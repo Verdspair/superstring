@@ -277,7 +277,7 @@ try {
   check("installed service serves health", health.status === 200);
   check(
     "installed service reports the product version",
-    JSON.parse(health.body).version === version.replace("-", ""),
+    JSON.parse(health.body).version === version,
   );
   const page = await request(port, "/");
   check("installed service serves the web app", page.status === 200 && page.body.includes("<html"));
