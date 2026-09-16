@@ -1,0 +1,384 @@
+{
+  "generated_by": "tools/ops/generate_field_semantics_golden.py",
+  "source": "G:\\reference\\src",
+  "python": "3.12.11",
+  "pydantic": "2.13.5",
+  "cases": [
+    {
+      "id": "chat.message.raw_over_limit_after_trim",
+      "schema": "ChatRequest",
+      "watched": "message",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "chat.message.at_limit",
+      "schema": "ChatRequest",
+      "watched": "message",
+      "accepted": true,
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "error": null
+    },
+    {
+      "id": "chat.message.blank_spaces",
+      "schema": "ChatRequest",
+      "watched": "message",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "chat.message.blank_nel",
+      "schema": "ChatRequest",
+      "watched": "message",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "chat.message.bom_is_not_blank_for_python",
+      "schema": "ChatRequest",
+      "watched": "message",
+      "accepted": true,
+      "value": "﻿",
+      "error": null
+    },
+    {
+      "id": "chat.message.padded_is_stripped",
+      "schema": "ChatRequest",
+      "watched": "message",
+      "accepted": true,
+      "value": "hi",
+      "error": null
+    },
+    {
+      "id": "session.title.raw_over_limit_after_trim",
+      "schema": "CreateSessionRequest",
+      "watched": "title",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "session.title.blank",
+      "schema": "CreateSessionRequest",
+      "watched": "title",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "session.update.title.raw_over_limit_after_trim",
+      "schema": "UpdateSessionRequest",
+      "watched": "title",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "agentconfig.name.nel_is_blank",
+      "schema": "AgentConfig",
+      "watched": "name",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "agentconfig.name.bom_is_not_blank",
+      "schema": "AgentConfig",
+      "watched": "name",
+      "accepted": true,
+      "value": "﻿",
+      "error": null
+    },
+    {
+      "id": "agentconfig.description.not_stripped",
+      "schema": "AgentConfig",
+      "watched": "description",
+      "accepted": true,
+      "value": "  留白  ",
+      "error": null
+    },
+    {
+      "id": "agentconfig.description.raw_over_limit_after_trim",
+      "schema": "AgentConfig",
+      "watched": "description",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "agentconfig.system_prompt.not_stripped",
+      "schema": "AgentConfig",
+      "watched": "system_prompt",
+      "accepted": true,
+      "value": "  keep me  ",
+      "error": null
+    },
+    {
+      "id": "agentconfig.additional_instructions.is_stripped",
+      "schema": "AgentConfig",
+      "watched": "additional_instructions",
+      "accepted": true,
+      "value": "drop me",
+      "error": null
+    },
+    {
+      "id": "agentconfig.additional_instructions.blank_allowed",
+      "schema": "AgentConfig",
+      "watched": "additional_instructions",
+      "accepted": true,
+      "value": "",
+      "error": null
+    },
+    {
+      "id": "agentconfig.memory_consolidation_prompt.blank_rejected",
+      "schema": "AgentConfig",
+      "watched": "memory_consolidation_prompt",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "agentconfig.model_name.null_allowed",
+      "schema": "AgentConfig",
+      "watched": "memory_consolidation_model_name",
+      "accepted": true,
+      "value": null,
+      "error": null
+    },
+    {
+      "id": "agentconfig.model_name.blank_rejected",
+      "schema": "AgentConfig",
+      "watched": "memory_retrieval_model_name",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "createagent.description.not_stripped",
+      "schema": "CreateAgentRequest",
+      "watched": "description",
+      "accepted": true,
+      "value": "  留白  ",
+      "error": null
+    },
+    {
+      "id": "createagent.additional_instructions.not_stripped_at_request_layer",
+      "schema": "CreateAgentRequest",
+      "watched": "additional_instructions",
+      "accepted": true,
+      "value": "  drop me  ",
+      "error": null
+    },
+    {
+      "id": "createagent.memory_consolidation_prompt.not_stripped_at_request_layer",
+      "schema": "CreateAgentRequest",
+      "watched": "memory_consolidation_prompt",
+      "accepted": true,
+      "value": "  keep me  ",
+      "error": null
+    },
+    {
+      "id": "createagent.name.nel_is_blank",
+      "schema": "CreateAgentRequest",
+      "watched": "name",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.description.empty_allowed",
+      "schema": "UpdateAgentRequest",
+      "watched": "description",
+      "accepted": true,
+      "value": "",
+      "error": null
+    },
+    {
+      "id": "updateagent.description.blank_rejected",
+      "schema": "UpdateAgentRequest",
+      "watched": "description",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.description.nel_rejected",
+      "schema": "UpdateAgentRequest",
+      "watched": "description",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.description.not_stripped",
+      "schema": "UpdateAgentRequest",
+      "watched": "description",
+      "accepted": true,
+      "value": "  留白  ",
+      "error": null
+    },
+    {
+      "id": "updateagent.description.raw_over_limit_after_trim",
+      "schema": "UpdateAgentRequest",
+      "watched": "description",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.additional_instructions.empty_allowed",
+      "schema": "UpdateAgentRequest",
+      "watched": "additional_instructions",
+      "accepted": true,
+      "value": "",
+      "error": null
+    },
+    {
+      "id": "updateagent.additional_instructions.not_stripped",
+      "schema": "UpdateAgentRequest",
+      "watched": "additional_instructions",
+      "accepted": true,
+      "value": "  keep me  ",
+      "error": null
+    },
+    {
+      "id": "updateagent.p5_config.explicit_null_rejected",
+      "schema": "UpdateAgentRequest",
+      "watched": "p5_config",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.is_active.explicit_null_rejected",
+      "schema": "UpdateAgentRequest",
+      "watched": "is_active",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.persona_intensity.explicit_null_rejected",
+      "schema": "UpdateAgentRequest",
+      "watched": "persona_intensity",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.temperature.explicit_null_rejected",
+      "schema": "UpdateAgentRequest",
+      "watched": "temperature",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "updateagent.memory_consolidation_model_name.null_allowed",
+      "schema": "UpdateAgentRequest",
+      "watched": "memory_consolidation_model_name",
+      "accepted": true,
+      "value": null,
+      "error": null
+    },
+    {
+      "id": "updateagent.memory_consolidation_model_name.blank_rejected",
+      "schema": "UpdateAgentRequest",
+      "watched": "memory_retrieval_model_name",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "persona.core_identity.blank_allowed_and_stripped",
+      "schema": "PersonaContent",
+      "watched": "core_identity",
+      "accepted": true,
+      "value": "",
+      "error": null
+    },
+    {
+      "id": "draft.name.raw_over_limit_after_trim",
+      "schema": "MemoryDraft",
+      "watched": "name",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "draft.name.nel_is_blank",
+      "schema": "MemoryDraft",
+      "watched": "name",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "draft.name.bom_is_not_blank",
+      "schema": "MemoryDraft",
+      "watched": "name",
+      "accepted": true,
+      "value": "﻿",
+      "error": null
+    },
+    {
+      "id": "draft.tags.astral_counts_as_one",
+      "schema": "MemoryDraft",
+      "watched": "tags",
+      "accepted": true,
+      "value": ["😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"],
+      "error": null
+    },
+    {
+      "id": "draft.tags.astral_over_60",
+      "schema": "MemoryDraft",
+      "watched": "tags",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "draft.tags.nel_is_blank",
+      "schema": "MemoryDraft",
+      "watched": "tags",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    },
+    {
+      "id": "draft.tags.bom_is_not_blank",
+      "schema": "MemoryDraft",
+      "watched": "tags",
+      "accepted": true,
+      "value": ["﻿"],
+      "error": null
+    },
+    {
+      "id": "draft.tags.dedup_after_strip_preserving_order",
+      "schema": "MemoryDraft",
+      "watched": "tags",
+      "accepted": true,
+      "value": ["a", "b"],
+      "error": null
+    },
+    {
+      "id": "draft.tags.omitted_defaults_to_empty",
+      "schema": "MemoryDraft",
+      "watched": "tags",
+      "accepted": true,
+      "value": [],
+      "error": null
+    },
+    {
+      "id": "preset.relevance_instruction.blank_rejected",
+      "schema": "RetrievalPreset",
+      "watched": "relevance_instruction",
+      "accepted": false,
+      "value": null,
+      "error": "ValidationError"
+    }
+  ]
+}

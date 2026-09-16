@@ -1,0 +1,2008 @@
+:root {
+  --superstring-tone-deep: #26364a;
+  --superstring-tone-light: #edf2f7;
+  --superstring-tone-line: #dce2e9;
+  --superstring-tone-soft: #f7f8fa;
+  --ac-surface: #ffffff;
+  --ac-text: #242b36;
+  --ac-muted: #616b79;
+  --ac-accent: #4266b0;
+  --ac-accent-soft: #edf2fc;
+  --ac-danger: #b83c46;
+  --ac-danger-soft: #fff3f3;
+  --ac-success: #397242;
+  --ac-success-soft: #f2fbf3;
+  --ac-radius: 8px;
+  --ac-radius-panel: 12px;
+  --ac-shadow: 0 6px 24px #18243a0a;
+  --superstring-sidebar-width: clamp(210px, 16vw, 236px);
+  color: var(--ac-text);
+  background: var(--ac-surface);
+  color-scheme: light;
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+:root.dark,
+.dark {
+  --superstring-tone-deep: #d7e1f0;
+  --superstring-tone-light: #263143;
+  --superstring-tone-line: #394353;
+  --superstring-tone-soft: #1d232d;
+  --ac-surface: #232b36;
+  --ac-text: #e7ebf2;
+  --ac-muted: #b0bac9;
+  --ac-accent: #a1bcff;
+  --ac-accent-soft: #303f59;
+  --ac-danger: #ffb1b8;
+  --ac-danger-soft: #462a32;
+  --ac-success: #b8e6c0;
+  --ac-success-soft: #243b2b;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --superstring-tone-deep: #d7e1f0;
+    --superstring-tone-light: #263143;
+    --superstring-tone-line: #394353;
+    --superstring-tone-soft: #1d232d;
+    --ac-surface: #232b36;
+    --ac-text: #e7ebf2;
+    --ac-muted: #b0bac9;
+    --ac-accent: #a1bcff;
+    --ac-accent-soft: #303f59;
+    --ac-danger: #ffb1b8;
+    --ac-danger-soft: #462a32;
+    --ac-success: #b8e6c0;
+    --ac-success-soft: #243b2b;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  background: var(--ac-surface);
+  color: var(--ac-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--ac-surface);
+  color: var(--ac-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 140ms,
+    border-color 140ms,
+    box-shadow 140ms;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--ac-muted);
+}
+
+button:not(.primary):hover:not(:disabled) {
+  background: var(--superstring-tone-soft);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  border-color: var(--superstring-tone-deep);
+  background: var(--superstring-tone-deep);
+  color: var(--ac-surface);
+  box-shadow: none;
+}
+
+button.primary:hover:not(:disabled) {
+  border-color: var(--superstring-tone-deep);
+  background: var(--superstring-tone-deep);
+}
+
+button.danger {
+  color: var(--ac-danger);
+}
+
+:is(button, summary, input, textarea, select, a):focus-visible {
+  outline: 2px solid var(--ac-accent);
+  outline-offset: 3px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.icon {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
+}
+
+#superstring-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: var(--superstring-sidebar-width) minmax(0, 1fr);
+  gap: 0;
+  background: var(--ac-surface);
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 12px 10px 10px;
+  border-right: 1px solid var(--superstring-tone-line);
+  background: var(--superstring-tone-soft);
+}
+
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 2px 46px 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ac-text);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+}
+
+.heading-icon-host {
+  width: 21px;
+  height: 21px;
+  flex: 0 0 21px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--superstring-tone-deep);
+}
+
+.heading-icon-host .icon,
+.heading-icon-host .heading-icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.7;
+}
+
+.version {
+  margin: 2px 0 14px 30px;
+  color: var(--ac-muted);
+  font-size: 11px;
+}
+
+.mode-note,
+.sidebar-empty {
+  color: var(--ac-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mode-note {
+  margin-bottom: 10px;
+}
+
+.new-session {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin: 6px 0 14px;
+}
+
+.new-session-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.new-dialog-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.heading-icon {
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.new-dialog {
+  display: grid;
+  gap: 7px;
+  margin: -6px 0 8px;
+  padding: 9px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  box-shadow: none;
+}
+
+.new-dialog > span {
+  color: var(--ac-muted);
+  font-size: 11px;
+}
+
+.session-heading {
+  margin: 5px 5px 7px;
+  color: var(--ac-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.session-list {
+  display: grid;
+  gap: 3px;
+}
+
+.session-list button {
+  width: 100%;
+  min-height: 32px;
+  overflow: hidden;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--ac-radius);
+  background: transparent;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-list button:hover,
+.session-list button.active {
+  border-color: var(--superstring-tone-line);
+  background: var(--ac-surface);
+}
+
+.settings-button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 5;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-color: transparent;
+  border-radius: var(--ac-radius);
+  background: transparent;
+  color: transparent;
+  font-size: 0;
+  box-shadow: none;
+}
+
+.settings-button .icon {
+  width: 19px;
+  height: 19px;
+  color: var(--ac-muted);
+}
+
+.settings-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--superstring-tone-light);
+}
+
+.main-area {
+  min-width: 0;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--ac-surface);
+}
+
+.page {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--ac-surface);
+}
+
+.page-header {
+  position: relative;
+  z-index: 3;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--superstring-tone-line);
+  background: var(--ac-surface);
+}
+
+.page-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ac-text);
+  font-size: 19px;
+  line-height: 1.25;
+}
+
+.page-header p {
+  margin: 3px 0 0;
+  color: var(--ac-muted);
+  font-size: 13px;
+}
+
+.chat-header h1 {
+  gap: 7px;
+}
+
+.header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.header-actions button {
+  min-width: 78px;
+}
+
+/* 聊天正文同样靠左：left:50% + translateX(-50%) 会让列宽随视口变化而在横轴上漂移，
+   宽屏下还会滑到中间。改成固定左边距，与页头标题、设置页内容落在同一条竖线上。 */
+.chat-content {
+  position: absolute;
+  top: 58px;
+  bottom: 136px;
+  left: 50%;
+  width: min(1180px, calc(100% - 32px));
+  transform: translateX(-50%);
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.empty-chat {
+  max-width: 480px;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  margin: 0 auto;
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--ac-text);
+}
+
+.empty-chat h2 {
+  margin: 0 0 6px;
+  color: var(--ac-text);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.empty-chat p {
+  margin: 0;
+  color: var(--ac-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.empty-chat small {
+  color: var(--ac-muted);
+  font-size: 10px;
+}
+
+.messages {
+  width: min(1080px, 100%);
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 6px 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.message {
+  width: 100%;
+  display: grid;
+  gap: 5px;
+  padding-block: 2px;
+}
+
+.message.user {
+  justify-items: end;
+}
+
+.message-meta {
+  display: block;
+  margin-top: 0;
+  color: var(--ac-muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.message.user .message-meta {
+  text-align: right;
+}
+
+.bubble {
+  max-width: min(72%, 760px);
+  padding: 8px 11px;
+  border-radius: var(--ac-radius);
+  background: var(--ac-surface);
+  color: var(--ac-text);
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: none;
+}
+
+.message.user .bubble {
+  background: var(--superstring-tone-light);
+  color: var(--ac-text);
+}
+
+.message.failed .bubble {
+  border: 1px solid var(--superstring-tone-line);
+  background: var(--ac-danger-soft);
+  color: var(--ac-danger);
+}
+
+.message-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 112px;
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--ac-surface);
+  box-shadow: 0 10px 28px #00000024;
+}
+
+.message-menu.is-open {
+  display: flex;
+}
+
+.message-menu button {
+  width: 100%;
+  min-width: auto;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: var(--ac-radius);
+  background: transparent;
+  color: var(--ac-danger);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.message-menu button:hover,
+.message-menu button:focus-visible {
+  background: var(--superstring-tone-soft);
+  outline: none;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: start center;
+  padding: 18vh 16px 16px;
+  background: #10182755;
+}
+
+.confirm-dialog {
+  width: calc(100vw - 32px);
+  min-width: 0;
+  max-width: 520px;
+  max-height: 70dvh;
+  display: grid;
+  gap: 18px;
+  overflow-y: auto;
+  padding: 24px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius-panel);
+  background: var(--ac-surface);
+  color: var(--ac-text);
+  box-shadow: 0 20px 80px #14223830;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-actions.three {
+  flex-wrap: wrap;
+}
+
+.dialog-status {
+  padding: 8px 10px;
+  border-radius: var(--ac-radius);
+  background: var(--ac-danger-soft);
+  color: var(--ac-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.composer-wrap {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 16px;
+  width: min(880px, calc(100% - 32px));
+  padding: 8px 9px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius-panel);
+  background: var(--ac-surface);
+  box-shadow: 0 4px 18px #18243a0a;
+}
+
+.composer-wrap:focus-within {
+  border-color: var(--ac-accent);
+  box-shadow: 0 0 0 3px var(--ac-accent-soft);
+}
+
+.composer-wrap textarea {
+  width: 100%;
+  min-height: 48px;
+  resize: none;
+  padding: 3px 5px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ac-text);
+}
+
+.composer-actions {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ac-muted);
+  font-size: 11px;
+}
+
+.composer-actions button.primary {
+  flex: 0 0 34px;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 0;
+  line-height: 1;
+}
+
+.composer-actions button.primary::before {
+  content: "↑";
+  font-size: 18px;
+  line-height: 1;
+}
+
+.processing-status {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 90;
+  width: max-content;
+  max-width: calc(100vw - 20px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: color-mix(in srgb, var(--ac-surface) 94%, transparent);
+  color: var(--ac-muted);
+  box-shadow: 0 2px 8px #0000000a;
+  font-size: 11px;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.superstring-loading-ring {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--superstring-tone-line);
+  border-top-color: var(--superstring-tone-deep);
+  border-radius: 50%;
+  animation: superstring-loading-turn 760ms linear infinite;
+}
+
+@keyframes superstring-loading-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.status {
+  position: fixed;
+  z-index: 91;
+  right: 12px;
+  bottom: 48px;
+  max-width: 420px;
+  padding: 8px 11px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--ac-success-soft);
+  color: var(--ac-success);
+  box-shadow: 0 2px 8px #0000000a;
+  font-size: 11px;
+}
+
+.status.error {
+  background: var(--ac-danger-soft);
+  color: var(--ac-danger);
+}
+
+.settings-page {
+  overflow-y: auto;
+  padding: 0 16px 22px;
+}
+
+.settings-page > .page-header {
+  position: sticky;
+  top: 0;
+  margin: 0 -16px;
+}
+
+.settings-page > .page-header > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 设置中心 / 助手设置 / 外观共用同一栏宽与起始位置。
+   用户要求（2026-09-15）：内容靠左对齐、与页头标题同一起始位置，
+   不再做成居中的窄条——居中会在横轴两侧留出大片空白，且各页留白不一致。 */
+.settings-content,
+.agent-settings {
+  width: min(880px, 100%);
+  margin: 0 auto;
+  padding: 16px 0 80px;
+}
+
+.settings-header nav {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+button.settings-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ac-muted);
+  font-size: 13px;
+}
+
+.settings-back .icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  stroke-width: 1.7;
+}
+
+.settings-content > h2,
+.agent-settings > h2,
+.agent-settings-heading h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.settings-content > p,
+.agent-settings > p {
+  margin: 5px 0 18px;
+  color: var(--ac-muted);
+  line-height: 1.6;
+}
+
+.agent-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-settings-heading h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+button.new-agent-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.agent-settings .new-agent-button .icon {
+  width: 16px;
+  height: 16px;
+  flex-basis: 16px;
+}
+
+.creation-note {
+  margin: 2px 2px 10px;
+}
+
+.agent-settings > p {
+  margin-bottom: 12px;
+}
+
+.settings-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* 说明文字只是段落，不该带列表描边。原先它和 .settings-list 并成一条规则，
+   导致外观页那句说明外面套了一个 1px 边框（实测高 21.2px vs 助手设置页 19.2px）。 */
+.appearance-settings > p {
+  margin-top: 10px;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+button.settings-entry {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 9px 12px;
+  text-align: left;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  box-shadow: none;
+}
+
+button.settings-entry:hover {
+  background: var(--superstring-tone-soft);
+}
+
+.settings-entry:focus-visible {
+  outline-offset: -3px;
+}
+
+.settings-entry-copy strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-entry-copy small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ac-muted);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.entry-arrow {
+  display: inline-flex;
+  transform: rotate(-90deg);
+}
+
+.entry-arrow .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}
+
+.settings-entry-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-entry > .icon,
+.appearance-settings .back-link .icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--ac-muted);
+  stroke-width: 1.7;
+}
+
+/* 主题色铺开：入口图标用主题色，返回箭头保持中性。 */
+.settings-entry > .icon {
+  color: var(--superstring-tone-deep);
+}
+
+.theme-options {
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+  max-width: 620px;
+  margin: 4px 0 8px;
+}
+
+button.theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 64px;
+  padding: 6px 2px;
+  border-color: transparent;
+  background: transparent;
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.theme-label {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.theme-option small {
+  color: var(--ac-muted);
+  font-size: 10px;
+}
+
+@media (max-width: 600px) {
+  .theme-options {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.theme-swatch {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  outline: 1px solid color-mix(in srgb, var(--ac-text) 15%, transparent);
+  outline-offset: 0;
+}
+
+.theme-option[aria-pressed="true"] .theme-swatch {
+  outline: 2px solid var(--superstring-tone-deep);
+  outline-offset: 4px;
+}
+
+/* 外观页彩色：选中色圆用当前主题色描边，状态圆点跟随主题。 */
+.theme-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--superstring-tone-deep);
+  vertical-align: middle;
+}
+
+.theme-swatch svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: white;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mode-options {
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+button.mode-option {
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* 选中态只用描边加粗表达，不铺主题色底（设计约定：主题色只给图标，不做大块底色）。 */
+button.mode-option[aria-pressed="true"] {
+  border-color: var(--superstring-tone-deep);
+  color: var(--ac-text);
+  font-weight: 600;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  border: 0;
+  padding-left: 0;
+  color: var(--ac-muted);
+  background: transparent;
+}
+
+button.back-link.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  margin-bottom: 8px;
+  border-radius: var(--ac-radius);
+}
+
+.back-link.icon-button .icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  stroke-width: 1.7;
+  /* 返回按钮里的图标要在自己的 32px 方框里居中：
+     不能吃折叠行那条 align-self: flex-start，否则会被顶到方框顶部。 */
+  align-self: center;
+  margin-top: 0;
+}
+
+.agent-selector {
+  margin-bottom: 12px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  overflow: hidden;
+}
+
+/* 折叠行几何、字体与图标规格统一放在文件末尾的「统一行规格」区块，
+   这里只保留与其它状态相关的声明，避免同一套行被三处规则各写一半。 */
+.agent-selector > summary {
+  font-weight: 600;
+}
+
+.agent-selector > summary > .icon:not(.chevron) {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.agent-editor-list {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+
+.agent-editor-list button {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.agent-editor-list button small {
+  flex: 0 0 auto;
+  color: var(--ac-muted);
+  font-size: 10px;
+}
+
+.agent-editor-list button.active {
+  border-color: var(--superstring-tone-line);
+  background: var(--ac-surface);
+  color: var(--ac-text);
+  font-weight: 600;
+}
+
+.delete-agent {
+  margin: 2px 6px 8px;
+}
+
+/* 新会话助手选择放在同一个助手下拉里：跟在助手列表下方，用一条分隔线保持层级。
+   内边距统一为 8px，与列表、分区导航、折叠体保持一致。 */
+.selector-extra {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+
+.selector-extra .field {
+  margin-bottom: 0;
+}
+
+.selector-extra > .hint {
+  margin: 0;
+}
+
+details {
+  border: 0;
+}
+
+details > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.detail-config {
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  overflow: hidden;
+}
+
+.detail-config > summary {
+  background: transparent;
+  font-weight: 600;
+}
+
+.agent-settings > .settings-note,
+.appearance-settings > .settings-note {
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.selector-identity {
+  display: block;
+  min-width: 0;
+  flex: 1;
+}
+
+.selector-identity small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ac-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.selector-identity strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.settings-summary,
+.summary-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+/* 折叠行主图标对齐到标题行（flex-start + 2px），与设置中心的入口行保持同一套对齐。
+   返回按钮里的图标**不能**吃这条规则：它要在自己的 32px 方框里居中（此前被这条
+   flex-start 顶到了方框顶部，是各页里最明显的细节不一致之一）。 */
+.agent-settings > details > summary > .icon:not(.chevron),
+.appearance-settings > details > summary > .icon:not(.chevron),
+.icon-summary > .icon:not(.chevron) {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.back-link.icon-button .icon {
+  align-self: center;
+  margin-top: 0;
+}
+
+/* 折叠行与分区导航统一图标规格：18px 主图标 + 16px 折叠箭头 + 1.7 线宽；
+   主图标改用主题色描边，跟随主题一起变色。 */
+.agent-settings > details > summary > .icon:not(.chevron),
+.appearance-settings > details > summary > .icon:not(.chevron),
+.section-selector-label .icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  stroke-width: 1.7;
+  color: var(--superstring-tone-deep);
+}
+
+.agent-settings > details > summary > .chevron,
+.appearance-settings > details > summary > .chevron,
+.section-selector > summary .chevron {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  stroke-width: 1.7;
+}
+
+.section-selector-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--ac-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.settings-summary strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-summary small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ac-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+/* 分组折叠行的 strong 曾被并进「分组标题」这条规则，拿到 14px 字号与 16px 上边距，
+   于是同一页的「批量管理」行比另外两行高约 18px、字号也大一档（实测 73.8 / 56.5 / 55.5px）。
+   这里只保留分区标题本身，折叠行统一交给文件末尾的「统一行规格」。 */
+.config-group-heading {
+  margin: 16px 0 8px;
+  color: var(--ac-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.config-group-heading.separated {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+
+.detail-body {
+  padding: 8px;
+}
+
+.section-selector {
+  margin-bottom: 10px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--ac-surface);
+  overflow: hidden;
+}
+
+.section-selector > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  font-weight: 600;
+}
+
+.section-selector-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section-selector-open {
+  display: none;
+}
+
+.section-selector[open] .section-selector-closed {
+  display: none;
+}
+
+.section-selector[open] .section-selector-open {
+  display: inline;
+}
+
+.section-nav {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+  padding: 8px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+
+/* 分区导航行统一高度：A—D 没有说明、E—H 带「未开放」说明，
+   只给 min-height 会让同一列表里出现 32px 与 47.3px 两种行高（和本页三行不一致同性质）。
+   固定 48px + 纵向居中，有没有说明都一样高。 */
+.section-nav button {
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 8px;
+  border-left: 3px solid transparent;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.section-nav button .section-row-head {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section-nav button strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.section-nav button small {
+  display: block;
+  color: var(--ac-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.section-nav button.active {
+  border-color: var(--superstring-tone-line);
+  border-left-color: var(--superstring-tone-deep);
+  background: var(--superstring-tone-light);
+}
+
+.section-nav .icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.7;
+  color: var(--superstring-tone-deep);
+}
+
+.section-content {
+  border-top: 1px solid var(--superstring-tone-line);
+  padding-top: 12px;
+}
+
+.config-section > h3 {
+  margin: 0 0 5px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.config-section > p {
+  color: var(--ac-muted);
+  line-height: 1.55;
+}
+
+.group {
+  margin: 8px 0;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  overflow: hidden;
+}
+
+.group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 12px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.config-list-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  margin-right: 5px;
+  vertical-align: -4px;
+  color: var(--superstring-tone-deep);
+}
+
+.config-list-icon .icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-self: center;
+  margin: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.group > summary > .summary-copy {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.group > summary strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.group > summary small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ac-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.group > summary > .chevron {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-self: center;
+  margin: 0;
+  stroke-width: 1.7;
+}
+
+.agent-settings > details,
+.appearance-settings > details {
+  margin: 0;
+}
+
+.agent-settings > details + details,
+.appearance-settings > details + details {
+  margin-top: 12px;
+}
+
+.chevron {
+  color: var(--ac-muted);
+}
+
+.group[open] > summary > .chevron,
+.agent-selector[open] > summary > .chevron,
+.detail-config[open] > summary > .chevron,
+.section-selector[open] > summary > .section-selector-action > .chevron {
+  transform: rotate(180deg);
+}
+
+.group-body {
+  padding: 0 8px 8px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.field-label {
+  color: var(--ac-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.field small,
+.check small {
+  color: var(--ac-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--ac-surface);
+  color: var(--ac-text);
+  outline: none;
+}
+
+:is(input, textarea)::placeholder {
+  color: var(--ac-muted);
+  opacity: 1;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--superstring-tone-deep);
+  box-shadow: 0 0 0 2px var(--ac-accent-soft);
+}
+
+textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+}
+
+.align-field {
+  margin-bottom: 12px;
+}
+
+.choice-group {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+}
+
+.choice-group legend {
+  padding: 0 5px;
+  color: var(--ac-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.choice-group:has(.memory-row) {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.memory-feedback {
+  min-height: 42px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  color: var(--ac-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.danger-note {
+  padding: 10px 12px;
+  border-left: 3px solid var(--ac-danger);
+  background: var(--ac-danger-soft);
+  color: var(--ac-danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.check input {
+  width: 17px;
+  height: 17px;
+  margin-top: 2px;
+  accent-color: var(--ac-accent);
+}
+
+.check span {
+  display: grid;
+  gap: 4px;
+}
+
+.range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  gap: 12px;
+  align-items: center;
+}
+
+.range-row input {
+  padding: 0;
+  accent-color: var(--ac-accent);
+}
+
+.range-row output {
+  text-align: center;
+  color: var(--ac-muted);
+  font-size: 12px;
+}
+
+.unavailable,
+.unavailable-section {
+  padding: 14px;
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  color: var(--ac-muted);
+}
+
+.unavailable > strong,
+.unavailable-section > strong {
+  color: var(--ac-text);
+}
+
+.hint {
+  margin: 8px 0 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ac-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.internal-save,
+.save-section {
+  margin-top: 14px;
+}
+
+.memory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.memory-list {
+  display: grid;
+  gap: 6px;
+}
+
+.memory-row {
+  display: flex;
+  gap: 10px;
+  padding: 9px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--ac-surface);
+}
+
+.memory-row input {
+  width: 16px;
+  height: 16px;
+}
+
+.memory-row span {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+
+.memory-row small {
+  color: var(--ac-muted);
+}
+
+.memory-row em {
+  color: var(--ac-muted);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.empty-panel {
+  padding: 20px;
+  border: 1px dashed var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  color: var(--ac-muted);
+  text-align: center;
+}
+
+.job-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 15px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--superstring-tone-line);
+}
+
+.job-row small {
+  grid-column: 1 / -1;
+  color: var(--ac-danger);
+}
+
+.loading-page {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  padding: 32px;
+  background: var(--ac-surface);
+  text-align: center;
+  color: var(--ac-muted);
+}
+
+.loading-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ac-text);
+  font-size: 22px;
+}
+
+.loading-brand .icon {
+  width: 28px;
+  height: 28px;
+}
+
+.loading-page h1 {
+  margin: 25px 0 8px;
+  color: var(--ac-text);
+  font-size: 20px;
+}
+
+.loading-page p {
+  margin: 0;
+}
+
+/* ===========================================================================
+   统一行规格（设计约定）
+   设置中心的入口行、助手设置/外观里的折叠行，此前是三套各写一半的规则，
+   实测同一页三行高度为 55.5 / 56.5 / 73.8px、字号 13/13/14px、内边距 8/8/7px。
+   这里给所有「一行 = 图标 + 标题 + 说明 + 折叠箭头」的行定义唯一一套几何与字体，
+   任何新界面只要复用这些类名就自动落在同一规格上。
+   放在样式表末尾、媒体查询之前：同优先级下由这里的值说了算，窄屏仍由媒体查询接管。
+   =========================================================================== */
+.agent-settings > details > summary,
+.appearance-settings > details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 58px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-settings > details > summary > .icon:not(.chevron),
+.appearance-settings > details > summary > .icon:not(.chevron),
+button.settings-entry > .icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-self: flex-start;
+  margin-top: 2px;
+  stroke-width: 1.7;
+  color: var(--superstring-tone-deep);
+}
+
+.agent-settings > details > summary > .chevron,
+.appearance-settings > details > summary > .chevron {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-self: center;
+  margin-top: 0;
+  stroke-width: 1.7;
+  color: var(--ac-muted);
+}
+
+.agent-settings > details > summary strong,
+.appearance-settings > details > summary strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-settings > details > summary small,
+.appearance-settings > details > summary small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ac-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none;
+    scroll-behavior: auto;
+  }
+
+  .superstring-loading-ring {
+    animation: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  :root {
+    --superstring-sidebar-width: clamp(196px, 20vw, 216px);
+  }
+
+  .messages {
+    width: 100%;
+    padding-inline: 0;
+  }
+
+  .bubble {
+    max-width: min(78%, 700px);
+  }
+
+  .section-nav {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  #superstring-shell {
+    display: flex;
+    flex-direction: column;
+    align-content: flex-start;
+    overflow-y: auto;
+  }
+
+  .sidebar,
+  .main-area {
+    width: 100%;
+    min-width: 100%;
+    max-width: none;
+  }
+
+  .sidebar {
+    position: relative;
+    top: auto;
+    height: auto;
+    min-height: auto;
+    max-height: 31vh;
+    padding: 9px;
+    border-right: 0;
+    border-bottom: 1px solid var(--superstring-tone-line);
+  }
+
+  .sidebar-scroll {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 2px 46px 0;
+  }
+
+  .settings-button {
+    right: 9px;
+    bottom: 9px;
+  }
+
+  .main-area,
+  .page {
+    height: 69vh;
+    min-height: 600px;
+  }
+
+  .page-header {
+    min-height: 108px;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 14px;
+  }
+
+  .page-header > div:first-child {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+
+  .page-header h1 {
+    font-size: 18px;
+    overflow-wrap: anywhere;
+  }
+
+  .page-header p {
+    max-width: 240px;
+  }
+
+  .header-actions {
+    flex-direction: column;
+  }
+
+  .header-actions button {
+    min-height: 32px;
+    padding: 5px 9px;
+    font-size: 11px;
+  }
+
+  .chat-content {
+    top: 108px;
+    bottom: 126px;
+    width: calc(100% - 28px);
+    max-width: none;
+    padding-top: 2px;
+  }
+
+  .messages {
+    padding: 4px 0 10px;
+    gap: 4px;
+  }
+
+  .bubble {
+    max-width: 88%;
+    padding: 7px 9px;
+  }
+
+  .empty-chat {
+    padding: 10px 0;
+  }
+
+  .empty-chat h2 {
+    font-size: 18px;
+  }
+
+  .composer-wrap {
+    bottom: 10px;
+    width: calc(100% - 28px);
+    max-width: none;
+    padding: 7px 8px;
+  }
+
+  .composer-wrap textarea {
+    min-height: 44px;
+  }
+
+  .settings-page {
+    padding: 0 14px 18px;
+  }
+
+  .settings-page > .page-header {
+    margin: 0 -14px 10px;
+  }
+
+  .settings-content,
+  .agent-settings {
+    width: 100%;
+    padding: 6px 0 50px;
+  }
+
+  button.settings-entry {
+    flex-direction: row;
+    padding: 9px 12px;
+  }
+
+  .agent-editor-list {
+    overflow: visible;
+    padding-bottom: 6px;
+  }
+
+  .detail-body {
+    padding: 7px;
+  }
+
+  .section-nav {
+    display: grid;
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+    padding-bottom: 6px;
+  }
+
+  .section-nav button {
+    width: 100%;
+  }
+
+  .group-body {
+    padding: 0 7px 7px;
+  }
+
+  .status {
+    left: 7px;
+    right: 7px;
+    bottom: 152px;
+    max-width: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .field-grid,
+  .field-grid.two {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .memory-toolbar {
+    flex-direction: column;
+  }
+
+  .processing-status {
+    right: 7px;
+    bottom: 118px;
+    max-width: calc(100vw - 14px);
+  }
+}
+
+@media (max-width: 480px) {
+  .memory-toolbar,
+  .dialog-actions,
+  .dialog-actions.three {
+    flex-wrap: wrap;
+  }
+
+  .memory-toolbar > *,
+  .dialog-actions > * {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "components": [
+    {
+      "file": "react-LICENSE.txt",
+      "source": "npm:react@19.3.0/LICENSE",
+      "component": "react",
+      "version": "19.3.0",
+      "license": "MIT",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    },
+    {
+      "file": "react-dom-LICENSE.txt",
+      "source": "npm:react-dom@19.3.0/LICENSE",
+      "component": "react-dom",
+      "version": "19.3.0",
+      "license": "MIT",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    },
+    {
+      "file": "scheduler-LICENSE.txt",
+      "source": "npm:scheduler@0.28.0/LICENSE",
+      "component": "scheduler",
+      "version": "0.28.0",
+      "license": "MIT",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    },
+    {
+      "file": "hono-LICENSE.txt",
+      "source": "npm:hono@4.13.7/LICENSE",
+      "component": "hono",
+      "version": "4.13.7",
+      "license": "MIT",
+      "sha256": "a6ab98e5c77b9070c443eaff2ff81034a6f8cc05a7524d5098eb0f24defa0115"
+    },
+    {
+      "file": "zod-LICENSE.txt",
+      "source": "npm:zod@4.6.2/LICENSE",
+      "component": "zod",
+      "version": "4.6.2",
+      "license": "MIT",
+      "sha256": "3f1189b28e3866e0d979968d466b78f813f76827cfdca1fbb124cc0a5c8841f8"
+    },
+    {
+      "file": "zustand-LICENSE.txt",
+      "source": "npm:zustand@5.0.15/LICENSE",
+      "component": "zustand",
+      "version": "5.0.15",
+      "license": "MIT",
+      "sha256": "c1e6e266563517467b1bf874817d23e426f3149252bd7d42758cd697514b8417"
+    },
+    {
+      "file": "drizzle-orm-LICENSE.txt",
+      "source": "https://github.com/drizzle-team/drizzle-orm/blob/0.45.2/LICENSE",
+      "component": "drizzle-orm",
+      "version": "0.45.2",
+      "license": "Apache-2.0",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "file": "bun-UPSTREAM-LICENSE.txt",
+      "source": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/LICENSE.md",
+      "component": "bun",
+      "version": "1.4.2",
+      "license": "MIT and separately licensed embedded components",
+      "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+    },
+    {
+      "file": "bun-EMBEDDED-NOTICES.txt",
+      "source": "Version-pinned original sources and text hashes listed in bun-RUNTIME-SOURCES.txt",
+      "component": "bun-embedded-notice-collection",
+      "version": "1.4.2",
+      "license": "Partial collection of original embedded-component licenses and copyright notices; not distribution clearance",
+      "sha256": "4d6811a9ad59ff6eddc1ccad9a61ba5b690499cce556af4440c6750cbdc87760"
+    },
+    {
+      "file": "bun-RUNTIME-SOURCES.txt",
+      "source": "https://github.com/oven-sh/bun/tree/744846f844374847c902b5e7fd59b4342a51ef99",
+      "component": "bun-runtime-provenance-and-open-items",
+      "version": "1.4.2",
+      "license": "Project-authored provenance and review status; not a replacement for upstream licenses",
+      "sha256": "4233252259ac3f6c19d2cefd1f9351940888c319310bc7fc9addb6a8c45ec8c8"
+    },
+    {
+      "file": "superstring-MIT.txt",
+      "source": "LICENSE",
+      "component": "superstring",
+      "version": "0.1.0-alpha",
+      "license": "MIT",
+      "sha256": "e4d6d80a4af894e56c61523138a2bbb631979dd2e93e82afe13e4d932b7071e9"
+    }
+  ]
+}

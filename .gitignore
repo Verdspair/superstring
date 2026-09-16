@@ -1,0 +1,33 @@
+# Dependencies and generated output
+node_modules/
+dist/
+artifacts/
+coverage/
+*.tsbuildinfo
+
+# Local data, configuration, credentials and backups
+.env
+.env.*
+data/
+local/
+userdata/
+logs/
+backups/
+maintenance/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.key
+*.pem
+*.pfx
+*.log
+
+# Local editor and operating-system state
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+_probe_*
