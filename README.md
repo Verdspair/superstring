@@ -6,7 +6,7 @@
 
 superstring is a local desktop chat application for ongoing conversations with configurable AI assistants. It brings together conversation history, long-term memory, and adjustable personality settings, with room for both everyday conversation and emotional support.
 
-**Current version:** `0.1.0alpha` · **Package version:** `0.1.0-alpha` · **Target platform:** Windows x64
+**Version:** `0.1.0-alpha` · **Target platform:** Windows x64
 
 The interface is in Simplified Chinese.
 
@@ -134,7 +134,7 @@ This project's own code is licensed under the [MIT License](LICENSE). Third-part
 
 超弦（superstring）是一款在本机运行的桌面聊天应用，让你与可配置的 AI 助手持续交流。它将会话记录、长期记忆与性格人设放在一起，既可以用于日常聊天，也为情感支持留出空间。
 
-**当前版本：** `0.1.0alpha` · **包版本：** `0.1.0-alpha` · **目标平台：** Windows x64
+**版本：** `0.1.0-alpha` · **目标平台：** Windows x64
 
 应用界面为简体中文。
 

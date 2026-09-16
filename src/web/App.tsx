@@ -5,7 +5,7 @@ import { broadcastAppearance } from "./desktop-lifecycle";
 import type { AgentDraft, SectionKey } from "./store";
 import { useSuperstringStore } from "./store";
 
-const VERSION = "0.1.0alpha";
+const VERSION = "0.1.0-alpha";
 
 function localTime(value: string | Date = new Date()): string {
   const parts = new Intl.DateTimeFormat("zh-CN", {

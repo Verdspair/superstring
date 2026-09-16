@@ -112,13 +112,12 @@ describe("dev API proxy coverage (#101)", () => {
 
 describe("build version consistency (#101)", () => {
   it("package.json names the same release /health reports", () => {
-    // package.json must hold legal semver, so the alpha prerelease is spelled
-    // "0.1.0-alpha" while the user-facing product string drops the separator:
-    // "0.1.0alpha". Normalise by removing the hyphen and compare, so the two can
+    // One spelling everywhere: legal SemVer "0.1.0-alpha", matching package.json,
+    // the release tag and the installer file name. Compared verbatim so the two can
     // never drift into different releases.
     const pkg = JSON.parse(read("package.json")) as { version: string };
-    expect(pkg.version.replace("-", "")).toBe(APP_VERSION);
-    expect(APP_VERSION).toBe("0.1.0alpha");
+    expect(pkg.version).toBe(APP_VERSION);
+    expect(APP_VERSION).toBe("0.1.0-alpha");
     const lock = JSON.parse(read("package-lock.json"));
     expect(lock.version).toBe(pkg.version);
     expect(lock.packages[""].version).toBe(pkg.version);
