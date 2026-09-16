@@ -2,10 +2,6 @@
 
 [English](#english) · [简体中文](#简体中文)
 
-> Pre-release — not yet published. The exported source has passed a fresh-dependency build and isolated installation checks on the development Windows host. A separate clean-PC acceptance test is still pending. Public installer distribution remains on hold while the embedded Bun runtime's license, corresponding-source, and relinking materials are completed.
->
-> 发布准备中，尚未发布。导出源码已在开发用 Windows 主机上通过全新依赖构建与隔离安装检查，另一台干净电脑的验收仍待完成。内嵌 Bun 运行时的许可、对应源码及重新链接材料补齐前，暂不公开分发安装包。
-
 ## English
 
 superstring is a local desktop chat application for ongoing conversations with configurable AI assistants. It brings together conversation history, long-term memory, and adjustable personality settings, with room for both everyday conversation and emotional support.
