@@ -1,5 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
@@ -9,9 +17,10 @@ const sql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql"),
   "utf8",
 );
+const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
   it("validates supplied SQL before creating a file-backed database", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "ss-resource-"));
+    const dir = mkdtempSync(path.join(testTmpdir, "ss-resource-"));
     const filename = path.join(dir, "test.sqlite");
     try {
       for (const migrationSql of ["", "this is not SQL"]) {
@@ -23,7 +32,7 @@ describe("explicit migration resources", () => {
     }
   });
   it("does not reuse a reference schema belonging to a different SQL resource", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "ss-reference-"));
+    const dir = mkdtempSync(path.join(testTmpdir, "ss-reference-"));
     const filename = path.join(dir, "test.sqlite");
     try {
       openBusinessDb({ path: filename, migrationSql: sql }).close();
@@ -41,7 +50,7 @@ describe("explicit migration resources", () => {
     }
   });
   it("rejects incomplete installed resources without creating userdata", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "ss-missing-resources-"));
+    const dir = mkdtempSync(path.join(testTmpdir, "ss-missing-resources-"));
     try {
       expect(() =>
         loadStartupLayout({ SUPERSTRING_APP_MODE: "installed", SUPERSTRING_APP_ROOT: dir }),
@@ -54,7 +63,7 @@ describe("explicit migration resources", () => {
   it("accepts a packaged layout that carries no R1 probe migration", () => {
     // The release package intentionally ships the business DDL only. Loading such a
     // layout must succeed, and it must not expose a probe resource of any kind.
-    const dir = mkdtempSync(path.join(tmpdir(), "ss-packaged-layout-"));
+    const dir = mkdtempSync(path.join(testTmpdir, "ss-packaged-layout-"));
     try {
       const versions = path.join(dir, "app/resources/migrations/versions");
       mkdirSync(versions, { recursive: true });

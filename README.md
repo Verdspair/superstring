@@ -6,7 +6,7 @@
 
 superstring is a local desktop chat application for ongoing conversations with configurable AI assistants. It brings together conversation history, long-term memory, and adjustable personality settings, with room for both everyday conversation and emotional support.
 
-**Version:** `0.1.0-alpha` · **Target platform:** Windows x64
+**Version:** `0.1.0-alpha` · **Packaged desktop release:** Windows x64
 
 The interface is in Simplified Chinese.
 
@@ -80,7 +80,7 @@ In desktop mode, closing the last superstring browser page starts an approximate
 
 Prerequisites:
 
-- Windows x64.
+- Windows x64 for the desktop package.
 - Node.js `22.12.0` or later, as declared in `package.json`.
 - Project dependencies installed using `package-lock.json`; the project pins Bun `1.4.2` as a development dependency.
 - For native launcher and installer builds: the .NET Framework C# compiler and the .NET Framework 4.8 reference assemblies required by the build scripts.
@@ -92,6 +92,13 @@ From the source root, in PowerShell:
 npm ci
 .\start.cmd --check
 .\start.cmd
+```
+
+On macOS or Linux, run the local browser app from source:
+
+```sh
+npm ci
+./start.sh
 ```
 
 `start.cmd` runs the development application, builds the frontend, and opens the browser. Unlike the installed desktop launcher, it is a console development entry; closing the browser does not stop it. Use Ctrl+C in its terminal to request shutdown.
@@ -114,6 +121,16 @@ node tools/installer/build-package.mjs
 
 Backend tests run under Bun; browser-facing tests run under Vitest. Do not substitute an unqualified `bun test` for the separate test commands. A frontend build alone does not produce a desktop installer.
 
+On macOS or Linux, run the source checks with:
+
+```sh
+npm run check
+npm run typecheck
+node_modules/.bin/bun test tests/integration tests/contracts
+npm run test:web
+npm run build
+```
+
 ### Limitations and feedback
 
 - This is a single-user local application, not a hosted multi-user service. Do not expose the application port to the public internet.
@@ -134,7 +151,7 @@ This project's own code is licensed under the [MIT License](LICENSE). Third-part
 
 超弦（superstring）是一款在本机运行的桌面聊天应用，让你与可配置的 AI 助手持续交流。它将会话记录、长期记忆与性格人设放在一起，既可以用于日常聊天，也为情感支持留出空间。
 
-**版本：** `0.1.0-alpha` · **目标平台：** Windows x64
+**版本：** `0.1.0-alpha` · **桌面安装包平台：** Windows x64
 
 应用界面为简体中文。
 
@@ -208,7 +225,7 @@ This project's own code is licensed under the [MIT License](LICENSE). Third-part
 
 所需环境：
 
-- Windows x64。
+- 桌面安装包需要 Windows x64。
 - Node.js `22.12.0` 或更高版本，以 `package.json` 声明为准。
 - 根据 `package-lock.json` 安装项目依赖；项目将 Bun `1.4.2` 固定为开发依赖。
 - 构建原生启动器与安装包时，需要构建脚本使用的 .NET Framework C# 编译器与 .NET Framework 4.8 引用程序集。
@@ -220,6 +237,13 @@ This project's own code is licensed under the [MIT License](LICENSE). Third-part
 npm ci
 .\start.cmd --check
 .\start.cmd
+```
+
+在 macOS 或 Linux 上从源码运行本地网页版：
+
+```sh
+npm ci
+./start.sh
 ```
 
 `start.cmd` 会运行开发应用、构建前端并打开浏览器。它是控制台开发入口，与安装版桌面启动器不同，关闭网页不会让它自动退出；需要在对应终端按 Ctrl+C 请求停止。
@@ -241,6 +265,16 @@ node tools/installer/build-package.mjs
 ```
 
 后端测试由 Bun 执行，浏览器相关测试由 Vitest 执行，不要用不带范围的 `bun test` 替代分开的测试命令。只构建前端不会生成桌面安装包。
+
+在 macOS 或 Linux 上运行源码检查：
+
+```sh
+npm run check
+npm run typecheck
+node_modules/.bin/bun test tests/integration tests/contracts
+npm run test:web
+npm run build
+```
 
 ### 限制与反馈
 
