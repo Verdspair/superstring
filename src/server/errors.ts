@@ -28,7 +28,7 @@ export class AppError extends Error {
   }
 }
 
-// ── errors.py core subclasses (12) ─────────────────────────────────────────
+// errors.py core subclasses (12)
 
 export class SessionNotFoundError extends AppError {
   constructor() {
@@ -111,7 +111,7 @@ export class ModelUnavailableError extends AppError {
   }
 }
 
-// ── Repository / service layer codes ───────────────────────────────────────
+// Repository / service layer codes
 
 /**
  * Mirrors the local `fail(code, message, status=409)` helpers in

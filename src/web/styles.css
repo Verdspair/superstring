@@ -161,7 +161,9 @@ button.danger {
 }
 
 #superstring-shell {
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
   display: grid;
   grid-template-columns: var(--superstring-sidebar-width) minmax(0, 1fr);
   gap: 0;
@@ -171,8 +173,8 @@ button.danger {
 .sidebar {
   position: sticky;
   top: 0;
-  height: 100vh;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -308,6 +310,80 @@ button.danger {
   white-space: nowrap;
 }
 
+.session-row {
+  min-width: 0;
+}
+.session-row > button[hidden] {
+  display: none;
+}
+.session-rename {
+  padding: 4px;
+}
+.session-rename input {
+  width: 100%;
+  min-width: 0;
+}
+.session-rename-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 4px;
+}
+.session-rename-actions button {
+  width: auto;
+  font-size: 11px;
+  text-align: center;
+}
+.session-notice,
+.session-rename p {
+  font-size: 11px;
+  color: var(--ac-muted);
+  overflow-wrap: anywhere;
+}
+.session-menu {
+  position: fixed;
+  z-index: 10000;
+  width: max-content;
+  min-width: 156px;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--ac-surface);
+  box-shadow: var(--ac-shadow);
+}
+.session-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+}
+.session-menu button:hover:not(:disabled),
+.session-menu button:focus-visible {
+  background: var(--superstring-tone-soft);
+  outline: none;
+}
+.session-menu .icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+.menu-separator {
+  border: 0;
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--superstring-tone-line);
+}
+.general-appearance {
+  min-width: 0;
+}
+
 .session-list button:hover,
 .session-list button.active {
   border-color: var(--superstring-tone-line);
@@ -349,8 +425,8 @@ button.danger {
 
 .main-area {
   min-width: 0;
-  height: 100vh;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   background: var(--ac-surface);
 }
@@ -358,8 +434,8 @@ button.danger {
 .page {
   position: relative;
   width: 100%;
-  height: 100vh;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   background: var(--ac-surface);
 }
@@ -407,8 +483,7 @@ button.danger {
   min-width: 78px;
 }
 
-/* 聊天正文同样靠左：left:50% + translateX(-50%) 会让列宽随视口变化而在横轴上漂移，
-   宽屏下还会滑到中间。改成固定左边距，与页头标题、设置页内容落在同一条竖线上。 */
+/* 聊天滚动区在主区域内居中，底部为输入栏留出空间。 */
 .chat-content {
   position: absolute;
   top: 58px;
@@ -522,7 +597,8 @@ button.danger {
   border: 1px solid var(--superstring-tone-line);
   border-radius: var(--ac-radius);
   background: var(--ac-surface);
-  box-shadow: 0 10px 28px #00000024;
+  box-shadow: var(--ac-shadow);
+  max-width: calc(100vw - 16px);
 }
 
 .message-menu.is-open {
@@ -530,6 +606,9 @@ button.danger {
 }
 
 .message-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   min-width: auto;
   padding: 5px 10px;
@@ -725,9 +804,7 @@ button.danger {
   white-space: nowrap;
 }
 
-/* 设置中心 / 助手设置 / 外观共用同一栏宽与起始位置。
-   用户要求（2026-09-15）：内容靠左对齐、与页头标题同一起始位置，
-   不再做成居中的窄条——居中会在横轴两侧留出大片空白，且各页留白不一致。 */
+/* 设置内容共用 880px 居中栏宽。 */
 .settings-content,
 .agent-settings {
   width: min(880px, 100%);
@@ -744,12 +821,30 @@ button.danger {
 button.settings-back {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 0;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
   border: 0;
+  border-radius: var(--ac-radius);
   background: transparent;
+  box-shadow: none;
   color: var(--ac-muted);
   font-size: 13px;
+  font-weight: 500;
+}
+
+button.settings-back:hover:not(:disabled) {
+  background: var(--superstring-tone-soft);
+  color: var(--ac-text);
+  box-shadow: none;
+}
+
+button.settings-back:focus-visible {
+  outline: 2px solid var(--ac-accent);
+  outline-offset: 2px;
 }
 
 .settings-back .icon {
@@ -817,8 +912,7 @@ button.new-agent-button {
   margin-top: 12px;
 }
 
-/* 说明文字只是段落，不该带列表描边。原先它和 .settings-list 并成一条规则，
-   导致外观页那句说明外面套了一个 1px 边框（实测高 21.2px vs 助手设置页 19.2px）。 */
+/* 说明段落不继承设置列表的描边。 */
 .appearance-settings > p {
   margin-top: 10px;
   border: 0;
@@ -888,7 +982,7 @@ button.settings-entry:hover {
   stroke-width: 1.7;
 }
 
-/* 主题色铺开：入口图标用主题色，返回箭头保持中性。 */
+/* 入口图标使用主题色，返回箭头保持中性。 */
 .settings-entry > .icon {
   color: var(--superstring-tone-deep);
 }
@@ -952,7 +1046,7 @@ button.theme-option {
   outline-offset: 4px;
 }
 
-/* 外观页彩色：选中色圆用当前主题色描边，状态圆点跟随主题。 */
+/* 选中色圆的描边和状态圆点跟随主题色。 */
 .theme-dot {
   display: inline-block;
   width: 8px;
@@ -990,11 +1084,91 @@ button.mode-option {
   font-weight: 400;
 }
 
-/* 选中态只用描边加粗表达，不铺主题色底（设计约定：主题色只给图标，不做大块底色）。 */
+/* 选中态以描边表示，不铺主题色底。 */
 button.mode-option[aria-pressed="true"] {
   border-color: var(--superstring-tone-deep);
   color: var(--ac-text);
   font-weight: 600;
+}
+
+.operating-mode-settings > .settings-note {
+  margin: 5px 0 18px;
+  font-size: 12px;
+}
+
+.operating-modes {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+button.operating-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  padding: 9px 12px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-soft);
+  box-shadow: none;
+  text-align: left;
+}
+
+button.operating-mode-row:disabled {
+  opacity: 1;
+  color: var(--ac-muted);
+}
+
+button.operating-mode-row:hover:not(:disabled) {
+  border-color: var(--superstring-tone-line);
+  background: var(--superstring-tone-soft);
+}
+
+.operating-mode-row > .icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  stroke-width: 1.7;
+  color: var(--ac-muted);
+}
+
+.operating-mode-row[aria-pressed="true"] > .icon,
+.operating-mode-status > .icon {
+  color: var(--superstring-tone-deep);
+}
+
+.operating-mode-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.operating-mode-status {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 6px;
+  color: var(--ac-muted);
+}
+
+.operating-mode-status small {
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.operating-mode-status > .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
 }
 
 .back-link {
@@ -1025,8 +1199,7 @@ button.back-link.icon-button {
   height: 16px;
   flex: 0 0 16px;
   stroke-width: 1.7;
-  /* 返回按钮里的图标要在自己的 32px 方框里居中：
-     不能吃折叠行那条 align-self: flex-start，否则会被顶到方框顶部。 */
+  /* 返回图标在 32px 触区内居中，不继承折叠行的顶部对齐。 */
   align-self: center;
   margin-top: 0;
 }
@@ -1039,8 +1212,7 @@ button.back-link.icon-button {
   overflow: hidden;
 }
 
-/* 折叠行几何、字体与图标规格统一放在文件末尾的「统一行规格」区块，
-   这里只保留与其它状态相关的声明，避免同一套行被三处规则各写一半。 */
+/* 行高、字体和图标由末尾的统一行规格管理。 */
 .agent-selector > summary {
   font-weight: 600;
 }
@@ -1088,8 +1260,7 @@ button.back-link.icon-button {
   margin: 2px 6px 8px;
 }
 
-/* 新会话助手选择放在同一个助手下拉里：跟在助手列表下方，用一条分隔线保持层级。
-   内边距统一为 8px，与列表、分区导航、折叠体保持一致。 */
+/* 新会话助手选择位于助手下拉底部，以分隔线区分。 */
 .selector-extra {
   display: grid;
   gap: 6px;
@@ -1162,9 +1333,7 @@ details > summary::-webkit-details-marker {
   flex: 1;
 }
 
-/* 折叠行主图标对齐到标题行（flex-start + 2px），与设置中心的入口行保持同一套对齐。
-   返回按钮里的图标**不能**吃这条规则：它要在自己的 32px 方框里居中（此前被这条
-   flex-start 顶到了方框顶部，是各页里最明显的细节不一致之一）。 */
+/* 折叠图标对齐标题行；返回按钮不适用这条顶部对齐规则。 */
 .agent-settings > details > summary > .icon:not(.chevron),
 .appearance-settings > details > summary > .icon:not(.chevron),
 .icon-summary > .icon:not(.chevron) {
@@ -1177,8 +1346,7 @@ details > summary::-webkit-details-marker {
   margin-top: 0;
 }
 
-/* 折叠行与分区导航统一图标规格：18px 主图标 + 16px 折叠箭头 + 1.7 线宽；
-   主图标改用主题色描边，跟随主题一起变色。 */
+/* 主图标 18px、箭头 16px、线宽 1.7；主图标使用主题色。 */
 .agent-settings > details > summary > .icon:not(.chevron),
 .appearance-settings > details > summary > .icon:not(.chevron),
 .section-selector-label .icon {
@@ -1223,9 +1391,7 @@ details > summary::-webkit-details-marker {
   line-height: 1.5;
 }
 
-/* 分组折叠行的 strong 曾被并进「分组标题」这条规则，拿到 14px 字号与 16px 上边距，
-   于是同一页的「批量管理」行比另外两行高约 18px、字号也大一档（实测 73.8 / 56.5 / 55.5px）。
-   这里只保留分区标题本身，折叠行统一交给文件末尾的「统一行规格」。 */
+/* 分区标题与折叠行分开设置，避免标题边距改变折叠行高度。 */
 .config-group-heading {
   margin: 16px 0 8px;
   color: var(--ac-text);
@@ -1287,9 +1453,7 @@ details > summary::-webkit-details-marker {
   border-top: 1px solid var(--superstring-tone-line);
 }
 
-/* 分区导航行统一高度：A—D 没有说明、E—H 带「未开放」说明，
-   只给 min-height 会让同一列表里出现 32px 与 47.3px 两种行高（和本页三行不一致同性质）。
-   固定 48px + 纵向居中，有没有说明都一样高。 */
+/* 导航行最小高度 48px，长说明仍可撑高。 */
 .section-nav button {
   min-height: 48px;
   display: flex;
@@ -1719,14 +1883,7 @@ textarea {
   margin: 0;
 }
 
-/* ===========================================================================
-   统一行规格（设计约定）
-   设置中心的入口行、助手设置/外观里的折叠行，此前是三套各写一半的规则，
-   实测同一页三行高度为 55.5 / 56.5 / 73.8px、字号 13/13/14px、内边距 8/8/7px。
-   这里给所有「一行 = 图标 + 标题 + 说明 + 折叠箭头」的行定义唯一一套几何与字体，
-   任何新界面只要复用这些类名就自动落在同一规格上。
-   放在样式表末尾、媒体查询之前：同优先级下由这里的值说了算，窄屏仍由媒体查询接管。
-   =========================================================================== */
+/* 统一顶层折叠行的几何与字体。放在媒体查询之前，保留窄屏覆盖。 */
 .agent-settings > details > summary,
 .appearance-settings > details > summary {
   display: flex;
@@ -1813,10 +1970,10 @@ button.settings-entry > .icon {
 
 @media (max-width: 760px) {
   #superstring-shell {
-    display: flex;
-    flex-direction: column;
-    align-content: flex-start;
-    overflow-y: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, auto) minmax(0, 1fr) auto;
+    overflow: hidden;
   }
 
   .sidebar,
@@ -1850,8 +2007,8 @@ button.settings-entry > .icon {
 
   .main-area,
   .page {
-    height: 69vh;
-    min-height: 600px;
+    height: 100%;
+    min-height: 0;
   }
 
   .page-header {
@@ -2005,4 +2162,65 @@ button.settings-entry > .icon {
     min-width: 0;
     max-width: 100%;
   }
+}
+
+.app-statusbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  min-height: 30px;
+  padding: 5px 14px;
+  border-top: 1px solid var(--superstring-tone-line);
+  background: var(--superstring-tone-soft);
+  color: var(--ac-muted);
+  font-size: 11px;
+}
+.app-statusbar span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.app-statusbar .icon,
+.message-menu .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}
+.general-settings > details + details {
+  margin-top: 12px;
+}
+.general-settings > details > summary {
+  min-height: 58px;
+  padding: 9px 12px;
+  gap: 10px;
+}
+.general-settings > details > summary > .icon:not(.chevron) {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.7;
+  color: var(--superstring-tone-deep);
+}
+.general-settings > details > summary > .chevron {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}
+.general-settings .group-body {
+  padding: 8px;
+}
+.mode-option,
+.settings-entry-copy,
+.section-row-head strong {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.message:focus-visible {
+  outline: 2px solid var(--ac-accent);
+  outline-offset: 2px;
+  border-radius: var(--ac-radius);
 }

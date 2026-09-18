@@ -4,9 +4,8 @@
 //  - The SQLite `user_version` pragma marks the schema version. migrations/
 //    versions/0001_initial.sql is the single authoritative DDL; this gate runs it
 //    only on a verifiably fresh database, then stamps user_version.
-//  - On any unrecognised version or structure, the gate REFUSES to proceed and
-//    throws an error whose message begins with the `REJECT_` prefix, leaving the
-//    without intentionally changing its schema or journal mode. Schema decisions
+//  - An unrecognised version or structure raises a `REJECT_` error without
+//    intentionally changing the database schema or journal mode. Schema decisions
 //    run in one transaction; on rejection it rolls back and openBusinessDb closes
 //    the connection. This is not a read-only forensic opener: SQLite may recover
 //    an existing hot journal or manage sidecars of a database already using WAL.

@@ -47,7 +47,6 @@ import {
   UuidSchema,
 } from "../../src/shared/contracts";
 
-// A stable, well-formed UUID used across positive samples.
 const UUID = "123e4567-e89b-12d3-a456-426614174000";
 const TS = "2026-01-01T00:00:00.123456Z";
 
@@ -999,11 +998,11 @@ describe("Error code taxonomy (66 codes, api-contract §6.2 v2)", () => {
     // MODEL_ERROR is HTTP-layer 503 that merely travels over SSE
     expect((MODEL_LAYER_ERROR_CODES as readonly string[]).includes("MODEL_ERROR")).toBe(true);
     expect((SSE_EXCLUSIVE_ERROR_CODES as readonly string[]).includes("MODEL_ERROR")).toBe(false);
-    // message-level set is exactly 3
+
     expect(MESSAGE_LEVEL_ERROR_CODES.length).toBe(3);
-    // job-level set is exactly 6
+
     expect(JOB_LEVEL_ERROR_CODES.length).toBe(6);
-    // every grouped code is also a declared code
+
     for (const code of [
       ...MESSAGE_LEVEL_ERROR_CODES,
       ...JOB_LEVEL_ERROR_CODES,

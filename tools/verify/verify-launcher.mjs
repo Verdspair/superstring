@@ -329,7 +329,7 @@ function stopServer(child) {
       try {
         child.kill("SIGKILL");
       } catch {
-        /* ignore */
+        // Cleanup is best-effort for processes or handles already closed.
       }
       finish("hard");
     }, 9000);
@@ -337,7 +337,7 @@ function stopServer(child) {
       try {
         child.kill("SIGTERM");
       } catch {
-        /* ignore */
+        // Cleanup is best-effort for processes or handles already closed.
       }
     }, 3000);
     child.on("exit", (code, signal) => {
@@ -582,7 +582,7 @@ async function main() {
       try {
         held?.close();
       } catch {
-        /* ignore */
+        // Cleanup is best-effort for processes or handles already closed.
       }
     }
     record("check-port-inuse", ok, detail);
@@ -890,7 +890,7 @@ async function main() {
       try {
         c.kill("SIGKILL");
       } catch {
-        /* ignore */
+        // Cleanup is best-effort for processes or handles already closed.
       }
     }
   }
@@ -904,7 +904,7 @@ async function main() {
     try {
       rmSync(path.join(fx, "dist"), { force: true });
     } catch {
-      /* ignore */
+      // Cleanup is best-effort for processes or handles already closed.
     }
     let removed = false;
     for (let attempt = 0; attempt < 5 && !removed; attempt++) {

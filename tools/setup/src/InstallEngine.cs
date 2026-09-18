@@ -302,7 +302,7 @@ namespace Superstring.Setup
             return desktop ? Shortcut.DesktopLinkPath() : Shortcut.StartMenuLinkPath();
         }
 
-        // ---- target validation -------------------------------------------------
+        // target validation
 
         private static void RejectLinks(string path)
         {
@@ -346,7 +346,7 @@ namespace Superstring.Setup
                 && (phase == "swapping" || phase == "verifying");
         }
 
-        // ---- journal and recovery ---------------------------------------------
+        // journal and recovery
 
         private static void WriteJournal(string root, string phase, InstallResult result)
         {
@@ -423,7 +423,7 @@ namespace Superstring.Setup
             TryDeleteFile(PreviousManifest(root));
         }
 
-        // ---- payload handling --------------------------------------------------
+        // payload handling
 
         private static Manifest ReadManifestFromPayload(Payload payload)
         {
@@ -456,7 +456,7 @@ namespace Superstring.Setup
             }
         }
 
-        // ---- backup ------------------------------------------------------------
+        // backup
 
         private static string Backup(string root, Manifest current)
         {
@@ -510,7 +510,7 @@ namespace Superstring.Setup
             log.Add(Path.GetFileName(source));
         }
 
-        // ---- swap and rollback -------------------------------------------------
+        // swap and rollback
 
         private static void Swap(string root, string staging)
         {
@@ -597,7 +597,7 @@ namespace Superstring.Setup
             }
         }
 
-        // ---- file helpers ------------------------------------------------------
+        // file helpers
 
         private static void WriteAtomic(string filename, string content)
         {

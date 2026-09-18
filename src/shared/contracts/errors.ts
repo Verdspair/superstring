@@ -1,36 +1,16 @@
 import { z } from "zod";
 
 /**
- * Unified error contract — authoritative reference:
- * `docs/reference/api-contract.md` §6.2 (revision v2).
- *
- * Counts (re-extracted from `<reference-project>` by cross-line
- * regex over every `AppError("CODE", …)` / `fail("CODE", …)` /
- * `ModelUnavailableError("CODE", …)` call site):
- *  - 66 distinct error codes in total:
- *      57 HTTP-layer codes (reachable in the JSON `error.code` envelope, and
- *      also in the SSE `error.code` field, since `api/app.py:342-359` re-emits
- *      *any* AppError raised inside a stream as an SSE `error` event)
- *    +  1 SSE-only code (`MESSAGE_PERSISTENCE_ERROR`, `api/app.py:376`)
- *    +  2 message-level-only codes (`CLIENT_DISCONNECTED`,
- *         `GENERATION_LEASE_EXPIRED`; `GENERATION_CANCELLED` overlaps HTTP)
- *    +  6 job-level-only codes (`memory_jobs.error_code`)
- *    =  66.
- *  - 9 of the 57 are model-layer codes carried by `ModelUnavailableError`
- *    (HTTP 503); `MODEL_SERVICE_UNAVAILABLE` is shared with `errors.py`.
- *
- * The previous v1 revision of this module listed only 24 codes and silently
- * dropped every code raised from `db/*_repository.py`,
- * `services/context_builder.py`, `services/memory_service.py` and
- * `llm/model_gateway.py`. That was a fidelity defect against the 1:1 replica
- * goal; it is fixed here.
- *
- * This module is pure data + validation: it imports ONLY `zod`.
+ * Error taxonomy: docs/reference/api-contract.md §6.2 (v2).
+ * Extracted from AppError/fail/ModelUnavailableError call sites in the source:
+ * 57 HTTP codes (including 9 model codes), 1 SSE-only, 2 extra message-only,
+ * and 6 job-only codes = 66. HTTP codes may also travel over SSE
+ * (api/app.py:342-359). Pure data and Zod validation only.
  */
 
 /** Every error code that exists in the source project (66). */
 export const ERROR_CODES = [
-  // ── errors.py core subclasses (12) ───────────────────────────────────────
+  // errors.py core subclasses (12)
   "SESSION_NOT_FOUND",
   "MESSAGE_NOT_FOUND",
   "MESSAGE_DELETE_FORBIDDEN",
@@ -43,7 +23,7 @@ export const ERROR_CODES = [
   "MODEL_EMPTY_RESPONSE",
   "DATABASE_UNAVAILABLE",
   "MODEL_SERVICE_UNAVAILABLE",
-  // ── Agent / config / persona (7) ─────────────────────────────────────────
+  // Agent / config / persona (7)
   "AGENT_NOT_FOUND",
   "AGENT_DISABLED",
   "AGENT_IN_USE",
@@ -51,12 +31,12 @@ export const ERROR_CODES = [
   "CONFIG_VERSION_CONFLICT",
   "PERSONA_NOT_FOUND",
   "MODE_NOT_AVAILABLE",
-  // ── Validation / migration consistency (4) ───────────────────────────────
+  // Validation / migration consistency (4)
   "VALIDATION_ERROR",
   "INVALID_MESSAGE_TURN",
   "INVALID_SESSION_CONFIG",
   "INVALID_TURN_CONFIG",
-  // ── Context building (15) ────────────────────────────────────────────────
+  // Context building (15)
   "CONTEXT_AUX_BUDGET",
   "CONTEXT_AUX_ERROR",
   "CONTEXT_AUX_TIMEOUT",
@@ -72,7 +52,7 @@ export const ERROR_CODES = [
   "CONTEXT_RECALL_BUDGET",
   "CONTEXT_SOURCE_INVALID",
   "CONTEXT_SUMMARY_BUDGET",
-  // ── Memory domain, HTTP-visible (11) ─────────────────────────────────────
+  // Memory domain, HTTP-visible (11)
   "MEMORY_FORBIDDEN",
   "MEMORY_SOURCE_FORBIDDEN",
   "MEMORY_NOT_FOUND",
@@ -84,7 +64,7 @@ export const ERROR_CODES = [
   "MEMORY_SOURCE_INVALID",
   "MEMORY_STATE_CONFLICT",
   "MEMORY_JOB_OWNERSHIP_LOST",
-  // ── Model gateway, ModelUnavailableError (9, default 503) ────────────────
+  // Model gateway, ModelUnavailableError (9, default 503)
   "MODEL_NOT_LOADED",
   "MODEL_TIMEOUT",
   "MODEL_ERROR",
@@ -93,12 +73,12 @@ export const ERROR_CODES = [
   "MODEL_OUTPUT_LIMIT",
   "MODEL_FINISH_UNSUPPORTED",
   "MODEL_STREAM_INTERRUPTED",
-  // ── SSE-only (1) ─────────────────────────────────────────────────────────
+  // SSE-only (1)
   "MESSAGE_PERSISTENCE_ERROR",
-  // ── Message-level persisted (messages.error_code) (2 extra) ──────────────
+  // Message-level persisted (messages.error_code) (2 extra)
   "CLIENT_DISCONNECTED",
   "GENERATION_LEASE_EXPIRED",
-  // ── Job-level persisted only (memory_jobs.error_code) (6) ────────────────
+  // Job-level persisted only (memory_jobs.error_code) (6)
   "MEMORY_WORKER_INTERRUPTED",
   "MEMORY_WORKER_STOPPED",
   "MEMORY_INVALID_RESULT",
@@ -112,15 +92,9 @@ export type ErrorCode = (typeof ERROR_CODES)[number];
 export const ErrorCodeSchema = z.enum(ERROR_CODES);
 
 /**
- * Codes that appear in the SSE `error` event but never in the JSON envelope.
- *
- * Note: `MODEL_ERROR` is intentionally NOT listed here any more. Evidence:
- * `api/app.py:342-359` re-emits *every* `AppError` raised inside a stream as an
- * SSE `error` event, and `MODEL_ERROR` is raised by `llm/model_gateway.py:64`
- * as a `ModelUnavailableError`, i.e. it is a normal HTTP-layer code that simply
- * happens to be delivered over SSE. Only `MESSAGE_PERSISTENCE_ERROR`
- * (`api/app.py:376`) is constructed directly inside the stream generator and
- * therefore never has an envelope counterpart.
+ * Only MESSAGE_PERSISTENCE_ERROR is SSE-exclusive (api/app.py:376).
+ * MODEL_ERROR is an HTTP 503 code that may also be emitted over SSE;
+ * api/app.py:342-359 forwards any AppError raised during streaming.
  */
 export const SSE_EXCLUSIVE_ERROR_CODES = ["MESSAGE_PERSISTENCE_ERROR"] as const;
 

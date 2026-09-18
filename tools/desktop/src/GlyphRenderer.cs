@@ -6,13 +6,8 @@ using System.Drawing.Drawing2D;
 namespace Superstring.Desktop
 {
     /// <summary>
-    /// Renders the confirmed superstring brand glyph (from workspace
-    /// outputs/superstring-quote9.svg) with System.Drawing only — no SVG library.
-    /// The same routine feeds both the embedded .ico (build time) and the live form
-    /// header, so the icon and the UI can never drift.
-    ///
-    /// The bubble uses explicit circular arcs matching the confirmed SVG;
-    /// other strokes use the restricted path parser below.
+    /// Renders the approved 24x24 brand glyph with System.Drawing.
+    /// Shared by the embedded icon and form header; circular corners use exact arcs.
     /// </summary>
     internal static class GlyphRenderer
     {

@@ -2,9 +2,9 @@
  * Desktop-mode lifecycle controller.
  *
  * Desktop mode is enabled ONLY when the process is launched with a valid
- * `SUPERSTRING_DESKTOP_TOKEN` (64 hex chars). The desktop launcher (owned by
- * the main agent) mints that token per launch and never shares it with the
- * page; the page learns it is in desktop mode via a server-injected
+ * `SUPERSTRING_DESKTOP_TOKEN` (64 hex chars). The desktop launcher generates
+ * a token per launch and never shares it with the page. The page detects
+ * desktop mode via a server-injected
  * `<meta name="desktop-mode" content="1">` and proves liveness with a
  * same-origin WebSocket, not with the token.
  *
@@ -27,8 +27,8 @@
  *     silently-dead socket eventually triggers the same grace, but the browser
  *     reconnect on wake cancels it.
  *
- * Timing defaults are fixed in production and SHORTCUTTING THEM VIA AN ENV VAR
- * IS INTENTIONALLY UNSUPPORTED. Tests inject smaller values through options.
+ * Production timings cannot be overridden by environment variables.
+ * Tests inject shorter intervals through options.
  */
 
 import type { Server, WebSocketHandler } from "bun";

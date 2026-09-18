@@ -12,7 +12,7 @@ const appearancePath = path.join(root, "src/shared/appearance.ts");
 const cssPath = path.join(root, "src/web/styles.css");
 const outPath = path.join(root, "tools/desktop/src/DesktopPalette.g.cs");
 
-// --- parse the 16 themes from appearance.ts -----------------------------------
+// parse the 16 themes from appearance.ts
 const apTs = fs.readFileSync(appearancePath, "utf8");
 const themes = [];
 const themeRe = /id:\s*"([^"]+)"[^}]*?color:\s*"([^"]+)"[^}]*?dark:\s*"([^"]+)"/g;
@@ -25,7 +25,7 @@ if (themes.length !== 16) {
   throw new Error(`expected 16 themes in appearance.ts, found ${themes.length}`);
 }
 
-// --- parse a CSS rule block and return its custom properties ------------------
+// parse a CSS rule block and return its custom properties
 const cssText = fs.readFileSync(cssPath, "utf8");
 function blockVars(selector) {
   const idx = cssText.indexOf(selector);
@@ -68,7 +68,7 @@ const darkMuted = need(dark, "--ac-muted", "dark .dark");
 const darkLine = need(dark, "--superstring-tone-line", "dark .dark");
 const darkSoft = need(dark, "--superstring-tone-soft", "dark .dark");
 
-// --- emit C#5-compatible source -----------------------------------------------
+// emit C#5-compatible source
 let themeConsts = "";
 for (const t of themes) {
   themeConsts +=

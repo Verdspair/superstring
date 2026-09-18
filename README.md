@@ -6,9 +6,18 @@
 
 superstring is a local desktop chat application for ongoing conversations with configurable AI assistants. It brings together conversation history, long-term memory, and adjustable personality settings, with room for both everyday conversation and emotional support.
 
-**Version:** `0.1.0-alpha` · **Packaged desktop release:** Windows x64
+**Version:** `0.2.0-alpha` · **Packaged desktop release:** Windows x64
 
-The interface is in Simplified Chinese.
+The interface supports English and Simplified Chinese. Switch languages in **Settings → General** without changing your conversations or assistant content.
+
+### What's new in 0.2.0-alpha
+
+- Switch languages instantly, with your choice saved and synchronized across tabs.
+- Rename, refresh, or delete conversations from the sidebar without switching the active chat.
+- Find language and appearance in General, with separate Operating mode and Assistant settings pages.
+- Use keyboard-accessible dialogs and menus that stay inside the window, with a bottom status bar showing the current mode.
+
+See the [release notes](RELEASE_NOTES.md) for the complete update.
 
 ### What it does
 
@@ -24,7 +33,7 @@ Multiple configurable assistants are not multi-agent collaboration.
 
 ### Install and start
 
-Download `superstring-setup-0.1.0-alpha.exe` from the [latest release](https://github.com/Verdspair/superstring/releases/latest).
+Download `superstring-setup-0.2.0-alpha.exe` from the [latest release](https://github.com/Verdspair/superstring/releases/latest).
 
 1. Run the installer and choose a dedicated installation directory. The suggested location is `D:\superstring`; you may type or browse to another location. If D: is unavailable, the installer looks for another non-system fixed drive, or leaves the field empty for you to choose.
 2. Leave **Create a desktop shortcut** checked if you want a desktop entry. A Start Menu entry is created even if you uncheck it. Unchecking does not delete an existing desktop shortcut.
@@ -70,13 +79,11 @@ Some directories are created only when needed. Development runs use a separate l
 
 Updates use a new full installer; there is no in-app automatic downloader. Close superstring before installing into the same directory. Reinstallation, updates, and uninstall keep your data and backups.
 
-The installer refuses unsupported downgrades. An older package named `0.1.0-dev` sorts higher than `0.1.0-alpha` and cannot be replaced by this alpha through the downgrade-protected path.
+The installer refuses unsupported downgrades. This update keeps the existing database format and does not require a new database migration.
 
 In desktop mode, closing the last superstring browser page starts an approximately eight-second grace period before the backend shuts down. Refreshing or reopening during that period keeps it alive. Shutdown waits for work to finish or cancel safely, so eight seconds is not a strict deadline. Browser suspension and system sleep may interrupt the connection. The application does not remain in the system tray.
 
 ### Build from source
-
-**Verified locally on 2026-09-16:** a fresh exported source tree passed `npm ci`, two complete check/test/build runs, isolated startup checks, installer generation, and isolated installation checks, on Windows x64 with Node.js `22.22.2` and Bun `1.4.2`.
 
 Prerequisites:
 
@@ -151,9 +158,18 @@ This project's own code is licensed under the [MIT License](LICENSE). Third-part
 
 超弦（superstring）是一款在本机运行的桌面聊天应用，让你与可配置的 AI 助手持续交流。它将会话记录、长期记忆与性格人设放在一起，既可以用于日常聊天，也为情感支持留出空间。
 
-**版本：** `0.1.0-alpha` · **桌面安装包平台：** Windows x64
+**版本：** `0.2.0-alpha` · **桌面安装包平台：** Windows x64
 
-应用界面为简体中文。
+应用支持简体中文与 English，可在“设置 → 通用”中切换。聊天记录与助手内容保持原文。
+
+### 0.2.0-alpha 更新亮点
+
+- 即时切换界面语言，自动保存选择并在标签页之间同步。
+- 从侧栏右键重命名、刷新或删除会话，无需切换当前聊天。
+- 通用设置集中管理语言与外观，运行模式和助手设置各自独立。
+- 对话框与菜单支持键盘操作，菜单自动避让窗口边缘；底部状态栏显示当前模式。
+
+完整更新内容见[版本说明](RELEASE_NOTES.md)。
 
 ### 已有功能
 
@@ -169,7 +185,7 @@ This project's own code is licensed under the [MIT License](LICENSE). Third-part
 
 ### 安装与启动
 
-从[最新版本](https://github.com/Verdspair/superstring/releases/latest)下载 `superstring-setup-0.1.0-alpha.exe`。
+从[最新版本](https://github.com/Verdspair/superstring/releases/latest)下载 `superstring-setup-0.2.0-alpha.exe`。
 
 1. 运行安装包，选择专用安装目录。建议位置为 `D:\superstring`，也可以手动输入或浏览选择其他位置。D 盘不可用时，安装器会寻找其他非系统固定盘；没有合适磁盘则留空，由你选择。
 2. 如果需要桌面入口，保留默认勾选的“在桌面创建快捷方式”。取消勾选后仍会创建开始菜单入口，也不会删除已有桌面快捷方式。
@@ -215,13 +231,13 @@ This project's own code is licensed under the [MIT License](LICENSE). Third-part
 
 更新通过下载新的完整安装包完成，没有应用内自动下载功能。覆盖安装到原目录前，请先关闭超弦。同版重装、升级和卸载都会保留用户数据与备份。
 
-安装器会拒绝不支持的降级。旧包 `0.1.0-dev` 按语义化版本规则高于 `0.1.0-alpha`，无法通过受降级保护的正常流程直接覆盖为本 Alpha 版本。
+安装器会拒绝不支持的降级。本次更新沿用原有数据库格式，不需要新增数据库迁移。
 
 桌面模式下，关闭最后一个超弦网页后，会经过约八秒宽限期再退出后台；期间刷新或重新打开页面可以保持连接。退出会等待任务完成或安全取消，因此八秒不是严格截止时间。浏览器挂起和系统休眠也可能中断连接。应用不会常驻系统托盘。
 
 ### 从源码运行和构建
 
-**已于 2026-09-16 完成本机验证：** 全新导出的源码在 Windows x64、Node.js `22.22.2`、Bun `1.4.2` 下通过了 `npm ci`、两轮完整检查/测试/构建、隔离启动检查、安装包构建及隔离安装检查。
+以下命令覆盖源码检查、本地网页版运行和 Windows 桌面安装包构建。
 
 所需环境：
 

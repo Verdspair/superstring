@@ -323,7 +323,10 @@ describe("R6 A/B/C 分区保存隔离", () => {
 
   it("A 只提交基础字段，不覆盖 B/C 草稿", async () => {
     const updateAgent = vi.fn().mockResolvedValue(savedAgent);
-    useSuperstringStore.setState({ activeSection: "A", apiClient: fakeClient({ updateAgent }) });
+    useSuperstringStore.setState({
+      activeSection: "A",
+      apiClient: fakeClient({ updateAgent }),
+    });
 
     expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(true);
 
@@ -541,7 +544,10 @@ describe("R5 首次打开入口默认规则", () => {
 
 describe("R5 同 ID 导航", () => {
   it("同 ID 且草稿为 null 时初始化新建草稿", () => {
-    useSuperstringStore.setState({ editorAgentId: "__new__", editorDraft: null });
+    useSuperstringStore.setState({
+      editorAgentId: "__new__",
+      editorDraft: null,
+    });
 
     useSuperstringStore.getState().requestAgentNavigation("__new__");
 
@@ -608,7 +614,10 @@ describe("R5 dirty 切换新建取消/放弃/保存失败", () => {
 
   it("保存失败保留草稿不重置", async () => {
     const updateAgent = vi.fn().mockRejectedValue(new Error("版本冲突"));
-    useSuperstringStore.setState({ ...base, apiClient: fakeClient({ updateAgent }) });
+    useSuperstringStore.setState({
+      ...base,
+      apiClient: fakeClient({ updateAgent }),
+    });
     useSuperstringStore.getState().requestAgentNavigation("__new__");
 
     await useSuperstringStore.getState().confirmSaveAndContinue();
@@ -627,7 +636,9 @@ describe("R5 创建流程真实行为", () => {
     const created = buildAgentResponse(NEW_ID, "新建助手");
     const createAgent = vi.fn().mockResolvedValue(created);
     const updateAgent = vi.fn().mockResolvedValue({ ...created, description: "改后" });
-    useSuperstringStore.setState({ apiClient: fakeClient({ createAgent, updateAgent }) });
+    useSuperstringStore.setState({
+      apiClient: fakeClient({ createAgent, updateAgent }),
+    });
 
     await useSuperstringStore.getState().editAgent("__new__");
     useSuperstringStore.getState().patchDraft({ name: "新建助手" });
@@ -738,10 +749,15 @@ describe("R5 放弃时目标读取失败可重试", () => {
     let state = useSuperstringStore.getState();
     expect(state.editorAgentId).toBe(AGENT_ID);
     expect(state.editorDraft?.name).toBe(draft.name);
-    expect(state.pendingNavigation).toEqual({ kind: "agent", id: OTHER_AGENT_ID });
+    expect(state.pendingNavigation).toEqual({
+      kind: "agent",
+      id: OTHER_AGENT_ID,
+    });
     expect(state.navigationConfirmOpen).toBe(true);
 
-    useSuperstringStore.setState({ apiClient: editClient(OTHER_AGENT_ID, "另一助手") });
+    useSuperstringStore.setState({
+      apiClient: editClient(OTHER_AGENT_ID, "另一助手"),
+    });
     await useSuperstringStore.getState().confirmDiscardAndContinue();
     state = useSuperstringStore.getState();
     expect(state.editorAgentId).toBe(OTHER_AGENT_ID);

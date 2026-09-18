@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { P5ConfigSchema } from "../../src/shared/contracts";
-import { ChatPage } from "../../src/web/App";
+import { ChatPage, Sidebar } from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
 import { useSuperstringStore } from "../../src/web/store";
 
@@ -123,8 +123,7 @@ describe("R5 聊天区 P0 交互", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "发送" }));
     expect(screen.getByText("请先新建或选择会话")).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: "删除会话" }));
-    expect(screen.getByText("当前没有可删除的会话。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "删除会话" })).toBeNull();
     expect(deleteSession).not.toHaveBeenCalled();
   });
 
@@ -159,7 +158,7 @@ describe("R5 聊天区 P0 交互", () => {
     expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull();
     fireEvent.contextMenu(screen.getByText("需要删除的消息"));
     expect(screen.getByRole("menu", { name: "消息操作" })).toBeTruthy();
-    await userEvent.click(screen.getByRole("menuitem", { name: "删除" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除消息" }));
     expect(screen.getByRole("alertdialog", { name: "确认删除这条消息？" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
 
@@ -195,24 +194,21 @@ describe("R5 聊天区 P0 交互", () => {
     render(<ChatPage />);
 
     fireEvent.contextMenu(screen.getByText("需要删除的消息"));
-    await userEvent.click(screen.getByRole("menuitem", { name: "删除" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除消息" }));
     await userEvent.click(screen.getByRole("button", { name: "删除" }));
 
     await waitFor(() => expect(deleteMessage).toHaveBeenCalledWith(SESSION_ID, MESSAGE_ID));
     expect(listMessages).toHaveBeenCalledWith(SESSION_ID);
   });
 
-  it("删除会话必须先显示原版确认文案，取消时不请求后端", async () => {
+  it("会话菜单删除须确认目标，取消不请求后端", async () => {
     const deleteSession = vi.fn();
     useSuperstringStore.setState({ apiClient: fakeClient({ deleteSession }) });
-    render(<ChatPage />);
-
-    await userEvent.click(screen.getByRole("button", { name: "删除会话" }));
-    expect(
-      screen.getByRole("alertdialog", {
-        name: "确认删除当前会话及其全部消息？",
-      }),
-    ).toBeTruthy();
+    render(<Sidebar />);
+    fireEvent.contextMenu(screen.getByRole("button", { name: "测试会话" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除会话" }));
+    expect(screen.getByRole("alertdialog", { name: "删除会话" })).toBeTruthy();
+    expect(screen.getByText("删除「测试会话」及其全部消息？此操作无法撤销。")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(deleteSession).not.toHaveBeenCalled();
   });

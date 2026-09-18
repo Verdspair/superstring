@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "components": [
     {
+      "file": "radix-dialog-NOTICES.txt",
+      "source": "Pinned npm packages listed individually in radix-dialog-NOTICES.txt",
+      "component": "radix-alert-dialog-and-new-runtime-dependencies",
+      "version": "1.1.23",
+      "license": "MIT and 0BSD; 25 original texts plus one package metadata record for react-remove-scroll-bar",
+      "sha256": "baa3e323638c82b844b8f9bbaa38db5ac4beaa3e5a96ef395e6e684e3a0630fe"
+    },
+    {
       "file": "react-LICENSE.txt",
       "source": "npm:react@19.3.0/LICENSE",
       "component": "react",
@@ -85,7 +93,7 @@
       "file": "superstring-MIT.txt",
       "source": "LICENSE",
       "component": "superstring",
-      "version": "0.1.0-alpha",
+      "version": "0.2.0-alpha",
       "license": "MIT",
       "sha256": "e4d6d80a4af894e56c61523138a2bbb631979dd2e93e82afe13e4d932b7071e9"
     }

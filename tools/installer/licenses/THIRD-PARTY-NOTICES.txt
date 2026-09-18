@@ -9,6 +9,10 @@ Pinned application components / 固定应用组件
 - Hono 4.13.7: MIT.
 - Zod 4.6.2: MIT.
 - Zustand 5.0.15: MIT.
+- Radix AlertDialog 1.1.23 and its new runtime dependencies: MIT; tslib 2.8.1: 0BSD.
+  Versions and 25 original license texts are in radix-dialog-NOTICES.txt.
+  react-remove-scroll-bar 2.3.8 declares MIT but its package has no LICENSE file;
+  the record includes package metadata, not a substituted license text.
 - Drizzle ORM 0.45.2: Apache-2.0.
 - Bun 1.4.2: Bun itself is MIT; embedded components carry additional licenses.
 

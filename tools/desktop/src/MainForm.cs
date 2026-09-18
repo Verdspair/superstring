@@ -43,11 +43,7 @@ namespace Superstring.Desktop
         }
     }
 
-    /// <summary>
-    /// Indeterminate, percentage-free activity indicator. Three dots fade in
-    /// sequence on a UI-thread timer. It communicates "working" without ever
-    /// implying a measurable progress value (no fake percentage).
-    /// </summary>
+    /// <summary>Three fading dots indicate activity without a percentage.</summary>
     internal sealed class IndeterminateDot : Control
     {
         private readonly Timer _timer = new Timer { Interval = 140 };

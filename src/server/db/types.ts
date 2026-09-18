@@ -96,7 +96,7 @@ export const TurnInvalidationReason = {
   GenerationFailed: "generation_failed",
 } as const;
 
-// --- Boolean storage contract (data-model.md §0): INTEGER 0/1 ---
+// Boolean storage contract (data-model.md §0): INTEGER 0/1
 export const BOOL_TRUE = 1 as const;
 export const BOOL_FALSE = 0 as const;
 export type SqlBoolean = 0 | 1;

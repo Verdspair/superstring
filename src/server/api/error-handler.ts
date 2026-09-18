@@ -2,19 +2,9 @@ import type { Context } from "hono";
 import { AppError, DatabaseUnavailableError, isAppError } from "../errors";
 
 /**
- * Unified error envelope, 1:1 with `api/app.py:105-143`.
- *
- * Source behaviour being replicated:
- *   - `error_payload(code, message)` → `{ "error": { "code", "message" } }`.
- *     The HTTP `AppError` handler passes **no** `request_id`
- *     (`api/app.py:118-122`), so the envelope must not carry one. (The SSE
- *     `error` event is different — it *does* include `request_id`,
- *     `api/app.py:352-359`.)
- *   - `AppError` → its own `status_code`.
- *   - Database errors → `DATABASE_UNAVAILABLE` at 503
- *     (`api/app.py:125-133`).
- *   - Request validation failures → `VALIDATION_ERROR` at 422
- *     (`api/app.py:136-143`).
+ * HTTP error envelope, matching api/app.py:105-143.
+ * AppError keeps its status; database errors map to 503, validation to 422.
+ * HTTP errors omit request_id. SSE errors include it (api/app.py:352-359).
  */
 export interface ErrorEnvelopeBody {
   error: {
@@ -87,5 +77,4 @@ export function handleError(err: unknown, c: Context): Response {
   return c.json({ detail: "Internal Server Error" } satisfies InternalErrorBody, 500);
 }
 
-/** Re-export so route modules can throw without a second import path. */
 export { AppError, DatabaseUnavailableError };

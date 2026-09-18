@@ -131,7 +131,7 @@ describe("desktop liveness client", () => {
   });
 });
 
-// --- Appearance sync (desktop mode only) ---------------------------------------
+// Appearance sync (desktop mode only)
 class SendingFakeWebSocket implements WebSocketLike {
   url: string;
   onopen: ((event: unknown) => void) | null = null;
@@ -184,7 +184,11 @@ describe("desktop appearance sync (client)", () => {
     expect(ws.sent).toHaveLength(0);
     ws.onopen?.({});
     expect(ws.sent).toHaveLength(1);
-    expect(JSON.parse(ws.sent[0])).toEqual({ type: "appearance", theme: "rose", mode: "dark" });
+    expect(JSON.parse(ws.sent[0])).toEqual({
+      type: "appearance",
+      theme: "rose",
+      mode: "dark",
+    });
   });
 
   it("does not open a connection or send in normal mode even with getAppearance", () => {
@@ -210,7 +214,11 @@ describe("desktop appearance sync (client)", () => {
     ws.sent.length = 0;
     win.dispatch("storage", { key: "superstring-appearance" });
     expect(ws.sent).toHaveLength(1);
-    expect(JSON.parse(ws.sent[0])).toEqual({ type: "appearance", theme: "violet", mode: "dark" });
+    expect(JSON.parse(ws.sent[0])).toEqual({
+      type: "appearance",
+      theme: "violet",
+      mode: "dark",
+    });
   });
 
   it("old socket identity check: a stale onopen must not send", () => {

@@ -120,7 +120,7 @@ export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}
           try {
             appearanceSink(getAppearance());
           } catch {
-            /* ignore */
+            // Appearance read failures must not interrupt liveness.
           }
         }
       };
@@ -131,7 +131,7 @@ export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}
         try {
           ws.close();
         } catch {
-          /* ignore */
+          // The socket may already be closed.
         }
       };
       ws.onclose = () => {
@@ -159,7 +159,7 @@ export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}
       try {
         socket.close();
       } catch {
-        /* ignore */
+        // Cleanup still clears timers and listeners if close fails.
       }
       socket = null;
     }
@@ -181,7 +181,7 @@ export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}
     try {
       broadcastAppearance(getAppearance());
     } catch {
-      /* ignore */
+      // Appearance sync is best-effort; liveness remains independent.
     }
   }
 

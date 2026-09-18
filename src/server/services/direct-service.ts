@@ -1,9 +1,7 @@
 // Streaming chat orchestration — 1:1 with `services/direct_service.py`.
 //
-// This is the most delicate module in the replica. The source runs two
-// concurrent tasks (a producer streaming from the model, and a heartbeat
-// monitor) and races them; the TS port keeps the same structure with an
-// AbortController + interval, because the OBSERVABLE contract is:
+// Model streaming races a heartbeat monitor, as in the source implementation.
+// AbortController and an interval preserve these observable guarantees:
 //
 //   1. `start` is emitted before anything else (the route does this).
 //   2. Deltas stream through unchanged; empty deltas are skipped.

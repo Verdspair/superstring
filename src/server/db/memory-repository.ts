@@ -1,13 +1,13 @@
 // Agent-scoped memory persistence — 1:1 with `db/memory_repository.py`.
 //
-// ── Ownership model (do not "fix") ─────────────────────────────────────────
+// Ownership model (do not "fix")
 // Memory belongs to the **Agent**, not to a session. `scope` / `scope_key` are
 // retained as historical labels so the original isolation architecture can be
 // reinstated later without a data migration, but today every scope keys to the
 // owning Agent (`services/memory_contract.py:118-126`). Recall is deliberately
 // NOT narrowed by `scope`.
 //
-// ── Transactions ───────────────────────────────────────────────────────────
+// Transactions
 // The source explicitly says "callers own transactions; all mutations lock
 // Agent first" (memory_repository.py:1). Row locks (`with_for_update`) do not
 // exist in SQLite, so every mutating entry point here is expected to be called
@@ -48,7 +48,7 @@ export interface TurnTriple {
 /** memory_repository.py:19-20 — local `fail` helper, default status **409**. */
 export { fail };
 
-// ── Policy ─────────────────────────────────────────────────────────────────
+// Policy
 
 /**
  * memory_repository.py:23-41.
@@ -167,7 +167,7 @@ export function setScope(orm: Orm, agentId: string, sessionId: string, scope: st
     .run();
 }
 
-// ── Turn sources ───────────────────────────────────────────────────────────
+// Turn sources
 
 /**
  * memory_repository.py:81-102 — only **valid, completed, paired** turns count as
@@ -257,7 +257,7 @@ export function sourceData(rows: TurnTriple[]): Array<Record<string, unknown>> {
   }));
 }
 
-// ── Entries ────────────────────────────────────────────────────────────────
+// Entries
 
 /**
  * memory_repository.py:111-122. `ids` asserts full resolution (MEMORY_NOT_FOUND
@@ -344,7 +344,7 @@ export function validateEntrySources(
   return sources;
 }
 
-// ── Jobs ───────────────────────────────────────────────────────────────────
+// Jobs
 
 export interface EnqueueArgs {
   /**

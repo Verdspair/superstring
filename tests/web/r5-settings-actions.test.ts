@@ -69,8 +69,18 @@ describe("R5 设置页动作", () => {
       deleted_count: 1,
       failed_count: 1,
       results: [
-        { id: AGENT_ID, deleted: true, error_code: null, message: "Agent 已删除" },
-        { id: OTHER_ID, deleted: false, error_code: "AGENT_IN_USE", message: "Agent 已被会话使用" },
+        {
+          id: AGENT_ID,
+          deleted: true,
+          error_code: null,
+          message: "Agent 已删除",
+        },
+        {
+          id: OTHER_ID,
+          deleted: false,
+          error_code: "AGENT_IN_USE",
+          message: "Agent 已被会话使用",
+        },
       ],
     });
     useSuperstringStore.setState({

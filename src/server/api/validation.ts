@@ -41,18 +41,9 @@ export function parseUuidParam(value: string): string {
 }
 
 /**
- * Read and parse a request body exactly the way FastAPI does.
- *
- * Every handler in the source declares a REQUIRED Pydantic body
- * (`body: Model`), so a request with no body at all — or only whitespace — is a
- * RequestValidationError → 422 (api/app.py:136-143). The source has no
- * "empty string becomes {}" helper anywhere. Treating a raw empty body as `{}`
- * silently changed behaviour: `PUT /agents/{id}/persona` accepts `{}` (all five
- * persona fields default to "") and would therefore wipe the persona, even
- * though the real API answers 422 (#90).
- *
- * A literal JSON `{}` still parses to `{}`, which is what the source does; only
- * a MISSING body is rejected.
+ * Required JSON body, matching api/app.py:136-143. Missing or whitespace-only
+ * bodies are 422, not {}: PUT persona accepts {} and would otherwise clear
+ * stored content on an invalid request (#90).
  */
 export async function readJsonBody(request: Request): Promise<unknown> {
   const text = await request.text();

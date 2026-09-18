@@ -34,7 +34,7 @@ namespace Superstring.Desktop
             }
             Native.SetPerMonitorDpi();
 
-            // ---- argument handling ----
+            // argument handling
             bool selfTest = false;
             bool help = false;
             bool checkPackage = false;
@@ -87,7 +87,7 @@ namespace Superstring.Desktop
                 return 2;
             Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { AutoFlush = true });
 #endif
-            // ---- project root ----
+            // project root
             DesktopLayout layout;
             try { layout = DesktopLayout.Resolve(); }
             catch (Exception ex)
@@ -115,7 +115,7 @@ namespace Superstring.Desktop
             }
             try
             {
-            // ---- single instance (normalised root hash) ----
+            // single instance (normalised root hash)
             var single = new SingleInstance();
             if (!single.TryAcquire(root))
             {
@@ -132,7 +132,7 @@ namespace Superstring.Desktop
                 return 1;
             }
 
-            // ---- runtime config ----
+            // runtime config
             string token = Util.RandomHex(32); // 64 hex
             Logger log;
             try { log = new Logger(root, token, layout.LogDirectory); }
@@ -158,7 +158,7 @@ namespace Superstring.Desktop
             var launcher = new Launcher(root, log, bunExe, token, DefaultPort, form, single, layout);
             launcher.Attach();
 
-            // ---- appearance: restore the persisted snapshot, then keep it in sync ----
+            // appearance: restore the persisted snapshot, then keep it in sync
             // The browser pushes {theme,mode} over the same-origin desktop WS; the
             // server persists it to artifacts/state/desktop-appearance.json. We read
             // it before launch, watch it for changes, and also follow the Windows

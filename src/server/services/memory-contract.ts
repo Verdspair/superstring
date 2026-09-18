@@ -81,7 +81,7 @@ export function canonical(text: string): string {
   return kept;
 }
 
-// ── Model-output contracts (memory_contract.py:79-111) ─────────────────────
+// Model-output contracts (memory_contract.py:79-111)
 
 /**
  * `MemoryDraft` (memory_contract.py:79-98), `extra="forbid"`.
@@ -149,7 +149,7 @@ export function parseResult(text: string): MemoryDraft | null {
   return DraftResultSchema.parse(JSON.parse(text)).memory;
 }
 
-// ── Response-format schemas ────────────────────────────────────────────────
+// Response-format schemas
 //
 // These are `DraftResult.model_json_schema()` / `SuppressionResult.model_json_schema()`
 // as produced by the source's own Pydantic 2.13.5, captured by read-only
@@ -205,7 +205,7 @@ export const SUPPRESSION_RESULT_JSON_SCHEMA = {
   type: "object",
 } as const;
 
-// ── Prompt builders (memory_contract.py:129-162) ───────────────────────────
+// Prompt builders (memory_contract.py:129-162)
 
 export interface PromptMessage {
   role: "system" | "user";

@@ -33,6 +33,7 @@ import {
   type TurnsList,
   TurnsListSchema,
 } from "../shared/contracts";
+import { msg } from "./i18n";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -55,7 +56,7 @@ async function responseError(response: Response): Promise<ApiError> {
   } catch {
     // Preserve the source status even when a proxy returned a non-JSON page.
   }
-  return new ApiError(response.status, "HTTP_ERROR", `请求失败（${response.status}）`);
+  return new ApiError(response.status, "HTTP_ERROR", msg("请求失败（{0}）", response.status));
 }
 
 async function requestJson<T>(path: string, schema: z.ZodType<T>, init?: RequestInit): Promise<T> {
@@ -206,7 +207,7 @@ export async function streamChat(
     signal,
   });
   if (!response.ok) throw await responseError(response);
-  if (!response.body) throw new ApiError(502, "MODEL_STREAM_INTERRUPTED", "模型流中断");
+  if (!response.body) throw new ApiError(502, "MODEL_STREAM_INTERRUPTED", msg("模型流中断"));
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

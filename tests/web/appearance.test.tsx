@@ -18,7 +18,12 @@ import { useSuperstringStore } from "../../src/web/store";
 
 // 侧栏与新会话设置只用 id/name/is_active，其余字段与本次 UI 断言无关。
 function fakeAgent(id: string, name: string, isActive = true): AgentResponse {
-  return { id, name, is_active: isActive, config_version: 1 } as unknown as AgentResponse;
+  return {
+    id,
+    name,
+    is_active: isActive,
+    config_version: 1,
+  } as unknown as AgentResponse;
 }
 
 beforeEach(() => {
@@ -51,7 +56,10 @@ it("浏览器拒绝保存时同步读取仍保持当前完整外观", () => {
   });
   expect(selectTheme("rose")).toBe(false);
   expect(selectMode("dark")).toBe(false);
-  expect({ theme: readTheme(), mode: readMode() }).toEqual({ theme: "rose", mode: "dark" });
+  expect({ theme: readTheme(), mode: readMode() }).toEqual({
+    theme: "rose",
+    mode: "dark",
+  });
   expect(document.documentElement.dataset.theme).toBe("rose");
   expect(document.documentElement.classList.contains("dark")).toBe(true);
 });
@@ -96,7 +104,8 @@ it("浏览器拒绝存储时仍切换，并如实告知", () => {
 it("设置中心可进入外观再返回，自定义不提供可操作入口", () => {
   useSuperstringStore.setState({ page: "settings", settingsView: "hub" });
   render(<App />);
-  fireEvent.click(screen.getByRole("button", { name: "外观" }));
+  fireEvent.click(screen.getByRole("button", { name: "通用" }));
+  fireEvent.click(screen.getByText("外观"));
   expect(screen.getByText("推荐外观")).toBeTruthy();
   expect(screen.getByText("自定义外观")).toBeTruthy();
   expect(screen.getByText("自定义颜色与更多外观选项暂未开放。")).toBeTruthy();
@@ -104,23 +113,25 @@ it("设置中心可进入外观再返回，自定义不提供可操作入口", (
   expect(screen.getByRole("button", { name: "助手设置" })).toBeTruthy();
 });
 
-it("设置入口整行可点，返回导航位于主栏页头并带文字", () => {
+it("设置入口整行可点，返回导航位于主栏页头且仅显示图标", () => {
   useSuperstringStore.setState({ page: "settings", settingsView: "hub" });
   const { container } = render(<App />);
   const row = screen.getByRole("button", { name: "助手设置" });
   expect(row.classList.contains("settings-entry")).toBe(true);
   expect(row.querySelector("button")).toBeNull();
-  expect(container.querySelectorAll(".settings-list > button")).toHaveLength(2);
+  expect(container.querySelectorAll(".settings-list > button")).toHaveLength(3);
   expect(screen.queryByText("打开配置")).toBeNull();
   fireEvent.click(screen.getByText("模型、记忆与性格人设；各分区独立保存。"));
   const back = screen.getByRole("button", { name: "返回设置中心" });
-  expect(back.textContent).toBe("设置中心");
+  expect(back.textContent).toBe("");
+  expect(back.getAttribute("title")).toBe("返回设置中心");
   expect(back.closest(".page-header")).toBeTruthy();
   expect(container.querySelector(".agent-settings .back-link")).toBeNull();
   expect(back.querySelector("svg")).toBeTruthy();
   fireEvent.click(back);
-  fireEvent.click(screen.getByRole("button", { name: "外观" }));
-  expect(screen.getByRole("button", { name: "返回设置中心" }).textContent).toBe("设置中心");
+  fireEvent.click(screen.getByRole("button", { name: "通用" }));
+  fireEvent.click(screen.getByText("外观"));
+  expect(screen.getByRole("button", { name: "返回设置中心" }).textContent).toBe("");
 });
 
 it("外观页与助手设置同用折叠分区，未开放项不提供操作入口", () => {
@@ -178,7 +189,7 @@ it("侧栏移除新会话助手设置，改由设置中心承担", () => {
   });
   render(<Sidebar />);
   expect(screen.queryByLabelText("新会话使用的 Agent")).toBeNull();
-  expect(screen.getByText("聊天模式 · 本地工作空间")).toBeTruthy();
+  expect(screen.queryByText("聊天模式 · 本地工作空间")).toBeNull();
 });
 
 it("新会话默认助手并入助手设置的下拉，停用助手不出现", () => {
@@ -200,7 +211,7 @@ it("新会话默认助手并入助手设置的下拉，停用助手不出现", (
     [...container.querySelectorAll(".settings-list > button")].map(
       (button) => button.querySelector("strong")?.textContent,
     ),
-  ).toEqual(["助手设置", "外观"]);
+  ).toEqual(["通用", "运行模式", "助手设置"]);
   expect(screen.queryByRole("button", { name: "新会话" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "助手设置" }));
   const select = screen.getByLabelText("新会话使用的助手") as HTMLSelectElement;
@@ -212,7 +223,11 @@ it("新会话默认助手并入助手设置的下拉，停用助手不出现", (
 });
 
 it("进入外观仍遵守助手草稿的未保存保护", () => {
-  useSuperstringStore.setState({ page: "settings", settingsView: "agents", dirty: true });
+  useSuperstringStore.setState({
+    page: "settings",
+    settingsView: "agents",
+    dirty: true,
+  });
   useSuperstringStore.getState().requestPageNavigation("settings", "appearance");
   expect(useSuperstringStore.getState().settingsView).toBe("agents");
   expect(useSuperstringStore.getState().navigationConfirmOpen).toBe(true);
@@ -223,7 +238,7 @@ it("进入外观仍遵守助手草稿的未保存保护", () => {
   });
 });
 
-it("用户画像插入F/H之间，未开放且没有保存按钮", async () => {
+it("用户画像显示为D，未开放且没有保存按钮", async () => {
   await useSuperstringStore.getState().editAgent("__new__");
   useSuperstringStore.setState({
     page: "settings",
@@ -235,8 +250,18 @@ it("用户画像插入F/H之间，未开放且没有保存按钮", async () => {
   const labels = [...container.querySelectorAll(".section-nav button strong")].map(
     (el) => el.textContent,
   );
-  expect(labels.slice(-3)).toEqual(["F · 外部软件接入", "G · 用户画像", "H · 其他"]);
-  expect(screen.getByRole("heading", { name: "G · 用户画像" })).toBeTruthy();
+  expect(labels).toEqual([
+    "A · 名称与模型",
+    "B · 性格与人设",
+    "C · 情绪",
+    "D · 用户画像",
+    "E · 记忆管理",
+    "F · 知识库",
+    "G · 上下文",
+    "H · 外部软件接入",
+    "I · 其他",
+  ]);
+  expect(screen.getByRole("heading", { name: "D · 用户画像" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "保存当前分区配置" })).toBeNull();
   expect(screen.getByRole("button", { name: "暂未开放" }).hasAttribute("disabled")).toBe(true);
   expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(false);

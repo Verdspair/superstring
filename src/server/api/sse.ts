@@ -6,7 +6,6 @@
 //   2. `separators=(",", ":")` → compact JSON, no spaces after `:` or `,`.
 //   3. Frame layout is `event: <name>\ndata: <json>\n\n` — a blank line ends it.
 
-/** Encode one SSE frame. */
 export function encodeSse(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
@@ -18,7 +17,6 @@ export const SSE_HEADERS: Record<string, string> = {
   "x-accel-buffering": "no",
 };
 
-/** One decoded SSE frame: the event name plus its parsed `data` payload. */
 export interface SseFrame {
   event: string;
   data: unknown;

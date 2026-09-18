@@ -6,17 +6,10 @@ using System.Text;
 namespace Superstring.Desktop
 {
     /// <summary>
-    /// Loopback readiness / stop client for the desktop contract.
-    ///
-    /// Design notes (mirrors the Bun-side rationale in tools/ops):
-    ///   * We use HttpWebRequest (not a proxy-aware client) and force request.Proxy = null
-    ///     so a configured HTTP(S)_PROXY never routes a 127.0.0.1 probe through a dead
-    ///     corporate proxy and makes a healthy local server look unreachable.
-    ///   * The desktop token travels ONLY in the Authorization: Bearer header. It is
-    ///     NEVER placed in the URL or written to logs (the Logger masks it).
-    ///   * "Ready" is decided by the response BODY identity (app/desktop/state), not by a
-    ///     bare 200. This is what stops us from trusting a stranger service that happens
-    ///     to answer on the port.
+    /// Loopback readiness and graceful-stop client. Proxy is disabled so local
+    /// probes never leave the machine. The token is sent only in the Bearer
+    /// header and never logged; readiness requires app/desktop/state identity,
+    /// not just HTTP 200.
     /// </summary>
     internal static class Readiness
     {
@@ -156,7 +149,7 @@ namespace Superstring.Desktop
             }
         }
 
-        // ---- minimal JSON field extraction (no external dependency) ----
+        // minimal JSON field extraction (no external dependency)
 
         public static string ExtractString(string json, string key)
         {

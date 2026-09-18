@@ -55,7 +55,7 @@ export function isAppearanceMode(value: unknown): value is AppearanceMode {
   return typeof value === "string" && (MODE_IDS as readonly string[]).includes(value);
 }
 
-// --- WebSocket appearance frame -------------------------------------------------
+// WebSocket appearance frame
 // The desktop liveness socket carries a single, strictly-shaped appearance
 // snapshot: { type: "appearance", theme, mode }. Themes / modes are whitelisted
 // (16 ids / 3 modes) and the whole frame is byte-bounded so a hostile or corrupt

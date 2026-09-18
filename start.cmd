@@ -1,7 +1,7 @@
 @echo off
-rem ============================================================================
+
 rem  superstring one-click launcher (project root)
-rem ============================================================================
+
 rem
 rem WHAT THIS STARTS (all of it is ONE Bun process)
 rem   1. frontend build      : vite output into dist/web, unless --no-build
@@ -50,7 +50,7 @@ set "HELPER=%ROOT%\tools\ops\start.ts"
 set "OPENER=%ROOT%\tools\ops\open-when-ready.ts"
 set "SERVER_ENTRY=%ROOT%\src\server\index.ts"
 
-rem ---- Bun resolution (an explicit path is validated; bad value fails loudly) --
+rem Bun resolution (an explicit path is validated; bad value fails loudly)
 set "BUN_EXE="
 if defined SUPERSTRING_BUN_EXE (
   if exist "%SUPERSTRING_BUN_EXE%" (
@@ -82,7 +82,7 @@ if not exist "%SERVER_ENTRY%" (
   exit /b 2
 )
 
-rem ---- Strict argument parsing -----------------------------------------------
+rem Strict argument parsing
 set "MODE_CHECK=0"
 set "NO_BUILD=0"
 set "OPEN=1"
@@ -113,7 +113,7 @@ echo [start]        Run "%~nx0 --help" for supported options.
 exit /b 2
 :end_parse
 
-rem ---- Validate on standalone lines: a bare "exit /b" inside a parenthesized
+rem Validate on standalone lines: a bare "exit /b" inside a parenthesized
 rem block loses its exit code in cmd, and an empty "--port"/"--db" value
 rem un-defines the variable, so both are guarded here instead. ----
 if defined BADARG (
@@ -127,7 +127,7 @@ if defined DB_PATH (
   if "!DB_PATH:~0,2!"=="--" ( echo [start] ERROR: --db requires a path value. & exit /b 2 )
 )
 
-rem ---- Environment, then cd, BEFORE anything runs: the helper, the server and
+rem Environment, then cd, BEFORE anything runs: the helper, the server and
 rem the browser opener must all resolve paths from the project root, and the
 rem port the helper probes must be the port the server binds. ----
 set "SUPERSTRING_SERVE_WEB=1"
@@ -141,7 +141,7 @@ cd /d "%ROOT%"
 if "%MODE_CHECK%"=="1" goto :run_check
 goto :run_prepare
 
-rem ---- Preflight only -------------------------------------------------------
+rem Preflight only
 :run_check
 "%BUN_EXE%" "%HELPER%" --check
 set "RC=%ERRORLEVEL%"
@@ -152,7 +152,7 @@ if not "%RC%"=="0" (
 echo [start] preflight passed. Nothing was built, started or opened.
 exit /b 0
 
-rem ---- Preflight + build, then serve ----------------------------------------
+rem Preflight + build, then serve
 :run_prepare
 if "%NO_BUILD%"=="1" (
   "%BUN_EXE%" "%HELPER%" --no-build
@@ -182,7 +182,7 @@ echo.
 set "RC=%ERRORLEVEL%"
 exit /b %RC%
 
-rem ---- Help ----------------------------------------------------------------
+rem Help
 :show_help
 echo superstring one-click launcher
 echo.

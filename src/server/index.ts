@@ -70,7 +70,7 @@ if (SERVE_WEB && existsSync(WEB_ROOT)) {
   appStaticFallback(runtime.app, WEB_ROOT);
 }
 
-// --- In-flight request tracking -------------------------------------------------
+// In-flight request tracking
 // On shutdown we wait (bounded) for active requests to finish before closing
 // the socket and the databases, so a request mid-write is not truncated purely
 // because the port closed. This protects both SIGINT and desktop-triggered stop.

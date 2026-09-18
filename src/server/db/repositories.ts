@@ -1,7 +1,7 @@
 // Session / Turn / Message repository — the lease + idempotency state machine.
 // 1:1 with `db/repositories.py`.
 //
-// ── Why this module is synchronous ────────────────────────────────────────
+// Why this module is synchronous
 // The source project runs on MySQL and relies on `SELECT … FOR UPDATE` row locks
 // inside `async with` transactions (db/repositories.py:539-543, 560-569,
 // 787-789). SQLite has no row locks, so the replica uses SQLite's own writer
@@ -11,7 +11,7 @@
 // the callback, so a read-modify-write sequence is atomic — the same guarantee
 // `with_for_update()` provided for this single-writer local application.
 //
-// ── Contract that must not drift (api-contract.md §2) ─────────────────────
+// Contract that must not drift (api-contract.md §2)
 //   IDEMPOTENCY_KEY_RETIRED : turn.invalidation_reason == "message_deleted",
 //                             or the Turn exists but its user message is gone.
 //   IDEMPOTENCY_CONFLICT    : same client_request_id, different content.
@@ -175,7 +175,7 @@ export interface MessageDeletionResult {
   repeated: boolean;
 }
 
-// ── Agent reads (needed by session creation and runtime resolution) ────────
+// Agent reads (needed by session creation and runtime resolution)
 
 export function getAgentRow(orm: Orm, agentId: string): AgentRow | null {
   const row = orm.select().from(schema.agents).where(eq(schema.agents.id, agentId)).get();
@@ -190,7 +190,7 @@ export function getAgent(orm: Orm, agentId: string): AgentRow {
   return row;
 }
 
-// ── Defaults ───────────────────────────────────────────────────────────────
+// Defaults
 
 /** repositories.py:94-128. Idempotent; safe to call on every entry point. */
 export function ensureDefaults(orm: Orm, modelName: string): void {
@@ -256,7 +256,7 @@ export function ensureDefaults(orm: Orm, modelName: string): void {
   }
 }
 
-// ── Sessions ───────────────────────────────────────────────────────────────
+// Sessions
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 
@@ -432,7 +432,7 @@ export function renameSession(orm: Orm, sessionId: string, title: string): Sessi
   });
 }
 
-// ── Derivation invalidation (memory + summaries) ───────────────────────────
+// Derivation invalidation (memory + summaries)
 
 /** memory_repository.invalidate_turns (memory_repository.py:224-237). */
 export function invalidateTurnsForMemory(orm: Orm, agentId: string, turnIds: string[]): void {
@@ -506,7 +506,7 @@ export function invalidateTurnsForSummaries(orm: Orm, turnIds: string[]): void {
     .run();
 }
 
-// ── Messages ───────────────────────────────────────────────────────────────
+// Messages
 
 export type MessageRow = typeof schema.messages.$inferSelect;
 
@@ -689,7 +689,7 @@ function repeatedDeletion(
   };
 }
 
-// ── Turn lookup helpers ────────────────────────────────────────────────────
+// Turn lookup helpers
 
 export type TurnRow = typeof schema.turns.$inferSelect;
 
@@ -735,7 +735,7 @@ export function getMessageByRequest(
   return row?.message ?? null;
 }
 
-// ── Runtime resolution for a Turn ──────────────────────────────────────────
+// Runtime resolution for a Turn
 
 function runtimeFromTurn(turn: TurnRow, session: SessionRow): RuntimeConfig {
   // repositories.py:478-490 — validate the snapshot and its binding.
@@ -806,7 +806,7 @@ export function getRuntimeConfig(orm: Orm, sessionId: string): RuntimeConfig {
   return runtimeFromPersona(orm, session);
 }
 
-// ── prepare_turn / heartbeat / save ────────────────────────────────────────
+// prepare_turn / heartbeat / save
 
 /**
  * repositories.py:531-691 — the heart of the idempotency + lease contract.
@@ -1228,7 +1228,7 @@ export function saveUserMessage(
   return user;
 }
 
-// ── Chat context assembly ──────────────────────────────────────────────────
+// Chat context assembly
 
 /**
  * repositories.py:403-442 — assemble the prompt the model will see.

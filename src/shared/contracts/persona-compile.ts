@@ -1,12 +1,7 @@
 // Persona compilation — 1:1 with `services/agent_config.py:119-167`.
 //
-// THIS MODULE IS THE SINGLE SOURCE OF TRUTH for the compile rules, and it lives
-// in the shared layer on purpose: the request contract must validate against the
-// SAME compile the server later persists. Keeping a second, slightly different
-// copy in the shared contracts is what produced a real fidelity defect — the
-// contract counted the character layer at full length while the source (and the
-// server) scale it to the default intensity of 60, so the API rejected persona
-// payloads the source accepts (#91).
+// Request validation and persistence share these compile rules. Both must apply
+// the default character intensity of 60 before checking the length limit (#91).
 //
 // The compile ORDER is contract-visible: it determines the rendered
 // `system_prompt`, which is part of the session/Turn snapshot.
@@ -46,7 +41,7 @@ export const PERSONA_SECTION_TITLES = {
   example_dialogues: "示例对话",
 } as const;
 
-// ── Python string primitives ────────────────────────────────────────────────
+// Python string primitives
 //
 // The primitives live in `./py-string` so the whole contract layer shares ONE
 // implementation: `common.ts` needs the same `pyStrip`/`pyLen` to reproduce

@@ -56,7 +56,12 @@ describe("shared appearance frame contract", () => {
     // Strict desktop protocol rejects extra keys.
     expect(
       parseAppearanceMessage(
-        JSON.stringify({ type: "appearance", theme: "slate", mode: "dark", extra: 1 }),
+        JSON.stringify({
+          type: "appearance",
+          theme: "slate",
+          mode: "dark",
+          extra: 1,
+        }),
       ),
     ).toBeNull();
     // oversized frame (pad past the byte cap) is dropped
@@ -74,7 +79,10 @@ describe("shared appearance frame contract", () => {
       theme: "neon" as never,
       mode: "bright" as never,
     });
-    expect(parseAppearanceMessage(frame)).toEqual({ theme: "slate", mode: "system" });
+    expect(parseAppearanceMessage(frame)).toEqual({
+      theme: "slate",
+      mode: "system",
+    });
   });
 });
 

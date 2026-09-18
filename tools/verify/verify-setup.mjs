@@ -154,7 +154,7 @@ if (compiled.status !== 0) throw new Error(compiled.stdout + compiled.stderr);
 
 let serviceChild = null;
 try {
-  // ---- 1. fresh install -----------------------------------------------------
+  // 1. fresh install
   let result = runSetup([`/dir=${installRoot}`, "/silent", "/verbose"]);
   check("fresh install exits 0", result.status === 0, result);
   check(
@@ -209,7 +209,7 @@ try {
     fs.readdirSync(unrelated).length === 0,
   );
 
-  // ---- 2. the installed product works ------------------------------------
+  // 2. the installed product works
   const packaged = spawnSync(path.join(installRoot, "superstring.exe"), ["--check-package"], {
     cwd: unrelated,
     windowsHide: true,
@@ -306,7 +306,7 @@ try {
     (await until(() => serviceChild.exitCode !== null, 30000)) && serviceChild.exitCode === 0,
   );
 
-  // ---- 3. synthetic chat data must survive every later operation ---------
+  // 3. synthetic chat data must survive every later operation
   const database = path.join(installRoot, "userdata/data/superstring.sqlite");
   const keyFile = path.join(installRoot, "userdata/state/browser-state.key");
   fs.writeFileSync(database, Buffer.from("SYNTHETIC-CHAT-DATA-".repeat(64)));
@@ -314,7 +314,7 @@ try {
   const databaseHash = hashFile(database);
   const keyHash = hashFile(keyFile);
 
-  // ---- 4. reinstall of the same version ---------------------------------
+  // 4. reinstall of the same version
   result = runSetup([`/dir=${installRoot}`, "/silent"]);
   check("same-version reinstall exits 0", result.status === 0);
   check(
@@ -341,7 +341,7 @@ try {
     Boolean(backupDatabase) && hashFile(backupDatabase) === databaseHash,
   );
 
-  // ---- 5. real upgrade path ---------------------------------------------
+  // 5. real upgrade path
   rewriteManifestVersion("0.0.1");
   result = runSetup([`/dir=${installRoot}`, "/silent"]);
   check("upgrade exits 0", result.status === 0);
@@ -372,7 +372,7 @@ try {
       !fs.existsSync(path.join(installRoot, "maintenance/journal.json")),
   );
 
-  // ---- 6. downgrade refusal ---------------------------------------------
+  // 6. downgrade refusal
   rewriteManifestVersion("9.9.9");
   const programHash = hashFile(serverExe());
   result = runSetup([`/dir=${installRoot}`, "/silent"]);
@@ -381,7 +381,7 @@ try {
   check("downgrade leaves chat data untouched", hashFile(database) === databaseHash);
   rewriteManifestVersion(version);
 
-  // ---- 7. failure injection and rollback --------------------------------
+  // 7. failure injection and rollback
   const beforeRollback = hashFile(serverExe());
   result = runSetup([`/dir=${installRoot}`, "/silent", "/fail-after=verify"]);
   check("injected verification failure fails the install", result.status === 13, {
@@ -489,7 +489,7 @@ try {
   result = runSetup([`/dir=${journalTarget}`, "/uninstall", "/silent"]);
   check("journal recovery fixture uninstalls", result.status === 0);
 
-  // ---- 8. running product blocks the installer --------------------------
+  // 8. running product blocks the installer
   const holder = spawn(fixtureExe, [installRoot, "maintenance", "hold"], {
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
@@ -514,7 +514,7 @@ try {
     holder.stdin.end("x\n");
   });
 
-  // ---- 9. foreign directory protection ---------------------------------
+  // 9. foreign directory protection
   const foreign = path.join(evidence, "我的文档");
   fs.mkdirSync(foreign);
   fs.writeFileSync(path.join(foreign, "important.txt"), "keep me");
@@ -540,7 +540,7 @@ try {
       fs.readFileSync(path.join(foreignApp, "app/important.txt"), "utf8") === "keep foreign app",
   );
 
-  // ---- 10. uninstall keeps user data -----------------------------------
+  // 10. uninstall keeps user data
   result = runSetup([`/dir=${installRoot}`, "/uninstall", "/silent"]);
   check("uninstall exits 0", result.status === 0 && result.json.action === "uninstalled");
   check(
@@ -557,7 +557,7 @@ try {
   check("uninstall removes the desktop shortcut", !fs.existsSync(desktopLink));
   check("uninstall removes the start menu shortcut", !fs.existsSync(startMenuLink));
 
-  // ---- 11. desktop-only opt-out and legacy all-shortcuts opt-out --------
+  // 11. desktop-only opt-out and legacy all-shortcuts opt-out
   const choiceTarget = path.join(evidence, "快捷方式 选项", "superstring");
   const choiceLinks = path.join(evidence, "choice-shortcuts");
   const choiceEnv = { SUPERSTRING_SETUP_SHORTCUT_ROOT: choiceLinks };
@@ -597,7 +597,7 @@ try {
   result = runSetup([`/dir=${choiceTarget}`, "/uninstall", "/silent"], choiceEnv);
   check("legacy opt-out fixture uninstalls", result.status === 0);
 
-  // ---- 12. payload integrity -------------------------------------------
+  // 12. payload integrity
   const truncated = path.join(evidence, "truncated-setup.exe");
   const truncatedTarget = path.join(evidence, "truncated-target");
   const bytes = fs.readFileSync(setup);

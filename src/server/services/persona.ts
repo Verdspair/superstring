@@ -1,9 +1,7 @@
 // Persona compilation — re-exported from the shared contract layer.
 //
-// The compile rules live in `shared/contracts/persona-compile.ts` so the request
-// validation and the persisted system prompt cannot drift apart. They used to be
-// two implementations, and the contract copy silently omitted the default
-// intensity-60 scaling of the character layer (#91).
+// Request validation and persistence share shared/contracts/persona-compile.ts,
+// including default intensity-60 scaling (#91).
 //
 // See that module for the source mapping (services/agent_config.py:119-167) and
 // the reasoning behind the Python-compatible string primitives.

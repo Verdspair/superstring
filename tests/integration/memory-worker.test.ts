@@ -58,7 +58,7 @@ import { MemoryService } from "../../src/server/services/memory-service";
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const MODEL = "qwen/qwen3-4b-2507";
 
-// ── Scripted gateway ───────────────────────────────────────────────────────
+// Scripted gateway
 
 interface CompleteCall {
   messages: Array<{ role: string; content: string }>;
@@ -127,7 +127,7 @@ const VALID_DRAFT = {
 
 const VALID_DRAFT_JSON = JSON.stringify(VALID_DRAFT);
 
-// ── Fixtures ───────────────────────────────────────────────────────────────
+// Fixtures
 
 function setup(options: { heartbeatIntervalMs?: number; jobTimeoutMs?: number } = {}) {
   const business = openBusinessDb();
@@ -242,7 +242,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<v
   }
 }
 
-// ── Pure contract ──────────────────────────────────────────────────────────
+// Pure contract
 
 describe("memory prompt contracts", () => {
   const config = {
@@ -472,7 +472,7 @@ describe("parse-result strictness", () => {
   });
 });
 
-// ── Auto scheduling ────────────────────────────────────────────────────────
+// Auto scheduling
 
 describe("auto scheduling", () => {
   it("queues nothing until every_turns unprocessed turns exist", () => {
@@ -583,7 +583,7 @@ describe("auto scheduling", () => {
   });
 });
 
-// ── Job execution ──────────────────────────────────────────────────────────
+// Job execution
 
 describe("job execution", () => {
   it("runs a queued auto job end to end and publishes an entry with its sources", async () => {
@@ -892,7 +892,7 @@ describe("job execution", () => {
   });
 });
 
-// ── Expired-lease recovery ─────────────────────────────────────────────────
+// Expired-lease recovery
 
 describe("expired lease recovery", () => {
   it("fails a lapsed running job as MEMORY_WORKER_INTERRUPTED and clears its token", () => {
@@ -937,7 +937,7 @@ describe("expired lease recovery", () => {
   });
 });
 
-// ── Merge jobs ─────────────────────────────────────────────────────────────
+// Merge jobs
 
 describe("merge jobs", () => {
   it("replaces its parents, links them to the child and leaves processed turns alone", async () => {
@@ -1008,7 +1008,7 @@ describe("merge jobs", () => {
   });
 });
 
-// ── Claim guards ───────────────────────────────────────────────────────────
+// Claim guards
 
 describe("claim guards", () => {
   it("fails a queued job whose governance epoch moved before it was claimed", async () => {
@@ -1050,7 +1050,7 @@ describe("claim guards", () => {
   });
 });
 
-// ── Queue drain ────────────────────────────────────────────────────────────
+// Queue drain
 
 describe("cycle bookkeeping", () => {
   it("reports whether a job was run so the loop can drain without delay", async () => {

@@ -4,12 +4,8 @@ using System.IO;
 namespace Superstring.Desktop
 {
     /// <summary>
-    /// Resolves the superstring project root by walking UP from the executable
-    /// directory until a package.json with name "superstring" is found. The path is
-    /// never hard-coded (no "<repo>"), so the launcher works from any install
-    /// location. Dev builds land in &lt;root&gt;/dist/desktop/superstring.exe, the
-    /// installed build in &lt;root&gt;/app/superstring.exe; the walk-up below means
-    /// neither location is hard-coded.
+    /// Walks up from the executable to a package.json named "superstring".
+    /// Supports dev dist/desktop and installed app layouts without fixed paths.
     /// </summary>
     internal static class ProjectLocator
     {
@@ -48,9 +44,7 @@ namespace Superstring.Desktop
             try
             {
                 string text = File.ReadAllText(pkgPath);
-                // Lightweight, allocation-free check: the manifest must contain
-                // "name" : "superstring" (whitespace tolerant). We avoid a full JSON
-                // parser dependency here.
+                // Match the package name without adding a JSON parser dependency.
                 int i = text.IndexOf("\"name\"", StringComparison.Ordinal);
                 if (i < 0) return false;
                 int colon = text.IndexOf(':', i);

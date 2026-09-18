@@ -119,18 +119,10 @@ export const P5ConfigSchema = z
 export type P5Config = z.infer<typeof P5ConfigSchema>;
 
 /**
- * `/models/capacity` response (api/models.py:13-22).
- *
- * The source has exactly three shapes and NO overlap between them:
- *   - success →  `{model, status: "loaded", context_length: <int>}` (no key)
- *   - unknown →  `{model, status: "unknown", context_length: None}`
- *   - failure →  `{model, status: "unavailable", context_length: None,
- *                 error_code: <AppError.code>}` — the code is a real string,
- *                 never `null`, because it is read off the raised exception.
- *
- * Modelling this as one loose object with `error_code` merely optional+nullable
- * accepted combinations Python can never emit (e.g. `loaded` carrying a code, or
- * `unavailable` with no code), so a wire regression would pass validation (#89).
+ * /models/capacity has three disjoint shapes (api/models.py:13-22):
+ * loaded has integer context_length; unknown has null context_length;
+ * unavailable has null context_length and a required string error_code.
+ * loaded/unknown never carry error_code (#89).
  */
 export const ModelCapacityResponseSchema = z.union([
   z.strictObject({

@@ -5,7 +5,30 @@ import { describe, expect, it } from "vitest";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const css = readFileSync(resolve(projectRoot, "src/web/styles.css"), "utf8");
-const app = readFileSync(resolve(projectRoot, "src/web/App.tsx"), "utf8");
+// Explicit module list preserves the original positive/negative source contracts after extraction.
+const app = [
+  "App.tsx",
+  "ui/icons.tsx",
+  "ui/Accordion.tsx",
+  "ui/Field.tsx",
+  "ui/ConfirmDialog.tsx",
+  "ui/ProcessingStatus.tsx",
+  "app/Sidebar.tsx",
+  "app/SettingsHeader.tsx",
+  "app/SettingsHub.tsx",
+  "app/NavigationConfirm.tsx",
+  "features/chat/ChatPage.tsx",
+  "features/agents/AgentSettings.tsx",
+  "features/agents/SectionA.tsx",
+  "features/agents/SectionC.tsx",
+  "features/agents/SectionD.tsx",
+  "features/agents/UnavailableSection.tsx",
+  "features/agents/sections.ts",
+  "features/memory/SectionB.tsx",
+  "features/appearance/AppearanceSettings.tsx",
+]
+  .map((file) => readFileSync(resolve(projectRoot, "src/web", file), "utf8"))
+  .join("\n");
 
 function rule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -13,6 +36,24 @@ function rule(selector: string): string {
 }
 
 describe("R5 视觉契约", () => {
+  it("返回为纯图标方形触区，运行模式沿用中性纵向设置行", () => {
+    const header = readFileSync(resolve(projectRoot, "src/web/app/SettingsHeader.tsx"), "utf8");
+    const back = header.split('className="settings-back"')[1]?.split("</button>")[0] ?? "";
+    expect(back).toContain('title={t("返回设置中心")}');
+    expect(back).toContain('aria-label={t("返回设置中心")}');
+    expect(back).not.toContain("<span>");
+    expect(rule("button.settings-back")).toContain("width: 32px");
+    expect(rule("button.settings-back")).toContain("height: 32px");
+    expect(rule(".operating-modes")).toContain("display: grid");
+    expect(rule(".operating-modes")).toContain("gap: 12px");
+    const mode = rule("button.operating-mode-row");
+    expect(mode).toContain("min-height: 58px");
+    expect(mode).toContain("padding: 9px 12px");
+    expect(mode).toContain("border-radius: var(--ac-radius)");
+    expect(mode).toContain("background: var(--superstring-tone-soft)");
+    expect(mode).not.toContain("background: var(--superstring-tone-deep)");
+    expect(rule("button.operating-mode-row:disabled")).toContain("opacity: 1");
+  });
   it("冻结9版高位双引号、延展弦端与实心节点，不恢复R1", () => {
     const brand = app.split("    brand: (")[1]?.split("    settings: (")[0] ?? "";
     expect(brand.match(/<path\b/g)).toHaveLength(6);
@@ -81,8 +122,9 @@ describe("R5 视觉契约", () => {
     }
     expect(css).toContain("--superstring-sidebar-width: clamp(196px, 20vw, 216px)");
     expect(css).toContain("max-height: 31vh");
-    expect(css).toContain("height: 69vh");
-    expect(css).toContain("min-height: 600px");
+    expect(rule("#superstring-shell")).toContain("grid-template-rows: minmax(0, 1fr) auto");
+    expect(css).not.toContain("min-height: 600px");
+    expect(rule(".app-statusbar")).toContain("grid-column: 1 / -1");
     expect(css).toContain("max-width: 88%");
     expect(css).not.toContain("@media (max-width: 640px)");
     expect(css).not.toContain("@media (max-width: 980px)");
@@ -254,7 +296,7 @@ describe("R5 视觉契约", () => {
       expect(app).toContain(`"${name}"`);
     }
     expect(app).toContain("const CONFIG_LIST_ICONS = {");
-    expect(app).toContain("{listIcon ? label : title}");
+    expect(app).toContain("{t(listIcon ? label : title)}");
     expect(rule(".config-list-icon")).toContain("display: inline-flex");
     const icon = rule(".config-list-icon .icon");
     expect(icon).toContain("width: 18px");

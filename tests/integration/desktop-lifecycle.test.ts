@@ -323,7 +323,7 @@ describe("normal (non-desktop) mode hides the control surface", () => {
   });
 });
 
-// --- Real isolated process: spawns the actual server entry, :memory: DB, temp
+// Real isolated process: spawns the actual server entry, :memory: DB, temp
 // browser-state dir, so no real database or secrets are touched. -------------------
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
 const SERVER_ENTRY = path.resolve(PROJECT_ROOT, "src/server/index.ts");
@@ -378,7 +378,7 @@ async function spawnServer(opts: { token?: string; port?: number } = {}): Promis
       try {
         child.kill();
       } catch {
-        /* ignore */
+        // The owned test process may already have exited.
       }
       try {
         rmSync(dir, { recursive: true, force: true });
@@ -443,7 +443,7 @@ describe("desktop lifecycle over a real isolated process", () => {
   }, 40_000);
 });
 
-// --- Appearance persistence over a real isolated process ----------------------
+// Appearance persistence over a real isolated process
 // The desktop launcher reads cwd/artifacts/state/desktop-appearance.json to
 // restore the chosen theme + mode. These tests spawn the actual server with a
 // valid token, drive the liveness WebSocket, and assert the file on disk. The

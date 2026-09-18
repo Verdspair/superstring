@@ -198,7 +198,7 @@ function exclusiveAttempt() {
 
 let serviceChild = null;
 try {
-  // ---- 1. install the real package ----------------------------------------
+  // 1. install the real package
   let result = runSetup([`/dir=${installRoot}`, "/silent", "/noshortcut"]);
   check("real package installs", result.status === 0 && result.json?.action === "fresh-install", {
     status: result.status,
@@ -214,7 +214,7 @@ try {
     exclusiveAttempt: exclusiveAttempt(),
   });
 
-  // ---- 2. start the SHIPPED service, no launcher anywhere ------------------
+  // 2. start the SHIPPED service, no launcher anywhere
   const port = await freePort();
   const token = randomBytes(32).toString("hex");
   serviceChild = spawn(serverExe(), [], {
@@ -250,7 +250,7 @@ try {
     exclusiveAttempt: exclusiveAttempt(),
   });
 
-  // ---- 3. the orphan case: launcher dead, service alive --------------------
+  // 3. the orphan case: launcher dead, service alive
   const before = {
     launcher: hashFile(launcherExe()),
     server: hashFile(serverExe()),
@@ -293,7 +293,7 @@ try {
     { residue: fs.readdirSync(unrelated) },
   );
 
-  // ---- 4. uninstall is maintenance too -------------------------------------
+  // 4. uninstall is maintenance too
   result = runSetup([`/dir=${installRoot}`, "/uninstall", "/silent"]);
   check(
     "uninstall is refused while the shipped service is alive",
@@ -301,7 +301,7 @@ try {
     { status: result.status, json: result.json },
   );
 
-  // ---- 5. graceful stop releases the lease ---------------------------------
+  // 5. graceful stop releases the lease
   const stopped = await request(port, "/__desktop/stop", token, "POST");
   check("shipped service accepts a graceful stop", stopped.status === 200);
   check(
@@ -318,7 +318,7 @@ try {
     exclusiveAttempt: exclusiveAttempt(),
   });
 
-  // ---- 6. with nothing running the installer may proceed -------------------
+  // 6. with nothing running the installer may proceed
   const databaseHash = hashFile(database());
   const keyHash = hashFile(keyFile());
   result = runSetup([`/dir=${installRoot}`, "/silent", "/noshortcut"]);

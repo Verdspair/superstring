@@ -1,6 +1,6 @@
 // Integration tests for the 16-table business data layer (R2).
 //
-// Coverage required by the task:
+// Coverage:
 //  - migrations/versions/0001_initial.sql runs on an empty DB and is idempotent
 //    across repeated execution.
 //  - The ACTUAL structure of all 16 tables (verified via PRAGMA table_info /
@@ -32,7 +32,7 @@ import {
 const MIGRATION_PATH = path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql");
 const MIGRATION_SQL = readFileSync(MIGRATION_PATH, "utf8");
 
-// ---- golden column contract (docs/reference/data-model.md) -------------------
+// golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };
 
 const GOLDEN_COLUMNS: Record<string, ColSpec[]> = {
@@ -292,7 +292,7 @@ const GOLDEN_FKS: Record<string, FkSpec[]> = {
 
 const ALL_TABLES = Object.keys(GOLDEN_COLUMNS);
 
-// ---- helpers ----------------------------------------------------------------
+// helpers
 function getColumns(db: Database, table: string): ColSpec[] {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{
     name: string;
@@ -404,7 +404,7 @@ function seedMinimal(db: Database): void {
   ).run("m1", "a1", "u1", "n", "s", "[]", "[]", "{}", "reality_user", "k", "active", "{}", NOW);
 }
 
-// ---- 1. migration runs + idempotency ----------------------------------------
+// 1. migration runs + idempotency
 describe("business migration (SQL idempotency)", () => {
   it("creates exactly the 16 business tables on an empty DB", () => {
     const db = new Database(":memory:");
@@ -424,7 +424,7 @@ describe("business migration (SQL idempotency)", () => {
   });
 });
 
-// ---- 2. per-table structure vs golden (the anti-drift core) ------------------
+// 2. per-table structure vs golden (the anti-drift core)
 describe("business schema structure vs golden (PRAGMA assertions)", () => {
   let db: Database;
   beforeAll(() => {
@@ -471,7 +471,7 @@ describe("business schema structure vs golden (PRAGMA assertions)", () => {
   }
 });
 
-// ---- 3. schema.ts <-> SQL DB anti-drift (columns) ---------------------------
+// 3. schema.ts <-> SQL DB anti-drift (columns)
 describe("schema.ts matches the SQL DDL (anti-drift)", () => {
   let db: Database;
   beforeAll(() => {
@@ -500,7 +500,7 @@ describe("schema.ts matches the SQL DDL (anti-drift)", () => {
   }
 });
 
-// ---- 4. CHECK constraints really fire ---------------------------------------
+// 4. CHECK constraints really fire
 describe("CHECK constraints reject violating inserts", () => {
   let db: Database;
   beforeAll(() => {
@@ -884,7 +884,7 @@ describe("CHECK constraints reject violating inserts", () => {
   });
 });
 
-// ---- 5. foreign keys are ON and policies behave -----------------------------
+// 5. foreign keys are ON and policies behave
 describe("foreign key enforcement", () => {
   it("the connection forces PRAGMA foreign_keys = ON", () => {
     const db = openConnection();
@@ -931,7 +931,7 @@ describe("foreign key enforcement", () => {
   });
 });
 
-// ---- 6. schema / version gate ----------------------------------------------
+// 6. schema / version gate
 describe("business schema gate", () => {
   it("initialises a fresh db and stamps user_version", () => {
     const h = openBusinessDb();
@@ -978,7 +978,7 @@ describe("business schema gate", () => {
   });
 });
 
-// ---- 7. json-text utility ---------------------------------------------------
+// 7. json-text utility
 describe("json-text canonical serialization", () => {
   it("sorts object keys regardless of insertion order", () => {
     const a = stableStringify({ b: 2, a: 1, c: 3 });

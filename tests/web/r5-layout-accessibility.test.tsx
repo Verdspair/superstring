@@ -17,7 +17,7 @@ beforeEach(() => {
 });
 
 describe("现有版面文案精简", () => {
-  it("保留 A—H 分区和保存入口，移除重复副标题", async () => {
+  it("保留 A—I 分区和保存入口，移除重复副标题", async () => {
     await useSuperstringStore.getState().editAgent("__new__");
     useSuperstringStore.setState({
       page: "settings",
@@ -28,8 +28,8 @@ describe("现有版面文案精简", () => {
     const { container } = render(<App />);
     expect(screen.getByRole("heading", { name: "助手设置" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "A · 名称与模型" })).toBeTruthy();
-    expect(container.querySelectorAll(".section-nav button")).toHaveLength(8);
-    expect(container.querySelectorAll(".section-nav button small")).toHaveLength(4);
+    expect(container.querySelectorAll(".section-nav button")).toHaveLength(9);
+    expect(container.querySelectorAll(".section-nav button small")).toHaveLength(5);
     expect(screen.getByRole("button", { name: "创建助手" })).toBeTruthy();
     expect(
       screen.getByText("各分区独立保存。新一轮使用已保存配置，失败重试沿用原轮配置。"),
@@ -57,7 +57,7 @@ describe("分组与提示层级", () => {
     const createAction = screen.getByRole("button", { name: "新建助手" });
     expect(createAction.closest(".agent-editor-list")).toBeNull();
     expect(createAction.getAttribute("aria-pressed")).toBeNull();
-    expect(container.querySelectorAll(".section-nav button:disabled")).toHaveLength(7);
+    expect(container.querySelectorAll(".section-nav button:disabled")).toHaveLength(8);
     expect(screen.getByText("模型、记忆、上下文与性格人设")).toBeTruthy();
     expect(screen.getByText("选择多个助手，批量删除。")).toBeTruthy();
     expect(container.querySelectorAll(".agent-settings > details")).toHaveLength(3);

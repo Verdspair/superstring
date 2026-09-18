@@ -3,7 +3,10 @@ import { createBrowserStateStorage, loadBrowserStateStorage } from "../../src/we
 
 const config = {
   secret: "abcdefghijklmnopqrstuvwxyzABCDEFGH1234567890-_",
-  storage_keys: { session: "superstring-session" as const, agent: "superstring-agent" as const },
+  storage_keys: {
+    session: "superstring-session" as const,
+    agent: "superstring-agent" as const,
+  },
 };
 
 describe("Gradio-compatible BrowserState storage", () => {
@@ -31,7 +34,10 @@ describe("Gradio-compatible BrowserState storage", () => {
     expect(await storage.read(config.storage_keys.session)).toBeNull();
 
     await storage.write(config.storage_keys.session, "value");
-    const wrong = createBrowserStateStorage({ ...config, secret: "Z".repeat(40) });
+    const wrong = createBrowserStateStorage({
+      ...config,
+      secret: "Z".repeat(40),
+    });
     expect(await wrong.read(config.storage_keys.session)).toBeNull();
 
     const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {

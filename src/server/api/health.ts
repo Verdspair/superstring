@@ -17,16 +17,8 @@ import { Hono } from "hono";
 import { BUSINESS_SCHEMA_VERSION } from "../db/schema-gate";
 import type { ModelGateway } from "../llm/model-gateway";
 
-/**
- * Product version reported by `/health`.
- *
- * Deliberately diverges from the inherited Python `__version__` ("0.1.0.dev") as of
- * the 2026-09-16 alpha relabel: this build is an alpha, not the source's dev marker.
- * Spelled as legal SemVer so that `/health`, `package.json`, the release tag and the
- * installer package name all read identically; `tests/integration/dev-proxy.test.ts`
- * locks them together.
- */
-export const APP_VERSION = "0.1.0-alpha";
+/** Product SemVer; keep identical to package.json and the installer version. */
+export const APP_VERSION = "0.2.0-alpha";
 
 /** Generated once per process (app.py:47). */
 export const PROCESS_INSTANCE_ID = crypto.randomUUID();

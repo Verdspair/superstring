@@ -82,13 +82,9 @@ function entrySummary(e: MemoryEntryRow) {
   };
 }
 
-/** Parse the persisted `config_snapshot` JSON string back into an object.
- *
- * Mirrors the Python API, which returns the snapshot as a dict (the source
- * stores a Python dict; the TS port persists a `JSON.stringify`'d string).
- * Returns `null` when no snapshot was captured or the stored value is empty.
- * A malformed value degrades to `null` rather than throwing, so a single bad
- * row cannot take down the whole detail response.
+/**
+ * Return config_snapshot as an object, matching api/memories.py:93-95.
+ * SQLite stores JSON text; missing, empty or malformed values return null.
  */
 function parseConfigSnapshot(raw: string | null): unknown {
   if (!raw) return null;
@@ -130,7 +126,7 @@ export function memoryRoutes(orm: Orm): Hono {
   const agentOf = (c: { req: { param: (name: string) => string } }): string =>
     parseUuidParam(c.req.param("agentId"));
 
-  // ── Policy ────────────────────────────────────────────────────────────────
+  // Policy
 
   // memories.py:31-35 — GET /policy. The read itself CREATES the row on first
   // touch, which is why a plain GET performs a write.
@@ -169,7 +165,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // ── Sessions / turns / scope ──────────────────────────────────────────────
+  // Sessions / turns / scope
 
   // memories.py:49-55 — sessions that belong to the agent.
   router.get(`${base}/sessions`, (c) => {
@@ -238,7 +234,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // ── Entries ───────────────────────────────────────────────────────────────
+  // Entries
 
   // memories.py:78-86 — pagination applies AFTER the full (already ordered) list.
   router.get(`${base}/entries`, (c) => {
@@ -263,7 +259,7 @@ export function memoryRoutes(orm: Orm): Hono {
     return c.json(immediate(db, () => entryDetail(entries(orm, agentId, [memoryId])[0])));
   });
 
-  // ── Jobs ──────────────────────────────────────────────────────────────────
+  // Jobs
 
   // memories.py:98-103 — enqueue a manual consolidation (202).
   router.post(`${base}/consolidate`, async (c) => {

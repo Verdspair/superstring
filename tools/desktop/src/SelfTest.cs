@@ -40,8 +40,12 @@ namespace Superstring.Desktop
             Check("project root located from EXE path", !string.IsNullOrEmpty(root));
             if (!string.IsNullOrEmpty(root))
             {
+                var manifest = new System.Web.Script.Serialization.JavaScriptSerializer()
+                    .Deserialize<System.Collections.Generic.Dictionary<string, object>>(File.ReadAllText(Path.Combine(root, "package.json")));
+                object packageName;
                 Check("root contains package.json(name=superstring)",
-                    File.Exists(Path.Combine(root, "package.json")) && root.ToLowerInvariant().EndsWith("superstring"));
+                    manifest != null && manifest.TryGetValue("name", out packageName) && object.Equals(packageName, "superstring"));
+                RunProjectLocatorCheck(root);
             }
 
             // 2. bun
@@ -182,6 +186,27 @@ namespace Superstring.Desktop
             return _failed == 0 ? 0 : 1;
         }
 
+        private static void RunProjectLocatorCheck(string projectRoot)
+        {
+            string fixture = Path.Combine(_outputDirectory, "project-locator-fixture");
+            string arbitraryRoot = Path.Combine(fixture, "renamed-project");
+            string nested = Path.Combine(arbitraryRoot, "dist", "desktop");
+            Directory.CreateDirectory(nested);
+            File.WriteAllText(Path.Combine(arbitraryRoot, "package.json"), "{\"name\":\"superstring\"}");
+            Check("project root accepts arbitrary directory names",
+                ProjectLocator.FindRoot(nested) == Path.GetFullPath(arbitraryRoot));
+
+            string wrongRoot = Path.Combine(fixture, "superstring");
+            Directory.CreateDirectory(wrongRoot);
+            File.WriteAllText(Path.Combine(wrongRoot, "package.json"), "{\"name\":\"different-project\"}");
+            // The fixture lives under the real project; a rejected package falls back to that ancestor.
+            Check("project root rejects wrong package despite matching directory name",
+                ProjectLocator.FindRoot(wrongRoot) == Path.GetFullPath(projectRoot));
+            File.WriteAllText(Path.Combine(wrongRoot, "package.json"), "{}");
+            Check("project root skips package without name",
+                ProjectLocator.FindRoot(wrongRoot) == Path.GetFullPath(projectRoot));
+        }
+
         private static void RunAppearanceCheck()
         {
             string dir = Path.Combine(_outputDirectory, "appearance-test-" + Guid.NewGuid().ToString("N"));
@@ -254,28 +279,28 @@ namespace Superstring.Desktop
                             image.Save(Path.Combine(_outputDirectory, "launcher-preview.png"));
                         }
 
-                        // ---- brand / title (English only, no subtitle, no CJK) ----
+                        // brand / title (English only, no subtitle, no CJK)
                         var brandName = f.Controls.Find("brandName", true)[0];
                         Check("brand is exactly English 'superstring'", brandName.Text == "superstring");
                         Check("brand has NO Chinese (超弦) characters", !ContainsCjk(brandName.Text));
                         Check("surface matches project CSS", f.BackColor == DesktopStyle.Surface);
                         Check("primary uses project deep color", DesktopStyle.Deep.ToArgb() == System.Drawing.ColorTranslator.FromHtml("#26364a").ToArgb());
 
-                        // ---- normal state: no operation buttons, no empty dashed frame ----
+                        // normal state: no operation buttons, no empty dashed frame
                         Check("normal state has NO visible action buttons", !AnyVisibleButton(f));
                         Check("normal state has NO empty dashed frame", !HasNamed(f, "content"));
                         Check("normal layout fits", Fits(f));
                         Check("normal status is centred and scaled once", StatusGeometry(f));
                         Capture(f, "launcher-normal.png");
 
-                        // ---- busy state: indicator animates, still no buttons ----
+                        // busy state: indicator animates, still no buttons
                         f.SetBusy(true);
                         f.SetStatus("正在准备…");
                         var spinner = (IndeterminateDot)f.Controls.Find("spinner", true)[0];
                         Check("busy shows animating indicator (no fake %)", spinner.IsAnimating && !AnyVisibleButton(f));
                         Capture(f, "launcher-busy.png");
 
-                        // ---- failure state: retry + details appear, indicator stops ----
+                        // failure state: retry + details appear, indicator stops
                         f.EnterFailed("测试用日志：连接未完成。\r\n这是合成失败状态，不连接服务、不读取用户数据。\r\n检查后可以重试。");
                         Check("failed state exposes retry button", f.Controls.Find("retry", true)[0].Visible);
                         Check("failed state exposes details button", f.Controls.Find("details", true)[0].Visible);
@@ -283,7 +308,7 @@ namespace Superstring.Desktop
                         Check("failed layout fits", Fits(f));
                         Capture(f, "launcher-failed.png");
 
-                        // ---- details expand / collapse works ----
+                        // details expand / collapse works
                         f.ToggleDetails();
                         Check("details expands on toggle", f.Controls.Find("detail", true)[0].Visible);
                         Check("details button label flips to hide", f.Controls.Find("details", true)[0].Text == "隐藏详情");
@@ -293,7 +318,7 @@ namespace Superstring.Desktop
                         Check("details collapses on second toggle", !f.Controls.Find("detail", true)[0].Visible);
                         Check("details button label returns to view", f.Controls.Find("details", true)[0].Text == "查看详情");
 
-                        // ---- busy-after-failure resets the state ----
+                        // busy-after-failure resets the state
                         f.ToggleDetails(); // expand again (verifies reset clears it)
                         f.SetBusy(true);    // simulate a retry attempt
                         Check("busy resets failure UI (buttons hidden)", !AnyVisibleButton(f) && spinner.IsAnimating);
@@ -304,7 +329,7 @@ namespace Superstring.Desktop
                             && !f.Controls.Find("detail", true)[0].Visible
                             && f.Controls.Find("details", true)[0].Text == "查看详情");
 
-                        // ---- synthetic scaling geometry (NOT a real-DPI acceptance) ----
+                        // synthetic scaling geometry (NOT a real-DPI acceptance)
                         f.SetBusy(false);
                         f.PerformLayout();
                         f.Scale(new System.Drawing.SizeF(1.25f, 1.25f));
@@ -318,7 +343,7 @@ namespace Superstring.Desktop
                         Check("150% status centred and scaled once", StatusGeometry(f));
                         Capture(f, "launcher-scale150.png");
 
-                        // ---- appearance applies to every visible label ----
+                        // appearance applies to every visible label
                         var lightSurface = System.Drawing.ColorTranslator.FromHtml("#ffffff").ToArgb();
                         f.ApplyAppearance("blue", "dark");
                         Check("ApplyAppearance(dark) changes surface colour",

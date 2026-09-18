@@ -1,11 +1,9 @@
 // Integration tests for the R3 repository layer — the idempotency / lease /
 // cancellation / deletion state machine.
 //
-// Why this file matters more than the others: a wrong transition here does not
-// produce a type error or a visible crash, it produces DUPLICATE GENERATION or
-// GHOST OUTPUT (a stale writer overwriting a fresh answer). Every assertion
-// below encodes a clause of docs/reference/api-contract.md §2 and the source
-// lines in <reference-project> that it mirrors.
+// Covers duplicate generation and stale writers overwriting newer answers.
+// Assertions follow docs/reference/api-contract.md §2 and the corresponding
+// source transitions in db/repositories.py.
 //
 // Ground rules encoded here:
 //   - A rejection path must write NOTHING (the whole transition runs inside

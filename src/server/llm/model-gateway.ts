@@ -336,7 +336,6 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<stri
   }
 }
 
-/** The real LM Studio implementation. */
 export function createLmStudioClient(
   config: LmStudioConfig = resolveLmStudioConfig(),
 ): ModelGateway {

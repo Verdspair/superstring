@@ -1,7 +1,6 @@
 // Safety tests for the business schema / version gate (R2).
 //
-// These tests harden src/server/db/schema-gate.ts + connection.ts against the
-// two known defects discovered during the perfect-replica review:
+// Regression coverage for schema-gate.ts and connection.ts:
 //   1. verifyBusinessTables only compared the 16 table NAMES. A database stamped
 //      user_version = 1 with the same 16 names but corrupted columns / types /
 //      NOT NULL / PK / indexes / foreign keys / CHECK was wrongly accepted.
@@ -17,8 +16,8 @@
 // indexes are rejected, and a version-0 DB that already contains any user
 // object (table / view / trigger / index) is rejected instead of being migrated.
 //
-// WAL is now applied only AFTER openBusinessDb's ensureBusinessSchema succeeds,
-// so a rejected file DB is never written to.
+// WAL is enabled only after schema validation. Byte-preservation assertions use
+// closed DELETE-mode fixtures, not existing WAL databases or hot journals.
 
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
