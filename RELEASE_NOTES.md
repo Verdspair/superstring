@@ -1,4 +1,4 @@
-# Superstring v0.2.1
+# v0.2.1
 
 [English](#english) · [简体中文](#简体中文)
 

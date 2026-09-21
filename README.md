@@ -1,4 +1,4 @@
-# superstring · 超弦 — Update guide / 升级说明
+# v0.2.1 — Update guide / 升级说明
 
 [English](#english) · [简体中文](#简体中文)
 
