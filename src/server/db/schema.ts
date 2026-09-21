@@ -1,11 +1,12 @@
-// Drizzle ORM schema for the 16 business tables, ported 1:1 from the inherited
+// Drizzle ORM schema: 16 inherited business tables plus 8 knowledge tables.
+// Legacy tables were ported 1:1 from the inherited
 // reference (Python + SQLAlchemy + MySQL/InnoDB) model to Drizzle + SQLite.
 //
 // Source of truth: docs/reference/data-model.md (golden). Every column name,
 // type, NOT NULL, default, primary key, composite unique key, foreign key (with
 // ON DELETE strategy) and CHECK constraint below mirrors that document. The
 // authoritative DDL that actually builds the database is
-// migrations/versions/0001_initial.sql — this file MUST stay in lock-step with
+// migrations/versions/0001_initial.sql and 0002_knowledge.sql — stay in lock-step with
 // it (see tests/integration/db-schema.test.ts for the drift guard).
 //
 // Type mapping (data-model.md §0):
@@ -224,6 +225,7 @@ export const memoryPolicies = sqliteTable(
       .references(() => users.id),
     autoEnabled: integer("auto_enabled").notNull().default(0),
     everyTurns: integer("every_turns").notNull().default(20),
+    // Frozen SQL default; repository creation supplies the current product default.
     targetChars: integer("target_chars").notNull().default(300),
     version: integer("version").notNull().default(1),
     governanceEpoch: integer("governance_epoch").notNull().default(0),
@@ -406,7 +408,215 @@ export const summarySources = sqliteTable(
   (t) => [primaryKey({ columns: [t.summaryId, t.turnId] })],
 );
 
-/** Ordered list of all 16 business tables, grouped by schema.ts export name. */
+// Knowledge library additions (0002_knowledge.sql, ADR0014).
+export const knowledgeSettings = sqliteTable(
+  "knowledge_settings",
+  {
+    id: integer("id").notNull().primaryKey(),
+    autoEnabled: integer("auto_enabled").notNull().default(1),
+    modelName: text("model_name"),
+    // Frozen SQL default; first-time schema initialization seeds the product default.
+    contextBudget: integer("context_budget").notNull().default(4096),
+    revision: integer("revision").notNull().default(1),
+  },
+  (t) => [
+    check("knowledge_settings_id", sql`${t.id} = 1`),
+    check("knowledge_auto_enabled", sql`${t.autoEnabled} IN (0, 1)`),
+    check("knowledge_context_budget", sql`${t.contextBudget} >= 1`),
+    check("knowledge_settings_revision", sql`${t.revision} >= 1`),
+  ],
+);
+
+export const knowledgeCategories = sqliteTable(
+  "knowledge_categories",
+  {
+    id: text("id").notNull().primaryKey(),
+    name: text("name").notNull(),
+    revision: integer("revision").notNull().default(1),
+  },
+  (t) => [
+    check("knowledge_category_name", sql`length(trim(${t.name})) > 0`),
+    check("knowledge_category_revision", sql`${t.revision} >= 1`),
+  ],
+);
+
+export const knowledgeDocuments = sqliteTable(
+  "knowledge_documents",
+  {
+    id: text("id").notNull().primaryKey(),
+    categoryId: text("category_id")
+      .notNull()
+      .references(() => knowledgeCategories.id),
+    name: text("name").notNull(),
+    originalText: text("original_text").notNull(),
+    importType: text("import_type").notNull(),
+    contentMode: text("content_mode").notNull().default("draft"),
+    contentVersion: integer("content_version").notNull().default(1),
+    revision: integer("revision").notNull().default(1),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    check("knowledge_document_name", sql`length(trim(${t.name})) > 0`),
+    check("knowledge_original_text", sql`length(${t.originalText}) > 0`),
+    check("knowledge_import_type", sql`${t.importType} IN ('text', 'txt', 'md')`),
+    check("knowledge_content_mode", sql`${t.contentMode} IN ('draft', 'original')`),
+    check("knowledge_content_version", sql`${t.contentVersion} >= 1`),
+    check("knowledge_document_revision", sql`${t.revision} >= 1`),
+    index("ix_knowledge_documents_category").on(t.categoryId, t.id),
+  ],
+);
+
+export const knowledgeGrants = sqliteTable(
+  "knowledge_grants",
+  {
+    documentId: text("document_id")
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    token: text("token").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.documentId, t.agentId] }),
+    index("ix_knowledge_grants_agent").on(t.agentId, t.documentId),
+  ],
+);
+
+export const knowledgeChunks = sqliteTable(
+  "knowledge_chunks",
+  {
+    id: text("id").notNull().primaryKey(),
+    documentId: text("document_id")
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    contentVersion: integer("content_version").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    startOffset: integer("start_offset").notNull(),
+    endOffset: integer("end_offset").notNull(),
+    body: text("body").notNull(),
+  },
+  (t) => [
+    check("knowledge_chunk_version", sql`${t.contentVersion} >= 1`),
+    check("knowledge_chunk_ordinal", sql`${t.ordinal} >= 0`),
+    check("knowledge_chunk_start", sql`${t.startOffset} >= 0`),
+    check("knowledge_chunk_end", sql`${t.endOffset} > ${t.startOffset}`),
+    unique("uq_knowledge_chunk_position").on(t.documentId, t.contentVersion, t.ordinal),
+  ],
+);
+
+export const knowledgeDrafts = sqliteTable(
+  "knowledge_drafts",
+  {
+    id: text("id").notNull().primaryKey(),
+    documentId: text("document_id")
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    contentVersion: integer("content_version").notNull(),
+    summary: text("summary").notNull(),
+    tags: text("tags").notNull(),
+    body: text("body").notNull(),
+    sources: text("sources").notNull(),
+    modelName: text("model_name").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    check("knowledge_draft_version", sql`${t.contentVersion} >= 1`),
+    unique("uq_knowledge_draft_version").on(t.documentId, t.contentVersion),
+  ],
+);
+
+export const knowledgeJobs = sqliteTable(
+  "knowledge_jobs",
+  {
+    id: text("id").notNull().primaryKey(),
+    documentId: text("document_id")
+      .notNull()
+      .references(() => knowledgeDocuments.id, { onDelete: "cascade" }),
+    contentVersion: integer("content_version").notNull(),
+    settingsRevision: integer("settings_revision").notNull(),
+    status: text("status").notNull().default("queued"),
+    token: text("token"),
+    leaseExpiresAt: text("lease_expires_at"),
+    errorCode: text("error_code"),
+    createdAt: text("created_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (t) => [
+    check("knowledge_job_version", sql`${t.contentVersion} >= 1`),
+    check("knowledge_job_settings_revision", sql`${t.settingsRevision} >= 1`),
+    check(
+      "knowledge_job_status",
+      sql`${t.status} IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')`,
+    ),
+    index("ix_knowledge_job_queue").on(t.status, t.createdAt, t.id),
+  ],
+);
+
+export const turnKnowledgeSnapshots = sqliteTable(
+  "turn_knowledge_snapshots",
+  {
+    turnId: text("turn_id")
+      .notNull()
+      .primaryKey()
+      .references(() => turns.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    settingsRevision: integer("settings_revision").notNull(),
+    items: text("items").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [check("knowledge_snapshot_revision", sql`${t.settingsRevision} >= 1`)],
+);
+
+// Per-assistant reading rules (0003_knowledge_read.sql, ADR0015).
+export const agentKnowledgeReadSettings = sqliteTable(
+  "agent_knowledge_read_settings",
+  {
+    agentId: text("agent_id")
+      .notNull()
+      .primaryKey()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    enabled: integer("enabled").notNull().default(1),
+    contextBudget: integer("context_budget"),
+    scope: text("scope").notNull().default("all"),
+    documentIds: text("document_ids").notNull().default("[]"),
+    revision: integer("revision").notNull().default(1),
+  },
+  (t) => [
+    check("agent_knowledge_read_enabled", sql`${t.enabled} IN (0, 1)`),
+    check(
+      "agent_knowledge_read_budget",
+      sql`${t.contextBudget} IS NULL OR ${t.contextBudget} >= 1`,
+    ),
+    check("agent_knowledge_read_scope", sql`${t.scope} IN ('all', 'selected')`),
+    check(
+      "agent_knowledge_read_ids",
+      sql`json_valid(${t.documentIds}) AND json_type(${t.documentIds}) = 'array'`,
+    ),
+    check("agent_knowledge_read_all", sql`${t.scope} <> 'all' OR ${t.documentIds} = '[]'`),
+    check("agent_knowledge_read_revision", sql`${t.revision} >= 1`),
+  ],
+);
+
+// Shared organization model default (0004_organization.sql, ADR0015).
+export const organizationSettings = sqliteTable(
+  "organization_settings",
+  {
+    id: integer("id").notNull().primaryKey(),
+    modelName: text("model_name"),
+    revision: integer("revision").notNull().default(1),
+  },
+  (t) => [
+    check("organization_settings_id", sql`${t.id} = 1`),
+    check("organization_settings_revision", sql`${t.revision} >= 1`),
+  ],
+);
+
+/** All business tables, including additive knowledge library storage. */
 export const businessTables = {
   users,
   agents,
@@ -424,6 +634,16 @@ export const businessTables = {
   memoryJobs,
   sessionSummaries,
   summarySources,
+  knowledgeSettings,
+  knowledgeCategories,
+  knowledgeDocuments,
+  knowledgeGrants,
+  knowledgeChunks,
+  knowledgeDrafts,
+  knowledgeJobs,
+  turnKnowledgeSnapshots,
+  agentKnowledgeReadSettings,
+  organizationSettings,
 } as const;
 
 export type BusinessTables = typeof businessTables;

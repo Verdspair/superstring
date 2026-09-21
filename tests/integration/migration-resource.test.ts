@@ -17,6 +17,19 @@ const sql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql"),
   "utf8",
 );
+const knowledgeSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0002_knowledge.sql"),
+  "utf8",
+);
+const readSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0003_knowledge_read.sql"),
+  "utf8",
+);
+const organizationSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0004_organization.sql"),
+  "utf8",
+);
+const resources = [sql, knowledgeSql, readSql, organizationSql] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
   it("validates supplied SQL before creating a file-backed database", () => {
@@ -24,7 +37,12 @@ describe("explicit migration resources", () => {
     const filename = path.join(dir, "test.sqlite");
     try {
       for (const migrationSql of ["", "this is not SQL"]) {
-        expect(() => openBusinessDb({ path: filename, migrationSql })).toThrow();
+        expect(() =>
+          openBusinessDb({
+            path: filename,
+            migrationSql: [sql, migrationSql, readSql, organizationSql],
+          }),
+        ).toThrow();
         expect(existsSync(filename)).toBe(false);
       }
     } finally {
@@ -35,15 +53,20 @@ describe("explicit migration resources", () => {
     const dir = mkdtempSync(path.join(testTmpdir, "ss-reference-"));
     const filename = path.join(dir, "test.sqlite");
     try {
-      openBusinessDb({ path: filename, migrationSql: sql }).close();
+      openBusinessDb({ path: filename, migrationSql: resources }).close();
       expect(() =>
         openBusinessDb({
           path: filename,
-          migrationSql: `${sql}\nCREATE TABLE extra_resource(id INTEGER);`,
+          migrationSql: [
+            sql,
+            `${knowledgeSql}\nCREATE TABLE extra_resource(id INTEGER);`,
+            readSql,
+            organizationSql,
+          ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
-      const reopened = openBusinessDb({ path: filename, migrationSql: sql });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+      const reopened = openBusinessDb({ path: filename, migrationSql: resources });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -71,12 +94,36 @@ describe("explicit migration resources", () => {
         path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql"),
         path.join(versions, "0001_initial.sql"),
       );
+      expect(() =>
+        loadStartupLayout({ SUPERSTRING_APP_MODE: "installed", SUPERSTRING_APP_ROOT: dir }),
+      ).toThrow();
+      expect(existsSync(path.join(dir, "userdata"))).toBe(false);
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0002_knowledge.sql"),
+        path.join(versions, "0002_knowledge.sql"),
+      );
+      expect(() =>
+        loadStartupLayout({ SUPERSTRING_APP_MODE: "installed", SUPERSTRING_APP_ROOT: dir }),
+      ).toThrow();
+      expect(existsSync(path.join(dir, "userdata"))).toBe(false);
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0003_knowledge_read.sql"),
+        path.join(versions, "0003_knowledge_read.sql"),
+      );
+      expect(() =>
+        loadStartupLayout({ SUPERSTRING_APP_MODE: "installed", SUPERSTRING_APP_ROOT: dir }),
+      ).toThrow();
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0004_organization.sql"),
+        path.join(versions, "0004_organization.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.trim().length).toBeGreaterThan(0);
+      expect(layout?.businessMigrationSql.length).toBe(4);
+      expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });

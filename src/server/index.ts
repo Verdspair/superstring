@@ -12,7 +12,12 @@ import {
   injectDesktopMeta,
   isDesktopToken,
 } from "./desktop-lifecycle";
-import { DEV_HOST, resolveDevPort } from "./dev-config";
+import {
+  bindWithDesktopFallback,
+  DESKTOP_PORT_MESSAGE,
+  DEV_HOST,
+  resolveDevPort,
+} from "./dev-config";
 import { createRuntime, resolveBusinessDbPath } from "./runtime";
 import { acquireServiceLease } from "./service-lease";
 import { loadStartupLayout } from "./startup-layout";
@@ -20,6 +25,10 @@ import { loadStartupLayout } from "./startup-layout";
 // Open the business database, mount API routes and run the memory worker.
 // The server only binds to loopback.
 const PORT = resolveDevPort(process.env.SUPERSTRING_DEV_PORT);
+let actualPort = PORT;
+const autoPort =
+  isDesktopToken(process.env.SUPERSTRING_DESKTOP_TOKEN) &&
+  process.env.SUPERSTRING_DESKTOP_AUTO_PORT === "1";
 const SERVE_WEB = process.env.SUPERSTRING_SERVE_WEB === "1";
 const layout = loadStartupLayout(process.env);
 const WEB_ROOT = layout?.paths.webDir ?? path.resolve("dist/web");
@@ -60,6 +69,7 @@ const desktop = isDesktopToken(process.env.SUPERSTRING_DESKTOP_TOKEN)
       token: process.env.SUPERSTRING_DESKTOP_TOKEN,
       host: DEV_HOST,
       port: PORT,
+      actualPort: () => actualPort,
       onStop: () => void shutdown(),
       onAppearance: appearanceRepo ? (snapshot) => void appearanceRepo.save(snapshot) : undefined,
     })
@@ -187,22 +197,33 @@ const noopWebsocket: WebSocketHandler<{ alive: boolean }> = {
 
 const server = (() => {
   try {
-    const created = serve({
-      fetch: (req, srv) => {
-        if (shuttingDown) return new Response("Shutting down", { status: 503 });
-        const url = new URL(req.url);
-        if (DESKTOP_CONTROL_PATHS.has(url.pathname)) {
-          if (!desktop) return desktopDisabledResponse();
-          const result = desktop.handle(req, srv);
-          if (result.upgraded) return undefined;
-          return result.response ?? desktopDisabledResponse();
-        }
-        return dispatch(req);
-      },
-      websocket: desktop ? desktop.websocket : noopWebsocket,
-      hostname: DEV_HOST,
-      port: PORT,
-    });
+    const created = bindWithDesktopFallback(PORT, autoPort, (port) =>
+      serve({
+        fetch: (req, srv) => {
+          if (shuttingDown) return new Response("Shutting down", { status: 503 });
+          const url = new URL(req.url);
+          if (DESKTOP_CONTROL_PATHS.has(url.pathname)) {
+            if (!desktop) return desktopDisabledResponse();
+            const result = desktop.handle(req, srv);
+            if (result.upgraded) return undefined;
+            return result.response ?? desktopDisabledResponse();
+          }
+          return dispatch(req);
+        },
+        websocket: desktop ? desktop.websocket : noopWebsocket,
+        hostname: DEV_HOST,
+        port,
+        // SSE turns go silent while the model is prefilling its prompt; Bun's
+        // 10s default idle timeout closed those sockets mid-stream and the
+        // client saw a bare disconnect instead of an error code (P2 evidence:
+        // outputs/p2-bun-idle-*/idle.json). 120s is well past the observed
+        // 7.6s cold-start and stays under Bun's 255s ceiling.
+        idleTimeout: 120,
+      }),
+    );
+    // Bun reports the bound port; PORT is the requested one and is what was
+    // bound when the OS did not pick for us (port 0).
+    actualPort = created.port ?? PORT;
     runtime.start();
     desktop?.start();
     return created;
@@ -216,8 +237,9 @@ const server = (() => {
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
+if (autoPort) console.log(`${DESKTOP_PORT_MESSAGE}${actualPort}`);
 console.log(
-  `[superstring:R3] server on http://${DEV_HOST}:${PORT} (businessReady=true, serveWeb=${SERVE_WEB}, db=${BUSINESS_DB_PATH}, desktop=${desktop ? "on" : "off"})`,
+  `[superstring:R3] server on http://${DEV_HOST}:${actualPort} (businessReady=true, serveWeb=${SERVE_WEB}, db=${BUSINESS_DB_PATH}, desktop=${desktop ? "on" : "off"})`,
 );
 
 function appStaticFallback(app: Hono, root: string): void {

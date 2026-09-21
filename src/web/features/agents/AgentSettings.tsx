@@ -1,27 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { NavigationConfirm } from "../../app/NavigationConfirm";
 import { SettingsHeader } from "../../app/SettingsHeader";
+import { SettingsBody } from "../../app/SettingsSidebar";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
-import { Accordion } from "../../ui/Accordion";
+import { SettingsGroup } from "../../ui/Accordion";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { Field } from "../../ui/Field";
-import { Chevron, Icon } from "../../ui/icons";
-import { SectionB } from "../memory/SectionB";
+import { Icon } from "../../ui/icons";
+import { newPageEditor } from "./page-drafts";
 import { SectionA } from "./SectionA";
-import { SectionC } from "./SectionC";
-import { SectionD } from "./SectionD";
-import { SECTION_META } from "./sections";
-import { UnavailableSection } from "./UnavailableSection";
+import { SettingsPageEditor } from "./SettingsPageEditor";
 
 export function AgentSettings() {
   const t = useI18n();
   const agents = useSuperstringStore((state) => state.agents);
   const editorAgentId = useSuperstringStore((state) => state.editorAgentId);
   const editorDraft = useSuperstringStore((state) => state.editorDraft);
-  const activeSection = useSuperstringStore((state) => state.activeSection);
-  const detailOpen = useSuperstringStore((state) => state.detailOpen);
-  const modelNames = useSuperstringStore((state) => state.modelNames);
   const selectedNewSessionAgentId = useSuperstringStore((state) => state.selectedNewSessionAgentId);
   const setNewSessionAgent = useSuperstringStore((state) => state.setNewSessionAgent);
   const navigationConfirmOpen = useSuperstringStore((state) => state.navigationConfirmOpen);
@@ -29,300 +24,308 @@ export function AgentSettings() {
   const error = useSuperstringStore((state) => state.error);
   const closeAgentSettings = useSuperstringStore((state) => state.closeAgentSettings);
   const requestAgentNavigation = useSuperstringStore((state) => state.requestAgentNavigation);
-  const requestSectionNavigation = useSuperstringStore((state) => state.requestSectionNavigation);
-  const setDetailOpen = useSuperstringStore((state) => state.setDetailOpen);
+  const openSettingsRoute = useSuperstringStore((state) => state.openSettingsRoute);
   const patchDraft = useSuperstringStore((state) => state.patchDraft);
   const saveCurrentSection = useSuperstringStore((state) => state.saveCurrentSection);
   const deleteEditorAgent = useSuperstringStore((state) => state.deleteEditorAgent);
   const deleteAgents = useSuperstringStore((state) => state.deleteAgents);
-  const setNotice = useSuperstringStore((state) => state.setNotice);
   const [selectedBatchAgents, setSelectedBatchAgents] = useState<string[]>([]);
   const [confirmSingleDelete, setConfirmSingleDelete] = useState(false);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   const activeAgents = agents.filter((agent) => agent.is_active);
-  const section = SECTION_META.find((item) => item.key === activeSection) ?? SECTION_META[0];
   const editorAgent = agents.find((agent) => agent.id === editorAgentId);
-  const hasDraft = editorDraft !== null;
-  const creating = editorAgentId === "__new__" && hasDraft;
-  const editorAgentLabel = creating ? t("新建助手") : (editorAgent?.name ?? t("选择助手"));
-  const selectorRef = useRef<HTMLDetailsElement>(null);
+  const creating = editorAgentId === "__new__" && editorDraft !== null;
+  const pageEditor = useSuperstringStore((state) => state.pageEditor);
+  const persona = useSuperstringStore((state) => state.persona);
+  const loading = useSuperstringStore((state) => state.editorLoading || state.settingsSaving);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const busy = loading || saving || deleting;
+  const selectedAgents = agents.filter((agent) => selectedBatchAgents.includes(agent.id));
+  const selectedIds = selectedAgents.map((agent) => agent.id);
+  const allSelected = agents.length > 0 && selectedIds.length === agents.length;
   useEffect(() => {
-    if (editorAgentId && hasDraft && selectorRef.current) selectorRef.current.open = false;
-  }, [editorAgentId, hasDraft]);
-  const chooseAgent = (id: string) => {
-    if (id === editorAgentId && editorDraft && selectorRef.current)
-      selectorRef.current.open = false;
-    requestAgentNavigation(id);
-  };
-  const content = !editorDraft ? (
-    <p className="empty-panel">{t("请选择已有助手，或点击“新建助手”。")}</p>
-  ) : activeSection === "A" ? (
-    <SectionA draft={editorDraft} patch={patchDraft} models={modelNames} />
-  ) : activeSection === "B" ? (
-    <SectionB draft={editorDraft} patch={patchDraft} models={modelNames} />
-  ) : activeSection === "C" ? (
-    <SectionC draft={editorDraft} patch={patchDraft} models={modelNames} />
-  ) : activeSection === "D" ? (
-    <SectionD draft={editorDraft} />
-  ) : (
-    <UnavailableSection section={activeSection as "E" | "F" | "G" | "H" | "knowledge"} />
+    const state = useSuperstringStore.getState();
+    if (!pageEditor && !state.dirty && persona && editorAgent && !creating) {
+      useSuperstringStore.setState({
+        pageEditor: newPageEditor(editorAgent, persona, state.policy),
+      });
+    }
+  }, [pageEditor, persona, editorAgent, creating]);
+  useEffect(() => {
+    const state = useSuperstringStore.getState();
+    if (!state.editorDraft && !state.editorLoading && !state.error) {
+      const target =
+        state.agents.find((agent) => agent.id === state.selectedNewSessionAgentId)?.id ??
+        state.agents[0]?.id ??
+        "__new__";
+      void state.editAgent(target);
+    }
+  }, []);
+  const chooseAgent = (id: string) => requestAgentNavigation(id);
+  const newSessionControl = (
+    <div className="agent-session-choice">
+      {activeAgents.length === 0 ? (
+        <p className="hint">{t("当前没有启用的助手，新对话无法创建；请先启用或新建助手。")}</p>
+      ) : (
+        <Field label={t("新会话使用的助手")} info={t("仅用于新会话；已有会话绑定不变。")}>
+          <select
+            aria-label={t("新会话使用的助手")}
+            value={selectedNewSessionAgentId ?? ""}
+            disabled={busy}
+            onChange={(event) => setNewSessionAgent(event.target.value || null)}
+          >
+            {activeAgents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+    </div>
   );
   return (
     <section className="page settings-page">
       <SettingsHeader onBack={closeAgentSettings} />
-      <div className="agent-settings">
-        <div className="agent-settings-heading">
-          <h2>{t("助手设置")}</h2>
-          <button
-            type="button"
-            className="new-agent-button"
-            disabled={creating || saving}
-            onClick={() => chooseAgent("__new__")}
-          >
-            <Icon name="plus" />
-            {t("新建助手")}
-          </button>
-        </div>
-        <p className="settings-note">
-          {t("各分区独立保存。新一轮使用已保存配置，失败重试沿用原轮配置。")}
-        </p>
-        <details className="agent-selector" ref={selectorRef}>
-          <summary>
+      <SettingsBody>
+        <div className="agent-settings">
+          <div className="shared-agent-selector agent-selector">
             <Icon name="agent" />
-            <span className="selector-identity">
-              <strong>{editorAgentLabel}</strong>
-              <small>{creating ? t("正在创建 · 未保存") : t("当前助手")}</small>
-            </span>
-            <Chevron />
-          </summary>
-          <div className="agent-editor-list">
-            {agents.length === 0 && (
-              <p className="hint">{t("还没有助手，完成下方基础配置即可创建。")}</p>
-            )}
-            {agents.map((agent) => (
-              <button
-                type="button"
-                key={agent.id}
-                className={editorAgentId === agent.id ? "active" : ""}
-                aria-pressed={editorAgentId === agent.id}
+            <Field
+              label={t("正在配置的助手")}
+              info={t("仅切换设置对象，不改变当前对话或新会话助手。")}
+            >
+              <select
+                aria-label={t("正在配置的助手")}
                 aria-controls="superstring-agent-workspace"
-                onClick={() => chooseAgent(agent.id)}
+                value={editorDraft ? editorAgentId : ""}
+                disabled={busy}
+                onChange={(event) => chooseAgent(event.target.value)}
               >
-                <span>
-                  {agent.name}
-                  {agent.is_active ? "" : t("（停用）")}
-                </span>
-                <small>{editorAgentId === agent.id ? t("当前") : t("选择")}</small>
+                <option value="" disabled>
+                  {t("选择助手")}
+                </option>
+                {creating && <option value="__new__">{t("正在创建 · 未保存")}</option>}
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name}
+                    {agent.is_active ? "" : t("（停用）")}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {error && !editorDraft && agents.length > 0 && (
+              <button type="button" disabled={busy} onClick={() => chooseAgent(agents[0].id)}>
+                {t("重试读取助手")}
               </button>
-            ))}
-          </div>
-          <div className="selector-extra">
-            {activeAgents.length === 0 ? (
-              <p className="hint">
-                {t("当前没有启用的助手，新对话无法创建；请先启用或新建助手。")}
-              </p>
-            ) : (
-              <Field
-                label={t("新会话使用的助手")}
-                info={t("只影响之后新建的对话；已有对话仍使用创建时绑定的助手。")}
-              >
-                <select
-                  aria-label={t("新会话使用的助手")}
-                  value={selectedNewSessionAgentId ?? ""}
-                  onChange={(event) => setNewSessionAgent(event.target.value || null)}
-                >
-                  {activeAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
             )}
           </div>
-          {editorAgentId !== "__new__" && (
+          <div className="agent-settings-heading">
+            <h2>{t("助手管理")}</h2>
             <button
               type="button"
-              className="danger delete-agent"
-              onClick={() => setConfirmSingleDelete(true)}
+              className="new-agent-button"
+              disabled={creating || busy}
+              onClick={() => chooseAgent("__new__")}
             >
-              {t("删除当前 Agent")}
+              <Icon name="plus" />
+              {t("新建助手")}
             </button>
-          )}
-        </details>
-        <details
-          className="detail-config"
-          open={detailOpen}
-          onToggle={(event) => setDetailOpen(event.currentTarget.open)}
-        >
-          <summary className="icon-summary">
-            <Icon name="sliders" />
-            <span className="settings-summary">
-              <strong>{t("详细配置")}</strong>
-              <small>{t("模型、记忆、上下文与性格人设")}</small>
-            </span>
-            <Chevron />
-          </summary>
-          <div className="detail-body" id="superstring-agent-workspace" aria-busy={saving}>
-            {creating && (
-              <p className="hint creation-note">
-                {t("填写名称并选择模型，点击“创建助手”。创建后可继续设置记忆、上下文与人设。")}
+          </div>
+          <p className="settings-note">{t("用下拉框或列表切换编辑对象。")}</p>
+          <SettingsGroup id="current-assistant" title="当前助手" note="名称、描述与启用状态。">
+            {loading && (
+              <p className="hint" role="status">
+                {t("正在读取助手配置…")}
               </p>
             )}
-            <details className="section-selector">
-              <summary>
-                <span className="section-selector-label">
-                  <Icon name={section.icon} />
-                  <span>
-                    {t("配置分区 · 当前：")}
-                    {section.letter} · {t(section.title)}
-                  </span>
-                </span>
-                <span className="section-selector-action">
-                  <span className="section-selector-closed">{t("展开 A—I")}</span>
-                  <span className="section-selector-open">{t("收起")}</span>
-                  <Chevron />
-                </span>
-              </summary>
-              <nav className="section-nav" aria-label={t("配置分区（A—I）")}>
-                {SECTION_META.map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    className={item.key === activeSection ? "active" : ""}
-                    aria-pressed={item.key === activeSection}
-                    disabled={creating && item.key !== "A"}
-                    title={creating && item.key !== "A" ? t("创建助手后可配置") : undefined}
-                    onClick={() => requestSectionNavigation(item.key)}
+            <fieldset className="agent-operation-fields" disabled={busy}>
+              <div id="superstring-agent-workspace" aria-busy={busy}>
+                {creating && editorDraft ? (
+                  <>
+                    <p className="hint creation-note">
+                      {t("填写名称、选择模型后创建；记忆、上下文与人设可在创建后设置。")}
+                    </p>
+                    <SectionA draft={editorDraft} patch={patchDraft} />
+                    {newSessionControl}
+                    <button
+                      type="button"
+                      className="primary save-section"
+                      disabled={busy}
+                      onClick={async () => {
+                        if (busy) return;
+                        setSaving(true);
+                        try {
+                          await saveCurrentSection();
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                    >
+                      {t(saving ? "创建中…" : "创建助手")}
+                    </button>
+                  </>
+                ) : !editorDraft || !pageEditor ? (
+                  <>
+                    <p className="empty-panel">{t("请选择已有助手，或点击“新建助手”。")}</p>
+                    {newSessionControl}
+                  </>
+                ) : (
+                  <SettingsPageEditor
+                    page="basic"
+                    embedded
+                    actions={
+                      <button
+                        type="button"
+                        className="danger delete-agent"
+                        disabled={!editorAgent || busy}
+                        onClick={() => setConfirmSingleDelete(true)}
+                      >
+                        {t("删除当前 Agent")}
+                      </button>
+                    }
                   >
-                    <span className="section-row-head">
-                      <Icon name={item.icon} />
-                      <strong>
-                        {item.letter} · {t(item.title)}
-                      </strong>
+                    <div className="agent-usage-grid">
+                      <div className="agent-model-summary">
+                        <button type="button" onClick={() => openSettingsRoute("models")}>
+                          <Icon name="chip" />
+                          {t("设置使用模型")}
+                        </button>
+                        <small className="hint">{t("前往默认模型页设置；本页草稿保留。")}</small>
+                      </div>
+                      {newSessionControl}
+                    </div>
+                  </SettingsPageEditor>
+                )}
+              </div>
+            </fieldset>
+          </SettingsGroup>
+          <SettingsGroup
+            id="all-assistants"
+            title="所有助手"
+            note="点击助手查看并编辑；勾选框仅用于批量删除。"
+          >
+            <ul className="agent-management-list" aria-label={t("助手列表")}>
+              {agents.map((agent) => (
+                <li
+                  key={agent.id}
+                  className={editorAgentId === agent.id ? "is-current" : undefined}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={t("选择助手：{0}", agent.name)}
+                    checked={selectedIds.includes(agent.id)}
+                    disabled={busy}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setSelectedBatchAgents((ids) =>
+                        checked
+                          ? [...ids.filter((id) => id !== agent.id), agent.id]
+                          : ids.filter((id) => id !== agent.id),
+                      );
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="agent-management-choice"
+                    aria-label={t("编辑助手：{0}", agent.name)}
+                    aria-pressed={editorAgentId === agent.id}
+                    aria-controls="superstring-agent-workspace"
+                    disabled={busy}
+                    onClick={() => chooseAgent(agent.id)}
+                  >
+                    <span className="agent-row-heading">
+                      <strong>{agent.name}</strong>
+                      <span className="agent-state">{t(agent.is_active ? "启用" : "停用")}</span>
+                      {editorAgentId === agent.id && (
+                        <span className="agent-state">{t("当前选中")}</span>
+                      )}
+                      {selectedNewSessionAgentId === agent.id && (
+                        <span className="agent-state">{t("新会话助手")}</span>
+                      )}
                     </span>
-                    {item.note && <small>{t(item.note)}</small>}
+                    <span className="agent-row-description">
+                      {agent.description || t("暂无描述")}
+                    </span>
+                    <small>
+                      {t("对话模型")}：{agent.model_name}
+                    </small>
                   </button>
-                ))}
-              </nav>
-            </details>
-            <div className="section-content">{content}</div>
-            {["A", "B", "C"].includes(activeSection) && (
+                </li>
+              ))}
+            </ul>
+            {agents.length === 0 && <p className="hint">{t("暂无助手，请先新建助手。")}</p>}
+            <div className="agent-batch-toolbar">
+              <span className="hint" role="status">
+                {t("已选 {0} / {1} 个助手", selectedIds.length, agents.length)}
+              </span>
               <button
                 type="button"
-                className="primary save-section"
-                disabled={!editorDraft || saving}
-                onClick={async () => {
-                  if (saving) return;
-                  setSaving(true);
-                  try {
-                    await saveCurrentSection();
-                  } finally {
-                    setSaving(false);
-                  }
-                }}
+                disabled={busy || agents.length === 0}
+                onClick={() =>
+                  setSelectedBatchAgents(allSelected ? [] : agents.map((agent) => agent.id))
+                }
               >
-                {saving
-                  ? creating
-                    ? t("创建中…")
-                    : t("保存中…")
-                  : creating
-                    ? t("创建助手")
-                    : t("保存当前分区配置")}
+                {t(allSelected ? "取消全选" : "全选")}
               </button>
-            )}
-          </div>
-        </details>
-        <Accordion title={t("批量管理")} note={t("选择多个助手，批量删除。")} icon="users">
-          <p className="hint">
-            {t("选择多个 Agent 后可统一删除；不能删除的项目会保留并反馈原因。")}
-          </p>
-          <Field label={t("选择 Agent")}>
-            <select
-              multiple
-              value={selectedBatchAgents}
-              onChange={(event) =>
-                setSelectedBatchAgents(
-                  Array.from(event.currentTarget.selectedOptions, (option) => option.value),
-                )
-              }
-            >
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                  {agent.is_active ? "" : t("（停用）")}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <div className="memory-toolbar">
-            <button
-              type="button"
-              onClick={() =>
-                setSelectedBatchAgents((selected) => {
-                  if (selected.length === agents.length) {
-                    setNotice({ feedback: t("已取消全选") });
-                    return [];
-                  }
-                  setNotice({
-                    feedback: t("已选择 {0} 个 Agent", agents.length),
-                  });
-                  return agents.map((agent) => agent.id);
-                })
-              }
-            >
-              {t("全选 / 取消全选")}
-            </button>
-            <button
-              type="button"
-              className="danger"
-              onClick={() =>
-                selectedBatchAgents.length
-                  ? setConfirmBatchDelete(true)
-                  : setNotice({
-                      feedback: t("请至少选择一个 Agent。"),
-                    })
-              }
-            >
-              {t("删除所选")}
-            </button>
-          </div>
-        </Accordion>
-        {confirmSingleDelete && (
-          <ConfirmDialog
-            message={t("确认删除当前 Agent？已被历史会话使用或属于内置默认配置时不会删除。")}
-            confirmLabel={t("删除 Agent")}
-            onCancel={() => setConfirmSingleDelete(false)}
-            onConfirm={() => {
-              setConfirmSingleDelete(false);
-              void deleteEditorAgent();
-            }}
-          />
-        )}
-        {confirmBatchDelete && (
-          <ConfirmDialog
-            message={t(
-              "确认删除选中的 {0} 个 Agent？已被历史会话使用或属于内置默认配置的项目会保留并反馈原因。",
-              selectedBatchAgents.length,
-            )}
-            confirmLabel={t("删除所选")}
-            onCancel={() => setConfirmBatchDelete(false)}
-            onConfirm={() => {
-              const ids = selectedBatchAgents;
-              setConfirmBatchDelete(false);
-              setSelectedBatchAgents([]);
-              void deleteAgents(ids);
-            }}
-          />
-        )}
-        {navigationConfirmOpen && <NavigationConfirm />}
-        {(feedback || error) && (
-          <div className={error ? "status error" : "status"}>
-            {translateNotice(error ?? feedback)}
-          </div>
-        )}
-      </div>
+              <button
+                type="button"
+                className="danger"
+                disabled={busy || selectedIds.length === 0}
+                onClick={() => setConfirmBatchDelete(true)}
+              >
+                {t("删除所选")}
+              </button>
+            </div>
+            <p className="hint">{t("无法删除的助手会保留，并显示原因。")}</p>
+          </SettingsGroup>
+          {confirmSingleDelete && editorAgent && (
+            <ConfirmDialog
+              message={t(
+                "确认删除助手「{0}」？已被历史会话使用或属于内置默认配置时不会删除。",
+                editorAgent.name,
+              )}
+              confirmLabel={t("删除 Agent")}
+              onCancel={() => setConfirmSingleDelete(false)}
+              onConfirm={async () => {
+                if (busy) return;
+                setConfirmSingleDelete(false);
+                setDeleting(true);
+                try {
+                  await deleteEditorAgent();
+                } finally {
+                  setDeleting(false);
+                }
+              }}
+            />
+          )}
+          {confirmBatchDelete && (
+            <ConfirmDialog
+              message={`${t("确认删除选中的 {0} 个 Agent？已被历史会话使用或属于内置默认配置的项目会保留并反馈原因。", selectedIds.length)} ${t("删除对象：{0}", selectedAgents.map((agent) => agent.name).join(" / "))}`}
+              confirmLabel={t("删除所选")}
+              onCancel={() => setConfirmBatchDelete(false)}
+              onConfirm={async () => {
+                if (busy || selectedIds.length === 0) return;
+                setConfirmBatchDelete(false);
+                setDeleting(true);
+                try {
+                  await deleteAgents(selectedIds);
+                } finally {
+                  setSelectedBatchAgents([]);
+                  setDeleting(false);
+                }
+              }}
+            />
+          )}
+          {navigationConfirmOpen && <NavigationConfirm />}
+          {(feedback || error) && (
+            <div className={error ? "status error" : "status"}>
+              {translateNotice(error ?? feedback)}
+            </div>
+          )}
+        </div>
+      </SettingsBody>
     </section>
   );
 }

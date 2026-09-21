@@ -3,6 +3,7 @@ import type { BrowserStateConfig } from "../shared/contracts";
 import { agentRoutes } from "./api/agents";
 import { handleError } from "./api/error-handler";
 import { healthRoutes } from "./api/health";
+import { knowledgeRoutes } from "./api/knowledge";
 import { memoryRoutes } from "./api/memories";
 import { modelRoutes } from "./api/models";
 import { sessionRoutes } from "./api/sessions";
@@ -42,6 +43,7 @@ export function createApp(opts: CreateAppOptions): Hono {
     app.route("/agents", agentRoutes(business.orm, gateway.config.model));
     app.route("/models", modelRoutes(gateway));
     app.route("/", memoryRoutes(business.orm));
+    app.route("/", knowledgeRoutes(business));
     app.route("/", healthRoutes(business.db, gateway));
     app.route("/", sessionRoutes(business.orm, business.db, gateway.config.model, gateway));
   }

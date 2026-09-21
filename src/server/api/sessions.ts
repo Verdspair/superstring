@@ -166,7 +166,15 @@ export function sessionRoutes(
     const requestId = crypto.randomUUID();
     // Production path: injecting `db` activates ContextBuilder. Omitting it is
     // reserved for DirectService's explicit low-level fixture fallback.
-    const service = new DirectService({ orm, db, gateway });
+    let sendContext:
+      | ((usage: import("../../shared/contracts/context-usage").ContextUsage) => void)
+      | undefined;
+    const service = new DirectService({
+      orm,
+      db,
+      gateway,
+      onContextUsage: (usage) => sendContext?.(usage),
+    });
 
     // Awaited BEFORE opening the stream (app.py:309), so a rejected turn —
     // SESSION_NOT_FOUND, IDEMPOTENCY_CONFLICT, GENERATION_ALREADY_ACTIVE,
@@ -198,6 +206,10 @@ export function sessionRoutes(
           const encoder = new TextEncoder();
           const send = (event: string, data: Record<string, unknown>): void => {
             if (!cancelled) controller.enqueue(encoder.encode(encodeSse(event, data)));
+          };
+          sendContext = (usage) => {
+            if (c.req.header("X-Superstring-Context-Usage") === "1")
+              send("context", { request_id: requestId, usage });
           };
           send("start", { request_id: requestId, session_id: body.session_id });
           let terminal = false;

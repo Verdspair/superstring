@@ -24,6 +24,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { RuntimeConfig } from "../../shared/contracts";
+import type { ContextUsage } from "../../shared/contracts/context-usage";
 import {
   getChatContext,
   getMessage,
@@ -64,6 +65,7 @@ export interface DirectServiceOptions {
   contextBuilder?: ContextBuilder | null;
   leaseSeconds?: number;
   heartbeatIntervalMs?: number;
+  onContextUsage?: (usage: ContextUsage) => void;
 }
 
 const DEFAULT_LEASE_SECONDS = 30;
@@ -75,9 +77,11 @@ export class DirectService {
   private readonly contextBuilder: ContextBuilder | null;
   private readonly leaseSeconds: number;
   private readonly heartbeatIntervalMs: number;
+  private readonly onContextUsage?: (usage: ContextUsage) => void;
 
   constructor(options: DirectServiceOptions) {
     this.orm = options.orm;
+    this.onContextUsage = options.onContextUsage;
     this.gateway = options.gateway;
     this.contextBuilder =
       options.contextBuilder ??
@@ -199,10 +203,12 @@ export class DirectService {
             runtime,
             generationToken,
             signal: abort.signal,
+            onUsage: this.onContextUsage,
           })
         : getChatContext(this.orm, sessionId, { currentTurnId, runtime });
 
       args.signal?.throwIfAborted();
+      this.contextBuilder?.assertKnowledgeAccess(currentTurnId, runtime.agent_id);
       const stream = this.gateway.streamChat({
         messages: context,
         model: runtime.model_name,

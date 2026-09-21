@@ -2,7 +2,12 @@ import { create } from "zustand";
 import { api } from "./api";
 import { createAgentActions } from "./features/agents/actions";
 import { createModelActions } from "./features/agents/model-actions";
+import { createPageActions } from "./features/agents/page-actions";
 import { createChatActions } from "./features/chat/actions";
+import { createKnowledgeActions } from "./features/knowledge/actions";
+import { createKnowledgeModelActions } from "./features/knowledge/model-actions";
+import { createOrganizationActions } from "./features/knowledge/organization-actions";
+import { createKnowledgeReadActions } from "./features/knowledge/read-actions";
 import { createMemoryActions } from "./features/memory/actions";
 import { createBootstrapActions } from "./state/bootstrap";
 import { defaultEffects } from "./state/effects";
@@ -29,11 +34,19 @@ export const useSuperstringStore = create<SuperstringState>()((set, get) => ({
   ...createNavigationActions(set, get),
   ...createChatActions(set, get),
   ...createAgentActions(set, get),
+  ...createPageActions(set, get),
   ...createModelActions(set, get),
   ...createMemoryActions(set, get),
+  ...createKnowledgeActions(set, get),
+  ...createKnowledgeModelActions(set, get),
+  ...createKnowledgeReadActions(set, get),
+  ...createOrganizationActions(set, get),
   setNotice: (patch) => set(patch),
-  clearMemoryDetail: () => set({ memoryEntryDetail: null }),
-  clearMemoryTurns: () => set({ memoryTurns: [] }),
+  clearMemoryDetail: () => {
+    if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
+    get().discardMemoryCorrection();
+    set({ memoryEntryDetail: null });
+  },
   resetForTests: (client = api, effects = {}) =>
     set({
       ...initial,

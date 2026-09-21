@@ -166,6 +166,8 @@ namespace Superstring.Setup
                     previousInstall = current != null;
                     if (current != null)
                     {
+                        if (incoming.SchemaVersion < current.SchemaVersion)
+                            throw new InvalidDataException("DOWNGRADE_REJECTED: business schema");
                         result.PreviousVersion = current.Version;
                         result.Action = SemVer.Classify(current.Version, incoming.Version);
                     }
@@ -437,7 +439,7 @@ namespace Superstring.Setup
         {
             string path = Path.Combine(root, "build-manifest.json");
             if (!File.Exists(path)) return null;
-            return Manifest.Load(path);
+            return Manifest.Load(path, true);
         }
 
         private static void Extract(Payload payload, string staging)

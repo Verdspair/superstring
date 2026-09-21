@@ -42,6 +42,9 @@ const DEFAULT_PORT = "17861";
 // probe checks the same address the server will actually call.
 const DEFAULT_MODEL_BASE_URL = "http://127.0.0.1:1234/v1";
 const DEFAULT_MODEL_NAME = "qwen/qwen3-4b-2507";
+// Accepted by LM Studio while it does not require a token; override with
+// LM_STUDIO_API_KEY when it does.
+const DEFAULT_MODEL_API_KEY = "lm-studio";
 const MODEL_PROBE_TIMEOUT_MS = 1_500;
 
 type Mode = "check" | "prepare" | "prepare-no-build";
@@ -142,10 +145,21 @@ function resolveModelName(): string {
   return (process.env.LM_STUDIO_MODEL ?? "").trim() || DEFAULT_MODEL_NAME;
 }
 
+/** Mirrors DEFAULT_LM_STUDIO_API_KEY in src/server/llm/model-gateway.ts. */
+function resolveModelApiKey(): string {
+  return (process.env.LM_STUDIO_API_KEY ?? "").trim() || DEFAULT_MODEL_API_KEY;
+}
+
 /**
  * Probe the OpenAI-compatible model service (`GET {base}/models`), mirroring the
  * path src/server/llm/model-gateway.ts uses. Read-only: it never loads a model.
- * Returns false on any error/timeout — the caller only warns, never fails.
+ * A failure is only ever reported, never treated as a preflight problem.
+ *
+ * `unauthorized` is its own outcome because LM Studio can be told to require an
+ * API token: the service is up, the request was refused, and the user needs to
+ * supply `LM_STUDIO_API_KEY` rather than to start a server that is already
+ * running. Sending that key is the whole point — the probe used to be
+ * unauthenticated, so a token-protected instance always looked unreachable.
  *
  * Deliberately uses node:http/node:https instead of fetch: Bun's fetch honours
  * HTTP(S)_PROXY from the environment, which routes a loopback probe through a
@@ -155,18 +169,21 @@ function resolveModelName(): string {
  * through the live one, while node:http returns 200 in both cases).
  * A loopback probe must never be proxied.
  */
-function probeModelService(baseUrl: string, timeoutMs = MODEL_PROBE_TIMEOUT_MS): Promise<boolean> {
+function probeModelService(
+  baseUrl: string,
+  timeoutMs = MODEL_PROBE_TIMEOUT_MS,
+): Promise<"connected" | "unauthorized" | "unreachable"> {
   return new Promise((resolve) => {
     let url: URL;
     try {
       url = new URL(`${baseUrl}/models`);
     } catch {
-      resolve(false);
+      resolve("unreachable");
       return;
     }
     const secure = url.protocol === "https:";
     if (!secure && url.protocol !== "http:") {
-      resolve(false);
+      resolve("unreachable");
       return;
     }
     const client = secure ? https : http;
@@ -178,16 +195,33 @@ function probeModelService(baseUrl: string, timeoutMs = MODEL_PROBE_TIMEOUT_MS):
         path: url.pathname,
         method: "GET",
         timeout: timeoutMs,
+        headers: { authorization: `Bearer ${resolveModelApiKey()}` },
       },
       (response) => {
         response.resume(); // drain so the socket is released
-        resolve(response.statusCode === 200);
+        if (response.statusCode === 200) resolve("connected");
+        else if (response.statusCode === 401 || response.statusCode === 403)
+          resolve("unauthorized");
+        else resolve("unreachable");
       },
     );
     request.on("timeout", () => request.destroy(new Error("model probe timed out")));
-    request.on("error", () => resolve(false));
+    request.on("error", () => resolve("unreachable"));
     request.end();
   });
+}
+
+/**
+ * LM Studio answered, but rejected the call. Both fixes are on the user's side
+ * and neither involves starting anything: copy the token into the environment,
+ * or turn the requirement off.
+ */
+function printModelAuthGuidance(baseUrl: string): void {
+  console.log("[start]   LM Studio is running but requires an API token.");
+  console.log("[start]   Developer tab -> Server settings -> copy the API token, then either:");
+  console.log(`[start]     1. set LM_STUDIO_API_KEY=<token> and start again, or`);
+  console.log("[start]     2. turn off 'Require API token' in LM Studio");
+  console.log(`[start]   Server will call: ${baseUrl}/chat/completions`);
 }
 
 /**
@@ -285,13 +319,27 @@ async function main(): Promise<number> {
 
   // External component (never started or loaded by this launcher). A failure is
   // reported with manual steps and never added to `problems`.
-  const modelUp = await probeModelService(modelBaseUrl);
-  console.log(`[start] model svc   : ${modelUp ? "connected" : "NOT connected"} (${modelBaseUrl})`);
+  const modelState = await probeModelService(modelBaseUrl);
+  const modelLabel =
+    modelState === "connected"
+      ? "connected"
+      : modelState === "unauthorized"
+        ? "AUTH REQUIRED (401)"
+        : "NOT connected";
+  console.log(`[start] model svc   : ${modelLabel} (${modelBaseUrl})`);
   console.log(`[start] model name  : ${resolveModelName()} (LM_STUDIO_MODEL)`);
-  if (!modelUp) printModelGuidance(modelBaseUrl);
+  if (modelState === "unauthorized") printModelAuthGuidance(modelBaseUrl);
+  else if (modelState === "unreachable") printModelGuidance(modelBaseUrl);
 
   const free = await probePortFree(port);
-  if (!free) {
+  const desktopAutoPort =
+    process.env.SUPERSTRING_DESKTOP_AUTO_PORT === "1" &&
+    /^[0-9a-fA-F]{64}$/.test(process.env.SUPERSTRING_DESKTOP_TOKEN ?? "");
+  if (!free && desktopAutoPort && mode !== "check") {
+    console.log(
+      `[start] preferred port ${port} is unavailable; desktop service will select an available port.`,
+    );
+  } else if (!free) {
     console.log(
       `[start] ERROR: cannot bind port ${port} (occupied or unavailable). ` +
         `This script will NOT kill the occupying process.`,

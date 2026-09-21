@@ -69,7 +69,7 @@ namespace Superstring.Desktop
             if (manifest == null || !manifest.ContainsKey("layoutVersion") || !(manifest["layoutVersion"] is int) || (int)manifest["layoutVersion"] != 1 || !manifest.ContainsKey("files"))
                 throw new InvalidOperationException("不支持的安装资源清单。");
             RequireInteger(manifest, "manifestVersion", 1);
-            RequireInteger(manifest, "businessSchemaVersion", 1);
+            RequireInteger(manifest, "businessSchemaVersion", 4);
             RequireString(manifest, "product", "superstring");
             RequireString(manifest, "version", PackageIdentity.Version);
             RequireString(manifest, "platform", "win32-x64");
@@ -99,7 +99,7 @@ namespace Superstring.Desktop
             }
             // The R1 probe migration is deliberately NOT required: it is a development
             // surface and is absent from every release package.
-            foreach (string required in new string[] { "app/superstring-server.exe", "app/resources/web/index.html", "app/resources/migrations/versions/0001_initial.sql" })
+            foreach (string required in new string[] { "app/superstring-server.exe", "app/resources/web/index.html", "app/resources/migrations/versions/0001_initial.sql", "app/resources/migrations/versions/0002_knowledge.sql", "app/resources/migrations/versions/0003_knowledge_read.sql", "app/resources/migrations/versions/0004_organization.sql" })
                 if (!seen.Contains(required)) throw new InvalidOperationException("缺少必要资源: " + required);
         }
 

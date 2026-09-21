@@ -3,11 +3,65 @@ import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 
+type Capacity = Awaited<ReturnType<SuperstringApi["getModelCapacity"]>>;
+type CapacityLabel = "聊天" | "记忆读取" | "摘要";
 export function createModelActions(
   set: StoreSet,
   get: StoreGet,
-): Pick<SuperstringState, "refreshModels" | "refreshCapacityPreview"> {
+): Pick<
+  SuperstringState,
+  "refreshModels" | "refreshCapacityPreview" | "recalculateCapacityPreview"
+> {
+  let capacityRequest = 0;
+  let cached: {
+    matches: () => boolean;
+    results: Array<readonly [CapacityLabel, Capacity]>;
+  } | null = null;
+  const recalculateCapacityPreview = () => {
+    if (!cached?.matches()) return;
+    const state = get();
+    const p5 =
+      state.settingsView === "workspace" && state.pageEditor
+        ? state.pageEditor.draft.p5_config
+        : state.editorDraft?.p5_config;
+    if (!p5) return;
+    const lines: string[] = [];
+    let chatContextCapacity: number | null = null;
+    for (const [label, result] of cached.results) {
+      if (label === "聊天") chatContextCapacity = result.context_length;
+      if (result.status === "unavailable") {
+        lines.push(msg("{0}：未加载／容量未知（{1}）", msg(label), result.error_code));
+        continue;
+      }
+      if (result.context_length === null) {
+        lines.push(msg("{0}：未加载／容量未知（{1}）", msg(label), result.status));
+        continue;
+      }
+      const budget =
+        label === "聊天" && p5.context_window !== null ? p5.context_window : result.context_length;
+      if (budget > result.context_length) {
+        lines.push(
+          msg("{0}：实际 {1}，自定义 {2} 超限，请调整", msg(label), result.context_length, budget),
+        );
+        continue;
+      }
+      const available = budget - p5.max_output_tokens - Math.ceil(budget * p5.safety_margin_ratio);
+      lines.push(
+        msg(
+          "{0}：实际 {1}，预算 {2}，输入可用约 {3}；回复预留 {4}{5}",
+          msg(label),
+          result.context_length,
+          budget,
+          Math.max(0, available),
+          p5.max_output_tokens,
+          available <= 0 ? msg("（预算不足，生成将拒绝）") : "",
+        ),
+      );
+    }
+    set({ capacityPreview: lines.join("\n"), chatContextCapacity });
+  };
   return {
+    recalculateCapacityPreview,
     refreshModels: async () => {
       try {
         const catalog = await get().apiClient.listModels();
@@ -28,12 +82,21 @@ export function createModelActions(
     refreshCapacityPreview: async (probeModels) => {
       const draft = get().editorDraft;
       if (!draft) return;
-      set({ chatContextCapacity: null });
-      const p5 = draft.p5_config;
-      // The three models to probe come from the caller so that the effect which
-      // re-probes on model change actually depends on them, but they must describe
-      // the draft the store holds — a stale caller must not probe a different
-      // model set than the one the panel is editing.
+      const request = ++capacityRequest;
+      const { editorAgentId, pageEditor, apiClient, settingsView, settingsRoute, page } = get();
+      const matches = () =>
+        request === capacityRequest &&
+        get().editorAgentId === editorAgentId &&
+        get().pageEditor?.token === pageEditor?.token &&
+        get().apiClient === apiClient &&
+        get().settingsView === settingsView &&
+        get().settingsRoute === settingsRoute &&
+        get().page === page;
+      cached = null;
+      set({
+        chatContextCapacity: null,
+        capacityPreview: msg("正在刷新容量预览…"),
+      });
       const [chatModel, retrievalModel, compressionModel] = probeModels ?? [
         draft.model_name,
         draft.memory_retrieval_model_name,
@@ -44,62 +107,24 @@ export function createModelActions(
         ["记忆读取", retrievalModel ?? chatModel],
         ["摘要", compressionModel ?? chatModel],
       ] as const;
-      const cache = new Map<string, Awaited<ReturnType<SuperstringApi["getModelCapacity"]>>>();
-      const lines: string[] = [];
-      let chatContextCapacity: number | null = null;
+      const cache = new Map<string, Capacity>();
+      const results: Array<readonly [CapacityLabel, Capacity]> = [];
       try {
         for (const [label, name] of models) {
           let result = cache.get(name);
           if (!result) {
-            result = await get().apiClient.getModelCapacity(name);
+            result = await apiClient.getModelCapacity(name);
+            if (!matches()) return;
             cache.set(name, result);
           }
-          if (label === "聊天") chatContextCapacity = result.context_length;
-          if (result.status === "unavailable") {
-            // Unavailable always carries the AppError code that caused it
-            // (api/models.py:18-20); "unknown" and "loaded" never carry one.
-            lines.push(msg("{0}：未加载／容量未知（{1}）", msg(label), result.error_code));
-            continue;
-          }
-          if (result.context_length === null) {
-            lines.push(msg("{0}：未加载／容量未知（{1}）", msg(label), result.status));
-            continue;
-          }
-          const budget =
-            label === "聊天" && p5.context_window !== null
-              ? p5.context_window
-              : result.context_length;
-          if (budget > result.context_length) {
-            lines.push(
-              msg(
-                "{0}：实际 {1}，自定义 {2} 超限，请调整",
-                msg(label),
-                result.context_length,
-                budget,
-              ),
-            );
-            continue;
-          }
-          const available =
-            budget - p5.max_output_tokens - Math.ceil(budget * p5.safety_margin_ratio);
-          lines.push(
-            msg(
-              "{0}：实际 {1}，预算 {2}，输入可用约 {3}；回复预留 {4}{5}",
-              msg(label),
-              result.context_length,
-              budget,
-              Math.max(0, available),
-              p5.max_output_tokens,
-              available <= 0 ? msg("（预算不足，生成将拒绝）") : "",
-            ),
-          );
+          results.push([label, result]);
         }
-        set({
-          capacityPreview: lines.join("\n"),
-          chatContextCapacity,
-          error: null,
-        });
+        if (!matches()) return;
+        cached = { matches, results };
+        // Budget edits during a probe are applied to the result, never captured stale values.
+        recalculateCapacityPreview();
       } catch (error) {
+        if (!matches()) return;
         set({
           capacityPreview: msg("容量预览不可用：{0}；未修改配置或加载模型。", errorText(error)),
         });

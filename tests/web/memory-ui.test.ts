@@ -1,3 +1,4 @@
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import {
 } from "../../src/shared/contracts";
 import { SectionB } from "../../src/web/App";
 import { api } from "../../src/web/api";
+import { toDraft } from "../../src/web/features/agents/draft";
 import { useSuperstringStore } from "../../src/web/store";
 
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -121,8 +123,140 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+describe("记忆管理迟到响应与离页回归", () => {
+  const store = useSuperstringStore;
+  const setup = (overrides: Partial<typeof api>) => {
+    store.getState().resetForTests(makeClient(overrides));
+    store.setState({
+      editorAgentId: AGENT_ID,
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "long-memory",
+    });
+  };
+  it.each([false, true])("M1：跨助手来源轮次迟到成功/失败不改新助手状态 (%s)", async (fails) => {
+    const pending = deferred<Awaited<ReturnType<typeof api.listMemoryTurns>>>();
+    setup({ listMemoryTurns: vi.fn(() => pending.promise) });
+    const work = store.getState().loadMemoryTurns(SESSION_ID, 20);
+    store.setState({ editorAgentId: "B", feedback: "B feedback", error: "B error" });
+    if (fails) pending.reject(new Error("A failed"));
+    else
+      pending.resolve({
+        scope: "reality_user",
+        turns: [{ id: TURN_ID, sequence_no: 1, user: "A", assistant: "A", processed: false }],
+      });
+    await work;
+    expect(store.getState()).toMatchObject({
+      memoryTurns: [],
+      feedback: "B feedback",
+      error: "B error",
+    });
+  });
+  it("M1：同助手切来源后旧响应无效，后发请求优先", async () => {
+    const old = deferred<Awaited<ReturnType<typeof api.listMemoryTurns>>>();
+    const fresh = {
+      scope: "reality_user" as const,
+      turns: [{ id: "new", sequence_no: 2, user: "new", assistant: "new", processed: false }],
+    };
+    setup({
+      listMemoryTurns: vi
+        .fn()
+        .mockImplementationOnce(() => old.promise)
+        .mockResolvedValue(fresh),
+    });
+    const work = store.getState().loadMemoryTurns(SESSION_ID, 20);
+    store.getState().clearMemoryTurns();
+    await store.getState().loadMemoryTurns("new-session", 20);
+    old.resolve({ scope: "reality_user", turns: [] });
+    await work;
+    expect(store.getState().memoryTurns).toEqual(fresh.turns);
+  });
+  it.each(["govern", "merge"] as const)("M2：旧%s成功不清新详情或覆盖提示", async (operation) => {
+    const old = deferred<never>();
+    setup({ [operation]: vi.fn(() => old.promise) });
+    const work =
+      operation === "govern"
+        ? store.getState().governMemories(AGENT_ID, [MEMORY_ID], "suppress", false)
+        : store.getState().mergeMemories(AGENT_ID, [MEMORY_ID]);
+    store.setState({ editorAgentId: "B", memoryEntryDetail: detail, feedback: "B feedback" });
+    old.resolve(undefined as never);
+    expect(await work).toBe(false);
+    expect(store.getState()).toMatchObject({ memoryEntryDetail: detail, feedback: "B feedback" });
+  });
+  it("M2：旧列表失败不覆盖新页反馈", async () => {
+    const old = deferred<Awaited<ReturnType<typeof api.listMemoryEntries>>>();
+    setup({ listMemoryEntries: vi.fn(() => old.promise) });
+    const work = store.getState().loadMemoryPage(1);
+    store.setState({ settingsRoute: "context", feedback: "context feedback" });
+    old.reject(new Error("old list failed"));
+    await work;
+    expect(store.getState().feedback).toBe("context feedback");
+  });
+  it("M2：同助手查看新详情后旧治理不清空新详情", async () => {
+    const old = deferred<void>();
+    setup({ govern: vi.fn(() => old.promise) });
+    const work = store.getState().governMemories(AGENT_ID, [MEMORY_ID], "suppress", false);
+    await store.getState().loadMemoryEntryDetail(MEMORY_ID);
+    old.resolve();
+    expect(await work).toBe(false);
+    expect(store.getState().memoryEntryDetail).toEqual(detail);
+  });
+  it("M4：卸载后列表、详情与来源一起清空，重挂载不接收旧轮次", async () => {
+    const old = deferred<Awaited<ReturnType<typeof api.listMemoryTurns>>>();
+    setup({ listMemoryTurns: vi.fn(() => old.promise) });
+    store.setState({
+      memorySessions: [{ id: SESSION_ID, title: "source" }],
+      memoryEntries: [memory],
+      memoryEntryTotal: 1,
+      memoryEntryDetail: detail,
+    });
+    const mounted = render(createElement(SectionB));
+    const work = store.getState().loadMemoryTurns(SESSION_ID, 20);
+    mounted.unmount();
+    render(createElement(SectionB));
+    await act(async () => {
+      old.resolve({
+        scope: "reality_user",
+        turns: [{ id: TURN_ID, sequence_no: 1, user: "A", assistant: "A", processed: false }],
+      });
+      await work;
+    });
+    expect(store.getState()).toMatchObject({
+      memoryTurns: [],
+      memoryEntries: [],
+      memoryEntryTotal: 0,
+      memoryEntryDetail: null,
+    });
+    expect((screen.getByRole("combobox", { name: "来源会话" }) as HTMLSelectElement).value).toBe(
+      "",
+    );
+    expect(document.querySelectorAll(".memory-row,.memory-entry-row")).toHaveLength(0);
+  });
+  it("M4：未保存纠正仍阻止离页，重置不删除纠正草稿", () => {
+    setup({});
+    store.setState({ memoryCorrectionDirty: true, memoryEntryDetail: detail });
+    store.getState().openSettingsRoute("context");
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().settingsRoute).toBe("long-memory");
+    store.getState().resetMemoryManagement();
+    expect(store.getState().memoryEntryDetail).toEqual(detail);
+    expect(store.getState().memoryCorrectionDirty).toBe(true);
+  });
 });
 
 describe("R5 B 区记忆面板状态", () => {
@@ -208,34 +342,68 @@ describe("R5 B 区记忆面板状态", () => {
   });
 });
 
+describe("记忆管理统一交互", () => {
+  it("未选来源或记忆时禁用动作，不渲染空详情框", () => {
+    useSuperstringStore.setState({ editorAgentId: AGENT_ID });
+    const { container } = render(createElement(SectionB));
+    for (const name of [
+      "加载可选择的轮次",
+      "开始整理所选轮次",
+      "整合为新记忆",
+      "永久删除所选条目",
+    ]) {
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+    }
+    expect(container.querySelector(".memory-detail-panel")).toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+  });
+  it("逐条查看不依赖批量勾选，永久删除需要先选条目再确认", async () => {
+    const client = makeClient();
+    useSuperstringStore.getState().resetForTests(client);
+    useSuperstringStore.setState({ editorAgentId: AGENT_ID, memoryEntries: [memory] });
+    render(createElement(SectionB));
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: `查看记忆：${memory.name}` })),
+    );
+    expect(client.getMemoryEntry).toHaveBeenCalledWith(AGENT_ID, MEMORY_ID);
+    expect(screen.getByRole("region", { name: "记忆详情（只读）" })).toBeTruthy();
+    const remove = screen.getByRole("button", { name: "永久删除所选条目" }) as HTMLButtonElement;
+    fireEvent.click(screen.getByRole("checkbox", { name: `选择记忆：${memory.name}` }));
+    expect(remove.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox", { name: "我确认永久删除当前勾选的记忆条目" }));
+    expect(remove.disabled).toBe(false);
+    fireEvent.click(screen.getByRole("checkbox", { name: `选择记忆：${memory.name}` }));
+    expect(remove.disabled).toBe(true);
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "我确认永久删除当前勾选的记忆条目",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+  });
+  it("纠正稿存在时保护列表、详情、批量操作", () => {
+    useSuperstringStore.setState({
+      editorAgentId: AGENT_ID,
+      memoryEntries: [memory],
+      memoryCorrectionDirty: true,
+    });
+    render(createElement(SectionB));
+    for (const name of ["加载记忆列表", `查看记忆：${memory.name}`, "整合为新记忆"])
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe("R5 B 区可见契约", () => {
-  it("渲染原版三个记忆子面板，且不增加任务控制台或重试按钮", () => {
+  it("只保留手动整理与记忆列表治理，且不增加任务控制台或重试按钮", () => {
     useSuperstringStore.setState({
       status: "ready",
       page: "settings",
       settingsView: "agents",
       activeSection: "B",
-      detailOpen: true,
       agents: [agent],
       editorAgentId: AGENT_ID,
-      editorDraft: {
-        name: agent.name,
-        description: agent.description,
-        additional_instructions: agent.additional_instructions,
-        model_name: agent.model_name,
-        temperature: agent.temperature,
-        memory_consolidation_model_name: agent.memory_consolidation_model_name,
-        memory_consolidation_prompt: agent.memory_consolidation_prompt,
-        memory_consolidation_additional_instructions:
-          agent.memory_consolidation_additional_instructions,
-        memory_retrieval_model_name: agent.memory_retrieval_model_name,
-        memory_retrieval_prompt: agent.memory_retrieval_prompt,
-        context_compression_model_name: agent.context_compression_model_name,
-        p5_config: agent.p5_config,
-        is_active: agent.is_active,
-        config_version: agent.config_version,
-        persona_intensity: agent.persona_intensity,
-      },
+      editorDraft: toDraft(agent),
       persona,
       policy: {
         auto_enabled: false,
@@ -251,18 +419,15 @@ describe("R5 B 区可见契约", () => {
 
     const draft = useSuperstringStore.getState().editorDraft;
     if (!draft) throw new Error("测试夹具缺少 Agent 草稿");
-    const html = renderToStaticMarkup(
-      createElement(SectionB, {
-        draft,
-        patch: useSuperstringStore.getState().patchDraft,
-        models: ["qwen/test"],
-      }),
-    );
-    expect(html).toContain("自动整理</strong>");
+    const html = renderToStaticMarkup(createElement(SectionB));
+    expect(html).not.toContain("自动整理</strong>");
+    expect(html).not.toContain("长期记忆</button>");
+    expect(html).toContain('id="settings-memory-management"');
     expect(html).toContain("手动整理</strong>");
     expect(html).toContain("记忆列表与治理</strong>");
-    expect(html).toContain("第 4 步：开始整理所选轮次");
-    expect(html).toContain("查看第一条已选记忆的详情");
+    expect(html).toContain("开始整理所选轮次");
+    expect(html).toContain("查看详情");
+    expect(html).not.toContain("查看第一条已选记忆的详情");
     expect(html).not.toContain("任务控制台");
     expect(html).not.toContain("重试失败任务");
     expect(html).not.toContain("⑤ 整理任务");

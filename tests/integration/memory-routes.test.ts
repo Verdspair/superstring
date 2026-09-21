@@ -12,6 +12,8 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { createApp } from "../../src/server/app";
+import { memoryContent } from "../../src/server/db/memory-content-repository";
+import { claim, enqueue, publish } from "../../src/server/db/memory-repository";
 import {
   DEFAULT_USER_ID,
   getTurnByRequest,
@@ -21,6 +23,7 @@ import {
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { MemoryContentResponseSchema } from "../../src/shared/contracts";
 
 const UUID_A = "11111111-1111-4111-8111-111111111111";
 const UUID_B = "22222222-2222-4222-8222-222222222222";
@@ -125,7 +128,7 @@ describe("memory policy", () => {
     expect(await res.json()).toEqual({
       auto_enabled: false,
       every_turns: 20,
-      target_chars: 300,
+      target_chars: 1200,
       version: 1,
     });
   });
@@ -803,6 +806,182 @@ describe("job inspection and retry", () => {
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe(
       "MEMORY_SOURCE_CHANGED",
     );
+  });
+});
+
+describe("0.2.1 immutable memory correction", () => {
+  async function fixture() {
+    const ctx = makeApp();
+    const agentId = await seedAgent(ctx.app);
+    const sessionId = await newSession(ctx.app);
+    const turn = completedTurn(ctx.business.orm, sessionId, "correction", "餐费上限80元");
+    const id = seedEntry(ctx.business.orm, agentId, turn.id, "错误记忆");
+    const url = `/agents/${agentId}/memory/entries/${id}`;
+    const detail = MemoryContentResponseSchema.parse(
+      await (await call(ctx.app, `${url}/content`)).json(),
+    );
+    const input = {
+      expected_revision: detail.content.revision,
+      name: "餐费",
+      summary: "上限80元",
+      tags: ["报销"],
+      body: "餐费上限80元。",
+    };
+    return { ...ctx, agentId, sessionId, turn, id, url, detail, input };
+  }
+
+  it("returns true source messages, creates a new revision and rejects stale saves without writes", async () => {
+    const f = await fixture();
+    try {
+      expect(f.detail.source_messages[0].user).toBe("餐费上限80元");
+      expect(f.detail.source_messages[0].assistant).toBe("你好");
+      const saved = await call(f.app, `${f.url}/correct`, json(f.input));
+      expect(saved.status).toBe(201);
+      const revision = MemoryContentResponseSchema.parse(await saved.json());
+      expect(revision.content.id).not.toBe(f.id);
+      expect(revision.content.content_origin).toBe("manual_correction");
+      expect(revision.content.sources).toEqual(f.detail.content.sources);
+      expect(memoryContent(f.business.orm, f.agentId, f.id).status).toBe("replaced");
+      const before = f.business.db.serialize();
+      expect((await call(f.app, `${f.url}/correct`, json(f.input))).status).toBe(409);
+      expect(f.business.db.serialize()).toEqual(before);
+      expect(
+        (
+          await call(
+            f.app,
+            `/agents/${f.agentId}/memory/govern`,
+            json({ memory_ids: [f.id], action: "enable" }),
+          )
+        ).status,
+      ).toBe(409);
+      expect(
+        f.business.orm
+          .select()
+          .from(schema.messages)
+          .all()
+          .map((m) => m.content),
+      ).toContain("餐费上限80元");
+    } finally {
+      f.business.close();
+    }
+  });
+
+  it("retires recursive derivatives and prevents late worker publication", async () => {
+    const f = await fixture();
+    try {
+      const child = seedEntry(f.business.orm, f.agentId, f.turn.id, "派生");
+      const grandchild = seedEntry(f.business.orm, f.agentId, f.turn.id, "再派生");
+      f.business.orm
+        .insert(schema.memoryLinks)
+        .values([
+          { parentId: f.id, childId: child },
+          { parentId: child, childId: grandchild },
+        ])
+        .run();
+      const job = enqueue(f.business.orm, f.agentId, "late", {
+        kind: "manual",
+        sessionId: f.sessionId,
+        turnIds: [f.turn.id],
+      });
+      const running = claim(f.business.orm, job.id);
+      expect(running?.token).toBeTruthy();
+      expect((await call(f.app, `${f.url}/correct`, json(f.input))).status).toBe(201);
+      for (const id of [child, grandchild]) {
+        expect(memoryContent(f.business.orm, f.agentId, id).status).toBe("suppressed");
+        expect(
+          (
+            await call(
+              f.app,
+              `/agents/${f.agentId}/memory/govern`,
+              json({ memory_ids: [id], action: "enable" }),
+            )
+          ).status,
+        ).toBe(409);
+      }
+      expect(() =>
+        publish(f.business.orm, f.agentId, job.id, running?.token ?? "", null),
+      ).toThrow();
+      expect(
+        f.business.orm
+          .select()
+          .from(schema.memoryJobs)
+          .where(eq(schema.memoryJobs.id, job.id))
+          .get()?.errorCode,
+      ).toBe("MEMORY_GOVERNANCE_CHANGED");
+    } finally {
+      f.business.close();
+    }
+  });
+
+  it("refuses missing sources and does not leak another agent's messages through damaged links", async () => {
+    const f = await fixture();
+    try {
+      const other = (await (
+        await call(f.app, "/agents", json({ name: "other", model_name: "test" }))
+      ).json()) as { id: string };
+      const session = (await (
+        await call(f.app, "/sessions", json({ title: "private", agent_id: other.id }))
+      ).json()) as { id: string };
+      const privateTurn = completedTurn(f.business.orm, session.id, "private", "private-secret");
+      const messages = f.business.orm
+        .select()
+        .from(schema.messages)
+        .where(eq(schema.messages.turnId, privateTurn.id))
+        .all();
+      f.business.orm
+        .update(schema.memorySources)
+        .set({
+          turnId: privateTurn.id,
+          userMessageId: messages.find((m) => m.role === "user")?.id,
+          assistantMessageId: messages.find((m) => m.role === "assistant")?.id,
+        })
+        .where(eq(schema.memorySources.memoryId, f.id))
+        .run();
+      const detail = await (await call(f.app, `${f.url}/content`)).json();
+      expect(JSON.stringify(detail)).not.toContain("private-secret");
+      expect(MemoryContentResponseSchema.parse(detail).content.validity).toBe("invalid");
+      expect((await call(f.app, `${f.url}/correct`, json(f.input))).status).toBe(409);
+      expect((await call(f.app, `/agents/${other.id}/memory/entries/${f.id}/content`)).status).toBe(
+        404,
+      );
+      f.business.orm
+        .delete(schema.memorySources)
+        .where(eq(schema.memorySources.memoryId, f.id))
+        .run();
+      expect((await call(f.app, `${f.url}/correct`, json(f.input))).status).toBe(409);
+    } finally {
+      f.business.close();
+    }
+  });
+
+  it("keeps a corrected suppressed memory suppressed, and rejects injected fields", async () => {
+    const f = await fixture();
+    try {
+      expect(
+        (await call(f.app, `${f.url}/correct`, json({ ...f.input, agent_id: UNKNOWN }))).status,
+      ).toBe(422);
+      expect(
+        (await call(f.app, `${f.url}/correct`, json({ ...f.input, body: "   " }))).status,
+      ).toBe(422);
+      await call(
+        f.app,
+        `/agents/${f.agentId}/memory/govern`,
+        json({ memory_ids: [f.id], action: "suppress" }),
+      );
+      const detail = memoryContent(f.business.orm, f.agentId, f.id);
+      const saved = MemoryContentResponseSchema.parse(
+        await (
+          await call(
+            f.app,
+            `${f.url}/correct`,
+            json({ ...f.input, expected_revision: detail.content.revision }),
+          )
+        ).json(),
+      );
+      expect(saved.status).toBe("suppressed");
+    } finally {
+      f.business.close();
+    }
   });
 });
 

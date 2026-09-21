@@ -20,7 +20,7 @@ export const SECTION_META: Array<{
     letter: "F",
     title: "知识库",
     icon: "book",
-    note: "未开放",
+    note: "资料授权与管理",
   },
   { key: "C", letter: "G", title: "上下文", icon: "context" },
   {

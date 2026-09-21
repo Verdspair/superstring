@@ -18,12 +18,22 @@
 import { describe, expect, it } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { and, eq } from "drizzle-orm";
-import { enqueue, entries, policy, updateJobRow } from "../../src/server/db/memory-repository";
+import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
+import {
+  claim,
+  enqueue,
+  entries,
+  govern,
+  policy,
+  publish,
+  updateJobRow,
+} from "../../src/server/db/memory-repository";
 import {
   createSession,
   DEFAULT_USER_ID,
   ensureDefaults,
   getTurnByRequest,
+  immediate,
   nowIso,
   prepareTurn,
   saveCompletedAssistantMessage,
@@ -233,6 +243,83 @@ function seedEntry(
   }
   return id;
 }
+
+describe("0.2.1 correction suppression", () => {
+  it("blocks the retired mistake even after its old row is explicitly purged", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const turnId = completedTurn(ctx.orm, sessionId, "source");
+      const id = seedEntry(ctx.orm, { name: "旧错误", body: "错误金额999元", turnId });
+      immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, AGENT_ID, id, {
+          expected_revision: memoryContent(ctx.orm, AGENT_ID, id).content.revision,
+          name: "正确金额",
+          summary: "80元",
+          tags: [],
+          body: "正确金额80元",
+        }),
+      );
+      immediate(ctx.business.db, () => govern(ctx.orm, AGENT_ID, [id], "purge"));
+      const job = immediate(ctx.business.db, () =>
+        enqueue(ctx.orm, AGENT_ID, "reprocess", { kind: "manual", sessionId, turnIds: [turnId] }),
+      );
+      ctx.gateway.replies = [
+        JSON.stringify({ memory: { ...VALID_DRAFT.memory, body: "错误金额999元" } }),
+      ];
+      await ctx.service.runJob(job.id);
+      expect(jobById(ctx.orm, job.id).status).toBe("succeeded");
+      expect(jobById(ctx.orm, job.id).resultId).toBeNull();
+      expect(
+        entries(ctx.orm, AGENT_ID, undefined, { status: "active" }).map((entry) => entry.body),
+      ).toEqual(["正确金额80元"]);
+    } finally {
+      ctx.business.close();
+    }
+  });
+  it("carries correction suppression provenance through a later merge", () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const turnId = completedTurn(ctx.orm, sessionId, "source");
+      const id = seedEntry(ctx.orm, { name: "旧错误", body: "错误金额999元", turnId });
+      const fixed = immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, AGENT_ID, id, {
+          expected_revision: memoryContent(ctx.orm, AGENT_ID, id).content.revision,
+          name: "纠正",
+          summary: "80元",
+          tags: [],
+          body: "金额80元",
+        }),
+      );
+      const another = seedEntry(ctx.orm, { name: "其他", body: "餐费规则", turnId });
+      const job = immediate(ctx.business.db, () =>
+        enqueue(ctx.orm, AGENT_ID, "merge-corrected", {
+          kind: "merge",
+          memoryIds: [fixed.content.id, another],
+        }),
+      );
+      const running = immediate(ctx.business.db, () => claim(ctx.orm, job.id));
+      immediate(ctx.business.db, () =>
+        publish(ctx.orm, AGENT_ID, job.id, running?.token ?? "", {
+          ...VALID_DRAFT.memory,
+          kinds: ["semantic"],
+          body: "餐费金额80元",
+        }),
+      );
+      const resultId = jobById(ctx.orm, job.id).resultId;
+      expect(resultId).toBeTruthy();
+      const result = entries(ctx.orm, AGENT_ID, [resultId as string])[0];
+      expect(result.configSnapshot).toContain("错误金额999元");
+      const merged = memoryContent(ctx.orm, AGENT_ID, result.id);
+      expect(merged.corrected).toBe(true);
+      expect(merged.content.sources).toHaveLength(1);
+      expect(merged.content.sources[0]).toMatchObject({ turn_id: turnId, valid: true });
+    } finally {
+      ctx.business.close();
+    }
+  });
+});
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

@@ -49,14 +49,12 @@ export const DEFAULT_STARTUP_WINDOW_MS = 120_000;
 export const DEFAULT_PING_INTERVAL_MS = 15_000;
 export const DEFAULT_PONG_TIMEOUT_MS = 10_000;
 
-/** Minimum length so a test cannot drive the real server into instant-exit. */
-export const MIN_GRACE_MS = 1_000;
-export const MIN_STARTUP_WINDOW_MS = 1_000;
-
 export interface DesktopLifecycleConfig {
   token: string;
   host: string;
   port: number;
+  /** Desktop binding can fall back to an OS-assigned port. */
+  actualPort?: () => number;
   onStop: () => void | Promise<void>;
   /** Persist an appearance snapshot received from a desktop client. Optional but
    * always present when desktop mode is enabled; a rejection here must never
@@ -154,7 +152,7 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
   const clearTimeoutFn = (config.clearTimeoutFn ?? clearTimeout) as (handle: unknown) => void;
 
   const token = config.token;
-  const expectedOrigin = `http://${config.host}:${config.port}`;
+  const expectedOrigin = () => `http://${config.host}:${config.actualPort?.() ?? config.port}`;
 
   const connections = new Set<WsLike>();
   const timers = new Map<WsLike, ConnState>();
@@ -249,7 +247,7 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
 
     if (url.pathname === "/__desktop/lifetime") {
       const origin = req.headers.get("origin");
-      if (!origin || origin !== expectedOrigin) {
+      if (!origin || origin !== expectedOrigin()) {
         return {
           upgraded: false,
           response: new Response("Forbidden", {

@@ -34,7 +34,20 @@ export function resolveAppPaths(options: AppPathOptions) {
     backupsDir: path.join(development ? privateRoot : root, "backups"),
     webDir: development ? path.join(root, "dist", "web") : path.join(resourceRoot, "web"),
     businessMigration: path.join(resourceRoot, "migrations", "versions", "0001_initial.sql"),
-    // Product layouts carry only the business migration resource.
+    knowledgeMigration: path.join(resourceRoot, "migrations", "versions", "0002_knowledge.sql"),
+    knowledgeReadMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0003_knowledge_read.sql",
+    ),
+    organizationMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0004_organization.sql",
+    ),
+    // Product layouts carry the ordered business resources, never the R1 probe.
   } as const;
 }
 

@@ -82,7 +82,7 @@ internal static class SetupUiFixture
     {
         object result = Activator.CreateInstance(assembly.GetType("Superstring.Setup.InstallResult"), true);
         Set(result, "Action", action);
-        Set(result, "Version", "0.2.0-alpha");
+        Set(result, "Version", "0.2.1");
         Set(result, "PreviousVersion", "0.0.1");
         var links = (List<string>)Field(result, "Shortcuts");
         MethodInfo linkPath = assembly.GetType("Superstring.Setup.InstallEngine").GetMethod("LinkPath", Static);

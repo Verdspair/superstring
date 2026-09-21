@@ -10,6 +10,7 @@ import {
   updateString,
 } from "./common";
 import { ErrorCodeSchema } from "./errors";
+import { FrozenKnowledgeReadSchema } from "./knowledge";
 import { P5ConfigSchema } from "./models";
 import { compilePersona, MAX_COMPILED_PERSONA_LENGTH, pyLen, pyStrip } from "./persona-compile";
 
@@ -230,6 +231,8 @@ export const RuntimeConfigSchema = z.strictObject({
   context_compression_model_name: rawString(1, 200),
   p5_config: P5ConfigSchema,
   resolved_model_capacities: z.record(z.string(), z.number().int().positive()).default({}),
+  // Absence identifies pre-S3 turns; never synthesize today's reading config on retry.
+  knowledge_read: FrozenKnowledgeReadSchema.optional(),
   mode: SessionModeSchema.default("chat"),
   config_version: z.number().int().min(1),
   persona_intensity: z.number().int().min(0).max(100).default(60),

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgentResponse } from "../../src/shared/contracts";
 import App, { AppearanceSettings, Sidebar } from "../../src/web/App";
@@ -104,32 +104,48 @@ it("浏览器拒绝存储时仍切换，并如实告知", () => {
 it("设置中心可进入外观再返回，自定义不提供可操作入口", () => {
   useSuperstringStore.setState({ page: "settings", settingsView: "hub" });
   render(<App />);
-  fireEvent.click(screen.getByRole("button", { name: "通用" }));
+  fireEvent.click(
+    within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
+      name: "通用",
+    }),
+  );
   fireEvent.click(screen.getByText("外观"));
   expect(screen.getByText("推荐外观")).toBeTruthy();
   expect(screen.getByText("自定义外观")).toBeTruthy();
   expect(screen.getByText("自定义颜色与更多外观选项暂未开放。")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "返回设置中心" }));
-  expect(screen.getByRole("button", { name: "助手设置" })).toBeTruthy();
+  expect(
+    within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
+      name: "快捷管理",
+    }),
+  ).toBeTruthy();
 });
 
-it("设置入口整行可点，返回导航位于主栏页头且仅显示图标", () => {
+it("设置入口整行可点，返回导航位于主栏页头且仅显示图标", async () => {
   useSuperstringStore.setState({ page: "settings", settingsView: "hub" });
   const { container } = render(<App />);
-  const row = screen.getByRole("button", { name: "助手设置" });
+  const row = within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
+    name: "快捷管理",
+  });
   expect(row.classList.contains("settings-entry")).toBe(true);
   expect(row.querySelector("button")).toBeNull();
-  expect(container.querySelectorAll(".settings-list > button")).toHaveLength(3);
+  expect(container.querySelectorAll(".settings-list > button")).toHaveLength(5);
   expect(screen.queryByText("打开配置")).toBeNull();
-  fireEvent.click(screen.getByText("模型、记忆与性格人设；各分区独立保存。"));
+  await act(async () =>
+    fireEvent.click(screen.getByText("管理助手、基础信息与全部用途模型；外部接入暂未开放。")),
+  );
   const back = screen.getByRole("button", { name: "返回设置中心" });
   expect(back.textContent).toBe("");
   expect(back.getAttribute("title")).toBe("返回设置中心");
   expect(back.closest(".page-header")).toBeTruthy();
   expect(container.querySelector(".agent-settings .back-link")).toBeNull();
   expect(back.querySelector("svg")).toBeTruthy();
-  fireEvent.click(back);
-  fireEvent.click(screen.getByRole("button", { name: "通用" }));
+  await act(async () => fireEvent.click(back));
+  fireEvent.click(
+    within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
+      name: "通用",
+    }),
+  );
   fireEvent.click(screen.getByText("外观"));
   expect(screen.getByRole("button", { name: "返回设置中心" }).textContent).toBe("");
 });
@@ -192,9 +208,10 @@ it("侧栏移除新会话助手设置，改由设置中心承担", () => {
   expect(screen.queryByText("聊天模式 · 本地工作空间")).toBeNull();
 });
 
-it("新会话默认助手并入助手设置的下拉，停用助手不出现", () => {
+it("新会话默认助手并入助手设置的下拉，停用助手不出现", async () => {
   const first = "11111111-1111-4111-8111-111111111111";
   const second = "22222222-2222-4222-8222-222222222222";
+  const editAgent = useSuperstringStore.getState().editAgent;
   useSuperstringStore.setState({
     page: "settings",
     settingsView: "hub",
@@ -204,6 +221,7 @@ it("新会话默认助手并入助手设置的下拉，停用助手不出现", (
       fakeAgent("x", "停用助手", false),
     ],
     selectedNewSessionAgentId: first,
+    editAgent: vi.fn().mockResolvedValue(true),
   });
   const { container } = render(<App />);
   // 新会话不再是设置中心的一级入口，它是助手设置里助手下拉的一部分。
@@ -211,15 +229,27 @@ it("新会话默认助手并入助手设置的下拉，停用助手不出现", (
     [...container.querySelectorAll(".settings-list > button")].map(
       (button) => button.querySelector("strong")?.textContent,
     ),
-  ).toEqual(["通用", "运行模式", "助手设置"]);
+  ).toEqual(["通用", "运行模式", "快捷管理", "人设", "记忆"]);
   expect(screen.queryByRole("button", { name: "新会话" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "助手设置" }));
+  await act(async () =>
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
+        name: "快捷管理",
+      }),
+    ),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "助手管理" }));
   const select = screen.getByLabelText("新会话使用的助手") as HTMLSelectElement;
   expect([...select.options].map((option) => option.textContent)).toEqual(["本地助手", "备用助手"]);
   fireEvent.change(select, { target: { value: second } });
   expect(useSuperstringStore.getState().selectedNewSessionAgentId).toBe(second);
   fireEvent.click(screen.getByRole("button", { name: "返回设置中心" }));
-  expect(screen.getByRole("button", { name: "助手设置" })).toBeTruthy();
+  expect(
+    within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
+      name: "快捷管理",
+    }),
+  ).toBeTruthy();
+  useSuperstringStore.setState({ editAgent });
 });
 
 it("进入外观仍遵守助手草稿的未保存保护", () => {
@@ -238,31 +268,21 @@ it("进入外观仍遵守助手草稿的未保存保护", () => {
   });
 });
 
-it("用户画像显示为D，未开放且没有保存按钮", async () => {
+it("用户画像在独立记忆页面保留未开放，不恢复旧字母分区", async () => {
   await useSuperstringStore.getState().editAgent("__new__");
   useSuperstringStore.setState({
     page: "settings",
     settingsView: "agents",
-    detailOpen: true,
     activeSection: "G",
   });
+  useSuperstringStore.setState({
+    dirty: false,
+    settingsView: "workspace",
+    settingsRoute: "profile",
+  });
   const { container } = render(<App />);
-  const labels = [...container.querySelectorAll(".section-nav button strong")].map(
-    (el) => el.textContent,
-  );
-  expect(labels).toEqual([
-    "A · 名称与模型",
-    "B · 性格与人设",
-    "C · 情绪",
-    "D · 用户画像",
-    "E · 记忆管理",
-    "F · 知识库",
-    "G · 上下文",
-    "H · 外部软件接入",
-    "I · 其他",
-  ]);
-  expect(screen.getByRole("heading", { name: "D · 用户画像" })).toBeTruthy();
+  expect(container.querySelector(".section-nav")).toBeNull();
+  expect(screen.getByRole("heading", { name: "用户画像" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "保存当前分区配置" })).toBeNull();
-  expect(screen.getByRole("button", { name: "暂未开放" }).hasAttribute("disabled")).toBe(true);
-  expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(false);
+  expect(screen.getByText("状态：暂未开放")).toBeTruthy();
 });

@@ -8,6 +8,7 @@ import {
 } from "../../src/shared/contracts";
 import { SectionB } from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
+import { toDraft } from "../../src/web/features/agents/draft";
 import { useSuperstringStore } from "../../src/web/store";
 
 const NOW = "2026-09-12T00:00:00.000000Z";
@@ -60,34 +61,16 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("R5 B 区原版可见契约", () => {
-  it("渲染原版三个记忆子面板，且不新增任务控制台或重试入口", () => {
+describe("R5 B 区可见契约", () => {
+  it("只保留手动整理与记忆列表治理，且不新增任务控制台或重试入口", () => {
     useSuperstringStore.setState({
       status: "ready",
       page: "settings",
       settingsView: "agents",
-      detailOpen: true,
       activeSection: "B",
       agents: [agent],
       editorAgentId: AGENT_ID,
-      editorDraft: {
-        name: agent.name,
-        description: agent.description,
-        additional_instructions: agent.additional_instructions,
-        model_name: agent.model_name,
-        temperature: agent.temperature,
-        memory_consolidation_model_name: agent.memory_consolidation_model_name,
-        memory_consolidation_prompt: agent.memory_consolidation_prompt,
-        memory_consolidation_additional_instructions:
-          agent.memory_consolidation_additional_instructions,
-        memory_retrieval_model_name: agent.memory_retrieval_model_name,
-        memory_retrieval_prompt: agent.memory_retrieval_prompt,
-        context_compression_model_name: agent.context_compression_model_name,
-        p5_config: agent.p5_config,
-        is_active: agent.is_active,
-        config_version: agent.config_version,
-        persona_intensity: agent.persona_intensity,
-      },
+      editorDraft: toDraft(agent),
       persona,
       policy: {
         auto_enabled: false,
@@ -122,19 +105,15 @@ describe("R5 B 区原版可见契约", () => {
 
     const draft = useSuperstringStore.getState().editorDraft;
     if (!draft) throw new Error("测试夹具缺少 Agent 草稿");
-    const html = renderToStaticMarkup(
-      createElement(SectionB, {
-        draft,
-        patch: useSuperstringStore.getState().patchDraft,
-        models: ["qwen/test"],
-      }),
-    );
+    const html = renderToStaticMarkup(createElement(SectionB));
+    expect(html).not.toContain("自动整理</strong>");
+    expect(html).not.toContain("选项修改后立即保存");
     for (const text of [
-      "自动整理</strong>",
+      'id="settings-memory-management"',
       "手动整理</strong>",
       "记忆列表与治理</strong>",
-      "第 4 步：开始整理所选轮次",
-      "查看第一条已选记忆的详情",
+      "开始整理所选轮次",
+      "查看详情",
       "我确认永久删除当前勾选的记忆条目",
     ]) {
       expect(html).toContain(text);

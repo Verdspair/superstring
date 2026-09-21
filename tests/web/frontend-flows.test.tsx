@@ -113,6 +113,7 @@ describe("流程与状态边界", () => {
     const govern = vi.fn().mockResolvedValue(undefined);
     const listMemoryEntries = vi.fn();
     useSuperstringStore.getState().resetForTests(client({ govern, listMemoryEntries }));
+    useSuperstringStore.setState({ editorAgentId: "agent" });
     expect(
       await useSuperstringStore.getState().governMemories("agent", ["entry"], "purge", false),
     ).toBe(false);
@@ -130,6 +131,7 @@ describe("流程与状态边界", () => {
   it("记忆合并保留请求ID生成方式与失败反馈", async () => {
     const merge = vi.fn().mockRejectedValue(new Error("失败"));
     useSuperstringStore.getState().resetForTests(client({ merge }), { requestId: () => "a-b-c" });
+    useSuperstringStore.setState({ editorAgentId: "agent" });
     expect(await useSuperstringStore.getState().mergeMemories("agent", ["entry"])).toBe(false);
     expect(merge).toHaveBeenCalledWith("agent", {
       request_key: "abc",

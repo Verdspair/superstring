@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { SettingsHeader } from "../../app/SettingsHeader";
+import { SettingsBody } from "../../app/SettingsSidebar";
 import { MODES, readMode, readTheme, selectMode, selectTheme, THEMES } from "../../appearance";
 import { broadcastAppearance } from "../../desktop-lifecycle";
 import { msg, translateNotice, useI18n } from "../../i18n";
@@ -12,10 +13,12 @@ export function AppearanceSettings() {
   return (
     <section className="page settings-page">
       <SettingsHeader onBack={() => requestPageNavigation("settings", "hub")} />
-      <div className="settings-content appearance-settings">
-        <h2>{t("外观")}</h2>
-        <AppearanceControls />
-      </div>
+      <SettingsBody>
+        <div className="settings-content appearance-settings">
+          <h2>{t("外观")}</h2>
+          <AppearanceControls />
+        </div>
+      </SettingsBody>
     </section>
   );
 }
@@ -46,7 +49,7 @@ export function AppearanceControls() {
 
   return (
     <>
-      <p className="settings-note">{t("点击色圆立即切换并自动保存；浅色与深色跟随系统。")}</p>
+      <p className="settings-note">{t("外观修改立即生效并自动保存。")}</p>
       <Accordion
         title={t("推荐外观")}
         note={t("16 种配色，点击色圆立即切换。")}

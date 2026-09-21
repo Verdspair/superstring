@@ -1,6 +1,15 @@
 import type { Locale } from "./index";
 
 const labels: Record<string, string> = {
+  KNOWLEDGE_NOT_FOUND: "Document not found or not authorized",
+  KNOWLEDGE_CATEGORY_NOT_FOUND: "Category not found",
+  KNOWLEDGE_REVISION_CONFLICT: "Document changed; reload before retrying",
+  KNOWLEDGE_ACCESS_CHANGED: "Document access changed; resend with current access",
+  KNOWLEDGE_SNAPSHOT_INVALID: "Knowledge snapshot is invalid; send a new request",
+  KNOWLEDGE_CONTEXT_BUDGET: "Frozen knowledge exceeds available context; snapshot was not trimmed",
+  KNOWLEDGE_CATEGORY_NOT_EMPTY: "Choose a destination for the documents",
+  KNOWLEDGE_LAST_CATEGORY: "Keep at least one category",
+  KNOWLEDGE_IMPORT_INVALID: "Choose a valid UTF-8 txt or md file",
   SESSION_NOT_FOUND: "Chat not found",
   MESSAGE_NOT_FOUND: "Message not found",
   MESSAGE_DELETE_FORBIDDEN: "This message cannot be deleted",
@@ -12,7 +21,8 @@ const labels: Record<string, string> = {
   GENERATION_CANCELLED: "Generation cancelled",
   MODEL_EMPTY_RESPONSE: "The model returned an empty response",
   DATABASE_UNAVAILABLE: "Database unavailable",
-  MODEL_SERVICE_UNAVAILABLE: "Model service unavailable",
+  MODEL_SERVICE_UNAVAILABLE:
+    "Model service unavailable or rejected the request (if LM Studio requires an API token, set LM_STUDIO_API_KEY)",
   AGENT_NOT_FOUND: "Assistant not found",
   AGENT_DISABLED: "Assistant disabled",
   AGENT_IN_USE: "This assistant is used by existing chats",

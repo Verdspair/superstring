@@ -110,6 +110,45 @@ function lastFrame(frames: SseFrame[]): SseFrame {
 }
 
 describe("POST /chat wire contract", () => {
+  it("opt-in context accounting precedes deltas and adds up without leaking content", async () => {
+    const gateway = new ScriptedGateway();
+    gateway.script = { deltas: ["ok"] };
+    const { app, business } = makeApp(gateway);
+    try {
+      const sessionId = await newSession(app);
+      const request = chatRequest({
+        session_id: sessionId,
+        message: "private-question",
+        client_request_id: "usage-1",
+      });
+      request.headers.set("X-Superstring-Context-Usage", "1");
+      const frames = parseSseFrames(await (await app.request(request)).text());
+      expect(frames.map((frame) => frame.event)).toEqual(["start", "context", "delta", "done"]);
+      const { ContextUsageSchema } = await import("../../src/shared/contracts/context-usage");
+      const usage = ContextUsageSchema.parse((frames[1].data as { usage: unknown }).usage);
+      expect(usage.session_id).toBe(sessionId);
+      expect(Object.values(usage.components).reduce((a, b) => a + b, 0)).toBe(usage.input_units);
+      expect(
+        usage.input_units + usage.output_reserved + usage.safety_reserved + usage.remaining,
+      ).toBe(usage.capacity);
+      expect(usage.components.current_question).toBeGreaterThan(0);
+      expect(usage.components.knowledge).toBe(0);
+      expect(JSON.stringify(usage)).not.toContain("private-question");
+      const replay = chatRequest({
+        session_id: sessionId,
+        message: "private-question",
+        client_request_id: "usage-1",
+      });
+      replay.headers.set("X-Superstring-Context-Usage", "1");
+      expect(
+        parseSseFrames(await (await app.request(replay)).text()).some(
+          (frame) => frame.event === "context",
+        ),
+      ).toBe(false);
+    } finally {
+      business.close();
+    }
+  });
   it("emits start → delta… → done in order, with the source's field names", async () => {
     const gateway = new ScriptedGateway();
     gateway.script = { deltas: ["你好", "，", "世界"] };

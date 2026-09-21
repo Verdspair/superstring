@@ -4,8 +4,8 @@
 // for each Turn. Three behaviours from the source that must not drift:
 //   1. `require_chat` — only `chat` mode is open; anything else is
 //      `MODE_NOT_AVAILABLE` 409 (agent_config.py:221-223).
-//   2. Auxiliary model names fall back to the conversation model via
-//      `_resolve_model` (agent_config.py:226-227).
+//   2. Organization uses assistant override > shared default > chat model.
+//      Retrieval and compression independently fall back to the chat model.
 //   3. `runtime_from_agent` must NOT touch the persona relation when no persona
 //      is passed — it reuses the already-compiled `system_prompt`
 //      (agent_config.py:247-250). In the TS port this is simply "use
@@ -13,28 +13,15 @@
 
 import { type RuntimeConfig, RuntimeConfigSchema } from "../../shared/contracts";
 import { AppError } from "../errors";
+import { type AgentConfigRow, readStoredP5 } from "./agent-config-fields";
 import { compilePersona, PERSONA_INTENSITY_DEFAULT, type PersonaSource } from "./persona";
 import { pyStrip } from "./text";
 
 /** The subset of an `agents` row that snapshot construction reads. */
-export interface AgentRow {
+export interface AgentRow extends Omit<AgentConfigRow, "description"> {
   id: string;
-  name: string;
-  systemPrompt: string;
-  additionalInstructions: string;
-  modelName: string;
-  temperature: number;
-  memoryConsolidationModelName: string | null;
-  memoryConsolidationPrompt: string;
-  memoryConsolidationAdditionalInstructions: string;
-  memoryRetrievalModelName: string | null;
-  memoryRetrievalPrompt: string;
-  contextCompressionModelName: string | null;
-  p5Config: string;
   personaIntensity: number;
   configVersion: number;
-  /** INTEGER 0/1 (see data-model.md §0 boolean mapping). */
-  isActive: number;
 }
 
 /** agent_config.py:221-223 */
@@ -67,6 +54,7 @@ export function runtimeFromAgent(
     mode?: string;
     persona?: PersonaSource | null;
     personaIntensity?: number | null;
+    organizationModel?: string | null;
   } = {},
 ): RuntimeConfig {
   const mode = options.mode ?? "chat";
@@ -86,12 +74,7 @@ export function runtimeFromAgent(
         // compiled column (agent_config.py:247-250).
         pyStrip(String(agent.systemPrompt ?? ""));
 
-  let parsedP5: unknown = {};
-  try {
-    parsedP5 = agent.p5Config ? JSON.parse(agent.p5Config) : {};
-  } catch {
-    parsedP5 = {};
-  }
+  const parsedP5 = readStoredP5(agent.p5Config);
 
   const candidate = {
     agent_id: agent.id,
@@ -101,7 +84,7 @@ export function runtimeFromAgent(
     model_name: conversationModel,
     temperature: agent.temperature,
     memory_consolidation_model_name: resolveModel(
-      agent.memoryConsolidationModelName,
+      agent.memoryConsolidationModelName || options.organizationModel || null,
       conversationModel,
     ),
     memory_consolidation_prompt: agent.memoryConsolidationPrompt,
@@ -128,11 +111,6 @@ export function runtimeFromAgent(
     throw new Error("RuntimeConfig validation failed");
   }
   return parsed.data;
-}
-
-/** agent_config.py:283-284 — the value written into `sessions.agent_config_snapshot`. */
-export function snapshotAgent(agent: AgentRow, mode = "chat"): Record<string, unknown> {
-  return runtimeFromAgent(agent, { mode }) as unknown as Record<string, unknown>;
 }
 
 /** agent_config.py:287-293 */

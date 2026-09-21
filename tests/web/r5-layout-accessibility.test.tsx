@@ -1,6 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { P5ConfigSchema } from "../../src/shared/contracts";
 import App, { SectionB, Sidebar } from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
 import { useSuperstringStore } from "../../src/web/store";
@@ -22,26 +21,22 @@ describe("现有版面文案精简", () => {
     useSuperstringStore.setState({
       page: "settings",
       settingsView: "agents",
-      detailOpen: true,
       bootstrap: vi.fn().mockResolvedValue(undefined),
     });
     const { container } = render(<App />);
-    expect(screen.getByRole("heading", { name: "助手设置" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "A · 名称与模型" })).toBeTruthy();
-    expect(container.querySelectorAll(".section-nav button")).toHaveLength(9);
-    expect(container.querySelectorAll(".section-nav button small")).toHaveLength(5);
+    expect(screen.getByRole("heading", { name: "助手管理" })).toBeTruthy();
+    expect(container.querySelectorAll(".agent-settings .section-nav button")).toHaveLength(0);
+    expect(container.querySelector(".detail-config")).toBeNull();
+    expect(screen.queryByText("详细配置")).toBeNull();
     expect(screen.getByRole("button", { name: "创建助手" })).toBeTruthy();
-    expect(
-      screen.getByText("各分区独立保存。新一轮使用已保存配置，失败重试沿用原轮配置。"),
-    ).toBeTruthy();
-    expect(screen.getByText("模型与指令保存后从下一轮生效，不影响正在生成的回复。")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "助手名称" })).toBeTruthy();
     expect(screen.queryByText("统一管理 Superstring 的功能与偏好")).toBeNull();
     expect(screen.queryByText("显示在 Agent 列表和会话选择中。")).toBeNull();
   });
 });
 
 describe("分组与提示层级", () => {
-  it("助手设置保留三个折叠入口及用途说明", async () => {
+  it("助手管理先展示当前助手，再展示完整列表与批量操作", async () => {
     await useSuperstringStore.getState().editAgent("__new__");
     useSuperstringStore.setState({
       page: "settings",
@@ -50,19 +45,28 @@ describe("分组与提示层级", () => {
     });
     const { container } = render(<App />);
     expect(screen.getByText("正在创建 · 未保存")).toBeTruthy();
-    const identity = container.querySelector(".selector-identity");
-    if (!identity) throw new Error("missing selector identity");
-    expect([...identity.children].map((child) => child.tagName)).toEqual(["STRONG", "SMALL"]);
-    expect(identity.querySelector("strong")?.textContent).toBe("新建助手");
+    const selector = screen.getByRole("combobox", { name: "正在配置的助手" });
+    expect((selector as HTMLSelectElement).value).toBe("__new__");
+    const current = screen.getByRole("region", { name: "当前助手" });
+    const list = screen.getByRole("region", { name: "所有助手" });
+    expect(current.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      selector.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(current.querySelector(".agent-current-identity")).toBeNull();
     const createAction = screen.getByRole("button", { name: "新建助手" });
     expect(createAction.closest(".agent-editor-list")).toBeNull();
     expect(createAction.getAttribute("aria-pressed")).toBeNull();
-    expect(container.querySelectorAll(".section-nav button:disabled")).toHaveLength(8);
-    expect(screen.getByText("模型、记忆、上下文与性格人设")).toBeTruthy();
-    expect(screen.getByText("选择多个助手，批量删除。")).toBeTruthy();
-    expect(container.querySelectorAll(".agent-settings > details")).toHaveLength(3);
-    expect(container.querySelector(".agent-selector > summary > svg.chevron")).toBeTruthy();
-    expect(container.querySelector(".agent-selector > summary > svg circle")).toBeTruthy();
+    expect(container.querySelectorAll(".agent-settings .section-nav button")).toHaveLength(0);
+    expect(screen.queryByText("模型、记忆、上下文与性格人设")).toBeNull();
+    expect(screen.getByText("点击助手查看并编辑；勾选框仅用于批量删除。")).toBeTruthy();
+    expect(container.querySelectorAll(".agent-settings details")).toHaveLength(0);
+    expect(container.querySelector(".shared-agent-selector > svg circle")).toBeTruthy();
+    expect(
+      container
+        .querySelector(".agent-settings")
+        ?.firstElementChild?.classList.contains("shared-agent-selector"),
+    ).toBe(true);
     for (const summary of container.querySelectorAll(".agent-settings > details > summary")) {
       expect(summary.querySelectorAll(":scope > svg")).toHaveLength(2);
       expect(summary.textContent).not.toMatch(/[▾▴]/);
@@ -74,26 +78,15 @@ describe("分组与提示层级", () => {
     expect(screen.getByRole("button", { name: "返回设置中心" }).querySelector("svg")).toBeTruthy();
   });
 
-  it("记忆配置与管理明确分组，保留手动保存和自动保存提示", async () => {
-    await useSuperstringStore.getState().editAgent("__new__");
-    const draft = useSuperstringStore.getState().editorDraft;
-    if (!draft) throw new Error("missing test draft");
-    const { container } = render(
-      <SectionB
-        draft={{ ...draft, p5_config: P5ConfigSchema.parse({}) }}
-        patch={vi.fn()}
-        models={[]}
-      />,
-    );
-    expect(screen.getByRole("heading", { name: "记忆配置", level: 4 })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "记忆管理", level: 4 })).toBeTruthy();
-    expect(screen.getByText("设置回答时如何查找和使用记忆。")).toBeTruthy();
-    expect(screen.getByText("设置生成记忆使用的模型与规则。")).toBeTruthy();
-    expect(screen.getByText("读取与整理配置修改后，点击底部“保存当前分区配置”。").className).toBe(
-      "hint",
-    );
-    expect(screen.getByText("按完整对话轮数自动整理；选项修改后立即保存。")).toBeTruthy();
-    expect(container.querySelectorAll(".config-section > details.group")).toHaveLength(5);
+  it("旧记忆区只保留管理和新页跳转，不恢复即时策略保存", () => {
+    const { container } = render(<SectionB />);
+    expect(screen.queryByRole("heading", { name: "记忆配置", level: 4 })).toBeNull();
+    expect(screen.getByRole("heading", { name: "记忆管理", level: 3 })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "长期记忆" })).toBeNull();
+    expect(screen.queryByText("按完整对话轮数自动整理；选项修改后立即保存。")).toBeNull();
+    expect(container.querySelectorAll(".memory-management > section.group")).toHaveLength(2);
+    expect(container.querySelectorAll(".memory-management details")).toHaveLength(0);
+    expect(container.querySelectorAll(".config-section textarea:not([readonly])")).toHaveLength(0);
   });
 });
 

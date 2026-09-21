@@ -1,5 +1,399 @@
 // Chinese source keys are the default-locale catalog; English must cover every key.
 export const english = {
+  全量读取细节: "Full-memory reading details",
+  最多检查多少批记忆: "Maximum batches to check",
+  每批检查多少条: "Memories checked per batch",
+  "通常无需调整；仅用于全目录或全部正文模式，不影响普通读取与上下文压缩。":
+    "Usually leave unchanged. Full-catalog and full-body modes only; regular reading and context compression are unaffected.",
+  "默认 100 批；达到上限仍未读完会报错，不跳过剩余记忆。":
+    "Default: 100 batches. If memories remain at the limit, report an error rather than skip them.",
+  "默认每批 30 条；限制每次检查量，不是最终使用条数。":
+    "Default: 30 entries per batch. Limits each check, not the final number used.",
+  "正在刷新容量预览…": "Refreshing capacity preview…",
+  "对话模型与回复随机度在默认模型页设置；返回后继续创建助手。":
+    "Set the conversation model and temperature on Default models, then return to create the assistant.",
+  "新助手模型暂存为草稿，创建时一并保存。":
+    "New assistant models stay in the draft until creation.",
+  返回助手管理继续创建: "Return to assistant management to create",
+  选择模型: "Select a model",
+  "管理助手、基础信息与全部用途模型；外部接入暂未开放。":
+    "Manage assistants, basic information and all model roles. External integrations are not yet available.",
+  上下文用量: "Context usage",
+  关闭上下文用量: "Close context usage",
+  "已用约 {0} / {1}": "Approx. {0} used / {1}",
+  最近请求的输入占用: "Input usage of the latest request",
+  "预留不计入已用输入；百分比以模型总容量为基准。":
+    "Reserves are not used input. Percentages use total model capacity.",
+  来源会话: "Source chat",
+  最近轮数: "Recent turns",
+  "可重复整理完整轮次，不改变自动整理进度。":
+    "Complete turns can be organized again without changing automatic progress.",
+  选择完整轮次: "Select complete turns",
+  "轮次 {0}": "Turn {0}",
+  "用户：{0}": "User: {0}",
+  "回复：{0}": "Reply: {0}",
+  "当前范围没有可整理的完整轮次。": "No complete turns are available in this range.",
+  "选择来源会话、加载轮次，再勾选要整理的内容。":
+    "Choose a source chat, load turns, then select content to organize.",
+  "已选 {0} 轮": "{0} turns selected",
+  开始整理所选轮次: "Organize selected turns",
+  "共 {0} 条记忆，每页最多 100 条。": "{0} memories in total, up to 100 per page.",
+  记忆列表: "Memory list",
+  "选择记忆：{0}": "Select memory: {0}",
+  "查看记忆：{0}": "View memory: {0}",
+  查看详情: "View details",
+  "本页暂无记忆。": "No memories on this page.",
+  "加载后查看详情，或勾选多条批量管理。":
+    "Load memories to view details or select several for batch actions.",
+  "已选 {0} 条": "{0} selected",
+  "存储时间：{0}": "Stored: {0}",
+  "请先保存或放弃纠正，再切换记忆或执行治理。":
+    "Save or discard your correction before switching memories or managing them.",
+  永久删除: "Permanently delete",
+  "删除对象：{0}": "Delete: {0}",
+  "用下拉框或列表切换编辑对象。": "Use the dropdown or list to switch the assistant being edited.",
+  设置使用模型: "Configure models",
+  "前往默认模型页设置；本页草稿保留。":
+    "Configure models on Default models. This page’s draft is kept.",
+  所有助手: "All assistants",
+  "点击助手查看并编辑；勾选框仅用于批量删除。":
+    "Click an assistant to view and edit it. Checkboxes are only for batch deletion.",
+  助手列表: "Assistant list",
+  "选择助手：{0}": "Select assistant: {0}",
+  "编辑助手：{0}": "Edit assistant: {0}",
+  当前选中: "Selected",
+  新会话助手: "New chats",
+  暂无描述: "No description",
+  "暂无助手，请先新建助手。": "No assistants yet. Create one to get started.",
+  "已选 {0} / {1} 个助手": "{0} / {1} assistants selected",
+  全选: "Select all",
+  取消全选: "Clear selection",
+  "确认删除助手「{0}」？已被历史会话使用或属于内置默认配置时不会删除。":
+    "Delete assistant “{0}”? Assistants used by existing chats or included as built-in defaults will not be deleted.",
+  "仅管理当前助手记忆；操作不提交配置草稿。":
+    "Manage this assistant’s memories only. Actions do not save settings drafts.",
+  "共同默认模型读取失败：{0}": "Could not load the shared default model: {0}",
+  "正在读取共同默认模型…": "Loading shared default model…",
+  重试读取共同默认模型: "Retry shared default model",
+  "记忆纠正有未保存修改，是否保存后再继续？":
+    "Memory corrections have unsaved changes. Save before continuing?",
+  "选择已有助手，或前往助手管理新建。":
+    "Select an existing assistant, or create one in Assistant management.",
+  记忆读取模型: "Memory reading model",
+  记忆整理模型: "Memory organization model",
+  跟随对话模型: "Use chat model",
+  共同默认模型: "Shared default organization model",
+  启用: "Enabled",
+  停用: "Disabled",
+  "仅用于当前助手的对话；不会自动加载或重载模型。":
+    "Used for this assistant's chats only. Models are not loaded or reloaded automatically.",
+  上下文占用分布: "Context composition",
+  指令与人设: "Instructions & persona",
+  近期原文: "Recent history",
+  压缩摘要: "Summaries",
+  知识库资料: "Knowledge documents",
+  本轮问题: "Current question",
+  协议开销: "Protocol overhead",
+  回复预留: "Reply reserve",
+  安全余量: "Safety margin",
+  剩余空间: "Remaining space",
+  正在准备上下文: "Preparing context",
+  尚无请求统计: "No request statistics yet",
+  "最近请求模型：{0}；不含本轮回复与待发送草稿。":
+    "Latest request model: {0}; excludes its reply and the unsent draft.",
+  "发送后显示请求用量；未统计项为未知，不记为零。":
+    "Request usage appears after sending. Unmeasured items are unknown, not zero.",
+  "按 UTF-8 字节和消息开销估算，非模型精确 token 数。":
+    "Estimated from UTF-8 bytes and message overhead, not exact model tokens.",
+  "待发送草稿约 {0}，不计入上方请求。":
+    "Unsent draft approx. {0}, excluded from the request above.",
+  压缩与读取摘要策略: "Compression and summary reading",
+  "容量与预算、压缩与读取摘要策略。": "Capacity, budgets, compression and summary reading.",
+  "压缩摘要目标(token)": "Compression summary target (tokens)",
+  "压缩摘要硬上限(token)": "Compression summary hard cap (tokens)",
+  "单次读取摘要上限(token)": "Summary reading cap per request (tokens)",
+  "压缩任务超时（秒）": "Compression task timeout (seconds)",
+  "目标与硬上限控制摘要生成；读取上限控制本轮用量，留空继承硬上限。超额时临时再压缩，不截断或覆盖已存摘要。":
+    "Target and hard cap control generation. Reading cap limits this turn; blank inherits the hard cap. Excess summaries are recompressed temporarily, never truncated or overwritten.",
+  "默认 300 秒，已有自定义值保留；同时用于压缩、记忆筛选与模型容量核查。":
+    "Default: 300 seconds; existing custom values stay. Shared by compression, memory selection and capacity checks.",
+  "统一管理全部用途模型；全局默认、知识库与当前助手分别保存。":
+    "Manage every model purpose here. Global defaults, library and assistant settings save separately.",
+  模型分区跳转: "Model section shortcuts",
+  共同整理默认值: "Shared organization default",
+  当前助手模型: "Current assistant models",
+  知识库整理模型: "Knowledge organization model",
+  全局整理与预算: "Global organization and budget",
+  "全局共享：不随助手切换，仅保存知识库模型。":
+    "Shared globally. Independent of the selected assistant; saves only the library model.",
+  "对共享资料生效；助手可覆盖读取预算，不改变资料授权。":
+    "Applies to shared documents. Assistants may override the reading budget; grants are unchanged.",
+  "未指定则继承共同默认；指定模型优先。":
+    "Inherit the shared default when unset; an explicit model takes priority.",
+  保存知识库模型: "Save library model",
+  保存全局整理规则: "Save global organization rules",
+  保存当前助手模型: "Save current assistant models",
+  "知识库整理模型已保存；整理规则草稿保持不变。":
+    "Library model saved. Organization-rule drafts are unchanged.",
+  "全局整理规则已保存；模型草稿保持不变。":
+    "Global organization rules saved. Model drafts are unchanged.",
+  "助手读取、全局整理、资料授权分别配置与保存。":
+    "Configure and save assistant reading, global organization and document access separately.",
+  "仅影响所选助手；读取范围不会授予新权限。":
+    "Applies only to the selected assistant. Reading scope never grants new access.",
+  默认模型: "Default models",
+  "默认模型已保存；已有明确覆盖和其他草稿保持不变。":
+    "Default models saved. Existing overrides and other drafts are unchanged.",
+  "全局知识库设置已保存；助手读取与资料草稿保持不变。":
+    "Global library settings saved. Assistant reading and document drafts are unchanged.",
+  "全局默认：记忆整理与知识库整理共用，不随助手切换。":
+    "Global default shared by memory and knowledge organization; independent of the selected assistant.",
+  "已有明确覆盖优先；对话、记忆检索与上下文压缩仍独立配置。":
+    "Explicit overrides take priority. Chat, memory retrieval and context compression remain independent.",
+  "未指定时，记忆整理跟随助手对话模型，知识库整理跟随网关默认模型。不会自动加载模型。":
+    "When unset, memory organization uses the assistant chat model and knowledge organization uses the gateway default. Models are not loaded automatically.",
+  "未指定（保留原有回退规则）": "Unset (keep existing fallback rules)",
+  保存默认模型: "Save default organization model",
+  "刷新全局基线（保留草稿）": "Refresh global baseline (keep drafts)",
+  "已保存默认：{0}；修订 {1}。": "Saved default: {0}; revision {1}.",
+  未指定: "Unset",
+  助手管理: "Assistant management",
+  知识库分区跳转: "Knowledge section shortcuts",
+  当前助手读取配置: "Current assistant reading",
+  全局知识库设置: "Global library settings",
+  资料与分类管理: "Documents and categories",
+  "全局资料、分类与授权，不随当前助手切换。":
+    "Global documents, categories and grants; independent of the selected assistant.",
+  知识库整理模型覆盖: "Knowledge organization override",
+  继承默认模型: "Inherit default organization model",
+  前往默认模型: "Go to default organization model",
+  保存全局知识库设置: "Save global library settings",
+  "已保存全局设置：整理 {0}；预算 {1}；模型 {2}；修订 {3}。":
+    "Saved settings: organization {0}; budget {1}; model {2}; revision {3}.",
+  本组有未保存修改: "This section has unsaved changes",
+  本组已保存: "This section is saved",
+  保存助手读取配置: "Save assistant reading settings",
+  "优先使用助手指定模型；未指定则继承共同默认。":
+    "Use the assistant override first; otherwise inherit the shared default.",
+  模型基础配置: "Model basics",
+  人设: "Persona",
+  记忆: "Memory",
+  快捷管理: "Quick management",
+  配置页面: "Settings pages",
+  管理入口: "Management shortcuts",
+  读取已启用: "On",
+  读取已关闭: "Off",
+  "保存基线：修订 {0}；读取 {1}；预算 {2}；范围 {3}。":
+    "Saved baseline: revision {0}; reading {1}; budget {2}; scope {3}.",
+  未选择资料: "No documents selected",
+  重试读取知识库配置: "Retry loading knowledge reading settings",
+  允许当前助手读取知识库: "Allow this assistant to read knowledge",
+  "关闭仅停止当前助手读取；授权、全局整理、预算与范围不变。":
+    "Turning off stops this assistant’s reading only. Grants, global organization, budget and scope stay unchanged.",
+  预算来源: "Budget source",
+  继承全局预算: "Inherit global budget",
+  为当前助手单独设置: "Override for this assistant",
+  助手读取预算: "Assistant reading budget",
+  "全局预算：{0}（按 UTF-8 字节近似 token）。":
+    "Global budget: {0} (UTF-8 byte approximation of tokens).",
+  "可高于全局默认值，但不超过对话剩余上下文。":
+    "May exceed the global default, but not the remaining chat context.",
+  资料范围: "Document scope",
+  全部已授权资料: "All authorized documents",
+  仅指定资料: "Selected documents only",
+  "全部模式包含以后新增的授权资料；此页不会授予新权限。":
+    "All mode includes future document grants. This page never grants new access.",
+  "仅从已授权资料中选择；未选则不读取，不回退全部。":
+    "Select from authorized documents only. Empty means read nothing, not all documents.",
+  "部分指定资料已失效，请移除后保存；不会自动扩大读取范围。":
+    "Some selected documents are no longer available. Remove them before saving; scope will not expand automatically.",
+  "已失效资料：{0}": "Unavailable document: {0}",
+  "刷新基线与授权（保留草稿）": "Refresh baseline and grants (keep draft)",
+  "刷新不提交草稿；冲突后请核对最新值再保存。":
+    "Refreshing does not submit drafts. After a conflict, review current values before saving.",
+  "已刷新保存基线与授权列表，当前草稿保留；请核对后再次保存。":
+    "Saved baseline and grants refreshed; your draft is retained. Review before saving again.",
+  "助手知识库读取配置已保存；其他页面与全局草稿保持不变。":
+    "Assistant knowledge reading settings saved. Other pages and global drafts are unchanged.",
+  "读取配置已被其他操作修改；草稿已保留。请刷新保存基线，核对后再次保存。":
+    "Reading settings were changed elsewhere; your draft is retained. Refresh the baseline, review and save again.",
+  尚未开放的读取策略: "Unavailable reading policies",
+  "已加载。整理完成后可在“记忆列表与治理”中查看结果。":
+    "Loaded. View completed results under Memory list and governance.",
+  前往助手模型配置: "Go to assistant models",
+  前往全局知识库整理模型: "Go to global knowledge organization model",
+  "自动整理选项需保存当前页才生效。":
+    "Automatic organization changes apply after saving this page.",
+  重试读取整理策略: "Retry loading organization policy",
+  重试读取全局配置: "Retry loading global settings",
+  跟随默认模型: "Follow default model",
+  容量与预算: "Capacity and budget",
+  "仅影响当前助手；切页保留草稿，按页保存，下一新轮生效。":
+    "Current assistant only. Drafts persist across pages; save each page to apply from the next new turn.",
+  本页快捷跳转: "On this page",
+  记忆模型: "Memory models",
+  上下文压缩模型: "Context compression model",
+  "正在保存页面…": "Saving page…",
+  保存当前页: "Save this page",
+  当前页有未保存修改: "This page has unsaved changes",
+  当前页已保存: "This page is saved",
+  "共 {0} 个页面未保存": "{0} pages have unsaved changes",
+  "设置中有未保存页面，是否全部保存再继续？":
+    "Settings contain unsaved pages. Save all before continuing?",
+  "页面配置已保存；其他页面的草稿保持不变。": "Page saved. Drafts on other pages are unchanged.",
+  "保存未全部完成；已成功部分保留，未保存内容仍在草稿中。":
+    "Saving is incomplete. Successful changes are retained; unsaved content remains in drafts.",
+  助手模型配置与基础功能: "Assistant models and basics",
+  助手人设: "Assistant persona",
+  助手长短期记忆与知识库: "Assistant memory and knowledge",
+  基础信息: "Basic information",
+  助手模型: "Assistant models",
+  全局知识库整理模型: "Global knowledge organization model",
+  外部模型API: "External model API",
+  第三方App接入: "Third-party apps",
+  身份与行为: "Identity and behavior",
+  性格与表达: "Personality and expression",
+  长期记忆: "Long-term memory",
+  短期上下文: "Short-term context",
+  管理中心: "Management center",
+  过渡入口: "Transition links",
+  原资料管理: "Original document management",
+  正在配置的助手: "Assistant being configured",
+  "仅切换设置对象，不改变当前对话或新会话助手。":
+    "Changes only the settings target, not the current chat or the assistant for new chats.",
+  "正在读取助手配置…": "Loading assistant settings…",
+  当前助手的读取配置: "Reading settings for this assistant",
+  全局共享配置: "Global shared settings",
+  打开原资料管理与配置: "Open original document management and settings",
+  打开原配置: "Open original settings",
+  原记忆模型配置: "Original memory model settings",
+  原上下文模型配置: "Original context model settings",
+  原补充指令配置: "Original additional instructions",
+  重试读取助手: "Retry loading assistant",
+  知识库读取开关: "Knowledge reading switch",
+  读取预算: "Reading budget",
+  原文或整理稿偏好: "Original or organized content preference",
+  资料检索规则: "Document retrieval rules",
+  读取范围: "Reading scope",
+  资料优先级: "Document priority",
+  检索时机: "Retrieval timing",
+  找不到资料时的行为: "Behavior when no document matches",
+  "外部模型 API 接入尚未开放。": "External model API integration is not available yet.",
+  "核心身份、互动边界、高级指令与补充指令。":
+    "Core identity, interaction boundaries, advanced and additional instructions.",
+  "沟通风格、示例对话与性格强度。":
+    "Communication style, example dialogues and personality intensity.",
+  "情绪功能尚未开放，当前无需配置。":
+    "Emotion features are not available yet; no configuration is needed.",
+  "设置记忆读取与整理，管理已存记忆。":
+    "Configure memory reading and organization; manage stored memories.",
+  "当前助手的读取配置与全局共享配置分开显示。":
+    "Assistant reading settings and global shared settings are shown separately.",
+  "知识库有未保存修改，是否先保存再继续？":
+    "Knowledge changes are unsaved. Save before continuing?",
+  "请选择 txt/md 文件并填写资料名称。": "Choose a txt/md file and enter a document name.",
+  "请填写有效的名称和完整原文。": "Enter a valid name and original text.",
+  "上下文预算必须为正整数。": "The context budget must be a positive integer.",
+  "请选择资料和助手。": "Select documents and an assistant.",
+  "知识库修改已保存。": "Knowledge changes saved.",
+  "集中管理资料、分类与助手授权；资料仅作为参考内容。":
+    "Manage documents, categories and assistant access. Documents are reference material only.",
+  "按授权与预算读取资料；整理未完成时使用原文片段。":
+    "Read documents within access and budget limits; use original passages until organization finishes.",
+  重试原请求: "Retry original request",
+  按最新权限重新发送: "Resend with current access",
+  "已按最新权限重新发送（新请求）": "Resent with current access (new request)",
+  "资料权限已变化，原请求不能重试。是否按最新权限重新发送？这将创建新请求。":
+    "Document access has changed; the original request cannot be retried. Resend with current access? This creates a new request.",
+  关闭: "Close",
+  确认删除: "Confirm delete",
+  刷新: "Refresh",
+  开启: "On",
+  导入资料: "Import document",
+  查看与编辑资料: "View and edit document",
+  资料授权: "Document access",
+  知识库配置: "Knowledge settings",
+  新增分类: "New category",
+  重命名分类: "Rename category",
+  批量授权: "Batch access",
+  分类名称: "Category name",
+  资料名称: "Document name",
+  所属分类: "Category",
+  "上传 txt/md 文件": "Upload txt/md file",
+  改用粘贴文本: "Use pasted text",
+  "支持 UTF-8 文本，保留完整原文；导入后需另行授权。":
+    "UTF-8 text supported; originals are kept in full. Grant access after importing.",
+  完整原文: "Full original text",
+  内容模式: "Content mode",
+  使用整理稿: "Use organized text",
+  使用原文: "Use original text",
+  "原文修改后旧整理稿失效；内容模式对所有获授权助手生效。":
+    "Editing the original invalidates older drafts. Content mode applies to every authorized assistant.",
+  查看整理稿与来源: "View organized text and sources",
+  原文区间: "Original range",
+  来源版本已失效: "Source version is no longer valid",
+  "暂无有效整理稿，使用原文。": "No valid organized text; using the original.",
+  "已保存原文（只读）": "Saved original (read only)",
+  "仅授权当前资料，不含同分类其他资料。": "Grants this document only, not others in the category.",
+  "仅修改已选资料；以后新增或移入的资料不继承授权。":
+    "Changes selected documents only. Future imports or moves do not inherit access.",
+  "授予访问权（取消勾选为撤销）": "Grant access (uncheck to revoke)",
+  模型自动整理: "Automatic organization",
+  "关闭后保留已有整理稿并使用原文；重新开启不改变手动原文偏好。":
+    "Turning off preserves drafts and uses originals. Turning on preserves manual original-text choices.",
+  整理模型: "Organization model",
+  应用默认模型: "Application default model",
+  知识库上下文预算: "Knowledge context budget",
+  "按 UTF-8 字节估算，包含资料格式与来源，仍受总上下文预算限制。":
+    "Estimated in UTF-8 bytes, including formatting and sources, within the total context budget.",
+  关闭编辑: "Close editor",
+  等待整理: "Awaiting organization",
+  已排队: "Queued",
+  正在整理: "Organizing",
+  整理完成: "Organized",
+  整理失败: "Organization failed",
+  已取消整理: "Organization cancelled",
+  整理已关闭: "Organization off",
+  "正在读取资料…": "Loading documents…",
+  "已选 {0} 条资料": "{0} documents selected",
+  "选择分类内资料：{0}": "Select documents in category: {0}",
+  "重命名分类：{0}": "Rename category: {0}",
+  "删除分类：{0}": "Delete category: {0}",
+  "此分类暂无资料。": "No documents in this category.",
+  "选择资料：{0}": "Select document: {0}",
+  "已授权 {0} 个助手": "{0} assistants authorized",
+  "资料操作：{0}": "Document actions: {0}",
+  "还没有资料，先导入文本或 txt/md 文件。": "No documents yet. Import text or a txt/md file.",
+  "确认删除：{0}": "Confirm deletion: {0}",
+  "删除资料将移除原文、整理稿及授权，不删除已有聊天。":
+    "Deleting removes original text, drafts and access grants, not existing conversations.",
+  "分类中的资料不会删除，请选择迁入分类。":
+    "Documents will be kept. Choose their destination category.",
+  迁入分类: "Destination category",
+  请选择迁入分类: "Choose a destination",
+  "当前助手的已授权资料；在知识库管理中修改。":
+    "Documents authorized for this assistant. Edit them in knowledge management.",
+  "当前助手暂无已授权资料。": "This assistant has no authorized documents.",
+  打开知识库详细配置: "Open knowledge settings",
+  资料授权与管理: "Document access and management",
+  "记忆已纠正，后续新轮使用新修订；旧内容及派生已停用。":
+    "Memory corrected. New turns use the revision; previous content and derivatives are retired.",
+  查看来源与纠正内容: "View sources and correct content",
+  "纠正只修改记忆，不改写来源聊天。": "Corrections change memory, not the source conversation.",
+  来源完整: "Sources intact",
+  "来源缺失或失效，不能纠正或重新启用。":
+    "Sources are missing or invalid; correction and reactivation are unavailable.",
+  人工纠正: "Manual correction",
+  记忆名称: "Memory name",
+  记忆摘要: "Memory summary",
+  "标签（逗号分隔）": "Tags (comma-separated)",
+  记忆正文: "Memory body",
+  保存纠正: "Save correction",
+  放弃纠正: "Discard correction",
+  来源轮次: "Source turn",
+  来源用户原话: "Original user message",
+  来源助手回复: "Original assistant response",
+  不可用: "Unavailable",
   使用中: "In use",
   "界面语言与外观。": "Interface language and appearance.",
   会话操作: "Conversation actions",
@@ -31,10 +425,8 @@ export const english = {
   返回对话: "Back to chat",
   功能设置: "Preferences",
   助手设置: "Assistant settings",
-  "模型、记忆与性格人设；各分区独立保存。":
-    "Models, memory and persona. Save each section separately.",
   外观: "Appearance",
-  "选择主题颜色，调整界面配色。": "Choose a theme and adjust interface colors.",
+  "主题配色与明暗模式。": "Theme colors and light / dark mode.",
   "聊天模式 · 本地工作空间": "Chat mode · Local workspace",
   "当前没有启用的助手，无法新建对话；请到设置中启用或新建助手。":
     "No enabled assistants. Enable or create one in settings to start a chat.",
@@ -75,45 +467,30 @@ export const english = {
   新建助手: "New assistant",
   选择助手: "Select an assistant",
   "请选择已有助手，或点击“新建助手”。": "Select an existing assistant or click “New assistant”.",
-  "各分区独立保存。新一轮使用已保存配置，失败重试沿用原轮配置。":
-    "Save each section separately. New turns use saved settings; retries keep the original turn settings.",
   "正在创建 · 未保存": "Creating · Not saved",
   当前助手: "Current assistant",
-  "还没有助手，完成下方基础配置即可创建。":
-    "No assistants yet. Complete the basic settings below to create one.",
   "（停用）": " (disabled)",
   当前: "Current",
   选择: "Select",
   "当前没有启用的助手，新对话无法创建；请先启用或新建助手。":
     "No enabled assistants. Enable or create one before starting a chat.",
   新会话使用的助手: "Assistant for new chats",
-  "只影响之后新建的对话；已有对话仍使用创建时绑定的助手。":
-    "Only affects new chats. Existing chats keep their original assistant.",
+  "仅用于新会话；已有会话绑定不变。":
+    "Applies to new chats only. Existing chats keep their assistant.",
   "删除当前 Agent": "Delete current assistant",
-  详细配置: "Detailed settings",
   "模型、记忆、上下文与性格人设": "Models, memory, context and persona",
-  "填写名称并选择模型，点击“创建助手”。创建后可继续设置记忆、上下文与人设。":
-    "Enter a name, select a model and click “Create assistant”. Then configure memory, context and persona.",
-  "配置分区 · 当前：": "Section · Current:",
-  "展开 A—H": "Expand A–H",
+  "填写名称、选择模型后创建；记忆、上下文与人设可在创建后设置。":
+    "Enter a name and choose a model to create the assistant. Configure memory, context and persona afterward.",
   收起: "Collapse",
-  "配置分区（A—H）": "Settings sections (A–H)",
   创建助手后可配置: "Available after creating the assistant",
   "创建中…": "Creating…",
-  "保存中…": "Saving…",
   创建助手: "Create assistant",
   保存当前分区配置: "Save this section",
   批量管理: "Batch management",
-  "选择多个助手，批量删除。": "Select multiple assistants to delete together.",
-  "选择多个 Agent 后可统一删除；不能删除的项目会保留并反馈原因。":
-    "Select assistants to delete. Protected items will be kept with an explanation.",
-  "选择 Agent": "Select assistants",
+  "无法删除的助手会保留，并显示原因。":
+    "Assistants that cannot be deleted are kept, with the reason shown.",
   已取消全选: "Selection cleared",
-  "已选择 {0} 个 Agent": "Selected {0} assistants",
-  "全选 / 取消全选": "Select all / Clear selection",
   删除所选: "Delete selected",
-  "确认删除当前 Agent？已被历史会话使用或属于内置默认配置时不会删除。":
-    "Delete this assistant? Built-in defaults and assistants used by past chats will be kept.",
   "删除 Agent": "Delete assistant",
   "确认删除选中的 {0} 个 Agent？已被历史会话使用或属于内置默认配置的项目会保留并反馈原因。":
     "Delete {0} selected assistants? Built-in defaults and assistants used by past chats will be kept with an explanation.",
@@ -133,103 +510,66 @@ export const english = {
   "容量预览不可用：{0}；未修改配置或加载模型。":
     "Capacity preview unavailable: {0}. No settings changed or models loaded.",
   跟随当前模型: "Use the current model",
-  "A · 名称与模型": "A · Name and model",
-  "模型与指令保存后从下一轮生效，不影响正在生成的回复。":
-    "Saved models and instructions apply from the next turn, not to replies already being generated.",
-  "① 基本信息": "① Basic information",
   "名称、描述与启用状态。": "Name, description and enabled status.",
   助手名称: "Assistant name",
   描述: "Description",
   "仅供识别，不影响回复。": "For identification only. Does not affect replies.",
   "启用当前 Agent": "Enable this assistant",
-  "取消勾选并保存后，新会话不能再选择该 Agent；已有会话不受影响。":
-    "After disabling and saving, this assistant cannot be selected for new chats. Existing chats are unaffected.",
-  "② 基础指令": "② Base instructions",
+  "停用并保存后，新会话不可选；已有会话不受影响。":
+    "After disabling and saving, unavailable for new chats. Existing chats are unaffected.",
   "对该助手回复的补充要求。": "Additional requirements for this assistant's replies.",
   补充指令: "Additional instructions",
   "追加到人设与性格之后，影响该助手的回复。":
     "Appended after persona and style to guide this assistant's replies.",
-  "③ 本地模型": "③ Local model",
-  "选择对话模型，调整回复随机度。": "Select the chat model and adjust response randomness.",
   对话模型: "Chat model",
-  "来自 LM Studio 当前可用的模型。": "Models currently available in LM Studio.",
   刷新模型列表: "Refresh model list",
   回复随机度: "Response randomness",
   "越低越稳定，越高越多样。对应 temperature，默认 0.7。":
     "Lower is more consistent; higher is more varied. Temperature defaults to 0.7.",
-  "④ 外部 API 模型接入": "④ External API models",
   "状态：暂未开放": "Status: Not available yet",
   服务地址: "Service URL",
   "例如：https://api.example.com/v1": "Example: https://api.example.com/v1",
   启用安全存储后再配置: "Configure after secure storage is enabled",
   模型名称: "Model name",
   "例如：provider-model-name": "Example: provider-model-name",
-  "C · 上下文": "G · Context",
   "默认跟随模型加载容量。保存后从下一轮生效，重试沿用原轮预算。":
     "Follows the loaded model capacity by default. Saved changes apply from the next turn; retries keep the original budget.",
-  "① 模型与预算": "① Model and budget",
-  "设置摘要模型、上下文容量与回复预留。":
-    "Set the summary model, context capacity and output reserve.",
-  "上下文摘要与压缩功能使用的 LLM 配置": "LLM for context summaries and compression",
-  "可跟随当前对话模型，也可选择其他可用模型；不会自动加载或重载模型。":
-    "Use the current chat model or another available model. No models will be loaded or reloaded automatically.",
+  "跟随对话模型或另选模型；不会自动加载或重载。":
+    "Use the chat model or choose another. No automatic loading or reloading.",
   聊天上下文预算: "Chat context budget",
   "跟随模型实际容量（推荐）": "Follow actual model capacity (recommended)",
   自定义预算: "Custom budget",
   "自定义上下文预算（实际上限：{0}）": "Custom context budget (actual limit: {0})",
   未知: "Unknown",
-  "只有选择自定义预算时可编辑，且不能超过模型实际容量。":
-    "Editable only with a custom budget, and cannot exceed actual model capacity.",
   "回复预留（token）": "Output reserve (tokens)",
   安全余量比例: "Safety margin ratio",
   "容量预览（只读）": "Capacity preview (read-only)",
   刷新容量预览: "Refresh capacity preview",
-  "② 压缩策略": "② Compression policy",
-  "达到触发比例后，将较早的完整轮次压缩为摘要。":
-    "Summarize older complete turns when the threshold is reached.",
   启用上下文压缩: "Enable context compression",
   "原消息仍保留，并记录摘要来源。":
     "Original messages are retained and summary sources are recorded.",
   压缩触发比例: "Compression threshold ratio",
   "近期原文目标（轮）": "Recent verbatim turns",
-  摘要与原文回查: "Summary and source recall",
-  "摘要目标（token）": "Summary target (tokens)",
-  "摘要硬上限（token）": "Summary hard limit (tokens)",
-  "单次原文回查（token）": "Source recall per request (tokens)",
-  "③ 高级设置": "③ Advanced settings",
-  "只有全目录检索过慢或辅助任务超时时再调整。":
-    "Adjust only when full-catalog retrieval is slow or auxiliary tasks time out.",
-  "辅助任务超时（秒）": "Auxiliary task timeout (seconds)",
   全目录最大批数: "Maximum catalog batches",
   每批目录条数: "Catalog entries per batch",
-  "预算采用保守估算；摘要是有损压缩，但会保留原文来源。":
-    "Budgets are conservative estimates. Summaries are lossy, but retain source references.",
-  "D · 性格与人设": "B · Personality and persona",
-  "留空字段不写入提示词。保存后覆盖原内容，不产生版本号。":
-    "Empty fields are omitted from prompts. Saving overwrites existing content without creating a version.",
-  "① 人设（身份与边界）": "① Persona (identity and boundaries)",
-  "决定 Agent 是谁、不能做什么，优先级最高。":
-    "Defines who the assistant is and what it must not do. Highest priority.",
+  "预算为保守估算；摘要可能损失细节，原文与来源保留。":
+    "Budgets are conservative estimates. Summaries may lose detail; originals and sources remain.",
   核心身份: "Core identity",
-  "这个 Agent 是谁、扮演什么角色、服务什么目标。建议 100—400 字。":
-    "Who this assistant is, its role and goals. Suggested length: 100–400 characters.",
-  "例如：你是「小助」，一位长期陪伴用户的本地中文助理，说话直接、不绕弯子。":
-    "Example: You are a local assistant providing long-term companionship, speaking clearly and directly.",
+  "助手的角色与目标，建议 100—400 字。":
+    "The assistant’s role and goals. Suggested length: 100–400 characters.",
   互动边界: "Interaction boundaries",
-  "明确不能做的事、必须拒绝的请求、以及遇到边界时怎么回应。":
-    "Specify prohibited actions, requests to refuse and how to respond at boundaries.",
+  "不能做的事、需拒绝的请求及回应方式。":
+    "Prohibited actions, requests to refuse and how to respond.",
   高级指令: "Advanced instructions",
   "对全部行为都生效的补充规则。": "Additional rules applying to all behavior.",
-  "② 性格（表达风格）": "② Personality (expression style)",
-  "只影响怎么说，不改变身份与边界。": "Affects expression only, not identity or boundaries.",
   沟通风格: "Communication style",
   "语气、节奏、用词习惯、称呼方式。": "Tone, pacing, wording and forms of address.",
   示例对话: "Example dialogues",
-  "示范语气与节奏；系统禁止复用样例里的人名、事实和话题。":
-    "Demonstrate tone and pacing. Names, facts and topics from examples must not be reused.",
+  "仅示范语气与节奏，不复用样例中的人名、事实和话题。":
+    "Examples guide tone and pacing, not names, facts or topics to reuse.",
   性格强度: "Personality strength",
-  "0 = 完全不注入性格；100 = 完整注入。人设与边界不受此开关影响。":
-    "0 = no personality injection; 100 = full injection. Identity and boundaries are unaffected.",
+  "0 不注入性格，100 完整注入；身份与边界不受影响。":
+    "0 omits personality; 100 includes it fully. Identity and boundaries are unaffected.",
   名称与模型: "Name and model",
   记忆管理: "Memory management",
   上下文: "Context",
@@ -243,11 +583,8 @@ export const english = {
   "外部软件接入暂不可用；现有本地聊天不受影响。":
     "External integrations are not available yet. Local chat is unaffected.",
   "用户画像暂未开放，当前无需设置。": "User profiles are not available yet. No settings required.",
-  "这里将收纳其他助手设置，当前无需操作。":
-    "Additional assistant settings will appear here. No action required.",
   暂未开放: "Not available yet",
-  "点击色圆立即切换并自动保存；浅色与深色跟随系统。":
-    "Click a color to apply and save it immediately. Light and dark can follow the system.",
+  "外观修改立即生效并自动保存。": "Appearance changes apply and save immediately.",
   推荐外观: "Recommended themes",
   "16 种配色，点击色圆立即切换。": "16 colors. Click to apply immediately.",
   主题颜色: "Theme color",
@@ -280,9 +617,7 @@ export const english = {
   "当前对话 · 请新建会话": "Current chat · Create a chat first",
   会话信息暂不可用: "Chat information unavailable",
   配置版本: "Configuration version",
-  "· 右击消息可打开操作菜单": "· Right-click a message for actions",
   刷新会话: "Refresh chat",
-  "当前没有可删除的会话。": "There is no current chat to delete.",
   删除会话: "Delete chat",
   开始对话: "Start chatting",
   开始一段对话: "Start a conversation",
@@ -297,15 +632,12 @@ export const english = {
   消息操作: "Message actions",
   删除: "Delete",
   "确认删除这条消息？": "Delete this message?",
-  "确认删除当前会话及其全部消息？": "Delete this chat and all its messages?",
   "输入消息…": "Enter a message…",
   "Enter 发送 · Shift + Enter 换行": "Enter to send · Shift + Enter for a new line",
   生成中: "Generating",
   发送: "Send",
   "请先创建或选择一个 Agent，这里会显示它的记忆设置。":
     "Create or select an assistant to view its memory settings.",
-  "已加载。策略字段改动即保存；整理完成后可在“记忆列表与治理”中查看结果。":
-    "Loaded. Policy changes are saved immediately. View completed results in “Memory list and governance”.",
   " 上次整理未成功（{0}）。请重新勾选相同轮次，再次点击“第 5 步：开始整理所选轮次”。":
     "Last consolidation failed ({0}). Select the same turns again and start consolidation.",
   未知原因: "Unknown reason",
@@ -340,27 +672,16 @@ export const english = {
   "宽泛（允许有帮助的间接背景）": "Broad (helpful indirect context allowed)",
   "全目录检索（逐批筛选全部记忆）": "Full catalog (filter all memories in batches)",
   "全部正文注入（不做相关性筛选）": "All full texts (no relevance filtering)",
-  "{0}\n存储时间：{1}\n{2}\n\n{3}": "{0}\nStored: {1}\n{2}\n\n{3}",
   生效: "Active",
   已屏蔽: "Suppressed",
   已被替代: "Replaced",
   来源失效: "Source invalid",
-  "B · 记忆管理": "E · Memory management",
   记忆配置: "Memory configuration",
-  "① 读取配置": "① Retrieval settings",
-  "设置回答时如何查找和使用记忆。": "Configure how to find and use memories when replying.",
-  "记忆读取功能使用的 LLM 配置": "LLM for memory retrieval",
-  "可跟随当前对话模型，也可选择 LM Studio 当前可使用的其他模型。":
-    "Use the current chat model or another model available in LM Studio.",
   相关性判断规则: "Relevance rules",
-  "告诉模型如何判断一条记忆是否与当前问题相关。":
-    "Tell the model how to judge whether a memory is relevant to the current question.",
+  "模型筛选相关记忆的判断依据。": "Criteria the model uses to select relevant memories.",
   默认读取强度: "Default retrieval strength",
-  "关闭：不读取；保守/标准/宽泛：按下方预设筛选；全目录：分批检查全部目录；全部正文：在预算允许时注入全部正文。":
-    "Off: no retrieval. Conservative / Standard / Broad: use presets below. Full catalog: check in batches. All full texts: inject within budget.",
-  "每档依次设置：候选目录数（先交给模型筛选的目录条数）、最终记忆数（筛选后注入正文的条数）、正文预算（这些正文合计最多占用的 token）和相关性要求。":
-    "For each preset, set candidate entries, final memories, total full-text token budget and relevance requirements.",
-  "{0} {1}预设": "{0} {1} preset",
+  "候选目录数：参与筛选的条数；最终记忆数：用于回答的条数；正文预算：所用记忆的总 token 上限。相关性要求按档设置。":
+    "Candidates: entries to filter. Final memories: entries used in the reply. Full-text budget: their total token cap. Set relevance for each preset.",
   保守: "Conservative",
   标准: "Standard",
   宽泛: "Broad",
@@ -368,46 +689,23 @@ export const english = {
   最终记忆数: "Final memories",
   "正文预算（token）": "Full-text budget (tokens)",
   相关性要求: "Relevance requirements",
-  "② 整理配置": "② Consolidation settings",
-  "设置生成记忆使用的模型与规则。": "Configure the model and rules used to create memories.",
-  "记忆整理功能使用的 LLM 配置": "LLM for memory consolidation",
-  "负责把选中的完整对话轮次提炼为结构化长期记忆；也可选择其他可用模型。":
-    "Extracts structured long-term memories from complete chat turns. Another available model can be used.",
   整理规则: "Consolidation rules",
-  "定义哪些信息值得长期保留，以及如何生成名称、简介、标签和正文。":
-    "Define what to retain and how to generate names, summaries, tags and full text.",
+  "需长期保留的信息，以及名称、简介、标签和正文的生成要求。":
+    "What to retain and how to write names, summaries, tags and full text.",
   "补充整理要求（可留空）": "Additional consolidation requirements (optional)",
-  "只填写当前 Agent 特有的额外要求。": "Only enter requirements specific to this assistant.",
-  "读取与整理配置修改后，点击底部“保存当前分区配置”。":
-    "After changing retrieval or consolidation settings, click “Save this section”.",
-  "① 自动整理": "① Automatic consolidation",
   "按完整对话轮数自动整理；选项修改后立即保存。":
     "Consolidate after complete chat turns. Changes are saved immediately.",
   启用自动整理: "Enable automatic consolidation",
-  "每隔指定完整轮数整理一次；以下字段改动后立即保存，不需要再点底部的保存按钮。":
-    "Run after the specified number of complete turns. Fields below save immediately; no need to click the section save button.",
   "触发间隔（完整轮数）": "Interval (complete turns)",
-  "范围 1—200，默认每 20 轮。": "Range: 1–200. Default: every 20 turns.",
   "单条记忆正文长度（字符）": "Memory body length (characters)",
-  "范围 50—4000，控制整理结果正文长度。":
-    "Range: 50–4000. Controls the length of each generated memory.",
-  "② 手动整理": "② Manual consolidation",
-  "从某个会话里挑出完整轮次，手动整理成长期记忆。":
-    "Select complete turns from a chat to consolidate into long-term memories.",
-  "记忆统一归属于当前助手，它可以在任意会话中随时调取。已整理过的轮次可以重新选择再次整理，这不会重置自动整理进度。":
-    "Memories belong to this assistant and can be retrieved across chats. Previously consolidated turns can be selected again without resetting automatic consolidation progress.",
-  "第 1 步：来源会话": "Step 1: Source chat",
+  "选择会话的完整轮次，整理为长期记忆。":
+    "Select complete chat turns to organize into long-term memory.",
   请选择会话: "Select a chat",
-  "第 2 步：查看最近多少轮": "Step 2: Number of recent turns",
   加载可选择的轮次: "Load available turns",
-  "第 3 步：勾选需要整理的完整轮次": "Step 3: Select complete turns to consolidate",
   序号: "Number",
   已整理: "Consolidated",
   未整理: "Not consolidated",
-  "· 用户：": "· User:",
-  "/ 回复：": "/ Reply:",
   请选择会话并勾选轮次: "Select a chat and turns",
-  "第 4 步：开始整理所选轮次": "Step 4: Consolidate selected turns",
   "③ 记忆列表与治理": "③ Memory list and governance",
   "查看、整合、屏蔽、启用或永久删除已生成的记忆。":
     "View, merge, suppress, enable or permanently delete generated memories.",
@@ -421,7 +719,6 @@ export const english = {
   整合为新记忆: "Merge into new memories",
   "屏蔽（停止使用）": "Suppress (stop using)",
   重新启用: "Re-enable",
-  "危险操作：": "Danger zone:",
   "永久删除只删除所选记忆条目且不可恢复；派生记忆、摘要和原聊天保留。":
     "Permanent deletion removes only the selected memories and cannot be undone. Derived memories, summaries and original chats are retained.",
   我确认永久删除当前勾选的记忆条目: "I confirm permanent deletion of the selected memories",
@@ -462,7 +759,6 @@ export const english = {
   标准预设: "Standard preset",
   宽泛预设: "Broad preset",
   通用: "General",
-  "语言与运行模式。": "Language and operating mode.",
   界面语言: "Interface language",
   "立即应用并自动保存，不改变聊天内容或模型回复语言。":
     "Applies and saves immediately. Does not change chat content or the model response language.",
@@ -478,14 +774,8 @@ export const english = {
   "语言已切换，但浏览器未允许保存；刷新后可能恢复默认。":
     "Language changed, but browser storage is blocked. Refreshing may restore the default.",
   知识库: "Knowledge base",
-  "知识库暂未开放，当前无需设置。": "Knowledge base is not available yet. No settings required.",
-  "展开 A—I": "Expand A–I",
-  "配置分区（A—I）": "Settings sections (A–I)",
   删除消息: "Delete message",
   "消息 {0}": "Message {0}",
-  "B · 性格与人设": "B · Personality and persona",
-  "E · 记忆管理": "E · Memory management",
-  "G · 上下文": "G · Context",
   深蓝灰: "Slate",
   海蓝: "Blue",
   靛蓝: "Indigo",

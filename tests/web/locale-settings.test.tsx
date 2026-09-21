@@ -1,11 +1,16 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { P5ConfigSchema } from "../../src/shared/contracts";
+import {
+  AgentResponseSchema,
+  P5ConfigSchema,
+  PersonaResponseSchema,
+} from "../../src/shared/contracts";
 import App from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
 import { StatusBar } from "../../src/web/app/StatusBar";
 import { AgentSettings } from "../../src/web/features/agents/AgentSettings";
-import { SectionC } from "../../src/web/features/agents/SectionC";
+import { MemoryPageFields } from "../../src/web/features/agents/MemoryPageFields";
+import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { SECTION_META } from "../../src/web/features/agents/sections";
 import { AppearanceSettings } from "../../src/web/features/appearance/AppearanceSettings";
 import { ChatPage } from "../../src/web/features/chat/ChatPage";
@@ -40,6 +45,28 @@ afterEach(() => {
 });
 
 describe("locale catalog and preferences", () => {
+  it("keeps concise safety, scope and fallback explanations translated", () => {
+    const notes = [
+      "外观修改立即生效并自动保存。",
+      "仅影响当前助手；切页保留草稿，按页保存，下一新轮生效。",
+      "停用并保存后，新会话不可选；已有会话不受影响。",
+      "默认 100 批；达到上限仍未读完会报错，不跳过剩余记忆。",
+      "仅从已授权资料中选择；未选则不读取，不回退全部。",
+      "目标与硬上限控制摘要生成；读取上限控制本轮用量，留空继承硬上限。超额时临时再压缩，不截断或覆盖已存摘要。",
+      "按 UTF-8 字节和消息开销估算，非模型精确 token 数。",
+    ] as const;
+    selectLocale("en");
+    for (const note of notes) {
+      expect(translateNotice(msg(note))).not.toBe(note);
+      expect(translateNotice(msg(note))).not.toMatch(/[\u3400-\u9fff]/);
+    }
+  });
+  it("does not claim color mode must follow the system", () => {
+    render(<AppearanceSettings />);
+    expect(screen.getByText("外观修改立即生效并自动保存。")).toBeTruthy();
+    expect(screen.queryByText("点击色圆立即切换并自动保存；浅色与深色跟随系统。")).toBeNull();
+    expect(screen.getByText("跟随系统，或固定浅色／深色。")).toBeTruthy();
+  });
   it("every English entry preserves interpolation placeholders", () => {
     for (const [key, value] of Object.entries(english)) {
       expect(value.trim(), key).not.toBe("");
@@ -58,6 +85,12 @@ describe("locale catalog and preferences", () => {
     useSuperstringStore.setState({ composer: "保留我的输入" });
     const draft = useSuperstringStore.getState().editorDraft;
     render(<GeneralSettings />);
+    const language = screen.getByText("界面语言", { selector: "strong" }).closest("details");
+    if (!language) throw new Error("Missing language details");
+    const summary = language.querySelector("summary");
+    if (!summary) throw new Error("Missing language summary");
+    expect(language.open).toBe(false);
+    fireEvent.click(summary);
     fireEvent.click(screen.getByRole("button", { name: "English" }));
     expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
     expect(document.documentElement.lang).toBe("en");
@@ -71,6 +104,12 @@ describe("locale catalog and preferences", () => {
       throw Error("blocked");
     });
     render(<GeneralSettings />);
+    const language = screen.getByText("界面语言", { selector: "strong" }).closest("details");
+    if (!language) throw new Error("Missing language details");
+    const summary = language.querySelector("summary");
+    if (!summary) throw new Error("Missing language summary");
+    expect(language.open).toBe(false);
+    fireEvent.click(summary);
     fireEvent.click(screen.getByRole("button", { name: "English" }));
     expect(getLocale()).toBe("en");
     expect(screen.getByText(/storage is blocked/)).toBeTruthy();
@@ -194,15 +233,20 @@ describe("section identities", () => {
       "H",
     ]);
   });
-  it("knowledge remains an unavailable view without a save action", async () => {
+  it("overview does not render the retired knowledge section or section save", async () => {
     await useSuperstringStore.getState().editAgent("__new__");
     useSuperstringStore.setState({
+      apiClient: {
+        listAgentKnowledge: vi.fn().mockResolvedValue([]),
+      } as unknown as SuperstringApi,
       editorAgentId: "fixture",
       activeSection: "knowledge",
-      detailOpen: true,
     });
     render(<AgentSettings />);
-    expect(screen.getByRole("heading", { name: "F · 知识库" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "助手管理" })).toBeTruthy();
+    expect(screen.queryByText("当前助手暂无已授权资料。")).toBeNull();
+    expect(screen.queryByRole("button", { name: "打开知识库详细配置" })).toBeNull();
+    expect(document.querySelector(".section-nav")).toBeNull();
     expect(screen.queryByRole("button", { name: "保存当前分区配置" })).toBeNull();
     let result = true;
     await act(async () => {
@@ -225,16 +269,30 @@ describe("section identities", () => {
       refreshCapacityPreview: vi.fn().mockResolvedValue(undefined),
     });
     selectLocale("en");
-    render(
-      <SectionC
-        draft={{
-          ...draft,
-          p5_config: { ...P5ConfigSchema.parse({}), context_window: 4096 },
-        }}
-        patch={vi.fn()}
-        models={[]}
-      />,
-    );
+    const saved = AgentResponseSchema.parse({
+      ...draft,
+      name: "fixture",
+      model_name: "synthetic",
+      memory_consolidation_prompt: "organize",
+      memory_retrieval_prompt: "retrieve",
+      id: "fixture",
+      created_at: "2026-09-19T00:00:00.000Z",
+      updated_at: "2026-09-19T00:00:00.000Z",
+      p5_config: { ...P5ConfigSchema.parse({}), context_window: 4096, max_output_tokens: 512 },
+    });
+    const persona = PersonaResponseSchema.parse({
+      id: "persona",
+      agent_id: "fixture",
+      core_identity: "",
+      communication_style: "",
+      interaction_boundaries: "",
+      example_dialogues: "",
+      advanced_instructions: "",
+      created_at: saved.created_at,
+      updated_at: saved.updated_at,
+    });
+    useSuperstringStore.setState({ pageEditor: newPageEditor(saved, persona) });
+    render(<MemoryPageFields page="context" />);
     expect(screen.getByText("Custom context budget (actual limit: 8192)")).toBeTruthy();
     expect(document.querySelector('input[max="8192"]')).toBeTruthy();
   });

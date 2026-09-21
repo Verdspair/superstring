@@ -11,6 +11,7 @@ export * from "./agent";
 export * from "./browser-state";
 export * from "./chat";
 export * from "./common";
+export * from "./content";
 export * from "./errors";
 export * from "./memory";
 export * from "./message";

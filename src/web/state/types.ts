@@ -1,6 +1,8 @@
 import type { StoreApi } from "zustand";
 import type {
   AgentResponse,
+  MemoryContentResponse,
+  MemoryCorrection,
   MemoryEntryResponse,
   MemoryJobView,
   MemorySessionOption,
@@ -12,16 +14,32 @@ import type {
   SessionResponse,
 } from "../../shared/contracts";
 import type { SuperstringApi, streamChat } from "../api";
+import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
 
+import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/types";
+
 export type Page = "chat" | "settings";
-export type SettingsView = "hub" | "agents" | "appearance" | "general" | "operating-mode";
+export type SettingsView =
+  | "hub"
+  | "agents"
+  | "appearance"
+  | "general"
+  | "operating-mode"
+  | "knowledge"
+  | "workspace";
 export type SectionKey = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "knowledge";
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type PendingNavigation =
-  | { kind: "page"; page: Page; settingsView: SettingsView }
+  | {
+      kind: "page";
+      page: Page;
+      settingsView: SettingsView;
+      settingsRoute?: SettingsRoute;
+    }
   | { kind: "agent"; id: string | "__new__" }
-  | { kind: "section"; section: SectionKey };
+  | { kind: "section"; section: SectionKey }
+  | { kind: "knowledge"; target: KnowledgeTarget };
 
 export interface ChatItem {
   id: string;
@@ -51,14 +69,31 @@ export interface AgentDraft {
   persona_intensity: number;
 }
 
-export interface SuperstringState {
+export interface SuperstringState extends KnowledgeState {
+  pageEditor: import("../features/agents/page-drafts").PageEditor | null;
+  settingsSaving: boolean;
+  patchPagePolicy: (patch: Partial<Omit<PolicyView, "version">>) => void;
+  patchPageAgent: (
+    page: import("../features/agents/page-drafts").EditablePage,
+    patch: Partial<AgentDraft>,
+  ) => void;
+  patchPagePersona: (
+    page: import("../features/agents/page-drafts").EditablePage,
+    patch: Partial<PersonaResponse>,
+  ) => void;
+  saveSettingsPage: (
+    page: import("../features/agents/page-drafts").EditablePage,
+  ) => Promise<boolean>;
+  saveAllSettingsPages: () => Promise<boolean>;
+  discardSettingsPages: () => void;
   status: LoadStatus;
   error: string | null;
   feedback: string;
   page: Page;
   settingsView: SettingsView;
+  settingsRoute: SettingsRoute;
+  openSettingsRoute: (route: SettingsRoute) => void;
   activeSection: SectionKey;
-  detailOpen: boolean;
   dirty: boolean;
   pendingNavigation: PendingNavigation | null;
   navigationConfirmOpen: boolean;
@@ -68,10 +103,12 @@ export interface SuperstringState {
   messages: ChatItem[];
   runtimeConfig: RuntimeConfig | null;
   runtimeConfigUnavailable: boolean;
+  contextUsage: import("../../shared/contracts/context-usage").ContextUsage | null;
   selectedNewSessionAgentId: string | null;
   currentSessionId: string | null;
   editorAgentId: string | "__new__";
   editorDraft: AgentDraft | null;
+  editorLoading: boolean;
   persona: PersonaResponse | null;
   policy: PolicyView | null;
   memorySessions: MemorySessionOption[];
@@ -79,9 +116,18 @@ export interface SuperstringState {
   memoryEntries: MemorySummary[];
   memoryEntryTotal: number;
   memoryEntryDetail: MemoryEntryResponse | null;
+  memoryContent: MemoryContentResponse | null;
+  memoryCorrectionDraft: MemoryCorrection | null;
+  memoryCorrectionDirty: boolean;
+  memoryCorrectionSaving: boolean;
+  loadMemoryContent: () => Promise<void>;
+  patchMemoryCorrection: (patch: Partial<MemoryCorrection>) => void;
+  saveMemoryCorrection: () => Promise<boolean>;
+  discardMemoryCorrection: () => void;
   memoryJobs: MemoryJobView[];
   modelNames: string[];
   modelStatus: string;
+  recalculateCapacityPreview: () => void;
   capacityPreview: string;
   chatContextCapacity: number | null;
   composer: string;
@@ -101,6 +147,7 @@ export interface SuperstringState {
   setNotice: (patch: Partial<Pick<SuperstringState, "error" | "feedback">>) => void;
   clearMemoryDetail: () => void;
   clearMemoryTurns: () => void;
+  resetMemoryManagement: () => void;
   bootstrap: () => Promise<void>;
   openChat: () => void;
   openSettings: () => void;
@@ -122,8 +169,16 @@ export interface SuperstringState {
   refreshSession: () => Promise<void>;
   setComposer: (value: string) => void;
   send: () => Promise<void>;
+  retryChat: () => Promise<void>;
+  resendKnowledgeChat: () => Promise<void>;
+  cancelKnowledgeResend: () => void;
+  failedChat: { sessionId: string; text: string; requestId: string } | null;
+  knowledgeResend: {
+    sessionId: string;
+    text: string;
+    requestId: string;
+  } | null;
   setActiveSection: (section: SectionKey) => void;
-  setDetailOpen: (open: boolean) => void;
   editAgent: (id: string | "__new__") => Promise<boolean>;
   patchDraft: (patch: Partial<AgentDraft>) => void;
   patchPersona: (patch: Partial<PersonaResponse>) => void;

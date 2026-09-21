@@ -23,6 +23,16 @@ namespace Superstring.Desktop
         public const string RequiredApp = "superstring";
         public const string RequiredState = "ready";
 
+        public static bool TryReadPort(string line, out int port)
+        {
+            port = 0;
+            const string prefix = "SUPERSTRING_DESKTOP_PORT ";
+            if (line == null || !line.StartsWith(prefix, StringComparison.Ordinal)) return false;
+            string value = line.Substring(prefix.Length);
+            for (int i = 0; i < value.Length; i++) if (value[i] < '0' || value[i] > '9') return false;
+            return int.TryParse(value, out port) && port >= 1 && port <= 65535;
+        }
+
         public static string StatusUrl(string baseUrl)
         {
             return Normalize(baseUrl) + "/__desktop/status";

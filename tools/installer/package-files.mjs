@@ -32,7 +32,12 @@ export function collectPackageFiles(root, appDirectory) {
   copyTree(path.join(root, "dist/web"), "web");
   // Business DDL only. The R1 probe migration is a development/verification
   // surface: it ships in the development tree and in tests, never in a release.
-  for (const migration of ["versions/0001_initial.sql"]) {
+  for (const migration of [
+    "versions/0001_initial.sql",
+    "versions/0002_knowledge.sql",
+    "versions/0003_knowledge_read.sql",
+    "versions/0004_organization.sql",
+  ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }
   const noticesRoot = path.join(root, "tools/installer/licenses");

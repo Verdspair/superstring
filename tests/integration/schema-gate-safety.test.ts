@@ -203,7 +203,7 @@ describe("schema-gate: accepts known-good structures", () => {
     const h = openBusinessDb({ path: p });
     try {
       const v = (h.db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-      expect(v).toBe(1);
+      expect(v).toBe(4);
     } finally {
       h.close();
     }

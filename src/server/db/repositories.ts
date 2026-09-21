@@ -53,6 +53,8 @@ import {
   requireChat,
   runtimeFromAgent,
 } from "../services/runtime-config";
+import { KnowledgeReadRepository } from "./knowledge-read-repository";
+import { readOrganizationSettings } from "./organization-repository";
 import * as schema from "./schema";
 import { MessageRole, MessageStatus, type SqlBoolean, TurnGenerationStatus } from "./types";
 
@@ -229,6 +231,7 @@ export function ensureDefaults(orm: Orm, modelName: string): void {
         createdAt: now,
       })
       .run();
+    orm.insert(schema.agentKnowledgeReadSettings).values({ agentId: DEFAULT_AGENT_ID }).run();
     agent = orm.select().from(schema.agents).where(eq(schema.agents.id, DEFAULT_AGENT_ID)).get();
   }
 
@@ -320,6 +323,7 @@ export function createSession(
     }
 
     const snapshot = runtimeFromAgent(agentRow, {
+      organizationModel: readOrganizationSettings(orm).model_name,
       mode,
       persona: {
         core_identity: persona.coreIdentity,
@@ -779,6 +783,7 @@ function runtimeFromPersona(orm: Orm, session: SessionRow): RuntimeConfig {
   let runtime: RuntimeConfig;
   try {
     runtime = runtimeFromAgent(agentRow, {
+      organizationModel: readOrganizationSettings(orm).model_name,
       mode: session.mode,
       persona: {
         core_identity: persona.coreIdentity,
@@ -841,7 +846,10 @@ export function prepareTurn(
     }
     const runtime = turn
       ? runtimeFromTurn(turn, chatSession)
-      : runtimeFromPersona(orm, chatSession);
+      : {
+          ...runtimeFromPersona(orm, chatSession),
+          knowledge_read: new KnowledgeReadRepository(db).freeze(chatSession.agentId),
+        };
 
     const activeTurns = orm
       .select()

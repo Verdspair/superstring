@@ -19,6 +19,9 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     paths.backupsDir,
     paths.webDir,
     paths.businessMigration,
+    paths.knowledgeMigration,
+    paths.knowledgeReadMigration,
+    paths.organizationMigration,
   ]) {
     let current = path.parse(target).root;
     for (const component of path.relative(current, target).split(path.sep)) {
@@ -36,8 +39,13 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
   // The business DDL is the ONLY migration a packaged layout carries: the R1 probe
   // migration is a development/verification surface with no release role, so it is
   // absent from the package and must never be a startup requirement again.
-  const businessMigrationSql = readFileSync(paths.businessMigration, "utf8");
-  if (!businessMigrationSql.trim()) throw new Error("EMPTY_MIGRATION_RESOURCE");
+  const businessMigrationSql = [
+    readFileSync(paths.businessMigration, "utf8"),
+    readFileSync(paths.knowledgeMigration, "utf8"),
+    readFileSync(paths.knowledgeReadMigration, "utf8"),
+    readFileSync(paths.organizationMigration, "utf8"),
+  ] as const;
+  if (businessMigrationSql.some((sql) => !sql.trim())) throw new Error("EMPTY_MIGRATION_RESOURCE");
   if (env.SUPERSTRING_SERVE_WEB === "1") readFileSync(path.join(paths.webDir, "index.html"));
   return { paths, businessMigrationSql };
 }

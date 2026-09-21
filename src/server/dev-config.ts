@@ -2,6 +2,22 @@
 
 export const DEV_HOST = "127.0.0.1";
 export const DEV_DEFAULT_PORT = 17861;
+export const DESKTOP_PORT_MESSAGE = "SUPERSTRING_DESKTOP_PORT ";
+
+/** Retry the real bind, not a probe-then-release race. Port 0 asks the OS to choose. */
+export function bindWithDesktopFallback<T>(
+  preferred: number,
+  enabled: boolean,
+  bind: (port: number) => T,
+): T {
+  try {
+    return bind(preferred);
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    if (!enabled || (code !== "EADDRINUSE" && code !== "EACCES")) throw error;
+    return bind(0);
+  }
+}
 
 /**
  * Resolve the bind port from SUPERSTRING_DEV_PORT. Falls back to the product

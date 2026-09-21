@@ -46,6 +46,7 @@ import {
   SuppressionResultSchema,
   suppressionPrompt,
 } from "./memory-contract";
+import { correctionMetadata } from "./memory-revision";
 
 /**
  * Marker for "the caller asked us to stop". The source signals this with
@@ -63,7 +64,15 @@ export interface MemoryServiceOptions {
   pollIntervalMs?: number;
   /** Source: the heartbeat task's `asyncio.sleep(15)`. */
   heartbeatIntervalMs?: number;
-  /** Source: `asyncio.wait(..., timeout=600)` — the whole-job wall clock. */
+  /**
+   * Source: `asyncio.wait(..., timeout=600)` — the whole-job wall clock.
+   *
+   * Raised to one hour (deviation from the source, recorded in ADR0016): this
+   * budget has to outlive a single model call, and one call on a local model can
+   * legitimately take many minutes. A 600s job budget equal to the per-request
+   * budget meant a slow-but-healthy job was killed by the job timer instead of
+   * finishing, or failed with the less specific MEMORY_TIMEOUT.
+   */
   jobTimeoutMs?: number;
 }
 
@@ -93,7 +102,7 @@ export class MemoryService {
     this.gateway = options.gateway;
     this.pollIntervalMs = options.pollIntervalMs ?? 5_000;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
-    this.jobTimeoutMs = options.jobTimeoutMs ?? 600_000;
+    this.jobTimeoutMs = options.jobTimeoutMs ?? 3_600_000;
   }
 
   /** `MemoryService.start` (memory_service.py:32-33). */
@@ -337,9 +346,12 @@ export class MemoryService {
           }),
         );
       }
-      const blocked = entries(this.orm, agentId)
-        .filter((entry) => entry.status === "suppressed" || entry.status === "replaced")
-        .map((entry) => ({ name: entry.name, summary: entry.summary, body: entry.body }));
+      const blocked = entries(this.orm, agentId).flatMap((entry) => [
+        ...(entry.status === "suppressed" || entry.status === "replaced"
+          ? [{ name: entry.name, summary: entry.summary, body: entry.body }]
+          : []),
+        ...(correctionMetadata(entry.configSnapshot)?.rejected ?? []),
+      ]);
       return { kind: job.kind, config, sources, blocked };
     });
 

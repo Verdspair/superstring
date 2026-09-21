@@ -15,11 +15,12 @@ namespace Superstring.Setup
     {
         internal const int SupportedManifestVersion = 1;
         internal const int SupportedLayoutVersion = 1;
-        internal const int SupportedSchemaVersion = 1;
+        internal const int SupportedSchemaVersion = 4;
         internal const string Product = "superstring";
         internal const string Platform = "win32-x64";
 
         internal string Version { get; private set; }
+        internal int SchemaVersion { get; private set; }
         internal string RawJson { get; private set; }
         internal readonly List<FileRecord> Files = new List<FileRecord>();
         internal FileRecord Launcher { get; private set; }
@@ -30,13 +31,13 @@ namespace Superstring.Setup
             internal string Sha256;
         }
 
-        internal static Manifest Load(string filename)
+        internal static Manifest Load(string filename, bool allowPreviousSchema = false)
         {
             if (!File.Exists(filename)) throw new FileNotFoundException("缺少安装清单", filename);
-            return Parse(File.ReadAllText(filename));
+            return Parse(File.ReadAllText(filename), allowPreviousSchema);
         }
 
-        internal static Manifest Parse(string json)
+        internal static Manifest Parse(string json, bool allowPreviousSchema = false)
         {
             var serializer = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
             var root = serializer.DeserializeObject(json) as Dictionary<string, object>;
@@ -45,7 +46,11 @@ namespace Superstring.Setup
             manifest.RawJson = json;
             RequireInteger(root, "manifestVersion", SupportedManifestVersion);
             RequireInteger(root, "layoutVersion", SupportedLayoutVersion);
-            RequireInteger(root, "businessSchemaVersion", SupportedSchemaVersion);
+            object schemaValue;
+            if (!root.TryGetValue("businessSchemaVersion", out schemaValue) || !(schemaValue is int)
+                || ((int)schemaValue != SupportedSchemaVersion && !(allowPreviousSchema && ((int)schemaValue >= 1 && (int)schemaValue < SupportedSchemaVersion))))
+                throw new InvalidDataException("MANIFEST_UNSUPPORTED_FIELD: businessSchemaVersion");
+            manifest.SchemaVersion = (int)schemaValue;
             RequireString(root, "product", Product);
             RequireString(root, "platform", Platform);
             manifest.Version = RequireAnyString(root, "version");
@@ -75,6 +80,12 @@ namespace Superstring.Setup
             }
             foreach (string required in RequiredFiles)
                 if (!seen.Contains(required)) throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: " + required);
+            if (manifest.SchemaVersion >= 2 && !seen.Contains("app/resources/migrations/versions/0002_knowledge.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0002_knowledge.sql");
+            if (manifest.SchemaVersion >= 3 && !seen.Contains("app/resources/migrations/versions/0003_knowledge_read.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0003_knowledge_read.sql");
+            if (manifest.SchemaVersion >= 4 && !seen.Contains("app/resources/migrations/versions/0004_organization.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0004_organization.sql");
             var launcher = root.ContainsKey("launcher") ? root["launcher"] as Dictionary<string, object> : null;
             if (launcher == null) throw new InvalidDataException("MANIFEST_MISSING_LAUNCHER");
             manifest.Launcher = new FileRecord

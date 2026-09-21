@@ -1,9 +1,9 @@
-// Schema / version gate for the 16 business tables.
+// Strict schema/version gate. v1 is frozen; v2 adds the knowledge library.
 //
 // Mechanism:
-//  - The SQLite `user_version` pragma marks the schema version. migrations/
-//    versions/0001_initial.sql is the single authoritative DDL; this gate runs it
-//    only on a verifiably fresh database, then stamps user_version.
+//  - The SQLite `user_version` pragma marks the schema version. Only a fresh DB
+//    or an exactly matching known schema may receive the ordered migrations.
+//    Resource validation happens before opening any file-backed database.
 //  - An unrecognised version or structure raises a `REJECT_` error without
 //    intentionally changing the database schema or journal mode. Schema decisions
 //    run in one transaction; on rejection it rolls back and openBusinessDb closes
@@ -19,12 +19,17 @@ import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
 import { type BusinessDbHandle, openConnection } from "./connection";
 import * as schema from "./schema";
 
-/** Schema version for migrations/versions/0001_initial.sql (user_version pragma). */
-export const BUSINESS_SCHEMA_VERSION = 1 as const;
+/** Ordered resources are also supplied explicitly by installed entrypoints. */
+export const BUSINESS_SCHEMA_VERSION = 4 as const;
+export const BUSINESS_MIGRATION_FILES = [
+  "0001_initial.sql",
+  "0002_knowledge.sql",
+  "0003_knowledge_read.sql",
+  "0004_organization.sql",
+] as const;
+export type BusinessMigrationSql = readonly [string, string, string, string];
 
-const MIGRATION_PATH = path.join(import.meta.dir, "../../../migrations/versions/0001_initial.sql");
-
-/** The 16 business table names in canonical order (data-model.md §0). */
+/** Legacy tables followed by the additive knowledge tables (ADR0014). */
 export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "users",
   "agents",
@@ -42,10 +47,35 @@ export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "memory_jobs",
   "session_summaries",
   "summary_sources",
+  "knowledge_settings",
+  "knowledge_categories",
+  "knowledge_documents",
+  "knowledge_grants",
+  "knowledge_chunks",
+  "knowledge_drafts",
+  "knowledge_jobs",
+  "turn_knowledge_snapshots",
+  "agent_knowledge_read_settings",
+  "organization_settings",
 ];
 
-function loadMigrationSql(): string {
-  return readFileSync(MIGRATION_PATH, "utf8");
+function loadMigrationSql(): BusinessMigrationSql {
+  const directory = path.join(import.meta.dir, "../../../migrations/versions");
+  return [
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[0]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[1]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[2]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[3]), "utf8"),
+  ];
+}
+
+function validateResources(migrations: BusinessMigrationSql): void {
+  if (migrations.length !== BUSINESS_SCHEMA_VERSION || migrations.some((sql) => !sql.trim())) {
+    throw new Error("INVALID_MIGRATION_RESOURCE: incomplete business SQL");
+  }
+  for (let version = 1; version <= BUSINESS_SCHEMA_VERSION; version++) {
+    getReferenceObjects(migrations.slice(0, version).join("\n"));
+  }
 }
 
 /**
@@ -114,26 +144,27 @@ function extractSchemaObjects(db: Database): Map<string, SchemaObject> {
 // The single source of truth: the authoritative DDL run against an isolated
 // in-memory database to obtain the canonical set of schema objects. Built once,
 // lazily, and cached for the lifetime of the process.
-let referenceObjects: Map<string, SchemaObject> | null = null;
-let referenceSql: string | null = null;
+const referenceCache = new Map<string, Map<string, SchemaObject>>();
 function getReferenceObjects(migrationSql: string): Map<string, SchemaObject> {
   if (!migrationSql.trim()) throw new Error("INVALID_MIGRATION_RESOURCE: empty business SQL");
-  if (referenceObjects === null || referenceSql !== migrationSql) {
-    const ref = new Database(":memory:");
-    try {
-      ref.exec(migrationSql);
-      referenceObjects = extractSchemaObjects(ref);
-      referenceSql = migrationSql;
-    } finally {
-      ref.close();
-    }
+  const cached = referenceCache.get(migrationSql);
+  if (cached) return cached;
+  const ref = new Database(":memory:");
+  try {
+    ref.exec(migrationSql);
+    const objects = extractSchemaObjects(ref);
+    // Bounded cache also supports alternate isolated resource fixtures.
+    if (referenceCache.size >= 8) referenceCache.clear();
+    referenceCache.set(migrationSql, objects);
+    return objects;
+  } finally {
+    ref.close();
   }
-  return referenceObjects;
 }
 
 /**
  * Strictly verify that the candidate database's structure is byte-for-byte the
- * same as the one produced by migrations/versions/0001_initial.sql.
+ * same as the one produced by the ordered resources for its declared version.
  *
  * The previous check only compared the 16 table NAMES, so a database stamped
  * `user_version = 1` with the same names but corrupted columns / types / NOT NULL
@@ -175,36 +206,36 @@ function verifyBusinessSchemaMatches(db: Database, migrationSql: string): void {
   }
 }
 
-/**
- * Gate the business schema. Mirrors ensureProbeSchema: a fresh DB (user_version 0,
- * no tables) is migrated and stamped; a DB already at BUSINESS_SCHEMA_VERSION is
- * structure-checked; anything else is rejected with a REJECT_ error.
- */
-export function ensureBusinessSchema(db: Database, migrationSql = loadMigrationSql()): void {
-  getReferenceObjects(migrationSql);
+/** Validate the old schema before any DDL; migrate and stamp in one transaction. */
+export function ensureBusinessSchema(
+  db: Database,
+  migrationSql: BusinessMigrationSql = loadMigrationSql(),
+): void {
+  validateResources(migrationSql);
   runInTransaction(db, (tx) => {
     const version = getUserVersion(tx);
-
+    if (version < 0 || version > BUSINESS_SCHEMA_VERSION) {
+      throw new Error(`REJECT_UNKNOWN_VERSION: user_version=${version}`);
+    }
     if (version === 0) {
-      if (!hasAnyUserObjects(tx)) {
-        tx.exec(migrationSql);
-        setUserVersion(tx, BUSINESS_SCHEMA_VERSION);
-        return;
+      if (hasAnyUserObjects(tx)) {
+        throw new Error(
+          "REJECT_UNKNOWN_STRUCTURE: version-0 database already contains user objects",
+        );
       }
-      // A version-0 database that already holds user objects (table, view,
-      // trigger, or index) is not ours to migrate — reject it instead of
-      // layering our schema on top of an unknown structure.
-      throw new Error(
-        `REJECT_UNKNOWN_STRUCTURE: version-0 database already contains user objects (not a fresh business DB)`,
-      );
+    } else {
+      verifyBusinessSchemaMatches(tx, migrationSql.slice(0, version).join("\n"));
     }
-
-    if (version === BUSINESS_SCHEMA_VERSION) {
-      verifyBusinessSchemaMatches(tx, migrationSql);
-      return;
+    for (let next = version; next < BUSINESS_SCHEMA_VERSION; next++) {
+      tx.exec(migrationSql[next]);
+      verifyBusinessSchemaMatches(tx, migrationSql.slice(0, next + 1).join("\n"));
+      // Only v0/v1 databases create the library here. Never rewrite a persisted
+      // setting on v2+ reopen; DEFAULT clauses remain frozen for exact DDL gates.
+      if (next === 1) {
+        tx.query("UPDATE knowledge_settings SET context_budget = ? WHERE id = 1").run(16384);
+      }
+      setUserVersion(tx, next + 1);
     }
-
-    throw new Error(`REJECT_UNKNOWN_VERSION: user_version=${version}`);
   });
 }
 
@@ -213,10 +244,13 @@ export function ensureBusinessSchema(db: Database, migrationSql = loadMigrationS
  * a file-backed database. The gate runs first; on rejection the connection is
  * closed so no open handle leaks. Always call `close()` when done.
  */
-export function openBusinessDb(opts?: { path?: string; migrationSql?: string }): BusinessDbHandle {
+export function openBusinessDb(opts?: {
+  path?: string;
+  migrationSql?: BusinessMigrationSql;
+}): BusinessDbHandle {
   const migrationSql = opts?.migrationSql ?? loadMigrationSql();
   // Resolve and validate resources before touching a file-backed database.
-  getReferenceObjects(migrationSql);
+  validateResources(migrationSql);
   const db = openConnection(opts);
   const isFile = !!opts?.path && opts.path !== ":memory:";
   try {

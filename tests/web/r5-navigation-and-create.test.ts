@@ -520,7 +520,6 @@ describe("R5 首次打开入口默认规则", () => {
     expect(state.editorAgentId).toBe("__new__");
     expect(state.editorDraft).not.toBeNull();
     expect(state.editorDraft?.name).toBe("");
-    expect(state.detailOpen).toBe(true);
   });
 
   it("已有主动草稿重进不覆盖", () => {
@@ -553,7 +552,6 @@ describe("R5 同 ID 导航", () => {
 
     const state = useSuperstringStore.getState();
     expect(state.editorDraft).not.toBeNull();
-    expect(state.detailOpen).toBe(true);
   });
 
   it("同 ID 且已有草稿时立即返回", () => {

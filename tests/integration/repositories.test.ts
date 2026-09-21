@@ -46,6 +46,9 @@ function newHandle(): BusinessDbHandle {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(MIGRATION_SQL);
+  for (const file of ["0002_knowledge.sql", "0003_knowledge_read.sql", "0004_organization.sql"]) {
+    db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"));
+  }
   return toOrmHandle(db);
 }
 

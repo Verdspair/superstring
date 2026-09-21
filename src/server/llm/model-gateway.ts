@@ -6,6 +6,20 @@
 // is MODEL_SERVICE_UNAVAILABLE, an unknown/missing model is MODEL_NOT_LOADED,
 // and anything else is MODEL_ERROR.
 //
+// One addition on top of the source mapping: LM Studio can require an API token
+// (`tokenMode: "required"`). A 401/403 means the service IS reachable and
+// rejected the call, so it stays MODEL_SERVICE_UNAVAILABLE with an auth-specific
+// message instead of being folded into "the service is down" — or, on the
+// capacity probe, into MODEL_CAPACITY_UNAVAILABLE. The inherited 66-code
+// taxonomy is deliberately not extended (tests pin its size).
+//
+// The token itself is configurable (`LM_STUDIO_API_KEY`), because requiring a
+// token is a legitimate LM Studio setting and the previous hard-coded
+// `Bearer lm-studio` made that configuration unusable. Every call carries it —
+// including the `/api/v1/models` capacity probe, which used to be sent with no
+// Authorization header at all and therefore failed the moment a token was
+// required, even after the chat path had been given the right one.
+//
 // Two source behaviours worth calling out:
 //   1. `capacity_from_catalog` reads the capacity of the LOADED INSTANCE, never
 //      the model's theoretical maximum, and refuses to guess when several
@@ -29,7 +43,16 @@ export interface LmStudioConfig {
   baseUrl: string;
   model: string;
   timeoutSeconds: number;
+  /**
+   * Bearer token sent to the model service. Optional so test doubles and
+   * pre-existing config literals stay valid; `resolveLmStudioConfig` always
+   * fills it. Empty/absent falls back to the LM Studio default token.
+   */
+  apiKey?: string;
 }
+
+/** LM Studio accepts any bearer token while `Require API token` is off. */
+export const DEFAULT_LM_STUDIO_API_KEY = "lm-studio";
 
 /** Read the new project's own LM Studio settings. Never touches the old `.env`. */
 export function resolveLmStudioConfig(
@@ -37,10 +60,19 @@ export function resolveLmStudioConfig(
 ): LmStudioConfig {
   const baseUrl = (env.LM_STUDIO_BASE_URL ?? "").trim() || "http://127.0.0.1:1234/v1";
   const model = (env.LM_STUDIO_MODEL ?? "").trim() || "qwen/qwen3-4b-2507";
+  const apiKey = (env.LM_STUDIO_API_KEY ?? "").trim() || DEFAULT_LM_STUDIO_API_KEY;
   const rawTimeout = (env.LM_STUDIO_TIMEOUT ?? "").trim();
   const parsed = rawTimeout === "" ? Number.NaN : Number(rawTimeout);
-  const timeoutSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 60;
-  return { baseUrl: baseUrl.replace(/\/+$/, ""), model, timeoutSeconds };
+  // Default 1200s, not 60s: `requestLifetime` keeps its timer until the response
+  // body has been fully consumed (streaming included), so this value is the
+  // wall-clock budget of one whole turn. Measured on a local 27B model, one
+  // memory-consolidation call takes 53-110s, and a long answer on slower
+  // hardware (a few tokens/second) legitimately runs into the hundreds of
+  // seconds — a 60s default made turns fail at random (P2 acceptance evidence:
+  // outputs/p2-memory-repro-*). Cancelling a turn still works immediately, so a
+  // generous default costs little; `LM_STUDIO_TIMEOUT` lowers it.
+  const timeoutSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 1200;
+  return { baseUrl: baseUrl.replace(/\/+$/, ""), model, timeoutSeconds, apiKey };
 }
 
 export interface ModelGateway {
@@ -74,6 +106,29 @@ export interface ModelGateway {
 }
 
 /**
+ * LM Studio rejects every unauthenticated call with 401 once its server is set
+ * to require an API token. Shares `MODEL_SERVICE_UNAVAILABLE` (the inherited
+ * taxonomy has no auth code) but says what actually happened AND what to do:
+ * the token is configurable, so the fix is a setting rather than a guess.
+ * Without this branch the capacity probe reported "cannot read the loaded
+ * capacity, check the local model service" and sent the user looking for a
+ * service that was running fine.
+ */
+const MODEL_AUTH_MESSAGE =
+  "LM Studio 需要 API token（鉴权失败）：服务可达但请求未获授权。请在 LM Studio 的 " +
+  "Developer → Server 设置中复制 API token，设为环境变量 LM_STUDIO_API_KEY 后重启；" +
+  "或关闭 LM Studio 的 Require API token";
+
+function isAuthRejection(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+/** Bearer token for every call, including the capacity probe. */
+function authToken(cfg: LmStudioConfig): string {
+  return (cfg.apiKey ?? "").trim() || DEFAULT_LM_STUDIO_API_KEY;
+}
+
+/**
  * Translate a transport/HTTP failure into the source's `ModelUnavailableError`.
  * `map_model_error` (model_gateway.py:44-61).
  */
@@ -87,6 +142,9 @@ export function mapModelError(error: unknown): ModelUnavailableError {
 
   if (name === "TimeoutError" || name === "AbortError" || /timed? ?out/i.test(message)) {
     return new ModelUnavailableError("MODEL_TIMEOUT", "本地模型响应超时，请重试");
+  }
+  if (isAuthRejection(status ?? 0)) {
+    return new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", MODEL_AUTH_MESSAGE);
   }
   if (status === 404 || ((status === 400 || status === 404) && /model/i.test(message))) {
     return new ModelUnavailableError("MODEL_NOT_LOADED", "LM Studio 未加载指定模型");
@@ -265,7 +323,6 @@ async function request(
   path: string,
   init: RequestInit,
   lifetime: ReturnType<typeof requestLifetime>,
-  apiKey = "lm-studio",
 ): Promise<Response> {
   try {
     const response = await localhostFetch(`${cfg.baseUrl}${path}`, {
@@ -273,7 +330,7 @@ async function request(
       signal: lifetime.signal,
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
+        authorization: `Bearer ${authToken(cfg)}`,
         ...(init.headers ?? {}),
       },
     });
@@ -360,8 +417,16 @@ export function createLmStudioClient(
       const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
       const lifetime = requestLifetime(10_000, options?.signal);
       try {
-        const response = await localhostFetch(url, { signal: lifetime.signal });
+        // The native catalog sits on the same origin as the OpenAI-compatible
+        // API and needs the same bearer token once a token is required.
+        const response = await localhostFetch(url, {
+          signal: lifetime.signal,
+          headers: { authorization: `Bearer ${authToken(config)}` },
+        });
         if (response.status === 404) return null;
+        if (isAuthRejection(response.status)) {
+          throw new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", MODEL_AUTH_MESSAGE);
+        }
         if (!response.ok) throw new Error(`Capacity HTTP ${response.status}`);
         // Read transport bytes before the parse-only fallback, as httpx.get does.
         const text = await response.text();

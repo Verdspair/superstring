@@ -10,6 +10,9 @@ import {
   EntriesListSchema,
   ErrorEnvelopeSchema,
   LocalModelCatalogResponseSchema,
+  type MemoryContentResponse,
+  MemoryContentResponseSchema,
+  type MemoryCorrection,
   type MemoryEntryResponse,
   MemoryEntryResponseSchema,
   type MemoryJobView,
@@ -33,6 +36,23 @@ import {
   type TurnsList,
   TurnsListSchema,
 } from "../shared/contracts";
+import {
+  AgentKnowledgeReadSettingsSchema,
+  type AgentKnowledgeReadUpdate,
+  AgentKnowledgeSchema,
+  type KnowledgeBatchGrant,
+  KnowledgeCategorySchema,
+  KnowledgeDocumentDetailSchema,
+  KnowledgeDocumentSchema,
+  type KnowledgeDocumentUpdate,
+  type KnowledgeImport,
+  KnowledgeSettingsSchema,
+  type KnowledgeSettingsUpdate,
+} from "../shared/contracts/knowledge";
+import {
+  OrganizationSettingsSchema,
+  type OrganizationSettingsUpdate,
+} from "../shared/contracts/organization";
 import { msg } from "./i18n";
 
 export class ApiError extends Error {
@@ -74,6 +94,76 @@ function json(method: string, body: unknown): RequestInit {
 }
 
 export const api = {
+  getOrganizationSettings: () => requestJson("/organization/settings", OrganizationSettingsSchema),
+  saveOrganizationSettings: (body: OrganizationSettingsUpdate) =>
+    requestJson("/organization/settings", OrganizationSettingsSchema, json("PUT", body)),
+  getAgentKnowledgeRead: (id: string) =>
+    requestJson(`/agents/${id}/knowledge-read-settings`, AgentKnowledgeReadSettingsSchema),
+  saveAgentKnowledgeRead: (id: string, body: AgentKnowledgeReadUpdate) =>
+    requestJson(
+      `/agents/${id}/knowledge-read-settings`,
+      AgentKnowledgeReadSettingsSchema,
+      json("PUT", body),
+    ),
+  getKnowledgeSettings: () => requestJson("/knowledge/settings", KnowledgeSettingsSchema),
+  saveKnowledgeSettings: (body: KnowledgeSettingsUpdate) =>
+    requestJson("/knowledge/settings", KnowledgeSettingsSchema, json("PUT", body)),
+  listKnowledgeCategories: () =>
+    requestJson("/knowledge/categories", KnowledgeCategorySchema.array()),
+  createKnowledgeCategory: (name: string) =>
+    requestJson("/knowledge/categories", KnowledgeCategorySchema, json("POST", { name })),
+  renameKnowledgeCategory: (id: string, name: string, expected_revision: number) =>
+    requestJson(
+      `/knowledge/categories/${id}`,
+      KnowledgeCategorySchema,
+      json("PATCH", { name, expected_revision }),
+    ),
+  async deleteKnowledgeCategory(
+    id: string,
+    expected_revision: number,
+    move_to?: string,
+  ): Promise<void> {
+    const response = await fetch(
+      `/knowledge/categories/${id}`,
+      json("DELETE", { expected_revision, move_to }),
+    );
+    if (!response.ok) throw await responseError(response);
+  },
+  listKnowledgeDocuments: () =>
+    requestJson("/knowledge/documents", KnowledgeDocumentSchema.array()),
+  getKnowledgeDocument: (id: string) =>
+    requestJson(`/knowledge/documents/${id}`, KnowledgeDocumentDetailSchema),
+  importKnowledgeText: (body: KnowledgeImport) =>
+    requestJson("/knowledge/documents", KnowledgeDocumentDetailSchema, json("POST", body)),
+  importKnowledgeFile(file: File, categoryId: string, name: string) {
+    const body = new FormData();
+    body.set("file", file);
+    body.set("category_id", categoryId);
+    body.set("name", name);
+    return requestJson("/knowledge/import", KnowledgeDocumentDetailSchema, {
+      method: "POST",
+      body,
+    });
+  },
+  updateKnowledgeDocument: (id: string, body: KnowledgeDocumentUpdate) =>
+    requestJson(`/knowledge/documents/${id}`, KnowledgeDocumentDetailSchema, json("PATCH", body)),
+  saveKnowledgeGrants: (id: string, expected_revision: number, agent_ids: string[]) =>
+    requestJson(
+      `/knowledge/documents/${id}/grants`,
+      KnowledgeDocumentDetailSchema,
+      json("PUT", { expected_revision, agent_ids }),
+    ),
+  batchKnowledgeGrants: (body: KnowledgeBatchGrant) =>
+    requestJson("/knowledge/grants/batch", KnowledgeDocumentSchema.array(), json("POST", body)),
+  async deleteKnowledgeDocument(id: string, expected_revision: number): Promise<void> {
+    const response = await fetch(
+      `/knowledge/documents/${id}`,
+      json("DELETE", { expected_revision }),
+    );
+    if (!response.ok) throw await responseError(response);
+  },
+  listAgentKnowledge: (id: string) =>
+    requestJson(`/agents/${id}/knowledge`, AgentKnowledgeSchema.array()),
   getBrowserStateConfig(): Promise<BrowserStateConfig> {
     return requestJson("/browser-state/config", BrowserStateConfigSchema);
   },
@@ -164,6 +254,23 @@ export const api = {
   getMemoryEntry(agentId: string, memoryId: string): Promise<MemoryEntryResponse> {
     return requestJson(`/agents/${agentId}/memory/entries/${memoryId}`, MemoryEntryResponseSchema);
   },
+  getMemoryContent(agentId: string, memoryId: string): Promise<MemoryContentResponse> {
+    return requestJson(
+      `/agents/${agentId}/memory/entries/${memoryId}/content`,
+      MemoryContentResponseSchema,
+    );
+  },
+  correctMemory(
+    agentId: string,
+    memoryId: string,
+    body: MemoryCorrection,
+  ): Promise<MemoryContentResponse> {
+    return requestJson(
+      `/agents/${agentId}/memory/entries/${memoryId}/correct`,
+      MemoryContentResponseSchema,
+      json("POST", body),
+    );
+  },
   listMemoryJobs(agentId: string): Promise<MemoryJobView[]> {
     return requestJson(`/agents/${agentId}/memory/jobs`, MemoryJobViewSchema.array());
   },
@@ -204,6 +311,10 @@ export async function streamChat(
 ): Promise<void> {
   const response = await fetch("/chat", {
     ...json("POST", body),
+    headers: {
+      "content-type": "application/json",
+      "X-Superstring-Context-Usage": "1",
+    },
     signal,
   });
   if (!response.ok) throw await responseError(response);

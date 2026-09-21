@@ -27,39 +27,10 @@ import {
 } from "../db/repositories";
 import * as schema from "../db/schema";
 import { AppError, ValidationError } from "../errors";
+import { agentConfigFields } from "./agent-config-fields";
 
 export type AgentRow = typeof schema.agents.$inferSelect;
 export type PersonaRow = typeof schema.agentPersonas.$inferSelect;
-
-/**
- * The exact key set of `AgentConfig` (agent_config.py:33-58). Used to build the
- * `current` mapping that mirrors
- * `{key: getattr(agent, key) for key in AgentConfig.model_fields}`.
- */
-function currentConfig(row: AgentRow): Record<string, unknown> {
-  let p5: unknown = {};
-  try {
-    p5 = row.p5Config ? JSON.parse(row.p5Config) : {};
-  } catch {
-    p5 = {};
-  }
-  return {
-    name: row.name,
-    description: row.description,
-    system_prompt: row.systemPrompt,
-    additional_instructions: row.additionalInstructions,
-    model_name: row.modelName,
-    temperature: row.temperature,
-    memory_consolidation_model_name: row.memoryConsolidationModelName,
-    memory_consolidation_prompt: row.memoryConsolidationPrompt,
-    memory_consolidation_additional_instructions: row.memoryConsolidationAdditionalInstructions,
-    memory_retrieval_model_name: row.memoryRetrievalModelName,
-    memory_retrieval_prompt: row.memoryRetrievalPrompt,
-    context_compression_model_name: row.contextCompressionModelName,
-    p5_config: p5,
-    is_active: row.isActive === 1,
-  };
-}
 
 /** Stable key order so two parsed configs compare structurally. */
 function canonical(value: unknown): string {
@@ -130,6 +101,7 @@ export function createAgent(
     })
     .run();
 
+  orm.insert(schema.agentKnowledgeReadSettings).values({ agentId }).run();
   orm
     .insert(schema.agentPersonas)
     .values({
@@ -211,7 +183,7 @@ export function updateAgent(
     throw new AppError("CONFIG_VERSION_CONFLICT", "配置已被修改，请重新加载后保存", 409);
   }
 
-  const current = currentConfig(agent);
+  const current = agentConfigFields(agent);
   // `extra="forbid"` means an unknown key (notably `persona_intensity`) is a
   // 422, exactly like the source.
   const parsed = AgentConfigSchema.safeParse({ ...current, ...changes });

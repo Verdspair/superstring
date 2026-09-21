@@ -5,12 +5,13 @@ import type { Hono } from "hono";
 import { createApp } from "./app";
 import { browserStateSecret } from "./browser-state";
 import type { BusinessDbHandle } from "./db/connection";
-import { openBusinessDb } from "./db/schema-gate";
+import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import {
   createLmStudioClient,
   type ModelGateway,
   resolveLmStudioConfig,
 } from "./llm/model-gateway";
+import { KnowledgeOrganizer } from "./services/knowledge-organizer";
 import { MemoryService } from "./services/memory-service";
 
 export const DEFAULT_BUSINESS_DB_PATH = path.resolve("data/superstring.sqlite");
@@ -32,7 +33,7 @@ export interface RuntimeOptions {
   memoryService?: MemoryService;
   browserStateSecret?: string;
   browserStateSecretPath?: string;
-  businessMigrationSql?: string;
+  businessMigrationSql?: BusinessMigrationSql;
 }
 
 export interface SuperstringRuntime {
@@ -54,10 +55,12 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let gateway: ModelGateway;
   let memoryService: MemoryService;
   let app: Hono;
+  let knowledgeOrganizer: KnowledgeOrganizer;
   try {
     gateway = options.gateway ?? createLmStudioClient(resolveLmStudioConfig());
     memoryService =
       options.memoryService ?? new MemoryService({ orm: business.orm, db: business.db, gateway });
+    knowledgeOrganizer = new KnowledgeOrganizer({ db: business.db, gateway });
     app = createApp({
       business,
       gateway,
@@ -80,11 +83,12 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       if (started || stopped) return;
       started = true;
       memoryService.start();
+      knowledgeOrganizer.start();
     },
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
-      if (started) await memoryService.stop();
+      if (started) await Promise.all([memoryService.stop(), knowledgeOrganizer.stop()]);
       business.close();
     },
   };

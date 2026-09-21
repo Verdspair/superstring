@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IsoTimestampSchema, nonBlankString, UuidSchema } from "./common";
+import { ContextUsageSchema } from "./context-usage";
 import { ErrorCodeSchema } from "./errors";
 
 /**
@@ -72,12 +73,20 @@ export const SseErrorEventSchema = z.strictObject({
 
 export type SseErrorEvent = z.infer<typeof SseErrorEventSchema>;
 
-/** Discriminated union of the 4 SSE events, keyed by `event`. */
+/** Read-only accounting for the assembled request, emitted before model deltas. */
+export const SseContextEventSchema = z.strictObject({
+  event: z.literal("context"),
+  request_id: z.string(),
+  usage: ContextUsageSchema,
+});
+
+/** Discriminated union of SSE events, keyed by `event`. */
 export const SseEventSchema = z.discriminatedUnion("event", [
   SseStartEventSchema,
   SseDeltaEventSchema,
   SseDoneEventSchema,
   SseErrorEventSchema,
+  SseContextEventSchema,
 ]);
 
 export type SseEvent = z.infer<typeof SseEventSchema>;

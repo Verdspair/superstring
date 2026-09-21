@@ -783,6 +783,59 @@ async function main() {
     } finally {
       await stub.close();
     }
+
+    // LM Studio can be told to require an API token. A 401 must be reported as
+    // "the service is up but refused the call" (with the fix), not as an
+    // unreachable service — and the probe must actually send the configured
+    // token instead of always being anonymous.
+    const requiredToken = "synthetic-required-token";
+    const protectedStub = await startHttpStub((req, res) => {
+      if (req.url?.split("?")[0] !== "/v1/models") {
+        res.writeHead(404).end("not found");
+        return;
+      }
+      if ((req.headers.authorization ?? "") === `Bearer ${requiredToken}`) {
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ data: [] }));
+        return;
+      }
+      res
+        .writeHead(401, { "content-type": "application/json" })
+        .end('{"error":{"code":"invalid_api_key"}}');
+    });
+    try {
+      const base = `http://127.0.0.1:${protectedStub.port}/v1`;
+      const anonymous = await runAsync(
+        bun,
+        [START_TS, "--check", "--port", String(PREFLIGHT_PORT)],
+        {
+          cwd: ROOT,
+          env: { ...process.env, LM_STUDIO_BASE_URL: base, LM_STUDIO_API_KEY: "" },
+        },
+      );
+      record(
+        "model-probe-auth-required",
+        anonymous.status === 0 &&
+          anonymous.stdout.includes("model svc   : AUTH REQUIRED") &&
+          anonymous.stdout.includes("LM_STUDIO_API_KEY"),
+        `exit=${anonymous.status} port=${protectedStub.port} stubSaw=${JSON.stringify(protectedStub.requests)}\n--- stdout ---\n${anonymous.stdout}`,
+        anonymous,
+      );
+
+      const withKey = await runAsync(bun, [START_TS, "--check", "--port", String(PREFLIGHT_PORT)], {
+        cwd: ROOT,
+        env: { ...process.env, LM_STUDIO_BASE_URL: base, LM_STUDIO_API_KEY: requiredToken },
+      });
+      record(
+        "model-probe-token-accepted",
+        withKey.status === 0 && withKey.stdout.includes("model svc   : connected"),
+        `exit=${withKey.status} port=${protectedStub.port}\n--- stdout ---\n${withKey.stdout}`,
+        withKey,
+      );
+    } finally {
+      await protectedStub.close();
+    }
   }
 
   // Browser opener, direct: must resolve the URL from a real /health probe and

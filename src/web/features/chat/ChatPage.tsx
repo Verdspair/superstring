@@ -1,14 +1,26 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { HeadingIcon, Icon } from "../../ui/icons";
 import { localTime } from "../../ui/local-time";
 import { ProcessingStatus } from "../../ui/ProcessingStatus";
+import { ContextUsagePanel } from "./ContextUsagePanel";
 import { menuPosition } from "./menu-position";
 
 export function ChatPage() {
   const t = useI18n();
+  const composerRef = useRef<HTMLDivElement | null>(null);
+  const [composerHeight, setComposerHeight] = useState(120);
+  useLayoutEffect(() => {
+    const element = composerRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() =>
+      setComposerHeight(element.getBoundingClientRect().height),
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const sessions = useSuperstringStore((state) => state.sessions);
   const currentSessionId = useSuperstringStore((state) => state.currentSessionId);
   const messages = useSuperstringStore((state) => state.messages);
@@ -21,6 +33,11 @@ export function ChatPage() {
   const feedback = useSuperstringStore((state) => state.feedback);
   const setComposer = useSuperstringStore((state) => state.setComposer);
   const send = useSuperstringStore((state) => state.send);
+  const failedChat = useSuperstringStore((state) => state.failedChat);
+  const knowledgeResend = useSuperstringStore((state) => state.knowledgeResend);
+  const retryChat = useSuperstringStore((state) => state.retryChat);
+  const resendKnowledgeChat = useSuperstringStore((state) => state.resendKnowledgeChat);
+  const cancelKnowledgeResend = useSuperstringStore((state) => state.cancelKnowledgeResend);
   const deleteMessageAction = useSuperstringStore((state) => state.deleteMessage);
   const current = sessions.find((item) => item.id === currentSessionId);
   const modeLabel =
@@ -109,7 +126,10 @@ export function ChatPage() {
 
   const deleteMessage = (id: string) => deleteMessageAction(currentSessionId, id);
   return (
-    <section className="page chat-page">
+    <section
+      className="page chat-page"
+      style={{ "--composer-space": `${composerHeight + 30}px` } as CSSProperties}
+    >
       <header className="page-header chat-header">
         <div>
           <h1>
@@ -205,7 +225,20 @@ export function ChatPage() {
           }}
         />
       )}
-      <div className="composer-wrap">
+      {knowledgeResend && knowledgeResend.sessionId === currentSessionId && (
+        <ConfirmDialog
+          message={t("资料权限已变化，原请求不能重试。是否按最新权限重新发送？这将创建新请求。")}
+          confirmLabel={t("按最新权限重新发送")}
+          onCancel={cancelKnowledgeResend}
+          onConfirm={() => void resendKnowledgeChat()}
+        />
+      )}
+      <div className="composer-wrap" ref={composerRef}>
+        {(error || feedback) && (
+          <div className={error ? "status error" : "status"}>
+            {translateNotice(error ?? feedback)}
+          </div>
+        )}
         <textarea
           value={composer}
           onChange={(event) => setComposer(event.target.value)}
@@ -221,17 +254,24 @@ export function ChatPage() {
         />
         <div className="composer-actions">
           <span>{t("Enter 发送 · Shift + Enter 换行")}</span>
-          <button type="button" className="primary" disabled={sending} onClick={() => void send()}>
+          <ContextUsagePanel />
+          {failedChat?.sessionId === currentSessionId && (
+            <button type="button" disabled={sending} onClick={() => void retryChat()}>
+              {t("重试原请求")}
+            </button>
+          )}
+          <button
+            type="button"
+            className="primary"
+            aria-label={sending ? t("生成中") : t("发送")}
+            disabled={sending}
+            onClick={() => void send()}
+          >
             {sending ? t("生成中") : t("发送")}
           </button>
         </div>
       </div>
       <ProcessingStatus active={sending || pendingOperations > 0} />
-      {(error || feedback) && (
-        <div className={error ? "status error" : "status"}>
-          {translateNotice(error ?? feedback)}
-        </div>
-      )}
     </section>
   );
 }

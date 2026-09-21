@@ -19,31 +19,3 @@ export function Field({
     </div>
   );
 }
-
-export function NumberField({
-  value,
-  min,
-  max,
-  step = 1,
-  disabled = false,
-  onChange,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  step?: number;
-  disabled?: boolean;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <input
-      type="number"
-      value={value}
-      min={min}
-      max={max}
-      step={step}
-      disabled={disabled}
-      onChange={(event) => onChange(Number(event.target.value))}
-    />
-  );
-}

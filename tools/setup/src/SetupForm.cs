@@ -110,7 +110,7 @@ namespace Superstring.Setup
             var hint = new Label
             {
                 Font = Font,
-                Text = "程序与聊天数据都会保存在这个目录下；可以改到其他磁盘。",
+                Text = "程序与聊天数据保存在此目录，可选择其他磁盘。",
                 ForeColor = MutedColor,
                 AutoSize = true,
                 MaximumSize = new Size(632, 0),

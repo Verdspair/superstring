@@ -16,7 +16,6 @@
 
 import { and, asc, desc, eq, inArray, notExists, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import { JOB_LEVEL_ERROR_CODES } from "../../shared/contracts/errors";
 import { AppError, fail } from "../errors";
 import {
   DEFAULT_SCOPE,
@@ -24,6 +23,12 @@ import {
   scopeKey,
   TEMPLATE_VERSION,
 } from "../services/memory-contract";
+import {
+  correctionMetadata,
+  correctionSnapshot,
+  isCorrectionRetired,
+} from "../services/memory-revision";
+import { readOrganizationSettings } from "./organization-repository";
 import {
   DEFAULT_USER_ID,
   getAgent,
@@ -87,7 +92,7 @@ export function policy(orm: Orm, agentId: string): MemoryPolicyRow {
           userId: DEFAULT_USER_ID,
           autoEnabled: 0,
           everyTurns: 20,
-          targetChars: 300,
+          targetChars: 1200,
           version: 1,
           governanceEpoch: 0,
         })
@@ -450,7 +455,10 @@ export function enqueue(
   }
 
   const snapshot = {
-    model: agent.memoryConsolidationModelName || agent.modelName,
+    model:
+      agent.memoryConsolidationModelName ||
+      readOrganizationSettings(orm).model_name ||
+      agent.modelName,
     base_prompt: agent.memoryConsolidationPrompt,
     additional: agent.memoryConsolidationAdditionalInstructions,
     target_chars: p.targetChars,
@@ -517,6 +525,9 @@ export function govern(orm: Orm, agentId: string, ids: string[], action: string)
   const selected = entries(orm, agentId, ids);
 
   if (action === "enable") {
+    if (selected.some((i) => isCorrectionRetired(i.configSnapshot))) {
+      fail("MEMORY_STATE_CONFLICT", "已被纠正的旧记忆及其派生内容不能重新启用");
+    }
     if (selected.some((i) => i.status === "invalid")) {
       fail("MEMORY_SOURCE_INVALID", "来源已失效的记忆不能重新启用");
     }
@@ -670,12 +681,15 @@ export function publish(
       fail("MEMORY_STATE_CONFLICT", "来源记忆状态已变化");
     }
     const sources = validateEntrySources(orm, selected);
-    sourceRows = sources.map((s) => ({
-      turn_id: s.turnId,
-      user_message_id: s.userMessageId,
-      assistant_message_id: s.assistantMessageId,
-      sequence_no: s.sequenceNo,
-    }));
+    // Several memories can share a turn; the merged entry stores that source once.
+    sourceRows = [...new Map(sources.map((source) => [source.turnId, source])).values()].map(
+      (s) => ({
+        turn_id: s.turnId,
+        user_message_id: s.userMessageId,
+        assistant_message_id: s.assistantMessageId,
+        sequence_no: s.sequenceNo,
+      }),
+    );
   } else {
     const rows = turns(orm, agentId, job.sessionId, { ids: JSON.parse(job.turnIds) as string[] });
     sourceRows = rows.map(({ turn, user, assistant }) => ({
@@ -702,7 +716,13 @@ export function publish(
         scope: snapshot.scope,
         scopeKey: snapshot.scope_key,
         status: "active",
-        configSnapshot: job.configSnapshot,
+        configSnapshot: selected.some((item) => correctionMetadata(item.configSnapshot) !== null)
+          ? correctionSnapshot(
+              job.configSnapshot,
+              selected[0].id,
+              selected.flatMap((item) => correctionMetadata(item.configSnapshot)?.rejected ?? []),
+            )
+          : job.configSnapshot,
         createdAt: nowIso(),
       })
       .returning()
@@ -784,9 +804,6 @@ export function updateJobRow(
   if (!row) throw new AppError("MEMORY_JOB_NOT_FOUND", "整理任务不存在", 404);
   return row;
 }
-
-/** Codes that only ever appear on a `memory_jobs.error_code` (see errors.ts). */
-export const JOB_ONLY_ERROR_CODES = JOB_LEVEL_ERROR_CODES;
 
 // `sql` is re-exported so route modules can build ad-hoc predicates without a
 // second drizzle import (keeps the import graph shallow).

@@ -65,6 +65,74 @@ function json(body: unknown, method = "POST"): RequestInit {
 
 const UUID_A = "11111111-1111-4111-8111-111111111111";
 
+describe("stored agent configuration integrity", () => {
+  for (const stored of ["not-json", "", "null", "[]", '{"max_output_tokens":-1}']) {
+    it(`rejects damaged stored P5 without writing: ${JSON.stringify(stored)}`, async () => {
+      const { app, business } = makeApp();
+      try {
+        await seedDefaults(app);
+        const created = await app.request("/sessions", json({ title: "Before corruption" }));
+        const session = (await created.json()) as { id: string };
+        expect(created.status).toBe(201);
+        business.db
+          .query("UPDATE agents SET p5_config = ? WHERE id = ?")
+          .run(stored, DEFAULT_AGENT_ID);
+        const before = business.db.query("SELECT * FROM agents WHERE id = ?").get(DEFAULT_AGENT_ID);
+        const count = () => business.db.query("SELECT count(*) AS n FROM sessions").get();
+        const sessionsBefore = count();
+        for (const [url, init] of [
+          ["/agents", undefined],
+          [`/agents/${DEFAULT_AGENT_ID}`, undefined],
+          [
+            `/agents/${DEFAULT_AGENT_ID}`,
+            json({ expected_version: 1, description: "must not save" }, "PATCH"),
+          ],
+          ["/sessions", json({ title: "Must not create" })],
+          [`/sessions/${session.id}/runtime-config`, undefined],
+        ] as const) {
+          const response = await app.request(url, init);
+          expect(response.status).toBe(409);
+          const body = (await response.json()) as { error: { code: string } };
+          expect(body.error.code).toBe("INVALID_SESSION_CONFIG");
+        }
+        expect(
+          business.db.query("SELECT * FROM agents WHERE id = ?").get(DEFAULT_AGENT_ID),
+        ).toEqual(before);
+        expect(count()).toEqual(sessionsBefore);
+        expect(business.db.query("SELECT count(*) AS n FROM turns").get()).toEqual({ n: 0 });
+      } finally {
+        business.close();
+      }
+    });
+  }
+  it("accepts old missing fields and retired recall values without rewriting stored JSON", async () => {
+    const { app, business } = makeApp();
+    try {
+      await seedDefaults(app);
+      for (const stored of ["{}", '{"recall_max_tokens":1234}']) {
+        business.db
+          .query("UPDATE agents SET p5_config = ? WHERE id = ?")
+          .run(stored, DEFAULT_AGENT_ID);
+        const agent = await app.request(`/agents/${DEFAULT_AGENT_ID}`);
+        expect(agent.status).toBe(200);
+        expect(((await agent.json()) as { p5_config: unknown }).p5_config).toEqual(
+          JSON.parse(stored),
+        );
+        const response = await app.request("/sessions", json({ title: "Compatible" }));
+        expect(response.status).toBe(201);
+        const session = (await response.json()) as { id: string };
+        const runtime = await app.request(`/sessions/${session.id}/runtime-config`);
+        expect(runtime.status).toBe(200);
+        expect(
+          business.db.query("SELECT p5_config FROM agents WHERE id = ?").get(DEFAULT_AGENT_ID),
+        ).toEqual({ p5_config: stored });
+      }
+    } finally {
+      business.close();
+    }
+  });
+});
+
 describe("agents routes", () => {
   it("GET /agents auto-creates and lists the default agent", async () => {
     const { app } = makeApp();
@@ -559,7 +627,7 @@ describe("health route", () => {
     expect(body.schema).toBe("ok");
     expect(body.model_service).toBe("ok");
     expect(body.model_loaded).toBe(true);
-    expect(body.version).toBe("0.2.0-alpha");
+    expect(body.version).toBe("0.2.1");
     expect(typeof body.instance_id).toBe("string");
   });
 
@@ -571,7 +639,7 @@ describe("health route", () => {
     expect(body.status).toBe("degraded");
     expect(body.model_service).toBe("ok");
     expect(body.model_loaded).toBe(false);
-    expect(BUSINESS_SCHEMA_VERSION).toBe(1);
+    expect(BUSINESS_SCHEMA_VERSION).toBe(4);
   });
 
   it("reports degraded when the model service is unreachable", async () => {

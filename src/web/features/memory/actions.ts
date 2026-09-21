@@ -7,7 +7,13 @@ export function createMemoryActions(
   get: StoreGet,
 ): Pick<
   SuperstringState,
+  | "resetMemoryManagement"
+  | "clearMemoryTurns"
   | "reloadMemory"
+  | "loadMemoryContent"
+  | "patchMemoryCorrection"
+  | "saveMemoryCorrection"
+  | "discardMemoryCorrection"
   | "loadMemoryTurns"
   | "loadMemoryPage"
   | "loadMemoryEntryDetail"
@@ -16,8 +22,151 @@ export function createMemoryActions(
   | "governMemories"
   | "mergeMemories"
 > {
+  let selectionRequest = 0;
+  let managementEpoch = 0;
+  let turnsRequest = 0;
+  const currentContext = () => {
+    const { editorAgentId, page, settingsView, settingsRoute, pageEditor, apiClient } = get();
+    const epoch = managementEpoch;
+    return () => {
+      const state = get();
+      return (
+        epoch === managementEpoch &&
+        state.editorAgentId === editorAgentId &&
+        state.page === page &&
+        state.settingsView === settingsView &&
+        state.settingsRoute === settingsRoute &&
+        state.pageEditor?.token === pageEditor?.token &&
+        state.apiClient === apiClient
+      );
+    };
+  };
   return {
+    resetMemoryManagement: () => {
+      managementEpoch += 1;
+      selectionRequest += 1;
+      turnsRequest += 1;
+      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
+      set({
+        memoryTurns: [],
+        memoryEntries: [],
+        memoryEntryTotal: 0,
+        memoryEntryDetail: null,
+        memoryContent: null,
+        memoryCorrectionDraft: null,
+      });
+    },
+    clearMemoryTurns: () => {
+      turnsRequest += 1;
+      set({ memoryTurns: [] });
+    },
+    discardMemoryCorrection: () => {
+      if (get().memoryCorrectionSaving) return;
+      selectionRequest += 1;
+      set({
+        memoryContent: null,
+        memoryCorrectionDraft: null,
+        memoryCorrectionDirty: false,
+      });
+    },
+    patchMemoryCorrection: (patch) => {
+      const draft = get().memoryCorrectionDraft;
+      if (draft && !get().memoryCorrectionSaving)
+        set({
+          memoryCorrectionDraft: { ...draft, ...patch },
+          memoryCorrectionDirty: true,
+        });
+    },
+    loadMemoryContent: async () => {
+      const agentId = get().editorAgentId;
+      const id = get().memoryEntryDetail?.id;
+      if (!id || get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
+      const request = ++selectionRequest;
+      const matches = currentContext();
+      try {
+        const detail = await get().apiClient.getMemoryContent(agentId, id);
+        if (
+          !matches() ||
+          request !== selectionRequest ||
+          get().editorAgentId !== agentId ||
+          get().memoryEntryDetail?.id !== id ||
+          get().memoryCorrectionDirty ||
+          get().memoryCorrectionSaving
+        )
+          return;
+        const c = detail.content;
+        set({
+          memoryContent: detail,
+          memoryCorrectionDraft: {
+            expected_revision: c.revision,
+            name: c.name,
+            summary: c.summary,
+            tags: c.tags,
+            body: c.body ?? "",
+          },
+          memoryCorrectionDirty: false,
+          error: null,
+        });
+      } catch (error) {
+        if (!matches() || request !== selectionRequest) return;
+        set({ error: errorText(error) });
+      }
+    },
+    saveMemoryCorrection: async () => {
+      const agentId = get().editorAgentId;
+      const detail = get().memoryContent;
+      const draft = get().memoryCorrectionDraft;
+      if (!get().memoryCorrectionDirty) return true;
+      if (!detail || !draft || get().memoryCorrectionSaving) return false;
+      set({ memoryCorrectionSaving: true });
+      try {
+        const saved = await get().apiClient.correctMemory(agentId, detail.content.id, {
+          ...draft,
+          tags: draft.tags.filter((tag) => tag.trim().length > 0),
+        });
+        if (get().editorAgentId !== agentId) return true;
+        const c = saved.content;
+        const old = get().memoryEntryDetail;
+        set({
+          memoryContent: saved,
+          memoryCorrectionDraft: {
+            expected_revision: c.revision,
+            name: c.name,
+            summary: c.summary,
+            tags: c.tags,
+            body: c.body ?? "",
+          },
+          memoryCorrectionDirty: false,
+          memoryEntryDetail: old
+            ? {
+                ...old,
+                id: c.id,
+                name: c.name,
+                summary: c.summary,
+                body: c.body ?? "",
+                tags: c.tags,
+                status: saved.status,
+              }
+            : null,
+          memoryEntries: get().memoryEntries.map((item) =>
+            item.id === detail.content.id ? { ...item, status: "replaced" } : item,
+          ),
+          feedback: msg("记忆已纠正，后续新轮使用新修订；旧内容及派生已停用。"),
+          error: null,
+        });
+        return true;
+      } catch (error) {
+        set({ error: errorText(error) });
+        return false;
+      } finally {
+        set({ memoryCorrectionSaving: false });
+      }
+    },
     reloadMemory: async () => {
+      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
+      get().discardMemoryCorrection();
+      const request = selectionRequest;
+      const matches = currentContext();
       const id = get().editorAgentId;
       if (id === "__new__") {
         set({
@@ -38,9 +187,8 @@ export function createMemoryActions(
           get().apiClient.listMemorySessions(id),
           get().apiClient.listMemoryJobs(id),
         ]);
-        let feedback = msg(
-          "已加载。策略字段改动即保存；整理完成后可在“记忆列表与治理”中查看结果。",
-        );
+        if (!matches() || request !== selectionRequest || get().editorAgentId !== id) return;
+        let feedback = msg("已加载。整理完成后可在“记忆列表与治理”中查看结果。");
         const latest = memoryJobs[0];
         if (latest?.status === "failed") {
           feedback += msg(
@@ -50,7 +198,11 @@ export function createMemoryActions(
         } else if (latest && ["queued", "running"].includes(latest.status)) {
           feedback += msg("上次提交的整理任务仍在后台处理，稍后可重新打开本分区查看结果。");
         }
+        const editor = get().pageEditor;
         set({
+          ...(editor && editor.agent.id === id && !editor.policy
+            ? { pageEditor: { ...editor, policy, policyDraft: { ...policy } } }
+            : {}),
           policy,
           memorySessions,
           memoryTurns: [],
@@ -58,10 +210,11 @@ export function createMemoryActions(
           memoryEntryTotal: 0,
           memoryEntryDetail: null,
           memoryJobs,
-          feedback,
+          feedback: get().settingsView === "workspace" ? "" : feedback,
           error: null,
         });
       } catch (error) {
+        if (!matches() || request !== selectionRequest || get().editorAgentId !== id) return;
         set({
           policy: null,
           memorySessions: [],
@@ -77,14 +230,19 @@ export function createMemoryActions(
     loadMemoryTurns: async (sessionId, limit) => {
       const id = get().editorAgentId;
       if (id === "__new__") return;
+      const contextMatches = currentContext();
+      const request = ++turnsRequest;
+      const matches = () => contextMatches() && request === turnsRequest;
       try {
         const result = await get().apiClient.listMemoryTurns(id, sessionId, limit);
+        if (!matches()) return;
         set({
           memoryTurns: result.turns,
           feedback: msg("已加载；请勾选需要的轮次。"),
           error: null,
         });
       } catch (error) {
+        if (!matches()) return;
         set({
           memoryTurns: [],
           feedback: msg("记忆设置未能加载：{0}", errorText(error)),
@@ -92,6 +250,10 @@ export function createMemoryActions(
       }
     },
     loadMemoryPage: async (page) => {
+      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
+      get().discardMemoryCorrection();
+      const request = selectionRequest;
+      const matches = currentContext();
       const id = get().editorAgentId;
       if (id === "__new__") return;
       if (!Number.isInteger(page) || page < 1) {
@@ -100,6 +262,14 @@ export function createMemoryActions(
       }
       try {
         const result = await get().apiClient.listMemoryEntries(id, (page - 1) * 100, 100);
+        if (
+          !matches() ||
+          request !== selectionRequest ||
+          get().editorAgentId !== id ||
+          get().memoryCorrectionDirty ||
+          get().memoryCorrectionSaving
+        )
+          return;
         set({
           memoryEntries: result.items,
           memoryEntryTotal: result.total,
@@ -108,28 +278,43 @@ export function createMemoryActions(
           error: null,
         });
       } catch (error) {
+        if (!matches() || request !== selectionRequest) return;
         set({ feedback: msg("记忆设置未能加载：{0}", errorText(error)) });
       }
     },
     loadMemoryEntryDetail: async (memoryId) => {
+      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
+      get().discardMemoryCorrection();
+      const request = selectionRequest;
+      const matches = currentContext();
       const id = get().editorAgentId;
       if (id === "__new__") return;
       try {
         const memoryEntryDetail = await get().apiClient.getMemoryEntry(id, memoryId);
-        set({ memoryEntryDetail, error: null });
+        if (
+          matches() &&
+          request === selectionRequest &&
+          get().editorAgentId === id &&
+          !get().memoryCorrectionDirty &&
+          !get().memoryCorrectionSaving
+        )
+          set({ memoryEntryDetail, error: null });
       } catch (error) {
+        if (!matches() || request !== selectionRequest) return;
         set({ feedback: msg("操作未完成：{0}", errorText(error)) });
       }
     },
     manualConsolidate: async (sessionId, turnIds) => {
       const id = get().editorAgentId;
       if (id === "__new__") return;
+      const matches = currentContext();
       try {
         let job = await get().apiClient.consolidate(id, {
           session_id: sessionId,
           turn_ids: turnIds,
           request_key: get().effects.requestId().replaceAll("-", ""),
         });
+        if (!matches()) return;
         if (!["succeeded", "failed"].includes(job.status)) {
           set({
             feedback: msg("已提交整理任务，正在后台生成长期记忆…"),
@@ -142,9 +327,12 @@ export function createMemoryActions(
           attempt += 1
         ) {
           await new Promise((resolve) => setTimeout(resolve, 1500));
+          if (!matches()) return;
           try {
             job = await get().apiClient.getMemoryJob(id, job.id);
+            if (!matches()) return;
           } catch (error) {
+            if (!matches()) return;
             set({
               feedback: msg("整理任务已提交，但状态查询失败：{0}", errorText(error)),
             });
@@ -168,6 +356,7 @@ export function createMemoryActions(
           });
         }
       } catch (error) {
+        if (!matches()) return;
         set({ feedback: msg("操作未完成：{0}", errorText(error)) });
       }
     },
@@ -175,25 +364,36 @@ export function createMemoryActions(
       const id = get().editorAgentId;
       const current = get().policy;
       if (id === "__new__" || !current) return;
+      const matches = currentContext();
       try {
         const policy = await get().apiClient.updatePolicy(id, {
           ...patch,
           expected_version: current.version,
         });
-        set({ policy, feedback: msg("整理策略已保存。"), error: null });
+        if (!matches()) return;
+        set({
+          policy,
+          pageEditor: null,
+          feedback: msg("整理策略已保存。"),
+          error: null,
+        });
       } catch {
+        if (!matches()) return;
         try {
           const policy = await get().apiClient.getPolicy(id);
+          if (!matches()) return;
           set({
             policy,
             feedback: msg("保存未成功，已恢复服务器值，请重试。"),
           });
         } catch (error) {
+          if (!matches()) return;
           set({ feedback: msg("记忆设置未能加载：{0}", errorText(error)) });
         }
       }
     },
     governMemories: async (agentId, ids, action, confirmed) => {
+      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return false;
       if (agentId === "__new__" || ids.length === 0) {
         set({ feedback: msg("请选择记忆") });
         return false;
@@ -202,12 +402,22 @@ export function createMemoryActions(
         set({ feedback: msg("永久删除需要明确确认") });
         return false;
       }
+      const contextMatches = currentContext();
+      const request = selectionRequest;
+      const matches = () =>
+        contextMatches() &&
+        request === selectionRequest &&
+        get().editorAgentId === agentId &&
+        !get().memoryCorrectionDirty &&
+        !get().memoryCorrectionSaving;
+      if (!matches()) return false;
       try {
         await get().apiClient.govern(agentId, {
           memory_ids: ids,
           action,
           confirm_permanent: action === "purge",
         });
+        if (!matches()) return false;
         set({
           memoryEntryDetail: null,
           feedback: msg("操作完成，请重新加载记忆列表。"),
@@ -215,20 +425,32 @@ export function createMemoryActions(
         });
         return true;
       } catch (error) {
+        if (!matches()) return false;
         set({ feedback: msg("操作未完成：{0}", errorText(error)) });
         return false;
       }
     },
     mergeMemories: async (agentId, ids) => {
+      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return false;
       if (agentId === "__new__" || ids.length === 0) {
         set({ feedback: msg("请选择记忆") });
         return false;
       }
+      const contextMatches = currentContext();
+      const request = selectionRequest;
+      const matches = () =>
+        contextMatches() &&
+        request === selectionRequest &&
+        get().editorAgentId === agentId &&
+        !get().memoryCorrectionDirty &&
+        !get().memoryCorrectionSaving;
+      if (!matches()) return false;
       try {
         await get().apiClient.merge(agentId, {
           request_key: get().effects.requestId().replaceAll("-", ""),
           memory_ids: ids,
         });
+        if (!matches()) return false;
         set({
           memoryEntryDetail: null,
           feedback: msg("整合任务已排队；成功后原条目被替代，新条目生效。"),
@@ -236,6 +458,7 @@ export function createMemoryActions(
         });
         return true;
       } catch (error) {
+        if (!matches()) return false;
         set({ feedback: msg("操作未完成：{0}", errorText(error)) });
         return false;
       }

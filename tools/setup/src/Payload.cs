@@ -79,6 +79,9 @@ namespace Superstring.Setup
             "app/superstring-server.exe",
             "app/resources/web/index.html",
             "app/resources/migrations/versions/0001_initial.sql",
+            "app/resources/migrations/versions/0002_knowledge.sql",
+            "app/resources/migrations/versions/0003_knowledge_read.sql",
+            "app/resources/migrations/versions/0004_organization.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

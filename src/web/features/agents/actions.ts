@@ -3,6 +3,7 @@ import { msg } from "../../i18n";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { toDraft } from "./draft";
+import { newPageEditor } from "./page-drafts";
 import { buildSectionPayload, mergeSavedSection } from "./section-rules";
 import { sectionLetter } from "./sections";
 
@@ -13,7 +14,6 @@ export function createAgentActions(
   SuperstringState,
   | "setNewSessionAgent"
   | "setActiveSection"
-  | "setDetailOpen"
   | "editAgent"
   | "patchDraft"
   | "patchPersona"
@@ -22,22 +22,29 @@ export function createAgentActions(
   | "deleteEditorAgent"
   | "deleteAgents"
 > {
+  let editorRequest = 0;
   return {
     setNewSessionAgent: (id) => {
       set({ selectedNewSessionAgentId: id });
       persistBrowserState(get().browserStateStorage, "superstring-agent", id);
     },
     setActiveSection: (activeSection) => get().requestSectionNavigation(activeSection),
-    setDetailOpen: (detailOpen) => set({ detailOpen }),
     editAgent: async (id) => {
+      if (get().settingsSaving) return false;
+      const request = ++editorRequest;
+      set({ editorLoading: true });
+      get().discardMemoryCorrection();
+      get().resetMemoryManagement();
       if (id === "__new__") {
-        // 新建草稿视为展开明细、停留在基础记录分区；已有助手不强制展开。
+        get().discardKnowledgeRead();
+        // 新建使用独立草稿及创建保存键；不复用已有助手的按页草稿。
         set({
           editorAgentId: id,
+          pageEditor: null,
           feedback: "",
           dirty: false,
           activeSection: "A",
-          detailOpen: true,
+          editorLoading: false,
           error: null,
         });
         const model = get().modelNames[0] ?? get().agents[0]?.model_name ?? "";
@@ -85,9 +92,13 @@ export function createAgentActions(
           get().apiClient.getAgent(id),
           get().apiClient.getPersona(id),
         ]);
+        if (request !== editorRequest) return false;
+        get().discardKnowledgeRead();
         set({
           editorAgentId: id,
           editorDraft: toDraft(agent),
+          pageEditor: newPageEditor(agent, persona),
+          agents: get().agents.map((item) => (item.id === id ? agent : item)),
           persona,
           error: null,
           feedback: "",
@@ -97,17 +108,21 @@ export function createAgentActions(
         await get().reloadMemory();
         return true;
       } catch (error) {
-        set({ error: errorText(error) });
+        if (request === editorRequest) set({ error: errorText(error) });
         return false;
+      } finally {
+        if (request === editorRequest) set({ editorLoading: false });
       }
     },
     patchDraft: (patch) =>
       set((state) => ({
+        pageEditor: null,
         editorDraft: state.editorDraft ? { ...state.editorDraft, ...patch } : null,
         dirty: true,
       })),
     patchPersona: (patch) =>
       set((state) => ({
+        pageEditor: null,
         persona: state.persona ? { ...state.persona, ...patch } : null,
         dirty: true,
       })),
@@ -185,6 +200,7 @@ export function createAgentActions(
           return {
             agents: [saved, ...state.agents.filter((item) => item.id !== saved.id)],
             editorAgentId: saved.id,
+            pageEditor: null,
             editorDraft,
             dirty: false,
             error: null,
@@ -222,6 +238,10 @@ export function createAgentActions(
         });
         set((state) => ({
           persona: saved,
+          pageEditor: null,
+          agents: state.agents.map((agent) =>
+            agent.id === id ? { ...agent, persona_intensity: patch.persona_intensity } : agent,
+          ),
           editorDraft: state.editorDraft
             ? {
                 ...state.editorDraft,
@@ -248,6 +268,7 @@ export function createAgentActions(
           agents,
           editorAgentId: "__new__",
           editorDraft: null,
+          pageEditor: null,
           persona: null,
           policy: null,
           memorySessions: [],

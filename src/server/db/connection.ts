@@ -1,4 +1,4 @@
-// SQLite connection for the 16 business tables.
+// SQLite connection for the versioned business schema.
 //
 // Responsibilities (and non-goals):
 //  - Open a bun:sqlite Database for either an in-memory database (":memory:") or a

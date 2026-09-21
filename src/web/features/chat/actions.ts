@@ -1,4 +1,5 @@
 import { UpdateSessionRequestSchema } from "../../../shared/contracts";
+import { ApiError } from "../../api";
 import { msg } from "../../i18n";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
@@ -18,11 +19,88 @@ export function createChatActions(
   | "refreshSession"
   | "setComposer"
   | "send"
+  | "retryChat"
+  | "resendKnowledgeChat"
+  | "cancelKnowledgeResend"
   | "deleteMessage"
 > {
+  const transmit = async (
+    request: { sessionId: string; text: string; requestId: string },
+    retry = false,
+  ) => {
+    if (get().sending || get().currentSessionId !== request.sessionId) return;
+    const { sessionId, text, requestId } = request;
+    const assistantId = `optimistic-assistant-${requestId}`;
+    let failed = false;
+    let conflict = false;
+    let failureMessage: string | null = null;
+    set((state) => ({
+      sending: true,
+      contextUsage: null,
+      error: null,
+      failedChat: null,
+      knowledgeResend: null,
+      messages: [
+        ...state.messages.filter((item) => item.id !== assistantId),
+        ...createOptimisticMessages(text, requestId, get().effects.now()).filter(
+          (item) => !retry || item.role === "assistant",
+        ),
+      ],
+    }));
+    try {
+      await get().effects.streamChat(
+        { session_id: sessionId, message: text, client_request_id: requestId },
+        (event) => {
+          if (event.event === "error") {
+            failed = true;
+            conflict = event.code === "KNOWLEDGE_ACCESS_CHANGED";
+            failureMessage = event.message;
+          }
+          if (get().currentSessionId !== sessionId) return;
+          if (event.event === "context") {
+            if (event.usage.session_id === sessionId) set({ contextUsage: event.usage });
+            return;
+          }
+          set((state) => ({
+            messages: applyMessageEvent(state.messages, assistantId, event),
+            ...(event.event === "error" ? { error: event.message } : {}),
+          }));
+        },
+      );
+      if (get().currentSessionId === sessionId) await get().refreshSession();
+    } catch (error) {
+      failed = true;
+      conflict = error instanceof ApiError && error.code === "KNOWLEDGE_ACCESS_CHANGED";
+      failureMessage = errorText(error);
+      if (get().currentSessionId === sessionId)
+        set((state) => ({
+          error: errorText(error),
+          messages: state.messages.map((item) =>
+            item.id === assistantId ? { ...item, status: "failed" } : item,
+          ),
+        }));
+    } finally {
+      set({
+        sending: false,
+        ...(get().currentSessionId === sessionId
+          ? {
+              failedChat: failed ? request : null,
+              knowledgeResend: conflict ? request : null,
+              ...(failureMessage ? { error: failureMessage } : {}),
+            }
+          : {}),
+      });
+    }
+  };
   return {
     selectSession: async (id) => {
-      set({ currentSessionId: id, error: null });
+      set({
+        currentSessionId: id,
+        error: null,
+        ...(get().currentSessionId !== id
+          ? { failedChat: null, knowledgeResend: null, contextUsage: null }
+          : {}),
+      });
       persistBrowserState(get().browserStateStorage, "superstring-session", id);
       const [messagesResult, runtimeResult] = await Promise.allSettled([
         get().apiClient.listMessages(id),
@@ -167,9 +245,13 @@ export function createChatActions(
       }
     },
     refreshSession: async () => {
+      const currentId = get().currentSessionId;
       try {
         const sessions = await get().apiClient.listSessions();
-        const currentId = get().currentSessionId;
+        if (get().currentSessionId !== currentId) {
+          set({ sessions });
+          return;
+        }
         const next = sessions.find((item) => item.id === currentId) ?? sessions[0] ?? null;
         set({ sessions, error: null, currentSessionId: next?.id ?? null });
         if (next) await get().selectSession(next.id);
@@ -181,7 +263,7 @@ export function createChatActions(
             feedback: msg("请先新建或选择会话"),
           });
       } catch (error) {
-        set({ error: errorText(error) });
+        if (get().currentSessionId === currentId) set({ error: errorText(error) });
       }
     },
     setComposer: (composer) => set({ composer }),
@@ -197,40 +279,19 @@ export function createChatActions(
         set({ error: null, feedback: msg("请先新建或选择会话") });
         return;
       }
-      const clientRequestId = get().effects.requestId();
-      const assistantId = `optimistic-assistant-${clientRequestId}`;
-      const now = get().effects.now();
-      set((state) => ({
-        composer: "",
-        sending: true,
-        error: null,
-        messages: [...state.messages, ...createOptimisticMessages(text, clientRequestId, now)],
-      }));
-      try {
-        await get().effects.streamChat(
-          {
-            session_id: sessionId,
-            message: text,
-            client_request_id: clientRequestId,
-          },
-          (event) => {
-            set((state) => ({
-              messages: applyMessageEvent(state.messages, assistantId, event),
-              ...(event.event === "error" ? { error: event.message } : {}),
-            }));
-          },
-        );
-        await get().refreshSession();
-      } catch (error) {
-        set((state) => ({
-          error: errorText(error),
-          messages: state.messages.map((item) =>
-            item.id === assistantId ? { ...item, status: "failed" } : item,
-          ),
-        }));
-      } finally {
-        set({ sending: false });
-      }
+      set({ composer: "", feedback: "" });
+      await transmit({ sessionId, text, requestId: get().effects.requestId() });
+    },
+    retryChat: async () => {
+      const request = get().failedChat;
+      if (request && !get().knowledgeResend) await transmit(request, true);
+    },
+    cancelKnowledgeResend: () => set({ knowledgeResend: null }),
+    resendKnowledgeChat: async () => {
+      const request = get().knowledgeResend;
+      if (!request || get().sending || get().currentSessionId !== request.sessionId) return;
+      set({ feedback: msg("已按最新权限重新发送（新请求）") });
+      await transmit({ ...request, requestId: get().effects.requestId() });
     },
     deleteMessage: async (sessionId, id) => {
       if (!sessionId) {
@@ -239,6 +300,7 @@ export function createChatActions(
       }
       try {
         await get().apiClient.deleteMessage(sessionId, id);
+        if (get().currentSessionId === sessionId) set({ contextUsage: null });
         await get().selectSession(sessionId);
       } catch (error) {
         set({

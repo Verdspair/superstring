@@ -14,26 +14,25 @@ import { Hono } from "hono";
 import {
   ConsolidateRequestSchema,
   GovernRequestSchema,
+  MemoryCorrectionSchema,
   MergeRequestSchema,
   PolicyUpdateSchema,
   SessionScopeUpdateSchema,
 } from "../../shared/contracts";
+import { correctMemory, memoryContent } from "../db/memory-content-repository";
 import {
-  claim,
   enqueue,
   entries,
   govern,
   jobOwned,
   type MemoryEntryRow,
   type MemoryJobRow,
-  ownedSession,
   policy,
-  publish,
   sessionScope,
   setScope,
   turns,
 } from "../db/memory-repository";
-import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories";
+import { DEFAULT_USER_ID, immediate, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
 import { fail } from "../errors";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
@@ -259,6 +258,22 @@ export function memoryRoutes(orm: Orm): Hono {
     return c.json(immediate(db, () => entryDetail(entries(orm, agentId, [memoryId])[0])));
   });
 
+  router.get(`${base}/entries/:memoryId/content`, (c) => {
+    const agentId = agentOf(c);
+    const memoryId = parseUuidParam(c.req.param("memoryId"));
+    return c.json(immediate(db, () => memoryContent(orm, agentId, memoryId)));
+  });
+
+  router.post(`${base}/entries/:memoryId/correct`, async (c) => {
+    const agentId = agentOf(c);
+    const memoryId = parseUuidParam(c.req.param("memoryId"));
+    const body = parseBody(MemoryCorrectionSchema, await readJsonBody(c.req.raw));
+    return c.json(
+      immediate(db, () => correctMemory(orm, agentId, memoryId, body)),
+      201,
+    );
+  });
+
   // Jobs
 
   // memories.py:98-103 — enqueue a manual consolidation (202).
@@ -384,7 +399,3 @@ export function memoryRoutes(orm: Orm): Hono {
 
   return router;
 }
-
-// Re-exported for the worker module (R4) so it shares one claim/publish pair
-// instead of re-deriving them.
-export { claim, nowIso, ownedSession, publish };

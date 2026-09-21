@@ -1,5 +1,7 @@
 import type {
   AgentResponse,
+  MemoryContentResponse,
+  MemoryCorrection,
   MemoryEntryResponse,
   MemoryJobView,
   MemorySessionOption,
@@ -10,7 +12,9 @@ import type {
   RuntimeConfig,
   SessionResponse,
 } from "../../shared/contracts";
+import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
+import { knowledgeInitial } from "../features/knowledge/types";
 import type {
   AgentDraft,
   ChatItem,
@@ -22,13 +26,16 @@ import type {
 } from "./types";
 
 export const initial = {
+  ...knowledgeInitial,
+  pageEditor: null as import("../features/agents/page-drafts").PageEditor | null,
+  settingsSaving: false,
   status: "idle" as LoadStatus,
   error: null as string | null,
   feedback: "",
   page: "chat" as Page,
   settingsView: "hub" as SettingsView,
+  settingsRoute: "basic" as SettingsRoute,
   activeSection: "A" as SectionKey,
-  detailOpen: false,
   dirty: false,
   pendingNavigation: null as PendingNavigation | null,
   navigationConfirmOpen: false,
@@ -38,10 +45,12 @@ export const initial = {
   messages: [] as ChatItem[],
   runtimeConfig: null as RuntimeConfig | null,
   runtimeConfigUnavailable: false,
+  contextUsage: null as import("../../shared/contracts/context-usage").ContextUsage | null,
   selectedNewSessionAgentId: null as string | null,
   currentSessionId: null as string | null,
   editorAgentId: "__new__" as const,
   editorDraft: null as AgentDraft | null,
+  editorLoading: false,
   persona: null as PersonaResponse | null,
   policy: null as PolicyView | null,
   memorySessions: [] as MemorySessionOption[],
@@ -49,6 +58,10 @@ export const initial = {
   memoryEntries: [] as MemorySummary[],
   memoryEntryTotal: 0,
   memoryEntryDetail: null as MemoryEntryResponse | null,
+  memoryContent: null as MemoryContentResponse | null,
+  memoryCorrectionDraft: null as MemoryCorrection | null,
+  memoryCorrectionDirty: false,
+  memoryCorrectionSaving: false,
   memoryJobs: [] as MemoryJobView[],
   modelNames: [] as string[],
   modelStatus: "模型列表将在打开配置时加载。",
@@ -56,6 +69,16 @@ export const initial = {
   chatContextCapacity: null as number | null,
   composer: "",
   sending: false,
+  failedChat: null as {
+    sessionId: string;
+    text: string;
+    requestId: string;
+  } | null,
+  knowledgeResend: null as {
+    sessionId: string;
+    text: string;
+    requestId: string;
+  } | null,
   pendingOperations: 0,
   browserStateStorage: null as BrowserStateStorage | null,
 };

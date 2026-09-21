@@ -25,12 +25,27 @@ import { parseJson, stableStringify } from "../../src/server/db/json-text";
 import { businessTables } from "../../src/server/db/schema";
 import {
   BUSINESS_SCHEMA_VERSION,
+  BUSINESS_TABLE_NAMES,
   ensureBusinessSchema,
   openBusinessDb,
 } from "../../src/server/db/schema-gate";
 
 const MIGRATION_PATH = path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql");
 const MIGRATION_SQL = readFileSync(MIGRATION_PATH, "utf8");
+const KNOWLEDGE_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0002_knowledge.sql"),
+  "utf8",
+);
+
+const READ_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0003_knowledge_read.sql"),
+  "utf8",
+);
+
+const ORGANIZATION_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0004_organization.sql"),
+  "utf8",
+);
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };
@@ -476,7 +491,7 @@ describe("schema.ts matches the SQL DDL (anti-drift)", () => {
   let db: Database;
   beforeAll(() => {
     db = new Database(":memory:");
-    db.exec(MIGRATION_SQL);
+    db.exec(`${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}`);
   });
   afterAll(() => db.close());
 
@@ -937,7 +952,7 @@ describe("business schema gate", () => {
     const h = openBusinessDb();
     const v = h.db.query("PRAGMA user_version").get() as { user_version: number };
     expect(v.user_version).toBe(BUSINESS_SCHEMA_VERSION);
-    expect(listUserTables(h.db)).toEqual(ALL_TABLES.slice().sort());
+    expect(listUserTables(h.db)).toEqual(BUSINESS_TABLE_NAMES.slice().sort());
     h.close();
   });
 
@@ -971,7 +986,7 @@ describe("business schema gate", () => {
 
   it("accepts the correct version with the full table set", () => {
     const db = new Database(":memory:");
-    db.exec(MIGRATION_SQL);
+    db.exec(`${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}`);
     db.run(`PRAGMA user_version = ${BUSINESS_SCHEMA_VERSION}`);
     expect(() => ensureBusinessSchema(db)).not.toThrow();
     db.close();

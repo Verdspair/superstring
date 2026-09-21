@@ -12,12 +12,14 @@ import {
   summaries,
   systemPrompt,
 } from "../../src/server/db/context-repository";
+import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
 import {
   createSession,
   DEFAULT_AGENT_ID,
   DEFAULT_USER_ID,
   ensureDefaults,
   getTurnByRequest,
+  immediate,
   listMessages,
   nowIso,
   type Orm,
@@ -189,6 +191,191 @@ function expectCode(fn: () => unknown, code: string): void {
   expect((caught as { code?: string })?.code).toBe(code);
 }
 
+describe("0.2.1 corrected memory context", () => {
+  it("recalls the corrected revision in the shared format, not the retired body", async () => {
+    const ctx = setup();
+    try {
+      const sourceSession = newSession(ctx.orm);
+      const source = completedTurn(ctx.orm, sourceSession, "source");
+      const id = seedMemory(ctx.orm, source.id, 1, "餐费999元错误");
+      const corrected = immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, DEFAULT_AGENT_ID, id, {
+          expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, id).content.revision,
+          name: "餐费",
+          summary: "上限80元",
+          tags: [],
+          body: "餐费80元",
+        }),
+      );
+      const chatSession = newSession(ctx.orm);
+      const current = activeTurn(ctx.orm, chatSession, "ask", "餐费多少");
+      const result = await builder(ctx).build({
+        sessionId: chatSession,
+        currentTurnId: current.turn.id,
+        runtime: current.prepared.runtime,
+        generationToken: current.prepared.generationToken,
+      });
+      expect(JSON.stringify(result)).toContain("餐费80元");
+      expect(JSON.stringify(result)).toContain("manual_correction");
+      expect(JSON.stringify(result)).not.toContain("餐费999元错误");
+      expect(
+        memoryBodies(ctx.orm, DEFAULT_AGENT_ID, chatSession, [corrected.content.id])[0].source_type,
+      ).toBe("memory");
+    } finally {
+      ctx.business.close();
+    }
+  });
+  it("fails closed when a memory is corrected during the final capacity probe", async () => {
+    const ctx = setup();
+    try {
+      const session = newSession(ctx.orm);
+      const source = completedTurn(ctx.orm, session, "source");
+      const id = seedMemory(ctx.orm, source.id, 1);
+      const current = activeTurn(ctx.orm, session, "ask");
+      ctx.gateway.onCapacity = (count) => {
+        if (count !== 2) return;
+        immediate(ctx.business.db, () =>
+          correctMemory(ctx.orm, DEFAULT_AGENT_ID, id, {
+            expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, id).content.revision,
+            name: "更正",
+            summary: "新内容",
+            tags: [],
+            body: "新事实",
+          }),
+        );
+      };
+      await expect(
+        builder(ctx).build({
+          sessionId: session,
+          currentTurnId: current.turn.id,
+          runtime: current.prepared.runtime,
+        }),
+      ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    } finally {
+      ctx.business.close();
+    }
+  });
+});
+
+describe("0.2.1 disabled memory isolation", () => {
+  it("does not fail an off-mode request when an unrelated correction changes", async () => {
+    const ctx = setup();
+    try {
+      const session = newSession(ctx.orm);
+      const source = completedTurn(ctx.orm, session, "source");
+      const id = seedMemory(ctx.orm, source.id, 1, "旧错误");
+      const current = activeTurn(ctx.orm, session, "ask");
+      current.prepared.runtime.p5_config.retrieval_mode = "off";
+      ctx.gateway.onCapacity = (count) => {
+        if (count !== 2) return;
+        immediate(ctx.business.db, () =>
+          correctMemory(ctx.orm, DEFAULT_AGENT_ID, id, {
+            expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, id).content.revision,
+            name: "更正",
+            summary: "新内容",
+            tags: [],
+            body: "未授权本轮读取的纠正",
+          }),
+        );
+      };
+      const result = await builder(ctx).build({
+        sessionId: session,
+        currentTurnId: current.turn.id,
+        runtime: current.prepared.runtime,
+      });
+      expect(JSON.stringify(result)).not.toContain("未授权本轮读取的纠正");
+      expect(ctx.gateway.completeCalls).toHaveLength(0);
+    } finally {
+      ctx.business.close();
+    }
+  });
+});
+
+describe("0.2.1 corrected summary lifecycle", () => {
+  it("invalidates the old summary, supplies correction to regeneration and never reuses it in off mode", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const old = completedTurn(ctx.orm, sessionId, "old", "餐费999元".repeat(80));
+      const id = seedMemory(ctx.orm, old.id, 1, "餐费999元");
+      completedTurn(ctx.orm, sessionId, "recent");
+      const current = activeTurn(ctx.orm, sessionId, "now");
+      const runtime = {
+        ...current.prepared.runtime,
+        p5_config: {
+          ...current.prepared.runtime.p5_config,
+          context_window: 4096,
+          max_output_tokens: 512,
+          retrieval_mode: "standard" as const,
+          compression_trigger_ratio: 0.1,
+          recent_turns: 1,
+          summary_target_tokens: 1024,
+          summary_max_tokens: 2048,
+        },
+      };
+      ctx.gateway.completeReply = (call) => {
+        if (call.responseSchema?.title !== "SummaryResult") return JSON.stringify({ ids: [] });
+        const data = JSON.parse(call.messages[1].content) as {
+          turns: Array<{ id: string }>;
+          manual_corrections: Array<{ body: string }>;
+        };
+        return JSON.stringify({
+          facts: [
+            {
+              kind: "fact",
+              speaker: "user",
+              text: data.manual_corrections[0]?.body ?? "餐费999元",
+              source_ids: [data.turns[0].id],
+            },
+          ],
+        });
+      };
+      await builder(ctx).build({ sessionId, currentTurnId: current.turn.id, runtime });
+      const previous = ctx.orm.select().from(schema.sessionSummaries).all();
+      expect(previous).toHaveLength(1);
+      immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, DEFAULT_AGENT_ID, id, {
+          expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, id).content.revision,
+          name: "餐费",
+          summary: "更正80元",
+          tags: [],
+          body: "用户后来纠正餐费80元",
+        }),
+      );
+      expect(
+        ctx.orm
+          .select()
+          .from(schema.sessionSummaries)
+          .where(eq(schema.sessionSummaries.id, previous[0].id))
+          .get()?.isValid,
+      ).toBe(0);
+      const rebuilt = await builder(ctx).build({
+        sessionId,
+        currentTurnId: current.turn.id,
+        runtime,
+      });
+      expect(rebuilt.some((message) => message.content.includes("用户后来纠正餐费80元"))).toBe(
+        true,
+      );
+      const turns = history(ctx.orm, DEFAULT_AGENT_ID, sessionId, current.sequenceNo);
+      expect(summaries(ctx.orm, DEFAULT_AGENT_ID, sessionId, turns, true)).toHaveLength(1);
+      expect(summaries(ctx.orm, DEFAULT_AGENT_ID, sessionId, turns, false)).toHaveLength(0);
+      ctx.gateway.completeCalls.length = 0;
+      await builder(ctx).build({
+        sessionId,
+        currentTurnId: current.turn.id,
+        runtime: { ...runtime, p5_config: { ...runtime.p5_config, retrieval_mode: "off" } },
+      });
+      const call = ctx.gateway.completeCalls.find(
+        (item) => item.responseSchema?.title === "SummaryResult",
+      );
+      expect(JSON.parse(call?.messages[1].content ?? "{}").manual_corrections).toEqual([]);
+    } finally {
+      ctx.business.close();
+    }
+  });
+});
+
 describe("R4 pure context contract", () => {
   it("counts UTF-8 bytes and message overhead exactly like Python", () => {
     expect(estimateTokens("A中😀")).toBe(8);
@@ -308,6 +495,86 @@ describe("R4 context repository authorization", () => {
 });
 
 describe("R4 ContextBuilder end-to-end", () => {
+  it("recompresses injected summaries to the independent reading cap without truncating stored summaries", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      for (let i = 0; i < 4; i++)
+        completedTurn(ctx.orm, sessionId, `read-${i}`, "x".repeat(600), "y".repeat(100));
+      const current = activeTurn(ctx.orm, sessionId, "read-now");
+      const runtime = {
+        ...current.prepared.runtime,
+        p5_config: {
+          ...current.prepared.runtime.p5_config,
+          context_window: 8192,
+          max_output_tokens: 512,
+          compression_trigger_ratio: 0.1,
+          recent_turns: 1,
+          summary_target_tokens: 1024,
+          summary_max_tokens: 4096,
+          summary_read_max_tokens: 500,
+          recall_max_tokens: 2048,
+        },
+      };
+      ctx.gateway.completeReply = (call) => {
+        if (call.responseSchema?.title !== "SummaryResult") return JSON.stringify({ ids: [] });
+        const message = call.messages.at(-1);
+        if (!message) throw new Error("Missing summary input");
+        const data = JSON.parse(message.content);
+        return JSON.stringify({
+          facts: [
+            {
+              kind: "fact",
+              speaker: "user",
+              text: (call.maxTokens ?? 0) <= 500 ? "short" : "x".repeat(400),
+              source_ids: [data.turns[0].id],
+            },
+          ],
+        });
+      };
+      let usage: import("../../src/shared/contracts/context-usage").ContextUsage | undefined;
+      const messages = await builder(ctx).build({
+        sessionId,
+        currentTurnId: current.turn.id,
+        generationToken: current.prepared.generationToken,
+        runtime,
+        onUsage: (value) => {
+          usage = value;
+        },
+      });
+      expect(messages.filter((message) => message.role === "user")).toHaveLength(2);
+      if (!usage) throw new Error("Missing context usage");
+      expect(usage.components.summaries).toBeGreaterThan(0);
+      expect(usage.components.summaries).toBeLessThanOrEqual(500);
+      expect(usage.components).not.toHaveProperty("recalled_originals");
+      expect(
+        ctx.gateway.completeCalls.every((call) => call.responseSchema?.title === "SummaryResult"),
+      ).toBe(true);
+      expect(ctx.gateway.completeCalls.some((call) => call.maxTokens === 500)).toBe(true);
+      const saved = summaries(
+        ctx.orm,
+        runtime.agent_id,
+        sessionId,
+        history(ctx.orm, runtime.agent_id, sessionId, current.sequenceNo),
+      );
+      expect(
+        saved.some((item) => item.content.facts.some((fact) => fact.text.length === 400)),
+      ).toBe(true);
+      expect(Object.values(usage.components).reduce((a, b) => a + b, 0)).toBe(usage.input_units);
+    } finally {
+      ctx.business.close();
+    }
+  });
+
+  it("new configs use 900 seconds while explicit old values and absent read caps survive", async () => {
+    const { P5ConfigSchema } = await import("../../src/shared/contracts");
+    expect(P5ConfigSchema.parse({}).auxiliary_timeout_seconds).toBe(900);
+    expect(P5ConfigSchema.parse({ auxiliary_timeout_seconds: 120 }).auxiliary_timeout_seconds).toBe(
+      120,
+    );
+    expect(P5ConfigSchema.parse({}).summary_read_max_tokens).toBeUndefined();
+    expect(P5ConfigSchema.safeParse({ summary_read_max_tokens: 0 }).success).toBe(false);
+  });
   it("propagates caller cancellation to the capacity probe", async () => {
     const ctx = setup();
     const sessionId = newSession(ctx.orm);

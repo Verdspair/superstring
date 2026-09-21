@@ -33,7 +33,8 @@ namespace Superstring.Desktop
         private readonly string _bunExe;
         private readonly string _token;
         private readonly int _port;
-        private readonly string _baseUrl;
+        private volatile string _baseUrl;
+        private volatile bool _portReported;
         private readonly MainForm _form;
         private readonly SingleInstance _single;
 
@@ -175,6 +176,8 @@ namespace Superstring.Desktop
                 RedirectStandardError = true,
             };
             psi.EnvironmentVariables["SUPERSTRING_DEV_PORT"] = _port.ToString();
+            psi.EnvironmentVariables["SUPERSTRING_DESKTOP_AUTO_PORT"] = "1";
+            psi.EnvironmentVariables["SUPERSTRING_DESKTOP_TOKEN"] = _token;
 
             try { lock (_processLock) { if (_cancel) return false; _preflight = Process.Start(psi); } }
             catch (Exception ex) { Fail("无法启动 Bun 预检: " + ex.Message); return false; }
@@ -217,7 +220,9 @@ namespace Superstring.Desktop
             _layout.ConfigureInstalledEnvironment(psi);
             psi.EnvironmentVariables["SUPERSTRING_SERVE_WEB"] = "1";
             psi.EnvironmentVariables["SUPERSTRING_DEV_PORT"] = _port.ToString();
+            psi.EnvironmentVariables["SUPERSTRING_DESKTOP_AUTO_PORT"] = "1";
             psi.EnvironmentVariables["SUPERSTRING_DESKTOP_TOKEN"] = _token;
+            _portReported = false;
 
             try { lock (_processLock) { if (_cancel) return false; _server = Process.Start(psi); } }
             catch (Exception ex) { Fail("无法启动服务: " + ex.Message); return false; }
@@ -230,7 +235,20 @@ namespace Superstring.Desktop
 
         private void WireOutput(Process p, string tag)
         {
-            p.OutputDataReceived += (s, e) => { if (e.Data != null) _log.Detail("[" + tag + "] " + e.Data); };
+            p.OutputDataReceived += (s, e) =>
+            {
+                if (e.Data == null) return;
+                int port;
+                if (tag == "server" && !_portReported && Readiness.TryReadPort(e.Data, out port))
+                {
+                    // Only our child's stdout can announce the address; HTTP identity
+                    // and the per-launch token are still checked before opening it.
+                    _baseUrl = "http://127.0.0.1:" + port;
+                    _portReported = true;
+                    _log.Info("本次服务地址: " + _baseUrl);
+                }
+                _log.Detail("[" + tag + "] " + e.Data);
+            };
             p.ErrorDataReceived += (s, e) => { if (e.Data != null) _log.Detail("[" + tag + "] " + e.Data); };
         }
 
@@ -246,6 +264,7 @@ namespace Superstring.Desktop
                     return false;
                 }
 
+                if (!_portReported) { Thread.Sleep(PollIntervalMs); continue; }
                 int remaining = (int)(ReadyTimeoutMs - clock.ElapsedMilliseconds);
                 if (remaining <= 0) break;
                 var outcome = Readiness.ProbeDesktopStatus(_baseUrl, _token, Math.Min(AttemptTimeoutMs, remaining));

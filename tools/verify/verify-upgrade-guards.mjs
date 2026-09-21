@@ -41,7 +41,7 @@ const base = {
   product: "superstring",
   platform: "win32-x64",
   layoutVersion: 1,
-  businessSchemaVersion: 1,
+  businessSchemaVersion: 4,
   version: "0.1.0-dev",
 };
 const holders = [];
@@ -98,7 +98,27 @@ try {
   test("forward version classified", () =>
     assert.equal(checkUpgradeIdentity(base, { ...base, version: "0.1.0" }), "upgrade"));
   test("unknown schema refuses automatic upgrade", () =>
-    assert.throws(() => checkUpgradeIdentity(base, { ...base, businessSchemaVersion: 2 })));
+    assert.throws(() => checkUpgradeIdentity(base, { ...base, businessSchemaVersion: 5 })));
+  test("known v1 to v3 upgrade accepted", () =>
+    assert.equal(
+      checkUpgradeIdentity({ ...base, businessSchemaVersion: 1 }, base),
+      "same-version-reinstall",
+    ));
+  test("known v2 to v3 upgrade accepted", () =>
+    assert.equal(
+      checkUpgradeIdentity({ ...base, businessSchemaVersion: 2 }, base),
+      "same-version-reinstall",
+    ));
+  test("v3 to v2 rejected", () =>
+    assert.throws(
+      () => checkUpgradeIdentity(base, { ...base, businessSchemaVersion: 2 }),
+      /DOWNGRADE/,
+    ));
+  test("schema downgrade rejected even with higher product version", () =>
+    assert.throws(
+      () => checkUpgradeIdentity(base, { ...base, version: "9.0.0", businessSchemaVersion: 1 }),
+      /DOWNGRADE/,
+    ));
   test("wrong product rejected", () =>
     assert.throws(() => checkUpgradeIdentity(base, { ...base, product: "other" })));
   test("space budget accounts for copies and backup", () =>

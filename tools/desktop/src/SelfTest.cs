@@ -73,6 +73,12 @@ namespace Superstring.Desktop
             Check("identity rejected (not ready)", !Readiness.IsIdentityReady("{\"app\":\"superstring\",\"desktop\":true,\"state\":\"starting\"}"));
             Check("identity rejected (garbage)", !Readiness.IsIdentityReady("not json"));
 
+            int reportedPort;
+            Check("actual port parses preferred", Readiness.TryReadPort("SUPERSTRING_DESKTOP_PORT 17861", out reportedPort) && reportedPort == 17861);
+            Check("actual port parses OS-assigned", Readiness.TryReadPort("SUPERSTRING_DESKTOP_PORT 49152", out reportedPort) && reportedPort == 49152);
+            foreach (string line in new string[] { null, "", "SUPERSTRING_DESKTOP_PORT ", "SUPERSTRING_DESKTOP_PORT 0", "SUPERSTRING_DESKTOP_PORT 65536", "SUPERSTRING_DESKTOP_PORT -1", "SUPERSTRING_DESKTOP_PORT +80", "SUPERSTRING_DESKTOP_PORT 80 trailing", "SUPERSTRING_DESKTOP_PORT  80", "[log] SUPERSTRING_DESKTOP_PORT 80" })
+                Check("actual port rejects malformed: " + (line ?? "null"), !Readiness.TryReadPort(line, out reportedPort));
+
             // 5. token never in URL
             string baseUrl = "http://127.0.0.1:17861";
             Check("status URL shape", Readiness.StatusUrl(baseUrl) == baseUrl + "/__desktop/status");

@@ -37,10 +37,14 @@ export function checkUpgradeIdentity(current, incoming) {
       manifest.platform !== "win32-x64" ||
       manifest.manifestVersion !== 1 ||
       manifest.layoutVersion !== 1 ||
-      manifest.businessSchemaVersion !== 1
+      ![1, 2, 3, 4].includes(manifest.businessSchemaVersion)
     )
       throw Error("UNSUPPORTED_PACKAGE_IDENTITY");
   }
+  if (incoming.businessSchemaVersion < current.businessSchemaVersion) {
+    throw Error("DOWNGRADE_REJECTED: business schema");
+  }
+  if (incoming.businessSchemaVersion !== 4) throw Error("UNSUPPORTED_PACKAGE_IDENTITY");
   const order = compareVersions(incoming.version, current.version);
   if (order < 0) throw Error("DOWNGRADE_REJECTED");
   return order === 0 ? "same-version-reinstall" : "upgrade";

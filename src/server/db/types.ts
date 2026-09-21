@@ -100,8 +100,3 @@ export const TurnInvalidationReason = {
 export const BOOL_TRUE = 1 as const;
 export const BOOL_FALSE = 0 as const;
 export type SqlBoolean = 0 | 1;
-
-/** Encode a JS boolean into the INTEGER 0/1 storage literal. */
-export function toSqlBoolean(value: boolean): SqlBoolean {
-  return value ? BOOL_TRUE : BOOL_FALSE;
-}

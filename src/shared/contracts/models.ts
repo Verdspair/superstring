@@ -6,24 +6,31 @@ import { LocalModelStatusSchema, nonBlankString, RetrievalModeSchema, rawString 
  * Source: api/schemas.py:200-206, api/models.py:18-22, services/context_config.py.
  */
 
+/**
+ * Retrieval preset DEFAULTS. Values are deliberately generous: they are the
+ * first numbers a new agent gets, and a user who never opens this page should
+ * not be silently capped to a handful of memories. The validation ranges below
+ * are unchanged — only the defaults moved (each roughly doubled, ordering
+ * conservative < standard < broad preserved).
+ */
 export const DEFAULT_CONSERVATIVE_PRESET = {
-  candidate_limit: 15,
-  max_entries: 3,
-  max_tokens: 1024,
+  candidate_limit: 30,
+  max_entries: 6,
+  max_tokens: 2048,
   relevance_instruction: "直接相关",
 } as const;
 
 export const DEFAULT_STANDARD_PRESET = {
-  candidate_limit: 30,
-  max_entries: 5,
-  max_tokens: 2048,
+  candidate_limit: 60,
+  max_entries: 10,
+  max_tokens: 4096,
   relevance_instruction: "直接或必要背景",
 } as const;
 
 export const DEFAULT_BROAD_PRESET = {
-  candidate_limit: 60,
-  max_entries: 8,
-  max_tokens: 4096,
+  candidate_limit: 120,
+  max_entries: 16,
+  max_tokens: 8192,
   relevance_instruction: "有帮助的间接背景",
 } as const;
 
@@ -83,18 +90,28 @@ export const P5ConfigSchema = z
       .number()
       .refine((v) => v > 0 && v <= 1, "必须 0 < x <= 1")
       .default(0.8),
-    recent_turns: z.number().int().min(1).max(10000).default(6),
-    summary_target_tokens: z.number().int().min(1).max(1048576).default(1024),
+    // 10 turns (5 exchanges) kept verbatim. The default is generous because the
+    // oldest turns are what the user notices missing; the builder drops them
+    // oldest-first when the budget runs out, so a larger default degrades
+    // gracefully instead of overflowing.
+    recent_turns: z.number().int().min(1).max(10000).default(10),
+    summary_target_tokens: z.number().int().min(1).max(1048576).default(2048),
     summary_max_tokens: z.number().int().min(1).max(1048576).default(4096),
+    // Absent/null inherits the compression cap, preserving pre-existing turn snapshots.
+    summary_read_max_tokens: z.number().int().min(1).max(1048576).nullable().optional(),
     retrieval_mode: RetrievalModeSchema.default("standard"),
     retrieval_presets: RetrievalPresetsSchema.default(DEFAULT_RETRIEVAL_PRESETS),
+    // 15 minutes, not 5: this budget covers capacity probes plus every
+    // compression / summary / retrieval auxiliary call, and those run on the
+    // same local model as the chat turn.
     auxiliary_timeout_seconds: z
       .number()
       .refine((v) => v > 0 && v <= 3600, "必须 0 < x <= 3600")
-      .default(120),
+      .default(900),
     max_catalog_batches: z.number().int().min(1).max(10000).default(100),
     catalog_batch_size: z.number().int().min(1).max(10000).default(30),
-    recall_max_tokens: z.number().int().min(1).max(1048576).default(2048),
+    // Compatibility only for stored configurations/snapshots; automatic recall is retired.
+    recall_max_tokens: z.number().int().min(1).max(1048576).optional(),
   })
   .superRefine((v, ctx) => {
     if (v.context_window !== null) {

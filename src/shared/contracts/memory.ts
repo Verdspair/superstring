@@ -32,11 +32,15 @@ const RequestKeySchema = z
  * PolicyUpdate (memory_contract.py:28-32). Strict ints for `every_turns`
  * (1..200) and `target_chars` (50..4000); `expected_version` is the optimistic
  * lock (ge=1).
+ *
+ * `target_chars` default is 1200, not 300: it is the length a consolidated
+ * memory aims for, and 300 characters cannot hold the facts a real session
+ * produces — memories came out as one-liners. The 50..4000 range is unchanged.
  */
 export const PolicyUpdateSchema = z.strictObject({
   auto_enabled: z.boolean(),
   every_turns: z.number().int().min(1).max(200).default(20),
-  target_chars: z.number().int().min(50).max(4000).default(300),
+  target_chars: z.number().int().min(50).max(4000).default(1200),
   expected_version: z.number().int().min(1),
 });
 

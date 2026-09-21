@@ -87,9 +87,21 @@ export const ERROR_CODES = [
   "MEMORY_INPUT_TOO_LARGE",
 ] as const;
 
-export type ErrorCode = (typeof ERROR_CODES)[number];
+// Additive product features do not rewrite the inherited error taxonomy.
+export const KNOWLEDGE_ERROR_CODES = [
+  "KNOWLEDGE_NOT_FOUND",
+  "KNOWLEDGE_CATEGORY_NOT_FOUND",
+  "KNOWLEDGE_REVISION_CONFLICT",
+  "KNOWLEDGE_CATEGORY_NOT_EMPTY",
+  "KNOWLEDGE_LAST_CATEGORY",
+  "KNOWLEDGE_IMPORT_INVALID",
+  "KNOWLEDGE_ACCESS_CHANGED",
+  "KNOWLEDGE_SNAPSHOT_INVALID",
+  "KNOWLEDGE_CONTEXT_BUDGET",
+] as const;
+export type ErrorCode = (typeof ERROR_CODES)[number] | (typeof KNOWLEDGE_ERROR_CODES)[number];
 
-export const ErrorCodeSchema = z.enum(ERROR_CODES);
+export const ErrorCodeSchema = z.enum([...ERROR_CODES, ...KNOWLEDGE_ERROR_CODES]);
 
 /**
  * Only MESSAGE_PERSISTENCE_ERROR is SSE-exclusive (api/app.py:376).
@@ -212,8 +224,22 @@ export const ERROR_HTTP_STATUS = {
  */
 export const CONTEXT_CAPACITY_ERROR_ALT_STATUS = 503;
 
+export const KNOWLEDGE_ERROR_HTTP_STATUS = {
+  KNOWLEDGE_NOT_FOUND: 404,
+  KNOWLEDGE_CATEGORY_NOT_FOUND: 404,
+  KNOWLEDGE_REVISION_CONFLICT: 409,
+  KNOWLEDGE_CATEGORY_NOT_EMPTY: 409,
+  KNOWLEDGE_LAST_CATEGORY: 409,
+  KNOWLEDGE_IMPORT_INVALID: 422,
+  KNOWLEDGE_ACCESS_CHANGED: 409,
+  KNOWLEDGE_SNAPSHOT_INVALID: 409,
+  KNOWLEDGE_CONTEXT_BUDGET: 409,
+} satisfies Record<(typeof KNOWLEDGE_ERROR_CODES)[number], number>;
+
 export function getErrorHttpStatus(code: ErrorCode): number | undefined {
-  return (ERROR_HTTP_STATUS as Partial<Record<ErrorCode, number>>)[code];
+  return (
+    { ...ERROR_HTTP_STATUS, ...KNOWLEDGE_ERROR_HTTP_STATUS } as Partial<Record<ErrorCode, number>>
+  )[code];
 }
 
 /** Unified JSON error envelope: `{ error: { code, message, request_id? } }`. */

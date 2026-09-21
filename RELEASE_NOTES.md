@@ -1,75 +1,77 @@
-# Superstring v0.2.0-alpha
+# Superstring v0.2.1
 
 [English](#english) · [简体中文](#简体中文)
 
 ## English
 
-### Added
+Changes relative to the published `v0.2.0-alpha`. Full before/after tables and upgrade steps: [README.md](README.md).
 
-- English and Simplified Chinese in General settings. The language choice is saved and shared across tabs; chat content stays in its original language.
-- A bottom status bar showing the operating mode and local workspace.
-- A sidebar context menu for renaming, refreshing, and deleting conversations without switching chats. Press Enter to save a name or Escape to cancel.
-- `start.sh` for running the browser app from source on macOS and Linux.
+### New
 
-### Changed
+- **Knowledge library:** import text/Markdown or paste text, edit originals, organize by category, and authorize assistants individually or in batches. Imports are not authorized by default.
+- **Knowledge organization and reading:** generate drafts with linked source passages, then let each assistant use original or organized content, all authorized documents or a subset, and its own budget. Retries recheck access after revocation.
+- **Memory correction:** edit remembered content and view its sources without deleting the original conversation.
+- **Context usage:** the ring beside the chat input shows estimated usage, model capacity, and the input breakdown; unknown capacity stays unknown.
+- **Shared organization model:** one default for memory and knowledge organization, with separate overrides.
 
-- Settings are split into General, Operating mode, and Assistant settings. Language and appearance are under General.
-- Settings pages use the same back icon, with tooltips, keyboard access, and a prompt for unsaved changes.
-- Operating modes are listed vertically and marked as active or unavailable.
-- Assistant settings are ordered as Name and model, Personality and persona, Emotion, User profile, Memory, Knowledge base, Context, External software, and Other. Existing save behavior is unchanged.
-- Message menus open at the pointer, stay within the window, and support keyboard navigation.
-- Removed the chat header's duplicate conversation controls and configuration-version hint.
-- Confirmation dialogs handle keyboard focus and block repeated submissions. Failed rename or delete requests leave the editor or dialog open; switching languages preserves drafts.
-- Split frontend views and state into feature modules, added regression tests, and removed redundant comments.
+### Improved
+
+- Settings use left navigation and top tabs with expanded parameter groups, jump links, and per-page saving that keeps drafts across pages without carrying other pages' unsaved edits.
+- Conversation, retrieval, organization, and compression models are selected in one place; assistant and long-term memory management are consolidated on their own pages.
+- Selection states, spacing, panels, and labels are more consistent across settings and management views.
+- Defaults rise across the board — recent turns 6 → 10, summary 1024 → 2048, memory target 300 → 1200 characters, recall presets raised to 30/6/2048, 60/10/4096 and 120/16/8192, auxiliary timeout 300 → 900 s, model-call timeout 60 → 1200 s, organization budget 600 → 3600 s and idle limit 10 → 120 s — and the new knowledge library starts at a 16384-unit context budget, while existing values are kept.
 
 ### Fixed
 
-- The desktop self-test now checks `package.json` instead of requiring a specific project folder name.
-- Migration-resource tests now resolve macOS temporary-directory symlinks before comparing paths.
+- Fixed long replies and memory organization being cut off at 60 seconds, and connections dropping before the first token arrived.
+- Fixed cases where an occupied port made the app unusable.
+- Fixed LM Studio authentication failing entirely and authorization errors being reported as a disconnected service.
+- Fixed failure messages covering the retry button.
+- Fixed delayed memory responses overwriting a newer view, and memory source, list, and pagination state going out of sync.
+- Fixed budget edits not refreshing the capacity preview, and malformed stored configuration silently falling back to defaults.
 
-### Updating
+### Upgrading
 
-Close the Windows app, then run `superstring-setup-0.2.0-alpha.exe` and select the existing installation folder. File checksums are in `SHA256SUMS.txt`. macOS and Linux users run from source.
-
-The database schema and existing conversation, assistant, and memory data formats are unchanged.
+Close the app, back up `userdata`, and install the new package into the same directory. Known schema-1 databases migrate to schema 4, keeping conversations, memories, and settings; unsupported structures and downgrades are rejected. Review model settings and authorize imported documents. Set `LM_STUDIO_API_KEY` if your LM Studio requires a token.
 
 ---
 
 ## 简体中文
 
+相对已发布 `v0.2.0-alpha` 的更新。完整前后对照表和升级步骤见 [README.md](README.md)。
+
 ### 新增
 
-- 通用设置支持切换简体中文和 English，自动保存并同步到其他标签页；聊天内容保持原文。
-- 底部状态栏显示运行模式和本地工作空间。
-- 侧栏会话右键菜单支持重命名、刷新和删除，无需切换会话。重命名时按 Enter 保存、Escape 取消。
-- 新增 `start.sh`，支持在 macOS 和 Linux 上从源码启动网页版。
+- **知识库：** 导入文本、Markdown 或粘贴内容，编辑原文、分类管理，并按助手逐份或批量授权；导入不会自动授权。
+- **资料整理与读取：** 生成带原文来源的整理稿，助手可选择原文或整理内容、全部授权资料或指定子集，并使用独立预算；撤权后重试重新检查权限。
+- **记忆内容纠正：** 修改记错的内容并查看来源，无需删除原聊天记录。
+- **上下文用量：** 输入框旁的圆环展示估算用量、模型容量和输入组成，未知容量显示为未知。
+- **共同默认整理模型：** 记忆与知识库共用一个默认模型，也可分别覆盖。
 
-### 调整
+### 改进
 
-- 设置分为通用、运行模式和助手设置；语言与外观放在通用设置中。
-- 设置页统一使用返回图标，支持悬停提示、键盘操作和未保存提醒。
-- 运行模式改为纵向列表，标注“使用中”或“未开放”。
-- 助手设置依次排列为名称与模型、性格与人设、情绪、用户画像、记忆管理、知识库、上下文、外部软件、其他，原有保存方式不变。
-- 消息菜单在鼠标位置打开，避让窗口边缘，支持键盘操作。
-- 移除聊天页头部重复的会话操作和配置版本提示。
-- 确认弹窗支持焦点管理并阻止重复提交。重命名或删除失败时保留编辑框或弹窗；切换语言不清空草稿。
-- 按功能拆分前端视图和状态，补充回归测试，清理冗余注释。
+- 设置改为左侧导航与顶部页签，参数分组展开、长页面提供锚点；按页保存，跨页保留草稿，且不夹带其他页未保存的修改。
+- 对话、读取、整理、压缩模型集中一处选择；助手管理和长期记忆管理各自集中到对应页面。
+- 统一设置与管理页的选中状态、间距、面板和说明文字。
+- 默认参数整体上调——近期原文 6 → 10 轮、摘要 1024 → 2048、记忆整理 300 → 1200 字、检索预设调整为 30/6/2048、60/10/4096、120/16/8192、辅助调用超时 300 → 900 秒、模型调用超时 60 → 1200 秒、整理任务预算 600 → 3600 秒、空闲上限 10 → 120 秒——新增知识库默认上下文预算 16384 单位，已有数值保持不变。
 
 ### 修复
 
-- 桌面自测改为检查 `package.json`，不再要求项目文件夹使用特定名称。
-- 迁移资源测试先解析 macOS 临时目录的软链接，再比较路径。
+- 修复了长回答和记忆整理在 60 秒后被截断、以及模型尚未输出首字就断开连接的问题。
+- 修复了部分情况下端口被占用导致软件无法使用的问题。
+- 修复了 LM Studio 鉴权无法使用、以及鉴权失败被误报为服务未连接的问题。
+- 修复了失败提示遮挡“重试原请求”按钮的问题。
+- 修复了迟到的记忆响应覆盖新页面，以及记忆来源、列表与分页状态不同步的问题。
+- 修复了修改预算不刷新容量预览，以及损坏的已存配置静默改用默认值的问题。
 
 ### 升级
 
-Windows 用户先关闭应用，再运行 `superstring-setup-0.2.0-alpha.exe`，选择原安装目录。文件校验值见 `SHA256SUMS.txt`。macOS 和 Linux 用户从源码运行。
-
-本次未修改数据库结构，聊天、助手和记忆的数据格式不变。
+关闭应用、备份 `userdata`，将新版安装包安装到原目录。已知结构版本 1 的数据库迁移到 4，保留会话、记忆和设置；不支持的结构与降级会被拒绝。检查模型设置并授权已导入的资料；LM Studio 需要 token 时设置 `LM_STUDIO_API_KEY`。
 
 ---
 
 ## Thanks / 致谢
 
-Thanks to @nkanf-dev for the macOS and Linux source launcher in [#1](https://github.com/Verdspair/superstring/pull/1).
+Thanks to [nkanf-dev](https://github.com/nkanf-dev) for continued support, the macOS/Linux source launcher contributed in [#1](https://github.com/Verdspair/superstring/pull/1), and for reporting that an occupied port could make the app unusable in some cases.
 
-感谢 @nkanf-dev 在 [#1](https://github.com/Verdspair/superstring/pull/1) 中贡献 macOS 和 Linux 源码启动支持。
+感谢 [nkanf-dev](https://github.com/nkanf-dev) 的持续支持，以及在 [#1](https://github.com/Verdspair/superstring/pull/1) 中贡献 macOS/Linux 源码启动入口；也感谢他发现部分情况下端口被占用导致软件无法使用的问题。

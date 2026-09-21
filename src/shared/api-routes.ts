@@ -24,6 +24,8 @@ export const API_PREFIXES = [
   "/agents",
   "/sessions",
   "/models",
+  "/knowledge",
+  "/organization",
   "/browser-state",
 ] as const;
 

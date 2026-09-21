@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "bun";
 import { spawn } from "bun";
+import { bindWithDesktopFallback, DESKTOP_PORT_MESSAGE } from "../../src/server/dev-config";
 import { MODE_IDS, THEME_IDS } from "../../src/shared/appearance";
 
 type TestWsData = { alive: boolean };
@@ -129,6 +130,45 @@ function status(token: string | null): Response {
     ),
   );
 }
+
+describe("desktop port fallback", () => {
+  it("keeps the preferred port on success", () => {
+    const bind = vi.fn((port: number) => port);
+    expect(bindWithDesktopFallback(17861, true, bind)).toBe(17861);
+    expect(bind).toHaveBeenCalledTimes(1);
+  });
+  it("retries address-in-use and access-denied once with OS assignment", () => {
+    for (const code of ["EADDRINUSE", "EACCES"]) {
+      const ports: number[] = [];
+      expect(
+        bindWithDesktopFallback(17861, true, (port) => {
+          ports.push(port);
+          if (port) throw Object.assign(new Error(code), { code });
+          return 24567;
+        }),
+      ).toBe(24567);
+      expect(ports).toEqual([17861, 0]);
+    }
+  });
+  it("does not mask non-desktop, unrelated, or fallback failures", () => {
+    for (const [enabled, code] of [
+      [false, "EADDRINUSE"],
+      [true, "EINVAL"],
+    ] as const) {
+      const error = Object.assign(new Error(code), { code });
+      const bind = vi.fn(() => {
+        throw error;
+      });
+      expect(() => bindWithDesktopFallback(17861, enabled, bind)).toThrow(error);
+      expect(bind).toHaveBeenCalledTimes(1);
+    }
+    const bind = vi.fn(() => {
+      throw Object.assign(new Error("occupied"), { code: "EADDRINUSE" });
+    });
+    expect(() => bindWithDesktopFallback(17861, true, bind)).toThrow("occupied");
+    expect(bind).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("desktop token validation", () => {
   it("enables only on a 64-hex token", () => {
@@ -337,9 +377,11 @@ interface Spawned {
   cleanup: () => void;
 }
 
-async function spawnServer(opts: { token?: string; port?: number } = {}): Promise<Spawned> {
+async function spawnServer(
+  opts: { token?: string; port?: number; autoPort?: boolean } = {},
+): Promise<Spawned> {
   const token = opts.token ?? "c".repeat(64);
-  const port = opts.port ?? 20000 + Math.floor(Math.random() * 15000);
+  let port = opts.port ?? 20000 + Math.floor(Math.random() * 15000);
   const dir = mkdtempSync(path.join(tmpdir(), "superstring-desktop-"));
   const child = spawn([process.execPath, "run", SERVER_ENTRY], {
     cwd: dir,
@@ -348,11 +390,37 @@ async function spawnServer(opts: { token?: string; port?: number } = {}): Promis
     env: {
       ...process.env,
       SUPERSTRING_DESKTOP_TOKEN: opts.token === undefined ? "" : token,
+      SUPERSTRING_DESKTOP_AUTO_PORT: opts.autoPort ? "1" : "0",
       SUPERSTRING_DB_PATH: ":memory:",
       SUPERSTRING_SERVE_WEB: "1",
       SUPERSTRING_DEV_PORT: String(port),
     },
   });
+  if (opts.autoPort) {
+    let output = "";
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    const timeout = setTimeout(() => child.kill(), 20_000);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error(`No actual port reported: ${output}`);
+        output += decoder.decode(value, { stream: true });
+        const line = output
+          .split(/\r?\n/)
+          .slice(0, -1)
+          .find((entry) => entry.startsWith(DESKTOP_PORT_MESSAGE));
+        if (line) {
+          port = Number(line.slice(DESKTOP_PORT_MESSAGE.length));
+          if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(line);
+          break;
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
+      reader.releaseLock();
+    }
+  }
   const base = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 20_000;
   for (;;) {
@@ -400,6 +468,48 @@ describe("desktop lifecycle over a real isolated process", () => {
     s = await spawnServer({ token: undefined });
     const res = await fetch(`${s.base}/__desktop/status`);
     expect(res.status).toBe(404);
+  }, 40_000);
+
+  it("occupied preferred port selects a real free port, authenticates, keeps WS alive and stops only its service", async () => {
+    const blocker = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("unrelated"),
+    });
+    let ws: WebSocket | undefined;
+    try {
+      s = await spawnServer({ token: TOKEN, port: blocker.port, autoPort: true });
+      expect(s.port).not.toBe(blocker.port);
+      const auth = { authorization: `Bearer ${TOKEN}` };
+      expect((await fetch(`${s.base}/__desktop/status`)).status).toBe(401);
+      expect(await (await fetch(`${s.base}/__desktop/status`, { headers: auth })).json()).toEqual({
+        app: "superstring",
+        desktop: true,
+        state: "ready",
+      });
+      ws = await openAppearanceWs(s.base);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      const wrongOrigin = await fetch(`${s.base}/__desktop/lifetime`, {
+        headers: { origin: `http://127.0.0.1:${blocker.port}`, upgrade: "websocket" },
+      });
+      expect(wrongOrigin.status).toBe(403);
+      expect(
+        (await fetch(`${s.base}/__desktop/stop`, { method: "POST", headers: auth })).status,
+      ).toBe(200);
+      expect(await s.child.exited).toBe(0);
+      expect(await (await fetch(`http://127.0.0.1:${blocker.port}/`)).text()).toBe("unrelated");
+    } finally {
+      ws?.close();
+      blocker.stop(true);
+    }
+  }, 40_000);
+
+  it("desktop auto mode reports the preferred port when it is free", async () => {
+    s = await spawnServer({ token: TOKEN, autoPort: true });
+    expect(
+      (await fetch(`${s.base}/__desktop/status`, { headers: { authorization: `Bearer ${TOKEN}` } }))
+        .status,
+    ).toBe(200);
   }, 40_000);
 
   it("desktop mode: status auth and stop exit cleanly", async () => {

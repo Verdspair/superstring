@@ -4,21 +4,15 @@
 
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
-import type { RuntimeConfig } from "../../shared/contracts";
+import type { ContentItem, RuntimeConfig } from "../../shared/contracts";
 import { AppError } from "../errors";
 import { AGENT_LEVEL_SCOPE_KEY } from "../services/memory-contract";
+import { correctionMetadata } from "../services/memory-revision";
 import { compileSystemPrompt } from "../services/runtime-config";
 import { pythonCasefold } from "../services/text";
+import { correctionsForTurns, memoryRevision } from "./memory-content-repository";
 import { entries, ownedSession, sessionScope, turns } from "./memory-repository";
-import {
-  DEFAULT_USER_ID,
-  getTurnByRequest,
-  immediate,
-  newId,
-  nowIso,
-  type Orm,
-  type TurnRow,
-} from "./repositories";
+import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
 export interface ContextMessage {
@@ -35,13 +29,8 @@ export interface ContextTurn {
   assistant: string;
 }
 
-export interface MemoryItem {
-  id: string;
-  name: string;
-  summary: string;
-  tags: string[];
+export interface MemoryItem extends ContentItem {
   createdAt: string;
-  body?: string;
 }
 
 export interface SummaryFact {
@@ -258,13 +247,37 @@ function parseStringArray(text: string): string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
-function asMemoryItem(row: ReturnType<typeof entries>[number], withBody = false): MemoryItem {
+function asMemoryItem(
+  orm: Orm,
+  row: ReturnType<typeof entries>[number],
+  withBody = false,
+): MemoryItem {
+  // Called only for validMemoryRows; do not load original chat bodies for catalog formatting.
+  const sources = orm
+    .select()
+    .from(schema.memorySources)
+    .innerJoin(schema.turns, eq(schema.turns.id, schema.memorySources.turnId))
+    .where(eq(schema.memorySources.memoryId, row.id))
+    .all();
   return {
     id: row.id,
+    source_type: "memory",
+    content_origin: correctionMetadata(row.configSnapshot) ? "manual_correction" : "derived",
     name: row.name,
     summary: row.summary,
     tags: parseStringArray(row.tags),
+    revision: memoryRevision(row),
+    validity: "valid",
     createdAt: row.createdAt,
+    sources: sources.map(({ memory_sources: source, turns: turn }) => ({
+      type: "chat",
+      turn_id: source.turnId,
+      session_id: turn.sessionId,
+      user_message_id: source.userMessageId,
+      assistant_message_id: source.assistantMessageId,
+      sequence_no: source.sequenceNo,
+      valid: true,
+    })),
     ...(withBody ? { body: row.body } : {}),
   };
 }
@@ -309,7 +322,7 @@ export function catalog(
   } else {
     rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
   }
-  return rows.slice(0, limit).map((row) => asMemoryItem(row));
+  return rows.slice(0, limit).map((row) => asMemoryItem(orm, row));
 }
 
 /** context_repository.py:164-175. Fingerprint metadata only, never bodies. */
@@ -345,7 +358,7 @@ export function memoryBodies(
   if (new Set(rows.map((row) => row.id)).size !== new Set(ids).size) {
     contextFail("已选记忆的权限、状态或来源已变化");
   }
-  const indexed = new Map(rows.map((row) => [row.id, asMemoryItem(row, true)]));
+  const indexed = new Map(rows.map((row) => [row.id, asMemoryItem(orm, row, true)]));
   return ids.map((id) => {
     const item = indexed.get(id);
     if (!item) contextFail("已选记忆的权限、状态或来源已变化");
@@ -359,6 +372,7 @@ export function summaries(
   agentId: string,
   sessionId: string,
   validTurns: ContextTurn[],
+  retrievalEnabled = true,
 ): SummaryItem[] {
   ownedSession(orm, agentId, sessionId);
   const byTurn = new Map(validTurns.map((turn) => [turn.id, turn]));
@@ -397,6 +411,15 @@ export function summaries(
       );
     });
     if (!valid) continue;
+    const snapshot = JSON.parse(row.configSnapshot) as { memory_corrections?: unknown[] };
+    const corrections = retrievalEnabled
+      ? correctionsForTurns(
+          orm,
+          agentId,
+          sources.map((source) => source.turnId),
+        )
+      : [];
+    if (JSON.stringify(snapshot.memory_corrections ?? []) !== JSON.stringify(corrections)) continue;
     result.push({
       id: row.id,
       content: JSON.parse(row.content) as SummaryContent,
@@ -446,6 +469,14 @@ export function saveSummary(
         p5_config: runtime.p5_config,
         config_version: runtime.config_version,
         resolved_model_capacities: runtime.resolved_model_capacities,
+        memory_corrections:
+          runtime.p5_config.retrieval_mode === "off"
+            ? []
+            : correctionsForTurns(
+                orm,
+                agentId,
+                fresh.map((turn) => turn.id),
+              ),
       }),
       templateVersion: "p5-1",
       estimatedTokens,
@@ -468,24 +499,6 @@ export function saveSummary(
       .run();
   }
   return { id, content, turnIds: fresh.map((turn) => turn.id) };
-}
-
-/** Convenience for callers that need the same short write transaction as Python. */
-export function saveSummaryImmediate(
-  orm: Orm,
-  ...args: Parameters<typeof saveSummary> extends [Orm, ...infer Rest] ? Rest : never
-): SummaryItem {
-  const db = (orm as unknown as { $client: import("bun:sqlite").Database }).$client;
-  return immediate(db, () => saveSummary(orm, ...args));
-}
-
-/** Helpers used by tests and final-source validation. */
-export function turnStillActive(
-  orm: Orm,
-  sessionId: string,
-  clientRequestId: string,
-): TurnRow | null {
-  return getTurnByRequest(orm, sessionId, clientRequestId);
 }
 
 export function systemPrompt(runtime: RuntimeConfig): ContextMessage[] {

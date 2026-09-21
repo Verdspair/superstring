@@ -1,31 +1,21 @@
-import { translateNotice, useI18n } from "../../i18n";
+import { useI18n } from "../../i18n";
 import type { AgentDraft } from "../../store";
 import { useSuperstringStore } from "../../store";
-import { Accordion } from "../../ui/Accordion";
+import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
 
 export function SectionA({
   draft,
   patch,
-  models,
 }: {
   draft: AgentDraft;
   patch: (patch: Partial<AgentDraft>) => void;
-  models: string[];
 }) {
   const t = useI18n();
-  const modelStatus = useSuperstringStore((state) => state.modelStatus);
-  const refreshModels = useSuperstringStore((state) => state.refreshModels);
-  const editorAgentId = useSuperstringStore((state) => state.editorAgentId);
+  const navigate = useSuperstringStore((state) => state.openSettingsRoute);
   return (
     <div className="config-section">
-      <h3>{t("A · 名称与模型")}</h3>
-      <p>{t("模型与指令保存后从下一轮生效，不影响正在生成的回复。")}</p>
-      <Accordion
-        title="① 基本信息"
-        note={t("名称、描述与启用状态。")}
-        open={editorAgentId === "__new__"}
-      >
+      <SettingsGroup title="基本信息" note="名称、描述与启用状态。">
         <Field label={t("助手名称")}>
           <input
             aria-label={t("助手名称")}
@@ -48,11 +38,11 @@ export function SectionA({
           />
           <span>
             <strong>{t("启用当前 Agent")}</strong>
-            <small>{t("取消勾选并保存后，新会话不能再选择该 Agent；已有会话不受影响。")}</small>
+            <small>{t("停用并保存后，新会话不可选；已有会话不受影响。")}</small>
           </span>
         </label>
-      </Accordion>
-      <Accordion title="② 基础指令" note={t("对该助手回复的补充要求。")}>
+      </SettingsGroup>
+      <SettingsGroup title="基础指令" note={t("对该助手回复的补充要求。")}>
         <Field label={t("补充指令")} info={t("追加到人设与性格之后，影响该助手的回复。")}>
           <textarea
             rows={5}
@@ -60,45 +50,12 @@ export function SectionA({
             onChange={(event) => patch({ additional_instructions: event.target.value })}
           />
         </Field>
-      </Accordion>
-      <Accordion title="③ 本地模型" note={t("选择对话模型，调整回复随机度。")}>
-        <Field label={t("对话模型")} info={t("来自 LM Studio 当前可用的模型。")}>
-          <select
-            value={draft.model_name}
-            onChange={(event) => patch({ model_name: event.target.value })}
-          >
-            {models.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-            {!models.includes(draft.model_name) && (
-              <option value={draft.model_name}>{draft.model_name}</option>
-            )}
-          </select>
-        </Field>
-        <button type="button" onClick={() => void refreshModels()}>
-          {t("刷新模型列表")}
-        </button>
-        <p className="hint">{translateNotice(modelStatus)}</p>
-        <Field
-          label={t("回复随机度")}
-          info={t("越低越稳定，越高越多样。对应 temperature，默认 0.7。")}
-        >
-          <div className="range-row">
-            <input
-              type="range"
-              min="0"
-              max="2"
-              step="0.05"
-              value={draft.temperature}
-              onChange={(event) => patch({ temperature: Number(event.target.value) })}
-            />
-            <output>{draft.temperature.toFixed(2)}</output>
-          </div>
-        </Field>
-      </Accordion>
-      <Accordion title="④ 外部 API 模型接入">
+      </SettingsGroup>
+      <button type="button" onClick={() => navigate("models")}>
+        {t("设置使用模型")}
+      </button>
+      <p className="hint">{t("对话模型与回复随机度在默认模型页设置；返回后继续创建助手。")}</p>
+      <SettingsGroup title="外部 API 模型接入">
         <div className="unavailable">
           <strong>{t("状态：暂未开放")}</strong>
           <Field label={t("服务地址")}>
@@ -111,7 +68,7 @@ export function SectionA({
             <input disabled placeholder={t("例如：provider-model-name")} />
           </Field>
         </div>
-      </Accordion>
+      </SettingsGroup>
     </div>
   );
 }

@@ -1,307 +1,175 @@
-# superstring · 超弦
+# superstring · 超弦 — Update guide / 升级说明
 
 [English](#english) · [简体中文](#简体中文)
 
 ## English
 
-superstring is a local desktop chat application for ongoing conversations with configurable AI assistants. It brings together conversation history, long-term memory, and adjustable personality settings, with room for both everyday conversation and emotional support.
+**Comparison baseline:** the published `v0.2.0-alpha` release. This guide describes changes in the current development source relative to that release.
 
-**Version:** `0.2.0-alpha` · **Packaged desktop release:** Windows x64
+**Version:** `0.2.1`.
 
-The interface supports English and Simplified Chinese. Switch languages in **Settings → General** without changing your conversations or assistant content.
+The main additions are a permission-controlled knowledge library, editable long-term memories, and a context-usage panel. Settings and model selection have been reorganized, with fixes for interrupted generation, model authentication, and memory-page state.
 
-### What's new in 0.2.0-alpha
+### 1. New features
 
-- Switch languages instantly, with your choice saved and synchronized across tabs.
-- Rename, refresh, or delete conversations from the sidebar without switching the active chat.
-- Find language and appearance in General, with separate Operating mode and Assistant settings pages.
-- Use keyboard-accessible dialogs and menus that stay inside the window, with a bottom status bar showing the current mode.
+| Feature | Previous release | This update |
+|---|---|---|
+| Knowledge library | No document library | Import UTF-8 `.txt` / `.md` files or paste text; retain and edit originals; organize documents into categories |
+| Document permissions | No per-document assistant access | Grant or revoke access per assistant, individually or in batches; importing does not automatically grant access |
+| Knowledge organization and retrieval | No knowledge-library retrieval pipeline | Generate organized drafts, inspect linked source passages, and choose original or organized content; use original passages when no valid draft exists |
+| Assistant-specific knowledge reading | Not available | Enable or disable reading, use all authorized documents or a selected subset, and override the context budget per assistant |
+| Memory correction | Memory management without a content-correction workflow | Edit incorrect memory content and inspect its sources, without deleting the original conversation |
+| Context-usage panel | No usage ring beside the chat input | Open the ring to inspect estimated usage, loaded model capacity, and the input breakdown; unknown capacity is shown as unknown |
+| Shared organization model | No shared default across memory and knowledge organization | Set one common default, with separate assistant and knowledge-library overrides |
 
-See the [release notes](RELEASE_NOTES.md) for the complete update.
+**Where to find them:** Knowledge library → **Settings → Memory → Knowledge settings**; memory correction → **Memory → Long-term memory**; model selection → **Quick management → Default models**.
 
-### What it does
+Knowledge access is checked again on retry. If a referenced document has been revoked or deleted, send a new request using current permissions.
 
-- **Conversations:** stream model replies and keep multiple conversations locally.
-- **Assistant settings:** configure assistant names, instructions, local models, and response randomness.
-- **Long-term memory:** organize conversation content into memories, review and manage them, and use them across conversations with the same assistant. Different assistants have separate memories.
-- **Context management:** configure context budgets and conversation-summary behavior.
-- **Personality and persona:** adjust expression style, identity, and conversational boundaries.
-- **Appearance:** choose from 16 color themes, with system, light, and dark modes.
-- **Desktop entry:** open the application in a browser through a lightweight native Windows launcher.
+### 2. Improvements to existing features
 
-Multiple configurable assistants are not multi-agent collaboration.
+| Area | Previous release | This update |
+|---|---|---|
+| Settings navigation | Assistant configuration spread across lettered sections and detailed settings | Left-side categories and top tabs; grouped parameters stay expanded, with jump links for long pages |
+| Model selection | Conversation, memory-reading, organization, and compression models configured in separate places | Select all model roles on the Default models page; feature pages retain their rules and budgets |
+| Assistant management | Assistant identity and configuration controls split across views | Select the editing target from a dropdown or list; manage identity, creation, deletion, and the new-conversation choice together |
+| Saving settings | Configuration saved through the old section structure | Save each page's field group independently; retain drafts across pages and on conflicts; do not include another page's unsaved changes |
+| Memory management | Reading rules, organization settings, and management controls spread across sections | Group reading, manual/automatic organization, and stored-memory management on the Long-term memory page |
+| Appearance | Existing theme system and mixed layout density | More consistent selection states, form spacing, panel styling, and concise labels across settings and management views |
 
-### Install and start
+Default values are raised across the board — recent turns 6 → 10, summary target 1024 → 2048 units, memory-organization target 300 → 1200 characters, the three recall presets 15/3/1024 → 30/6/2048, 30/5/2048 → 60/10/4096 and 60/8/4096 → 120/16/8192, auxiliary-call timeout 300 → 900 seconds, model-call timeout 60 → 1200 seconds, organization-task budget 600 → 3600 seconds and server idle limit 10 → 120 seconds — the new knowledge library starts at a 16384-unit context budget, these values compare the published release directly with the current source, and existing saved settings and environment overrides are kept.
 
-Download `superstring-setup-0.2.0-alpha.exe` from the [latest release](https://github.com/Verdspair/superstring/releases/latest).
+Saved assistant settings still apply to the next new turn; retrying the original request retains its original configuration. This behavior is preserved, not newly introduced.
 
-1. Run the installer and choose a dedicated installation directory. The suggested location is `D:\superstring`; you may type or browse to another location. If D: is unavailable, the installer looks for another non-system fixed drive, or leaves the field empty for you to choose.
-2. Leave **Create a desktop shortcut** checked if you want a desktop entry. A Start Menu entry is created even if you uncheck it. Unchecking does not delete an existing desktop shortcut.
-3. Open **superstring** from the desktop, Start Menu, or `superstring.exe` in the installation directory.
-4. The launcher starts the local application and opens its browser interface. The default application address is `http://127.0.0.1:17861`.
+### 3. Bug fixes
 
-The installer includes the application runtime and built frontend. End users do not need to install Node.js or Bun. **LM Studio and model weights are not included.**
+- **Long replies and memory organization stopped after 60 seconds.** The model transport timer previously ended an otherwise active request at that limit. Its default is now 1200 seconds, allowing slower generation and organization to continue. It remains a total-call limit, including the streamed response, not an unlimited wait.
+- **Generation disconnected before the first text arrived.** The server previously used a 10-second idle limit, which could close a connection during model preparation. The idle limit is now 120 seconds; it is separate from the model-call timeout.
+- **An occupied port could make the app unusable.** In some cases the desktop launcher could not bind its preferred port and the app failed to start. It now selects a free port and opens the matching address without stopping other software.
+- **LM Studio authentication prevented normal use.** The previous gateway used a fixed token, and capacity detection omitted authentication. Set `LM_STUDIO_API_KEY` to use your token consistently for model listing, capacity detection, and generation.
+- **Authentication failures looked like a disconnected model service.** HTTP 401/403 now produce token-setting guidance; the source-launch precheck distinguishes authorization failure from an unreachable server.
+- **Failure messages covered the retry button.** Messages now sit above the chat input instead of floating over the retry controls.
+- **Delayed memory requests could update the wrong view after switching assistants or pages.** Stale success and failure responses no longer replace the current list, details, or status message.
+- **Memory source selection and displayed turns could get out of sync after leaving and returning.** Source, list, and pagination state now reset together.
+- **Changing a budget did not immediately update the capacity preview.** Once capacity is known, budget edits recalculate the preview locally; switching assistants refreshes the capacity check even when the model is the same.
+- **Malformed stored assistant configuration could silently fall back to defaults.** Invalid stored configurations now return a configuration error rather than producing an unintended request configuration; valid older configurations remain readable.
 
-This alpha build is not digitally signed. The release page lists its SHA-256 checksum.
+### 4. Changed or removed behavior
 
-### Connect a model
+- **Removed automatic reinsertion of original conversation passages during summary reading.** Original chat history is retained; recent-turn context, summary compression, long-term memory, and knowledge retrieval remain available.
+- Removed the old lettered assistant-navigation sections and duplicate configuration controls in favor of the unified settings pages.
+- English and Simplified Chinese, 16 themes, conversation context menus, and macOS/Linux source launchers already existed. They remain supported and are not counted as new features here.
 
-1. Install LM Studio separately, choose a model suitable for your hardware, and load it.
-2. Start its local model server. superstring's default model endpoint is `http://127.0.0.1:1234/v1`.
-3. In superstring, open **Settings → Assistant settings → Name and model** (`设置 → 助手设置 → 名称与模型`), refresh the model list, and select the model for your assistant.
-4. Save the settings and start a conversation.
+### 5. Upgrading and configuration
 
-superstring does not start LM Studio, download models, or load a model for you. The application can open without the model service, but generating replies requires an available model. Quality, speed, and memory use depend on the selected model and hardware.
+1. Fully close the application and back up `userdata`. Run the new installer against the same installation directory; do not delete the old database to create a new one.
+2. The update adds knowledge and model-setting structures, migrating known databases from schema 1 to schema 4 while retaining conversations, memories, and saved settings. Unsupported structures and downgrades are rejected. Historical default values were only changed during development and never shipped, so no released version is affected.
+3. Review **Quick management → Default models**, import reference material in **Memory → Knowledge settings**, and explicitly authorize the assistants that may use it. Upgrading does not overwrite existing values; to adopt the larger defaults, save the affected settings yourself.
 
-### Your data
-
-Installed copies keep their application files and persistent data under the directory you choose:
-
-```text
-<installation directory>/
-├── superstring.exe    # Desktop entry
-├── app/               # Application resources
-├── userdata/          # Database, configuration, and persistent state
-├── logs/              # Application logs
-├── backups/           # Maintenance backups
-└── maintenance/       # Installation and recovery records
-```
-
-Some directories are created only when needed. Development runs use a separate layout; these paths describe installed copies.
-
-- Conversations and memories are stored locally. The relevant messages, instructions, summaries, and memories are sent to the configured model service to generate replies or process memory.
-- With the default local LM Studio endpoint, that model connection stays on the same machine. If you configure a remote endpoint, submitted content leaves the machine and is subject to that service's policies.
-- Treat `userdata`, backups, and logs as private. Do not upload them to a repository or attach them unredacted to issue reports.
-- New installations do not automatically import another installation's or a developer's conversations and settings.
-- Back up important data with the application fully stopped; do not copy only a live SQLite database file while it may still be writing.
-
-### Updates and shutdown
-
-Updates use a new full installer; there is no in-app automatic downloader. Close superstring before installing into the same directory. Reinstallation, updates, and uninstall keep your data and backups.
-
-The installer refuses unsupported downgrades. This update keeps the existing database format and does not require a new database migration.
-
-In desktop mode, closing the last superstring browser page starts an approximately eight-second grace period before the backend shuts down. Refreshing or reopening during that period keeps it alive. Shutdown waits for work to finish or cancel safely, so eight seconds is not a strict deadline. Browser suspension and system sleep may interrupt the connection. The application does not remain in the system tray.
-
-### Build from source
-
-Prerequisites:
-
-- Windows x64 for the desktop package.
-- Node.js `22.12.0` or later, as declared in `package.json`.
-- Project dependencies installed using `package-lock.json`; the project pins Bun `1.4.2` as a development dependency.
-- For native launcher and installer builds: the .NET Framework C# compiler and the .NET Framework 4.8 reference assemblies required by the build scripts.
-- LM Studio and a loaded model for actual model conversations, not for isolated automated tests.
-
-From the source root, in PowerShell:
+For an LM Studio server with **Require API token** enabled, set the token before launching. PowerShell example:
 
 ```powershell
-npm ci
-.\start.cmd --check
-.\start.cmd
+$env:LM_STUDIO_API_KEY = "your-lm-studio-token"
+& "D:\superstring\superstring.exe"
 ```
 
-On macOS or Linux, run the local browser app from source:
+This sets the token for that launch only. For shortcut launches, add `LM_STUDIO_API_KEY` to Windows user environment variables and sign out and back in. The default model endpoint remains `http://127.0.0.1:1234/v1`.
 
-```sh
-npm ci
-./start.sh
-```
+### Downloads and source use
 
-`start.cmd` runs the development application, builds the frontend, and opens the browser. Unlike the installed desktop launcher, it is a console development entry; closing the browser does not stop it. Use Ctrl+C in its terminal to request shutdown.
+Windows x64 packages are available from [Releases](https://github.com/Verdspair/superstring/releases). Installed copies include the application runtime, but not LM Studio or model weights.
 
-Run the checks and builds separately:
+For source use, install Node.js 22.12.0 or newer, run `npm ci`, then launch `start.cmd` on Windows or `./start.sh` on macOS/Linux. Source-launch processes stop with Ctrl+C in the terminal.
 
-```powershell
-npm run check
-npm run typecheck
-.\node_modules\bun\bin\bun.exe test tests/integration tests/contracts
-npm run test:web
-npm run build
-
-# Native development launcher
-npm run build:desktop
-
-# Full Windows installer
-node tools/installer/build-package.mjs
-```
-
-Backend tests run under Bun; browser-facing tests run under Vitest. Do not substitute an unqualified `bun test` for the separate test commands. A frontend build alone does not produce a desktop installer.
-
-On macOS or Linux, run the source checks with:
-
-```sh
-npm run check
-npm run typecheck
-node_modules/.bin/bun test tests/integration tests/contracts
-npm run test:web
-npm run build
-```
-
-### Limitations and feedback
-
-- This is a single-user local application, not a hosted multi-user service. Do not expose the application port to the public internet.
-- Model output and extracted memories may be incomplete or incorrect. Review important information. superstring is not a medical or mental-health treatment service.
-- When reporting a problem, include the application version, Windows version, display scaling, reproduction steps, and redacted error details. Do not include private conversations, database files, credentials, or backups.
-
-### Acknowledgments
-
-Special thanks to my friend [nkanf-dev](https://github.com/nkanf-dev). Without his support and encouragement—especially his help with hardware—I could not have brought this project this far or turned my ideas and dreams into reality.
-
-### License
-
-This project's own code is licensed under the [MIT License](LICENSE). Third-party components keep their respective licenses; collected notices are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
+The project's own code uses the [MIT License](LICENSE); third-party notices are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
 
 ---
 
 ## 简体中文
 
-超弦（superstring）是一款在本机运行的桌面聊天应用，让你与可配置的 AI 助手持续交流。它将会话记录、长期记忆与性格人设放在一起，既可以用于日常聊天，也为情感支持留出空间。
+**对比基线：** 已发布的 `v0.2.0-alpha`。本文说明当前开发源码相对该版本的变化。
 
-**版本：** `0.2.0-alpha` · **桌面安装包平台：** Windows x64
+**版本：** `0.2.1`。
 
-应用支持简体中文与 English，可在“设置 → 通用”中切换。聊天记录与助手内容保持原文。
+本次主要新增带授权管理的知识库、长期记忆内容纠正、上下文用量面板；重组设置和模型配置入口，并修复生成中断、模型鉴权、记忆页面状态等问题。
 
-### 0.2.0-alpha 更新亮点
+### 1. 新功能
 
-- 即时切换界面语言，自动保存选择并在标签页之间同步。
-- 从侧栏右键重命名、刷新或删除会话，无需切换当前聊天。
-- 通用设置集中管理语言与外观，运行模式和助手设置各自独立。
-- 对话框与菜单支持键盘操作，菜单自动避让窗口边缘；底部状态栏显示当前模式。
+| 功能 | 上一版 | 本次更新 |
+|---|---|---|
+| 知识库 | 没有资料库 | 导入 UTF-8 `.txt`、`.md` 文件或粘贴文本，保留和编辑原文，按分类管理资料 |
+| 资料授权 | 没有按资料划分的助手权限 | 按助手逐份或批量授予、撤回访问权限；导入不等于自动授权 |
+| 资料整理与检索 | 没有知识库检索流程 | 生成整理稿，查看对应原文片段，选择使用原文或整理内容；无有效整理稿时读取原文片段 |
+| 助手独立读取配置 | 不支持 | 每个助手可开关知识库读取，选择全部授权资料或指定子集，并单独覆盖上下文预算 |
+| 记忆内容纠正 | 可以管理记忆，但没有内容纠正流程 | 直接修改记错的内容并查看来源，不需要删除原聊天记录 |
+| 上下文用量面板 | 输入框旁没有用量圆环 | 点击圆环查看估算用量、已加载模型容量及输入组成；未知容量明确显示未知 |
+| 共同默认整理模型 | 没有跨记忆与知识库的共同默认值 | 设置一个共同整理模型，助手记忆整理和全局知识库整理仍可分别覆盖 |
 
-完整更新内容见[版本说明](RELEASE_NOTES.md)。
+**使用入口：** 知识库在“**设置 → 记忆 → 知识库配置**”；记忆纠正在“**记忆 → 长期记忆**”；模型选择在“**快捷管理 → 默认模型**”。
 
-### 已有功能
+知识库资料在重试时会再次检查权限。引用资料已撤权或删除时，需要按当前权限重新发送。
 
-- **会话交流：** 流式显示模型回复，在本机保存多个会话。
-- **助手设置：** 配置助手名称、指令、本地模型与回复随机度。
-- **长期记忆：** 将对话内容整理为记忆，查看和管理，并在同一助手的不同会话中使用；不同助手的记忆相互隔离。
-- **上下文管理：** 调整上下文预算与会话摘要策略。
-- **性格与人设：** 调整表达风格、身份和交流边界。
-- **外观：** 16 种配色，以及跟随系统、浅色、深色模式。
-- **桌面入口：** 通过轻量原生 Windows 启动器，在浏览器中打开应用。
+### 2. 原有功能改进
 
-可配置多个助手不等于多助手协作。
+| 方面 | 上一版 | 本次更新 |
+|---|---|---|
+| 设置导航 | 助手配置分散在字母分区和详细配置中 | 改为左侧分类、顶部页签；参数分组展开，长页面可通过锚点跳转 |
+| 模型选择 | 对话、记忆读取、整理、压缩模型分散配置 | 全部集中到“默认模型”页；各功能页保留规则和预算 |
+| 助手管理 | 助手身份和配置操作分散 | 下拉框与列表共同选择编辑对象，集中管理基本信息、新建、删除和新会话候选 |
+| 设置保存 | 沿用旧配置分区保存 | 按页独立保存，跨页保留草稿，冲突时保留编辑内容，不夹带其他页未保存的修改 |
+| 记忆管理 | 读取、整理配置与管理操作分散 | 在“长期记忆”页集中配置读取、手动整理、自动整理和已存记忆管理 |
+| 界面样式 | 已有主题体系，但布局密度不统一 | 统一设置与管理页的选中状态、表单间距、面板样式，精简重复说明 |
 
-### 安装与启动
+默认参数同步整体上调——近期原文 6 → 10 轮、摘要目标 1024 → 2048 单位、记忆整理目标 300 → 1200 字、三档检索预设 15/3/1024 → 30/6/2048、30/5/2048 → 60/10/4096、60/8/4096 → 120/16/8192、辅助调用超时 300 → 900 秒、模型调用超时 60 → 1200 秒、整理任务预算 600 → 3600 秒、连接空闲上限 10 → 120 秒——新增知识库默认上下文预算 16384 单位，数值直接比较上一发布版与当前源码，已保存的设置和环境变量覆盖值保持不变。
 
-从[最新版本](https://github.com/Verdspair/superstring/releases/latest)下载 `superstring-setup-0.2.0-alpha.exe`。
+助手配置仍在下一新轮生效，重试原请求仍使用当时的配置。这是保留的原有行为，不是本次新增功能。
 
-1. 运行安装包，选择专用安装目录。建议位置为 `D:\superstring`，也可以手动输入或浏览选择其他位置。D 盘不可用时，安装器会寻找其他非系统固定盘；没有合适磁盘则留空，由你选择。
-2. 如果需要桌面入口，保留默认勾选的“在桌面创建快捷方式”。取消勾选后仍会创建开始菜单入口，也不会删除已有桌面快捷方式。
-3. 从桌面、开始菜单，或安装目录中的 `superstring.exe` 打开应用。
-4. 启动器会启动本机应用并打开浏览器界面，默认应用地址为 `http://127.0.0.1:17861`。
+### 3. 问题修复
 
-安装包包含应用运行时和已构建的前端，普通安装用户不需要另外安装 Node.js 或 Bun。**安装包不包含 LM Studio 和模型文件。**
+- **长回答和记忆整理在 60 秒后被截断。** 旧版模型传输计时器会在到达上限时结束仍正常进行的请求。默认上限现为 1200 秒，为慢模型生成和整理留出时间。它仍是包含完整流式回复的单次调用总耗时上限，不是无限等待。
+- **模型尚未输出首字，连接就断开。** 旧版服务器使用 10 秒空闲上限，模型准备期间可能被断开。现改为 120 秒；该限制与模型调用超时分别生效。
+- **修复了部分情况下端口被占用导致软件无法使用的问题。** 桌面启动器原先可能因无法绑定首选端口而启动失败；现在会自动选择空闲端口并打开对应地址，不关闭其他软件。
+- **LM Studio 开启鉴权后无法正常使用。** 旧版固定使用预设 token，容量探测还缺少鉴权信息。现在可通过 `LM_STUDIO_API_KEY` 配置自己的 token，模型列表、容量探测和生成统一携带。
+- **鉴权失败被误报为模型服务未连接。** 401/403 现在明确提示配置 token；源码启动预检也区分“需要授权”和“服务不可达”。
+- **失败提示遮挡“重试原请求”按钮。** 提示移到输入框上方，不再浮动覆盖重试操作。
+- **切换助手或页面后，迟到的记忆请求覆盖当前界面。** 旧请求的成功和失败结果不再替换新页面的列表、详情或提示。
+- **离开记忆页再返回，来源选择与显示轮次不一致。** 来源、列表和分页状态现在一起复位。
+- **修改预算后，容量预览没有立即变化。** 容量已知后在本地即时重算；切换助手时，即使模型相同也重新检查容量。
+- **已存助手配置损坏时，部分路径静默改用默认值。** 非法配置现在明确报配置错误，不再悄悄生成另一套请求配置；合法旧配置仍可读取。
 
-当前 Alpha 安装包尚未数字签名，版本页面提供 SHA-256 校验值。
+### 4. 行为调整与移除
 
-### 连接模型
+- **移除摘要读取中的原文自动回注。** 原始聊天记录仍保留；近期原文、摘要压缩、长期记忆读取和知识库检索继续使用。
+- 移除旧字母分区导航和重复配置控件，统一从新的设置页面操作。
+- 应用支持简体中文与 English、16 种主题、会话右键菜单、macOS/Linux 源码启动。这些上一版已有，本次保留，不列为新增。
 
-1. 单独安装 LM Studio，选择适合电脑配置的模型并加载。
-2. 启动其本地模型服务。超弦默认连接 `http://127.0.0.1:1234/v1`。
-3. 在超弦中进入“设置 → 助手设置 → 名称与模型”，刷新模型列表，为助手选择模型。
-4. 保存设置后开始聊天。
+### 5. 升级与配置
 
-超弦不会替你启动 LM Studio、下载模型或加载模型。模型服务未就绪时仍可打开应用，但生成回复需要可用模型；回复质量、速度和内存占用取决于所选模型及电脑配置。
+1. 完整退出应用并备份 `userdata`，运行新版安装包并选择原安装目录，不要删掉旧数据库重新建库。
+2. 本次增加知识库和模型设置结构，将已知旧库从结构版本 1 迁移到 4，保留会话、记忆和已存配置；不支持的结构和降级会被拒绝。历史数据库默认值的调整只在开发阶段出现，未随任何已发布版本发布。
+3. 到“**快捷管理 → 默认模型**”检查各用途模型；到“**记忆 → 知识库配置**”导入资料，并明确授权给需要使用的助手。升级不会覆盖已有数值，如需采用较大的新默认值，请自行检查并保存配置。
 
-### 数据保存
-
-安装版的程序文件和持久数据保存在你选择的目录下：
-
-```text
-<安装目录>/
-├── superstring.exe    # 桌面启动入口
-├── app/               # 程序资源
-├── userdata/          # 数据库、配置与持久状态
-├── logs/              # 应用日志
-├── backups/           # 维护备份
-└── maintenance/       # 安装与恢复记录
-```
-
-部分目录在需要时才会创建。源码开发运行使用另一套目录布局；上述结构仅描述安装版。
-
-- 会话与记忆保存在本机。生成回复或处理记忆时，相关消息、指令、摘要和记忆会发送给配置的模型服务。
-- 使用默认的本机 LM Studio 地址时，这条模型连接在同一台电脑内完成。如果配置了远程地址，提交的内容会离开本机，并受该服务的数据政策约束。
-- 请把 `userdata`、备份和日志视为私人内容，不要上传到代码仓库，也不要未经脱敏就附在问题反馈里。
-- 新安装不会自动导入另一份安装或开发环境中的会话与设置。
-- 备份重要数据前应先完整退出应用；数据库仍可能写入时，不要只复制正在使用的 SQLite 主文件。
-
-### 更新与退出
-
-更新通过下载新的完整安装包完成，没有应用内自动下载功能。覆盖安装到原目录前，请先关闭超弦。同版重装、升级和卸载都会保留用户数据与备份。
-
-安装器会拒绝不支持的降级。本次更新沿用原有数据库格式，不需要新增数据库迁移。
-
-桌面模式下，关闭最后一个超弦网页后，会经过约八秒宽限期再退出后台；期间刷新或重新打开页面可以保持连接。退出会等待任务完成或安全取消，因此八秒不是严格截止时间。浏览器挂起和系统休眠也可能中断连接。应用不会常驻系统托盘。
-
-### 从源码运行和构建
-
-以下命令覆盖源码检查、本地网页版运行和 Windows 桌面安装包构建。
-
-所需环境：
-
-- 桌面安装包需要 Windows x64。
-- Node.js `22.12.0` 或更高版本，以 `package.json` 声明为准。
-- 根据 `package-lock.json` 安装项目依赖；项目将 Bun `1.4.2` 固定为开发依赖。
-- 构建原生启动器与安装包时，需要构建脚本使用的 .NET Framework C# 编译器与 .NET Framework 4.8 引用程序集。
-- 实际模型对话需要 LM Studio 和已加载模型；隔离自动化测试不需要。
-
-在源码根目录打开 PowerShell：
+LM Studio 开启 **Require API token** 时，先设置 token 再启动。PowerShell 示例：
 
 ```powershell
-npm ci
-.\start.cmd --check
-.\start.cmd
+$env:LM_STUDIO_API_KEY = "your-lm-studio-token"
+& "D:\superstring\superstring.exe"
 ```
 
-在 macOS 或 Linux 上从源码运行本地网页版：
+此设置仅对本次启动生效。使用快捷方式时，在 Windows 用户环境变量中添加 `LM_STUDIO_API_KEY`，再注销并重新登录。模型服务默认地址仍为 `http://127.0.0.1:1234/v1`。
 
-```sh
-npm ci
-./start.sh
-```
+### 下载与源码使用
 
-`start.cmd` 会运行开发应用、构建前端并打开浏览器。它是控制台开发入口，与安装版桌面启动器不同，关闭网页不会让它自动退出；需要在对应终端按 Ctrl+C 请求停止。
+Windows x64 安装包见[版本页面](https://github.com/Verdspair/superstring/releases)。安装版自带应用运行时，不包含 LM Studio 和模型文件。
 
-分别执行检查与构建：
+源码运行需 Node.js 22.12.0 或更高版本，先执行 `npm ci`，Windows 启动 `start.cmd`，macOS/Linux 启动 `./start.sh`。源码入口通过终端 Ctrl+C 停止服务。
 
-```powershell
-npm run check
-npm run typecheck
-.\node_modules\bun\bin\bun.exe test tests/integration tests/contracts
-npm run test:web
-npm run build
+本项目自身代码采用 [MIT 开源协议](LICENSE)，第三方声明见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。
 
-# 原生开发启动器
-npm run build:desktop
+---
 
-# 完整 Windows 安装包
-node tools/installer/build-package.mjs
-```
+## Thanks / 致谢
 
-后端测试由 Bun 执行，浏览器相关测试由 Vitest 执行，不要用不带范围的 `bun test` 替代分开的测试命令。只构建前端不会生成桌面安装包。
+Special thanks to my friend [nkanf-dev](https://github.com/nkanf-dev) for his support and encouragement, especially his help with hardware, for contributing macOS/Linux source-launch support in [#1](https://github.com/Verdspair/superstring/pull/1), and for reporting that an occupied port could make the app unusable in some cases.
 
-在 macOS 或 Linux 上运行源码检查：
-
-```sh
-npm run check
-npm run typecheck
-node_modules/.bin/bun test tests/integration tests/contracts
-npm run test:web
-npm run build
-```
-
-### 限制与反馈
-
-- 当前为单用户本机应用，不是多用户在线服务，请勿将应用端口暴露到公网。
-- 模型回复及整理出的记忆可能不完整或有误，请核对重要信息。超弦不是医疗或心理治疗服务。
-- 反馈问题时，请附应用版本、Windows 版本、显示缩放比例、复现步骤和脱敏后的错误信息。不要附上私人对话、数据库、凭据或备份。
-
-### 特别感谢
-
-特别感谢我的朋友 [nkanf-dev](https://github.com/nkanf-dev)。没有他的支持与鼓励，尤其是在硬件上的支持，我不可能将这个项目推进至今，让自己的想法与梦想成为现实。
-
-### 开源协议
-
-本项目自身代码采用 [MIT 开源协议](LICENSE)。第三方组件遵循各自的许可证，已收集的声明见 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)。
+特别感谢我的朋友 [nkanf-dev](https://github.com/nkanf-dev) 的支持与鼓励，尤其在硬件上的帮助；也感谢他在 [#1](https://github.com/Verdspair/superstring/pull/1) 中贡献 macOS/Linux 源码启动支持，以及发现部分情况下端口被占用导致软件无法使用的问题。

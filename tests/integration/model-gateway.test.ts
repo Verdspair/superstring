@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Server } from "node:http";
 import http from "node:http";
-import { createLmStudioClient } from "../../src/server/llm/model-gateway";
+import { createLmStudioClient, resolveLmStudioConfig } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 
 // Regression test for the loopback-proxy bug: on machines where HTTP_PROXY is
@@ -233,5 +233,147 @@ describe("model response body error lifecycle", () => {
       expect(await gateway.complete({ messages })).toBe("ok");
       expect(await gateway.probeModelLoaded()).toBe(true);
     });
+  });
+});
+
+// LM Studio refuses unauthenticated calls with 401 once its server requires an
+// API token. The service is reachable, so this must not be reported as "the
+// local model service is down" nor folded into MODEL_CAPACITY_UNAVAILABLE —
+// that message sent the user hunting for a service that was running fine.
+describe("model gateway distinguishes an auth rejection", () => {
+  it("reports 401 as service-unavailable-with-auth, not as missing capacity", async () => {
+    const stub = http.createServer((_req, res) => {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end('{"error":{"code":"invalid_api_key"}}');
+    });
+    await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+    const gateway = createLmStudioClient({
+      baseUrl: `http://127.0.0.1:${(stub.address() as { port: number }).port}/v1`,
+      model: "test/model",
+      timeoutSeconds: 0.2,
+    });
+    const capture = (pending: Promise<unknown>) =>
+      pending.then(
+        () => null,
+        (error: unknown) => error as { code?: string; message?: string },
+      );
+    try {
+      const completion = await capture(gateway.complete({ messages }));
+      expect(completion).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE" });
+      expect(completion?.message).toContain("API token");
+
+      const capacity = await capture(gateway.loadedContextCapacity("test/model"));
+      expect(capacity).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE" });
+      expect(capacity?.message).toContain("API token");
+
+      const runtime = createRuntime({
+        businessDbPath: ":memory:",
+        gateway,
+        browserStateSecret: "synthetic-review-secret",
+      });
+      try {
+        const response = await runtime.app.request("/models/local");
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({
+          error: { code: "MODEL_SERVICE_UNAVAILABLE" },
+        });
+      } finally {
+        await runtime.stop();
+      }
+    } finally {
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  });
+});
+
+// Requiring an API token is a legitimate LM Studio setting, so the token has to
+// be configurable — and it has to reach EVERY call. The capacity probe used to
+// be sent with no Authorization header at all, which meant a token-protected
+// instance still failed to report its capacity after the chat path was fixed.
+describe("model gateway API token", () => {
+  it("reads the token from LM_STUDIO_API_KEY and falls back to the LM Studio default", () => {
+    expect(resolveLmStudioConfig({}).apiKey).toBe("lm-studio");
+    expect(resolveLmStudioConfig({ LM_STUDIO_API_KEY: "  secret-token  " }).apiKey).toBe(
+      "secret-token",
+    );
+    expect(resolveLmStudioConfig({ LM_STUDIO_API_KEY: "   " }).apiKey).toBe("lm-studio");
+  });
+
+  it("sends the configured token on chat, model list and the capacity probe", async () => {
+    const seen: Array<{ path: string; authorization: string | undefined }> = [];
+    const stub = http.createServer((req, res) => {
+      seen.push({ path: req.url ?? "", authorization: req.headers.authorization });
+      if (req.url?.startsWith("/api/v1/models")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            models: [
+              {
+                type: "llm",
+                key: "test/model",
+                loaded_instances: [{ id: "test/model", config: { context_length: 8192 } }],
+              },
+            ],
+          }),
+        );
+        return;
+      }
+      if (req.url?.startsWith("/v1/models")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "test/model" }] }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('data: {"choices":[{"delta":{"content":"hi"}}]}\n');
+      res.write("data: [DONE]\n");
+      res.end();
+    });
+    await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+    const gateway = createLmStudioClient({
+      baseUrl: `http://127.0.0.1:${(stub.address() as { port: number }).port}/v1`,
+      model: "test/model",
+      timeoutSeconds: 5,
+      apiKey: "secret-token",
+    });
+    try {
+      expect(await gateway.listModels()).toEqual(["test/model"]);
+      expect(await gateway.loadedContextCapacity("test/model")).toBe(8192);
+      for await (const _chunk of gateway.streamChat({ messages })) {
+        /* consume */
+      }
+      expect(seen.map((entry) => entry.authorization)).toEqual([
+        "Bearer secret-token",
+        "Bearer secret-token",
+        "Bearer secret-token",
+      ]);
+      expect(seen.map((entry) => entry.path.split("?")[0])).toEqual([
+        "/v1/models",
+        "/api/v1/models",
+        "/v1/chat/completions",
+      ]);
+    } finally {
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  });
+
+  it("falls back to the default token when a config literal omits apiKey", async () => {
+    const seen: Array<string | undefined> = [];
+    const stub = http.createServer((req, res) => {
+      seen.push(req.headers.authorization);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [] }));
+    });
+    await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+    const gateway = createLmStudioClient({
+      baseUrl: `http://127.0.0.1:${(stub.address() as { port: number }).port}/v1`,
+      model: "test/model",
+      timeoutSeconds: 5,
+    });
+    try {
+      await gateway.listModels();
+      expect(seen).toEqual(["Bearer lm-studio"]);
+    } finally {
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
   });
 });

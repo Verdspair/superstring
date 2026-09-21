@@ -18,6 +18,8 @@ import {
 } from "../../shared/contracts";
 import { ensureDefaults, type Orm } from "../db/repositories";
 import { isAppError } from "../errors";
+import { agentConfigFields } from "../services/agent-config-fields";
+import type { AgentRow } from "../services/agent-service";
 import {
   createAgent,
   deleteAgent,
@@ -30,49 +32,10 @@ import {
 import { parseBody, parseUuidParam, readJsonBody } from "./validation";
 
 /** Wire shape of AgentResponse (api/schemas.py AgentResponse). */
-export function toAgentResponse(row: {
-  id: string;
-  name: string;
-  description: string;
-  systemPrompt: string;
-  additionalInstructions: string;
-  modelName: string;
-  temperature: number;
-  memoryConsolidationModelName: string | null;
-  memoryConsolidationPrompt: string;
-  memoryConsolidationAdditionalInstructions: string;
-  memoryRetrievalModelName: string | null;
-  memoryRetrievalPrompt: string;
-  contextCompressionModelName: string | null;
-  p5Config: string;
-  personaIntensity: number;
-  isActive: number;
-  configVersion: number;
-  createdAt: string;
-  updatedAt: string;
-}) {
-  let p5: unknown = {};
-  try {
-    p5 = row.p5Config ? JSON.parse(row.p5Config) : {};
-  } catch {
-    p5 = {};
-  }
+export function toAgentResponse(row: AgentRow) {
   return {
     id: row.id,
-    name: row.name,
-    description: row.description,
-    system_prompt: row.systemPrompt,
-    additional_instructions: row.additionalInstructions,
-    model_name: row.modelName,
-    temperature: row.temperature,
-    memory_consolidation_model_name: row.memoryConsolidationModelName,
-    memory_consolidation_prompt: row.memoryConsolidationPrompt,
-    memory_consolidation_additional_instructions: row.memoryConsolidationAdditionalInstructions,
-    memory_retrieval_model_name: row.memoryRetrievalModelName,
-    memory_retrieval_prompt: row.memoryRetrievalPrompt,
-    context_compression_model_name: row.contextCompressionModelName,
-    p5_config: p5,
-    is_active: row.isActive === 1,
+    ...agentConfigFields(row),
     config_version: row.configVersion,
     persona_intensity: row.personaIntensity,
     created_at: row.createdAt,

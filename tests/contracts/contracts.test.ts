@@ -459,7 +459,7 @@ describe("Memory contracts", () => {
     expect(r.success).toBe(true);
     if (r.success) {
       expect(r.data.every_turns).toBe(20);
-      expect(r.data.target_chars).toBe(300);
+      expect(r.data.target_chars).toBe(1200);
     }
   });
 

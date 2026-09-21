@@ -180,7 +180,16 @@ try {
   );
   check(
     "fresh install writes the business migration",
-    fs.existsSync(path.join(installRoot, "app/resources/migrations/versions/0001_initial.sql")),
+    fs.existsSync(path.join(installRoot, "app/resources/migrations/versions/0001_initial.sql")) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0002_knowledge.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0003_knowledge_read.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0004_organization.sql"),
+      ),
   );
   // The R1 probe is a development surface and must never reach a release package.
   check(
