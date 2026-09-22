@@ -4,7 +4,7 @@
 
 ## English
 
-Changes relative to the published `v0.2.0-alpha`. Full before/after tables and upgrade steps: [README.md](README.md).
+Changes relative to the published `v0.2.0-alpha`. Full before/after tables and upgrade steps: [UPGRADING.md](UPGRADING.md).
 
 ### New
 
@@ -38,7 +38,7 @@ Close the app, back up `userdata`, and install the new package into the same dir
 
 ## 简体中文
 
-相对已发布 `v0.2.0-alpha` 的更新。完整前后对照表和升级步骤见 [README.md](README.md)。
+相对已发布 `v0.2.0-alpha` 的更新。完整前后对照表和升级步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 新增
 
