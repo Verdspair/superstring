@@ -1,11 +1,9 @@
-// Agent-scoped memory API — 1:1 with `api/memories.py`.
-//
-// Prefix in the source is `APIRouter(prefix="/agents/{agent_id}/memory")`, so the
+// Agent-scoped memory API
+// The route prefix is `/agents/{agent_id}/memory`, so the
 // full paths below are `/agents/:agentId/memory/...`. No memory content is
 // injected into chat from here; these routes only read and govern.
-//
 // Every handler is synchronous and wrapped in `immediate()`, which stands in for
-// the source's `async with` transaction + `SELECT … FOR UPDATE`. See the header
+// the contract's transaction + `SELECT … FOR UPDATE`. See the header
 // of `src/server/db/memory-repository.ts` for why that is the faithful mapping.
 
 import type { Database } from "bun:sqlite";
@@ -37,7 +35,7 @@ import * as schema from "../db/schema";
 import { fail } from "../errors";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
-/** `policy_view` (api/memories.py:20-22). */
+/** `policy_view`. */
 function policyView(p: {
   autoEnabled: number;
   everyTurns: number;
@@ -52,7 +50,7 @@ function policyView(p: {
   };
 }
 
-/** `job_view` (api/memories.py:25-28). `session_id` is null for merge jobs. */
+/** `job_view`. `session_id` is null for merge jobs. */
 function jobView(j: MemoryJobRow) {
   return {
     id: j.id,
@@ -66,7 +64,7 @@ function jobView(j: MemoryJobRow) {
   };
 }
 
-/** Entry list item (api/memories.py:84-86). `tags`/`kinds` are JSON TEXT. */
+/** Entry list item. `tags`/`kinds` are JSON TEXT. */
 function entrySummary(e: MemoryEntryRow) {
   return {
     id: e.id,
@@ -82,7 +80,7 @@ function entrySummary(e: MemoryEntryRow) {
 }
 
 /**
- * Return config_snapshot as an object, matching api/memories.py:93-95.
+ * Return config_snapshot as an object.
  * SQLite stores JSON text; missing, empty or malformed values return null.
  */
 function parseConfigSnapshot(raw: string | null): unknown {
@@ -94,7 +92,7 @@ function parseConfigSnapshot(raw: string | null): unknown {
   }
 }
 
-/** Entry detail (api/memories.py:93-95) — adds `body` + `config_snapshot`. */
+/** Entry detail — adds `body` + `config_snapshot`. */
 function entryDetail(e: MemoryEntryRow) {
   return {
     ...entrySummary(e),
@@ -104,9 +102,9 @@ function entryDetail(e: MemoryEntryRow) {
 }
 
 /**
- * Parse an integer query parameter with FastAPI's `Query(ge, le, default)`
- * semantics: a missing value takes the default, anything non-numeric or out of
- * range is a 422 (never a silent clamp).
+ * Parse an integer query parameter with `ge, le, default` semantics: a
+ * missing value takes the default, anything non-numeric or out of range is
+ * a 422 (never a silent clamp).
  */
 function intQuery(raw: string | undefined, fallback: number, min: number, max: number): number {
   if (raw === undefined || raw === "") return fallback;
@@ -127,14 +125,14 @@ export function memoryRoutes(orm: Orm): Hono {
 
   // Policy
 
-  // memories.py:31-35 — GET /policy. The read itself CREATES the row on first
+  // GET /policy. The read itself CREATES the row on first
   // touch, which is why a plain GET performs a write.
   router.get(`${base}/policy`, (c) => {
     const agentId = agentOf(c);
     return c.json(immediate(db, () => policyView(policy(orm, agentId))));
   });
 
-  // memories.py:38-46 — PATCH /policy, optimistic lock on `version`.
+  // PATCH /policy, optimistic lock on `version`.
   router.patch(`${base}/policy`, async (c) => {
     const agentId = agentOf(c);
     const body = parseBody(PolicyUpdateSchema, await readJsonBody(c.req.raw));
@@ -166,7 +164,7 @@ export function memoryRoutes(orm: Orm): Hono {
 
   // Sessions / turns / scope
 
-  // memories.py:49-55 — sessions that belong to the agent.
+  // sessions that belong to the agent.
   router.get(`${base}/sessions`, (c) => {
     const agentId = agentOf(c);
     return c.json(
@@ -185,7 +183,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // memories.py:58-67 — recent turns with their processed flag.
+  // recent turns with their processed flag.
   router.get(`${base}/sessions/:sessionId/turns`, (c) => {
     const agentId = agentOf(c);
     const sessionId = parseUuidParam(c.req.param("sessionId"));
@@ -220,7 +218,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // memories.py:70-75 — set the legacy scope label (bumps governance epoch).
+  // set the legacy scope label (bumps governance epoch).
   router.patch(`${base}/sessions/:sessionId/scope`, async (c) => {
     const agentId = agentOf(c);
     const sessionId = parseUuidParam(c.req.param("sessionId"));
@@ -235,7 +233,7 @@ export function memoryRoutes(orm: Orm): Hono {
 
   // Entries
 
-  // memories.py:78-86 — pagination applies AFTER the full (already ordered) list.
+  // pagination applies AFTER the full (already ordered) list.
   router.get(`${base}/entries`, (c) => {
     const agentId = agentOf(c);
     const offset = intQuery(c.req.query("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
@@ -251,7 +249,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // memories.py:89-95 — detail. An unknown id is 404 MEMORY_NOT_FOUND.
+  // detail. An unknown id is 404 MEMORY_NOT_FOUND.
   router.get(`${base}/entries/:memoryId`, (c) => {
     const agentId = agentOf(c);
     const memoryId = parseUuidParam(c.req.param("memoryId"));
@@ -276,7 +274,7 @@ export function memoryRoutes(orm: Orm): Hono {
 
   // Jobs
 
-  // memories.py:98-103 — enqueue a manual consolidation (202).
+  // enqueue a manual consolidation (202).
   router.post(`${base}/consolidate`, async (c) => {
     const agentId = agentOf(c);
     const body = parseBody(ConsolidateRequestSchema, await readJsonBody(c.req.raw));
@@ -294,7 +292,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // memories.py:106-111 — enqueue a merge (202). Note: NO session_id.
+  // enqueue a merge (202). Note: NO session_id.
   router.post(`${base}/merge`, async (c) => {
     const agentId = agentOf(c);
     const body = parseBody(MergeRequestSchema, await readJsonBody(c.req.raw));
@@ -311,7 +309,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // memories.py:114-118 — suppress / enable / purge.
+  // suppress / enable / purge.
   router.post(`${base}/govern`, async (c) => {
     const agentId = agentOf(c);
     const body = parseBody(GovernRequestSchema, await readJsonBody(c.req.raw));
@@ -323,7 +321,7 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // memories.py:121-127 — most recent 100 jobs.
+  // most recent 100 jobs.
   router.get(`${base}/jobs`, (c) => {
     const agentId = agentOf(c);
     return c.json(
@@ -346,15 +344,14 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // memories.py:130-134 — job detail.
+  // job detail.
   router.get(`${base}/jobs/:jobId`, (c) => {
     const agentId = agentOf(c);
     const jobId = parseUuidParam(c.req.param("jobId"));
     return c.json(immediate(db, () => jobView(jobOwned(orm, agentId, jobId))));
   });
 
-  // memories.py:137-151 — retry a FAILED job (202).
-  //
+  // retry a FAILED job (202).
   // Order of the three guards is part of the contract: state first, then the
   // busier "another job is active" check, then the governance-epoch check.
   router.post(`${base}/jobs/:jobId/retry`, (c) => {

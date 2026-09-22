@@ -53,7 +53,7 @@ const persona = PersonaResponseSchema.parse({
 const memory: MemorySummary = {
   id: MEMORY_ID,
   name: "项目约定",
-  summary: "使用当前实现复刻",
+  summary: "使用当前实现",
   tags: ["项目"],
   kinds: ["semantic"],
   status: "active",

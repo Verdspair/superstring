@@ -1,19 +1,17 @@
 // Agent configuration + in-place Persona persistence.
-//
-// 1:1 with `db/agent_repository.py`. Three behaviours that must not drift:
-//   1. `save_persona` is an IN-PLACE OVERWRITE — no version row, no history
-//      (ADR 0008). Persona and `persona_intensity` are written together.
-//   2. `update_agent` compares the *parsed* config before deciding whether to
-//      bump `config_version`. A PATCH whose values are unchanged must NOT bump
-//      the version, otherwise every client's cached `expected_version` breaks.
-//   3. `delete_agent` refuses the built-in default agent and any agent bound to
-//      a session — historical conversations must never lose their Agent.
-//
+// Three behaviours that must not drift:
+// 1. Persona saving is an IN-PLACE OVERWRITE — no version row, no history
+// (ADR 0008). Persona and `persona_intensity` are written together.
+// 2. An agent update compares the *parsed* config before deciding whether to
+// bump `config_version`. A PATCH whose values are unchanged must NOT bump
+// the version, otherwise every client's cached `expected_version` breaks.
+// 3. Agent deletion refuses the built-in default agent and any agent bound to
+// a session — historical conversations must never lose their Agent.
 // Known faithful quirk (do NOT "fix" silently): `UpdateAgentRequest` accepts
 // `persona_intensity`, but `AgentConfig` has `extra="forbid"` and does not
 // declare it. So a PATCH that explicitly carries `persona_intensity` fails
-// validation and becomes VALIDATION_ERROR 422 (agent_repository.py:84-85 →
-// api/agents.py:76-77). Recorded in docs/INVALID_CONFIG_PATHS.md.
+// validation and becomes VALIDATION_ERROR 422. Recorded in
+// docs/INVALID_CONFIG_PATHS.md.
 
 import { eq } from "drizzle-orm";
 import { AgentConfigSchema, type PersonaContent } from "../../shared/contracts";
@@ -44,19 +42,18 @@ function canonical(value: unknown): string {
   });
 }
 
-/** agent_repository.py:10-17 — 404 when missing. */
+/** 404 when missing. */
 export function getAgentRowById(orm: Orm, agentId: string): AgentRow {
   const row = orm.select().from(schema.agents).where(eq(schema.agents.id, agentId)).get();
   if (!row) throw new AppError("AGENT_NOT_FOUND", "Agent 不存在", 404);
   return row;
 }
 
-/** agent_repository.py:20-21 — ordered by created_at then id. */
+/** ordered by created_at then id. */
 export function listAgents(orm: Orm): AgentRow[] {
   return orm.select().from(schema.agents).orderBy(schema.agents.createdAt, schema.agents.id).all();
 }
 
-/** agent_repository.py:24-39. */
 export function createAgent(
   orm: Orm,
   config: Record<string, unknown>,
@@ -120,7 +117,7 @@ export function createAgent(
   return getAgentRowById(orm, agentId);
 }
 
-/** agent_repository.py:42-55 — missing persona is a config fault (409), not 404. */
+/** missing persona is a config fault (409), not 404. */
 export function getPersona(orm: Orm, agentId: string): PersonaRow {
   const row = orm
     .select()
@@ -133,7 +130,7 @@ export function getPersona(orm: Orm, agentId: string): PersonaRow {
   return row;
 }
 
-/** agent_repository.py:58-77 — overwrite in place; never creates a version. */
+/** overwrite in place; never creates a version. */
 export function savePersona(
   orm: Orm,
   agentId: string,
@@ -171,7 +168,6 @@ export function savePersona(
   return getPersona(orm, agentId);
 }
 
-/** agent_repository.py:80-93. */
 export function updateAgent(
   orm: Orm,
   agentId: string,
@@ -185,7 +181,7 @@ export function updateAgent(
 
   const current = agentConfigFields(agent);
   // `extra="forbid"` means an unknown key (notably `persona_intensity`) is a
-  // 422, exactly like the source.
+  // 422, exactly like the contract.
   const parsed = AgentConfigSchema.safeParse({ ...current, ...changes });
   if (!parsed.success) throw new ValidationError("Agent 配置不合法");
   const next = parsed.data;
@@ -224,7 +220,7 @@ export function updateAgent(
 }
 
 /**
- * agent_repository.py:96-126. The default Agent is undeletable and an Agent
+ * 126. The default Agent is undeletable and an Agent
  * referenced by any session is refused, so history keeps a resolvable agent_id.
  */
 export function deleteAgent(orm: Orm, agentId: string): AgentRow {

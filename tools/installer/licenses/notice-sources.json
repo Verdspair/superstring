@@ -75,19 +75,11 @@
     },
     {
       "file": "bun-EMBEDDED-NOTICES.txt",
-      "source": "Version-pinned original sources and text hashes listed in bun-RUNTIME-SOURCES.txt",
+      "source": "Original license and copyright texts of the components embedded in the Bun runtime, with upstream sources and SHA-256 hashes",
       "component": "bun-embedded-notice-collection",
       "version": "1.4.2",
-      "license": "Partial collection of original embedded-component licenses and copyright notices; not distribution clearance",
-      "sha256": "4d6811a9ad59ff6eddc1ccad9a61ba5b690499cce556af4440c6750cbdc87760"
-    },
-    {
-      "file": "bun-RUNTIME-SOURCES.txt",
-      "source": "https://github.com/oven-sh/bun/tree/744846f844374847c902b5e7fd59b4342a51ef99",
-      "component": "bun-runtime-provenance-and-open-items",
-      "version": "1.4.2",
-      "license": "Project-authored provenance and review status; not a replacement for upstream licenses",
-      "sha256": "4233252259ac3f6c19d2cefd1f9351940888c319310bc7fc9addb6a8c45ec8c8"
+      "license": "MIT and separately licensed embedded components",
+      "sha256": "b509586fb46dd41c517ed39e4e24907668b13464910ecc90be3c4ba475e1835f"
     },
     {
       "file": "superstring-MIT.txt",

@@ -3,11 +3,11 @@ import { IsoTimestampSchema, MemoryEntryStatusSchema } from "./common";
 
 /**
  * Memory "summary" (摘要) and "source" (来源) contracts. Pure `zod` only.
- * Source: api-contract.md §1.4 (entries item), §4.4 (entry status), §7.2.
+ * See api-contract.md §1.4 (entries item), §4.4 (entry status), §7.2.
  *
  * `MemorySummarySchema` is the per-entry summary shape returned in the entries
  * list; `MemorySourceSchema` captures the provenance (scope/scope_key) of an
- * entry, which the source resolves to the owning agent id.
+ * entry, which resolves to the owning agent id.
  */
 
 /** Entry list-item / summary view (api-contract.md §1.4). */

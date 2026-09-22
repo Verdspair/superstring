@@ -1,13 +1,11 @@
-// Durable P4 memory worker — 1:1 with `services/memory_service.py`.
-//
+// Durable P4 memory worker
 // Source invariant, quoted from its module docstring: "Model calls never hold a
 // transaction or publish directly." Everything below is arranged to keep that
 // true:
-//   * `claim` takes the job in a short transaction and hands back a token.
-//   * `loadInputs` reads sources in a short transaction and returns plain data.
-//   * `generate` performs model calls **outside** any transaction.
-//   * `publish` re-validates ownership and writes in one short transaction.
-//
+// * `claim` takes the job in a short transaction and hands back a token.
+// * `loadInputs` reads sources in a short transaction and returns plain data.
+// * `generate` performs model calls **outside** any transaction.
+// * `publish` re-validates ownership and writes in one short transaction.
 // A lease + per-beat ownership re-check is what makes concurrent workers safe:
 // a job whose lease lapsed, whose token changed or whose `governance_epoch`
 // moved can never publish, no matter how long the model took.
@@ -41,16 +39,16 @@ import {
   DRAFT_RESULT_JSON_SCHEMA,
   MAX_SOURCE_CHARS,
   parseResult,
-  pythonJsonDumps,
   SUPPRESSION_RESULT_JSON_SCHEMA,
   SuppressionResultSchema,
+  stringifyJsonSpaced,
   suppressionPrompt,
 } from "./memory-contract";
 import { correctionMetadata } from "./memory-revision";
 
 /**
- * Marker for "the caller asked us to stop". The source signals this with
- * `asyncio.CancelledError`; JS has no cancellation exception, so a unique
+ * Marker for "the caller asked us to stop". The contract signals this with
+ * a cancellation exception; JS has no such exception, so a unique
  * sentinel carries the same meaning through one `catch`.
  */
 const WORKER_STOPPED = Symbol("superstring.memory-worker-stopped");
@@ -60,14 +58,13 @@ export interface MemoryServiceOptions {
   /** The raw handle, needed for the explicit `BEGIN IMMEDIATE` transactions. */
   db: Database;
   gateway: ModelGateway;
-  /** Source: `asyncio.sleep(5)` at the end of an idle cycle. */
+  /** How long an idle cycle waits before the next poll. */
   pollIntervalMs?: number;
-  /** Source: the heartbeat task's `asyncio.sleep(15)`. */
+  /** How often the heartbeat renews the lease. */
   heartbeatIntervalMs?: number;
   /**
-   * Source: `asyncio.wait(..., timeout=600)` — the whole-job wall clock.
-   *
-   * Raised to one hour (deviation from the source, recorded in ADR0016): this
+   * The whole-job wall clock budget.
+   * Set to one hour (recorded in ADR0016): this
    * budget has to outlive a single model call, and one call on a local model can
    * legitimately take many minutes. A 600s job budget equal to the per-request
    * budget meant a slow-but-healthy job was killed by the job timer instead of
@@ -105,7 +102,7 @@ export class MemoryService {
     this.jobTimeoutMs = options.jobTimeoutMs ?? 3_600_000;
   }
 
-  /** `MemoryService.start` (memory_service.py:32-33). */
+  /** `MemoryService.start`. */
   start(): void {
     if (this.loopPromise !== null) return;
     this.stopped = false;
@@ -113,9 +110,8 @@ export class MemoryService {
   }
 
   /**
-   * `MemoryService.stop` (memory_service.py:35-40).
-   *
-   * The source cancels the runner task; here the same effect is produced by
+   * `MemoryService.stop`.
+   * The contract cancels the runner task; here the same effect is produced by
    * flagging the loop, releasing any in-flight poll sleep, and letting the
    * job-level race observe the cancel so the job is recorded as
    * `MEMORY_WORKER_STOPPED` instead of being left `running` until its lease
@@ -129,7 +125,7 @@ export class MemoryService {
     this.loopPromise = null;
   }
 
-  /** `loop` (memory_service.py:42-58). */
+  /** `loop`. */
   private async loop(): Promise<void> {
     while (!this.stopped) {
       let ranJob = false;
@@ -151,7 +147,6 @@ export class MemoryService {
   /**
    * One pass of the loop body, minus the trailing sleep. Split out so tests can
    * drive the worker deterministically instead of racing a timer.
-   *
    * Returns `true` when a job was run.
    */
   async runCycle(): Promise<boolean> {
@@ -164,12 +159,11 @@ export class MemoryService {
   }
 
   /**
-   * `recover_expired` (memory_service.py:60-72).
-   *
+   * `recover_expired`.
    * A `running` job whose lease has lapsed belongs to a worker that died
    * mid-flight. It is failed as `MEMORY_WORKER_INTERRUPTED` so the interval it
    * covered can be retried, and its token is cleared so a zombie holder cannot
-   * publish. Note the SQL comparison mirrors the source exactly: rows with a
+   * publish. Note the SQL comparison mirrors the contract exactly: rows with a
    * `NULL` lease are never selected, because `NULL <= x` is `NULL`.
    */
   recoverExpired(): void {
@@ -189,7 +183,7 @@ export class MemoryService {
         policy(this.orm, row.agentId);
         const job = jobOwned(this.orm, row.agentId, row.id);
         // The outer query already guarantees a non-null lease; the explicit
-        // check replaces the source's implicit "it is a datetime here".
+        // check replaces the contract's implicit "it is a datetime here".
         if (
           job.status === "running" &&
           job.leaseExpiresAt !== null &&
@@ -208,12 +202,10 @@ export class MemoryService {
   }
 
   /**
-   * `schedule_auto` (memory_service.py:74-105).
-   *
+   * `schedule_auto`.
    * For every session whose Agent has automatic consolidation on, queue work
    * once `every_turns` *unprocessed* valid turns exist.
-   *
-   * The failure filter is the subtle part, and the source comment states the
+   * The failure filter is the subtle part, and the reasoning states the
    * rule: "Governance/source changes invalidate old work, not future
    * scheduling. A model failure pauses only its still-unprocessed interval."
    * So a previous `auto` failure blocks rescheduling **only** while it overlaps
@@ -221,8 +213,7 @@ export class MemoryService {
    * `governance_epoch`. A model failure therefore does not wedge the Agent
    * forever — the next interval proceeds — while a governance change frees the
    * interval for a clean retry.
-   *
-   * `AppError` per session is swallowed (the source rolls back and moves on);
+   * `AppError` per session is swallowed (the contract rolls back and moves on);
    * anything else propagates to the loop's generic handler.
    */
   scheduleAuto(): void {
@@ -296,7 +287,7 @@ export class MemoryService {
     }
   }
 
-  /** The oldest queued job (memory_service.py:47-49). */
+  /** The oldest queued job. */
   private nextQueuedJobId(): string | null {
     const row = this.orm
       .select({ id: schema.memoryJobs.id })
@@ -309,16 +300,14 @@ export class MemoryService {
   }
 
   /**
-   * `load_inputs` (memory_service.py:115-133).
-   *
-   * For a `merge` job the sources are the selected memory entries (re-validated,
+   * `load_inputs`.
+   * For a `merge` job the sources are the selected memory entries (re-validated
    * because a merge can be queued long before it runs) and every source must
    * still be `active`. For any other kind they are the job's turns.
-   *
    * `blocked` is every suppressed/replaced entry, which the suppression pass
    * compares the candidate against. The size guard runs *after* the read
-   * transaction closes and rejects the job rather than truncating the input —
-   * the source comment for the chunked suppression call says the same thing:
+   * transaction closes and rejects the job rather than truncating the input
+   * the reasoning for the chunked suppression call says the same thing:
    * never silently truncate.
    */
   loadInputs(agentId: string, jobId: string, token: string): MemoryInputs {
@@ -355,21 +344,19 @@ export class MemoryService {
       return { kind: job.kind, config, sources, blocked };
     });
 
-    if (codePointLength(pythonJsonDumps(loaded.sources)) > MAX_SOURCE_CHARS) {
+    if (codePointLength(stringifyJsonSpaced(loaded.sources)) > MAX_SOURCE_CHARS) {
       fail("MEMORY_INPUT_TOO_LARGE", "来源内容过长，请减少所选轮次或记忆");
     }
     return loaded;
   }
 
   /**
-   * `generate` (memory_service.py:135-154).
-   *
+   * `generate`.
    * Three independent chances to discard a draft, all returning `null` (which
    * is a *successful* job with no new memory, not a failure):
-   *   1. the model itself said `{"memory": null}`;
-   *   2. a cheap canonical containment check against blocked entries;
-   *   3. a model-judged semantic comparison, in bounded chunks of 8.
-   *
+   * 1. the model itself said `{"memory": null}`;
+   * 2. a cheap canonical containment check against blocked entries;
+   * 3. a model-judged semantic comparison, in bounded chunks of 8.
    * The containment check strips case and punctuation via `canonical()`, so
    * "我 喜欢：精炼" and "我喜欢精炼" collide. It is a short-circuit, not the
    * authority — step 3 catches paraphrase that shares no substring.
@@ -412,7 +399,7 @@ export class MemoryService {
     return draft;
   }
 
-  /** `fail_job` (memory_service.py:156-166) — token-guarded so it never clobbers a successor. */
+  /** `fail_job` — token-guarded so it never clobbers a successor. */
   async failJob(agentId: string, jobId: string, token: string, code: string): Promise<void> {
     try {
       immediate(this.db, () => {
@@ -434,11 +421,10 @@ export class MemoryService {
   }
 
   /**
-   * `run_job` (memory_service.py:168-201).
-   *
-   * The order of checks after the race is load-bearing and matches the source:
+   * `run_job`.
+   * The order of checks after the race is load-bearing and matches the contract:
    * a completed heartbeat is inspected **before** the work result, because
-   * losing ownership must abort the job even if the model already returned —
+   * losing ownership must abort the job even if the model already returned
    * publishing stale work is exactly what the lease exists to prevent.
    */
   async runJob(jobId: string): Promise<void> {
@@ -453,7 +439,7 @@ export class MemoryService {
     const cancelled = new Promise<void>((resolve) => {
       onCancel = resolve;
     });
-    // One controller per job. Every exit path (stop, timeout, ownership loss,
+    // One controller per job. Every exit path (stop, timeout, ownership loss
     // normal completion) aborts it, so the in-flight model request is actually
     // terminated instead of being left to burn LM Studio capacity (#96).
     const jobAbort = new AbortController();
@@ -526,7 +512,7 @@ export class MemoryService {
       // the model request observes the same signal, so BOTH settle promptly.
       // Without the abort, `await service.stop()` used to block for the
       // remainder of a 15s heartbeat sleep and the model call kept running
-      // (#96). `work` is still not awaited — the source cancels that coroutine,
+      // (#96). `work` is still not awaited — the contract cancels that coroutine
       // and a fake gateway may legitimately ignore the signal; the attached
       // handler keeps a late rejection from surfacing as an unhandled
       // rejection, and the token/lease guards above are the only route to
@@ -537,7 +523,7 @@ export class MemoryService {
     }
   }
 
-  /** `heartbeat` (memory_service.py:107-113) — renew every 15s, extend by 60s. */
+  /** `heartbeat` — renew every 15s, extend by 60s. */
   private async heartbeatLoop(
     agentId: string,
     jobId: string,
@@ -547,9 +533,9 @@ export class MemoryService {
   ): Promise<void> {
     for (;;) {
       // Not the loop's `sleep`: the heartbeat must not be woken by an unrelated
-      // poll can. It IS tied to the job's abort signal, because the source's
-      // `asyncio.sleep(15)` is cancelled the instant the runner task is
-      // cancelled (memory_service.py:107-113). A bare `setTimeout` made
+      // poll can. It IS tied to the job's abort signal, because the contract's
+      // heartbeat must stop the instant the runner task is
+      // cancelled. A bare `setTimeout` made
       // `await stop()` wait out the remaining sleep (#96).
       await this.delayUntilAborted(this.heartbeatIntervalMs, signal);
       if (shouldStop() || signal.aborted) return;
@@ -578,7 +564,7 @@ export class MemoryService {
 
   /**
    * Resolve as soon as either participant settles, the caller cancels, or the
-   * job budget elapses. `asyncio.wait(..., return_when=FIRST_COMPLETED, timeout=600)`.
+   * job budget elapses — the first participant to settle wins.
    */
   private waitForFirst(
     heartbeat: Promise<void>,

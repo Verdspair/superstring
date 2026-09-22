@@ -1,16 +1,15 @@
-// SSE frame encoding — 1:1 with `api/sse.py`.
-//
+// SSE frame encoding
 // The exact bytes matter to the browser's EventSource parser, so three details
-// from the source are preserved:
-//   1. `ensure_ascii=False` → non-ASCII text is emitted as UTF-8, not \uXXXX.
-//   2. `separators=(",", ":")` → compact JSON, no spaces after `:` or `,`.
-//   3. Frame layout is `event: <name>\ndata: <json>\n\n` — a blank line ends it.
+// are preserved:
+// 1. Non-ASCII text is emitted as UTF-8, not \uXXXX.
+// 2. Compact JSON: no spaces after `:` or `,`.
+// 3. Frame layout is `event: <name>\ndata: <json>\n\n` — a blank line ends it.
 
 export function encodeSse(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-/** Headers the source sets on the streaming response (api/app.py:384-387). */
+/** Headers set on the streaming response. */
 export const SSE_HEADERS: Record<string, string> = {
   "content-type": "text/event-stream",
   "cache-control": "no-cache",

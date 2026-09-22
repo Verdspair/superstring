@@ -30,7 +30,7 @@ function restrictPermissions(target: string, mode: number): void {
   try {
     chmodSync(target, mode);
   } catch {
-    // The Python source also treats permission tightening as best-effort.
+    // Permission tightening is best-effort.
   }
 }
 

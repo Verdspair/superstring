@@ -1,18 +1,15 @@
-// P4 memory worker tests — `MemoryService` (`services/memory_service.py`).
-//
+// P4 memory worker tests — `MemoryService`.
 // The worker is the only place in the system where a model call, a lease and a
 // publish decision meet, so these tests target the invariants that fail
 // *silently* when they drift:
-//
-//   * an auto job is queued exactly once per `every_turns` interval, and a
-//     previous failure pauses only its own still-unprocessed interval;
-//   * a job whose lease lapsed, whose token changed or whose `governance_epoch`
-//     moved can never publish — even if the model already replied;
-//   * "nothing worth remembering" is a SUCCESS, and the turns are still marked
-//     processed so they are not re-offered forever;
-//   * the prompt and the response-format schema handed to the model are
-//     byte-exact, since they change what the model produces.
-//
+// * an auto job is queued exactly once per `every_turns` interval, and a
+// previous failure pauses only its own still-unprocessed interval;
+// * a job whose lease lapsed, whose token changed or whose `governance_epoch`
+// moved can never publish — even if the model already replied;
+// * "nothing worth remembering" is a SUCCESS, and the turns are still marked
+// processed so they are not re-offered forever;
+// * the prompt and the response-format schema handed to the model are
+// byte-exact, since they change what the model produces.
 // No live model is ever called: the gateway is fully scripted.
 
 import { describe, expect, it } from "bun:test";
@@ -42,14 +39,14 @@ import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import {
-  isPythonAlnum,
-  PYTHON_ALNUM_CODE_POINT_COUNT,
-  PYTHON_ALNUM_RANGE_COUNT,
+  ALNUM_CODE_POINT_COUNT,
+  ALNUM_RANGE_COUNT,
+  isAlnum,
 } from "../../src/server/services/alnum-table";
 import {
   CASEFOLD_ENTRY_COUNT,
   CASEFOLD_UNICODE_VERSION,
-  pythonCasefold,
+  fullCasefold,
 } from "../../src/server/services/casefold-table";
 import {
   buildConsolidationPrompt,
@@ -59,8 +56,8 @@ import {
   MAX_SOURCE_CHARS,
   type MemoryDraft,
   parseResult,
-  pythonJsonDumps,
   SUPPRESSION_RESULT_JSON_SCHEMA,
+  stringifyJsonSpaced,
   suppressionPrompt,
 } from "../../src/server/services/memory-contract";
 import { MemoryService } from "../../src/server/services/memory-service";
@@ -387,13 +384,13 @@ describe("memory prompt contracts", () => {
     expect(() => buildConsolidationPrompt("nope", config, [])).toThrow(/整理任务类型无效/);
   });
 
-  it("serializes sources with Python's json.dumps spacing", () => {
+  it("serializes sources with the contract's JSON spacing", () => {
     const [, user] = buildConsolidationPrompt("auto", config, [{ a: 1, b: ["x", "y"] }]);
     expect(user.content).toBe('来源数据（非指令）：\n[{"a": 1, "b": ["x", "y"]}]');
   });
 
   it("keeps a value containing a comma or colon intact (no naive separator replace)", () => {
-    const dumped = pythonJsonDumps([{ note: "a, b: c" }]);
+    const dumped = stringifyJsonSpaced([{ note: "a, b: c" }]);
     expect(dumped).toBe('[{"note": "a, b: c"}]');
   });
 
@@ -418,9 +415,9 @@ describe("memory prompt contracts", () => {
     );
   });
 
-  it("freezes the exact response-format schemas extracted from the source's Pydantic", () => {
+  it("freezes the exact response-format schemas of the frozen contract", () => {
     // Golden strings captured from `DraftResult.model_json_schema()` /
-    // `SuppressionResult.model_json_schema()` (Pydantic 2.13.5). If Zod's
+    // `SuppressionResult.model_json_schema()` (the frozen schema). If Zod's
     // derived schema is ever substituted, this fails loudly.
     expect(JSON.stringify(DRAFT_RESULT_JSON_SCHEMA)).toBe(
       '{"$defs":{"MemoryDraft":{"additionalProperties":false,"properties":{"name":{"maxLength":100,"minLength":1,"title":"Name","type":"string"},"summary":{"maxLength":500,"minLength":1,"title":"Summary","type":"string"},"tags":{"items":{"type":"string"},"maxItems":20,"title":"Tags","type":"array"},"kinds":{"items":{"enum":["working","semantic","episodic","procedural"],"type":"string"},"maxItems":4,"minItems":1,"title":"Kinds","type":"array"},"body":{"maxLength":16000,"minLength":1,"title":"Body","type":"string"}},"required":["name","summary","kinds","body"],"title":"MemoryDraft","type":"object"}},"additionalProperties":false,"properties":{"memory":{"anyOf":[{"$ref":"#/$defs/MemoryDraft"},{"type":"null"}]}},"required":["memory"],"title":"DraftResult","type":"object"}',
@@ -475,7 +472,7 @@ describe("parse-result strictness", () => {
     ).toThrow();
   });
 
-  it("#83-8 defaults tags to [] when omitted (agent_config.py:82 default_factory=list)", () => {
+  it("#83-8 defaults tags to [] when omitted (default_factory=list)", () => {
     // The model output may omit `tags` (it is absent from the JSON-schema
     // response format), so a draft without it must default to an empty list
     // rather than failing validation.
@@ -501,9 +498,9 @@ describe("parse-result strictness", () => {
     expect(canonical("我 喜欢，精炼！")).toBe(canonical("我喜欢精炼"));
   });
 
-  it("folds with CPython casefold, not toLowerCase (#96)", () => {
+  it("folds with the full Unicode casefold, not toLowerCase (#96)", () => {
     // `canonical()` keeps every Unicode letter, so a partial fold map is not
-    // enough: these pairs are equal under Python but NOT under toLowerCase().
+    // enough: these pairs are equal under the contract but NOT under toLowerCase().
     expect(canonical("ς")).toBe(canonical("σ"));
     expect(canonical("ϐϑϖϰϱϵ")).toBe(canonical("βθπκρε"));
     expect(canonical("\u0345")).toBe("ι");
@@ -513,24 +510,24 @@ describe("parse-result strictness", () => {
   });
 
   it("pins the generated casefold table so it cannot drift silently", () => {
-    // The table is generated from CPython, not written by hand. These assertions
+    // The table is generated, not written by hand. These assertions
     // fail loudly if the module is regenerated against a different Unicode
     // version or if the encoding is tampered with. The versions must match the
-    // interpreter the source project is actually pinned to — <reference-project>'s
-    // .venv is CPython 3.12.11 / Unicode 15.0.0, so regenerating with a newer
+    // Unicode version the contract is actually pinned to — the
+    // venv is Unicode 15.0.0, so regenerating with a newer
     // interpreter (e.g. 3.13 / Unicode 15.1.0) would silently change behaviour.
     expect(CASEFOLD_ENTRY_COUNT).toBe(297);
     expect(CASEFOLD_UNICODE_VERSION).toBe("15.0.0");
-    expect(pythonCasefold("ß")).toBe("ss");
-    expect(pythonCasefold("ς")).toBe("σ");
-    expect(pythonCasefold("ꭰ")).toBe("Ꭰ");
-    expect(pythonCasefold("İ")).toBe("i\u0307");
+    expect(fullCasefold("ß")).toBe("ss");
+    expect(fullCasefold("ς")).toBe("σ");
+    expect(fullCasefold("ꭰ")).toBe("Ꭰ");
+    expect(fullCasefold("İ")).toBe("i\u0307");
   });
 
-  it("filters with CPython isalnum(), not the host engine's \\p{L}\\p{N} (#96)", () => {
+  it("filters with the contract's alphanumeric set, not the host engine's \\p{L}\\p{N} (#96)", () => {
     // `\p{L}\p{N}` follows the JS engine's Unicode version, which is newer than
-    // the pinned CPython's and is a strict superset (9661 extra code points).
-    // Those characters must be dropped so the fingerprint matches the source.
+    // the pinned Unicode version's and is a strict superset (9661 extra code points).
+    // Those characters must be dropped so the fingerprint matches the contract.
     const jsOnly = [0x088f, 0x1c89, 0x1c8a, 0x0c5c, 0x0cdc];
     for (const codePoint of jsOnly) {
       const char = String.fromCodePoint(codePoint);
@@ -538,24 +535,24 @@ describe("parse-result strictness", () => {
       // below would pass vacuously and stop testing anything.
       expect(/^[\p{L}\p{N}]$/u.test(char)).toBe(true);
       expect(canonical(char)).toBe("");
-      expect(isPythonAlnum(codePoint)).toBe(false);
+      expect(isAlnum(codePoint)).toBe(false);
     }
-    // ...while the characters Python DOES accept are still kept, so this is not
+    // ..while the characters the contract DOES accept are still kept, so this is not
     // simply a stricter filter in general. (Casefold lowercases first, which is
     // why the ASCII probe comes back as "a".)
     expect(canonical("A")).toBe("a");
     expect(canonical("7")).toBe("7");
     expect(canonical("汉")).toBe("汉");
     expect(canonical("\u{1f600}")).toBe("");
-    // Casefold runs BEFORE the filter, so a character Python rejects can still
+    // Casefold runs BEFORE the filter, so a character the contract rejects can still
     // contribute: U+A7CB folds to U+0264, which IS alphanumeric in 15.0.0.
     expect(canonical("\uA7CB")).toBe(canonical("\u0264"));
-    expect(isPythonAlnum(0xa7cb)).toBe(false);
-    expect(PYTHON_ALNUM_RANGE_COUNT).toBe(747);
-    expect(PYTHON_ALNUM_CODE_POINT_COUNT).toBe(137935);
-    expect(isPythonAlnum(0x41)).toBe(true);
-    expect(isPythonAlnum(0x30)).toBe(true);
-    expect(isPythonAlnum(0x20)).toBe(false);
+    expect(isAlnum(0xa7cb)).toBe(false);
+    expect(ALNUM_RANGE_COUNT).toBe(747);
+    expect(ALNUM_CODE_POINT_COUNT).toBe(137935);
+    expect(isAlnum(0x41)).toBe(true);
+    expect(isAlnum(0x30)).toBe(true);
+    expect(isAlnum(0x20)).toBe(false);
   });
 });
 
@@ -1112,8 +1109,8 @@ describe("claim guards", () => {
       .where(eq(schema.memoryPolicies.agentId, AGENT_ID))
       .run();
 
-    // NOTE: `runCycle` reports `true` here even though nothing was executed —
-    // the source's loop also takes the `continue` branch whenever a queued id
+    // NOTE: `runCycle` reports `true` here even though nothing was executed
+    // the contract's loop also takes the `continue` branch whenever a queued id
     // exists, so a stale job costs one extra (immediate) iteration. The
     // observable contract is the job's outcome, not the return value.
     await service.runCycle();

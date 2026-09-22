@@ -1,14 +1,11 @@
-// `/models` routes — 1:1 with `api/models.py`.
-//
+// `/models` routes
 // `/models/capacity` is deliberately never a hard failure: any model-layer error
 // is folded into `status: "unavailable"` plus the `error_code`, because the UI
-// calls it while the user is still editing settings (models.py:13-22).
-//
+// calls it while the user is still editing settings.
 // `/models/local` de-duplicates model ids while preserving first-seen order
-// (`dict.fromkeys`, models.py:29) and reports `status: "empty"` rather than
+// (first-seen order) and reports `status: "empty"` rather than
 // failing when LM Studio has nothing loaded.
-//
-// Note: neither route touches the database — the source reads `get_config()`
+// Note: neither route touches the database — the live config is read
 // only — so this router intentionally takes no ORM handle.
 
 import { Hono } from "hono";
@@ -18,9 +15,9 @@ import { isAppError } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { validationFailed } from "./validation";
 
-/** Query contract for `/models/capacity` (models.py:14). */
+/** Query contract for `/models/capacity`. */
 const CapacityQuerySchema = z.strictObject({
-  // api/models.py:14 declares `Query(min_length=1, max_length=200)` with no
+  // declares `Query(min_length=1, max_length=200)` with no
   // validator — the value is used verbatim, so it must not be trimmed here.
   model: rawString(1, 200),
 });

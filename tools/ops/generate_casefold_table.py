@@ -1,16 +1,15 @@
 """Regenerate `src/server/services/casefold-table.ts` from CPython's real casefold data.
 
 WHY THIS EXISTS
-    `canonical()` in the source project is
+    `canonical()` is defined as
 
         "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
 
-    and the context keyword extractor also calls `str.casefold()`
-    (services/context_builder.py:72-77,453-455).
+    and the context keyword extractor also calls `str.casefold()`.
 
     JavaScript only exposes `toLowerCase()`, which is NOT the same operation
     (`"\u03c2".casefold() == "\u03c3"` but `"\u03c2".toLowerCase() == "\u03c2"`).
-    The replica therefore ships a frozen table of every code point where
+    This implementation therefore ships a frozen table of every code point where
     CPython's `casefold()` differs from `lower()`, including one-to-many folds.
 
 USAGE
@@ -60,14 +59,13 @@ def render(pairs: list[tuple[int, str]]) -> str:
 // CPython / Unicode version changes.
 //
 // WHY THIS FILE EXISTS
-//   `canonical()` in the source project is
+//   `canonical()` is defined as
 //     "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
-//   (services/memory_contract.py:114-115) and the context keyword extractor also
-//   calls `str.casefold()` (services/context_builder.py:72-77,453-455).
+//   and the context keyword extractor also calls `str.casefold()`.
 //   JavaScript only exposes `toLowerCase()`, which is NOT the same operation:
 //     "\\u03c2".casefold() === "\\u03c3"   but   "\\u03c2".toLowerCase() === "\\u03c2"
 //   Using `toLowerCase()` therefore produces different suppression
-//   fingerprints and can publish a memory the source project would drop.
+//   fingerprints and can publish a memory the contract would drop.
 //
 //   The table below stores every code point where CPython's casefold differs
 //   from lower(), including one-to-many folds (e.g. "\\u00df" -> "ss").

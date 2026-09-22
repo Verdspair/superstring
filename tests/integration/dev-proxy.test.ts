@@ -19,7 +19,7 @@ function read(relative: string): string {
 /**
  * Every API path the browser client requests. The client uses RELATIVE paths,
  * so in dev they only work if `vite.config.ts` forwards them to the Bun server.
- * Extracting them from the source (rather than hard-coding a list that would
+ * Extracting them from the running app (rather than hard-coding a list that would
  * rot) is the point of this test.
  */
 function clientApiPaths(): string[] {

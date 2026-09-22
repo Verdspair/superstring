@@ -4,8 +4,7 @@ import { ErrorCodeSchema } from "./errors";
 
 /**
  * Message response contract. Pure `zod` only.
- * Source: api/schemas.py:303-318; db/models.py:18-24.
- */
+ * */
 export const MessageResponseSchema = z.strictObject({
   id: z.string(),
   role: RoleSchema,

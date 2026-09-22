@@ -1,5 +1,5 @@
-// R4 context-builder integration tests — 1:1 with context_builder.py and
-// context_repository.py. No live model is called.
+// R4 context-builder integration tests and
+// No live model is called.
 
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
@@ -39,7 +39,7 @@ import {
   SUMMARY_RESULT_JSON_SCHEMA,
   validateContextIds,
 } from "../../src/server/services/context-builder";
-import { pyStrip } from "../../src/server/services/text";
+import { unicodeStrip } from "../../src/server/services/text";
 
 const MODEL = "qwen/qwen3-4b-2507";
 
@@ -377,7 +377,7 @@ describe("0.2.1 corrected summary lifecycle", () => {
 });
 
 describe("R4 pure context contract", () => {
-  it("counts UTF-8 bytes and message overhead exactly like Python", () => {
+  it("counts UTF-8 bytes and message overhead exactly like the contract", () => {
     expect(estimateTokens("A中😀")).toBe(8);
     expect(estimateMessages([{ role: "user", content: "中" }])).toBe(22);
   });
@@ -386,7 +386,7 @@ describe("R4 pure context contract", () => {
     expect(contextDumps({ z: [{ b: 2, a: 1 }], a: 0 })).toBe('{"a":0,"z":[{"a":1,"b":2}]}');
   });
 
-  it("matches Python casefold keyword results, including ß, long-s and ligatures", () => {
+  it("matches the contract's casefold keyword results, including ß, long-s and ligatures", () => {
     expect(contextKeywords("Straße STRASSE")).toEqual(["strasse"]);
     expect(contextKeywords("ﬀoo ſystem ẞ")).toEqual(["ffoo", "system", "ss"]);
     expect(contextKeywords("İstanbul Σςσ ＡＢＣ")).toEqual(["stanbul"]);
@@ -422,9 +422,9 @@ describe("R4 pure context contract", () => {
     expect(SUMMARY_RESULT_JSON_SCHEMA.$defs.SummaryFact.properties.source_ids.minItems).toBe(1);
   });
 
-  it("uses Python strip semantics for final model answers", () => {
-    expect(pyStrip("\u0085回答\u001c")).toBe("回答");
-    expect(pyStrip("\ufeff回答\ufeff")).toBe("\ufeff回答\ufeff");
+  it("uses the contract's strip semantics for final model answers", () => {
+    expect(unicodeStrip("\u0085回答\u001c")).toBe("回答");
+    expect(unicodeStrip("\ufeff回答\ufeff")).toBe("\ufeff回答\ufeff");
   });
 });
 
@@ -688,7 +688,7 @@ describe("R4 ContextBuilder end-to-end", () => {
     const ctx = setup();
     // The main model is intentionally budgeted to 4096 below, but the actual
     // loaded capacity remains 32768. The compression model therefore has room
-    // for its strict JSON schema + source turns + 1024 output reservation,
+    // for its strict JSON schema + source turns + 1024 output reservation
     // while the main-context budget is still small enough to trigger summary.
     ctx.gateway.capacity = 32768;
     const sessionId = newSession(ctx.orm);
@@ -700,7 +700,7 @@ describe("R4 ContextBuilder end-to-end", () => {
       "旧回答".repeat(100),
     );
     // `recent_turns=1` means the newest complete historical turn must remain as
-    // raw text. Two historical turns are therefore required before the source
+    // raw text. Two historical turns are therefore required before the contract
     // algorithm is allowed to summarize the older prefix.
     completedTurn(ctx.orm, sessionId, "sum-recent", "最近问题", "最近回答");
     const current = activeTurn(ctx.orm, sessionId, "sum-now", "当前问题");
@@ -809,7 +809,7 @@ describe("R4 ContextBuilder end-to-end", () => {
     ).toBe("CONTEXT_CAPACITY_ERROR");
   });
 
-  it("DirectService persists Python-strip output rather than JS-trim output", async () => {
+  it("DirectService persists contract-strip output rather than JS-trim output", async () => {
     const business = openBusinessDb();
     const gateway = new ContextGateway();
     gateway.streamDeltas = ["\u0085回答\u001c"];

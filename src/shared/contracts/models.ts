@@ -3,8 +3,7 @@ import { LocalModelStatusSchema, nonBlankString, RetrievalModeSchema, rawString 
 
 /**
  * Model catalogue and context-budget (P5) contracts. Pure `zod` only.
- * Source: api/schemas.py:200-206, api/models.py:18-22, services/context_config.py.
- */
+ * */
 
 /**
  * Retrieval preset DEFAULTS. Values are deliberately generous: they are the
@@ -40,7 +39,7 @@ export const DEFAULT_RETRIEVAL_PRESETS = {
   broad: DEFAULT_BROAD_PRESET,
 } as const;
 
-/** A single retrieval preset (context_config.py:7-27). */
+/** A single retrieval preset. */
 export const RetrievalPresetSchema = z
   .strictObject({
     candidate_limit: z.number().int().min(1).max(10000),
@@ -70,11 +69,11 @@ export const RetrievalPresetsSchema = z.strictObject({
 export type RetrievalPresets = z.infer<typeof RetrievalPresetsSchema>;
 
 /**
- * P5 context-budget configuration (context_config.py:41-67).
- * Cross-field invariants (context_config.py:61-64):
- *  - `max_output_tokens + context_window * safety_margin_ratio < context_window`
- *    whenever `context_window` is set.
- *  - `summary_target_tokens <= summary_max_tokens`.
+ * P5 context-budget configuration.
+ * Cross-field invariants:
+ * - `max_output_tokens + context_window * safety_margin_ratio < context_window`
+ * whenever `context_window` is set.
+ * - `summary_target_tokens <= summary_max_tokens`.
  */
 export const P5ConfigSchema = z
   .strictObject({
@@ -136,7 +135,7 @@ export const P5ConfigSchema = z
 export type P5Config = z.infer<typeof P5ConfigSchema>;
 
 /**
- * /models/capacity has three disjoint shapes (api/models.py:13-22):
+ * /models/capacity has three disjoint shapes:
  * loaded has integer context_length; unknown has null context_length;
  * unavailable has null context_length and a required string error_code.
  * loaded/unknown never carry error_code (#89).
@@ -162,7 +161,7 @@ export const ModelCapacityResponseSchema = z.union([
 
 export type ModelCapacityResponse = z.infer<typeof ModelCapacityResponseSchema>;
 
-/** `/models/local` response (api/schemas.py:200-206). */
+/** `/models/local` response. */
 export const LocalModelCatalogResponseSchema = z.strictObject({
   provider: z.literal("lm_studio"),
   status: LocalModelStatusSchema,

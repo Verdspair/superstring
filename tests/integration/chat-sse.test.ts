@@ -1,12 +1,10 @@
 // SSE streaming contract tests for `POST /chat`.
-//
 // Two layers are covered:
-//   1. The WIRE contract through a real Hono app: frame layout, event order,
-//      field names, UTF-8 passthrough, and the three distinct error exits.
-//   2. The ORCHESTRATION contract against DirectService directly, because the
-//      most dangerous behaviours (ownership loss, client disconnect, empty
-//      output) cannot be expressed with a well-behaved HTTP client.
-//
+// 1. The WIRE contract through a real Hono app: frame layout, event order
+// field names, UTF-8 passthrough, and the three distinct error exits.
+// 2. The ORCHESTRATION contract against DirectService directly, because the
+// most dangerous behaviours (ownership loss, client disconnect, empty
+// output) cannot be expressed with a well-behaved HTTP client.
 // The gateway is always a scripted fake — no live model is ever called.
 
 import { describe, expect, it } from "bun:test";
@@ -149,7 +147,7 @@ describe("POST /chat wire contract", () => {
       business.close();
     }
   });
-  it("emits start → delta… → done in order, with the source's field names", async () => {
+  it("emits start → delta… → done in order, with the contract's field names", async () => {
     const gateway = new ScriptedGateway();
     gateway.script = { deltas: ["你好", "，", "世界"] };
     const { app } = makeApp(gateway);
@@ -189,10 +187,10 @@ describe("POST /chat wire contract", () => {
   });
 
   it("accepts unknown body fields and ignores them (#93)", async () => {
-    // `ChatRequest` is the only request model in the source without
-    // `extra="forbid"` (api/schemas.py:38-46), so Pydantic's default `ignore`
+    // `ChatRequest` is the only request model without
+    // an explicit extra-key policy, so the default ignore
     // applies: unknown keys are accepted and dropped. Being strict here turned a
-    // request the source answers 200 into a 422.
+    // request the contract answers 200 into a 422.
     const gateway = new ScriptedGateway();
     gateway.script = { deltas: ["ok"] };
     const { app } = makeApp(gateway);
@@ -305,7 +303,7 @@ describe("POST /chat wire contract", () => {
   it("rejects an empty model answer with MODEL_EMPTY_RESPONSE and never saves it", async () => {
     const gateway = new ScriptedGateway();
     // No deltas at all: an empty stream. (A whitespace-only delta is truthy in
-    // both Python and JS, so it WOULD be emitted as a delta event first —
+    // both in the contract and in JS, so it WOULD be emitted as a delta event first
     // asserted separately below.)
     gateway.script = { deltas: [] };
     const { app, business } = makeApp(gateway);
@@ -378,7 +376,7 @@ describe("POST /chat wire contract", () => {
 
     // Same key, different content, turn now idle → IDEMPOTENCY_CONFLICT, and
     // because `open_reply` is awaited before the StreamingResponse is built
-    // (app.py:309) it arrives as a normal HTTP error rather than an SSE event.
+    // it arrives as a normal HTTP error rather than an SSE event.
     const res = await app.request(
       chatRequest({ session_id: sessionId, message: "换一句", client_request_id: "c-9" }),
     );
@@ -389,7 +387,7 @@ describe("POST /chat wire contract", () => {
   });
 
   it("emits a whitespace-only delta before failing with MODEL_EMPTY_RESPONSE", async () => {
-    // "   " is truthy in Python AND in JS, so the source emits it as a delta
+    // " " is truthy in the contract AND in JS, so it emits it as a delta
     // and only then discovers the trimmed answer is empty. Reproduced exactly.
     const gateway = new ScriptedGateway();
     gateway.script = { deltas: ["   "] };
@@ -458,9 +456,9 @@ describe("DirectService orchestration (behaviours HTTP cannot express)", () => {
     expect(first.done).toBe(false);
     await stream.return(undefined);
 
-    // Stopping the consumer must stop the producer: the source cancels every
-    // task it owns in the generator's `finally` (direct_service.py:246-254), so
-    // the replica must abort the signal the model fetch is holding. Without this
+    // Stopping the consumer must stop the producer: the contract cancels every
+    // task it owns in the generator's `finally`, so
+    // this project must abort the signal the model fetch is holding. Without this
     // the upstream request keeps running to its own timeout.
     expect(gateway.lastOptions.signal?.aborted).toBe(true);
 

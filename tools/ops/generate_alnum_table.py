@@ -3,15 +3,14 @@
 
 Why this exists
 ---------------
-`canonical()` in the source project is
+`canonical()` is defined as
 
     "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
-    # services/memory_contract.py:114-115
 
-The replica must reproduce that filter exactly, because `canonical()` decides
+This implementation must reproduce that filter exactly, because `canonical()` decides
 whether a new draft duplicates a blocked memory — a different set of retained
 characters changes the number of suppression model calls and can publish a
-memory the source project drops.
+memory the contract drops.
 
 The obvious JS translation is `/[^\\p{L}\\p{N}]/gu`, but that is NOT the same set:
 `\\p{L}\\p{N}` comes from the JavaScript engine's Unicode version, which is not
@@ -20,10 +19,10 @@ pinned and does not match CPython's. Measured on the development host:
     CPython 3.12.11  (Unicode 15.0.0)  isalnum()  137935 code points / 747 ranges
     Node 22.22.2     \\p{L}\\p{N}                  9661 EXTRA code points, none missing
 
-i.e. the regex is a strict superset, so the replica would keep characters — e.g.
+i.e. the regex is a strict superset, so this implementation would keep characters — e.g.
 U+088F, U+1C89, newly assigned scripts added after Unicode 15.0.0 — that the
-source project strips. Deriving the set from the runtime is therefore not
-faithful; it has to be frozen here.
+contract strips. Deriving the set from the runtime is therefore not faithful;
+it has to be frozen here.
 
 This is a DEVELOPMENT-ONLY tool. It reads the pinned interpreter and writes one
 generated module. It is never part of the build, the runtime, or the tests.
@@ -65,15 +64,14 @@ HEADER = """// CPython `str.isalnum()` code points — GENERATED, DO NOT EDIT BY
 // / Unicode version changes.
 //
 // WHY THIS FILE EXISTS
-//   `canonical()` in the source project filters with `c.isalnum()`
-//   (services/memory_contract.py:114-115), and that filter decides whether a
-//   draft counts as a duplicate of a blocked memory.
+//   `canonical()` filters with `c.isalnum()`, and that filter decides whether
+//   a draft counts as a duplicate of a blocked memory.
 //
 //   Character classes like \\p{L}\\p{N} are NOT equivalent: they follow the
 //   JavaScript engine's Unicode version, which is newer than the pinned
 //   CPython's and is a strict superset. Keeping the extra code points would make
-//   the replica call the suppression model where the source project
-//   short-circuits, and in the worst case publish a memory the source drops.
+//   this implementation call the suppression model where the contract
+//   short-circuits, and in the worst case publish a memory the contract drops.
 //
 //   So the set is frozen here and `isPythonAlnum()` binary-searches it. The
 //   result does not depend on the host engine's Unicode tables at all.
@@ -157,7 +155,7 @@ def main() -> int:
     parser.add_argument(
         "--python",
         default=sys.executable,
-        help="the interpreter the replica is pinned to (read-only)",
+        help="the interpreter this table is pinned to (read-only)",
     )
     parser.add_argument(
         "--out",

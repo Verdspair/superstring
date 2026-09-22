@@ -1,27 +1,23 @@
 // Session / Turn / Message repository — the lease + idempotency state machine.
-// 1:1 with `db/repositories.py`.
-//
 // Why this module is synchronous
-// The source project runs on MySQL and relies on `SELECT … FOR UPDATE` row locks
-// inside `async with` transactions (db/repositories.py:539-543, 560-569,
-// 787-789). SQLite has no row locks, so the replica uses SQLite's own writer
+// A row-locking engine would rely on `SELECT … FOR UPDATE` inside a transaction.
+// SQLite has no row locks, so this project uses SQLite's own writer
 // lock instead: every mutating operation runs inside `BEGIN IMMEDIATE`, which
 // takes the database-level write lock up front. Because bun:sqlite is
 // synchronous, nothing can interleave between the reads and the writes inside
 // the callback, so a read-modify-write sequence is atomic — the same guarantee
-// `with_for_update()` provided for this single-writer local application.
-//
+// a row lock provided for this single-writer local application.
 // Contract that must not drift (api-contract.md §2)
-//   IDEMPOTENCY_KEY_RETIRED : turn.invalidation_reason == "message_deleted",
-//                             or the Turn exists but its user message is gone.
-//   IDEMPOTENCY_CONFLICT    : same client_request_id, different content.
-//   GENERATION_ALREADY_ACTIVE : the SAME turn is still active and leased.
-//   SESSION_GENERATION_BUSY   : a DIFFERENT turn in the session is still leased.
-//   replay                  : assistant message already `completed` → return it
-//                             without calling the model.
-//   Heartbeat returns "active" | "lost" | "cancelled" — never throws.
-//   Saving raises GENERATION_OWNERSHIP_LOST / GENERATION_CANCELLED and writes
-//   nothing in those cases.
+// IDEMPOTENCY_KEY_RETIRED: turn.invalidation_reason == "message_deleted"
+// or the Turn exists but its user message is gone.
+// IDEMPOTENCY_CONFLICT: same client_request_id, different content.
+// GENERATION_ALREADY_ACTIVE: the SAME turn is still active and leased.
+// SESSION_GENERATION_BUSY: a DIFFERENT turn in the session is still leased.
+// replay: assistant message already `completed` → return it
+// without calling the model.
+// Heartbeat returns "active" | "lost" | "cancelled" — never throws.
+// Saving raises GENERATION_OWNERSHIP_LOST / GENERATION_CANCELLED and writes
+// nothing in those cases.
 
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
@@ -80,9 +76,8 @@ export function newId(): string {
 }
 
 /**
- * `utc_now()` (repositories.py:90-91) — naive UTC.
- *
- * Fidelity note: the source column is `DATETIME(fsp=6)` (microseconds). JS
+ * Current UTC time as an ISO-8601 string, with no timezone suffix.
+ * Fidelity note: the column carries microsecond precision. JS
  * `Date` only exposes milliseconds, so the last three digits are always `000`.
  * Ordering never depends on these timestamps (message order is
  * `sequence_no`), and lease comparisons only need millisecond resolution.
@@ -98,7 +93,7 @@ function msFromIso(value: string): number {
 }
 
 /**
- * `utc_now() + timedelta(seconds=n)` in the same fixed-width format as
+ * A fixed-width timestamp `n` seconds ahead, in the same format as
  * `nowIso()`.
  */
 export function nowIsoPlusSeconds(seconds: number): string {
@@ -107,23 +102,22 @@ export function nowIsoPlusSeconds(seconds: number): string {
   return `${base}.${String(d.getMilliseconds()).padStart(3, "0")}000Z`;
 }
 
-/** True for a UNIQUE / PRIMARY KEY violation (the SQLAlchemy `IntegrityError` case). */
+/** True for a UNIQUE / PRIMARY KEY violation. */
 export function isIntegrityError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /UNIQUE|PRIMARY KEY|SQLITE_CONSTRAINT/i.test(message);
 }
 
 /**
- * Normalise a storage-layer failure into the error `handleError` maps to 503,
- * mirroring `api/app.py:125-133` (any `SQLAlchemyError` → `DATABASE_UNAVAILABLE`).
- *
- *   - `AppError` passes through unchanged (its own `status_code` must win — e.g.
- *     the integrity→`AGENT_IN_USE`/`IDEMPOTENCY_CONFLICT` mappings below).
- *   - A raw `bun:sqlite` `SqliteError` becomes a `DatabaseError`, so both
- *     `handleError` and the marker-name checks (`direct-service.ts:250`,
- *     `sessions.ts:212`) treat it as a database outage.
- *   - Any other (non-DB) error is left untouched, surfacing as a generic 500 the
- *     same way an unhandled exception does in the source.
+ * Normalise a storage-layer failure into the error `handleError` maps to 503
+ * mirroring (any storage-layer error → `DATABASE_UNAVAILABLE`).
+ * - `AppError` passes through unchanged (its own `status_code` must win — e.g.
+ * the integrity→`AGENT_IN_USE`/`IDEMPOTENCY_CONFLICT` mappings below).
+ * - A raw `bun:sqlite` `SqliteError` becomes a `DatabaseError`, so both
+ * `handleError` and the marker-name checks (`direct-service.ts:250`
+ * `sessions.ts:212`) treat it as a database outage.
+ * - Any other (non-DB) error is left untouched, surfacing as a generic 500 the
+ * same way an unhandled exception does in the contract.
  */
 export function asDatabaseError(error: unknown): Error {
   if (isAppError(error)) return error as Error;
@@ -151,7 +145,7 @@ export function immediate<T>(db: Database, fn: () => T): T {
     try {
       db.run("ROLLBACK");
     } catch {
-      // A failed rollback must not mask the original error.
+      // A failed rollback must not mask the underlying error.
     }
     // A raw `bun:sqlite` error leaving the transaction must become a
     // `DatabaseError` so `handleError` downgrades it to DATABASE_UNAVAILABLE
@@ -185,7 +179,7 @@ export function getAgentRow(orm: Orm, agentId: string): AgentRow | null {
   return row as AgentRow;
 }
 
-/** agent_repository.get_agent (agent_repository.py:10-18). */
+/** agent_repository.get_agent. */
 export function getAgent(orm: Orm, agentId: string): AgentRow {
   const row = getAgentRow(orm, agentId);
   if (!row) throw new AppError("AGENT_NOT_FOUND", "Agent 不存在", 404);
@@ -194,7 +188,7 @@ export function getAgent(orm: Orm, agentId: string): AgentRow {
 
 // Defaults
 
-/** repositories.py:94-128. Idempotent; safe to call on every entry point. */
+/** Idempotent; safe to call on every entry point. */
 export function ensureDefaults(orm: Orm, modelName: string): void {
   const user = orm.select().from(schema.users).where(eq(schema.users.id, DEFAULT_USER_ID)).get();
   if (!user) {
@@ -263,7 +257,6 @@ export function ensureDefaults(orm: Orm, modelName: string): void {
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
 
-/** repositories.py:131-208. */
 export function createSession(
   orm: Orm,
   title: string,
@@ -387,14 +380,13 @@ export function createSession(
   });
 }
 
-/** repositories.py:211-215. */
 export function getSession(orm: Orm, sessionId: string): SessionRow {
   const row = orm.select().from(schema.sessions).where(eq(schema.sessions.id, sessionId)).get();
   if (!row) throw new SessionNotFoundError();
   return row;
 }
 
-/** repositories.py:218-224 — updated_at desc, then id desc. */
+/** updated_at desc, then id desc. */
 export function listSessions(orm: Orm): SessionRow[] {
   return orm
     .select()
@@ -403,12 +395,11 @@ export function listSessions(orm: Orm): SessionRow[] {
     .all();
 }
 
-/** repositories.py:227-237. */
 export function deleteSession(orm: Orm, sessionId: string): SessionRow {
   const db = clientOf(orm);
   return immediate(db, () => {
     const item = getSession(orm, sessionId);
-    // The source takes the agent lock first; BEGIN IMMEDIATE already serialises.
+    // Locking the agent row explicitly is unnecessary; BEGIN IMMEDIATE already serialises.
     getAgent(orm, item.agentId);
     const turnIds = orm
       .select({ id: schema.turns.id })
@@ -438,7 +429,7 @@ export function renameSession(orm: Orm, sessionId: string, title: string): Sessi
 
 // Derivation invalidation (memory + summaries)
 
-/** memory_repository.invalidate_turns (memory_repository.py:224-237). */
+/** memory_repository.invalidate_turns. */
 export function invalidateTurnsForMemory(orm: Orm, agentId: string, turnIds: string[]): void {
   if (turnIds.length === 0) return;
 
@@ -487,7 +478,7 @@ export function invalidateTurnsForMemory(orm: Orm, agentId: string, turnIds: str
     .run();
 }
 
-/** context_repository.invalidate_turns (context_repository.py:234-238). */
+/** context_repository.invalidate_turns. */
 export function invalidateTurnsForSummaries(orm: Orm, turnIds: string[]): void {
   if (turnIds.length === 0) return;
   const affected = orm
@@ -514,7 +505,6 @@ export function invalidateTurnsForSummaries(orm: Orm, turnIds: string[]): void {
 
 export type MessageRow = typeof schema.messages.$inferSelect;
 
-/** repositories.py:241-252. */
 export function getMessage(orm: Orm, sessionId: string, messageId: string): MessageRow {
   const row = orm
     .select()
@@ -525,7 +515,6 @@ export function getMessage(orm: Orm, sessionId: string, messageId: string): Mess
   return row;
 }
 
-/** repositories.py:389-400. */
 export function listMessages(
   orm: Orm,
   sessionId: string,
@@ -544,7 +533,6 @@ export function listMessages(
     .all();
 }
 
-/** repositories.py:255-386. */
 export function deleteMessage(
   orm: Orm,
   sessionId: string,
@@ -697,7 +685,6 @@ function repeatedDeletion(
 
 export type TurnRow = typeof schema.turns.$inferSelect;
 
-/** repositories.py:498-511. */
 export function getTurnByRequest(
   orm: Orm,
   sessionId: string,
@@ -717,7 +704,6 @@ export function getTurnByRequest(
   );
 }
 
-/** repositories.py:514-528. */
 export function getMessageByRequest(
   orm: Orm,
   sessionId: string,
@@ -742,7 +728,7 @@ export function getMessageByRequest(
 // Runtime resolution for a Turn
 
 function runtimeFromTurn(turn: TurnRow, session: SessionRow): RuntimeConfig {
-  // repositories.py:478-490 — validate the snapshot and its binding.
+  // validate the snapshot and its binding.
   let raw: unknown;
   try {
     raw = JSON.parse(turn.runtimeConfigSnapshot);
@@ -754,7 +740,6 @@ function runtimeFromTurn(turn: TurnRow, session: SessionRow): RuntimeConfig {
     throw new AppError("INVALID_TURN_CONFIG", "轮次运行配置无效，请检查迁移或恢复备份", 409);
   }
   // 0013/0014 removed the Persona version binding; tolerate stale keys
-  // (agent_config.py:196-218).
   delete candidate.persona_version_id;
   delete candidate.persona_version;
   const result = RuntimeConfigSchema.safeParse(candidate);
@@ -766,7 +751,7 @@ function runtimeFromTurn(turn: TurnRow, session: SessionRow): RuntimeConfig {
 }
 
 function runtimeFromPersona(orm: Orm, session: SessionRow): RuntimeConfig {
-  // repositories.py:445-475.
+  // 475.
   const agentRow = getAgentRow(orm, session.agentId);
   const persona = orm
     .select()
@@ -805,7 +790,6 @@ function runtimeFromPersona(orm: Orm, session: SessionRow): RuntimeConfig {
   return runtime;
 }
 
-/** repositories.py:493-495. */
 export function getRuntimeConfig(orm: Orm, sessionId: string): RuntimeConfig {
   const session = getSession(orm, sessionId);
   return runtimeFromPersona(orm, session);
@@ -814,7 +798,7 @@ export function getRuntimeConfig(orm: Orm, sessionId: string): RuntimeConfig {
 // prepare_turn / heartbeat / save
 
 /**
- * repositories.py:531-691 — the heart of the idempotency + lease contract.
+ * the heart of the idempotency + lease contract.
  * Throws (never partially writes) for every rejection path in api-contract §2.
  */
 export function prepareTurn(
@@ -1061,7 +1045,7 @@ export function prepareTurn(
   });
 }
 
-/** repositories.py:709-731. Returns "active" | "lost" | "cancelled"; never throws. */
+/** Returns "active" | "lost" | "cancelled"; never throws. */
 export function heartbeatGeneration(
   orm: Orm,
   sessionId: string,
@@ -1090,7 +1074,6 @@ export function heartbeatGeneration(
   });
 }
 
-/** repositories.py:734-749. */
 export function saveCompletedAssistantMessage(
   orm: Orm,
   sessionId: string,
@@ -1109,7 +1092,6 @@ export function saveCompletedAssistantMessage(
   );
 }
 
-/** repositories.py:752-774. */
 export function saveFailedAssistantMessage(
   orm: Orm,
   sessionId: string,
@@ -1133,7 +1115,7 @@ export function saveFailedAssistantMessage(
   );
 }
 
-/** repositories.py:777-838. Raises rather than writing stale output. */
+/** Raises rather than writing stale output. */
 function saveAssistantMessage(
   orm: Orm,
   sessionId: string,
@@ -1223,7 +1205,6 @@ function saveAssistantMessage(
   });
 }
 
-/** repositories.py:694-706. */
 export function saveUserMessage(
   orm: Orm,
   sessionId: string,
@@ -1239,8 +1220,7 @@ export function saveUserMessage(
 // Chat context assembly
 
 /**
- * repositories.py:403-442 — assemble the prompt the model will see.
- *
+ * assemble the prompt the model will see.
  * The `context_valid` filter is the whole point: a Turn whose context was
  * invalidated (its source message was deleted, or its summary was superseded)
  * must NOT be replayed to the model. The CURRENT turn's user message is always

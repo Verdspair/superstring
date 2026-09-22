@@ -1,9 +1,8 @@
 import { z } from "zod";
-import { pyIsBlank, pyLen, pyStrip } from "./py-string";
+import { codePointLength, isBlank, unicodeStrip } from "./code-point-string";
 
 /**
  * Cross-cutting primitives shared by every contract module.
- *
  * This layer is transport-agnostic: it imports ONLY `zod`. It must never import
  * `bun`, `bun:sqlite`, `node:fs`, `drizzle`, `react`, or any server/browser
  * specific module. No business logic, no I/O — types and validation only.
@@ -13,26 +12,24 @@ const UUID_BODY = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 const UUID_FLAT = "[0-9a-fA-F]{32}";
 
 /**
- * The UUID spellings the source accepts. Pydantic does not merely check for the
- * canonical form, so neither may we — anything else makes a request that Python
- * answers happily a 422 here. Verified against the source interpreter
- * (CPython 3.12.11 + pydantic 2.13.5):
- *
- *   ACCEPT  `8-4-4-4-12` (any case)
- *           `{8-4-4-4-12}` (braces must be paired, body must keep its hyphens)
- *           `urn:uuid:8-4-4-4-12` (prefix case-sensitive)
- *           `32` flat hex (any case)
- *   REJECT  `urn:uuid:{...}` · braces around the flat form · mismatched braces
- *           `URN:UUID:...` · `urn:...` · any surrounding or interior whitespace
- *           partially placed hyphens · lengths other than 32/36
+ * The UUID spellings the contract accepts. It does not merely check for the
+ * canonical form — anything else is a 422 here. The accept/reject list below is
+ * the frozen contract:
+ * ACCEPT `8-4-4-4-12` (any case)
+ * `{8-4-4-4-12}` (braces must be paired, body must keep its hyphens)
+ * `urn:uuid:8-4-4-4-12` (prefix case-sensitive)
+ * `32` flat hex (any case)
+ * REJECT `urn:uuid:{...}` · braces around the flat form · mismatched braces
+ * `URN:UUID:...` · `urn:...` · any surrounding or interior whitespace
+ * partially placed hyphens · lengths other than 32/36
  */
 export const UUID_REGEX = new RegExp(
   `^(?:(?:urn:uuid:)?${UUID_BODY}|\\{${UUID_BODY}\\}|${UUID_FLAT})$`,
 );
 
 /**
- * Pydantic parses into `uuid.UUID`, and every handler stores `str(uuid_value)`
- * (api/app.py:246) — i.e. lowercase 8-4-4-4-12, whatever spelling arrived.
+ * The id is parsed into a UUID, and every handler stores its canonical string form
+ * i.e. lowercase 8-4-4-4-12, whatever spelling arrived.
  * Skipping this normalisation would let an uppercase or unhyphenated id pass
  * validation and then miss the row it names.
  */
@@ -76,37 +73,34 @@ export const IsoTimestampSchema = z
 export type IsoTimestamp = z.infer<typeof IsoTimestampSchema>;
 
 /**
- * Bounded string primitives — one per Pydantic validator shape.
- *
- * Pydantic applies `Field(min_length=…, max_length=…)` to the RAW input and only
- * THEN runs the `@field_validator(mode="after")`, and each field picks its own
+ * Bounded string primitives — one per validator shape.
+ * The contract applies the min/max length bounds to the RAW input and only
+ * THEN runs the field's post-validator, and each field picks its own
  * validator. A single "trim then bound" helper cannot express that, so there is
  * one helper per shape and every call site must choose explicitly:
- *
- *   rawString      field has no validator at all — the value is stored verbatim
- *   strippedString validator only strips; an empty result is fine
- *   nonBlankString validator strips and then requires content (`_strip_required`)
- *   updateString   UpdateAgentRequest's `no_explicit_null`: null is a 422, and a
- *                  non-empty-but-blank value is a 422, but the value is NOT
- *                  stripped (schemas.py:256-276)
- *   optionalModelName  `str | None` model names: null passes through, blank 422
- *
- * Lengths are measured in CODE POINTS on the raw value (`pyLen`), matching
- * Python `len()`. Zod 4 already counts code points, but going through `pyLen`
+ * rawString field has no validator at all — the value is stored verbatim
+ * strippedString validator only strips; an empty result is fine
+ * nonBlankString validator strips and then requires content (`_strip_required`)
+ * updateString UpdateAgentRequest's `no_explicit_null`: null is a 422, and a
+ * non-empty-but-blank value is a 422, but the value is NOT
+ * stripped
+ * optionalModelName `str | None` model names: null passes through, blank 422
+ * Lengths are measured in CODE POINTS on the raw value (`codePointLength`). Zod 4
+ * already counts code points, but going through `codePointLength`
  * keeps the order explicit and keeps this file independent of the Zod version.
- * Whitespace is `pyStrip` — never `String.prototype.trim()` (see py-string.ts).
+ * Whitespace is `unicodeStrip` — never `String.prototype.trim()` (see code-point-string.ts).
  */
 
 function lengthIssue(min: number, max: number): string {
   return `长度需在 ${min}~${max} 个字符之间`;
 }
 
-/** No strip, no blank rule — mirrors a field with no `field_validator`. */
+/** No strip, no blank rule — mirrors a field with no post-validator. */
 export function rawString(minLength: number, maxLength: number): z.ZodType<string> {
   return z
     .string()
     .refine(
-      (value) => pyLen(value) >= minLength && pyLen(value) <= maxLength,
+      (value) => codePointLength(value) >= minLength && codePointLength(value) <= maxLength,
       lengthIssue(minLength, maxLength),
     );
 }
@@ -116,10 +110,10 @@ export function strippedString(minLength: number, maxLength: number): z.ZodType<
   return z
     .string()
     .refine(
-      (value) => pyLen(value) >= minLength && pyLen(value) <= maxLength,
+      (value) => codePointLength(value) >= minLength && codePointLength(value) <= maxLength,
       lengthIssue(minLength, maxLength),
     )
-    .transform(pyStrip);
+    .transform(unicodeStrip);
 }
 
 /** Raw length check, then strip, then require content (`_strip_required`). */
@@ -127,16 +121,15 @@ export function nonBlankString(minLength: number, maxLength: number): z.ZodType<
   return z
     .string()
     .refine(
-      (value) => pyLen(value) >= minLength && pyLen(value) <= maxLength,
+      (value) => codePointLength(value) >= minLength && codePointLength(value) <= maxLength,
       lengthIssue(minLength, maxLength),
     )
-    .transform(pyStrip)
+    .transform(unicodeStrip)
     .refine((value) => value !== "", "内容不能为空");
 }
 
 /**
- * UpdateAgentRequest string fields (schemas.py:256-276 `no_explicit_null`).
- *
+ * UpdateAgentRequest string fields (`no_explicit_null`).
  * Explicit `null` is rejected; the raw length constraint already ran; a value
  * that is non-empty yet blank is rejected ("配置内容不能为空白"); everything else
  * is returned UNCHANGED — PATCH does not trim the values it stores.
@@ -145,17 +138,17 @@ export function updateString(minLength: number, maxLength: number): z.ZodType<st
   return z
     .string()
     .refine(
-      (value) => pyLen(value) >= minLength && pyLen(value) <= maxLength,
+      (value) => codePointLength(value) >= minLength && codePointLength(value) <= maxLength,
       lengthIssue(minLength, maxLength),
     )
-    .refine((value) => value === "" || !pyIsBlank(value), "配置内容不能为空白");
+    .refine((value) => value === "" || !isBlank(value), "配置内容不能为空白");
 }
 
 /**
  * `str | None` model name. `null` means "follow the conversation model"; a
  * blank string is a 422 in both the AgentConfig and the request variants.
- * `minLength` is 0 for the create/config shapes (the source declares only a
- * max there) and 1 for the update shape (schemas.py:241-246).
+ * `minLength` is 0 for the create/config shapes (the contract declares only a
+ * max there) and 1 for the update shape.
  */
 export function optionalModelName(
   maxLength: number,
@@ -165,31 +158,31 @@ export function optionalModelName(
   return z
     .string()
     .refine(
-      (value) => pyLen(value) >= minLength && pyLen(value) <= maxLength,
+      (value) => codePointLength(value) >= minLength && codePointLength(value) <= maxLength,
       lengthIssue(minLength, maxLength),
     )
-    .transform(pyStrip)
+    .transform(unicodeStrip)
     .refine((value) => value !== "", "模型名称不能是空字符串；使用 null 表示跟随对话模型")
     .nullable();
 }
 
-/** Message author role. Source: db/models.py:18-24. */
+/** Message author role. */
 export const RoleSchema = z.enum(["user", "assistant", "system"]);
 export type Role = z.infer<typeof RoleSchema>;
 
-/** Persisted message status. Source: db/models.py:18-24. */
+/** Persisted message status. */
 export const MessageStatusSchema = z.enum(["pending", "completed", "failed", "cancelled"]);
 export type MessageStatus = z.infer<typeof MessageStatusSchema>;
 
-/** Turn generation status (API-internal but observable). Source: db/models.py:26-37. */
+/** Turn generation status (API-internal but observable). */
 export const GenerationStatusSchema = z.enum(["active", "completed", "failed", "cancelled"]);
 export type GenerationStatus = z.infer<typeof GenerationStatusSchema>;
 
-/** Session interaction mode. Source: api/schemas.py:49-64, agent_config.py:221-223. */
+/** Session interaction mode. */
 export const SessionModeSchema = z.enum(["chat", "work"]);
 export type SessionMode = z.infer<typeof SessionModeSchema>;
 
-/** Memory scope. Source: memory_contract.py (scope enum). */
+/** Memory scope. */
 export const ScopeSchema = z.enum([
   "reality_user",
   "companion_relationship",
@@ -198,7 +191,7 @@ export const ScopeSchema = z.enum([
 ]);
 export type Scope = z.infer<typeof ScopeSchema>;
 
-/** P5 context retrieval strength. Source: context_config.py:52. */
+/** P5 context retrieval strength. */
 export const RetrievalModeSchema = z.enum([
   "off",
   "conservative",
@@ -209,22 +202,22 @@ export const RetrievalModeSchema = z.enum([
 ]);
 export type RetrievalMode = z.infer<typeof RetrievalModeSchema>;
 
-/** Memory entry lifecycle status. Source: db/models.py:403. */
+/** Memory entry lifecycle status. */
 export const MemoryEntryStatusSchema = z.enum(["active", "suppressed", "replaced", "invalid"]);
 export type MemoryEntryStatus = z.infer<typeof MemoryEntryStatusSchema>;
 
-/** Memory job status. Source: db/models.py:450 (config-and-memory-contract §4.3). */
+/** Memory job status. */
 export const MemoryJobStatusSchema = z.enum(["queued", "running", "succeeded", "failed"]);
 export type MemoryJobStatus = z.infer<typeof MemoryJobStatusSchema>;
 
-/** Memory governance action. Source: memory_contract.py:68-76. */
+/** Memory governance action. */
 export const GovernActionSchema = z.enum(["suppress", "enable", "purge"]);
 export type GovernAction = z.infer<typeof GovernActionSchema>;
 
-/** Local LM Studio model catalog availability. Source: api/schemas.py:200-206. */
+/** Local LM Studio model catalog availability. */
 export const LocalModelStatusSchema = z.enum(["available", "empty"]);
 export type LocalModelStatus = z.infer<typeof LocalModelStatusSchema>;
 
-/** `/models/capacity` probe status. Source: api/models.py:18-22. */
+/** `/models/capacity` probe status. */
 export const ModelLoadStatusSchema = z.enum(["loaded", "unknown", "unavailable"]);
 export type ModelLoadStatus = z.infer<typeof ModelLoadStatusSchema>;

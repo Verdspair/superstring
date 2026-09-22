@@ -5,7 +5,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Development gate runner. Fixed absolute executors so it does not depend on the
-// host shell PATH; never touches the old project, the real database or a model.
+// host shell PATH; never touches anything outside this tree, the real database
+// or a model.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const require = createRequire(resolve(root, "package.json"));
 const packageBin = (name, file) => resolve(dirname(require.resolve(`${name}/package.json`)), file);

@@ -1,15 +1,13 @@
-// Agent-scoped memory persistence — 1:1 with `db/memory_repository.py`.
-//
+// Agent-scoped memory persistence
 // Ownership model (do not "fix")
 // Memory belongs to the **Agent**, not to a session. `scope` / `scope_key` are
-// retained as historical labels so the original isolation architecture can be
+// retained as historical labels so the contract isolation architecture can be
 // reinstated later without a data migration, but today every scope keys to the
-// owning Agent (`services/memory_contract.py:118-126`). Recall is deliberately
+// owning Agent. Recall is deliberately
 // NOT narrowed by `scope`.
-//
 // Transactions
-// The source explicitly says "callers own transactions; all mutations lock
-// Agent first" (memory_repository.py:1). Row locks (`with_for_update`) do not
+// The contract explicitly says "callers own transactions; all mutations lock
+// Agent first". Row locks (`with_for_update`) do not
 // exist in SQLite, so every mutating entry point here is expected to be called
 // inside `immediate()`, which takes the database write lock up front. The route
 // layer does exactly that.
@@ -50,21 +48,19 @@ export interface TurnTriple {
   assistant: typeof schema.messages.$inferSelect;
 }
 
-/** memory_repository.py:19-20 — local `fail` helper, default status **409**. */
+/** local `fail` helper, default status **409**. */
 export { fail };
 
 // Policy
 
 /**
- * memory_repository.py:23-41.
- *
- * The source passes `lock=True` to take `SELECT … FOR UPDATE` on the Agent row
+ * 41.
+ * The contract passes `lock=True` to take `SELECT … FOR UPDATE` on the Agent row
  * twice (once for the read, again before creating the policy) so a concurrent
  * first-touch cannot create two policies. SQLite has no row locks: the route
  * layer wraps every memory mutation in `BEGIN IMMEDIATE`, which holds the
  * database write lock for the whole read-modify-write, so the mutual exclusion
  * is preserved without a per-call flag.
- *
  * The `MEMORY_FORBIDDEN` check is on the *stored* `user_id`, which only differs
  * from the default in a multi-user database.
  */
@@ -80,7 +76,7 @@ export function policy(orm: Orm, agentId: string): MemoryPolicyRow {
 
   let item = read();
   if (!item) {
-    // Creation also re-reads the Agent, including on a plain GET (the source
+    // Creation also re-reads the Agent, including on a plain GET (the contract
     // does the same so a first-touch GET still validates ownership).
     getAgent(orm, agentId);
     item = read();
@@ -109,7 +105,6 @@ export function policy(orm: Orm, agentId: string): MemoryPolicyRow {
   return item;
 }
 
-/** memory_repository.py:44-50. */
 export function ownedSession(
   orm: Orm,
   agentId: string,
@@ -133,7 +128,7 @@ export function ownedSession(
 }
 
 /**
- * memory_repository.py:53-61 — a legacy per-session label kept for API
+ * a legacy per-session label kept for API
  * compatibility. It no longer narrows recall; it is still returned so the
  * published contract shape stays intact.
  */
@@ -147,7 +142,7 @@ export function sessionScope(orm: Orm, agentId: string, sessionId: string): stri
   return state ? state.scope : DEFAULT_SCOPE;
 }
 
-/** memory_repository.py:64-78. Bumps the governance epoch. */
+/** Bumps the governance epoch. */
 export function setScope(orm: Orm, agentId: string, sessionId: string, scope: string): void {
   const p = policy(orm, agentId);
   ownedSession(orm, agentId, sessionId);
@@ -175,12 +170,11 @@ export function setScope(orm: Orm, agentId: string, sessionId: string, scope: st
 // Turn sources
 
 /**
- * memory_repository.py:81-102 — only **valid, completed, paired** turns count as
+ * only **valid, completed, paired** turns count as
  * memory sources. A turn qualifies when:
- *   - it is still `source_valid` AND `context_valid`,
- *   - its generation completed, and
- *   - BOTH its user and assistant messages are `completed`.
- *
+ * - it is still `source_valid` AND `context_valid`
+ * - its generation completed, and
+ * - BOTH its user and assistant messages are `completed`.
  * `recent` switches the ordering to newest-first (and limits); otherwise the
  * result is oldest-first. `ids` additionally asserts that *every* requested turn
  * resolved, so a partially-valid selection is rejected as a whole rather than
@@ -250,7 +244,6 @@ export function turns(
   return rows;
 }
 
-/** memory_repository.py:105-108. */
 export function sourceData(rows: TurnTriple[]): Array<Record<string, unknown>> {
   return rows.map(({ turn, user, assistant }) => ({
     turn_id: turn.id,
@@ -265,7 +258,7 @@ export function sourceData(rows: TurnTriple[]): Array<Record<string, unknown>> {
 // Entries
 
 /**
- * memory_repository.py:111-122. `ids` asserts full resolution (MEMORY_NOT_FOUND
+ * `ids` asserts full resolution (MEMORY_NOT_FOUND
  * 404) so a caller can never act on a subset of what it thinks it selected.
  */
 export function entries(
@@ -299,7 +292,7 @@ export function entries(
 }
 
 /**
- * memory_repository.py:125-138 — a memory is only reusable while EVERY one of
+ * a memory is only reusable while EVERY one of
  * its source turns is still intact. Note this checks `source_valid` and the
  * generation status but deliberately not `context_valid`: a turn that merely
  * scrolled out of the context window has not lost its meaning as a source.
@@ -353,8 +346,8 @@ export function validateEntrySources(
 
 export interface EnqueueArgs {
   /**
-   * `auto` is written by the worker's scheduler (`memory_service.py:101-102`),
-   * never by a route. `memory_jobs.kind` is a plain `String(16)` in the source
+   * `auto` is written by the worker's scheduler
+   * never by a route. `memory_jobs.kind` is a plain `String(16)` in the contract
    * with no CHECK constraint, so the set is open-ended and `publish` decides
    * turn-based vs merge behaviour by comparing against `"merge"`.
    */
@@ -365,14 +358,12 @@ export interface EnqueueArgs {
 }
 
 /**
- * memory_repository.py:141-184.
- *
+ * 184.
  * Three guard rails, in this order:
- *   1. `request_key` replay — same key + same payload returns the SAME job
- *      (idempotent), same key + different payload is `MEMORY_REQUEST_CONFLICT`.
- *   2. Only one active (queued/running) job per Agent → `MEMORY_BUSY`.
- *   3. A disabled Agent cannot enqueue → `AGENT_DISABLED`.
- *
+ * 1. `request_key` replay — same key + same payload returns the SAME job
+ * (idempotent), same key + different payload is `MEMORY_REQUEST_CONFLICT`.
+ * 2. Only one active (queued/running) job per Agent → `MEMORY_BUSY`.
+ * 3. A disabled Agent cannot enqueue → `AGENT_DISABLED`.
  * `config_snapshot` freezes everything the worker will need, including the
  * policy version and `governance_epoch`, so a later governance change can
  * invalidate the job instead of letting it publish against moved facts.
@@ -492,7 +483,6 @@ export function enqueue(
   return result;
 }
 
-/** memory_repository.py:187-194. */
 export function jobOwned(orm: Orm, agentId: string, jobId: string): MemoryJobRow {
   policy(orm, agentId);
   const job = orm
@@ -513,9 +503,8 @@ export function jobOwned(orm: Orm, agentId: string, jobId: string): MemoryJobRow
 }
 
 /**
- * memory_repository.py:197-221.
- *
- * Order matters: the source guard ("can this memory be re-enabled?") runs
+ * 221.
+ * Order matters: the contract guard ("can this memory be re-enabled?") runs
  * BEFORE `governance_epoch` is bumped, so a rejected `enable` leaves the epoch
  * untouched. Queued/in-flight jobs are failed *before* the facts they read are
  * changed, which is what makes `MEMORY_GOVERNANCE_CHANGED` meaningful.
@@ -590,7 +579,7 @@ export function govern(orm: Orm, agentId: string, ids: string[], action: string)
 }
 
 /**
- * memory_repository.py:240-254 — worker claim. Returns `null` for a job that is
+ * worker claim. Returns `null` for a job that is
  * not claimable (missing, already taken, or governance moved on). The
  * governance check **fails the job** as a side effect rather than silently
  * dropping it.
@@ -616,7 +605,6 @@ export function claim(orm: Orm, jobId: string): MemoryJobRow | null {
   });
 }
 
-/** memory_repository.py:257-263. */
 export function ownedRunning(
   orm: Orm,
   agentId: string,
@@ -638,11 +626,10 @@ export function ownedRunning(
 }
 
 /**
- * The DB half of the worker heartbeat (`memory_service.py:107-113`).
- *
+ * The DB half of the worker heartbeat.
  * Ownership is re-checked on every beat, so a job that lost its lease (or whose
  * `governance_epoch` moved) makes the heartbeat itself throw — the running
- * generation then aborts and can never publish against moved facts. The source
+ * generation then aborts and can never publish against moved facts. The contract
  * extends the lease by a flat 60s each beat while beating every 15s.
  */
 export function renewLease(orm: Orm, agentId: string, jobId: string, token: string): void {
@@ -651,14 +638,13 @@ export function renewLease(orm: Orm, agentId: string, jobId: string, token: stri
 }
 
 /**
- * The draft type is owned by the contract module (`memory_contract.py:79-98`)
+ * The draft type is owned by the contract module
  * and re-exported here so existing callers keep importing it from one place.
  */
 export type { MemoryDraft };
 
 /**
- * memory_repository.py:266-298 — publish a worker result.
- *
+ * publish a worker result.
  * `draft === null` means "nothing worth remembering": the job still succeeds and
  * (for manual/auto) its turns are still marked processed, so the same turns are
  * not re-offered forever. For a merge, the replaced parents are linked to the
@@ -777,9 +763,8 @@ export function publish(
 
 /**
  * Shared narrow update helper: only the columns a job transition touches.
- *
  * Exported because the worker's lease/failure transitions are service-level
- * policy in the source (`memory_service.py:60-72,107-113,156-166`) that mutates
+ * policy in the contract that mutates
  * a repository-provided row directly; keeping the primitive here preserves the
  * DB-in-repository layering without inventing near-duplicate wrappers.
  */

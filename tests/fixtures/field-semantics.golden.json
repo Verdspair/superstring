@@ -1,8 +1,4 @@
 {
-  "generated_by": "tools/ops/generate_field_semantics_golden.py",
-  "source": "G:\\reference\\src",
-  "python": "3.12.11",
-  "pydantic": "2.13.5",
   "cases": [
     {
       "id": "chat.message.raw_over_limit_after_trim",
@@ -37,7 +33,7 @@
       "error": "ValidationError"
     },
     {
-      "id": "chat.message.bom_is_not_blank_for_python",
+      "id": "chat.message.bom_is_not_blank",
       "schema": "ChatRequest",
       "watched": "message",
       "accepted": true,

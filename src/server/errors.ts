@@ -1,20 +1,15 @@
 import type { ErrorCode } from "../shared/contracts/errors";
 
 /**
- * Runtime error type, 1:1 with `<reference-project>`.
- *
- * `AppError` is the TS equivalent of the Python base class: it carries the
- * machine-readable `code` (one of the 66 declared in
+ * Runtime error type
+ * `AppError` carries the machine-readable `code` (one of the 66 declared in
  * `src/shared/contracts/errors.ts`) plus the HTTP status. The Hono error
  * handler (`src/server/api/error-handler.ts`) turns it into the JSON envelope
- * `{ error: { code, message } }` exactly like `api/app.py:117-122`.
- *
- * Status codes come from `docs/reference/api-contract.md` §6.2. Two rules from
- * the source project that callers must respect:
- *   - `services/context_builder.py:62-63` and `db/memory_repository.py:19-20`
- *     use a local `fail()` helper whose **default status is 409**. Codes raised
- *     that way keep 409 unless the call site overrides it.
- *   - `ModelUnavailableError` (errors.py:99-101) **defaults to 503**.
+ * `{ error: { code, message } }`. Status codes come from
+ * `docs/reference/api-contract.md` §6.2. Two rules callers must respect:
+ * - Codes raised through the local `fail()` helper **default to status 409**
+ * and keep it unless the call site overrides the status.
+ * - `MODEL_SERVICE_UNAVAILABLE` **defaults to 503**.
  */
 export class AppError extends Error {
   readonly code: ErrorCode;
@@ -28,7 +23,7 @@ export class AppError extends Error {
   }
 }
 
-// errors.py core subclasses (12)
+// core subclasses (12)
 
 export class SessionNotFoundError extends AppError {
   constructor() {
@@ -101,7 +96,7 @@ export class DatabaseUnavailableError extends AppError {
 }
 
 /**
- * errors.py:99-101 — note the **default code differs** from the class name:
+ * note the **default code differs** from the class name:
  * the default is `MODEL_SERVICE_UNAVAILABLE`, and callers override both code
  * and message for the other eight model-layer codes.
  */
@@ -115,14 +110,14 @@ export class ModelUnavailableError extends AppError {
 
 /**
  * Mirrors the local `fail(code, message, status=409)` helpers in
- * `db/memory_repository.py:19-20` and `services/context_builder.py:62-63`.
+ * 20` and
  * Default status is **409**.
  */
 export function fail(code: ErrorCode, message: string, status = 409): never {
   throw new AppError(code, message, status);
 }
 
-/** Validation failure → 422 `VALIDATION_ERROR` (api/app.py:136-143). */
+/** Validation failure → 422 `VALIDATION_ERROR`. */
 export class ValidationError extends AppError {
   constructor(message = "请求参数不合法") {
     super("VALIDATION_ERROR", message, 422);

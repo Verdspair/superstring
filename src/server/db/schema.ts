@@ -1,23 +1,19 @@
-// Drizzle ORM schema: 16 inherited business tables plus 8 knowledge tables.
-// Legacy tables were ported 1:1 from the inherited
-// reference (Python + SQLAlchemy + MySQL/InnoDB) model to Drizzle + SQLite.
-//
-// Source of truth: docs/reference/data-model.md (golden). Every column name,
+// Drizzle ORM schema: 16 business tables plus 8 knowledge tables.
+// The business tables are mapped 1:1 onto Drizzle + SQLite.
+// Source of truth: docs/reference/data-model.md (golden). Every column name
 // type, NOT NULL, default, primary key, composite unique key, foreign key (with
 // ON DELETE strategy) and CHECK constraint below mirrors that document. The
 // authoritative DDL that actually builds the database is
 // migrations/versions/0001_initial.sql and 0002_knowledge.sql — stay in lock-step with
 // it (see tests/integration/db-schema.test.ts for the drift guard).
-//
 // Type mapping (data-model.md §0):
-//   String(N)/Text -> text()   -> TEXT
-//   Integer/BigInteger -> integer() -> INTEGER (SQLite INTEGER is 8 bytes)
-//   Float -> real() -> REAL
-//   Boolean -> integer() -> INTEGER 0/1, CHECK IN (0,1)
-//   JSON -> text() -> TEXT (JSON string, see json-text.ts)
-//   DATETIME(fsp=6) -> text() -> TEXT ISO8601 with microseconds (app-generated)
-//
-// MySQL InnoDB / charset / collate table options are all dropped (data-model.md §0).
+// String(N)/Text -> text() -> TEXT
+// Integer/BigInteger -> integer() -> INTEGER (SQLite INTEGER is 8 bytes)
+// Float -> real() -> REAL
+// Boolean -> integer() -> INTEGER 0/1, CHECK IN (0,1)
+// JSON -> text() -> TEXT (JSON string, see json-text.ts)
+// DATETIME(fsp=6) -> text() -> TEXT ISO8601 with microseconds (app-generated)
+// Engine / charset / collate table options are dropped (data-model.md §0).
 
 import { sql } from "drizzle-orm";
 import {
@@ -265,7 +261,7 @@ export const memoryEntries = sqliteTable(
     summary: text("summary").notNull(),
     tags: text("tags").notNull(), // JSON list[str]
     kinds: text("kinds").notNull(), // JSON list[str]
-    body: text("body").notNull(), // Markdown TEXT (models.py: MemoryEntry.body)
+    body: text("body").notNull(), // Markdown TEXT (: MemoryEntry.body)
     scope: text("scope").notNull(),
     scopeKey: text("scope_key").notNull(),
     status: text("status").notNull().default("active"),

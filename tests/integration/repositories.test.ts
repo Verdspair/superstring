@@ -1,18 +1,16 @@
 // Integration tests for the R3 repository layer — the idempotency / lease /
 // cancellation / deletion state machine.
-//
 // Covers duplicate generation and stale writers overwriting newer answers.
 // Assertions follow docs/reference/api-contract.md §2 and the corresponding
-// source transitions in db/repositories.py.
-//
+// state transitions in
 // Ground rules encoded here:
-//   - A rejection path must write NOTHING (the whole transition runs inside
-//     BEGIN IMMEDIATE and rolls back on throw).
-//   - replay (assistant already `completed`) must NOT call the model: it returns
-//     the existing message id and a null generation token.
-//   - Save must refuse stale output: wrong token, expired lease, or a cancelled
-//     turn all raise instead of writing.
-//   - Deleting a message retires its client_request_id forever.
+// - A rejection path must write NOTHING (the whole transition runs inside
+// BEGIN IMMEDIATE and rolls back on throw).
+// - replay (assistant already `completed`) must NOT call the model: it returns
+// the existing message id and a null generation token.
+// - Save must refuse stale output: wrong token, expired lease, or a cancelled
+// turn all raise instead of writing.
+// - Deleting a message retires its client_request_id forever.
 
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
@@ -206,7 +204,7 @@ describe("prepareTurn — first turn", () => {
     );
   });
 
-  it("saveUserMessage mirrors prepareTurn (repositories.py:694-706) and returns the user row", () => {
+  it("saveUserMessage mirrors prepareTurn and returns the user row", () => {
     const row = saveUserMessage(ctx.orm, ctx.sessionId, "独立消息", "cg-solo");
     expect(row.role).toBe("user");
     expect(row.content).toBe("独立消息");
@@ -242,7 +240,7 @@ describe("prepareTurn — idempotency", () => {
   });
 
   it("raises GENERATION_ALREADY_ACTIVE before comparing content (lease check wins)", () => {
-    // repositories.py:570-593 runs before the content comparison at :608, so a
+    // 593 runs before the content comparison at:608, so a
     // leased turn reports busy even when the content differs.
     prepareTurn(ctx.orm, ctx.sessionId, "你好", "cg-1");
     expectCode(

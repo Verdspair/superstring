@@ -304,7 +304,7 @@ export const english = {
   按最新权限重新发送: "Resend with current access",
   "已按最新权限重新发送（新请求）": "Resent with current access (new request)",
   "资料权限已变化，原请求不能重试。是否按最新权限重新发送？这将创建新请求。":
-    "Document access has changed; the original request cannot be retried. Resend with current access? This creates a new request.",
+    "Document access has changed; the earlier request cannot be retried. Resend with current access? This creates a new request.",
   关闭: "Close",
   确认删除: "Confirm delete",
   刷新: "Refresh",
@@ -328,11 +328,11 @@ export const english = {
   使用整理稿: "Use organized text",
   使用原文: "Use original text",
   "原文修改后旧整理稿失效；内容模式对所有获授权助手生效。":
-    "Editing the original invalidates older drafts. Content mode applies to every authorized assistant.",
+    "Editing the prior version invalidates older drafts. Content mode applies to every authorized assistant.",
   查看整理稿与来源: "View organized text and sources",
   原文区间: "Original range",
   来源版本已失效: "Source version is no longer valid",
-  "暂无有效整理稿，使用原文。": "No valid organized text; using the original.",
+  "暂无有效整理稿，使用原文。": "No valid organized text; falling back to the source text.",
   "已保存原文（只读）": "Saved original (read only)",
   "仅授权当前资料，不含同分类其他资料。": "Grants this document only, not others in the category.",
   "仅修改已选资料；以后新增或移入的资料不继承授权。":
@@ -533,7 +533,7 @@ export const english = {
   模型名称: "Model name",
   "例如：provider-model-name": "Example: provider-model-name",
   "默认跟随模型加载容量。保存后从下一轮生效，重试沿用原轮预算。":
-    "Follows the loaded model capacity by default. Saved changes apply from the next turn; retries keep the original budget.",
+    "Follows the loaded model capacity by default. Saved changes apply from the next turn; retries keep the earlier budget.",
   "跟随对话模型或另选模型；不会自动加载或重载。":
     "Use the chat model or choose another. No automatic loading or reloading.",
   聊天上下文预算: "Chat context budget",
@@ -665,7 +665,7 @@ export const english = {
   永久删除需要明确确认: "Permanent deletion requires explicit confirmation",
   "操作完成，请重新加载记忆列表。": "Operation complete. Reload the memory list.",
   "整合任务已排队；成功后原条目被替代，新条目生效。":
-    "Merge queued. On success, new memories replace the original entries.",
+    "Merge queued. On success, new memories replace the earlier entries.",
   "关闭（本轮不读取长期记忆）": "Off (do not retrieve long-term memory this turn)",
   "保守（只用直接相关记忆）": "Conservative (directly relevant memories only)",
   "标准（兼顾直接相关和必要背景）": "Standard (direct relevance and essential background)",

@@ -52,9 +52,10 @@ export function collectPackageFiles(root, appDirectory) {
     }
     copyFile(source, path.join("licenses", notice.file));
   }
-  for (const name of ["notice-sources.json", "THIRD-PARTY-NOTICES.txt"]) {
-    copyFile(path.join(noticesRoot, name), path.join("licenses", name));
-  }
+  copyFile(
+    path.join(noticesRoot, "notice-sources.json"),
+    path.join("licenses", "notice-sources.json"),
+  );
   return files;
 }
 

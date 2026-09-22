@@ -140,7 +140,7 @@ describe("memory policy", () => {
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("AGENT_NOT_FOUND");
   });
 
-  it("422s for a non-uuid agent id (FastAPI rejects the path first)", async () => {
+  it("422s for a non-uuid agent id (path validation runs first)", async () => {
     const { app } = makeApp();
     const res = await call(app, "/agents/not-a-uuid/memory/policy");
     expect(res.status).toBe(422);

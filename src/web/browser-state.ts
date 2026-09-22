@@ -67,7 +67,7 @@ export function createBrowserStateStorage(config: BrowserStateConfig): BrowserSt
       try {
         localStorage.setItem(storageKey, await encrypt(value, config.secret));
       } catch {
-        // Match Gradio BrowserState: persistence failure is non-fatal to the action.
+        // Persistence failure is non-fatal to the action.
       }
     },
   };

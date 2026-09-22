@@ -1,10 +1,8 @@
 // Persona compilation — re-exported from the shared contract layer.
-//
-// Request validation and persistence share shared/contracts/persona-compile.ts,
+// Request validation and persistence share shared/contracts/persona-compile.ts
 // including default intensity-60 scaling (#91).
-//
-// See that module for the source mapping (services/agent_config.py:119-167) and
-// the reasoning behind the Python-compatible string primitives.
+// See that module for the mapping and
+// the reasoning behind the code-point string primitives.
 
 export {
   compilePersona,

@@ -224,7 +224,7 @@ describe("schema-gate: accepts known-good structures", () => {
 });
 
 describe("schema-gate: version-0 with pre-existing objects is rejected", () => {
-  it("rejects a version-0 DB that only contains a view (the original bug)", () => {
+  it("rejects a version-0 DB that only contains a view (the historical bug)", () => {
     const p = track(tmpFile("v0view"));
     const db = new Database(p);
     db.exec("CREATE VIEW v0_only_view AS SELECT 1 AS one");

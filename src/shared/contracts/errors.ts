@@ -2,15 +2,15 @@ import { z } from "zod";
 
 /**
  * Error taxonomy: docs/reference/api-contract.md §6.2 (v2).
- * Extracted from AppError/fail/ModelUnavailableError call sites in the source:
- * 57 HTTP codes (including 9 model codes), 1 SSE-only, 2 extra message-only,
+ * Extracted from AppError/fail/ModelUnavailableError call sites in the contract:
+ * 57 HTTP codes (including 9 model codes), 1 SSE-only, 2 extra message-only
  * and 6 job-only codes = 66. HTTP codes may also travel over SSE
- * (api/app.py:342-359). Pure data and Zod validation only.
+ * Pure data and Zod validation only.
  */
 
-/** Every error code that exists in the source project (66). */
+/** Every error code that exists in the contract (66). */
 export const ERROR_CODES = [
-  // errors.py core subclasses (12)
+  // core subclasses (12)
   "SESSION_NOT_FOUND",
   "MESSAGE_NOT_FOUND",
   "MESSAGE_DELETE_FORBIDDEN",
@@ -87,7 +87,7 @@ export const ERROR_CODES = [
   "MEMORY_INPUT_TOO_LARGE",
 ] as const;
 
-// Additive product features do not rewrite the inherited error taxonomy.
+// Additive product features do not rewrite the error taxonomy.
 export const KNOWLEDGE_ERROR_CODES = [
   "KNOWLEDGE_NOT_FOUND",
   "KNOWLEDGE_CATEGORY_NOT_FOUND",
@@ -104,9 +104,9 @@ export type ErrorCode = (typeof ERROR_CODES)[number] | (typeof KNOWLEDGE_ERROR_C
 export const ErrorCodeSchema = z.enum([...ERROR_CODES, ...KNOWLEDGE_ERROR_CODES]);
 
 /**
- * Only MESSAGE_PERSISTENCE_ERROR is SSE-exclusive (api/app.py:376).
+ * Only MESSAGE_PERSISTENCE_ERROR is SSE-exclusive.
  * MODEL_ERROR is an HTTP 503 code that may also be emitted over SSE;
- * api/app.py:342-359 forwards any AppError raised during streaming.
+ * 359 forwards any AppError raised during streaming.
  */
 export const SSE_EXCLUSIVE_ERROR_CODES = ["MESSAGE_PERSISTENCE_ERROR"] as const;
 
@@ -143,17 +143,15 @@ export const MODEL_LAYER_ERROR_CODES = [
 /**
  * HTTP status code for each error code that carries one
  * (`docs/reference/api-contract.md` §6.2.1–§6.2.6).
- *
  * `CONTEXT_CAPACITY_ERROR` is the only code with two observed statuses:
- * 409 (`db/context_repository.py:84`) and 503 (`services/context_builder.py:113`).
+ * 409 and 503.
  * 409 is used here as the default; the 503 branch is a per-call-site override
  * (capacity-probe failure). See `CONTEXT_CAPACITY_ERROR_ALT_STATUS`.
- *
  * `MESSAGE_PERSISTENCE_ERROR` has no HTTP status — it only exists as an SSE
  * event — so it is deliberately absent.
  */
 export const ERROR_HTTP_STATUS = {
-  // errors.py core
+  // core
   SESSION_NOT_FOUND: 404,
   MESSAGE_NOT_FOUND: 404,
   MESSAGE_DELETE_FORBIDDEN: 400,
@@ -219,8 +217,8 @@ export const ERROR_HTTP_STATUS = {
 } satisfies Partial<Record<ErrorCode, number>>;
 
 /**
- * The single code with two reachable statuses in the source project.
- * `db/context_repository.py:84` → 409, `services/context_builder.py:113` → 503.
+ * The single code with two reachable statuses in the contract.
+ * → 409 → 503.
  */
 export const CONTEXT_CAPACITY_ERROR_ALT_STATUS = 503;
 

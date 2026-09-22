@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("knowledge access retry", () => {
-  it("ordinary retry preserves the original request id and text", async () => {
+  it("ordinary retry preserves the earlier request id and text", async () => {
     stream.mockRejectedValueOnce(new Error("network"));
     await useSuperstringStore.getState().send();
     useSuperstringStore.setState({ composer: "另一个草稿" });
@@ -66,7 +66,7 @@ describe("knowledge access retry", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(stream).toHaveBeenCalledTimes(1);
   });
-  it("explicit confirmation sends the original text with a fresh id and preserves composer", async () => {
+  it("explicit confirmation sends the earlier text with a fresh id and preserves composer", async () => {
     stream.mockImplementationOnce(conflict).mockResolvedValueOnce();
     render(<ChatPage />);
     await useSuperstringStore.getState().send();

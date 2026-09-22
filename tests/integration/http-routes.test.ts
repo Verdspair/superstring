@@ -1,12 +1,10 @@
 // HTTP contract tests for the R3 business routes.
-//
-// These assert the WIRE contract, not the repository internals: status codes,
-// JSON shape, and the exact error codes the source project produces. They run
+// These assert the WIRE contract, not the repository internals: status codes
+// JSON shape, and the exact error codes the contract produces. They run
 // against a real in-memory SQLite database and a real Hono app via
 // `app.request(...)`, so routing, validation, and the error envelope are all
 // exercised together.
-//
-// Source of truth: docs/reference/api-contract.md and <reference-project>
+// Source of truth: docs/reference/api-contract.md and
 // Nothing here touches the live model server — the gateway is a fake.
 
 import { describe, expect, it } from "bun:test";
@@ -219,7 +217,7 @@ describe("agents routes", () => {
 
   it("PUT persona rejects an out-of-range intensity with 422 (ge=0, le=100)", async () => {
     // SavePersonaRequest constrains persona_intensity to 0..100
-    // (api/schemas.py:188-192), so the defensive clamp inside save_persona is
+    // so the defensive clamp inside save_persona is
     // unreachable through this route.
     const { app } = makeApp();
     const id = await seedDefaults(app);
@@ -232,7 +230,7 @@ describe("agents routes", () => {
   });
 
   it("treats a raw empty body as 422 on every body-required route (#90)", async () => {
-    // Every handler in the source declares a REQUIRED body (`body: Model`), so a
+    // Every handler declares a REQUIRED body, so a
     // missing body is a RequestValidationError → 422. The port used to turn a
     // blank body into `{}`, which silently let `PUT persona` wipe the persona.
     const { app } = makeApp();
@@ -254,13 +252,13 @@ describe("agents routes", () => {
     }
   });
 
-  it("accepts a literal JSON {} only where the source model is fully defaulted (#90)", async () => {
+  it("accepts a literal JSON {} only where the contract model is fully defaulted (#90)", async () => {
     const { app } = makeApp();
     const id = await seedDefaults(app);
     const sessionId = "33333333-3333-4333-8333-333333333333";
 
     // SavePersonaRequest inherits PersonaContent, whose five fields all default
-    // to "" (services/agent_config.py:88-108) → `{}` is a valid body that clears
+    // to "" → `{}` is a valid body that clears
     // the persona but leaves config_version and intensity alone.
     const before = (await (await app.request(`/agents/${id}`)).json()) as Record<string, unknown>;
     const personaRes = await app.request(`/agents/${id}/persona`, json({}, "PUT"));
@@ -530,8 +528,8 @@ describe("sessions and messages routes", () => {
 });
 
 describe("UUID spelling on the wire (#92)", () => {
-  // The source parses every id into `uuid.UUID` and then queries with
-  // `str(uuid_value)` (api/app.py:246), so uppercase / unhyphenated spellings
+  // Every id is parsed into a UUID and then queried with
+  // `str(uuid_value)`, so uppercase / unhyphenated spellings
   // reach the SAME row. A regex-only path check accepted them but looked up the
   // literal string, turning a valid request into a 404.
   it("GET resolves an agent addressed with an unhyphenated uppercase id", async () => {
@@ -559,12 +557,12 @@ describe("UUID spelling on the wire (#92)", () => {
     expect(await res.json()).toEqual([]);
   });
 
-  it("accepts the braces and urn:uuid: spellings the source accepts", async () => {
+  it("accepts the braces and urn:uuid: spellings the contract accepts", async () => {
     const { app } = makeApp();
     const lettered = "ABCDEF12-3456-7890-ABCD-EF1234567890";
     for (const spelling of [lettered, `{${lettered}}`, `urn:uuid:${lettered}`]) {
       const res = await app.request(`/agents/${encodeURIComponent(spelling)}`);
-      // 404 (not 422): the id is well-formed for the source, it simply is not in
+      // 404 (not 422): the id is well-formed, it simply is not in
       // the database.
       expect(res.status).toBe(404);
       expect(((await res.json()) as { error: { code: string } }).error.code).toBe(
@@ -573,7 +571,7 @@ describe("UUID spelling on the wire (#92)", () => {
     }
   });
 
-  it("rejects the spellings the source rejects with 422 VALIDATION_ERROR", async () => {
+  it("rejects the spellings the contract rejects with 422 VALIDATION_ERROR", async () => {
     const { app } = makeApp();
     const lettered = "ABCDEF12-3456-7890-ABCD-EF1234567890";
     for (const spelling of [
@@ -604,7 +602,7 @@ describe("UUID spelling on the wire (#92)", () => {
       json({
         request_key: "dup",
         session_id: session.id,
-        // Same UUID three times: uppercase, canonical, unhyphenated. The source
+        // Same UUID three times: uppercase, canonical, unhyphenated. The contract
         // collapses them to one entry and then fails the "not enough turns"
         // check; here it must be the duplicate guard that rejects (422), never a
         // silent accept.

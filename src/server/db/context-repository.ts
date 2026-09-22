@@ -1,5 +1,5 @@
 // P5 context reads and segmented-summary persistence.
-// 1:1 with `db/context_repository.py`; all model calls live in ContextBuilder,
+// all model calls live in ContextBuilder
 // never in this repository. Callers own transaction boundaries.
 
 import { createHash } from "node:crypto";
@@ -9,7 +9,7 @@ import { AppError } from "../errors";
 import { AGENT_LEVEL_SCOPE_KEY } from "../services/memory-contract";
 import { correctionMetadata } from "../services/memory-revision";
 import { compileSystemPrompt } from "../services/runtime-config";
-import { pythonCasefold } from "../services/text";
+import { fullCasefold } from "../services/text";
 import { correctionsForTurns, memoryRevision } from "./memory-content-repository";
 import { entries, ownedSession, sessionScope, turns } from "./memory-repository";
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
@@ -58,7 +58,6 @@ function isoExpired(value: string): boolean {
   return new Date(value).getTime() <= Date.now();
 }
 
-/** context_repository.py:57-74. */
 export function currentUser(
   orm: Orm,
   agentId: string,
@@ -114,7 +113,7 @@ export function currentUser(
   };
 }
 
-/** context_repository.py:77-99. Incrementally freeze one observed capacity. */
+/** Incrementally freeze one observed capacity. */
 export function freezeModelCapacity(
   orm: Orm,
   agentId: string,
@@ -176,7 +175,6 @@ function toContextTurn(row: ReturnType<typeof turns>[number]): ContextTurn {
   };
 }
 
-/** context_repository.py:102-109. */
 export function history(
   orm: Orm,
   agentId: string,
@@ -282,7 +280,6 @@ function asMemoryItem(
   };
 }
 
-/** context_repository.py:142-161. */
 export function catalog(
   orm: Orm,
   agentId: string,
@@ -304,11 +301,11 @@ export function catalog(
   if (options.allEntries) {
     rows.sort((a, b) => a.id.localeCompare(b.id));
   } else if ((options.keywords ?? []).length > 0) {
-    const words = (options.keywords ?? []).map(pythonCasefold);
+    const words = (options.keywords ?? []).map(fullCasefold);
     const score = (row: (typeof rows)[number]) => {
-      const name = pythonCasefold(row.name);
-      const summary = pythonCasefold(row.summary);
-      const body = pythonCasefold(row.body);
+      const name = fullCasefold(row.name);
+      const summary = fullCasefold(row.summary);
+      const body = fullCasefold(row.body);
       return words.reduce(
         (sum, word) =>
           sum + Number(name.includes(word) || summary.includes(word) || body.includes(word)),
@@ -325,7 +322,7 @@ export function catalog(
   return rows.slice(0, limit).map((row) => asMemoryItem(orm, row));
 }
 
-/** context_repository.py:164-175. Fingerprint metadata only, never bodies. */
+/** Fingerprint metadata only, never bodies. */
 export function catalogFingerprint(orm: Orm, agentId: string, sessionId: string): string {
   sessionScope(orm, agentId, sessionId);
   const digest = createHash("sha256");
@@ -346,7 +343,6 @@ export function catalogFingerprint(orm: Orm, agentId: string, sessionId: string)
   return digest.digest("hex");
 }
 
-/** context_repository.py:178-184. */
 export function memoryBodies(
   orm: Orm,
   agentId: string,
@@ -366,7 +362,7 @@ export function memoryBodies(
   });
 }
 
-/** context_repository.py:187-205. Reuse only summaries with complete valid sources. */
+/** Reuse only summaries with complete valid sources. */
 export function summaries(
   orm: Orm,
   agentId: string,
@@ -429,7 +425,7 @@ export function summaries(
   return result;
 }
 
-/** context_repository.py:208-231. Must run after the model call in a short write transaction. */
+/** Must run after the model call in a short write transaction. */
 export function saveSummary(
   orm: Orm,
   agentId: string,

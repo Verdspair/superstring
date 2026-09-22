@@ -9,8 +9,8 @@ import {
 
 /**
  * Session request & response contracts. Pure `zod` only.
- * Source: api/schemas.py:49-64, api/schemas.py:293-300, api/schemas.py:67-80,
- * memory_contract.py:35-36.
+ *
+ * 36.
  */
 
 export const CreateSessionRequestSchema = z.strictObject({
@@ -29,9 +29,9 @@ export const UpdateSessionRequestSchema = z.strictObject({
 export type UpdateSessionRequest = z.infer<typeof UpdateSessionRequestSchema>;
 
 /**
- * SessionResponse (api/schemas.py:67-80).
- * NOTE: `agent_id` is declared `str` in the source; the source passes `None`
- * when no agent is bound (api-contract.md §4.1 / 【待实测确认-1】). We model it
+ * SessionResponse.
+ * NOTE: `agent_id` is declared `str`; it is absent (no value) when no agent is bound
+ * (api-contract.md §4.1 / 【待实测确认-1】). It is modelled
  * as `str` per the contract; see report for the open uncertainty.
  */
 export const SessionResponseSchema = z.strictObject({

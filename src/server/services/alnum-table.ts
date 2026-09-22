@@ -1,25 +1,20 @@
-// CPython `str.isalnum()` code points — GENERATED, DO NOT EDIT BY HAND.
-//
-// Regenerate with tools/ops/generate_alnum_table.py whenever the pinned CPython
-// / Unicode version changes.
-//
+// Alphanumeric code points (Unicode 15.0.0) — GENERATED, DO NOT EDIT BY HAND.
+// Regenerate with tools/ops/generate_alnum_table.py whenever the pinned
+// Unicode version changes.
 // WHY THIS FILE EXISTS
-//   `canonical()` in the source project filters with `c.isalnum()`
-//   (services/memory_contract.py:114-115), and that filter decides whether a
-//   draft counts as a duplicate of a blocked memory.
-//
-//   Character classes like \p{L}\p{N} are NOT equivalent: they follow the
-//   JavaScript engine's Unicode version, which is newer than the pinned
-//   CPython's and is a strict superset. Keeping the extra code points would make
-//   the replica call the suppression model where the source project
-//   short-circuits, and in the worst case publish a memory the source drops.
-//
-//   So the set is frozen here and `isPythonAlnum()` binary-searches it. The
-//   result does not depend on the host engine's Unicode tables at all.
-//
-// Generated from: CPython 3.12.11
-//   Unicode data version: 15.0.0
-//   code points: 137935   ranges: 747
+// `canonical()` filters with `isAlnum()`
+// and that filter decides whether a
+// draft counts as a duplicate of a blocked memory.
+// Character classes like \p{L}\p{N} are NOT equivalent: they follow the
+// JavaScript engine's Unicode version, which is newer than the pinned
+// the pinned Unicode version's and is a strict superset. Keeping the extra code points would make
+// this project call the suppression model where the contract
+// short-circuits, and in the worst case publish a memory the contract drops.
+// So the set is frozen here and `isAlnum()` binary-searches it. The
+// result does not depend on the host engine's Unicode tables at all.
+// Generated from: Unicode 15.0.0
+// Unicode data version: 15.0.0
+// code points: 137935 ranges: 747
 
 /**
  * Encoded as `START-END` hex ranges, comma separated. A range whose start and
@@ -148,8 +143,8 @@ function table(): Range[] {
   return ranges;
 }
 
-/** CPython `str.isalnum()` for a single code point. */
-export function isPythonAlnum(codePoint: number): boolean {
+/** Alphanumeric test for a single code point. */
+export function isAlnum(codePoint: number): boolean {
   const ranges = table();
   let low = 0;
   let high = ranges.length - 1;
@@ -168,7 +163,7 @@ export function isPythonAlnum(codePoint: number): boolean {
 }
 
 /** Number of frozen ranges — the drift guard in the tests reads this. */
-export const PYTHON_ALNUM_RANGE_COUNT = 747;
+export const ALNUM_RANGE_COUNT = 747;
 
 /** Number of code points the frozen table accepts. */
-export const PYTHON_ALNUM_CODE_POINT_COUNT = 137935;
+export const ALNUM_CODE_POINT_COUNT = 137935;

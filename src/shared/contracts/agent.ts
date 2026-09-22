@@ -12,7 +12,12 @@ import {
 import { ErrorCodeSchema } from "./errors";
 import { FrozenKnowledgeReadSchema } from "./knowledge";
 import { P5ConfigSchema } from "./models";
-import { compilePersona, MAX_COMPILED_PERSONA_LENGTH, pyLen, pyStrip } from "./persona-compile";
+import {
+  codePointLength,
+  compilePersona,
+  MAX_COMPILED_PERSONA_LENGTH,
+  unicodeStrip,
+} from "./persona-compile";
 
 export {
   compilePersona,
@@ -30,8 +35,7 @@ export {
 
 /**
  * Agent / Persona request & response contracts. Pure `zod` only.
- * Source: api/schemas.py, services/agent_config.py, services/context_config.py.
- */
+ * */
 
 export const DEFAULT_MEMORY_CONSOLIDATION_PROMPT =
   "根据授权的来源内容整理一条可复用的长期记忆。只提取来源明确支持的事实、决定、偏好或待办，" +
@@ -50,13 +54,13 @@ type PersonaFields = {
 };
 
 /**
- * agent_config.py:110-116 — the check runs `compile_persona(self)` with NO
+ * the check compiles the persona with NO
  * intensity argument, so the character layer is scaled by the DEFAULT intensity
  * of 60 before the 16000 limit is applied. Counting the raw fields (or even the
- * unscaled compile) rejects payloads the source accepts (#91).
+ * unscaled compile) rejects payloads the contract accepts (#91).
  */
 function checkPersonaTotal(v: PersonaFields, ctx: z.RefinementCtx): void {
-  if (pyLen(compilePersona(v)) > MAX_COMPILED_PERSONA_LENGTH) {
+  if (codePointLength(compilePersona(v)) > MAX_COMPILED_PERSONA_LENGTH) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: `Persona 编译后不能超过 ${MAX_COMPILED_PERSONA_LENGTH} 个字符`,
@@ -66,15 +70,15 @@ function checkPersonaTotal(v: PersonaFields, ctx: z.RefinementCtx): void {
 }
 
 /**
- * Persona content (agent_config.py:88-117). Lengths are counted in Python
+ * Persona content. Lengths are counted in Unicode
  * characters (code points, not UTF-16 units, not UTF-8 bytes) and stripped with
- * Python's whitespace set instead of `String.prototype.trim()`.
+ * the contract's whitespace set instead of `String.prototype.trim()`.
  */
 const personaString = (maxLength: number) =>
   z
     .string()
-    .refine((value) => pyLen(value) <= maxLength, `不能超过 ${maxLength} 个字符`)
-    .transform((value) => pyStrip(value));
+    .refine((value) => codePointLength(value) <= maxLength, `不能超过 ${maxLength} 个字符`)
+    .transform((value) => unicodeStrip(value));
 
 export const PersonaContentShape = z.strictObject({
   core_identity: personaString(16000).default(""),
@@ -90,7 +94,7 @@ export const PersonaContentSchema = PersonaContentShape.superRefine((v, ctx) =>
 
 export type PersonaContent = z.infer<typeof PersonaContentSchema>;
 
-/** Agent configuration fields (agent_config.py:33-86), inherited by AgentResponse. */
+/** Agent configuration fields, shared with AgentResponse. */
 export const AgentConfigSchema = z.strictObject({
   name: nonBlankString(1, 100),
   description: rawString(0, 2000).default(""),
@@ -156,7 +160,7 @@ export const CreateAgentRequestSchema = z.strictObject({
 
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
 
-/** SavePersonaRequest (api/schemas.py:185-197): PersonaContent + optional intensity. */
+/** SavePersonaRequest: PersonaContent + optional intensity. */
 export const SavePersonaRequestSchema = PersonaContentShape.extend({
   persona_intensity: z.number().int().min(0).max(100).nullable().default(null),
 }).superRefine((v, ctx) => checkPersonaTotal(v, ctx));
@@ -164,7 +168,7 @@ export const SavePersonaRequestSchema = PersonaContentShape.extend({
 export type SavePersonaRequest = z.infer<typeof SavePersonaRequestSchema>;
 
 /**
- * UpdateAgentRequest (api/schemas.py:234-290). All fields optional (omit = no
+ * UpdateAgentRequest. All fields optional (omit = no
  * change); an explicit `null` is rejected for non-nullable fields, matching the
  * source `no_explicit_null` validator. `expected_version` is required.
  */
@@ -215,7 +219,7 @@ export const DeleteAgentsResponseSchema = z.strictObject({
 
 export type DeleteAgentsResponse = z.infer<typeof DeleteAgentsResponseSchema>;
 
-/** Session runtime snapshot (agent_config.py:170-218). */
+/** Session runtime snapshot. */
 export const RuntimeConfigSchema = z.strictObject({
   agent_id: z.string(),
   name: rawString(1, 100),

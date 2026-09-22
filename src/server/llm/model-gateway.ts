@@ -1,32 +1,28 @@
-// LM Studio gateway — 1:1 with `llm/model_gateway.py`.
-//
+// LM Studio gateway
 // Everything the model can report is mapped onto a MODEL_* error code so the
 // API layer never has to know about HTTP status codes from the model server.
 // The mapping is the contract: a timeout is MODEL_TIMEOUT, a connection refusal
-// is MODEL_SERVICE_UNAVAILABLE, an unknown/missing model is MODEL_NOT_LOADED,
+// is MODEL_SERVICE_UNAVAILABLE, an unknown/missing model is MODEL_NOT_LOADED
 // and anything else is MODEL_ERROR.
-//
-// One addition on top of the source mapping: LM Studio can require an API token
+// One addition on top of the base mapping: LM Studio can require an API token
 // (`tokenMode: "required"`). A 401/403 means the service IS reachable and
 // rejected the call, so it stays MODEL_SERVICE_UNAVAILABLE with an auth-specific
 // message instead of being folded into "the service is down" — or, on the
-// capacity probe, into MODEL_CAPACITY_UNAVAILABLE. The inherited 66-code
+// capacity probe, into MODEL_CAPACITY_UNAVAILABLE. The 66-code
 // taxonomy is deliberately not extended (tests pin its size).
-//
 // The token itself is configurable (`LM_STUDIO_API_KEY`), because requiring a
 // token is a legitimate LM Studio setting and the previous hard-coded
-// `Bearer lm-studio` made that configuration unusable. Every call carries it —
+// `Bearer lm-studio` made that configuration unusable. Every call carries it
 // including the `/api/v1/models` capacity probe, which used to be sent with no
 // Authorization header at all and therefore failed the moment a token was
 // required, even after the chat path had been given the right one.
-//
-// Two source behaviours worth calling out:
-//   1. `capacity_from_catalog` reads the capacity of the LOADED INSTANCE, never
-//      the model's theoretical maximum, and refuses to guess when several
-//      instances match (MODEL_CAPACITY_AMBIGUOUS) instead of taking min/max.
-//   2. `stream_chat` treats an unterminated stream as an error
-//      (MODEL_STREAM_INTERRUPTED) and a `length` finish as MODEL_OUTPUT_LIMIT —
-//      a truncated answer must never be saved as a successful completion.
+// Two behaviours worth calling out:
+// 1. `capacity_from_catalog` reads the capacity of the LOADED INSTANCE, never
+// the model's theoretical maximum, and refuses to guess when several
+// instances match (MODEL_CAPACITY_AMBIGUOUS) instead of taking min/max.
+// 2. `stream_chat` treats an unterminated stream as an error
+// (MODEL_STREAM_INTERRUPTED) and a `length` finish as MODEL_OUTPUT_LIMIT
+// a truncated answer must never be saved as a successful completion.
 
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -86,7 +82,7 @@ export interface ModelGateway {
     temperature?: number;
     maxTokens?: number;
     /**
-     * `response_schema` (model_gateway.py:154,164-167) — sent as a strict
+     * `response_schema` — sent as a strict
      * `json_schema` response format. The memory worker relies on this to get a
      * machine-checkable consolidation result.
      */
@@ -107,7 +103,7 @@ export interface ModelGateway {
 
 /**
  * LM Studio rejects every unauthenticated call with 401 once its server is set
- * to require an API token. Shares `MODEL_SERVICE_UNAVAILABLE` (the inherited
+ * to require an API token. Shares `MODEL_SERVICE_UNAVAILABLE` (the
  * taxonomy has no auth code) but says what actually happened AND what to do:
  * the token is configurable, so the fix is a setting rather than a guess.
  * Without this branch the capacity probe reported "cannot read the loaded
@@ -129,8 +125,8 @@ function authToken(cfg: LmStudioConfig): string {
 }
 
 /**
- * Translate a transport/HTTP failure into the source's `ModelUnavailableError`.
- * `map_model_error` (model_gateway.py:44-61).
+ * Translate a transport/HTTP failure into a MODEL_* `AppError`.
+ * `map_model_error`.
  */
 export function mapModelError(error: unknown): ModelUnavailableError {
   if (error instanceof ModelUnavailableError) return error;
@@ -161,8 +157,7 @@ export function mapModelError(error: unknown): ModelUnavailableError {
 }
 
 /**
- * model_gateway.py:64-83. Reads the loaded instance's `context_length`.
- *
+ * 83. Reads the loaded instance's `context_length`.
  * Returns null when the model simply is not present in the catalog (unknown
  * capacity — the caller fails closed). Throws MODEL_CAPACITY_AMBIGUOUS when two
  * loaded instances match, because guessing would mean reporting a budget that
@@ -212,7 +207,6 @@ function isLoopbackHost(host: string): boolean {
 /**
  * `fetch` for the local model service that NEVER routes loopback traffic through
  * an HTTP(S) proxy.
- *
  * Why this exists: Bun's global `fetch` honours `HTTP_PROXY` even for
  * 127.0.0.1, so on machines where `HTTP_PROXY` is set (and `NO_PROXY` is unset)
  * every call to the local LM Studio endpoint can be silently sent to the proxy
@@ -220,7 +214,6 @@ function isLoopbackHost(host: string): boolean {
  * `HTTP_PROXY=http://127.0.0.1:1` (dead), `fetch` to 127.0.0.1 fails with
  * "Unable to connect", while `node:http` reaches the stub — and Bun 1.4.2's
  * `fetch` ignores `NO_PROXY`, so that is not a reliable bypass.
- *
  * `node:http`/`node:https` do not consult proxy env vars, so for loopback hosts
  * we talk to the service directly and wrap the response in a standards-shaped
  * `Response` (status, headers, json/text/body). Non-loopback URLs fall back to
@@ -310,11 +303,10 @@ function requestLifetime(timeoutMs: number, caller?: AbortSignal) {
 
 /**
  * Narrow `fetch` so both text and streamed responses share the error mapping.
- *
  * The internal timeout is combined with a caller-provided `signal` so that a
  * cancellation anywhere (timeout OR external abort) terminates the underlying
- * fetch — mirroring Python `asyncio.wait_for(gateway(...), timeout)`, which
- * cancels the inner task on either condition rather than merely rejecting the
+ * fetch. Either condition (timeout or external abort) cancels the underlying
+ * request rather than merely rejecting the
  * awaiting wrapper. Without this, an aborted request would keep consuming the
  * model stream in the background (#95).
  */
@@ -387,7 +379,7 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<stri
     try {
       await reader.cancel();
     } catch {
-      /* retain the original read error */
+      /* retain the underlying read error */
     }
     reader.releaseLock();
   }
@@ -401,7 +393,6 @@ export function createLmStudioClient(
   return {
     config,
 
-    /** model_gateway.py:64-72 */
     async listModels(): Promise<string[]> {
       const body = (await requestJson(config, "/models", { method: "GET" }, timeoutMs)) as {
         data?: Array<{ id?: string }>;
@@ -409,7 +400,7 @@ export function createLmStudioClient(
       return (body.data ?? []).map((m) => String(m.id ?? "")).filter((id) => id !== "");
     },
 
-    /** model_gateway.py:86-104 — native REST catalog, 404 means "no capability". */
+    /** native REST catalog, 404 means "no capability". */
     async loadedContextCapacity(
       model: string,
       options?: { signal?: AbortSignal },
@@ -448,7 +439,6 @@ export function createLmStudioClient(
       }
     },
 
-    /** model_gateway.py:107-120 */
     async probeModelLoaded(): Promise<boolean> {
       await requestJson(
         config,
@@ -467,7 +457,6 @@ export function createLmStudioClient(
       return true;
     },
 
-    /** model_gateway.py:138-177 */
     async complete(options): Promise<string> {
       const body: Record<string, unknown> = {
         model: options.model || config.model,
@@ -510,7 +499,6 @@ export function createLmStudioClient(
       return choice?.message?.content ?? "";
     },
 
-    /** model_gateway.py:180-235 */
     async *streamChat(options): AsyncGenerator<string, void, unknown> {
       const body: Record<string, unknown> = {
         model: options.model || config.model,

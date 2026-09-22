@@ -1,23 +1,20 @@
-// Streaming chat orchestration — 1:1 with `services/direct_service.py`.
-//
-// Model streaming races a heartbeat monitor, as in the source implementation.
+// Streaming chat orchestration
+// Model streaming races a heartbeat monitor, as in the contract.
 // AbortController and an interval preserve these observable guarantees:
-//
-//   1. `start` is emitted before anything else (the route does this).
-//   2. Deltas stream through unchanged; empty deltas are skipped.
-//   3. The final answer is the concatenation of every delta, `.strip()`-ed.
-//      An empty answer is MODEL_EMPTY_RESPONSE (502) — never saved as "".
-//   4. The answer is saved with `save_completed_assistant_message`, which
-//      re-verifies the token AND the lease. A stale writer therefore CANNOT
-//      overwrite a fresher answer; it raises instead.
-//   5. Losing ownership (`lost`) or being cancelled (`cancelled`) aborts the
-//      model stream and re-raises WITHOUT writing a failed message — the
-//      winning writer owns the row.
-//   6. Any other failure records a failed message carrying the partial text,
-//      then re-raises so the route can emit an `error` event.
-//   7. If the CLIENT disconnects, the partial text is recorded as
-//      CLIENT_DISCONNECTED and the generator unwinds.
-//
+// 1. `start` is emitted before anything else (the route does this).
+// 2. Deltas stream through unchanged; empty deltas are skipped.
+// 3. The final answer is the concatenation of every delta, `.strip()`-ed.
+// An empty answer is MODEL_EMPTY_RESPONSE (502) — never saved as "".
+// 4. The answer is saved with `save_completed_assistant_message`, which
+// re-verifies the token AND the lease. A stale writer therefore CANNOT
+// overwrite a fresher answer; it raises instead.
+// 5. Losing ownership (`lost`) or being cancelled (`cancelled`) aborts the
+// model stream and re-raises WITHOUT writing a failed message — the
+// winning writer owns the row.
+// 6. Any other failure records a failed message carrying the partial text
+// then re-raises so the route can emit an `error` event.
+// 7. If the CLIENT disconnects, the partial text is recorded as
+// CLIENT_DISCONNECTED and the generator unwinds.
 // Ordering matters: ownership is checked BEFORE classifying an error, because
 // a cancellation surfaces as a generic abort error from the model client and
 // must not be misreported as MODEL_ERROR.
@@ -45,7 +42,7 @@ import {
 } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { ContextBuilder } from "./context-builder";
-import { pyStrip } from "./text";
+import { unicodeStrip } from "./text";
 
 export type StreamEvent =
   | { kind: "delta"; text: string }
@@ -97,11 +94,10 @@ export class DirectService {
   }
 
   /**
-   * direct_service.py:75-101.
-   *
+   * 101.
    * IMPORTANT: this is an `async` function returning a generator, NOT an
-   * `async function*`. In the source, `open_reply` is a coroutine that AWAITS
-   * `prepare_turn` eagerly and then returns the iterator, and `api/app.py:309`
+   * `async function*`. The reply producer AWAITS
+   * `prepare_turn` eagerly and then returns the iterator, and
    * awaits it BEFORE constructing the StreamingResponse. That ordering is
    * observable: a rejection such as SESSION_NOT_FOUND or
    * IDEMPOTENCY_CONFLICT comes back as a normal JSON HTTP error, not as an SSE
@@ -137,7 +133,6 @@ export class DirectService {
     });
   }
 
-  /** direct_service.py:119-127 */
   private async *replay(
     sessionId: string,
     messageId: string,
@@ -152,7 +147,6 @@ export class DirectService {
     };
   }
 
-  /** direct_service.py:129-260 */
   private async *streamOwnedReply(args: {
     sessionId: string;
     clientRequestId: string;
@@ -181,7 +175,6 @@ export class DirectService {
         }
       } catch {
         // A failed heartbeat is indistinguishable from a lost lease
-        // (direct_service.py:343-344).
         ownership = "lost";
         abort.abort();
       }
@@ -193,9 +186,9 @@ export class DirectService {
     try {
       args.signal?.throwIfAborted();
       // Context preparation runs under the same lease monitor as production
-      // (direct_service.py:262-295). Production always injects ContextBuilder;
+      // Production always injects ContextBuilder;
       // the legacy getChatContext path remains only for explicit low-level
-      // fixtures, matching direct_service.py:273-283.
+      // fixtures.
       const context = this.contextBuilder
         ? await this.contextBuilder.build({
             sessionId,
@@ -231,7 +224,7 @@ export class DirectService {
       if (ownership !== "active") this.raiseOwnership(ownership);
 
       args.signal?.throwIfAborted();
-      const answer = pyStrip(chunks.join(""));
+      const answer = unicodeStrip(chunks.join(""));
       if (!answer) throw new EmptyModelResponseError();
 
       const assistant = saveCompletedAssistantMessage(
@@ -298,8 +291,8 @@ export class DirectService {
     } finally {
       args.signal?.removeEventListener("abort", disconnect);
       clearInterval(monitor);
-      // Cancelling the producer is unconditional in the source: the `finally`
-      // at direct_service.py:246-254 cancels every task it owns, which is what
+      // Cancelling the producer is unconditional in the contract: the `finally`
+      // at cancels every task it owns, which is what
       // stops an in-flight ContextBuilder / model fetch when the consumer stops
       // pulling (`stream.return()`, client disconnect) or an error unwinds the
       // generator. Without this the abort signal above would be a no-op on the
@@ -320,13 +313,12 @@ export class DirectService {
     }
   }
 
-  /** direct_service.py:354-358 */
   private raiseOwnership(status: "lost" | "cancelled"): never {
     if (status === "cancelled") throw new GenerationCancelledError();
     throw new GenerationOwnershipLostError();
   }
 
-  /** direct_service.py:360-379 — best-effort; never masks the original error. */
+  /** best-effort; never masks the underlying error. */
   private async recordFailed(
     sessionId: string,
     clientRequestId: string,

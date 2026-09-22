@@ -133,7 +133,7 @@ export function createKnowledgeReadActions(
                 error: msg("部分指定资料已失效，请移除后保存；不会自动扩大读取范围。"),
               });
           } catch {
-            /* Keep the original save failure and draft if the refresh also fails. */
+            /* Keep the earlier save failure and draft if the refresh also fails. */
           }
         }
         return false;

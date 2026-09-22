@@ -1,4 +1,4 @@
-// Frozen HTTP behavior verified against a CPython reference implementation.
+// Frozen HTTP behavior verified against the contract.
 import { describe, expect, it } from "bun:test";
 import { request as httpRequest } from "node:http";
 import { isDatabaseError } from "../../src/server/api/error-handler";

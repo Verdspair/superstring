@@ -63,7 +63,7 @@ async function envelopeFor(err: unknown) {
   };
 }
 
-describe("error payload shape (api/app.py:105-114)", () => {
+describe("error payload shape", () => {
   it("omits request_id when not provided", () => {
     expect(errorPayload("SESSION_NOT_FOUND", "会话不存在，请先新建会话")).toEqual({
       error: { code: "SESSION_NOT_FOUND", message: "会话不存在，请先新建会话" },
@@ -81,7 +81,7 @@ describe("error payload shape (api/app.py:105-114)", () => {
   });
 });
 
-describe("errors.py class parity — status codes", () => {
+describe(" class parity — status codes", () => {
   const cases: Array<[AppError, number, ErrorCode]> = [
     [new SessionNotFoundError(), 404, "SESSION_NOT_FOUND"],
     [new MessageNotFoundError(), 404, "MESSAGE_NOT_FOUND"],
@@ -107,14 +107,14 @@ describe("errors.py class parity — status codes", () => {
     });
   }
 
-  it("ModelUnavailableError accepts a code/message override (errors.py:99-101)", () => {
+  it("ModelUnavailableError accepts a code/message override", () => {
     const err = new ModelUnavailableError("MODEL_NOT_LOADED", "LM Studio 未加载指定模型");
     expect(err.code).toBe("MODEL_NOT_LOADED");
     expect(err.statusCode).toBe(503);
     expect(err.message).toBe("LM Studio 未加载指定模型");
   });
 
-  it("fail() defaults to 409 (memory_repository.py:19, context_builder.py:62)", () => {
+  it("fail() defaults to 409 ()", () => {
     let caught: unknown;
     try {
       fail("MEMORY_BUSY", "该 Agent 已有整理任务，请等待完成");
@@ -137,7 +137,7 @@ describe("errors.py class parity — status codes", () => {
   });
 });
 
-describe("Hono error handler (api/app.py:117-143)", () => {
+describe("Hono error handler", () => {
   it("returns the AppError envelope with its own status and no request_id", async () => {
     const { status, body } = await envelopeFor(new SessionNotFoundError());
     expect(status).toBe(404);
@@ -161,7 +161,7 @@ describe("Hono error handler (api/app.py:117-143)", () => {
   it("#83-1 maps a raw bun:sqlite error to DATABASE_UNAVAILABLE 503", async () => {
     // The storage layer throws genuine `SQLiteError`s; until R6 these were
     // not recognised as database errors and surfaced as a generic 500. They
-    // must downgrade to 503, matching api/app.py:125-133 (SQLAlchemyError → 503).
+    // must downgrade to 503.
     const { status, body } = await envelopeFor(rawSqliteError());
     expect(status).toBe(503);
     expect(body).toEqual({

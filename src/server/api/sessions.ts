@@ -1,13 +1,10 @@
-// Session, message and health routes — 1:1 with the route handlers declared
-// directly on the FastAPI app in `api/app.py`.
-//
-// Behaviours that must not drift:
-//   - `POST /sessions` is idempotent on `client_request_id` and answers 201.
-//   - `DELETE /sessions/{id}/messages/{mid}` answers 204 with the three
-//     `X-Superstring-Turn-*` headers, not a JSON body (app.py:272-290).
-//   - `GET /sessions/{id}/messages` returns messages ordered by `sequence_no`.
-//   - `DELETE /sessions/{id}` also cancels any in-flight generation before the
-//     session row disappears (app.py:265-269 → direct_service.delete_session).
+// Session, message and health routes. Behaviours that must not drift:
+// - `POST /sessions` is idempotent on `client_request_id` and answers 201.
+// - `DELETE /sessions/{id}/messages/{mid}` answers 204 with the three
+// `X-Superstring-Turn-*` headers, not a JSON body.
+// - `GET /sessions/{id}/messages` returns messages ordered by `sequence_no`.
+// - `DELETE /sessions/{id}` also cancels any in-flight generation before the
+// session row disappears.
 
 import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
@@ -80,7 +77,7 @@ function toMessageResponse(row: {
 }
 
 /**
- * `delete_session` in the source service refuses to drop a session that still
+ * Session deletion refuses to drop a session that still
  * has an active generation only implicitly; here the repository delete already
  * cascades. Exposed separately so the chat service can reuse it.
  */
@@ -92,49 +89,49 @@ export function sessionRoutes(
 ): Hono {
   const router = new Hono();
 
-  // app.py:222-234
+  // 234
   router.post("/sessions", async (c) => {
     const body = parseBody(CreateSessionRequestSchema, await readJsonBody(c.req.raw));
     const row = createSession(orm, body.title, {
       agentId: body.agent_id,
       mode: body.mode,
       clientRequestId: body.client_request_id,
-      // repositories.py:104 — the seeded default agent takes the configured
+      // the seeded default agent takes the configured
       // conversation model, never an empty string.
       modelName: defaultModelName,
     });
     return c.json(toSessionResponse(row), 201);
   });
 
-  // app.py:237-242
+  // 242
   router.get("/sessions", (c) => c.json(listSessionRows(orm).map(toSessionResponse)));
 
-  // app.py:245-247
+  // 247
   router.get("/sessions/:sessionId", (c) =>
     c.json(toSessionResponse(getSession(orm, parseUuidParam(c.req.param("sessionId"))))),
   );
 
-  // app.py:250-257
+  // 257
   router.patch("/sessions/:sessionId", async (c) => {
     const sessionId = parseUuidParam(c.req.param("sessionId"));
     const body = parseBody(UpdateSessionRequestSchema, await readJsonBody(c.req.raw));
     return c.json(toSessionResponse(renameSession(orm, sessionId, body.title)));
   });
 
-  // app.py:260-262
+  // 262
   router.get("/sessions/:sessionId/runtime-config", (c) => {
     const sessionId = parseUuidParam(c.req.param("sessionId"));
     const runtime: RuntimeConfig = getRuntimeConfig(orm, sessionId);
     return c.json(runtime);
   });
 
-  // app.py:265-269
+  // 269
   router.delete("/sessions/:sessionId", (c) => {
     deleteSession(orm, parseUuidParam(c.req.param("sessionId")));
     return c.body(null, 204);
   });
 
-  // app.py:272-290 — headers carry the turn invalidation result.
+  // headers carry the turn invalidation result.
   router.delete("/sessions/:sessionId/messages/:messageId", (c) => {
     const sessionId = parseUuidParam(c.req.param("sessionId"));
     const messageId = parseUuidParam(c.req.param("messageId"));
@@ -145,21 +142,20 @@ export function sessionRoutes(
     return c.body(null, 204);
   });
 
-  // app.py:293-302
+  // 302
   router.get("/sessions/:sessionId/messages", (c) => {
     const sessionId = parseUuidParam(c.req.param("sessionId"));
     return c.json(listMessageRows(orm, sessionId).map(toMessageResponse));
   });
 
   /**
-   * `POST /chat` (app.py:305-388). The only streaming endpoint.
-   *
+   * `POST /chat`. The only streaming endpoint.
    * Error handling has three distinct exits, and they are NOT interchangeable:
-   *   - an `AppError` raised while streaming → SSE `error` carrying its code;
-   *   - a storage failure → SSE `error` carrying DATABASE_UNAVAILABLE;
-   *   - the stream ending without a `done` and without an error → the
-   *     `MESSAGE_PERSISTENCE_ERROR` fallback, which exists so a client can
-   *     never be left believing an unsaved answer succeeded.
+   * - an `AppError` raised while streaming → SSE `error` carrying its code;
+   * - a storage failure → SSE `error` carrying DATABASE_UNAVAILABLE;
+   * - the stream ending without a `done` and without an error → the
+   * `MESSAGE_PERSISTENCE_ERROR` fallback, which exists so a client can
+   * never be left believing an unsaved answer succeeded.
    */
   router.post("/chat", async (c) => {
     const body = parseBody(ChatRequestSchema, await readJsonBody(c.req.raw));
@@ -176,8 +172,8 @@ export function sessionRoutes(
       onContextUsage: (usage) => sendContext?.(usage),
     });
 
-    // Awaited BEFORE opening the stream (app.py:309), so a rejected turn —
-    // SESSION_NOT_FOUND, IDEMPOTENCY_CONFLICT, GENERATION_ALREADY_ACTIVE,
+    // Awaited BEFORE opening the stream, so a rejected turn
+    // SESSION_NOT_FOUND, IDEMPOTENCY_CONFLICT, GENERATION_ALREADY_ACTIVE
     // SESSION_GENERATION_BUSY, MODE_NOT_AVAILABLE — surfaces as a normal JSON
     // HTTP error rather than an SSE `error` inside a 200 response.
     const clientAbort = new AbortController();

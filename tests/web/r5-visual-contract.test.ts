@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const css = readFileSync(resolve(projectRoot, "src/web/styles.css"), "utf8");
-// Explicit module list preserves the original positive/negative source contracts after extraction.
+// Explicit module list preserves the pre-extraction positive/negative source contracts after extraction.
 const app = [
   "App.tsx",
   "ui/icons.tsx",

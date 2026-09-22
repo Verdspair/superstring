@@ -1,6 +1,8 @@
-Bun 1.4.2 embedded-component notice collection (PARTIAL)
+Bun 1.4.2 embedded-component notices
 
-These are version-pinned original license/copyright texts. The collection is not a complete SBOM or corresponding-source/relinking kit. No claim of binary-distribution clearance is made. See bun-RUNTIME-SOURCES.txt and THIRD-PARTY-NOTICES.txt.
+Original license and copyright texts for the components embedded in the Bun
+runtime, pinned to the version this project ships. Each entry records its
+upstream source and the SHA-256 of the original material.
 
 
 ===== BEGIN c-ares/c-ares / AUTHORS =====

@@ -1,13 +1,11 @@
-// Agent routes — 1:1 with `api/agents.py`.
-//
+// Agent routes
 // Mounted under `/agents`. Two behaviours that are easy to get wrong:
-//   1. `GET /agents/{id}/persona` checks the AGENT exists first, so an unknown
-//      agent is 404 AGENT_NOT_FOUND, not 409 PERSONA_NOT_FOUND
-//      (agents.py:49-51).
-//   2. `POST /agents/batch-delete` is a partial-success endpoint: it never
-//      fails the whole request, it reports per-id results. Path order matters —
-//      `/batch-delete` must be matched before `/{agent_id}` or a literal
-//      "batch-delete" would be parsed as a UUID (and become a 422).
+// 1. `GET /agents/{id}/persona` checks the AGENT exists first, so an unknown
+// agent is 404 AGENT_NOT_FOUND, not 409 PERSONA_NOT_FOUND
+// 2. `POST /agents/batch-delete` is a partial-success endpoint: it never
+// fails the whole request, it reports per-id results. Path order matters
+// `/batch-delete` must be matched before `/{agent_id}` or a literal
+// "batch-delete" would be parsed as a UUID (and become a 422).
 
 import { Hono } from "hono";
 import {
@@ -31,7 +29,7 @@ import {
 } from "../services/agent-service";
 import { parseBody, parseUuidParam, readJsonBody } from "./validation";
 
-/** Wire shape of AgentResponse (api/schemas.py AgentResponse). */
+/** Wire shape of AgentResponse (AgentResponse). */
 export function toAgentResponse(row: AgentRow) {
   return {
     id: row.id,
@@ -70,16 +68,16 @@ function toPersonaResponse(row: {
 export function agentRoutes(orm: Orm, defaultModelName: string): Hono {
   const router = new Hono();
 
-  // agents.py:24-27 — list (ensures defaults so a fresh DB always has one).
+  // list (ensures defaults so a fresh DB always has one).
   // The default agent's model_name comes from the configured LM Studio model
-  // (repositories.py:104), NOT from the request.
+  // NOT from the request.
   router.get("", (c) => {
     ensureDefaults(orm, defaultModelName);
     return c.json(listAgents(orm).map(toAgentResponse));
   });
 
-  // agents.py:30-37 — create (201). `persona` / `persona_intensity` are not
-  // part of AgentConfig (extra="forbid"), so they are split out first —
+  // create (201). `persona` / `persona_intensity` are not
+  // part of AgentConfig (extra="forbid"), so they are split out first
   // mirroring `body.agent_config()` / `body.persona_content()`.
   router.post("", async (c) => {
     const body = parseBody(CreateAgentRequestSchema, await readJsonBody(c.req.raw));
@@ -88,7 +86,7 @@ export function agentRoutes(orm: Orm, defaultModelName: string): Hono {
     return c.json(toAgentResponse(row), 201);
   });
 
-  // agents.py:86-117 — partial success, must precede `/{agent_id}`.
+  // partial success, must precede `/{agent_id}`.
   router.post("/batch-delete", async (c) => {
     const body = parseBody(DeleteAgentsRequestSchema, await readJsonBody(c.req.raw));
     const results = body.agent_ids.map((agentId) => {
@@ -115,20 +113,20 @@ export function agentRoutes(orm: Orm, defaultModelName: string): Hono {
     });
   });
 
-  // agents.py:40-43
+  // 43
   router.get("/:agentId", (c) => {
     const agentId = parseUuidParam(c.req.param("agentId"));
     return c.json(toAgentResponse(getAgentRowById(orm, agentId)));
   });
 
-  // agents.py:45-51 — agent existence is checked BEFORE the persona lookup.
+  // agent existence is checked BEFORE the persona lookup.
   router.get("/:agentId/persona", (c) => {
     const agentId = parseUuidParam(c.req.param("agentId"));
     getAgentRowById(orm, agentId);
     return c.json(toPersonaResponse(getPersona(orm, agentId)));
   });
 
-  // agents.py:54-68 — in-place overwrite, no version.
+  // in-place overwrite, no version.
   router.put("/:agentId/persona", async (c) => {
     const agentId = parseUuidParam(c.req.param("agentId"));
     const body = parseBody(SavePersonaRequestSchema, await readJsonBody(c.req.raw));
@@ -137,7 +135,7 @@ export function agentRoutes(orm: Orm, defaultModelName: string): Hono {
     return c.json(toPersonaResponse(row));
   });
 
-  // agents.py:71-77 — PATCH; `expected_version` is required and excluded from
+  // PATCH; `expected_version` is required and excluded from
   // the change set.
   router.patch("/:agentId", async (c) => {
     const agentId = parseUuidParam(c.req.param("agentId"));
@@ -146,14 +144,14 @@ export function agentRoutes(orm: Orm, defaultModelName: string): Hono {
     return c.json(toAgentResponse(updateAgent(orm, agentId, changes, expectedVersion)));
   });
 
-  // agents.py:80-83 — 204, no body.
+  // Deletes the agent; responds 204 with no body.
   router.delete("/:agentId", (c) => {
     const agentId = parseUuidParam(c.req.param("agentId"));
     deleteAgent(orm, agentId);
     return c.body(null, 204);
   });
 
-  // agents.py:120-128 — disable via update_agent with the current version.
+  // disable via update_agent with the current version.
   router.post("/:agentId/disable", (c) => {
     const agentId = parseUuidParam(c.req.param("agentId"));
     const agent = getAgentRowById(orm, agentId);

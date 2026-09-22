@@ -63,7 +63,6 @@ Launch `start.cmd` on Windows, or `./start.sh` on macOS/Linux. Both entry points
 - [UPGRADING.md](UPGRADING.md) — what changed in this version and how to upgrade from the previous one
 - [RELEASE_NOTES.md](RELEASE_NOTES.md) — release notes
 - [LICENSE](LICENSE) — MIT for this project's own code
-- [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) — third-party notices
 
 ---
 
@@ -122,7 +121,6 @@ Windows 启动 `start.cmd`，macOS/Linux 启动 `./start.sh`。两者都会构�
 - [UPGRADING.md](UPGRADING.md)——本版相对上一版的变化与升级步骤
 - [RELEASE_NOTES.md](RELEASE_NOTES.md)——版本说明
 - [LICENSE](LICENSE)——本项目自身代码采用 MIT 协议
-- [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt)——第三方声明
 
 ---
 

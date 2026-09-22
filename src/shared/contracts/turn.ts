@@ -3,7 +3,7 @@ import { GenerationStatusSchema, IsoTimestampSchema, ScopeSchema } from "./commo
 
 /**
  * Turn contracts (API-visible + memory turns listing). Pure `zod` only.
- * Source: api-contract.md §1.4, §7.2; db/models.py:26-37.
+ * See api-contract.md §1.4, §7.2;
  */
 
 /** Observable Turn snapshot (api-contract.md §7.2). */

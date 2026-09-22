@@ -9,7 +9,7 @@ const config = {
   },
 };
 
-describe("Gradio-compatible BrowserState storage", () => {
+describe("BrowserState storage", () => {
   beforeEach(() => localStorage.clear());
 
   it("uses randomized encrypted storage without exposing the UUID", async () => {
@@ -55,7 +55,7 @@ describe("Gradio-compatible BrowserState storage", () => {
     ).toBeNull();
   });
 
-  it("matches the original falsy behavior and does not remove stale storage on null", async () => {
+  it("matches the legacy falsy behavior and does not remove stale storage on null", async () => {
     const storage = createBrowserStateStorage(config);
     await storage.write(config.storage_keys.agent, "agent-id");
     const saved = localStorage.getItem(config.storage_keys.agent);

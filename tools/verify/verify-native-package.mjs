@@ -46,10 +46,13 @@ try {
     );
   }
   const licenses = path.join(install, "app/resources/licenses");
+  const noticeIndex = JSON.parse(
+    fs.readFileSync(path.join(licenses, "notice-sources.json"), "utf8"),
+  );
   check(
-    "package includes project and third-party notices",
+    "package includes project license and every indexed third-party notice",
     fs.existsSync(path.join(licenses, "superstring-MIT.txt")) &&
-      fs.existsSync(path.join(licenses, "THIRD-PARTY-NOTICES.txt")),
+      noticeIndex.components.every((notice) => fs.existsSync(path.join(licenses, notice.file))),
   );
   check(
     "runtime notice preserves separate embedded-component licensing",

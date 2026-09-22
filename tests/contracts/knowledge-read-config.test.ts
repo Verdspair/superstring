@@ -50,7 +50,7 @@ describe("S3 assistant knowledge read contract", () => {
   test.each([0, -1, 1.5, Infinity, "4096"])("rejects invalid override %s", (context_budget) => {
     expect(Config.safeParse({ context_budget }).success).toBe(false);
   });
-  test("all includes future grants without mutating the original list", () => {
+  test("all includes future grants without mutating the input list", () => {
     const config = Config.parse({});
     expect(filterKnowledgeReadScope([...rows, { id: C, name: "C" }], config)).toHaveLength(3);
     expect(filterKnowledgeReadScope(rows, config)).not.toBe(rows);

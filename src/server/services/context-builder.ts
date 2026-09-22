@@ -1,4 +1,4 @@
-// P5 budgeted context builder — 1:1 with `services/context_builder.py`.
+// P5 budgeted context builder
 // UTF-8 bytes are a conservative budget unit; this deliberately does NOT claim
 // to be an exact tokenizer. Model calls never hold a SQLite transaction.
 
@@ -30,7 +30,7 @@ import type { ModelGateway } from "../llm/model-gateway";
 import { contentBlocks, contentCandidate } from "./content-format";
 import { KnowledgeContext } from "./knowledge-context";
 import { requireChat } from "./runtime-config";
-import { pythonCasefold } from "./text";
+import { fullCasefold } from "./text";
 
 const SelectionSchema = z.strictObject({ ids: z.array(z.string()) });
 const SummaryFactSchema = z.strictObject({
@@ -43,7 +43,7 @@ const SummaryResultSchema = z.strictObject({
   facts: z.array(SummaryFactSchema),
 });
 
-/** Frozen Pydantic shapes before per-call enum/maxItems restrictions are added. */
+/** Frozen response shapes before per-call enum/maxItems restrictions are added. */
 export const SELECTION_JSON_SCHEMA = {
   additionalProperties: false,
   properties: {
@@ -129,12 +129,10 @@ export interface ContextBuilderOptions {
   diagnosticSink?: (record: ContextDiagnostic) => void;
 }
 
-/** context_builder.py:53-55. */
 export function estimateTokens(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
-/** context_builder.py:58-59. */
 export function estimateMessages(messages: ContextMessage[]): number {
   return (
     3 +
@@ -162,9 +160,8 @@ export function contextDumps(value: unknown): string {
   return JSON.stringify(sorted(value));
 }
 
-/** context_builder.py:72-77. */
 export function contextKeywords(text: string): string[] {
-  const words = pythonCasefold(text).match(/[a-zA-Z0-9_]{2,}|[\u3400-\u9fff]+/g) ?? [];
+  const words = fullCasefold(text).match(/[a-zA-Z0-9_]{2,}|[\u3400-\u9fff]+/g) ?? [];
   const pieces: string[] = [];
   for (const word of words) {
     const isAscii = [...word].every((char) => (char.codePointAt(0) ?? 128) <= 0x7f);
@@ -258,8 +255,8 @@ export class ContextBuilder {
   }
 
   private diagnostic(record: ContextDiagnostic): void {
-    // Explicit metadata allow-list: never log prompts, content, summary bodies,
-    // exception text or generation tokens (context_builder.py:349-357).
+    // Explicit metadata allow-list: never log prompts, content, summary bodies
+    // exception text or generation tokens.
     console.info("context_build", contextDumps(record));
     try {
       this.diagnosticSink?.({ ...record });
@@ -272,7 +269,7 @@ export class ContextBuilder {
     return capacity - outputTokens - Math.ceil(capacity * cfg.safety_margin_ratio);
   }
 
-  /** context_builder.py:99-136. Probe, validate and freeze actual capacity. */
+  /** Probe, validate and freeze actual capacity. */
   private async capacity(
     state: BuildState,
     model: string,

@@ -2,9 +2,9 @@ import type { Context } from "hono";
 import { AppError, DatabaseUnavailableError, isAppError } from "../errors";
 
 /**
- * HTTP error envelope, matching api/app.py:105-143.
+ * HTTP error envelope.
  * AppError keeps its status; database errors map to 503, validation to 422.
- * HTTP errors omit request_id. SSE errors include it (api/app.py:352-359).
+ * HTTP errors omit request_id. SSE errors include it.
  */
 export interface ErrorEnvelopeBody {
   error: {
@@ -22,7 +22,7 @@ export function errorPayload(code: string, message: string, requestId?: string):
 }
 
 /**
- * Marker for storage-layer failures, the TS analogue of `SQLAlchemyError`.
+ * Marker for storage-layer failures.
  * Only errors of this type are downgraded to `DATABASE_UNAVAILABLE`; unrelated
  * programming errors must not be masked as database outages.
  */
@@ -37,11 +37,10 @@ export function isDatabaseError(value: unknown): value is DatabaseError {
   if (value instanceof DatabaseError || (value as { name?: string })?.name === "DatabaseError") {
     return true;
   }
-  // A raw `bun:sqlite` error is the faithful analogue of a `SQLAlchemyError`.
-  // Python's `handle_database_error` (api/app.py:125-133) maps *every*
-  // SQLAlchemy error to `DATABASE_UNAVAILABLE`, so a raw driver error must also
-  // downgrade to 503 at the boundary instead of leaking as a generic 500
-  // (or being silently mis-handled by marker-only checks).
+  // A raw `bun:sqlite` error belongs to the same class of storage-layer
+  // failures the mapper sends to `DATABASE_UNAVAILABLE`, so a raw driver
+  // error must also downgrade to 503 at the boundary instead of leaking as
+  // a generic 500 (or being silently mis-handled by marker-only checks).
   const candidate = value as { name?: string; code?: unknown } | null;
   return (
     candidate?.name === "SQLiteError" ||
@@ -70,10 +69,10 @@ export function handleError(err: unknown, c: Context): Response {
     return c.json(errorPayload(dbError.code, dbError.message), dbError.statusCode as 503);
   }
 
-  // Anything else mirrors FastAPI's default unhandled-exception response.
-  // Shape is marked `待实测确认` in api-contract.md §9: the source project has
-  // no custom handler for generic exceptions, so the body is Starlette's
-  // default rather than the `error` envelope.
+  // Anything else uses the contract's default unhandled-exception response.
+  // Shape is marked `待实测确认` in api-contract.md §9: the contract has
+  // no custom handler for generic exceptions, so the body uses that default
+  // shape rather than the `error` envelope.
   return c.json({ detail: "Internal Server Error" } satisfies InternalErrorBody, 500);
 }
 

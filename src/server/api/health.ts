@@ -1,16 +1,14 @@
-// `/health` — 1:1 with `api/app.py:195-219`.
-//
+// `/health`
 // The shape is a flat object with a `status` of "ok" | "degraded". `degraded`
 // is produced by ANY of the four sub-checks failing, so the UI can show which
 // dependency is down without parsing prose.
-//
 // Fidelity notes:
-//   - `_check_database` returns ("ok", schema_status) or ("unavailable",
-//     "unavailable") and NEVER throws (app.py:166-183). The schema probe is the
-//     SQLite equivalent of the source's MySQL `check_schema`.
-//   - `_check_model` has a 5-second budget and returns ("unavailable", False) on
-//     any failure (app.py:186-192).
-//   - `instance_id` is generated once per process (app.py:47), not per request.
+// - The database check returns ("ok", schema_status) or ("unavailable",
+// "unavailable") and NEVER throws. The schema probe is the
+// SQLite equivalent of the contract's schema check.
+// - The model check has a 5-second budget and reports "unavailable" on
+// any failure.
+// - `instance_id` is generated once per process, not per request.
 
 import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
@@ -20,15 +18,15 @@ import type { ModelGateway } from "../llm/model-gateway";
 /** Product SemVer; keep identical to package.json and the installer version. */
 export const APP_VERSION = "0.2.1";
 
-/** Generated once per process (app.py:47). */
+/** Generated once per process. */
 export const PROCESS_INSTANCE_ID = crypto.randomUUID();
 
 const DATABASE_CHECK_TIMEOUT_MS = 5_000;
 const MODEL_CHECK_TIMEOUT_MS = 5_000;
 
 /**
- * Equivalent of the source's `check_schema`: confirm the business schema is the
- * version this build understands. In SQLite the marker is `PRAGMA user_version`,
+ * The schema check: confirm the business schema is the
+ * version this build understands. In SQLite the marker is `PRAGMA user_version`
  * written by the schema gate.
  */
 function checkSchema(db: Database): string {

@@ -72,11 +72,10 @@ describe("UUID primitive", () => {
     expect(UUID_REGEX.test(UUID)).toBe(true);
   });
 
-  // The acceptance surface below was measured against the source interpreter
-  // (CPython 3.12.11 + pydantic 2.13.5), whose `UUID` field accepts more
-  // spellings than the canonical one. Each case is a real 200 in the source, so
+  // The acceptance surface below is the frozen contract's, whose `UUID` field
+  // accepts more spellings than the canonical one. Each case is accepted, so
   // a regex-only check would turn it into a 422 here (#92).
-  it("normalises every spelling the source accepts to lowercase 8-4-4-4-12", () => {
+  it("normalises every spelling the contract accepts to lowercase 8-4-4-4-12", () => {
     const upper = UUID.toUpperCase();
     const flat = UUID.replace(/-/g, "").toUpperCase();
     const cases: Array<[string, string]> = [
@@ -93,9 +92,9 @@ describe("UUID primitive", () => {
     }
   });
 
-  it("rejects the spellings the source rejects", () => {
+  it("rejects the spellings the contract rejects", () => {
     // Braces are only valid around the hyphenated body, and the `urn:uuid:`
-    // prefix is case-sensitive — both verified against the source interpreter.
+    // prefix is case-sensitive.
     const flat = UUID.replace(/-/g, "");
     const rejected = [
       `{${flat}}`,
@@ -122,7 +121,6 @@ describe("UUID primitive", () => {
     const id = "123e4567-e89b-12d3-a456-426614174000";
     // Same UUID written three ways must collapse to a single entry, because the
     // source parses each element into uuid.UUID before the de-dup check
-    // (memory_contract.py:52-60).
     expect(
       ok(ConsolidateRequestSchema, {
         request_key: "k",
@@ -158,9 +156,9 @@ describe("ISO timestamp primitive", () => {
 });
 
 describe("strict-object (extra=forbid) behaviour", () => {
-  // `ChatRequest` is the one request model in the source WITHOUT
-  // `extra="forbid"` (api/schemas.py:38-46), so Pydantic's default `ignore`
-  // applies: unknown keys are accepted and dropped, verified against the source
+  // `ChatRequest` is the one request model WITHOUT
+  // an explicit extra-key policy, so the default ignore
+  // applies: unknown keys are accepted and dropped, as the contract does
   // interpreter. Modelling it as strict turned a valid request into a 422 (#93).
   it("ChatRequest ignores unknown extra fields and keeps only declared ones", () => {
     const parsed = ChatRequestSchema.safeParse({
@@ -188,7 +186,7 @@ describe("strict-object (extra=forbid) behaviour", () => {
     ).toBe(false);
   });
 
-  it("CreateSessionRequest still forbids extras (extra=forbid, schemas.py:50)", () => {
+  it("CreateSessionRequest still forbids extras (extra=forbid)", () => {
     expect(ok(CreateSessionRequestSchema, { title: "t", surprise: 1 })).toBe(false);
   });
 
@@ -294,7 +292,7 @@ describe("Agent contracts", () => {
     expect(ok(SavePersonaRequestSchema, { core_identity: "a".repeat(100) })).toBe(true);
   });
 
-  it("PersonaContentSchema counts Python characters, not UTF-16 code units", () => {
+  it("PersonaContentSchema counts contract characters, not UTF-16 code units", () => {
     expect(ok(PersonaContentSchema, { core_identity: "😀".repeat(15992) })).toBe(true);
     expect(ok(PersonaContentSchema, { core_identity: "😀".repeat(15993) })).toBe(false);
   });
@@ -512,7 +510,7 @@ describe("Memory contracts", () => {
   });
 
   it("GovernRequest requires memory_ids (inherited from MemorySelection)", () => {
-    // memory_contract.py:68 — GovernRequest extends MemorySelection, so the id
+    // GovernRequest extends MemorySelection, so the id
     // list is mandatory rather than defaulted.
     expect(ok(GovernRequestSchema, { action: "suppress" })).toBe(false);
     expect(ok(GovernRequestSchema, { memory_ids: [], action: "suppress" })).toBe(false);
@@ -541,7 +539,7 @@ describe("Memory contracts", () => {
     expect(ok(GovernRequestSchema, { memory_ids: [UUID], action: "enable" })).toBe(true);
   });
 
-  it("GovernRequest rejects duplicate memory_ids (memory_contract.py:57-60)", () => {
+  it("GovernRequest rejects duplicate memory_ids", () => {
     expect(ok(GovernRequestSchema, { memory_ids: [UUID, UUID], action: "suppress" })).toBe(false);
   });
 
@@ -568,7 +566,7 @@ describe("Memory contracts", () => {
   });
 
   it("#83-2 config_snapshot is the parsed object (or null), not a JSON string", () => {
-    // Python returns the snapshot dict directly; the TS port persists a JSON
+    // The snapshot is persisted as a JSON string
     // string and the route must `JSON.parse` it back. The contract therefore
     // accepts any object or null — never a raw string in the served payload.
     const objectSnapshot = {
@@ -602,8 +600,8 @@ describe("Memory contracts", () => {
   });
 
   it("MemoryJobView accepts a merge job with session_id null", () => {
-    // api/memories.py:107-110 enqueues merge jobs without a session, and
-    // db/models.py declares MemoryJob.session_id nullable.
+    // 110 enqueues merge jobs without a session, and
+    // declares MemoryJob.session_id nullable.
     expect(
       ok(MemoryJobViewSchema, {
         id: UUID,
@@ -795,7 +793,7 @@ describe("Session scope + message + turn", () => {
 });
 
 describe("Model capacity response (#89)", () => {
-  it("accepts exactly the three shapes api/models.py can emit", () => {
+  it("accepts exactly the three shapes can emit", () => {
     expect(
       ok(ModelCapacityResponseSchema, {
         model: "qwen/qwen3-4b",
@@ -820,7 +818,7 @@ describe("Model capacity response (#89)", () => {
     ).toBe(true);
   });
 
-  it("rejects combinations Python can never emit", () => {
+  it("rejects combinations the contract can never emit", () => {
     // A success branch must not carry an error code...
     expect(
       ok(ModelCapacityResponseSchema, {
@@ -838,8 +836,8 @@ describe("Model capacity response (#89)", () => {
         error_code: "MODEL_NOT_LOADED",
       }),
     ).toBe(false);
-    // ...and the failure branch always carries a real code, never null/absent,
-    // because it is read straight off the raised AppError (api/models.py:18-20).
+    // ..and the failure branch always carries a real code, never null/absent
+    // because it is read straight off the raised AppError.
     expect(
       ok(ModelCapacityResponseSchema, {
         model: "qwen/qwen3-4b",
@@ -913,9 +911,9 @@ describe("Model catalog + error envelope", () => {
 });
 
 // Regression guard: the api-contract.md v1 revision listed only 24 codes and
-// silently dropped every code raised from db/*_repository.py,
-// services/context_builder.py, services/memory_service.py and
-// llm/model_gateway.py. These tests pin the corrected 66-code taxonomy so the
+// silently dropped every code raised from db/*
+// and
+// These tests pin the corrected 66-code taxonomy so the
 // defect cannot silently return.
 describe("Error code taxonomy (66 codes, api-contract §6.2 v2)", () => {
   it("contains exactly 66 distinct codes", () => {
@@ -1013,7 +1011,7 @@ describe("Error code taxonomy (66 codes, api-contract §6.2 v2)", () => {
     }
   });
 
-  it("rejects codes that do not exist in the source project", () => {
+  it("rejects codes that do not exist in the contract", () => {
     for (const bogus of ["UNKNOWN_CODE", "MEMORY_ARCHIVED", "MODEL_BUSY", "memory_busy"]) {
       expect(ok(ErrorCodeSchema, bogus)).toBe(false);
     }
