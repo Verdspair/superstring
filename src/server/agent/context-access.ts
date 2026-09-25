@@ -251,11 +251,17 @@ export function sourceAccess(
         ? "available"
         : "revoked";
     }
-    case "qq_sticker":
+    case "qq_sticker": {
+      const asset = db
+        .query("SELECT enabled,updated_at FROM qq_sticker_assets WHERE id=?")
+        .get(source.id) as { enabled: number; updated_at: string } | null;
       return principal.userId === DEFAULT_USER_ID &&
-        db.query("SELECT 1 FROM qq_sticker_assets WHERE id=?").get(source.id) !== null
+        asset !== null &&
+        asset.enabled === 1 &&
+        asset.updated_at === source.revision
         ? "available"
         : "revoked";
+    }
     default:
       return "revoked";
   }

@@ -69,7 +69,7 @@ BEGIN
 END;
 
 CREATE TRIGGER revoke_agent_context_memory_hide AFTER UPDATE OF status ON memory_entries
-WHEN NEW.status='invalid'
+WHEN NEW.status IN ('invalid','suppressed','replaced')
 BEGIN
   UPDATE context_snapshots SET protected_messages=NULL,status='revoked'
   WHERE status='exact' AND EXISTS (SELECT 1 FROM json_each(source_refs) r WHERE json_extract(r.value,'$.kind')='memory' AND json_extract(r.value,'$.id')=OLD.id);
@@ -126,6 +126,13 @@ END;
 
 CREATE TRIGGER revoke_agent_context_qq_sticker AFTER DELETE ON qq_sticker_assets
 
+BEGIN
+  UPDATE context_snapshots SET protected_messages=NULL,status='revoked'
+  WHERE status='exact' AND EXISTS (SELECT 1 FROM json_each(source_refs) r WHERE json_extract(r.value,'$.kind')='qq_sticker' AND json_extract(r.value,'$.id')=OLD.id);
+END;
+
+CREATE TRIGGER revoke_agent_context_qq_sticker_revision AFTER UPDATE OF updated_at ON qq_sticker_assets
+WHEN NEW.updated_at<>OLD.updated_at
 BEGIN
   UPDATE context_snapshots SET protected_messages=NULL,status='revoked'
   WHERE status='exact' AND EXISTS (SELECT 1 FROM json_each(source_refs) r WHERE json_extract(r.value,'$.kind')='qq_sticker' AND json_extract(r.value,'$.id')=OLD.id);

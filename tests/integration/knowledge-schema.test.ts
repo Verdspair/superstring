@@ -330,10 +330,11 @@ describe("frozen schema defaults and product initialization", () => {
     // v38 = QQ 全局判断模型（`qq_settings.judgement_model_name`）：判断开口兴趣打分用哪一个
     // 模型，NULL＝跟随每间会话绑定助手的对话模型。实测于 v1—v37 逐字节重现原值之后。
     "0b2cfa6295a1f660d2d6f28e42d3327bb95457043cf997a20108531217ab2773",
-    // v39: unified Agent runs, steps, source-bound context snapshots and event journal.
-    "409b5450681e00f01e22d1e2c384e0bede564d2f3b3d2a2f047ae460a4f2f9db",
-    "fcba738a70c034b036b2a21a3fbee4e57cc08980b2fe631cce5365c94ee567e0",
-    "696f58d0123eaa43a5d9e70422e2ccf7fba1a4218302d2eea1aaf3338dd07075",
+    // v39–v41: unified Agent runs, conversation journal and outbound intents; pins re-recorded with
+    // the follow-up review fixes to migration 0039.
+    "ecc3b52a58b85045be4b22df0e2dc0257a142dd5e3953ca7ef70f1701daf46f1",
+    "2e9244362629c8beecfc95e44e7f5420243b08741ea818ba06f391b17cc46f0b",
+    "2383ad5c56b764249f6d3385ada548faeb0aefa084a7713312860f3b36938454",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
