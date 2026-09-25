@@ -67,6 +67,139 @@ export function knowledgeCost(items: ContentItem[]): number {
   );
 }
 
+/**
+ * 授权范围内的候选片段，按关键词打分排序。
+ *
+ * 网页的冻结快照（`begin`）与 QQ 判断调用的一次只读检索（`qqKnowledgeItems`）共用这一段：
+ * 授权 join、768 分段、草稿映射、来源有效性、关键词打分、候选个数与字节上限，规则只有一份。
+ */
+function rankAuthorizedKnowledge(
+  db: Database,
+  agentId: string,
+  question: string,
+  frozen: FrozenKnowledgeRead | undefined,
+): { candidates: Candidate[]; budget: number; revision: number } {
+  // Pre-S3 turns without a knowledge snapshot retain their former initialization path.
+  const settings = frozen
+    ? {
+        auto_enabled: frozen.auto_enabled,
+        context_budget: frozen.budget,
+        revision: frozen.global_revision,
+      }
+    : new KnowledgeRepository(db).settings();
+  const terms = knowledgeTerms(question);
+  const ranked: Array<{ candidate: Candidate; score: number }> = [];
+  const authorized =
+    frozen?.config.enabled === false
+      ? []
+      : db
+          .query<DocumentRow, [string]>(
+            `SELECT d.id, g.token, d.name, d.original_text, d.content_version, d.content_mode FROM knowledge_documents d JOIN knowledge_grants g ON g.document_id = d.id WHERE g.agent_id = ? ORDER BY d.id`,
+          )
+          .all(agentId);
+  const rows = frozen ? filterKnowledgeReadScope(authorized, frozen.config) : authorized;
+  for (const row of rows) {
+    const saved =
+      settings.auto_enabled && row.content_mode === "draft"
+        ? db
+            .query<{ body: string; sources: string }, [string, number]>(
+              "SELECT body, sources FROM knowledge_drafts WHERE document_id = ? AND content_version = ?",
+            )
+            .get(row.id, row.content_version)
+        : null;
+    let mapped: ContentItem["sources"] = [];
+    if (saved) {
+      try {
+        mapped = ContentItemSchema.shape.sources.parse(JSON.parse(saved.sources));
+      } catch {
+        /* Invalid/legacy maps fall back to original. */
+      }
+    }
+    const chunks = knowledgeSegments(row.original_text, 768);
+    for (const chunk of chunks) {
+      if (!chunk.body.trim()) continue;
+      const original: ContentItem = {
+        id: row.id,
+        source_type: "knowledge",
+        content_origin: "original",
+        name: row.name,
+        summary: "",
+        tags: [],
+        body: chunk.body,
+        revision: String(row.content_version),
+        validity: "valid",
+        sources: [
+          {
+            type: "document",
+            document_id: row.id,
+            version: row.content_version,
+            start: chunk.start,
+            end: chunk.end,
+            valid: true,
+          },
+        ],
+      };
+      const source = mapped.find(
+        (source) =>
+          source.type === "document" &&
+          source.valid &&
+          source.document_id === row.id &&
+          source.version === row.content_version &&
+          source.start <= chunk.start &&
+          source.end >= chunk.end &&
+          source.end <= row.original_text.length &&
+          source.draft_start !== undefined &&
+          source.draft_end !== undefined &&
+          source.draft_end <= (saved?.body.length ?? 0),
+      );
+      const derived =
+        source?.type === "document" && saved
+          ? {
+              ...original,
+              content_origin: "derived" as const,
+              body: saved.body.slice(source.draft_start, source.draft_end),
+              sources: [source],
+            }
+          : null;
+      const candidate: Candidate = {
+        id: `${row.id}:${chunk.ordinal}`,
+        document_id: row.id,
+        token: row.token,
+        items: derived ? [derived, original] : [original],
+      };
+      const haystack = `${row.name}\n${chunk.body}`.toLowerCase();
+      const score = terms.reduce((sum, term) => sum + Number(haystack.includes(term)), 0);
+      ranked.push({ candidate, score });
+    }
+  }
+  ranked.sort((a, b) => b.score - a.score || a.candidate.id.localeCompare(b.candidate.id));
+  const candidates: Candidate[] = [];
+  for (const { candidate } of ranked) {
+    if (candidates.length >= 12) break;
+    // Bound the actual source payload, including derived and original bodies.
+    if (utf8Size(JSON.stringify([...candidates, candidate])) <= 8192) candidates.push(candidate);
+  }
+  return { candidates, budget: settings.context_budget, revision: settings.revision };
+}
+
+/**
+ * QQ 判断调用用的一次只读检索（用户 2026-09-25）：**没有 web 轮次**，所以既不冻结快照、也不调
+ * 选择模型——直接按与网页完全相同的那套规则取前几条，交给调用方按预算裁剪。
+ *
+ * 授权口径与网页同源：助手名下已授权的文档才算数（用户在弹窗里选定"按助手授权读"）。失败由调用方
+ * 处理：判断是"要不要开口"，背景资料取不到不该让她永久闭嘴（与 §7.2 的媒体失败不同性质的先例）。
+ */
+export function qqKnowledgeItems(
+  db: Database,
+  agentId: string,
+  question: string,
+  limit = 4,
+): ContentItem[] {
+  return rankAuthorizedKnowledge(db, agentId, question, undefined)
+    .candidates.slice(0, limit)
+    .flatMap((candidate) => candidate.items.slice(0, 1));
+}
+
 /** Freeze bounded, authorized source material before any selection-model call. */
 export class KnowledgeContext {
   constructor(private readonly db: Database) {}
@@ -131,117 +264,18 @@ export class KnowledgeContext {
           fail("KNOWLEDGE_SNAPSHOT_INVALID", "资料读取规则快照无效");
         }
         // Pre-S3 turns without a knowledge snapshot retain their former initialization path.
-        const settings = frozen
-          ? {
-              auto_enabled: frozen.auto_enabled,
-              context_budget: frozen.budget,
-              revision: frozen.global_revision,
-            }
-          : new KnowledgeRepository(this.db).settings();
-        const terms = knowledgeTerms(question);
-        const ranked: Array<{ candidate: Candidate; score: number }> = [];
-        const authorized =
-          frozen?.config.enabled === false
-            ? []
-            : this.db
-                .query<DocumentRow, [string]>(
-                  `SELECT d.id, g.token, d.name, d.original_text, d.content_version, d.content_mode FROM knowledge_documents d JOIN knowledge_grants g ON g.document_id = d.id WHERE g.agent_id = ? ORDER BY d.id`,
-                )
-                .all(agentId);
-        const rows = frozen ? filterKnowledgeReadScope(authorized, frozen.config) : authorized;
-        for (const row of rows) {
-          const saved =
-            settings.auto_enabled && row.content_mode === "draft"
-              ? this.db
-                  .query<{ body: string; sources: string }, [string, number]>(
-                    "SELECT body, sources FROM knowledge_drafts WHERE document_id = ? AND content_version = ?",
-                  )
-                  .get(row.id, row.content_version)
-              : null;
-          let mapped: ContentItem["sources"] = [];
-          if (saved) {
-            try {
-              mapped = ContentItemSchema.shape.sources.parse(JSON.parse(saved.sources));
-            } catch {
-              /* Invalid/legacy maps fall back to original. */
-            }
-          }
-          const chunks = knowledgeSegments(row.original_text, 768);
-          for (const chunk of chunks) {
-            if (!chunk.body.trim()) continue;
-            const original: ContentItem = {
-              id: row.id,
-              source_type: "knowledge",
-              content_origin: "original",
-              name: row.name,
-              summary: "",
-              tags: [],
-              body: chunk.body,
-              revision: String(row.content_version),
-              validity: "valid",
-              sources: [
-                {
-                  type: "document",
-                  document_id: row.id,
-                  version: row.content_version,
-                  start: chunk.start,
-                  end: chunk.end,
-                  valid: true,
-                },
-              ],
-            };
-            const source = mapped.find(
-              (source) =>
-                source.type === "document" &&
-                source.valid &&
-                source.document_id === row.id &&
-                source.version === row.content_version &&
-                source.start <= chunk.start &&
-                source.end >= chunk.end &&
-                source.end <= row.original_text.length &&
-                source.draft_start !== undefined &&
-                source.draft_end !== undefined &&
-                source.draft_end <= (saved?.body.length ?? 0),
-            );
-            const derived =
-              source?.type === "document" && saved
-                ? {
-                    ...original,
-                    content_origin: "derived" as const,
-                    body: saved.body.slice(source.draft_start, source.draft_end),
-                    sources: [source],
-                  }
-                : null;
-            const candidate: Candidate = {
-              id: `${row.id}:${chunk.ordinal}`,
-              document_id: row.id,
-              token: row.token,
-              items: derived ? [derived, original] : [original],
-            };
-            const haystack = `${row.name}\n${chunk.body}`.toLowerCase();
-            const score = terms.reduce((sum, term) => sum + Number(haystack.includes(term)), 0);
-            ranked.push({ candidate, score });
-          }
-        }
-        ranked.sort((a, b) => b.score - a.score || a.candidate.id.localeCompare(b.candidate.id));
-        const candidates: Candidate[] = [];
-        for (const { candidate } of ranked) {
-          if (candidates.length >= 12) break;
-          // Bound the actual source payload, including derived and original bodies.
-          if (utf8Size(JSON.stringify([...candidates, candidate])) <= 8192)
-            candidates.push(candidate);
-        }
+        const ranked = rankAuthorizedKnowledge(this.db, agentId, question, frozen);
         const snapshot: Snapshot = {
           version: 1,
-          budget: settings.context_budget,
-          candidates,
+          budget: ranked.budget,
+          candidates: ranked.candidates,
           final: null,
         };
         this.db
           .query(
             "INSERT INTO turn_knowledge_snapshots (turn_id, agent_id, settings_revision, items, created_at) VALUES (?, ?, ?, ?, ?)",
           )
-          .run(turnId, agentId, settings.revision, JSON.stringify(snapshot), nowIso());
+          .run(turnId, agentId, ranked.revision, JSON.stringify(snapshot), nowIso());
       })
       .immediate();
   }

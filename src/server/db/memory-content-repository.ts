@@ -10,6 +10,11 @@ import {
   memoryMetadata,
 } from "../services/memory-revision";
 import { entries, govern, type MemoryEntryRow, validateEntrySources } from "./memory-repository";
+import {
+  acceptsObservationSources,
+  observationContentSources,
+  observationSources,
+} from "./memory-source-repository";
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -37,8 +42,9 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
     .from(schema.memorySources)
     .where(eq(schema.memorySources.memoryId, row.id))
     .all();
+  const observations = observationSources(orm, [row.id]).get(row.id) ?? [];
   const sourceMessages: MemoryContentResponse["source_messages"] = [];
-  const sources: ContentItem["sources"] = links.map((link) => {
+  const chatSources: ContentItem["sources"] = links.map((link) => {
     const turn = orm.select().from(schema.turns).where(eq(schema.turns.id, link.turnId)).get();
     const session = turn
       ? orm.select().from(schema.sessions).where(eq(schema.sessions.id, turn.sessionId)).get()
@@ -95,6 +101,15 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
       valid,
     };
   });
+  const sources: ContentItem["sources"] = [
+    ...chatSources,
+    ...observationContentSources(observations).map(
+      (source) =>
+        // An observation is intact exactly when its dedup row still matches; the
+        // repository already rejected the memory otherwise.
+        ({ ...source, valid: true }) as ContentItem["sources"][number],
+    ),
+  ];
   return {
     content: {
       id: row.id,
@@ -108,13 +123,18 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
       revision: memoryRevision(row),
       sources,
       validity:
-        sources.length > 0 && sources.every((source) => source.valid) && row.status !== "invalid"
+        sources.length > 0 &&
+        sources.every((source) => source.valid) &&
+        row.status !== "invalid" &&
+        (acceptsObservationSources(row.scopeKey, agentId) || observations.length === 0)
           ? "valid"
           : "invalid",
     },
     status: row.status as MemoryContentResponse["status"],
     corrected: correctionMetadata(row.configSnapshot) !== null,
     retired: isCorrectionRetired(row.configSnapshot),
+    // Original text is only kept for chat turns. An observation stores no message
+    // body, so a QQ memory has no recap here — that is deliberate, not a gap.
     source_messages: sourceMessages,
   };
 }
@@ -190,6 +210,13 @@ export function correctMemory(
     orm
       .insert(schema.memorySources)
       .values({ ...source, memoryId: replacementId })
+      .run();
+  // A corrected QQ memory keeps its observation provenance; dropping it would leave
+  // the replacement with no evidence and therefore unusable.
+  for (const observation of observationSources(orm, [id]).get(id) ?? [])
+    orm
+      .insert(schema.qqMemorySources)
+      .values({ ...observation, memoryId: replacementId })
       .run();
   orm.insert(schema.memoryLinks).values({ parentId: id, childId: replacementId }).run();
   const turnIds = orm

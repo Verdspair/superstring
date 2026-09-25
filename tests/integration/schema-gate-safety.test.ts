@@ -25,7 +25,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ensureBusinessSchema, openBusinessDb } from "../../src/server/db/schema-gate";
+import {
+  BUSINESS_SCHEMA_VERSION,
+  ensureBusinessSchema,
+  openBusinessDb,
+} from "../../src/server/db/schema-gate";
 
 const MIGRATION_PATH = path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql");
 const MIGRATION_SQL = readFileSync(MIGRATION_PATH, "utf8");
@@ -203,7 +207,7 @@ describe("schema-gate: accepts known-good structures", () => {
     const h = openBusinessDb({ path: p });
     try {
       const v = (h.db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-      expect(v).toBe(4);
+      expect(v).toBe(BUSINESS_SCHEMA_VERSION);
     } finally {
       h.close();
     }

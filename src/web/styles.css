@@ -1009,7 +1009,43 @@ button.danger {
 }
 .memory-list-toolbar .field {
   width: 100px;
-  flex: 0 0 100px;
+  flex: 0 1 100px;
+}
+.memory-list-toolbar .field:first-child {
+  width: 220px;
+  flex: 1 1 180px;
+}
+.memory-scope-toolbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.memory-scope-toolbar .field {
+  flex: 1 1 220px;
+  min-width: 0;
+  margin: 0;
+}
+.memory-scope-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.memory-scope-facts p {
+  margin: 6px 0;
+}
+.memory-qq-controls {
+  width: 100%;
+  min-width: 0;
+}
+.memory-qq-controls .memory-toolbar {
+  align-items: end;
+}
+.memory-qq-controls .field {
+  margin: 0;
+  min-width: 0;
 }
 .memory-source-toolbar .field,
 .memory-list-toolbar .field {
@@ -1717,7 +1753,9 @@ button.mode-option[aria-pressed="true"] {
   border: 0;
 }
 
-button.operating-mode-row {
+/* 第三方聊天（QQ）那一行是同样的模式行，但它承载的是开关而不是跳转（所以不是 button），
+   样式必须一致：这类"非按钮的模式行"也吃同一套外观。 */
+.operating-mode-row {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1731,6 +1769,7 @@ button.operating-mode-row {
   text-align: left;
 }
 
+.operating-mode-row:disabled,
 button.operating-mode-row:disabled {
   opacity: 1;
   color: var(--ac-muted);
@@ -2045,6 +2084,28 @@ details > summary::-webkit-details-marker {
   font-weight: 500;
 }
 
+/* 就地标记"这个字段改过"（方案页，用户 2026-09-25 第 7 项）。 */
+.field-label:has(.field-tag) {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.field-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--ac-accent-soft);
+  color: var(--ac-accent);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 只读框要看得出来（用户 2026-09-25 第 8 项）：readonly 的 textarea 不该和可编辑的一模一样。 */
+textarea[readonly] {
+  background: var(--superstring-tone-light);
+  color: var(--ac-muted);
+  cursor: default;
+}
+
 .field small,
 .check small {
   color: var(--ac-muted);
@@ -2052,7 +2113,11 @@ details > summary::-webkit-details-marker {
   line-height: 1.5;
 }
 
-input,
+/* Checkboxes and radios keep their own 13px widget: stretching one to the field width both moves
+   the glyph away from its label and, with the widget's 4px margin, pushes it 4px past a flex
+   column's content box (found by the §15 matrix on the scheme page, 2026-09-25). Ranges stay at
+   100% on purpose — a slider is meant to fill its field. */
+input:not([type="checkbox"]):not([type="radio"]),
 textarea,
 select {
   width: 100%;
@@ -2843,6 +2908,22 @@ button.settings-entry > .icon {
   font-weight: 600;
   margin: 0 0 8px;
 }
+/* 「运行模式 → QQ」里的分段：外层已经是分组（标题带 + 边框），里面不再套第二层分组外框，
+   用小标题分段（与知识库页的 .knowledge-subsection 同一种层级）。 */
+.qq-access-subsection {
+  min-width: 0;
+}
+.qq-access-subsection + .qq-access-subsection {
+  margin-top: 18px;
+}
+.qq-access-subsection > h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.qq-access-subsection > .hint {
+  margin-top: 0;
+}
 .knowledge-subsection {
   min-width: 0;
 }
@@ -2953,6 +3034,7 @@ button.settings-entry > .icon {
 .settings-secondary-nav button.active:hover:not(:disabled),
 .session-list button.active:hover:not(:disabled),
 button.mode-option[aria-pressed="true"],
+.operating-mode-row[aria-pressed="true"],
 button.operating-mode-row[aria-pressed="true"],
 button.theme-option[aria-pressed="true"] {
   background: var(--ac-accent-soft);
@@ -3013,4 +3095,384 @@ input[type="radio"] {
 }
 button > .icon {
   vertical-align: middle;
+}
+
+/* An area caption inside a nav of buttons (§11.1's "QQ额外配置"): a leading rule and a lighter
+   weight keep it from reading as a button that does nothing when clicked. */
+.settings-nav-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 2px 2px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--ac-muted);
+}
+.settings-nav-label::before {
+  content: "";
+  width: 1px;
+  height: 12px;
+  background: var(--superstring-tone-line);
+}
+
+/* QQ sticker library (§9.2). Rows follow the same density as the other management lists:
+   58px minimum, 9px/12px padding, 13px/600 titles and 11px muted details. */
+.qq-sticker-collections,
+.qq-sticker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.qq-sticker-collections > li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 9px 12px;
+  min-height: 48px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+.qq-sticker-collections > li > span {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.qq-sticker-collections > li > small {
+  font-size: 11px;
+  color: var(--ac-muted);
+}
+.qq-sticker-list > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+.qq-sticker-select {
+  flex: none;
+  padding-left: 12px;
+}
+.qq-storage-list {
+  margin: 0;
+}
+.qq-storage-list > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+.qq-storage-list dt {
+  font-size: 13px;
+  font-weight: 600;
+}
+.qq-storage-list dd {
+  margin: 0;
+  color: var(--ac-muted);
+}
+.qq-storage-list small {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.qq-sticker-batch {
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-light);
+}
+.qq-sticker-batch .qq-sticker-actions {
+  margin-top: 6px;
+}
+.qq-sticker-batch button {
+  margin-left: 6px;
+}
+.qq-sticker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  min-height: 58px;
+  border: 0;
+  border-radius: var(--ac-radius);
+  background: transparent;
+  color: var(--ac-text);
+  text-align: left;
+}
+.qq-sticker-thumb {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-light);
+}
+.qq-sticker-row-text {
+  flex: 1;
+  min-width: 0;
+}
+.qq-sticker-preview {
+  max-width: 240px;
+  max-height: 240px;
+  object-fit: contain;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-light);
+}
+.qq-sticker-row.active {
+  background: var(--ac-accent-soft);
+  box-shadow: var(--ac-selection-marker);
+}
+.qq-sticker-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.qq-sticker-row-head strong {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.qq-sticker-row-head small {
+  font-size: 11px;
+  color: var(--ac-muted);
+}
+.qq-sticker-state.enabled {
+  color: var(--ac-accent);
+}
+.qq-sticker-row > small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ac-muted);
+  overflow-wrap: anywhere;
+}
+.qq-sticker-memberships {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.qq-sticker-memberships > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.qq-sticker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+.qq-sticker-impact {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-light);
+}
+.qq-sticker-impact h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.qq-sticker-impact ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ac-muted);
+}
+
+/* QQ chat scheme (P5f): parameter grids keep the same density as the other groups. */
+.qq-scheme-grid {
+  display: grid;
+  /* min(200px, 100%) rather than a bare 200px: the settings content column is only ~188px wide at
+     the 320px viewport, and a fixed floor would push the right-hand fields out of view (found by
+     the §15 matrix, 2026-09-25). Wide layouts keep the same 200px column. */
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.qq-scheme-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.qq-scheme-checks > label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  align-items: center;
+  font-size: 13px;
+}
+.qq-scheme-checks > label > small {
+  grid-column: 2;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.qq-scheme-preview {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  background: var(--superstring-tone-light);
+}
+.qq-scheme-preview h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.qq-scheme-preview ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ac-muted);
+}
+/* 变更预览按分区分组（用户 2026-09-25 第 7 项）。 */
+.qq-scheme-preview h5 {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ac-text);
+}
+/* 判断/回复各一组（用户第 6 项）。 */
+.qq-scheme-part {
+  margin-top: 12px;
+}
+.qq-scheme-part > h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* 删除方案单独一行并与其它操作隔开（用户第 9 项：同类就近、破坏性的单独放）。 */
+.qq-scheme-danger {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+/* 底部保存条（用户第 3 项）：滚到哪都能保存/放弃，并说清还有多少没保存。
+   背景用页面底色（--ac-surface）而不是透明：否则滚动时下面的字段会从条里透出来。 */
+.qq-scheme-savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 14px -4px 0;
+  padding: 10px 4px;
+  border-top: 1px solid var(--superstring-tone-line);
+  background: var(--ac-surface);
+}
+.qq-scheme-savebar .hint {
+  flex: 1 1 auto;
+}
+/* 输入还没改对（数字框失焦校验）：红框 + 小字，值不写进草稿，也不被夹紧。 */
+input[aria-invalid="true"] {
+  border-color: var(--ac-danger);
+}
+.qq-scheme-grid .error {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.link-button {
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: var(--ac-accent);
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* 关闭行为（§12）：选项是「标题 + 一句说明」的两行块，不是单行按钮文字。 */
+.close-behavior-options button.mode-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  white-space: normal;
+}
+.close-behavior-options button.mode-option .hint {
+  margin: 0;
+}
+.settings-inline-action {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* 第三方App接入（§11.1, P5q）：会话一行，绑定控件一行。 */
+.qq-access-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.qq-access-list > li {
+  border: 1px solid var(--ac-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qq-access-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+.qq-access-row .hint {
+  margin: 0;
+}
+.qq-access-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+.qq-access-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--ac-muted);
+}
+.qq-access-controls select {
+  min-width: 140px;
+}
+
+/* 群级模块开关（§0.6/F05）：四个三态下拉，跟随方案是缺省态。 */
+.qq-access-triggers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+}
+.qq-access-triggers label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--ac-muted);
+}
+.qq-access-triggers select {
+  min-width: 96px;
+}
+.settings-inline-action .hint {
+  margin: 0;
 }

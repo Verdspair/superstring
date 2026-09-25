@@ -250,7 +250,6 @@ export const english = {
   助手模型: "Assistant models",
   全局知识库整理模型: "Global knowledge organization model",
   外部模型API: "External model API",
-  第三方App接入: "Third-party apps",
   身份与行为: "Identity and behavior",
   性格与表达: "Personality and expression",
   长期记忆: "Long-term memory",
@@ -499,6 +498,8 @@ export const english = {
     "LM Studio reports no loaded models. You can keep or enter a model ID manually.",
   "模型列表加载失败：{0}；仍可保留或手动输入模型 ID。":
     "Could not load the model list: {0}. You can keep or enter a model ID manually.",
+  "本地模型服务连不上：{0}；已登记的外部模型仍可选择。":
+    "The local model service is unreachable: {0}. Registered external models are still selectable.",
   聊天: "Chat",
   记忆读取: "Memory retrieval",
   摘要: "Summary",
@@ -549,7 +550,7 @@ export const english = {
   "原消息仍保留，并记录摘要来源。":
     "Original messages are retained and summary sources are recorded.",
   压缩触发比例: "Compression threshold ratio",
-  "近期原文目标（轮）": "Recent verbatim turns",
+  压缩时保留原文轮数: "Verbatim turns kept when compressing",
   全目录最大批数: "Maximum catalog batches",
   每批目录条数: "Catalog entries per batch",
   "预算为保守估算；摘要可能损失细节，原文与来源保留。":
@@ -795,4 +796,687 @@ export const english = {
   跟随系统: "System",
   浅色: "Light",
   深色: "Dark",
+  // QQ sticker library (§9.2). The Chinese keys are the source; these are their English forms.
+  QQ额外配置: "Extra QQ configuration",
+  "QQ 全局共享素材：导入、补说明、归类与启用。":
+    "QQ-wide shared stickers: import, describe, file and enable.",
+  "QQ 聊天方案的编辑界面尚未开放；方案与参数接口已就绪。":
+    "Editing QQ chat schemes is not open yet; the scheme and parameter API is in place.",
+  "QQ 存储用量、清理与失败记录尚未开放。":
+    "QQ storage usage, cleanup and failure records are not open yet.",
+  "QQ 全局共享素材，不随当前助手切换。导入只保存应用内副本并默认停用，启用后还要有方案授权它所在的集合，回复才可能选中它。":
+    "QQ-wide shared stickers, independent of the assistant being configured. Importing only saves an in-app copy and leaves it disabled; even after enabling, a scheme must authorize one of its collections before a reply can pick it.",
+  "正在读取素材库…": "Loading the sticker library…",
+  导入素材: "Import a sticker",
+  "原文件不会被移动或修改；导入后默认停用，等待你审核与补充说明。":
+    "Your original file is neither moved nor modified. The import stays disabled until you review it and add a description.",
+  选择图片文件: "Choose an image file",
+  "格式与尺寸按文件内容读取，不看扩展名；同时导入多个文件请逐个进行。":
+    "Format and size are read from the file's content, not its name. Import several files one at a time.",
+  "已导入并选中：": "Imported and selected: ",
+  "这个文件是空的，没有可保存的内容。": "This file is empty; there is nothing to save.",
+  "这个格式不在支持范围内：请选择 PNG、JPEG、GIF、WebP 或 BMP 图片。":
+    "This format is not supported. Choose a PNG, JPEG, GIF, WebP or BMP image.",
+  "这个文件不完整，读不出图片信息。":
+    "This file is incomplete; its image information cannot be read.",
+  "这个文件的尺寸不合法，无法作为素材。":
+    "This file reports an invalid size and cannot be used as a sticker.",
+  集合: "Collections",
+  "方案授权的是集合；一个素材可以同时属于多个集合，不会因此更容易被选中。":
+    "Schemes authorize collections; a sticker may belong to several, which does not make it any more likely to be picked.",
+  "还没有集合。先建一个集合，素材才能被方案授权。":
+    "No collections yet. Create one first — schemes authorize collections, not stickers.",
+  集合名称: "Collection name",
+  保存名称: "Save name",
+  素材: "Stickers",
+  重命名集合: "Rename collection",
+  新建集合: "New collection",
+  "集合是方案授权的单位，名字只是给你自己看的。":
+    "A collection is what a scheme authorizes; its name is for you alone.",
+  "例如：日常、节日": "For example: everyday, holidays",
+  新建: "Create",
+  "启用只是允许选用；是否真的发出去还要看方案授权、节奏与防重复规则。":
+    "Enabling only allows selection; whether a sticker actually goes out still depends on the scheme's authorization, rhythm and repetition rules.",
+  "还没有素材。先导入一张图片。": "No stickers yet. Import an image first.",
+  已启用: "Enabled",
+  已停用: "Disabled",
+  动图: "Animated",
+  静态图: "Still image",
+  不属于任何集合: "In no collection",
+  素材详情: "Sticker details",
+  "保存整理只写内容；开放使用是另一个动作，保存并启用会一并完成。":
+    "Saving the details writes content only; making a sticker usable is a separate action, and Save and enable does both.",
+  名称: "Name",
+  内容说明: "Description",
+  "选图时按说明判断是否贴合语境；说不清就留空，别让模型猜。":
+    "Sticker selection judges fit from the description. If you cannot describe it, leave it empty rather than let the model guess.",
+  标签: "Tags",
+  "用逗号分隔，仅用于你自己的整理。": "Separated by commas; for your own filing only.",
+  "例如：日常、问候": "For example: everyday, greeting",
+  使用说明: "Usage note",
+  "可选的备注，例如适合在什么场合发。": "An optional note, e.g. when this one fits.",
+  所属集合: "Collections",
+  "取消勾选只是移出这个集合，素材与文件都保留。":
+    "Clearing a box only removes that membership; the sticker and its file stay.",
+  "还没有集合可归类。": "No collections to file it into yet.",
+  保存整理: "Save details",
+  保存并启用: "Save and enable",
+  停用素材: "Disable sticker",
+  启用素材: "Enable sticker",
+  放弃改动: "Discard changes",
+  "有未保存的改动；保存前不会影响任何回复。":
+    "There are unsaved changes; until you save, no reply is affected.",
+  启用后的影响范围: "What enabling reaches",
+  "目前没有方案授权它所在的集合，因此不会被任何回复选中。":
+    "No scheme authorizes its collections yet, so no reply will pick it.",
+  授权它的方案: "Schemes that authorize it",
+  群: "Group",
+  私聊: "Private chat",
+  已暂停: "paused",
+  未知集合: "Unknown collection",
+  已保存并启用: "Saved and enabled",
+  已保存素材整理: "Sticker details saved",
+  已启用素材: "Sticker enabled",
+  已停用素材: "Sticker disabled",
+  已新建集合: "Collection created",
+  已保存集合名称: "Collection name saved",
+  // QQ chat schemes (§5.2/§11.2, P5f).
+  "QQ 全局方案，不随当前助手切换；群与私聊绑定方案后在「运行模式 → QQ」改绑。":
+    "QQ-wide schemes, independent of the assistant being configured. Rebinding a group or private chat happens in Quick management → Third-party app access.",
+  "正在读取聊天方案…": "Loading chat schemes…",
+  方案: "Schemes",
+  "方案是 QQ 全局的命名资源，可以跨助手复用；这里改的是它本身，改绑会话在「运行模式 → QQ」。":
+    "A scheme is a QQ-wide named resource that assistants share; this page edits the scheme itself, and conversations are rebound on the third-party app page.",
+  当前方案: "Current scheme",
+  "切换方案会放弃未保存的改动。": "Switching schemes discards unsaved changes.",
+  方案名称: "Scheme name",
+  说明: "Description",
+  "只给你自己看。": "For your own reference.",
+  保存方案: "Save scheme",
+  当前被: "Used by ",
+  个会话使用: " conversation(s)",
+  "正在读取使用情况…": "Loading usage…",
+  将要保存的变更: "Changes about to be saved",
+  "还没有任何方案；新建一个才能配置。": "No schemes yet; create one to configure.",
+  "把当前草稿存成新方案，不动原来那个；改绑在「运行模式 → QQ」。":
+    "Save the current draft as a new scheme without touching the old one; rebinding happens on the third-party app page.",
+  新方案名称: "New scheme name",
+  另存: "Save as",
+  新建方案: "New scheme",
+  "新方案默认所有发言触发都是关闭的。": "A new scheme starts with every speech trigger off.",
+  删除方案: "Delete scheme",
+  "；它仍被": "; it is still used by ",
+  "个会话使用，请先改绑": " conversation(s) — rebind them first",
+  发言与节奏: "Speech and rhythm",
+  "触发开关决定哪几种发言会出现；节奏参数只约束主动发言，被叫到时的直接回应不受限。":
+    "The switches decide which kinds of speech can happen; the rhythm values constrain unprompted speech only — a direct reply is never held back.",
+  直接回应: "Direct replies",
+  "群里明确叫到助手时回应；不受节奏门槛限制。":
+    "Answer when the assistant is called by name in a group; the rhythm gates do not apply.",
+  连续交谈: "Ongoing conversation",
+  "正在进行的交谈里继续接话。": "Keep an exchange going in a conversation already under way.",
+  自主接话: "Chiming in",
+  "无人叫到时，判断值得再开口；受冷却与上限约束。":
+    "Decide whether it is worth speaking without being called; subject to cooldown and the hourly cap.",
+  冷场发起: "Opening a quiet room",
+  "会话安静满一段时间后主动开话题。":
+    "Start a topic after the conversation has been quiet for a while.",
+  "主动开口门槛（0–10 分）": "Unprompted-speech threshold (0–10)",
+  "判断模型给这次开口打兴趣分，达到门槛才说话；调高更安静。":
+    "The judge scores how much this moment wants a reply; she speaks once the score reaches this threshold. Higher is quieter.",
+  // 2026-09-25：打分口径写进提示词后，小字说明也要说清分数是怎么来的（人物 > 上下文 > 记忆 > 资料）。
+  "判断模型给这次开口打兴趣分：跟说话的人本身的关系最重，其次是刚聊的这件事，再其次是记忆与资料；达到门槛才说话，调高更安静。每个人的合并窗口一结束就为他真判一次。":
+    "The judge scores how much this moment wants a reply: the person themselves weighs most, then what was just being discussed, then her memory and reference material. She speaks once the score reaches this threshold; higher is quieter. Each person is judged once, as soon as their own merge window closes.",
+  // 聊天方案页的九项改版（用户 2026-09-25）：数字框失焦校验不夹紧、操作前确认、底部保存条、
+  // 时段用时间选择器、数字字段统一 Field、判断/回复分两组、变更预览可开关并分组、只读框看得
+  // 出来、按钮就近按序。
+  已修改: "changed",
+  网页记忆: "Web memories",
+  "历史分区（{0}）": "Legacy partition ({0})",
+  "QQ · 群 {0} · 账号 {1}": "QQ · Group {0} · Account {1}",
+  "QQ · 私聊 {0} · 账号 {1}": "QQ · Private chat {0} · Account {1}",
+  "整理条数已保存。": "Consolidation threshold saved.",
+  放弃条数修改: "Discard threshold changes",
+  "按本会话的文字消息条数自动整理；立即整理忽略条数门槛，使用当前助手的整理模型与规则。":
+    "Automatically consolidate after the configured number of text messages in this conversation. Consolidate now ignores the threshold and uses this assistant’s consolidation model and rules.",
+  "条数需为正整数，留空表示关闭。":
+    "Enter a positive whole number, or leave blank to disable automatic consolidation.",
+  记忆分区与整理状态: "Memory partitions and consolidation status",
+  "选择分区只筛选管理内容，不修改聊天的读取权限；不同助手的记忆不互通。":
+    "Selecting a partition only filters this management view; it does not change chat access. Memories remain separate between assistants.",
+  记忆分区: "Memory partition",
+  "全部分区（统一管理）": "All partitions (management)",
+  刷新分区与任务状态: "Refresh partitions and tasks",
+  "正在读取记忆分区…": "Loading memory partitions…",
+  "此处能管理全部分区，不代表群聊能读取全部记忆；请选择分区查看读写范围与整理状态。":
+    "Managing all partitions here does not grant group chats access to all memories. Select a partition to see its read/write scope and consolidation status.",
+  "共 {0} 条，其中 {1} 条处于生效状态。": "{0} memories in total; {1} marked active.",
+  "聊天可读取：{0}": "Chat may read: {0}",
+  当前助手的全部记忆分区: "All memory partitions of this assistant",
+  "当前无可用的 QQ 读取授权": "No current QQ read authorization",
+  "新整理结果存入：{0}": "New consolidation results go to: {0}",
+  "读取范围不等于每次全部注入；网页与 QQ 回复使用下方的读取配置，QQ 开口判断使用轻量读取。":
+    "Access does not mean every memory is included each time. Web and QQ replies use the retrieval settings below; QQ speech judgements use lightweight retrieval.",
+  "网页自动整理已开启：每 {0} 个完整轮次触发。":
+    "Web automatic consolidation is on: every {0} complete turns.",
+  "网页自动整理已关闭；仍可手动整理。":
+    "Web automatic consolidation is off; manual consolidation is still available.",
+  "正在读取网页整理策略…": "Loading the web consolidation policy…",
+  调整网页自动整理: "Configure web automatic consolidation",
+  "此分区未绑定当前助手，保留历史记忆供管理，不会自动整理新消息。":
+    "This partition is not bound to the current assistant. Historical memories remain manageable; new messages will not be consolidated automatically.",
+  "最近整理：{0} · {1}": "Latest consolidation: {0} · {1}",
+  "此分区还没有整理记录。": "No consolidation jobs for this partition yet.",
+  "本次整理完成，但没有需要长期保留的新信息。":
+    "Consolidation completed with no new information worth retaining.",
+  "整理失败原因：{0}": "Consolidation failed: {0}",
+  整理成功: "Consolidated",
+  保存未成功: "Save failed",
+  "记忆设置或纠正有未保存修改，是否保存后再继续？":
+    "Memory settings or corrections have unsaved changes. Save before continuing?",
+  排队中: "Queued",
+  整理中: "Consolidating",
+  "选择网页会话的完整轮次，整理结果存入网页分区；QQ 会话请在上方选择对应分区。":
+    "Select complete web turns to consolidate into the web partition. For QQ, select the corresponding partition above.",
+  搜索记忆: "Search memories",
+  记忆状态: "Memory status",
+  全部状态: "All statuses",
+  "整合需要至少两条同一分区的生效记忆；屏蔽和删除可以跨分区选择。":
+    "Merging requires at least two active memories from the same partition. Suppression and deletion may span partitions.",
+  "当前助手的网页与 QQ 回复共用；只从各自获准的分区选取，QQ 开口判断仍采用轻量读取。":
+    "Shared by web and QQ replies for this assistant, within each conversation’s authorized partitions. QQ speech judgements retain lightweight retrieval.",
+  "当前助手的网页与 QQ 共用整理规则和正文长度；触发频率按入口分别设置。":
+    "Web and QQ share this assistant’s consolidation rules and target length; each entry point has its own trigger frequency.",
+  "这里设置网页会话的触发频率；QQ 每个群或私聊的条数在上方记忆分区内设置。":
+    "Set the web trigger frequency here. Configure each QQ group or private chat in its memory partition above.",
+  前往记忆分区: "Go to memory partitions",
+  "这里只配置近期原文和输出预留；长期记忆的读取与整理规则统一在「记忆 → 长期记忆」管理。":
+    "Only recent messages and output reservations are configured here. Manage long-term retrieval and consolidation under Memory → Long-term memory.",
+  "需要 {0}–{1} 之间的整数": "Needs a whole number between {0} and {1}",
+  "有 {0} 处输入还需要改对，改好才能保存。":
+    "{0} input(s) still need fixing before this can be saved.",
+  "共 {0} 项改动尚未保存。": "{0} change(s) not saved yet.",
+  "当前方案已保存。": "This scheme is saved.",
+  显示变更预览: "Show the change list",
+  隐藏变更预览: "Hide the change list",
+  "正在保存方案…": "Saving the scheme…",
+  "当前方案有未保存的改动，切换会丢掉它们。要继续吗？":
+    "The current scheme has unsaved changes; switching discards them. Continue?",
+  放弃改动并继续: "Discard the changes and continue",
+  "另存会把当前未保存的改动一起存进新方案；原方案保持已保存的样子。":
+    "Save-as copies the unsaved changes into the new scheme; the original keeps its saved state.",
+  继续: "Continue",
+  "新建会打开一个全新的方案；当前未保存的改动会丢失。":
+    "Creating opens a brand-new scheme; unsaved changes are lost.",
+  "删除方案「{0}」；参数会一起删掉，不能撤销。":
+    "Delete the scheme “{0}”? Its settings go with it and this cannot be undone.",
+  "；没有会话在用它。": "; no conversation is using it.",
+  "；改绑在「运行模式 → QQ」。": "; rebind conversations under Operating mode → QQ.",
+  时段开始: "Window starts",
+  时段结束: "Window ends",
+  "按本机时间填写；开始与结束相同＝全天，结束早于开始＝跨过午夜。":
+    "Filled in on this machine’s clock; start = end means all day, and an end earlier than the start crosses midnight.",
+  "按本机时间填写；可跨午夜，例如 22:00–07:00。":
+    "Filled in on this machine’s clock; a window such as 22:00–07:00 may cross midnight.",
+  允许时段开始: "Allowed hours start",
+  允许时段结束: "Allowed hours end",
+  判断: "Judgement",
+  回复: "Reply",
+  发言触发: "Speech triggers",
+  节奏与门槛: "Rhythm and gates",
+  回答方式: "How replies are written",
+  "上下文与记忆（判断）": "Context and memory (judgement)",
+  "上下文与记忆（回复）": "Context and memory (reply)",
+  提示词: "Prompts",
+  按发言人分开回答: "Answer each speaker separately",
+  "不同人发的话分开成各自的任务来跑：每人各自判断一次、各写一条回复，并 @ 到对方；同一个人不分条。关掉就用下面那份默认文案。":
+    "Messages from different people run as separate tasks: each person is judged once and gets one reply that mentions them; one person never gets split into several. Turn this off to use the default reply task text below.",
+  "这一段由上面的开关决定，暂时不能修改；开着＝按发言人分开回（一条消息只回一个人），关掉＝默认文案。":
+    "This text is chosen by the switch above and cannot be edited for now: on = answer each speaker separately (one message answers one person), off = the default text.",
+  "合并窗口（秒）": "Merge window (seconds)",
+  "按人算：每个人自己的最后一条消息过了这么久才算说完，才为他判断一次门槛；0＝每条立即判断。":
+    "Counted per person: each person's own last message must be this old before they are judged against the threshold; 0 judges each message at once.",
+  "发言冷却（秒）": "Speech cooldown (seconds)",
+  "两次主动发言之间的最小间隔；只约束主动发言。":
+    "Minimum gap between two unprompted utterances; unprompted speech only.",
+  每小时上限: "Hourly cap",
+  "滚动一小时内的主动发言条数；只约束主动发言。":
+    "Unprompted utterances in a rolling hour; unprompted speech only.",
+  "冷场安静（分钟）": "Quiet room threshold (minutes)",
+  "最后一条群友消息之后安静这么久才算冷场。":
+    "The conversation counts as quiet only after this long with no member message.",
+  最多重算次数: "Maximum recomputes",
+  "提交前发现关键补充时最多重算几次；0＝不重算。":
+    "How often a key addition may force a rewrite before submitting; 0 never recomputes.",
+  允许时段: "Allowed hours",
+  "默认关闭＝不限；开启后只在这段时间内主动发言。":
+    "Off by default (no limit); when on, unprompted speech happens only inside this window.",
+  "允许时段开始（当天第几分钟）": "Allowed hours start (minutes since midnight)",
+  "允许时段结束（当天第几分钟）": "Allowed hours end (minutes since midnight)",
+  上下文与记忆: "Context and memory",
+  "判断与回复分别取多宽的近期原文；输出预留是给模型回答留的容量，不是原文上限。":
+    "How much recent conversation the judgement and the reply each take; the output reserve is capacity for the model's own answer, not a limit on that conversation.",
+  "判断：最近条数": "Judgement: recent messages",
+  "判断：时间范围（分钟）": "Judgement: time window (minutes)",
+  "判断：预算（估算字节）": "Judgement: budget (estimated bytes)",
+  "回复：最近条数": "Reply: recent messages",
+  "回复：时间范围（分钟）": "Reply: time window (minutes)",
+  "回复：预算（估算字节）": "Reply: budget (estimated bytes)",
+  "判断：输出预留（估算字节）": "Judgement: output reserve (estimated bytes)",
+  "为本次判断回答预留的容量；不是近期原文的上限。":
+    "Capacity reserved for the judgement's own answer; not a limit on the recent messages.",
+  "回复：输出预留（估算字节）": "Reply: output reserve (estimated bytes)",
+  "QQ 记忆按助手与会话隔离，本方案不改变记忆范围；":
+    "QQ memory is isolated per assistant and conversation; a scheme does not change that scope. ",
+  前往长期记忆: "Go to long-term memory",
+  知识库使用: "Knowledge use",
+  "QQ 里读取知识库仍受当前助手的授权约束：方案只能沿用，不能扩大权限。":
+    "Reading knowledge inside QQ still follows the assistant's own authorization: a scheme may narrow it, never widen it.",
+  "资料与授权在「记忆 → 知识库配置」里管理；这里没有独立的开关。":
+    "Documents and grants live in Memory → Knowledge configuration; there is no separate switch here. ",
+  前往知识库配置: "Go to knowledge configuration",
+  媒体与表达: "Media and expression",
+  "表情的选择、防重复与授权集合；媒体理解用哪两个模型在默认模型页选择。":
+    "Sticker selection, repetition and the authorized collections; which models understand media is chosen on the default-model page.",
+  每条回复最多几张表情: "Stickers per reply",
+  "上限，不是配额；模型只要一张就发一张。": "A ceiling, not a quota: asking for one sends one.",
+  "同一素材最短重复间隔（分钟）": "Shortest repeat interval per sticker (minutes)",
+  "硬规则：未到间隔的素材不会被选用；0＝不限。":
+    "Hard rule: a sticker inside the interval is never selected; 0 means no limit.",
+  最近几张尽量避开: "Avoid the last few",
+  "软规则：只影响排序，不禁止；0＝不回避。":
+    "Soft rule: ordering only, never a ban; 0 turns it off.",
+  授权集合: "Authorized collections",
+  "方案授权的是集合；新增并启用的素材进入已授权集合后即可被选用，不必改方案。":
+    "Schemes authorize collections: a newly enabled sticker inside an authorized collection becomes selectable without editing the scheme.",
+  "还没有素材集合；先到表情素材页建一个。":
+    "No sticker collections yet; create one on the sticker page first.",
+  "媒体理解用哪个视觉或转写模型在默认模型页选择。":
+    "Which vision or transcription model reads media is chosen on the default-model page. ",
+  场景与行为: "Scene and behaviour",
+  "助手在 QQ 里怎么说话。": "How the assistant talks in QQ at all.",
+  判断任务: "Judgement task",
+  "决定要不要开口。": "Decide whether to speak.",
+  回复任务: "Reply task",
+  "写那条要发出去的话。": "Write the sentence that would go out.",
+  复核任务: "Review task",
+  "新消息来了，这条回复要不要改。": "New messages arrived; does this reply still stand.",
+  选图任务: "Sticker task",
+  "从候选表情里挑一张；只输出编号。":
+    "Pick one sticker from the candidates; output only its number.",
+  媒体说明任务: "Media note task",
+  "如实说明图片或语音里有什么。": "Describe what the picture or voice actually contains.",
+  提示词索引: "Prompt index",
+  // §9.2's batch operations (P5g).
+  已选择: "Selected: ",
+  个素材: " sticker(s) ",
+  归类集合: "Collection",
+  选择集合: "Choose a collection",
+  加入集合: "Add to collection",
+  移出集合: "Remove from collection",
+  批量标签: "Tag",
+  添加标签: "Add tag",
+  移除标签: "Remove tag",
+  启用所选: "Enable selected",
+  停用所选: "Disable selected",
+  确认停用: "Confirm disable",
+  "停用所选会阻止它们尚未提交的发送；已发出的内容不受影响。":
+    "Disabling the selection stops their unsubmitted sends; what was already sent is untouched.",
+  "启用所选后，回复才可能选中它们；会到达的方案：":
+    "Only after enabling can a reply pick them; schemes they would reach: ",
+  "启用所选后，回复才可能选中它们；目前没有方案授权它们的集合。":
+    "Only after enabling can a reply pick them; no scheme authorizes their collections yet.",
+  // 存储与诊断 (§11.1, P5h). The unit suffixes below translate to nothing in English.
+  存储与诊断: "Storage and diagnostics",
+  聊天方案: "Chat schemes",
+  另存为新方案: "Save as a new scheme",
+  // The 人设 second-level entries' one-line notes: titles were translated, their notes were not
+  // (a 2026-09-25 English pass caught the three QQ ones; the nav renders these through `t()`).
+  "QQ连接、群与私聊列表、绑定助手与方案；连接参数只保存在本机。":
+    "QQ connection, the observed groups and private chats, and the assistant/scheme bindings; the transport token is only ever stored on this machine.",
+  "QQ 全局方案：发言与节奏、上下文与记忆、媒体与表达、六段提示词。":
+    "QQ-wide schemes: speech and rhythm, context and memory, media and expression, and the six editable prompts.",
+  "QQ 保存了什么、保留多久，以及一个只删过期内容的清理入口。":
+    "What the QQ side keeps, how long it keeps it, and the one cleanup entry that removes expired content only.",
+  // P5n the durable waiting state (queued conversations, media awaiting one more attempt).
+  "QQ 侧在等什么": "What the QQ side is waiting for",
+  "这些是真实的待办状态：安静的会话在等开场，收到媒体在等一次理解。":
+    "These are the real pending states: quiet conversations waiting to be opened, and received media waiting to be understood.",
+  排队中的会话: "Conversations in the queue",
+  "其中 {0} 个现在可跑；全局同一时刻只跑一条模型链（当前{1}）":
+    "{0} of them are runnable now; only one model chain runs at a time (currently {1}).",
+  占用中: "busy",
+  空闲: "idle",
+  收到的媒体: "Received media",
+  "已理解 {0} 条；已尝试但还没有描述 {1} 条":
+    "{0} understood; {1} attempted without a description yet.",
+  "媒体读取失败只留下“尝试过、还没有描述”这一条事实与次数；失败原因不单独记录，处理方式与导出字段仍待定。":
+    "A failed media read leaves exactly one fact — attempted, still without a description — plus the attempt count. The reason is not stored separately, and how failures are handled or exported is still open.",
+  "计划里的失败记录（保留天数、脱敏与导出字段）仍未确定，因此这里也只报事实。":
+    "The failure log from the plan (retention, redaction, export fields) is still undecided, so this page reports facts only.",
+  "这里只显示 QQ 侧真实保存的数据；清理只删除已经过期的内容。":
+    "This page shows what the QQ side actually keeps; cleanup removes only what has already expired.",
+  // P5u 原因可追踪: the sweep's stored verdict per conversation, and the reasons it names.
+  冷场扫描的裁决: "The quiet-room sweep's verdicts",
+  "每个绑定会话一行，写的是最近一次扫描的结论：它决定开口，或者被哪一道门槛挡住。":
+    "One line per bound conversation: what the last sweep concluded — it decided to open, or which gate stopped it.",
+  "还没有任何裁决记录：要么还没有绑定会话，要么运行时还没有扫描过一次。":
+    "No verdicts recorded yet: either no conversation is bound, or the runtime has not swept once.",
+  "最近一次扫描：{0}。": "Last sweep: {0}.",
+  "消息正文、发送台账、助手发言正文与成员昵称都跟随同一个 {0} 天窗口，到期只删过期内容。":
+    "Message text, the send ledger, assistant speech text and member nicknames all follow the same {0}-day window, and cleanup removes only what has already expired.",
+  已经决定开口: "Decided to open a topic",
+  "QQ 侧总开关没开，或这条绑定不属于当前账号":
+    "The QQ side is switched off, or this binding belongs to another account",
+  这个会话被暂停了: "This conversation is paused",
+  冷场发起开关关着: "The idle-topic switch is off",
+  还没有群友说过话: "No group member has spoken yet",
+  上次主动开口没有人回应: "The last unprompted opener got no reply",
+  还没到安静时间: "The room has not been quiet long enough yet",
+  离上次发言太近: "Too soon after the last utterance",
+  这一小时已经说得够多: "Already spoke as often as this hour allows",
+  不在允许时段: "Outside the allowed hours",
+  "已经排好一次开场，正在等发送": "An opener is already queued and waiting to be sent",
+  "最近群友消息 {0}": "last partner message {0}",
+  "最快{0}可以再判": "can be reconsidered in {0}",
+  "本轮裁决 {0}": "this verdict {0}",
+  // Ages, shown wherever a verdict or a gate names a moment.
+  "{0} 秒前": "{0} s ago",
+  "{0} 分钟前": "{0} min ago",
+  "{0} 小时前": "{0} h ago",
+  "{0} 天前": "{0} d ago",
+  "不到 1 分钟": "under a minute",
+  "约 {0} 分钟": "about {0} min",
+  "约 {0} 小时": "about {0} h",
+  "共 {0} 个会话，这里显示最近裁决的 {1} 个。":
+    "{0} conversations in total; the {1} most recent verdicts are shown here.",
+  "裁决记录也不参与清理：它每个扫描周期被重写，只保存结论、时间和原因，没有正文。":
+    "Verdicts are not part of this cleanup either: they are rewritten every sweep and hold only a conclusion, a time and a reason — no message text.",
+  "直接回应与连续交谈的裁决没有单独记录：它们每一轮都从存储事实重新判断，不额外落库；这里只有冷场扫描的结论。":
+    "Direct replies and continuations have no separate record: they are re-judged from stored facts on every pass and are not persisted; only the quiet-room sweep's verdicts appear here.",
+  "正在读取存储用量…": "Loading storage usage…",
+  保存了什么: "What is kept",
+  "按表计数；素材副本单独治理。": "Counted per table; sticker copies are governed separately.",
+  群与私聊消息: "Group and private messages",
+  "其中带正文 {0} 条，已过期 {1} 条": "with text: {0}, expired: {1}",
+  "其中带正文 {0} 条": "with text: {0}",
+  "其中部件 {0} 条": "parts: {0}",
+  "其中已过期 {0} 条": "expired: {0}",
+  助手发言: "Assistant speech",
+  发送台账: "Send ledger",
+  成员昵称: "Member nicknames",
+  素材副本: "Sticker copies",
+  "启用 {0} 个，占用 {1}；集合 {2} 个": "{0} enabled, using {1}; collections: {2}",
+  保留与清理: "Retention and cleanup",
+  立即清理过期内容: "Clean up expired content now",
+  "上次清理：正文 {0} · 媒体说明 {1} · 发言 {2} · 台账 {3} · 昵称 {4}":
+    "Last cleanup: text {0} · media notes {1} · speech {2} · ledger {3} · nicknames {4}",
+  "素材与集合不参与这里的清理：素材治理是独立的一块。":
+    "Sticker copies and collections are not part of this cleanup: material governance is its own area.",
+  还没有的东西: "What is not here yet",
+  "如实说明，不用 0 冒充。": "Stated plainly rather than faked with a zero.",
+  "收到的媒体缓存：本版只保存上游引用与模型描述，不落地字节，因此没有缓存体积。":
+    "Received-media cache: this version stores upstream references and model descriptions, not bytes, so there is no cache size to report.",
+  "失败记录：本版尚未记录（计划里的保留天数、脱敏与导出字段还没确定）。":
+    "Failure records: not stored yet (their retention days, redaction and export fields are still undecided).",
+  // Media purposes (§7.1, P5i) and the sticker annotation.
+  图片理解模型: "Image understanding model",
+  "用于理解收到的图片与表情，以及为素材生成说明；未配置＝不能理解。":
+    "Reads received pictures and stickers and drafts sticker descriptions. Unset means it cannot understand them.",
+  "未配置（不能理解图片）": "Not configured (cannot read pictures)",
+  语音转写模型: "Speech transcription model",
+  "用于把语音转成文字；未配置＝不能转写。":
+    "Turns voice messages into text. Unset means it cannot transcribe them.",
+  "未配置（不能转写语音）": "Not configured (cannot transcribe speech)",
+  未配置: "Not configured",
+  "已保存默认：{0}；图片理解：{1}；语音转写：{2}；修订 {3}。":
+    "Saved default: {0}; image understanding: {1}; speech transcription: {2}; revision {3}.",
+  生成说明和标签: "Generate description and tags",
+  "还没有配置图片理解模型：先到默认模型页选一个；未配置＝不能理解图片。":
+    "No image understanding model is configured. Choose one on the default-model page; unset means pictures cannot be read.",
+  "当前加载的模型没有余量完成这次生成，请换一个模型或稍后再试。":
+    "The loaded model has no room for this generation. Load another model or try again later.",
+  "模型没有按要求返回说明和标签，草稿保持为空。":
+    "The model did not return a description and tags in the requested shape; both drafts stay empty.",
+  "这次生成没有成功，草稿保持为空。": "This generation did not succeed; both drafts stay empty.",
+  "模型草稿（未审核）": "Model drafts (not reviewed)",
+  "（没有说明草稿）": "(no description draft)",
+  建议标签: "Suggested tags",
+  "把草稿填入编辑器（还需保存）": "Fill the drafts into the editor (still needs saving)",
+  "已生成说明与标签草稿，审核后再保存": "Drafts generated; review them before saving",
+
+  // Close behaviour in desktop mode (§12, P5l). The remembered answer IS the setting; "ask every
+  // time" is listed as unavailable because its dialog belongs to the desktop host.
+  关闭窗口时: "When the window closes",
+  "记住这个选择，之后关闭窗口时按它执行；随时可以在这里改。":
+    "This answer is remembered and applied the next time the window closes; change it here any time.",
+  "正在读取关闭行为…": "Reading the close behaviour…",
+  保持后台在线: "Stay online in the background",
+  "界面关闭后继续在后台运行，QQ 连接与任务照常；再次打开应用即可回到界面。":
+    "Keeps running after the interface closes, with the QQ connection and its tasks intact. Open the app again to return to the interface.",
+  完全退出: "Quit completely",
+  "关闭界面后应用随之退出；正在运行的模型任务不会等待。":
+    "Quits with the interface. A model task that is still running is not waited for.",
+  每次询问: "Ask every time",
+  "关闭时先弹窗询问；该弹窗随桌面宿主提供，尚未开放。":
+    "Would ask first when the window closes. That dialog ships with the desktop host and is not available yet.",
+  关闭窗口后将保持后台在线: "The app will stay online in the background after the window closes",
+  关闭窗口后将完全退出: "The app will quit completely after the window closes",
+  立即完全退出应用: "Quit the app completely now",
+  "已请求退出；页面会在服务停止后断开。":
+    "Quit requested; this page disconnects once the service stops.",
+  "后台在线时用它退出；桌面宿主托盘就位后会多一个入口。":
+    "Use this to quit while background-online is on. A tray entry arrives with the desktop host.",
+  "没能发出退出请求：当前没有可用的连接，请稍后重试。":
+    "The quit request was not sent: no live connection right now. Try again in a moment.",
+  // 第三方App接入 (§11.1, P5q) the connection surface, the observed conversations and their
+  // bindings, and the third-party master switch that also appears on 运行模式.
+  "这里配置 QQ 机器人侧的连接参数，并给已经说过话的群和私聊绑定助手与方案。":
+    "Configure the QQ bot-side connection here, then bind the groups and private chats that have actually spoken to an assistant and a scheme.",
+  "正在读取接入状态…": "Reading the access state…",
+  连接: "Connection",
+  "地址与令牌只保存在本机；令牌写入后不再回显。":
+    "The address and token are stored on this machine only, and the token is never echoed back after it is saved.",
+  总开关: "Master switch",
+  "关闭后停止连接QQ，也不再新增模型任务；现有本地聊天不受影响。":
+    "Turning this off stops connecting to QQ and stops new model tasks; your local chats are unaffected.",
+  已开启: "On",
+  已关闭: "Off",
+  "；运行模式页也有同一个开关。": " The operating-mode page carries the same switch.",
+  连接状态: "Connection state",
+  "来自运行中的传输，不是从已保存地址推断。":
+    "Reported by the running transport, not inferred from a saved address.",
+  刷新状态: "Refresh state",
+  本进程没有传输运行时: "This process has no transport runtime",
+  未连接: "Not connected",
+  正在连接: "Connecting",
+  正在校验: "Verifying",
+  已连接: "Connected",
+  连接已关闭: "Connection closed",
+  助手账号: "Assistant account",
+  "机器人自己的QQ号；与绑定会话的账号一致才会处理消息。":
+    "The bot's own QQ number. Messages are handled only when the bound conversation's account matches it.",
+  "WebSocket 地址": "WebSocket address",
+  "NapCat 的正向 WebSocket 地址，本机优先，例如 ws://127.0.0.1:3000/。":
+    "NapCat's forward WebSocket address, loopback preferred, for example ws://127.0.0.1:3000/.",
+  访问令牌: "Access token",
+  "写入后不再回显；留空表示不改动已保存的令牌，清空按钮单独提供。":
+    "Never echoed back once saved. Leaving it empty keeps the saved token; clearing it has its own button.",
+  "已保存（留空则不修改）": "Saved (leave empty to keep)",
+  尚未保存: "Not saved yet",
+  已保存令牌: "Token saved",
+  尚未保存令牌: "No token saved yet",
+  保存接入设置: "Save access settings",
+  清除已保存令牌: "Clear the saved token",
+  已保存接入设置: "Access settings saved",
+  群与私聊: "Groups and private chats",
+  "绑定后才会按方案参与判断与发言；没有绑定的群或私聊，消息不会被记录。":
+    "Binding is what makes a conversation take part in judgement and speech; messages in chats that are not bound are not recorded.",
+  "还没有会话：用上面的号码直接绑定一个群或私聊。":
+    "No conversation yet: bind a group or private chat by its number above.",
+  手动绑定: "Bind by number",
+  手动绑定的类型: "Type for the manual binding",
+  号码: "Number",
+  群号或QQ号: "Group or QQ number",
+  手动绑定的助手: "Assistant for the manual binding",
+  手动绑定的方案: "Scheme for the manual binding",
+  绑定这个号码: "Bind this number",
+  还没有观察到消息: "Nothing observed yet",
+  重要的人: "Important people",
+  重要的人模式: "Attention mode",
+  模式: "Mode",
+  不启用: "Off",
+  软优先: "Soft priority",
+  只回应名单内的人: "Only reply to the list",
+  名单: "List",
+  重要的人名单: "Attention list",
+  "QQ号，用逗号或空格分隔": "QQ numbers, separated by commas or spaces",
+  保存名单: "Save list",
+  "软优先只让他们的发言在上下文里更显眼，不改任何门槛；只回应模式下名单外的人照常记录，但不会让它开口。":
+    "Soft priority only makes their messages stand out in the context and changes no threshold; under “only reply to the list”, everyone else is still recorded but never makes it speak.",
+  "{0} 条消息 · 最近 {1}": "{0} messages · last {1}",
+  未绑定: "Not bound",
+  参与中: "Taking part",
+  助手: "Assistant",
+  绑定: "Bind",
+  保存改绑: "Save binding",
+  恢复参与: "Resume",
+  暂停发言: "Pause speech",
+  // 记忆整理 per conversation (2026-09-25): the batch size, the manual action and its verdicts.
+  记忆整理: "Memory organising",
+  攒够: "Every",
+  自动整理条数: "Automatic-organising batch size",
+  "留空＝不自动整理": "Empty = no automatic organising",
+  保存条数: "Save batch size",
+  立即整理: "Organise now",
+  "待整理 {0} 条": "{0} waiting",
+  "攒够这么多条群消息就自动整理一次；留空则不自动整理。立即整理不受条数限制，花一次整理模型调用。":
+    "Once this many group messages have arrived, they are organised automatically; empty means never. “Organise now” ignores the batch size and spends one organising model call.",
+  "已交给整理任务，跑完会出现在记忆列表里。":
+    "Queued for organising; it will appear in the memory list once the job finishes.",
+  "现在没有待整理的群消息。": "Nothing is waiting to be organised right now.",
+  "第三方聊天总开关关着，整理不会花模型调用；先打开开关再试。":
+    "The third-party chat master switch is off, so organising would not spend a model call; turn it on first.",
+  "这个会话已暂停，暂停期间不新增整理任务。":
+    "This conversation is paused, and pausing means no new organising tasks for it.",
+  "这个助手正有一个整理任务在跑，等它完成再试。":
+    "This assistant already has an organising task running; try again once it finishes.",
+  "这个助手已停用，先启用它再整理。": "This assistant is disabled; enable it before organising.",
+  "这个设置仅对网页端会话生效；QQ 里的记忆整理按会话单独设置（攒够多少条自动整理、立即整理）。":
+    "This setting applies to web sessions only; QQ memory is organised per conversation (a batch size, and “organise now”).",
+  已绑定会话: "Conversation bound",
+  已更新绑定: "Binding updated",
+  "还没有方案：先到聊天方案页建一个，才能绑定会话。":
+    "No scheme yet: create one on the chat-scheme page before binding a conversation.",
+  前往聊天方案: "Go to chat schemes",
+  相关配置: "Related settings",
+  "这些是 QQ 全局资源，不随助手切换。":
+    "These are QQ-global resources and do not follow the assistant being configured.",
+  "：发言触发、节奏、上下文、媒体与六段提示词。":
+    ": speech triggers, rhythm, context, media and the six prompts.",
+  表情素材: "Sticker library",
+  "：导入、归类与启用；方案授权集合后才可能被选中。":
+    ": import, organise and enable; a scheme has to authorise the collection before one can be chosen.",
+  "：保存了什么、在等什么、清理与保留窗口。":
+    ": what is kept, what is waiting, cleanup and the retention window.",
+  第三方聊天总启停: "Third-party chat master switch",
+  "第三方聊天（QQ）": "Third-party chat (QQ)",
+  第三方聊天总开关: "Third-party chat master switch",
+  "正在读取…": "Reading…",
+  QQ: "QQ",
+  未开启: "Off",
+  前往运行模式: "Go to operating mode",
+  "当前使用对话聊天模式；第三方聊天（QQ）可在这里开关与配置，任务模式暂未开放。":
+    "Chat mode is in use. Third-party chat (QQ) is switched on and configured here; task mode is not available yet.",
+  "连接、群与私聊绑定、逐会话的发言开关与记忆整理；地址与令牌只保存在本机。":
+    "Connection, group and private-chat bindings, per-conversation speech switches and memory consolidation; the address and token stay on this machine.",
+  "来自运行中的传输，不是从已保存地址推断；总开关在上方「第三方聊天（QQ）」那一行。":
+    "Read from the live transport, not inferred from a saved address; the master switch is on the third-party chat (QQ) row above.",
+  // 一键覆盖（用户 2026-09-25）：把当前助手的四个文本用途模型改成共同默认模型并立即保存。
+  一键覆盖当前助手的模型: "Overwrite the current assistant's models",
+  "先选中一个已有助手（上方助手选择器），才能覆盖它的模型。":
+    "Select an existing assistant (the picker above) before its models can be overwritten.",
+  "把当前助手「{0}」的对话、记忆读取、记忆整理与上下文压缩都改成这个默认模型，并立即保存。":
+    "Set {0}'s conversation, memory-read, memory-organising and context-compression models to this default and save at once.",
+  "将把「{0}」的对话、记忆读取、记忆整理与上下文压缩都设为「{1}」并立即保存；图片理解与语音转写保持不变。":
+    "This sets {0}'s conversation, memory-read, memory-organising and context-compression models to {1} and saves immediately; vision and transcription are left alone.",
+  覆盖并保存: "Overwrite and save",
+  "四个文本用途已经是这个模型，无需覆盖。":
+    "All four text purposes already use this model; nothing to overwrite.",
+  "已把这个默认模型覆盖到当前助手的四个文本用途。":
+    "The current assistant's four text purposes now use this default model.",
+  // 0038: the QQ-global judgement model, shown on 快捷管理 → 默认模型 (user request 2026-09-25).
+  "QQ 判断模型": "QQ judgement model",
+  "QQ 全局：所有群与私聊共用同一个「判断开口兴趣打分」模型，不随当前助手切换。":
+    "QQ-wide: every group and private chat shares one model for the interest score, independent of the assistant being configured.",
+  判断开口兴趣打分模型: "Model for the interest score",
+  "未选择＝跟随每间会话绑定助手的对话模型；改选立即保存，所有群与私聊下一轮判断起生效。":
+    "Unset follows the bound assistant's conversation model; a new choice is saved at once and applies to every group and private chat from its next judgement.",
+  "正在读取 QQ 设置…": "Loading QQ settings…",
+  "读取 QQ 设置失败：{0}": "Could not read the QQ settings: {0}",
+  "重试读取 QQ 设置": "Retry reading QQ settings",
+  "当前判断模型：{0}": "Judging with: {0}",
+  "第三方聊天总开关关着，判断不会运行；这个选择先留着，打开开关后生效。":
+    "The third-party chat master switch is off, so judgement never runs; this choice is kept and takes effect once the switch is on. ",
+  已保存判断模型: "Judgement model saved",
+
+  // Per-conversation module switches (§0.6/F05, P5t) and the media sampling parameters.
+  模块开关: "Module switches",
+  "模块开关的四个下拉：跟随方案时用方案里的开关，开/关只影响这个会话。":
+    'The four drop-downs: "follow the scheme" uses the scheme\'s own switch, while on/off apply to this conversation only.',
+  跟随方案: "Follow the scheme",
+  开: "On",
+  关: "Off",
+  "{0} 的开关": "Switch for {0}",
+  动图抽帧张数: "Animation frames to sample",
+  "动图按这个张数抽样理解，不是完整视频理解；越多越慢。":
+    "An animation is understood from this many sampled frames — not as a full video — and more frames take longer.",
+  抽帧长边像素: "Sampled frame long edge (px)",
+  "抽出的帧按这个长边等比缩小后再交给图片模型。":
+    "Sampled frames are scaled to this long edge before they are sent to the picture model.",
+  // 外部模型API (0032): providers, their write-only keys and the hand-typed context windows.
+  "另有 {0} 个来自外部模型 API。": "{0} more come from an external model API.",
+  "登记 OpenAI 兼容的外部模型服务；每个模型手填上下文窗口，登记后即可在用途里选用。":
+    "Register an OpenAI-compatible model service; type each model's context window, then pick the name wherever a purpose chooses a model.",
+  "在这里登记 OpenAI 兼容的外部模型服务；登记的模型会出现在所有「选择模型」的下拉里。每个模型必须手填上下文窗口——外部服务不报这个数，没填就不会被 QQ 链路调用。":
+    "Register OpenAI-compatible external model services here; their models then appear in every “pick a model” list. Every model needs a hand-typed context window — external services do not report one, and without it the QQ chain will not call that model.",
+  已登记的服务: "Registered services",
+  "密钥只写不读：这里只会显示是否已保存；保存与删除都按修订号比较交换。":
+    "The key is write-only: this page only says whether one is stored; saves and deletes compare-and-swap on the revision.",
+  "还没有登记任何外部服务。": "No external service registered yet.",
+  地址: "Address",
+  密钥: "Key",
+  供应商名称: "Provider name",
+  供应商地址: "Provider base URL",
+  供应商密钥: "Provider key",
+  已保存密钥: "Key saved",
+  尚未保存密钥: "No key saved yet",
+  "{0} 个模型": "{0} models",
+  模型与上下文窗口: "Models and context windows",
+  模型名: "Model name",
+  上下文窗口: "Context window",
+  添加模型: "Add model",
+  清除密钥: "Clear the key",
+  重新检测: "Check again",
+  "（已加载）": " (loaded)",
+  "（未加载）": " (not loaded)",
+  "（外部）": " (external)",
+  "正在检测…": "Checking…",
+  "可连接：{0} 个模型": "Reachable: {0} models",
+  "连不上：{0}": "Unreachable: {0}",
+  "正在测试…": "Testing…",
+  "连接成功：{0}": "Connected: {0}",
+  "连接失败：{0}": "Connection failed: {0}",
+  已保存: "Saved",
+  已清除密钥: "Key cleared",
+  已删除: "Deleted",
+  已登记: "Registered",
+  "填名称、地址，按需要填密钥；保存后模型清单会出现在上面的卡片里。":
+    "Give it a name and an address, and a key if it needs one; after saving, its model list shows up in the card above.",
+  新供应商名称: "New provider name",
+  新供应商地址: "New provider base URL",
+  新供应商密钥: "New provider key",
+  登记这个服务: "Register this service",
+  "登记的模型默认不参与任何用途；到「默认模型」或助手里把某个用途的模型选成它的名字即可。":
+    "A registered model takes part in nothing by default; pick its name for a purpose on 默认模型 or in the assistant.",
 } as const;

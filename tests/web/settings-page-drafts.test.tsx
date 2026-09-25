@@ -428,6 +428,10 @@ describe("页面草稿与白名单保存", () => {
   it("全量读取细节置底、说明清楚且保留独立保存", async () => {
     store.setState({ settingsRoute: "long-memory" });
     const { container } = render(<SettingsWorkspace />);
+    expect(container.querySelector("#settings-catalog-limits")).toBeNull();
+    fireEvent.change(screen.getByRole("combobox", { name: "默认读取强度" }), {
+      target: { value: "full_catalog" },
+    });
     const details = container.querySelector("#settings-catalog-limits");
     const automatic = container.querySelector("#settings-policy");
     if (!details || !automatic) throw new Error("Missing sections");
@@ -677,8 +681,11 @@ describe("页面草稿与白名单保存", () => {
     act(() => store.getState().openSettingsRoute("expression"));
     expect(screen.getByRole("textbox", { name: "沟通风格" })).toBeTruthy();
     await act(async () => store.getState().openSettingsRoute("models"));
-    expect(screen.getAllByRole("combobox")).toHaveLength(7);
-    expect(screen.getAllByRole("link")).toHaveLength(3);
+    // Seven assistant/knowledge choices plus the two media purposes (P5i). The QQ judgement
+    // select (0038) is absent here because this fixture's client has no QQ settings route.
+    expect(screen.getAllByRole("combobox")).toHaveLength(9);
+    // Four model sections now: 共同整理默认值, QQ 判断模型 (0038), 当前助手模型, 知识库整理模型.
+    expect(screen.getAllByRole("link")).toHaveLength(4);
     act(() => store.getState().openSettingsRoute("basic"));
     cleanup();
     render(<AgentSettings />);

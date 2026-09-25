@@ -27,6 +27,8 @@ import {
   updateJobRow,
   validateEntrySources,
 } from "../db/memory-repository";
+import { ownedObservations } from "../db/memory-source-repository";
+import { observationText } from "../db/qq-observation-repository";
 import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
 import { AppError, fail } from "../errors";
@@ -287,8 +289,7 @@ export class MemoryService {
     }
   }
 
-  /** The oldest queued job. */
-  private nextQueuedJobId(): string | null {
+  /** The oldest queued job. */ private nextQueuedJobId(): string | null {
     const row = this.orm
       .select({ id: schema.memoryJobs.id })
       .from(schema.memoryJobs)
@@ -314,9 +315,19 @@ export class MemoryService {
     const loaded = immediate(this.db, () => {
       const job = ownedRunning(this.orm, agentId, jobId, token);
       const config = JSON.parse(job.configSnapshot) as ConsolidationConfig;
+      const snapshot = JSON.parse(job.configSnapshot) as {
+        scope_key?: string;
+        source_event_ids?: string[];
+      };
+      // A job only ever sees the scope it writes into. Without this, a suppressed
+      // memory's body from one group would be handed to the model while organising
+      // another group — a cross-scope content leak, not just a governance detail.
+      const scopeKeys = snapshot.scope_key === undefined ? undefined : [snapshot.scope_key];
       let sources: Array<Record<string, unknown>>;
       if (job.kind === "merge") {
-        const selected = entries(this.orm, agentId, JSON.parse(job.memoryIds) as string[]);
+        const selected = entries(this.orm, agentId, JSON.parse(job.memoryIds) as string[], {
+          scopeKeys,
+        });
         if (selected.some((item) => item.status !== "active")) {
           fail("MEMORY_STATE_CONFLICT", "来源记忆已变化");
         }
@@ -328,6 +339,27 @@ export class MemoryService {
           tags: JSON.parse(entry.tags),
           kinds: JSON.parse(entry.kinds),
         }));
+      } else if ((snapshot.source_event_ids ?? []).length > 0) {
+        // A QQ conversation cites observations instead of turns. Every event must
+        // still have its text: a body that reached the retention window is not a
+        // source we can summarise, and using only the survivors would attach
+        // provenance for messages that were never read. Fail closed instead.
+        const eventIds = snapshot.source_event_ids ?? [];
+        const scopeKey = snapshot.scope_key;
+        if (scopeKey === undefined) {
+          fail("MEMORY_SOURCE_INVALID", "观察任务缺少记忆范围，不能整理");
+        }
+        const bodies = observationText(this.orm, eventIds);
+        const missing = eventIds.filter((id) => !bodies.has(id));
+        if (missing.length > 0) {
+          fail("MEMORY_SOURCE_INVALID", "观察正文已过期或缺失，不能整理为长期记忆");
+        }
+        sources = ownedObservations(this.orm, agentId, eventIds, scopeKey).map((event) => ({
+          message_id: event.messageId,
+          speaker_kind: event.speakerKind,
+          occurred_at_seconds: event.occurredAtSeconds,
+          body: bodies.get(event.eventKey) ?? "",
+        }));
       } else {
         sources = sourceData(
           turns(this.orm, agentId, job.sessionId, {
@@ -335,7 +367,7 @@ export class MemoryService {
           }),
         );
       }
-      const blocked = entries(this.orm, agentId).flatMap((entry) => [
+      const blocked = entries(this.orm, agentId, undefined, { scopeKeys }).flatMap((entry) => [
         ...(entry.status === "suppressed" || entry.status === "replaced"
           ? [{ name: entry.name, summary: entry.summary, body: entry.body }]
           : []),

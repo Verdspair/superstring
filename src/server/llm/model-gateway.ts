@@ -27,8 +27,16 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
-
 import { ModelUnavailableError } from "../errors";
+import {
+  nextStructuredOutputLevel,
+  rememberStructuredOutput,
+  type StructuredOutputLevel,
+  structuredOutputKey,
+  structuredOutputRejected,
+  structuredOutputStart,
+  toStrictRequiredSchema,
+} from "./strict-json-schema";
 
 export interface ChatMessage {
   role: string;
@@ -135,15 +143,21 @@ export function mapModelError(error: unknown): ModelUnavailableError {
   const message = error instanceof Error ? error.message : String(error);
   const status = (error as { status?: number } | null)?.status;
   const code = (error as { code?: unknown } | null)?.code;
+  // 把 HTTP 状态带到映射后的错误上（2026-09-25）：结构化输出的自动降级要能分辨"服务端拒绝了这个
+  // 请求的形状"（4xx）与"服务坏了/超时"（5xx、网络），只靠文案猜是不行的。
+  const withStatus = (mapped: ModelUnavailableError): ModelUnavailableError => {
+    if (typeof status === "number") (mapped as { status?: number }).status = status;
+    return mapped;
+  };
 
   if (name === "TimeoutError" || name === "AbortError" || /timed? ?out/i.test(message)) {
-    return new ModelUnavailableError("MODEL_TIMEOUT", "本地模型响应超时，请重试");
+    return withStatus(new ModelUnavailableError("MODEL_TIMEOUT", "本地模型响应超时，请重试"));
   }
   if (isAuthRejection(status ?? 0)) {
-    return new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", MODEL_AUTH_MESSAGE);
+    return withStatus(new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", MODEL_AUTH_MESSAGE));
   }
   if (status === 404 || ((status === 400 || status === 404) && /model/i.test(message))) {
-    return new ModelUnavailableError("MODEL_NOT_LOADED", "LM Studio 未加载指定模型");
+    return withStatus(new ModelUnavailableError("MODEL_NOT_LOADED", "LM Studio 未加载指定模型"));
   }
   if (
     name === "ConnectionRefused" ||
@@ -151,9 +165,11 @@ export function mapModelError(error: unknown): ModelUnavailableError {
       ["ECONNREFUSED", "ECONNRESET", "EPIPE", "ENOTFOUND", "EAI_AGAIN"].includes(code)) ||
     /ECONNREFUSED|fetch failed|Unable to connect|socket hang up/i.test(message)
   ) {
-    return new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", "本地模型服务暂不可用");
+    return withStatus(
+      new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", "本地模型服务暂不可用"),
+    );
   }
-  return new ModelUnavailableError("MODEL_ERROR", "本地模型调用失败");
+  return withStatus(new ModelUnavailableError("MODEL_ERROR", "本地模型调用失败"));
 }
 
 /**
@@ -385,10 +401,93 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<stri
   }
 }
 
+/**
+ * 外部模型 API 的解析钩子（0032）：给一个模型名，回答它由哪个外部 provider 服务，或 `null`
+ * 表示"不是外部模型，仍走本地服务"。注入而不是在这里读库，是为了让网关保持"一个 HTTP 客户端"
+ * 的本分——路由是配置的事，不是传输的事。
+ */
+export interface ExternalModelRoute {
+  readonly baseUrl: string;
+  readonly apiKey: string | null;
+  readonly contextWindow: number;
+}
+
+/**
+ * 配置的模型不可用时的替补规则（用户 2026-09-25）。
+ *
+ * "Unavailable" is decided by this side, not guessed: a model declared on the 外部模型API page is
+ * used as configured (its provider is the user's own choice and its window is on record), while a
+ * local name has to appear in what the local service reports as loaded. When it does not, the call
+ * uses an available local model instead — and because this is decided per call, the configured model
+ * is used again the moment it is loaded, with no sticky switch to undo.
+ *
+ * `null` means "nothing to fall back to": with no model loaded at all, the configured name travels
+ * unchanged so the existing capacity error can explain the situation instead of a silent invention.
+ */
+export function pickUsableModel(input: {
+  configured: string;
+  availableLocal: readonly string[];
+  isExternal: boolean;
+}): string {
+  if (input.isExternal) return input.configured;
+  if (input.availableLocal.includes(input.configured)) return input.configured;
+  return input.availableLocal[0] ?? input.configured;
+}
+
 export function createLmStudioClient(
   config: LmStudioConfig = resolveLmStudioConfig(),
+  options: { readonly externalModel?: (model: string) => ExternalModelRoute | null } = {},
 ): ModelGateway {
   const timeoutMs = config.timeoutSeconds * 1000;
+  /** The config a given model name talks to: the local one, or a declared external provider. */
+  const routeFor = (model: string | undefined): LmStudioConfig => {
+    const external = model === undefined ? null : (options.externalModel?.(model) ?? null);
+    if (external === null) return config;
+    return {
+      ...config,
+      baseUrl: external.baseUrl.replace(/\/+$/, ""),
+      apiKey: external.apiKey ?? config.apiKey,
+    };
+  };
+
+  const routeOfExternal = (model: string): ExternalModelRoute | null =>
+    options.externalModel?.(model) ?? null;
+
+  // The loaded list is cached for a few seconds so one reply's several calls (judge → draft → pick)
+  // do not each ask the local service again; short enough that loading a model in LM Studio shows up
+  // on the next turn rather than after a restart.
+  let loadedCache: { at: number; models: readonly string[] } | null = null;
+  const loadedLocalModels = async (): Promise<readonly string[]> => {
+    const now = Date.now();
+    if (loadedCache !== null && now - loadedCache.at < 5_000) return loadedCache.models;
+    try {
+      const body = (await requestJson(config, "/models", { method: "GET" }, timeoutMs)) as {
+        data?: Array<{ id?: string }>;
+      };
+      const models = (body.data ?? []).map((m) => String(m.id ?? "")).filter((id) => id !== "");
+      loadedCache = { at: now, models };
+      return models;
+    } catch {
+      // A catalogue we cannot read is not a licence to invent a substitute; the configured name
+      // travels and the call's own error explains what happened.
+      return [];
+    }
+  };
+  /**
+   * The model a call actually uses: the configured one whenever it can be used, an available local
+   * model when it cannot (see `pickUsableModel`), and — when the substitute is in play — a warning
+   * line in the server console, because a silent swap would make "it answered differently today"
+   * impossible to explain.
+   */
+  const effectiveModel = async (model: string): Promise<string> => {
+    const chosen = pickUsableModel({
+      configured: model,
+      availableLocal: await loadedLocalModels(),
+      isExternal: routeOfExternal(model) !== null,
+    });
+    if (chosen !== model) console.warn(`[model-fallback] ${model} 不可用，本次改用 ${chosen}`);
+    return chosen;
+  };
 
   return {
     config,
@@ -405,6 +504,19 @@ export function createLmStudioClient(
       model: string,
       options?: { signal?: AbortSignal },
     ): Promise<number | null> {
+      // A declared external model carries the window the user typed. That is the whole point of
+      // asking for it: external services have no catalogue to read, and an unknown capacity would
+      // make the QQ chain refuse to call at all.
+      const external = routeOfExternal(model);
+      if (external !== null) return external.contextWindow;
+      // A configured local model that is not loaded is judged by its substitute's capacity, because
+      // that substitute is the model the call will actually reach (see `effectiveModel`).
+      const used = await effectiveModel(model);
+      if (used !== model) {
+        const substitute = routeOfExternal(used);
+        if (substitute !== null) return substitute.contextWindow;
+      }
+      const capacityModel = used;
       const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
       const lifetime = requestLifetime(10_000, options?.signal);
       try {
@@ -422,7 +534,7 @@ export function createLmStudioClient(
         // Read transport bytes before the parse-only fallback, as httpx.get does.
         const text = await response.text();
         try {
-          return capacityFromCatalog(JSON.parse(text), model);
+          return capacityFromCatalog(JSON.parse(text), capacityModel);
         } catch (error) {
           if (error instanceof ModelUnavailableError) throw error;
           return null;
@@ -458,34 +570,79 @@ export function createLmStudioClient(
     },
 
     async complete(options): Promise<string> {
-      const body: Record<string, unknown> = {
-        model: options.model || config.model,
-        messages: options.messages,
-        temperature: options.temperature ?? 0.7,
-      };
-      if (options.maxTokens !== undefined) {
-        if (options.maxTokens < 1) throw new Error("max_tokens must be positive");
-        body.max_tokens = options.maxTokens;
-      }
-      if (options.responseSchema !== undefined) {
-        body.response_format = {
-          type: "json_schema",
-          json_schema: {
-            name: "superstring_result",
-            strict: true,
-            schema: options.responseSchema,
-          },
+      const requested = options.model || config.model;
+      const used = await effectiveModel(requested);
+      const isExternal = routeOfExternal(used) !== null;
+      const cfg = routeFor(used);
+      const key = structuredOutputKey(cfg.baseUrl, used);
+      const send = async (level: StructuredOutputLevel) => {
+        const body: Record<string, unknown> = {
+          model: used,
+          messages: options.messages,
+          temperature: options.temperature ?? 0.7,
         };
-      }
-      const payload = (await requestJson(
-        config,
-        "/chat/completions",
-        { method: "POST", body: JSON.stringify(body) },
-        timeoutMs,
-        options.signal,
-      )) as {
-        choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>;
+        if (options.maxTokens !== undefined) {
+          if (options.maxTokens < 1) throw new Error("max_tokens must be positive");
+          body.max_tokens = options.maxTokens;
+        }
+        if (options.responseSchema !== undefined && level !== "none") {
+          const schema =
+            level === "json_object"
+              ? undefined
+              : isExternal
+                ? // External providers that proxy OpenAI's strict mode reject an optional property
+                  // (`required` must list every key). The rewritten schema says the same thing in
+                  // their dialect — required, but nullable — and this side reads both the same way.
+                  // The local service keeps the frozen schema byte for byte.
+                  toStrictRequiredSchema(options.responseSchema)
+                : options.responseSchema;
+          body.response_format =
+            level === "json_object"
+              ? { type: "json_object" }
+              : {
+                  type: "json_schema",
+                  json_schema: { name: "superstring_result", strict: true, schema },
+                };
+        }
+        return (await requestJson(
+          cfg,
+          "/chat/completions",
+          { method: "POST", body: JSON.stringify(body) },
+          timeoutMs,
+          options.signal,
+        )) as {
+          choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>;
+        };
       };
+      // 结构化输出的自动降级（用户 2026-09-25）：有些服务不接受严格的 json_schema 而直接 4xx，
+      // 而我们的解析本来就是严格的，所以退回 json_object、再退回不带该字段都是安全的。
+      let payload: Awaited<ReturnType<typeof send>>;
+      if (options.responseSchema === undefined) {
+        payload = await send("none");
+      } else {
+        let level = structuredOutputStart(key);
+        for (;;) {
+          try {
+            payload = await send(level);
+            if (level !== "json_schema") {
+              rememberStructuredOutput(key, level);
+              console.warn(
+                `[model-structured] ${used} 本进程起改用 ${level}（该服务不接受更严的档）`,
+              );
+            }
+            break;
+          } catch (error) {
+            if (!structuredOutputRejected(error)) throw error;
+            const next = nextStructuredOutputLevel(level);
+            if (next === null) throw error;
+            const status = (error as { status?: number }).status;
+            console.warn(
+              `[model-structured] ${used} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}`,
+            );
+            level = next;
+          }
+        }
+      }
       const choice = payload.choices?.[0];
       if (choice?.finish_reason === "length") {
         throw new ModelUnavailableError(
@@ -500,8 +657,10 @@ export function createLmStudioClient(
     },
 
     async *streamChat(options): AsyncGenerator<string, void, unknown> {
+      const used = await effectiveModel(options.model || config.model);
+      const cfg = routeFor(used);
       const body: Record<string, unknown> = {
-        model: options.model || config.model,
+        model: used,
         messages: options.messages,
         temperature: options.temperature ?? 0.7,
         stream: true,
@@ -514,7 +673,7 @@ export function createLmStudioClient(
       const lifetime = requestLifetime(timeoutMs, options.signal);
       try {
         const response = await request(
-          config,
+          cfg,
           "/chat/completions",
           { method: "POST", body: JSON.stringify(body) },
           lifetime,

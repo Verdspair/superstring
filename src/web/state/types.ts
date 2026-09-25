@@ -17,7 +17,14 @@ import type { SuperstringApi, streamChat } from "../api";
 import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
 
+import type { DesktopSettingsState } from "../features/general/desktop-state";
 import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/types";
+import type {
+  QqAccessState,
+  QqSchemeState,
+  QqStickerState,
+  QqStorageState,
+} from "../features/qq/types";
 
 export type Page = "chat" | "settings";
 export type SettingsView =
@@ -69,7 +76,13 @@ export interface AgentDraft {
   persona_intensity: number;
 }
 
-export interface SuperstringState extends KnowledgeState {
+export interface SuperstringState
+  extends KnowledgeState,
+    QqStickerState,
+    QqSchemeState,
+    QqStorageState,
+    QqAccessState,
+    DesktopSettingsState {
   pageEditor: import("../features/agents/page-drafts").PageEditor | null;
   settingsSaving: boolean;
   patchPagePolicy: (patch: Partial<Omit<PolicyView, "version">>) => void;
@@ -85,6 +98,12 @@ export interface SuperstringState extends KnowledgeState {
     page: import("../features/agents/page-drafts").EditablePage,
   ) => Promise<boolean>;
   saveAllSettingsPages: () => Promise<boolean>;
+  /**
+   * 一键覆盖（用户 2026-09-25）：把当前助手的四个**文本用途**模型（对话、记忆读取、记忆整理、
+   * 上下文压缩）都设成给定的默认模型，并立即保存该助手的模型页。图片理解与语音转写不是助手的字段，
+   * 因此不在覆盖范围内。没有可覆盖的助手（正在新建）时返回 false。
+   */
+  applyDefaultModelToAgent: (modelName: string) => Promise<boolean>;
   discardSettingsPages: () => void;
   status: LoadStatus;
   error: string | null;
@@ -125,7 +144,17 @@ export interface SuperstringState extends KnowledgeState {
   saveMemoryCorrection: () => Promise<boolean>;
   discardMemoryCorrection: () => void;
   memoryJobs: MemoryJobView[];
+  qqMemoryBatchDrafts: Record<string, { value: string; revision: number }>;
+  qqMemoryBatchSaving: boolean;
+  patchQqMemoryBatchDraft: (id: string, draft: { value: string; revision: number } | null) => void;
+  saveQqMemoryBatchDrafts: (ids?: string[]) => Promise<boolean>;
+  discardQqMemoryBatchDrafts: () => void;
+  /** 所有可选项（本地已加载 + 外部声明的），选择器用它渲染选项。 */
   modelNames: string[];
+  /** 本地服务**当前已加载**的模型（用户 2026-09-25：可用性要看得见）。 */
+  loadedModelNames: string[];
+  /** 外部模型 API 里声明过的模型名。 */
+  externalModelNames: string[];
   modelStatus: string;
   recalculateCapacityPreview: () => void;
   capacityPreview: string;
@@ -193,8 +222,12 @@ export interface SuperstringState extends KnowledgeState {
     probeModels?: readonly [string, string | null, string | null],
   ) => Promise<void>;
   reloadMemory: () => Promise<void>;
+  loadMemoryPolicy: () => Promise<void>;
   loadMemoryTurns: (sessionId: string, limit: number) => Promise<void>;
-  loadMemoryPage: (page: number) => Promise<void>;
+  loadMemoryPage: (
+    page: number,
+    filters?: { scope_key?: string; search?: string; status?: string },
+  ) => Promise<void>;
   loadMemoryEntryDetail: (memoryId: string) => Promise<void>;
   manualConsolidate: (sessionId: string, turnIds: string[]) => Promise<void>;
   updatePolicy: (patch: Omit<PolicyView, "version">) => Promise<void>;

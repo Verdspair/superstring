@@ -66,6 +66,14 @@
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     },
     {
+      "file": "omggif-LICENSE.txt",
+      "source": "npm:omggif@1.0.10/README (the package's MIT permission notice; neither the published package nor the upstream repository carries a separate LICENSE file)",
+      "component": "omggif",
+      "version": "1.0.10",
+      "license": "MIT",
+      "sha256": "2d9a40568bc52521afe3908e4807291ea4f2c7a09b9be751aded3f798ce7c86a"
+    },
+    {
       "file": "bun-UPSTREAM-LICENSE.txt",
       "source": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/LICENSE.md",
       "component": "bun",

@@ -1,10 +1,12 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
 import { localTime } from "../../ui/local-time";
 import { MemoryCorrection } from "./MemoryCorrection";
+import { MemoryScopePanel } from "./MemoryScopePanel";
+import { memoryScopeLabel } from "./scope-label";
 
 export function SectionB() {
   const t = useI18n();
@@ -18,7 +20,8 @@ export function SectionB() {
     (s) => s.memoryCorrectionDirty || s.memoryCorrectionSaving,
   );
   const loadMemoryTurns = useSuperstringStore((s) => s.loadMemoryTurns);
-  const loadMemoryPage = useSuperstringStore((s) => s.loadMemoryPage);
+  const loadMemoryPageRaw = useSuperstringStore((s) => s.loadMemoryPage);
+  const loadMemory = useSuperstringStore((s) => s.loadMemoryPolicy);
   const loadMemoryEntryDetail = useSuperstringStore((s) => s.loadMemoryEntryDetail);
   const manualConsolidate = useSuperstringStore((s) => s.manualConsolidate);
   const editorAgentId = useSuperstringStore((s) => s.editorAgentId);
@@ -35,6 +38,15 @@ export function SectionB() {
   const [busy, setBusy] = useState(false);
   const [turnsLoaded, setTurnsLoaded] = useState(false);
   const [listLoaded, setListLoaded] = useState(false);
+  const [scopeKey, setScopeKey] = useState("");
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("");
+  const loadMemoryPage = (next: number) =>
+    loadMemoryPageRaw(next, {
+      scope_key: scopeKey || undefined,
+      search: search || undefined,
+      status: status || undefined,
+    });
   const resetManagement = useSuperstringStore((s) => s.resetMemoryManagement);
   const mounted = useRef(false);
   useLayoutEffect(() => {
@@ -44,11 +56,32 @@ export function SectionB() {
       if (useSuperstringStore.getState().editorAgentId === editorAgentId) resetManagement();
     };
   }, [resetManagement, editorAgentId]);
+  useEffect(() => {
+    if (editorAgentId === "__new__") return;
+    // 整理策略与来源会话由这一跳加载（面板要显示网页自动整理的真实状态），随后再读列表——但只在
+    // 列表本来就空的时候读：这一跳是为了"打开就看得到"，不是为了把已经在看的内容换掉。
+    void loadMemory().then(() => {
+      if (!mounted.current) return;
+      if (useSuperstringStore.getState().memoryEntries.length > 0) {
+        setListLoaded(true);
+        return;
+      }
+      void loadMemoryPageRaw(1).then(() => {
+        if (mounted.current) setListLoaded(true);
+      });
+    });
+  }, [editorAgentId, loadMemory, loadMemoryPageRaw]);
   const locked = busy || correctionDirty || editorAgentId === "__new__";
   const validTurns = selectedTurns.filter((id) => memoryTurns.some((turn) => turn.id === id));
   const validMemories = selectedMemories.filter((id) =>
     memoryEntries.some((entry) => entry.id === id),
   );
+  const selectedEntries = memoryEntries.filter((entry) => validMemories.includes(entry.id));
+  const mergeable =
+    selectedEntries.length >= 2 &&
+    selectedEntries.every(
+      (entry) => entry.status === "active" && entry.scope_key === selectedEntries[0].scope_key,
+    );
   const run = async (action: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
@@ -103,106 +136,162 @@ export function SectionB() {
         <h3>{t("记忆管理")}</h3>
         <p className="hint">{t("仅管理当前助手记忆；操作不提交配置草稿。")}</p>
       </div>
-      <SettingsGroup title="手动整理" note="选择会话的完整轮次，整理为长期记忆。">
-        <div className="memory-source-toolbar">
-          <Field label={t("来源会话")}>
-            <select
-              aria-label={t("来源会话")}
-              value={sourceSessionId}
-              disabled={busy}
+      <MemoryScopePanel
+        value={scopeKey}
+        disabled={locked}
+        onChange={(key) => {
+          resetMemorySelection();
+          clearMemoryTurns();
+          setSelectedTurns([]);
+          setTurnsLoaded(false);
+          setScopeKey(key);
+          setPage(1);
+          setSearch("");
+          setStatus("");
+          void run(async () => {
+            await loadMemoryPageRaw(1, { scope_key: key || undefined });
+            setListLoaded(true);
+          });
+        }}
+      />
+      {(!scopeKey || scopeKey === editorAgentId) && (
+        <SettingsGroup
+          title="手动整理"
+          note="选择网页会话的完整轮次，整理结果存入网页分区；QQ 会话请在上方选择对应分区。"
+        >
+          <div className="memory-source-toolbar">
+            <Field label={t("来源会话")}>
+              <select
+                aria-label={t("来源会话")}
+                value={sourceSessionId}
+                disabled={busy}
+                onChange={(event) => {
+                  setSourceSessionId(event.target.value);
+                  setSelectedTurns([]);
+                  setTurnsLoaded(false);
+                  clearMemoryTurns();
+                }}
+              >
+                <option value="">{t("请选择会话")}</option>
+                {memorySessions.map((session) => (
+                  <option key={session.id} value={session.id}>
+                    {session.title}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={t("最近轮数")}>
+              <input
+                type="number"
+                aria-label={t("最近轮数")}
+                min={1}
+                max={200}
+                value={recentTurnCount}
+                disabled={busy}
+                onChange={(e) => setRecentTurnCount(Number(e.target.value))}
+              />
+            </Field>
+            <button
+              type="button"
+              disabled={
+                busy ||
+                !sourceSessionId ||
+                !Number.isInteger(recentTurnCount) ||
+                recentTurnCount < 1 ||
+                recentTurnCount > 200
+              }
+              onClick={() =>
+                void run(async () => {
+                  setSelectedTurns([]);
+                  await loadMemoryTurns(sourceSessionId, recentTurnCount);
+                  setTurnsLoaded(true);
+                })
+              }
+            >
+              {t("加载可选择的轮次")}
+            </button>
+          </div>
+          <p className="hint">{t("可重复整理完整轮次，不改变自动整理进度。")}</p>
+          {memoryTurns.length > 0 ? (
+            <fieldset className="choice-group memory-selection-list">
+              <legend>{t("选择完整轮次")}</legend>
+              {memoryTurns.map((turn) => (
+                <label key={turn.id} className="memory-row">
+                  <input
+                    type="checkbox"
+                    disabled={busy}
+                    checked={validTurns.includes(turn.id)}
+                    onChange={(e) =>
+                      setSelectedTurns((items) =>
+                        e.target.checked
+                          ? [...items, turn.id]
+                          : items.filter((id) => id !== turn.id),
+                      )
+                    }
+                  />
+                  <span>
+                    <strong>
+                      {t("轮次 {0}", turn.sequence_no)} ·{" "}
+                      {turn.processed ? t("已整理") : t("未整理")}
+                    </strong>
+                    <small>{t("用户：{0}", turn.user.slice(0, 100))}</small>
+                    <small>{t("回复：{0}", turn.assistant.slice(0, 100))}</small>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          ) : (
+            <p className="memory-empty">
+              {turnsLoaded
+                ? t("当前范围没有可整理的完整轮次。")
+                : t("选择来源会话、加载轮次，再勾选要整理的内容。")}
+            </p>
+          )}
+          <div className="memory-toolbar">
+            <span className="hint">{t("已选 {0} 轮", validTurns.length)}</span>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !sourceSessionId || validTurns.length === 0}
+              onClick={() => void run(() => manualConsolidate(sourceSessionId, validTurns))}
+            >
+              {t("开始整理所选轮次")}
+            </button>
+          </div>
+        </SettingsGroup>
+      )}
+      <SettingsGroup title="记忆列表与治理" note="查看、整合、屏蔽、启用或永久删除已生成的记忆。">
+        <div className="memory-list-toolbar">
+          <Field label="搜索记忆">
+            <input
+              aria-label={t("搜索记忆")}
+              value={search}
+              maxLength={200}
+              disabled={locked}
               onChange={(event) => {
-                setSourceSessionId(event.target.value);
-                setSelectedTurns([]);
-                setTurnsLoaded(false);
-                clearMemoryTurns();
+                setSearch(event.target.value);
+                setPage(1);
+              }}
+            />
+          </Field>
+          <Field label="记忆状态">
+            <select
+              aria-label={t("记忆状态")}
+              value={status}
+              disabled={locked}
+              onChange={(event) => {
+                setStatus(event.target.value);
+                setPage(1);
               }}
             >
-              <option value="">{t("请选择会话")}</option>
-              {memorySessions.map((session) => (
-                <option key={session.id} value={session.id}>
-                  {session.title}
+              <option value="">{t("全部状态")}</option>
+              {Object.entries(statusLabel).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label={t("最近轮数")}>
-            <input
-              type="number"
-              aria-label={t("最近轮数")}
-              min={1}
-              max={200}
-              value={recentTurnCount}
-              disabled={busy}
-              onChange={(e) => setRecentTurnCount(Number(e.target.value))}
-            />
-          </Field>
-          <button
-            type="button"
-            disabled={
-              busy ||
-              !sourceSessionId ||
-              !Number.isInteger(recentTurnCount) ||
-              recentTurnCount < 1 ||
-              recentTurnCount > 200
-            }
-            onClick={() =>
-              void run(async () => {
-                setSelectedTurns([]);
-                await loadMemoryTurns(sourceSessionId, recentTurnCount);
-                setTurnsLoaded(true);
-              })
-            }
-          >
-            {t("加载可选择的轮次")}
-          </button>
-        </div>
-        <p className="hint">{t("可重复整理完整轮次，不改变自动整理进度。")}</p>
-        {memoryTurns.length > 0 ? (
-          <fieldset className="choice-group memory-selection-list">
-            <legend>{t("选择完整轮次")}</legend>
-            {memoryTurns.map((turn) => (
-              <label key={turn.id} className="memory-row">
-                <input
-                  type="checkbox"
-                  disabled={busy}
-                  checked={validTurns.includes(turn.id)}
-                  onChange={(e) =>
-                    setSelectedTurns((items) =>
-                      e.target.checked ? [...items, turn.id] : items.filter((id) => id !== turn.id),
-                    )
-                  }
-                />
-                <span>
-                  <strong>
-                    {t("轮次 {0}", turn.sequence_no)} · {turn.processed ? t("已整理") : t("未整理")}
-                  </strong>
-                  <small>{t("用户：{0}", turn.user.slice(0, 100))}</small>
-                  <small>{t("回复：{0}", turn.assistant.slice(0, 100))}</small>
-                </span>
-              </label>
-            ))}
-          </fieldset>
-        ) : (
-          <p className="memory-empty">
-            {turnsLoaded
-              ? t("当前范围没有可整理的完整轮次。")
-              : t("选择来源会话、加载轮次，再勾选要整理的内容。")}
-          </p>
-        )}
-        <div className="memory-toolbar">
-          <span className="hint">{t("已选 {0} 轮", validTurns.length)}</span>
-          <button
-            type="button"
-            className="primary"
-            disabled={busy || !sourceSessionId || validTurns.length === 0}
-            onClick={() => void run(() => manualConsolidate(sourceSessionId, validTurns))}
-          >
-            {t("开始整理所选轮次")}
-          </button>
-        </div>
-      </SettingsGroup>
-      <SettingsGroup title="记忆列表与治理" note="查看、整合、屏蔽、启用或永久删除已生成的记忆。">
-        <div className="memory-list-toolbar">
           <Field label={t("列表页码")}>
             <input
               type="number"
@@ -256,6 +345,8 @@ export function SectionB() {
                     <strong>{entry.name}</strong>
                     <small>
                       {statusLabel[entry.status]} · {localTime(entry.created_at)}
+                      {" · "}
+                      {memoryScopeLabel(entry.scope_key, editorAgentId, t)}
                     </small>
                     <small>{entry.summary}</small>
                   </span>
@@ -279,11 +370,7 @@ export function SectionB() {
         <div className="memory-batch-actions">
           <span className="hint">{t("已选 {0} 条", validMemories.length)}</span>
           <div className="memory-toolbar">
-            <button
-              type="button"
-              disabled={locked || validMemories.length === 0}
-              onClick={() => void merge()}
-            >
+            <button type="button" disabled={locked || !mergeable} onClick={() => void merge()}>
               {t("整合为新记忆")}
             </button>
             <button
@@ -302,6 +389,11 @@ export function SectionB() {
             </button>
           </div>
         </div>
+        {validMemories.length > 0 && !mergeable && (
+          <p className="hint">
+            {t("整合需要至少两条同一分区的生效记忆；屏蔽和删除可以跨分区选择。")}
+          </p>
+        )}
         {detail && (
           <section className="memory-detail-panel" aria-label={t("记忆详情（只读）")}>
             <h4>{detail.name}</h4>

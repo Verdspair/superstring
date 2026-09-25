@@ -162,3 +162,23 @@ export const EntriesListSchema = z.strictObject({
 });
 
 export type EntriesList = z.infer<typeof EntriesListSchema>;
+
+export const MemoryScopeViewSchema = z.strictObject({
+  scope_key: z.string(),
+  count: z.number().int().nonnegative(),
+  active_count: z.number().int().nonnegative(),
+  read_scope_keys: z.array(z.string()).nullable(),
+  write_scope_key: z.string(),
+  pending: z.number().int().nonnegative().nullable(),
+  binding: z
+    .strictObject({
+      id: UuidSchema,
+      revision: z.number().int().positive(),
+      memory_batch_size: z.number().int().positive().nullable(),
+      paused: z.boolean(),
+      enabled: z.boolean(),
+    })
+    .nullable(),
+  latest_job: MemoryJobViewSchema.nullable(),
+});
+export type MemoryScopeView = z.infer<typeof MemoryScopeViewSchema>;

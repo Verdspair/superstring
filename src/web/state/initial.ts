@@ -14,7 +14,14 @@ import type {
 } from "../../shared/contracts";
 import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
+import { desktopSettingsInitial } from "../features/general/desktop-state";
 import { knowledgeInitial } from "../features/knowledge/types";
+import {
+  qqAccessInitial,
+  qqSchemeInitial,
+  qqStickerInitial,
+  qqStorageInitial,
+} from "../features/qq/types";
 import type {
   AgentDraft,
   ChatItem,
@@ -27,6 +34,11 @@ import type {
 
 export const initial = {
   ...knowledgeInitial,
+  ...qqStickerInitial,
+  ...qqSchemeInitial,
+  ...qqStorageInitial,
+  ...qqAccessInitial,
+  ...desktopSettingsInitial,
   pageEditor: null as import("../features/agents/page-drafts").PageEditor | null,
   settingsSaving: false,
   status: "idle" as LoadStatus,
@@ -63,7 +75,11 @@ export const initial = {
   memoryCorrectionDirty: false,
   memoryCorrectionSaving: false,
   memoryJobs: [] as MemoryJobView[],
+  qqMemoryBatchDrafts: {} as Record<string, { value: string; revision: number }>,
+  qqMemoryBatchSaving: false,
   modelNames: [] as string[],
+  loadedModelNames: [] as string[],
+  externalModelNames: [] as string[],
   modelStatus: "模型列表将在打开配置时加载。",
   capacityPreview: "",
   chatContextCapacity: null as number | null,

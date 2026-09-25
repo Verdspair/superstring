@@ -23,6 +23,7 @@
     "@radix-ui/react-alert-dialog": "1.1.23",
     "drizzle-orm": "0.45.2",
     "hono": "4.13.7",
+    "omggif": "1.0.10",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "zod": "4.6.2",

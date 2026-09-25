@@ -20,6 +20,16 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
   const retrievalModel = editor?.agent.memory_retrieval_model_name ?? null;
   const compressionModel = editor?.agent.context_compression_model_name ?? null;
   const editorToken = editor?.token;
+  // QQ conversations organise their own memory per conversation (2026-09-25), so when the assistant
+  // being edited is bound to one, this page owes the reader that fact and a way over there. The
+  // bindings are read here only for that sentence; a failed read leaves the hint out.
+  const loadQqBindings = useSuperstringStore((s) => s.loadQqBindings);
+  const qqBound = useSuperstringStore((s) =>
+    s.qqBindings.some((binding) => binding.agent_id === s.editorAgentId),
+  );
+  useEffect(() => {
+    void loadQqBindings();
+  }, [loadQqBindings]);
   useEffect(() => {
     if (page === "context" && model && editorToken)
       void refresh([model, retrievalModel, compressionModel]);
@@ -70,7 +80,11 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
       </button>
       {page === "long-memory" ? (
         <>
-          <SettingsGroup id="settings-retrieval" title="读取配置">
+          <SettingsGroup
+            id="settings-retrieval"
+            title="读取配置"
+            note="当前助手的网页与 QQ 回复共用；只从各自获准的分区选取，QQ 开口判断仍采用轻量读取。"
+          >
             <Field label={t("相关性判断规则")} info={t("模型筛选相关记忆的判断依据。")}>
               <textarea
                 aria-label={t("相关性判断规则")}
@@ -106,54 +120,66 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                 "候选目录数：参与筛选的条数；最终记忆数：用于回答的条数；正文预算：所用记忆的总 token 上限。相关性要求按档设置。",
               )}
             </p>
-            {(["conservative", "standard", "broad"] as const).map((key, index) => {
-              const preset = p5.retrieval_presets[key];
-              const set = (next: Partial<typeof preset>) =>
-                update({
-                  retrieval_presets: {
-                    ...p5.retrieval_presets,
-                    [key]: { ...preset, ...next },
-                  },
-                });
-              const label = ["保守预设", "标准预设", "宽泛预设"][index];
-              return (
-                <section key={key} aria-label={t(label)}>
-                  <h4>{t(label)}</h4>
-                  <div className="field-grid">
-                    {number(
-                      "候选目录数",
-                      preset.candidate_limit,
-                      (value) => set({ candidate_limit: value }),
-                      1,
-                      10000,
-                    )}
-                    {number(
-                      "最终记忆数",
-                      preset.max_entries,
-                      (value) => set({ max_entries: value }),
-                      1,
-                      10000,
-                    )}
-                    {number(
-                      "正文预算（token）",
-                      preset.max_tokens,
-                      (value) => set({ max_tokens: value }),
-                      1,
-                      1048576,
-                    )}
-                  </div>
-                  <Field label={t("相关性要求")}>
-                    <input
-                      aria-label={t("相关性要求")}
-                      value={preset.relevance_instruction}
-                      onChange={(e) => set({ relevance_instruction: e.target.value })}
-                    />
-                  </Field>
-                </section>
-              );
-            })}
+            {(["conservative", "standard", "broad"] as const)
+              .filter(
+                (key) =>
+                  key === p5.retrieval_mode ||
+                  (p5.retrieval_mode === "full_catalog" && key === "broad"),
+              )
+              .map((key) => {
+                const preset = p5.retrieval_presets[key];
+                const set = (next: Partial<typeof preset>) =>
+                  update({
+                    retrieval_presets: {
+                      ...p5.retrieval_presets,
+                      [key]: { ...preset, ...next },
+                    },
+                  });
+                const label = { conservative: "保守预设", standard: "标准预设", broad: "宽泛预设" }[
+                  key
+                ];
+                return (
+                  <section key={key} aria-label={t(label)}>
+                    <h4>{t(label)}</h4>
+                    <div className="field-grid">
+                      {number(
+                        "候选目录数",
+                        preset.candidate_limit,
+                        (value) => set({ candidate_limit: value }),
+                        1,
+                        10000,
+                      )}
+                      {number(
+                        "最终记忆数",
+                        preset.max_entries,
+                        (value) => set({ max_entries: value }),
+                        1,
+                        10000,
+                      )}
+                      {number(
+                        "正文预算（token）",
+                        preset.max_tokens,
+                        (value) => set({ max_tokens: value }),
+                        1,
+                        1048576,
+                      )}
+                    </div>
+                    <Field label={t("相关性要求")}>
+                      <input
+                        aria-label={t("相关性要求")}
+                        value={preset.relevance_instruction}
+                        onChange={(e) => set({ relevance_instruction: e.target.value })}
+                      />
+                    </Field>
+                  </section>
+                );
+              })}
           </SettingsGroup>
-          <SettingsGroup id="settings-consolidation" title="整理配置">
+          <SettingsGroup
+            id="settings-consolidation"
+            title="整理配置"
+            note="当前助手的网页与 QQ 共用整理规则和正文长度；触发频率按入口分别设置。"
+          >
             <Field
               label={t("整理规则")}
               info={t("需长期保留的信息，以及名称、简介、标签和正文的生成要求。")}
@@ -177,9 +203,29 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                 }
               />
             </Field>
+            {editor.policyDraft &&
+              number(
+                "单条记忆正文长度（字符）",
+                editor.policyDraft.target_chars,
+                (value) => patchPolicy({ target_chars: value }),
+                50,
+                4000,
+              )}
           </SettingsGroup>
-          <SettingsGroup id="settings-policy" title="自动整理">
+          <SettingsGroup
+            id="settings-policy"
+            title="自动整理"
+            note="这里设置网页会话的触发频率；QQ 每个群或私聊的条数在上方记忆分区内设置。"
+          >
             <p className="hint">{t("自动整理选项需保存当前页才生效。")}</p>
+            {qqBound && (
+              <p className="hint">
+                {t(
+                  "这个设置仅对网页端会话生效；QQ 里的记忆整理按会话单独设置（攒够多少条自动整理、立即整理）。",
+                )}
+                <a href="#settings-memory-scopes">{t("前往记忆分区")}</a>
+              </p>
+            )}
             {editor.policyDraft ? (
               <>
                 <label className="check">
@@ -198,13 +244,6 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                     1,
                     200,
                   )}
-                  {number(
-                    "单条记忆正文长度（字符）",
-                    editor.policyDraft.target_chars,
-                    (value) => patchPolicy({ target_chars: value }),
-                    50,
-                    4000,
-                  )}
                 </div>
               </>
             ) : (
@@ -213,22 +252,26 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
               </button>
             )}
           </SettingsGroup>
-          <section id="settings-catalog-limits" aria-label={t("全量读取细节")}>
-            <h4>{t("全量读取细节")}</h4>
-            <p className="hint">
-              {t("通常无需调整；仅用于全目录或全部正文模式，不影响普通读取与上下文压缩。")}
-            </p>
-            <div className="field-grid two">
-              <div>
-                {numericP5("max_catalog_batches", "最多检查多少批记忆", 1, 10000)}
-                <p className="hint">{t("默认 100 批；达到上限仍未读完会报错，不跳过剩余记忆。")}</p>
+          {(p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body") && (
+            <section id="settings-catalog-limits" aria-label={t("全量读取细节")}>
+              <h4>{t("全量读取细节")}</h4>
+              <p className="hint">
+                {t("通常无需调整；仅用于全目录或全部正文模式，不影响普通读取与上下文压缩。")}
+              </p>
+              <div className="field-grid two">
+                <div>
+                  {numericP5("max_catalog_batches", "最多检查多少批记忆", 1, 10000)}
+                  <p className="hint">
+                    {t("默认 100 批；达到上限仍未读完会报错，不跳过剩余记忆。")}
+                  </p>
+                </div>
+                <div>
+                  {numericP5("catalog_batch_size", "每批检查多少条", 1, 10000)}
+                  <p className="hint">{t("默认每批 30 条；限制每次检查量，不是最终使用条数。")}</p>
+                </div>
               </div>
-              <div>
-                {numericP5("catalog_batch_size", "每批检查多少条", 1, 10000)}
-                <p className="hint">{t("默认每批 30 条；限制每次检查量，不是最终使用条数。")}</p>
-              </div>
-            </div>
-          </section>
+            </section>
+          )}
         </>
       ) : (
         <>
@@ -296,7 +339,7 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
             <p className="hint">{t("原消息仍保留，并记录摘要来源。")}</p>
             <div className="field-grid two">
               {numericP5("compression_trigger_ratio", "压缩触发比例", 0.01, 1, 0.01)}
-              {numericP5("recent_turns", "近期原文目标（轮）", 1, 10000)}
+              {numericP5("recent_turns", "压缩时保留原文轮数", 1, 10000)}
             </div>
             <div className="field-grid">
               {numericP5("summary_target_tokens", "压缩摘要目标(token)", 1, 1048576)}

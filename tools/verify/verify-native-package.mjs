@@ -122,7 +122,7 @@ try {
     m.manifestVersion = 2;
   });
   rejectManifest("unknown schema declaration rejected", (m) => {
-    m.businessSchemaVersion = 5;
+    m.businessSchemaVersion = 24;
   });
   rejectManifest("missing required migration rejected", (m) => {
     m.files = m.files.filter((f) => !f.path.endsWith("0001_initial.sql"));
@@ -132,6 +132,9 @@ try {
   });
   rejectManifest("missing knowledge reading migration rejected", (m) => {
     m.files = m.files.filter((f) => !f.path.endsWith("0003_knowledge_read.sql"));
+  });
+  rejectManifest("missing output reserve migration rejected", (m) => {
+    m.files = m.files.filter((f) => !f.path.endsWith("0023_qq_dispatch.sql"));
   });
   rejectManifest("case-insensitive duplicate rejected", (m) => {
     m.files.push({ ...m.files[0], path: m.files[0].path.toUpperCase().replace("APP/", "app/") });

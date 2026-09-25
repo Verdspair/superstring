@@ -31,7 +31,28 @@ const DocumentSourceSchema = z
           source.draft_end > source.draft_start)),
     "Invalid source interval",
   );
-export const ContentSourceSchema = z.union([ChatSourceSchema, DocumentSourceSchema]);
+/**
+ * A memory sourced from a QQ conversation observation rather than a chat turn.
+ * A group member's message is not a user/assistant pair, so it cannot be a
+ * `chat` source; it carries its own provenance instead. `valid` is computed by the
+ * repository, exactly like the chat variant.
+ */
+const QqObservationSourceSchema = z.strictObject({
+  type: z.literal("qq_observation"),
+  scope_key: z.string().min(1),
+  conversation_key: z.string().min(1),
+  event_key: z.string().min(1),
+  message_id: z.string().min(1),
+  occurred_at_seconds: z.number().int().nonnegative(),
+  speaker_kind: z.enum(["member", "anonymous", "system"]),
+  speaker_id: z.string().nullable(),
+  valid: z.boolean(),
+});
+export const ContentSourceSchema = z.union([
+  ChatSourceSchema,
+  DocumentSourceSchema,
+  QqObservationSourceSchema,
+]);
 export const ContentItemSchema = z.strictObject({
   id: UuidSchema,
   source_type: z.enum(["memory", "knowledge"]),

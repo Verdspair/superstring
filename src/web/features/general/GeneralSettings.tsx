@@ -5,6 +5,7 @@ import { selectLocale, useI18n, useLocale } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { Accordion } from "../../ui/Accordion";
 import { AppearanceControls } from "../appearance/AppearanceSettings";
+import { CloseBehaviorSettings } from "./CloseBehaviorSettings";
 
 export function GeneralSettings() {
   const t = useI18n();
@@ -53,6 +54,7 @@ export function GeneralSettings() {
               <AppearanceControls />
             </div>
           </Accordion>
+          <CloseBehaviorSettings />
         </div>
       </SettingsBody>
     </section>

@@ -18,14 +18,22 @@
  *                               403 and is never upgraded.
  *
  * Stop policy (keeps the "last superstring page closed -> stop" promise while
- * surviving refresh / multi-tab / sleep):
+ * surviving refresh / multi-tab / sleep), and one setting on top of it (§12):
  *   - First connect has a startup window (default 120s); if no WebSocket ever
- *     connects, the server stops to avoid a dangling process.
+ *     connects, the server stops to avoid a dangling process. This window is NOT
+ *     affected by the close preference: "nobody ever came" is a failed launch,
+ *     not a user asking to stay online.
  *   - When the last tracked connection closes, an 8s grace starts; a new
  *     connection (refresh, tab restored from bfcache, re-visible) cancels it.
+ *     Exception: when the stored close preference is "background", no grace is
+ *     scheduled at all and the process stays up until someone stops it.
  *   - Server-side ping/pong detects dead links (sleep / dropped network) so a
  *     silently-dead socket eventually triggers the same grace, but the browser
  *     reconnect on wake cancels it.
+ *   - An explicit `{"exit":true}` frame on the lifetime channel stops the process
+ *     regardless of the preference. That is the "完全退出" path a user needs once
+ *     "stay in the background" is remembered, and it travels the same
+ *     same-origin-checked channel the liveness promise already trusts.
  *
  * Production timings cannot be overridden by environment variables.
  * Tests inject shorter intervals through options.
@@ -34,6 +42,7 @@
 import type { Server, WebSocketHandler } from "bun";
 import type { AppearanceSnapshot } from "../shared/appearance";
 import { APPEARANCE_MESSAGE_MAX_BYTES, parseAppearanceMessage } from "../shared/appearance";
+import type { DesktopCloseAction } from "../shared/contracts/desktop";
 
 /** 64 hex chars exactly. The launcher mints lowercase; accept either case. */
 export const DESKTOP_TOKEN_PATTERN = /^[0-9a-fA-F]{64}$/;
@@ -60,6 +69,13 @@ export interface DesktopLifecycleConfig {
    * always present when desktop mode is enabled; a rejection here must never
    * break the liveness socket or chat. */
   onAppearance?: (snapshot: AppearanceSnapshot) => void | Promise<void>;
+  /**
+   * The stored §12 close preference, read when the last page closes. Defaults to
+   * `"exit"`, which is what the product did before the setting existed. A throwing
+   * getter is treated as `"exit"`: an unreadable preference must not turn into an
+   * unkillable process.
+   */
+  closeAction?: () => DesktopCloseAction;
   graceMs?: number;
   startupWindowMs?: number;
   pingIntervalMs?: number;
@@ -138,6 +154,27 @@ export interface DesktopLifecycle {
   handle(req: Request, server: Server<DesktopWsData>): DesktopControlResult;
   websocket: WebSocketHandler<DesktopWsData>;
   start(): void;
+  /** Live page connections, for the status body the host polls. */
+  pageConnections(): number;
+  /** True when the last page closed and the stored preference kept the process up (§12). */
+  backgroundOnline(): boolean;
+}
+
+/**
+ * True for the one client frame that means "quit for good". Strict on purpose: this is the only
+ * message on the liveness channel that can end the process, so anything that is not exactly
+ * `{"exit":true}` is ignored like every other out-of-contract frame.
+ */
+export function isExitRequest(message: string): boolean {
+  if (message.length > 64) return false;
+  try {
+    const value: unknown = JSON.parse(message);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    const keys = Object.keys(value);
+    return keys.length === 1 && keys[0] === "exit" && (value as { exit?: unknown }).exit === true;
+  } catch {
+    return false;
+  }
 }
 
 export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopLifecycle {
@@ -160,6 +197,16 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
   let startupTimer: Timer | null = null;
   let stopping = false;
   let started = false;
+  let background = false;
+
+  /** The stored preference, with a throwing getter treated as "exit" (see the config docs). */
+  function closeAction(): DesktopCloseAction {
+    try {
+      return config.closeAction?.() ?? "exit";
+    } catch {
+      return "exit";
+    }
+  }
 
   function clearGrace(): void {
     if (graceTimer !== null) {
@@ -207,6 +254,20 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
     }, graceMs);
   }
 
+  /**
+   * The last page is gone. `background` means the user asked to keep the process online, so no
+   * grace is armed at all — the process then lives until an explicit stop (the settings page's
+   * "完全退出" frame, the host's tray, or `/__desktop/stop`).
+   */
+  function handleLastPageClosed(): void {
+    if (stopping) return;
+    if (closeAction() === "background") {
+      background = true;
+      return;
+    }
+    scheduleGrace();
+  }
+
   function startStartupWindow(): void {
     if (startupTimer !== null || startupWindowMs <= 0 || connections.size > 0) return;
     startupTimer = setTimeoutFn(() => {
@@ -229,9 +290,19 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
     if (url.pathname === "/__desktop/status") {
       if (!authOk(req))
         return { upgraded: false, response: noStoreJson({ error: "unauthorized" }, 401) };
+      // `page_connections` and `close_action` are here for the desktop host: the dialog for §12's
+      // "ask on close" needs to know the last page just went away, and the identity check above
+      // already proves the caller is the launcher that started this process.
       return {
         upgraded: false,
-        response: noStoreJson({ app: "superstring", desktop: true, state: "ready" }),
+        response: noStoreJson({
+          app: "superstring",
+          desktop: true,
+          state: "ready",
+          page_connections: connections.size,
+          background_online: background,
+          close_action: closeAction(),
+        }),
       };
     }
 
@@ -318,26 +389,33 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
         return;
       }
       // A new connection means the desktop is alive: cancel any pending
-      // shutdown grace and the startup window.
+      // shutdown grace and the startup window, and leave background-online mode.
       clearGrace();
       clearStartup();
+      background = false;
       const conn = ws as unknown as WsLike;
       connections.add(conn);
       timers.set(conn, { ping: null, watch: null, awaitingPong: false });
       scheduleHeartbeat(conn);
     },
     message(ws, message) {
-      // Liveness is server-driven (ping/pong). The single allowed client frame
-      // is an appearance snapshot; everything else is dropped silently and NEVER
+      // Liveness is server-driven (ping/pong). Two client frames are allowed: an appearance
+      // snapshot, and the explicit exit request. Everything else is dropped silently and NEVER
       // escalates to a shutdown.
       if (stopping) return;
       if (typeof message !== "string") return; // binary frames ignored
       if (message.length > APPEARANCE_MESSAGE_MAX_BYTES) return;
-      const snapshot = parseAppearanceMessage(message);
-      if (!snapshot) return; // invalid / out-of-contract frame: ignore
       // Identity check: only accept frames from a tracked, alive connection.
       const conn = ws as unknown as WsLike;
       if (!timers.has(conn)) return;
+      if (isExitRequest(message)) {
+        // The same-origin check at upgrade time is what makes this safe to obey, and the frame
+        // means the same thing `/__desktop/stop` does: quit now, whatever the close preference is.
+        triggerStop();
+        return;
+      }
+      const snapshot = parseAppearanceMessage(message);
+      if (!snapshot) return; // invalid / out-of-contract frame: ignore
       if (config.onAppearance) {
         // Fire-and-forget; a persistence failure must not surface as a socket
         // error, break the liveness channel, or affect chat.
@@ -362,7 +440,7 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
       const conn = ws as unknown as WsLike;
       clearConnTimers(conn);
       connections.delete(conn);
-      if (connections.size === 0) scheduleGrace();
+      if (connections.size === 0) handleLastPageClosed();
     },
     drain() {},
     ping() {},
@@ -374,7 +452,13 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
     startStartupWindow();
   }
 
-  return { handle, websocket, start };
+  return {
+    handle,
+    websocket,
+    start,
+    pageConnections: () => connections.size,
+    backgroundOnline: () => background,
+  };
 }
 
 /** True when the supplied token enables desktop mode. */

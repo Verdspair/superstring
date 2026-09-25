@@ -9,7 +9,11 @@ export function createOrganizationActions(
   get: StoreGet,
 ): Pick<
   KnowledgeState,
-  "loadOrganization" | "patchOrganization" | "saveOrganization" | "discardOrganization"
+  | "loadOrganization"
+  | "patchOrganization"
+  | "patchOrganizationPurposes"
+  | "saveOrganization"
+  | "discardOrganization"
 > {
   let read = 0;
   return {
@@ -32,6 +36,14 @@ export function createOrganizationActions(
             source,
             modelName:
               previous && organizationDirty(previous) ? previous.modelName : source.model_name,
+            visionModelName:
+              previous && organizationDirty(previous)
+                ? previous.visionModelName
+                : source.vision_model_name,
+            transcriptionModelName:
+              previous && organizationDirty(previous)
+                ? previous.transcriptionModelName
+                : source.transcription_model_name,
           },
           error: null,
         });
@@ -46,6 +58,11 @@ export function createOrganizationActions(
       if (!editor || get().organizationLoading || get().settingsSaving) return;
       set({ organizationEditor: { ...editor, modelName }, feedback: "" });
     },
+    patchOrganizationPurposes: (patch) => {
+      const editor = get().organizationEditor;
+      if (!editor || get().organizationLoading || get().settingsSaving) return;
+      set({ organizationEditor: { ...editor, ...patch }, feedback: "" });
+    },
     saveOrganization: async () => {
       const editor = get().organizationEditor;
       if (!organizationDirty(editor)) return true;
@@ -57,6 +74,8 @@ export function createOrganizationActions(
           OrganizationSettingsUpdateSchema.parse({
             expected_revision: editor.source.revision,
             model_name: editor.modelName,
+            vision_model_name: editor.visionModelName,
+            transcription_model_name: editor.transcriptionModelName,
           }),
         );
         if (get().organizationEditor?.token !== editor.token) return false;
@@ -65,6 +84,8 @@ export function createOrganizationActions(
             ...editor,
             source: saved,
             modelName: saved.model_name,
+            visionModelName: saved.vision_model_name,
+            transcriptionModelName: saved.transcription_model_name,
           },
           feedback: msg("默认模型已保存；已有明确覆盖和其他草稿保持不变。"),
         });

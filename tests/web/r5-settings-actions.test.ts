@@ -20,7 +20,10 @@ describe("R5 设置页动作", () => {
       models: ["qwen/a", "qwen/a", "qwen/b"],
       default_model: "qwen/a",
     });
-    useSuperstringStore.setState({ apiClient: fakeClient({ listModels }) });
+    // The refresh also asks for declared external models (0032); none here, so the message stays
+    // the local-only one.
+    const listModelProviders = vi.fn().mockResolvedValue([]);
+    useSuperstringStore.setState({ apiClient: fakeClient({ listModels, listModelProviders }) });
 
     await useSuperstringStore.getState().refreshModels();
 

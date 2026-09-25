@@ -3,6 +3,7 @@ import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
+import { modelOptionLabel } from "../models/model-availability";
 import { knowledgeModelDirty } from "./types";
 
 /** Shared revision, separate model/rule save whitelists. */
@@ -18,6 +19,10 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
   const save = useSuperstringStore((s) => s.saveKnowledgeModel);
   const openRoute = useSuperstringStore((s) => s.openSettingsRoute);
   const models = useSuperstringStore((s) => s.modelNames);
+  const availability = {
+    loaded: useSuperstringStore((s) => s.loadedModelNames),
+    external: useSuperstringStore((s) => s.externalModelNames),
+  };
   const model = scope === "model";
   useEffect(() => {
     void load();
@@ -49,7 +54,7 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
                 {[...new Set([...models, ...(editor.modelName ? [editor.modelName] : [])])].map(
                   (name) => (
                     <option key={name} value={name}>
-                      {name}
+                      {modelOptionLabel(name, availability, t)}
                     </option>
                   ),
                 )}

@@ -158,6 +158,7 @@ export function createNavigationActions(
         get().organizationLoading ||
         get().knowledgeModelLoading ||
         get().memoryCorrectionSaving ||
+        get().qqMemoryBatchSaving ||
         get().knowledgeBusy
       )
         return;
@@ -171,7 +172,8 @@ export function createNavigationActions(
         get().settingsView === "agents" &&
         get().editorAgentId === "__new__" &&
         get().editorDraft &&
-        !get().memoryCorrectionDirty
+        !get().memoryCorrectionDirty &&
+        Object.keys(get().qqMemoryBatchDrafts).length === 0
       ) {
         set({ settingsView: "workspace", settingsRoute, feedback: "" });
         return;
@@ -234,14 +236,15 @@ export function createNavigationActions(
         get().organizationLoading ||
         get().knowledgeModelLoading ||
         get().memoryCorrectionSaving ||
+        get().qqMemoryBatchSaving ||
         get().knowledgeBusy
       )
         return;
-      if (get().memoryCorrectionDirty) {
+      if (get().memoryCorrectionDirty || Object.keys(get().qqMemoryBatchDrafts).length > 0) {
         set({
           pendingNavigation: { kind: "page", page, settingsView },
           navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("记忆纠正有未保存修改，是否保存后再继续？"),
+          navigationConfirmMessage: msg("记忆设置或纠正有未保存修改，是否保存后再继续？"),
         });
         return;
       }
@@ -303,6 +306,7 @@ export function createNavigationActions(
         get().organizationLoading ||
         get().knowledgeModelLoading ||
         get().memoryCorrectionSaving ||
+        get().qqMemoryBatchSaving ||
         get().knowledgeBusy
       )
         return;
@@ -311,6 +315,7 @@ export function createNavigationActions(
       if (
         get().dirty ||
         get().memoryCorrectionDirty ||
+        Object.keys(get().qqMemoryBatchDrafts).length > 0 ||
         dirtyPages(get().pageEditor).length ||
         knowledgeReadDirty(get().knowledgeReadEditor)
       ) {
@@ -331,6 +336,7 @@ export function createNavigationActions(
         get().organizationLoading ||
         get().knowledgeModelLoading ||
         get().memoryCorrectionSaving ||
+        get().qqMemoryBatchSaving ||
         get().knowledgeBusy
       )
         return;
@@ -343,6 +349,7 @@ export function createNavigationActions(
       if (
         get().dirty ||
         get().memoryCorrectionDirty ||
+        Object.keys(get().qqMemoryBatchDrafts).length > 0 ||
         dirtyPages(get().pageEditor).length ||
         knowledgeReadDirty(get().knowledgeReadEditor)
       ) {
@@ -357,7 +364,21 @@ export function createNavigationActions(
     },
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;
-      if (!pending || get().settingsSaving || get().editorLoading || get().knowledgeBusy) return;
+      if (
+        !pending ||
+        get().settingsSaving ||
+        get().editorLoading ||
+        get().knowledgeBusy ||
+        get().qqMemoryBatchSaving
+      )
+        return;
+      if (!(await get().saveQqMemoryBatchDrafts())) {
+        set({
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
+        });
+        return;
+      }
       const leavingWorkspace =
         pending.kind === "agent" ||
         pending.kind === "section" ||
@@ -449,8 +470,16 @@ export function createNavigationActions(
     },
     confirmDiscardAndContinue: async () => {
       const pending = get().pendingNavigation;
-      if (!pending || get().settingsSaving || get().editorLoading || get().knowledgeBusy) return;
+      if (
+        !pending ||
+        get().settingsSaving ||
+        get().editorLoading ||
+        get().knowledgeBusy ||
+        get().qqMemoryBatchSaving
+      )
+        return;
       await performNavigation(get, set, pending, true);
+      if (!get().pendingNavigation) get().discardQqMemoryBatchDrafts();
     },
     cancelPendingNavigation: () =>
       set({

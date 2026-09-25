@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type AgentResponse, P5ConfigSchema } from "../../src/shared/contracts";
-import type { SuperstringApi } from "../../src/web/api";
+import { ApiError, type SuperstringApi } from "../../src/web/api";
 import { useSuperstringStore } from "../../src/web/store";
 
 const NOW = "2026-09-12T03:00:00.000Z";
@@ -67,6 +67,9 @@ describe("R6 局部 bootstrap", () => {
           models: ["qwen/test"],
           default_model: "qwen/test",
         }),
+        // Registered external models join the picker list (0032); rejecting here is also fine —
+        // the bootstrap treats that source like any other optional one.
+        listModelProviders: vi.fn().mockResolvedValue([]),
         getBrowserStateConfig: vi.fn().mockRejectedValue(new Error("浏览器状态不可用")),
       }),
     });
@@ -80,6 +83,67 @@ describe("R6 局部 bootstrap", () => {
     expect(state.modelNames).toEqual(["qwen/test"]);
     expect(state.error).toContain("Agent 暂不可用");
     expect(state.pendingOperations).toBe(0);
+  });
+
+  it("本地模型目录连不上、但登记了外部模型时，只提示不报错", async () => {
+    useSuperstringStore.setState({
+      apiClient: fakeClient({
+        listAgents: vi.fn().mockResolvedValue([]),
+        listSessions: vi.fn().mockResolvedValue([]),
+        // LM Studio 关着：这正是用户 2026-09-25 报的场景（对话模型已切到外部 API）。
+        listModels: vi
+          .fn()
+          .mockRejectedValue(
+            new ApiError(503, "MODEL_SERVICE_UNAVAILABLE", "本地模型服务暂不可用"),
+          ),
+        listModelProviders: vi.fn().mockResolvedValue([
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            name: "kanglives",
+            base_url: "https://example.invalid/v1",
+            has_api_key: true,
+            models: [{ name: "gpt-6-luna", context_window: 32768 }],
+            revision: 1,
+            created_at: NOW,
+            updated_at: NOW,
+          },
+        ]),
+        getBrowserStateConfig: vi.fn().mockResolvedValue(null),
+      }),
+    });
+
+    await useSuperstringStore.getState().bootstrap();
+
+    const state = useSuperstringStore.getState();
+    expect(state.status).toBe("ready");
+    expect(state.error).toBeNull();
+    expect(state.modelNames).toEqual(["gpt-6-luna"]);
+    expect(state.externalModelNames).toEqual(["gpt-6-luna"]);
+    expect(state.loadedModelNames).toEqual([]);
+    expect(state.modelStatus).toContain("本地模型服务连不上");
+  });
+
+  it("一个模型来源都拿不到时才把本地目录失败当成错误", async () => {
+    useSuperstringStore.setState({
+      apiClient: fakeClient({
+        listAgents: vi.fn().mockResolvedValue([]),
+        listSessions: vi.fn().mockResolvedValue([]),
+        listModels: vi
+          .fn()
+          .mockRejectedValue(
+            new ApiError(503, "MODEL_SERVICE_UNAVAILABLE", "本地模型服务暂不可用"),
+          ),
+        listModelProviders: vi.fn().mockResolvedValue([]),
+        getBrowserStateConfig: vi.fn().mockResolvedValue(null),
+      }),
+    });
+
+    await useSuperstringStore.getState().bootstrap();
+
+    const state = useSuperstringStore.getState();
+    expect(state.modelNames).toEqual([]);
+    expect(state.error).toContain("MODEL_SERVICE_UNAVAILABLE");
+    expect(state.modelStatus).toContain("模型列表加载失败");
   });
 });
 

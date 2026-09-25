@@ -12,10 +12,10 @@ import { dirtyPages, type EditablePage } from "./page-drafts";
 
 const GROUPS = {
   "long-memory": [
+    ["memory-management", "记忆管理"],
     ["retrieval", "读取配置"],
     ["consolidation", "整理配置"],
     ["policy", "自动整理"],
-    ["memory-management", "记忆管理"],
   ],
   context: [
     ["budget", "容量与预算"],
@@ -156,6 +156,7 @@ export function SettingsPageEditor({
           ))}
         </nav>
       )}
+      {page === "long-memory" && <SectionB key={editor.agent.id} />}
       <fieldset disabled={loading || saving}>
         {(page === "long-memory" || page === "context") && <MemoryPageFields page={page} />}
         {page === "basic" &&
@@ -299,7 +300,6 @@ export function SettingsPageEditor({
         {t(dirty.includes(page) ? "当前页有未保存修改" : "当前页已保存")}
         {dirty.length > 0 && ` · ${t("共 {0} 个页面未保存", dirty.length)}`}
       </p>
-      {page === "long-memory" && <SectionB key={editor.agent.id} />}
       {!compact && !embedded && feedback && (
         <p role="status" className="hint">
           {translateNotice(feedback)}

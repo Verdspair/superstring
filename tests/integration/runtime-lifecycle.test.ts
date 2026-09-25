@@ -1,9 +1,14 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../../src/server/app";
+import {
+  readQqSettings,
+  updateQqSettings,
+  updateQqTransportConfig,
+} from "../../src/server/db/qq-settings-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import {
@@ -129,6 +134,46 @@ describe("application runtime lifecycle", () => {
       rmSync(`${dbPath}-shm`, { force: true });
     }
   });
+  it("gives the QQ transport the key path it was told to use", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ss-transport-key-"));
+    const keyPath = path.join(dir, "qq-transport.key");
+    const business = openBusinessDb();
+    try {
+      const runtime = createRuntime({
+        business,
+        gateway,
+        qqTransportKeyPath: keyPath,
+        browserStateSecret: testBrowserStateSecret,
+      });
+      // Nothing saved yet: the runtime resolves through the SAME path it was given, which is what
+      // keeps a saved token readable in an installed layout (the dev default is a different file).
+      expect(runtime.qqIntake.connectionConfig()).toBeNull();
+      updateQqSettings(business.orm, {
+        accountId: "10001",
+        enabled: true,
+        expectedRevision: 1,
+      });
+      updateQqTransportConfig(business.orm, {
+        endpoint: "ws://127.0.0.1:3000/",
+        token: "synthetic-token",
+        expectedRevision: readQqSettings(business.orm).revision,
+        keyPath,
+      });
+      expect(runtime.qqIntake.connectionConfig()).toEqual({
+        endpoint: "ws://127.0.0.1:3000/",
+        token: "synthetic-token",
+        accountId: "10001",
+      });
+      // The page reads the live transport state through this app: the runtime is wired, and it is
+      // not connected, which is exactly what "idle" means here.
+      const status = await runtime.app.request("/qq/status");
+      expect(await status.json()).toEqual({ connection: { phase: "idle", reason: null } });
+    } finally {
+      business.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps createApp pure: constructing an app does not start a worker", async () => {
     const business = openBusinessDb();
     try {

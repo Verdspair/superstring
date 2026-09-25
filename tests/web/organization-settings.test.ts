@@ -6,11 +6,20 @@ import { useSuperstringStore as store } from "../../src/web/store";
 let client: SuperstringApi;
 beforeEach(() => {
   client = {
-    getOrganizationSettings: vi.fn(async () => ({ model_name: null, revision: 1 })),
-    saveOrganizationSettings: vi.fn(async ({ model_name, expected_revision }) => ({
-      model_name,
-      revision: expected_revision + 1,
+    getOrganizationSettings: vi.fn(async () => ({
+      model_name: null,
+      vision_model_name: null,
+      transcription_model_name: null,
+      revision: 1,
     })),
+    saveOrganizationSettings: vi.fn(
+      async ({ model_name, vision_model_name, transcription_model_name, expected_revision }) => ({
+        model_name,
+        vision_model_name: vision_model_name ?? null,
+        transcription_model_name: transcription_model_name ?? null,
+        revision: expected_revision + 1,
+      }),
+    ),
     getKnowledgeSettings: vi.fn(async () => ({
       model_name: null,
       revision: 1,
@@ -61,6 +70,8 @@ describe("default organization and independent scopes", () => {
     expect(await store.getState().saveOrganization()).toBe(true);
     expect(client.saveOrganizationSettings).toHaveBeenCalledWith({
       model_name: "shared",
+      vision_model_name: null,
+      transcription_model_name: null,
       expected_revision: 1,
     });
     expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
@@ -81,11 +92,34 @@ describe("default organization and independent scopes", () => {
     await store.getState().confirmSaveAndContinue();
     expect(store.getState().page).toBe("chat");
   });
+  it("saves the two media purposes together with the shared default", async () => {
+    await store.getState().loadOrganization();
+    // §7.1: the purposes live on the shared row; unset stays unset rather than falling back.
+    store.getState().patchOrganization("shared");
+    store.getState().patchOrganizationPurposes({ visionModelName: "vision-model" });
+    expect(organizationDirty(store.getState().organizationEditor)).toBe(true);
+    vi.mocked(client.saveOrganizationSettings).mockResolvedValueOnce({
+      model_name: "shared",
+      vision_model_name: "vision-model",
+      transcription_model_name: null,
+      revision: 2,
+    });
+    expect(await store.getState().saveOrganization()).toBe(true);
+    expect(client.saveOrganizationSettings).toHaveBeenCalledWith({
+      model_name: "shared",
+      vision_model_name: "vision-model",
+      transcription_model_name: null,
+      expected_revision: 1,
+    });
+    expect(organizationDirty(store.getState().organizationEditor)).toBe(false);
+  });
   it("refreshes conflict baselines without replacing dirty input", async () => {
     await store.getState().loadOrganization();
     store.getState().patchOrganization("draft");
     vi.mocked(client.getOrganizationSettings).mockResolvedValue({
       model_name: "remote",
+      vision_model_name: null,
+      transcription_model_name: null,
       revision: 8,
     });
     await store.getState().loadOrganization(true);
@@ -96,6 +130,8 @@ describe("default organization and independent scopes", () => {
     await store.getState().saveOrganization();
     expect(client.saveOrganizationSettings).toHaveBeenCalledWith({
       model_name: "draft",
+      vision_model_name: null,
+      transcription_model_name: null,
       expected_revision: 8,
     });
   });
@@ -119,7 +155,12 @@ describe("default organization and independent scopes", () => {
   it("blocks duplicate default saves and ignores late results for another editor", async () => {
     await store.getState().loadOrganization();
     store.getState().patchOrganization("before");
-    let finish!: (value: { model_name: string | null; revision: number }) => void;
+    let finish!: (value: {
+      model_name: string | null;
+      vision_model_name: string | null;
+      transcription_model_name: string | null;
+      revision: number;
+    }) => void;
     vi.mocked(client.saveOrganizationSettings).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -133,7 +174,12 @@ describe("default organization and independent scopes", () => {
     const editor = store.getState().organizationEditor;
     if (!editor) throw new Error("Missing editor");
     store.setState({ organizationEditor: { ...editor, token: {}, modelName: "new-session" } });
-    finish({ model_name: "before", revision: 2 });
+    finish({
+      model_name: "before",
+      vision_model_name: null,
+      transcription_model_name: null,
+      revision: 2,
+    });
     expect(await saving).toBe(false);
     expect(store.getState().organizationEditor?.modelName).toBe("new-session");
   });

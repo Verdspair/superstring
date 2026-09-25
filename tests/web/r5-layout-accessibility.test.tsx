@@ -84,7 +84,7 @@ describe("分组与提示层级", () => {
     expect(screen.getByRole("heading", { name: "记忆管理", level: 3 })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "长期记忆" })).toBeNull();
     expect(screen.queryByText("按完整对话轮数自动整理；选项修改后立即保存。")).toBeNull();
-    expect(container.querySelectorAll(".memory-management > section.group")).toHaveLength(2);
+    expect(container.querySelectorAll(".memory-management > section.group")).toHaveLength(3);
     expect(container.querySelectorAll(".memory-management details")).toHaveLength(0);
     expect(container.querySelectorAll(".config-section textarea:not([readonly])")).toHaveLength(0);
   });

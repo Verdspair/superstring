@@ -80,7 +80,11 @@ describe("R5 视觉契约", () => {
   it("常规操作控件共用32px基准，保留键盘焦点和危险失败色", () => {
     expect(css).toContain("--ac-control-height: 32px");
     expect(rule("button")).toContain("min-height: var(--ac-control-height)");
-    expect(css).toMatch(/(?:^|\})\s*input,\s*textarea,\s*select\s*\{[^}]*padding: 5px 10px/);
+    // Checkboxes and radios are named out of the shared field styling on purpose: stretching one to
+    // the field width moves its glyph away from the label and overflows a flex column (§15 matrix).
+    expect(css).toMatch(
+      /(?:^|\}|\*\/)\s*input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\s*textarea,\s*select\s*\{[^}]*padding: 5px 10px/,
+    );
     expect(rule(".confirm-dialog > strong")).toContain("font-size: 16px");
     expect(rule(".confirm-dialog > strong")).toContain("font-weight: 600");
     expect(rule(":is(button, summary, input, textarea, select, a):focus-visible")).toContain(
@@ -244,7 +248,9 @@ describe("R5 视觉契约", () => {
     expect(rule("button.settings-back")).toContain("height: 32px");
     expect(rule(".operating-modes")).toContain("display: grid");
     expect(rule(".operating-modes")).toContain("gap: 12px");
-    const mode = rule("button.operating-mode-row");
+    // 2026-09-25：第三方聊天（QQ）那一行是模式行但不跳转（承载开关），所以模式行的外观规则
+    // 从 `button.` 放宽到所有 `.operating-mode-row`，两种形态共用同一套几何。
+    const mode = rule(".operating-mode-row");
     expect(mode).toContain("min-height: 58px");
     expect(mode).toContain("padding: 9px 12px");
     expect(mode).toContain("border-radius: var(--ac-radius)");
@@ -530,5 +536,37 @@ describe("R5 视觉契约", () => {
     expect(app).not.toContain('<details className="section-selector">');
     // The section rows must go through the dirty guard, never `setActiveSection`.
     expect(app).not.toContain("onClick={() => setActiveSection(item.key)}");
+  });
+
+  it("QQ 方案网格在窄屏可收缩，复选框不被拉伸到字段宽度", () => {
+    // Both were found by the §15 page matrix (2026-09-25): a fixed 200px column pushed the
+    // right-hand fields out of a 188px-wide content column, and a stretched checkbox — the global
+    // full-width input rule plus the widget's own 4px margin — overflowed its field by 4px.
+    const grid = rule(".qq-scheme-grid");
+    expect(grid).toContain("minmax(min(200px, 100%), 1fr)");
+    expect(grid).not.toContain("minmax(200px, 1fr)");
+    const exclusion = 'input:not([type="checkbox"]):not([type="radio"])';
+    expect(css).toContain(exclusion);
+    // The exclusion list is the one that carries the full-width declaration …
+    expect(css.slice(css.indexOf(exclusion)).slice(0, 200)).toContain("width: 100%");
+    // … and the bare list above it only inherits the font, never a width.
+    const bare = css.indexOf("button,\ninput,\ntextarea,\nselect {");
+    expect(bare).toBeGreaterThan(-1);
+    expect(css.slice(bare, bare + 80)).toContain("font: inherit");
+  });
+
+  it("方案页的底部保存条与只读框按用户 2026-09-25 的九项改版呈现", () => {
+    // 底部保存条必须真的固定在底部，而且要挡住下面的内容（透明底色等于没造这条）。
+    const bar = rule(".qq-scheme-savebar");
+    expect(bar).toContain("position: sticky");
+    expect(bar).toContain("bottom: 0");
+    expect(bar).toContain("background: var(--ac-surface)");
+    // 判断/回复两组的小标题，和"改过"的就地标记。
+    expect(rule(".qq-scheme-part > h4")).toContain("font-weight: 600");
+    expect(rule(".field-tag")).toContain("var(--ac-accent-soft)");
+    // 只读框要看得出来：属性选择器覆盖所有只读 textarea，方案页的回复任务框因此不再和可编辑的一样。
+    expect(rule("textarea[readonly]")).toContain("var(--superstring-tone-light)");
+    // 数字框没改对时的红框。
+    expect(rule('input[aria-invalid="true"]')).toContain("var(--ac-danger)");
   });
 });

@@ -68,9 +68,17 @@ export interface OrganizationEditor {
   token: object;
   source: import("../../../shared/contracts/organization").OrganizationSettings;
   modelName: string | null;
+  /** §7.1's media purposes; unset means "cannot understand", never a fallback (P4b). */
+  visionModelName: string | null;
+  transcriptionModelName: string | null;
 }
 export function organizationDirty(editor: OrganizationEditor | null): boolean {
-  return !!editor && editor.modelName !== editor.source.model_name;
+  return (
+    !!editor &&
+    (editor.modelName !== editor.source.model_name ||
+      editor.visionModelName !== editor.source.vision_model_name ||
+      editor.transcriptionModelName !== editor.source.transcription_model_name)
+  );
 }
 export interface KnowledgeReadEditor {
   token: object;
@@ -100,6 +108,11 @@ export interface KnowledgeState {
   organizationError: string | null;
   loadOrganization: (refresh?: boolean) => Promise<void>;
   patchOrganization: (modelName: string | null) => void;
+  /** The two media purposes, patched together because they sit in one group on the page. */
+  patchOrganizationPurposes: (patch: {
+    readonly visionModelName?: string | null;
+    readonly transcriptionModelName?: string | null;
+  }) => void;
   saveOrganization: () => Promise<boolean>;
   discardOrganization: () => void;
   knowledgeReadEditor: KnowledgeReadEditor | null;

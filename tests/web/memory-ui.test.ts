@@ -94,6 +94,7 @@ const makeClient = (overrides: Partial<typeof api> = {}): typeof api => ({
   }),
   listMemorySessions: vi.fn().mockResolvedValue([{ id: SESSION_ID, title: "测试会话" }]),
   listMemoryJobs: vi.fn().mockResolvedValue([]),
+  listMemoryScopes: vi.fn().mockResolvedValue([]),
   listMemoryTurns: vi.fn().mockResolvedValue({
     scope: "reality_user",
     turns: [
@@ -228,6 +229,11 @@ describe("记忆管理迟到响应与离页回归", () => {
     const mounted = render(createElement(SectionB));
     const work = store.getState().loadMemoryTurns(SESSION_ID, 20);
     mounted.unmount();
+    expect(store.getState()).toMatchObject({
+      memoryEntries: [],
+      memoryEntryDetail: null,
+      memoryEntryTotal: 0,
+    });
     render(createElement(SectionB));
     await act(async () => {
       old.resolve({
@@ -238,14 +244,14 @@ describe("记忆管理迟到响应与离页回归", () => {
     });
     expect(store.getState()).toMatchObject({
       memoryTurns: [],
-      memoryEntries: [],
-      memoryEntryTotal: 0,
+      memoryEntries: [memory],
+      memoryEntryTotal: 1,
       memoryEntryDetail: null,
     });
     expect((screen.getByRole("combobox", { name: "来源会话" }) as HTMLSelectElement).value).toBe(
       "",
     );
-    expect(document.querySelectorAll(".memory-row,.memory-entry-row")).toHaveLength(0);
+    expect(document.querySelectorAll(".memory-entry-row")).toHaveLength(1);
   });
   it("M4：未保存纠正仍阻止离页，重置不删除纠正草稿", () => {
     setup({});
@@ -276,7 +282,7 @@ describe("R5 B 区记忆面板状态", () => {
     useSuperstringStore.setState({ editorAgentId: AGENT_ID });
 
     await useSuperstringStore.getState().loadMemoryPage(3);
-    expect(client.listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100);
+    expect(client.listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100, undefined);
     expect(useSuperstringStore.getState().feedback).toBe("共 1 条记忆，当前第 3 页。");
 
     await useSuperstringStore.getState().loadMemoryEntryDetail(MEMORY_ID);
@@ -357,6 +363,24 @@ describe("记忆管理统一交互", () => {
     expect(container.querySelector(".memory-detail-panel")).toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
   });
+  it("列出 QQ 记忆并按真实五段范围键标出群与账号", async () => {
+    const qq = {
+      ...memory,
+      id: "77777777-7777-4777-8777-777777777777",
+      name: "群里的约定",
+      scope_key: JSON.stringify(["qq", "10001", "group", "30003", AGENT_ID]),
+    };
+    useSuperstringStore.getState().resetForTests(
+      makeClient({
+        listMemoryEntries: vi.fn().mockResolvedValue({ total: 2, items: [memory, qq] }),
+      }),
+    );
+    useSuperstringStore.setState({ editorAgentId: AGENT_ID });
+    await act(async () => render(createElement(SectionB)));
+    expect(document.querySelector(".memory-entry-list")?.textContent).toContain("网页记忆");
+    expect(screen.getByText(/QQ · 群 30003 · 账号 10001/)).toBeTruthy();
+  });
+
   it("逐条查看不依赖批量勾选，永久删除需要先选条目再确认", async () => {
     const client = makeClient();
     useSuperstringStore.getState().resetForTests(client);

@@ -26,6 +26,14 @@ import {
   correctionSnapshot,
   isCorrectionRetired,
 } from "../services/memory-revision";
+import type { MemoryScopeKeys } from "../services/memory-scope";
+import {
+  acceptsObservationSources,
+  observationSourceRows,
+  observationSources,
+  observationSourcesIntact,
+  ownedObservations,
+} from "./memory-source-repository";
 import { readOrganizationSettings } from "./organization-repository";
 import {
   DEFAULT_USER_ID,
@@ -260,12 +268,15 @@ export function sourceData(rows: TurnTriple[]): Array<Record<string, unknown>> {
 /**
  * `ids` asserts full resolution (MEMORY_NOT_FOUND
  * 404) so a caller can never act on a subset of what it thinks it selected.
+ * `scopeKeys` narrows the read to explicit `scope_key` values; omitting it keeps
+ * the historical agent-level read (see memory-scope.ts). An empty list matches
+ * nothing, so a caller that resolved no readable scope fails closed.
  */
 export function entries(
   orm: Orm,
   agentId: string,
   ids?: string[],
-  options: { status?: string } = {},
+  options: { status?: string; scopeKeys?: MemoryScopeKeys } = {},
 ): MemoryEntryRow[] {
   policy(orm, agentId);
   const conditions = [
@@ -274,6 +285,10 @@ export function entries(
   ];
   if (ids !== undefined) conditions.push(inArray(schema.memoryEntries.id, ids));
   if (options.status) conditions.push(eq(schema.memoryEntries.status, options.status));
+  // `null` and `undefined` both mean agent-level; only an explicit list filters.
+  if (Array.isArray(options.scopeKeys)) {
+    conditions.push(inArray(schema.memoryEntries.scopeKey, [...options.scopeKeys]));
+  }
 
   const items = orm
     .select()
@@ -296,6 +311,10 @@ export function entries(
  * its source turns is still intact. Note this checks `source_valid` and the
  * generation status but deliberately not `context_valid`: a turn that merely
  * scrolled out of the context window has not lost its meaning as a source.
+ *
+ * A QQ memory may instead be backed by conversation observations, so an entry is
+ * acceptable when its turn sources are intact OR its observation sources are — but
+ * observation evidence never validates a web (agent-level) memory.
  */
 export function validateEntrySources(
   orm: Orm,
@@ -308,38 +327,49 @@ export function validateEntrySources(
     .from(schema.memorySources)
     .where(inArray(schema.memorySources.memoryId, ids))
     .all();
+  const observations = observationSources(orm, ids);
 
-  if (new Set(sources.map((s) => s.memoryId)).size !== new Set(ids).size) {
-    fail("MEMORY_SOURCE_INVALID", "记忆来源缺失，不能重新启用或整合");
-  }
-
-  for (const s of sources) {
-    const t = orm.select().from(schema.turns).where(eq(schema.turns.id, s.turnId)).get();
-    const u = orm
-      .select()
-      .from(schema.messages)
-      .where(eq(schema.messages.id, s.userMessageId))
-      .get();
-    const a = orm
-      .select()
-      .from(schema.messages)
-      .where(eq(schema.messages.id, s.assistantMessageId))
-      .get();
-    const intact =
-      t !== undefined &&
-      t.sourceValid === 1 &&
-      t.generationStatus === "completed" &&
-      u !== undefined &&
-      a !== undefined &&
-      u.turnId === t.id &&
-      a.turnId === t.id &&
-      u.status === "completed" &&
-      a.status === "completed";
-    if (!intact) {
-      fail("MEMORY_SOURCE_INVALID", "记忆来源已失效");
+  const broken = items.filter((item) => {
+    const turnSources = sources.filter((source) => source.memoryId === item.id);
+    if (turnSources.length > 0 && turnSources.every((source) => turnSourceIntact(orm, source))) {
+      return false;
     }
+    const observationRows = observations.get(item.id) ?? [];
+    return !(
+      acceptsObservationSources(item.scopeKey, item.agentId) &&
+      observationSourcesIntact(orm, observationRows)
+    );
+  });
+  if (broken.length > 0) {
+    fail("MEMORY_SOURCE_INVALID", "记忆来源缺失或已失效");
   }
   return sources;
+}
+
+/** One turn source is intact when its turn and both messages are still complete. */
+function turnSourceIntact(orm: Orm, source: typeof schema.memorySources.$inferSelect): boolean {
+  const t = orm.select().from(schema.turns).where(eq(schema.turns.id, source.turnId)).get();
+  const u = orm
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.id, source.userMessageId))
+    .get();
+  const a = orm
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.id, source.assistantMessageId))
+    .get();
+  return (
+    t !== undefined &&
+    t.sourceValid === 1 &&
+    t.generationStatus === "completed" &&
+    u !== undefined &&
+    a !== undefined &&
+    u.turnId === t.id &&
+    a.turnId === t.id &&
+    u.status === "completed" &&
+    a.status === "completed"
+  );
 }
 
 // Jobs
@@ -355,6 +385,19 @@ export interface EnqueueArgs {
   sessionId?: string | null;
   turnIds?: string[];
   memoryIds?: string[];
+  /**
+   * Explicit `(scope, scope_key)` for a non-web conversation. Omitted for web
+   * sessions, which keep deriving the historical agent-level key. Supplying it
+   * freezes the caller's already-resolved decision into the job snapshot instead
+   * of re-deriving it later from mutable configuration.
+   */
+  scope?: { scope: string; scopeKey: string };
+  /**
+   * Observation event keys backing this memory. A QQ conversation has messages but
+   * no paired turns, so its job cites `qq_events` dedup keys instead. Requires an
+   * explicit `scope`: the events must belong to the very scope being written.
+   */
+  eventIds?: string[];
 }
 
 /**
@@ -379,6 +422,7 @@ export function enqueue(
   const sessionId = args.sessionId ?? null;
   const turnIds = args.turnIds ?? [];
   const memoryIds = args.memoryIds ?? [];
+  const eventIds = [...new Set(args.eventIds ?? [])];
 
   const existing = orm
     .select()
@@ -396,11 +440,15 @@ export function enqueue(
       const a = new Set(JSON.parse(stored) as string[]);
       return a.size === new Set(incoming).size && incoming.every((x) => a.has(x));
     };
+    const storedEvents =
+      (JSON.parse(existing.configSnapshot) as { source_event_ids?: string[] }).source_event_ids ??
+      [];
     if (
       existing.kind !== kind ||
       existing.sessionId !== sessionId ||
       !sameSet(existing.turnIds, turnIds) ||
-      !sameSet(existing.memoryIds, memoryIds)
+      !sameSet(existing.memoryIds, memoryIds) ||
+      !sameSet(JSON.stringify(storedEvents), eventIds)
     ) {
       fail("MEMORY_REQUEST_CONFLICT", "请求键已用于不同整理内容");
     }
@@ -431,14 +479,35 @@ export function enqueue(
   let key: string;
   let selected: MemoryEntryRow[] = [];
   if (kind === "merge") {
+    if (eventIds.length > 0) {
+      fail("MEMORY_STATE_CONFLICT", "整合任务不能单独指定观察来源");
+    }
     selected = entries(orm, agentId, [...memoryIds]);
     if (selected.some((i) => i.status !== "active")) {
       fail("MEMORY_STATE_CONFLICT", "只能整合有效记忆");
     }
     validateEntrySources(orm, selected);
-    // 记忆统一归属 Agent，同一 Agent 的记忆都可整合；scope 仅作为历史标签保留。
+    key = args.scope?.scopeKey ?? selected[0].scopeKey;
+    if (selected.some((item) => item.scopeKey !== key)) {
+      fail("MEMORY_STATE_CONFLICT", "只能整合同一分区的记忆，不能改变记忆归属");
+    }
     scope = selected[0].scope;
-    key = agentId;
+  } else if (eventIds.length > 0) {
+    // An observation-backed job needs an explicit scope (there is no session to
+    // derive one from) and cites only events that belong to that very scope.
+    if (args.scope === undefined) {
+      fail("MEMORY_SOURCE_INVALID", "观察来源必须与本会话的记忆范围一起指定");
+    }
+    if (sessionId !== null || turnIds.length > 0) {
+      fail("MEMORY_SOURCE_INVALID", "观察来源不能与会话轮次混用");
+    }
+    ownedObservations(orm, agentId, eventIds, args.scope.scopeKey);
+    scope = args.scope.scope;
+    key = args.scope.scopeKey;
+  } else if (args.scope !== undefined) {
+    turns(orm, agentId, sessionId, { ids: turnIds });
+    scope = args.scope.scope;
+    key = args.scope.scopeKey;
   } else {
     turns(orm, agentId, sessionId, { ids: turnIds });
     scope = sessionScope(orm, agentId, sessionId as string);
@@ -458,6 +527,7 @@ export function enqueue(
     template_version: TEMPLATE_VERSION,
     scope,
     scope_key: key,
+    source_event_ids: [...eventIds].sort(),
   };
 
   const result = orm
@@ -649,6 +719,11 @@ export type { MemoryDraft };
  * (for manual/auto) its turns are still marked processed, so the same turns are
  * not re-offered forever. For a merge, the replaced parents are linked to the
  * new child via `memory_links` so the merge stays auditable.
+ *
+ * Provenance is written per job kind: a turn job records `memory_sources`, an
+ * observation job records `qq_memory_sources`, and a merge carries BOTH kinds
+ * forward — dropping observation provenance would leave the merged memory with no
+ * evidence and therefore immediately unusable.
  */
 export function publish(
   orm: Orm,
@@ -658,8 +733,14 @@ export function publish(
   draft: MemoryDraft | null,
 ): void {
   const job = ownedRunning(orm, agentId, jobId, token);
+  const snapshot = JSON.parse(job.configSnapshot) as {
+    scope: string;
+    scope_key: string;
+    source_event_ids?: string[];
+  };
 
   let sourceRows: Array<Record<string, unknown>> = [];
+  let observationRows: Array<Record<string, unknown>> = [];
   let selected: MemoryEntryRow[] = [];
   if (job.kind === "merge") {
     selected = entries(orm, agentId, JSON.parse(job.memoryIds) as string[]);
@@ -676,18 +757,56 @@ export function publish(
         sequence_no: s.sequenceNo,
       }),
     );
-  } else {
-    const rows = turns(orm, agentId, job.sessionId, { ids: JSON.parse(job.turnIds) as string[] });
-    sourceRows = rows.map(({ turn, user, assistant }) => ({
-      turn_id: turn.id,
-      user_message_id: user.id,
-      assistant_message_id: assistant.id,
-      sequence_no: user.sequenceNo,
+    // Carry the parents' observation provenance forward, one row per event.
+    observationRows = [
+      ...new Map(
+        [
+          ...observationSources(
+            orm,
+            selected.map((item) => item.id),
+          ).values(),
+        ]
+          .flat()
+          .map((row) => [row.eventKey, row] as const),
+      ).values(),
+    ].map((row) => ({
+      event_key: row.eventKey,
+      scope_key: row.scopeKey,
+      conversation_key: row.conversationKey,
+      message_id: row.messageId,
+      occurred_at_seconds: row.occurredAtSeconds,
+      speaker_kind: row.speakerKind,
+      speaker_id: row.speakerId,
     }));
+  } else {
+    const eventIds = snapshot.source_event_ids ?? [];
+    if (eventIds.length > 0) {
+      // Re-validate against the job's own scope, so a hand-written id list cannot
+      // attach another conversation's message to this memory.
+      const events = ownedObservations(orm, agentId, eventIds, snapshot.scope_key);
+      observationRows = observationSourceRows(events, snapshot.scope_key).map((row) => ({
+        event_key: row.eventKey,
+        scope_key: row.scopeKey,
+        conversation_key: row.conversationKey,
+        message_id: row.messageId,
+        occurred_at_seconds: row.occurredAtSeconds,
+        speaker_kind: row.speakerKind,
+        speaker_id: row.speakerId ?? null,
+      }));
+    } else {
+      const rows = turns(orm, agentId, job.sessionId, {
+        ids: JSON.parse(job.turnIds) as string[],
+      });
+      sourceRows = rows.map(({ turn, user, assistant }) => ({
+        turn_id: turn.id,
+        user_message_id: user.id,
+        assistant_message_id: assistant.id,
+        sequence_no: user.sequenceNo,
+      }));
+    }
   }
 
   if (draft !== null) {
-    const snapshot = JSON.parse(job.configSnapshot) as { scope: string; scope_key: string };
     const entry = orm
       .insert(schema.memoryEntries)
       .values({
@@ -724,6 +843,21 @@ export function publish(
           userMessageId: data.user_message_id as string,
           assistantMessageId: data.assistant_message_id as string,
           sequenceNo: data.sequence_no as number,
+        })
+        .run();
+    }
+    for (const data of observationRows) {
+      orm
+        .insert(schema.qqMemorySources)
+        .values({
+          memoryId: entry.id,
+          eventKey: data.event_key as string,
+          scopeKey: data.scope_key as string,
+          conversationKey: data.conversation_key as string,
+          messageId: data.message_id as string,
+          occurredAtSeconds: data.occurred_at_seconds as number,
+          speakerKind: data.speaker_kind as string,
+          speakerId: data.speaker_id as string | null,
         })
         .run();
     }

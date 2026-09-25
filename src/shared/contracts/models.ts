@@ -170,3 +170,75 @@ export const LocalModelCatalogResponseSchema = z.strictObject({
 });
 
 export type LocalModelCatalogResponse = z.infer<typeof LocalModelCatalogResponseSchema>;
+
+// ---- 外部模型 API（0032，用户 2026-09-25）--------------------------------------------------
+
+/** One model a provider serves, with the context window the user typed for it. */
+export const ModelProviderModelSchema = z.strictObject({
+  name: nonBlankString(1, 200),
+  /**
+   * 手填的上下文窗口。外部服务通常不报这个数，而容量预检拿不到数就一律拒绝（QQ 的判断/回复/
+   * 复核/选图与标注都先过这道闸）——所以这里没有默认值：填了才可用。
+   */
+  context_window: z.number().int().min(256).max(10_000_000),
+});
+export type ModelProviderModel = z.infer<typeof ModelProviderModelSchema>;
+
+/** A provider declares a handful of models, not a catalogue mirror. */
+export const MODEL_PROVIDER_MODEL_LIMIT = 50;
+export const MODEL_PROVIDER_LIST_LIMIT = 20;
+
+const ProviderName = nonBlankString(1, 100);
+/** Only the OpenAI-compatible surface is supported; the scheme check catches typos early. */
+const ProviderBaseUrl = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .refine((value) => /^https?:\/\//.test(value), {
+    message: "地址必须以 http:// 或 https:// 开头",
+  });
+
+/**
+ * A provider as the page receives it. The key is never echoed: the response says whether one is
+ * stored, exactly like the QQ transport token.
+ */
+export const ModelProviderResponseSchema = z.strictObject({
+  id: z.string().uuid(),
+  name: ProviderName,
+  base_url: ProviderBaseUrl,
+  has_api_key: z.boolean(),
+  models: z.array(ModelProviderModelSchema).max(MODEL_PROVIDER_MODEL_LIMIT),
+  revision: z.number().int().positive(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ModelProviderResponse = z.infer<typeof ModelProviderResponseSchema>;
+
+export const CreateModelProviderRequestSchema = z.strictObject({
+  name: ProviderName,
+  base_url: ProviderBaseUrl,
+  /** Omitted or empty means "no key"; the value is write-only. */
+  api_key: z.string().max(500).nullable().optional(),
+  models: z.array(ModelProviderModelSchema).max(MODEL_PROVIDER_MODEL_LIMIT).optional(),
+});
+export type CreateModelProviderRequest = z.infer<typeof CreateModelProviderRequestSchema>;
+
+export const UpdateModelProviderRequestSchema = z.strictObject({
+  name: ProviderName.optional(),
+  base_url: ProviderBaseUrl.optional(),
+  /** Absent leaves the stored key alone; `null` clears it. */
+  api_key: z.string().max(500).nullable().optional(),
+  /** The whole list travels, like every other group in this project. */
+  models: z.array(ModelProviderModelSchema).max(MODEL_PROVIDER_MODEL_LIMIT).optional(),
+  expected_revision: z.number().int().positive(),
+});
+export type UpdateModelProviderRequest = z.infer<typeof UpdateModelProviderRequestSchema>;
+
+/** The "test connection" answer: what the provider's own `/models` said, or why it could not. */
+export const ModelProviderTestResponseSchema = z.strictObject({
+  ok: z.boolean(),
+  models: z.array(z.string()),
+  error: z.string().nullable(),
+});
+export type ModelProviderTestResponse = z.infer<typeof ModelProviderTestResponseSchema>;

@@ -64,13 +64,30 @@ export function createModelActions(
     recalculateCapacityPreview,
     refreshModels: async () => {
       try {
-        const catalog = await get().apiClient.listModels();
-        const modelNames = [...new Set(catalog.models)];
+        // 外部模型 API（0032）：登记过的外部模型名与本地模型并列出现在每个选择器里。取不到外部
+        // 清单不是错误——本地列表照旧可用，只是少了几项可选项。
+        const [catalog, providers] = await Promise.all([
+          get().apiClient.listModels(),
+          get()
+            .apiClient.listModelProviders()
+            .catch(() => []),
+        ]);
+        const local = [...new Set(catalog.models)];
+        const external = providers.flatMap((provider) =>
+          provider.models.map((model) => model.name),
+        );
+        const modelNames = [...new Set([...local, ...external])];
+        const parts = [
+          local.length
+            ? msg("LM Studio 当前报告 {0} 个已加载模型。", local.length)
+            : msg("LM Studio 当前没有报告已加载模型；仍可保留或手动输入模型 ID。"),
+        ];
+        if (external.length) parts.push(msg("另有 {0} 个来自外部模型 API。", external.length));
         set({
           modelNames,
-          modelStatus: modelNames.length
-            ? msg("LM Studio 当前报告 {0} 个已加载模型。", modelNames.length)
-            : msg("LM Studio 当前没有报告已加载模型；仍可保留或手动输入模型 ID。"),
+          loadedModelNames: local,
+          externalModelNames: [...new Set(external)],
+          modelStatus: parts.join(" "),
           error: null,
         });
       } catch (error) {

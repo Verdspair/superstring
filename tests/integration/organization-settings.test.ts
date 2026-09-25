@@ -44,7 +44,12 @@ const turn = () => {
 
 describe("shared organization default", () => {
   it("keeps the old fallback and changes only consolidation for new turns", () => {
-    expect(readOrganizationSettings(h.orm)).toEqual({ model_name: null, revision: 1 });
+    expect(readOrganizationSettings(h.orm)).toEqual({
+      model_name: null,
+      vision_model_name: null,
+      transcription_model_name: null,
+      revision: 1,
+    });
     expect(turn().prepared.runtime.memory_consolidation_model_name).toBe("chat-model");
     setDefault("organizer");
     const runtime = turn().prepared.runtime;
@@ -108,6 +113,8 @@ describe("shared organization default", () => {
       .get(DEFAULT_AGENT_ID);
     expect(await (await app.request("/organization/settings")).json()).toEqual({
       model_name: null,
+      vision_model_name: null,
+      transcription_model_name: null,
       revision: 1,
     });
     expect((await put({ model_name: "helper", expected_revision: 1 })).status).toBe(200);
@@ -118,7 +125,12 @@ describe("shared organization default", () => {
       { model_name: 42, expected_revision: 2 },
     ])
       expect((await put(body)).status).toBe(422);
-    expect(readOrganizationSettings(h.orm)).toEqual({ model_name: "helper", revision: 2 });
+    expect(readOrganizationSettings(h.orm)).toEqual({
+      model_name: "helper",
+      vision_model_name: null,
+      transcription_model_name: null,
+      revision: 2,
+    });
     expect(
       h.db.query("SELECT config_version FROM agents WHERE id = ?").get(DEFAULT_AGENT_ID),
     ).toEqual(before);
@@ -128,7 +140,46 @@ describe("shared organization default", () => {
 describe("schema4 additive migration", () => {
   const migrations = BUSINESS_MIGRATION_FILES.map((file) =>
     readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
-  ) as [string, string, string, string];
+  ) as unknown as [
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
   it("upgrades exact v3 without overwriting existing overrides", () => {
     const db = new Database(":memory:");
     try {
@@ -143,8 +194,10 @@ describe("schema4 additive migration", () => {
         id: 1,
         model_name: null,
         revision: 1,
+        vision_model_name: null,
+        transcription_model_name: null,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 38 });
     } finally {
       db.close();
     }

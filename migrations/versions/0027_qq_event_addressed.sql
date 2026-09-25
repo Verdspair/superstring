@@ -1,0 +1,16 @@
+-- P5r: whether an observed message was addressed to the assistant.
+--
+-- The immediate reply path (直接回应 / 连续交谈) does not run inside the intake turn: the global
+-- "one QQ model chain at a time" rule means a message can arrive while another chain holds the
+-- slot, so the reply is attempted on a later pass and has to decide, from STORAGE, whether this
+-- message was addressed to the assistant (an @ in a group, or any message in a private chat).
+--
+-- Until now that fact lived only in the delivery: `recordInbound` knew it, the row did not. Without
+-- it, a later pass would have to guess from the text, and a guess decides whether the assistant
+-- answers when called — the one case where being wrong is most visible.
+--
+-- Nullable on purpose, like every column appended to a populated table: rows written before this
+-- migration keep the weaker fact they really have (unknown), and "unknown" is read as "not
+-- addressed" — the conservative direction, because the other one replies to messages nobody aimed
+-- at the assistant.
+ALTER TABLE qq_events ADD COLUMN addressed INTEGER CHECK (addressed IN (0, 1));

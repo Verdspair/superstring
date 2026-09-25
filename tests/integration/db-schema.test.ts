@@ -47,6 +47,167 @@ const ORGANIZATION_SQL = readFileSync(
   "utf8",
 );
 
+const QQ_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0005_qq_transport.sql"),
+  "utf8",
+);
+
+const QQ_MEMORY_SOURCES_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0006_qq_memory_sources.sql"),
+  "utf8",
+);
+
+const QQ_OBSERVATION_TEXT_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0007_qq_observation_text.sql"),
+  "utf8",
+);
+
+const QQ_MEMORY_BATCH_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0008_qq_memory_batch.sql"),
+  "utf8",
+);
+
+const QQ_TRANSPORT_CONFIG_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0009_qq_transport_config.sql"),
+  "utf8",
+);
+
+const QQ_SCHEMES_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0010_qq_schemes.sql"),
+  "utf8",
+);
+const QQ_SPEECH_LOG_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0011_qq_speech_log.sql"),
+  "utf8",
+);
+const QQ_MEDIA_NOTES_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0012_qq_media_notes.sql"),
+  "utf8",
+);
+const QQ_SCHEME_TRIGGERS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0013_qq_scheme_triggers.sql"),
+  "utf8",
+);
+const QQ_SEND_LOG_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0014_qq_send_log.sql"),
+  "utf8",
+);
+const QQ_SCHEME_RHYTHM_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0015_qq_scheme_rhythm.sql"),
+  "utf8",
+);
+const QQ_CONTEXT_BUDGET_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0016_qq_context_budget.sql"),
+  "utf8",
+);
+
+const QQ_SCHEME_PROMPTS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0017_qq_scheme_prompts.sql"),
+  "utf8",
+);
+const QQ_MEMBERS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0018_qq_members.sql"),
+  "utf8",
+);
+const QQ_OUTPUT_RESERVE_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0019_qq_output_reserve.sql"),
+  "utf8",
+);
+const QQ_SCHEME_STICKERS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0020_qq_scheme_stickers.sql"),
+  "utf8",
+);
+const QQ_STICKERS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0021_qq_stickers.sql"),
+  "utf8",
+);
+const QQ_STICKER_AUTHORIZATION_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0022_qq_sticker_authorization.sql"),
+  "utf8",
+);
+const QQ_DISPATCH_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0023_qq_dispatch.sql"),
+  "utf8",
+);
+const QQ_MEDIA_PURPOSES_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0024_qq_media_purposes.sql"),
+  "utf8",
+);
+const DESKTOP_SETTINGS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0025_desktop_settings.sql"),
+  "utf8",
+);
+const QQ_MEDIA_SUPPLEMENT_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0026_qq_media_supplement.sql"),
+  "utf8",
+);
+const QQ_EVENT_ADDRESSED_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0027_qq_event_addressed.sql"),
+  "utf8",
+);
+const QQ_IMMEDIATE_LEASE_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0028_qq_immediate_lease.sql"),
+  "utf8",
+);
+const QQ_MODULE_SWITCHES_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0029_qq_module_switches.sql"),
+  "utf8",
+);
+const QQ_SWEEP_VERDICTS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0030_qq_sweep_verdicts.sql"),
+  "utf8",
+);
+const QQ_ATTENTION_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0031_qq_attention.sql"),
+  "utf8",
+);
+const MODEL_PROVIDERS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0032_model_providers.sql"),
+  "utf8",
+);
+const QQ_IDLE_JUDGEMENTS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0033_qq_idle_judgements.sql"),
+  "utf8",
+);
+const QQ_INITIATIVE_MIN_SCORE_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0034_qq_initiative_min_score.sql"),
+  "utf8",
+);
+const QQ_REPLY_SPLIT_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0035_qq_reply_split.sql"),
+  "utf8",
+);
+const QQ_JUDGEMENT_REUSE_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0036_qq_judgement_reuse.sql"),
+  "utf8",
+);
+const QQ_JUDGEMENT_PER_SPEAKER_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0037_qq_judgement_per_speaker.sql"),
+  "utf8",
+);
+const QQ_JUDGEMENT_MODEL_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0038_qq_judgement_model.sql"),
+  "utf8",
+);
+/** Every ordered business migration, joined for a complete reference database. */
+const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
+${QQ_DISPATCH_SQL}
+${QQ_MEDIA_PURPOSES_SQL}
+${DESKTOP_SETTINGS_SQL}
+${QQ_MEDIA_SUPPLEMENT_SQL}
+${QQ_EVENT_ADDRESSED_SQL}
+${QQ_IMMEDIATE_LEASE_SQL}
+${QQ_MODULE_SWITCHES_SQL}
+${QQ_SWEEP_VERDICTS_SQL}
+${QQ_ATTENTION_SQL}
+${MODEL_PROVIDERS_SQL}
+${QQ_IDLE_JUDGEMENTS_SQL}
+${QQ_INITIATIVE_MIN_SCORE_SQL}
+${QQ_REPLY_SPLIT_SQL}
+${QQ_JUDGEMENT_REUSE_SQL}
+${QQ_JUDGEMENT_PER_SPEAKER_SQL}
+${QQ_JUDGEMENT_MODEL_SQL}`;
+
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };
 
@@ -491,7 +652,7 @@ describe("schema.ts matches the SQL DDL (anti-drift)", () => {
   let db: Database;
   beforeAll(() => {
     db = new Database(":memory:");
-    db.exec(`${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}`);
+    db.exec(ALL_MIGRATION_SQL);
   });
   afterAll(() => db.close());
 
@@ -986,7 +1147,7 @@ describe("business schema gate", () => {
 
   it("accepts the correct version with the full table set", () => {
     const db = new Database(":memory:");
-    db.exec(`${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}`);
+    db.exec(ALL_MIGRATION_SQL);
     db.run(`PRAGMA user_version = ${BUSINESS_SCHEMA_VERSION}`);
     expect(() => ensureBusinessSchema(db)).not.toThrow();
     db.close();

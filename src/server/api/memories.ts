@@ -30,9 +30,18 @@ import {
   setScope,
   turns,
 } from "../db/memory-repository";
+import { readQqBindings } from "../db/qq-binding-repository";
+import { pendingObservationCount } from "../db/qq-observation-repository";
+import { readQqOwnerIdentity } from "../db/qq-owner-repository";
+import { readQqSettings } from "../db/qq-settings-repository";
 import { DEFAULT_USER_ID, immediate, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
 import { fail } from "../errors";
+import {
+  qqConversationScope,
+  qqMemoryScopeKey,
+  resolveQqMemoryAccess,
+} from "../services/qq-binding-contract";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
 /** `policy_view`. */
@@ -231,16 +240,98 @@ export function memoryRoutes(orm: Orm): Hono {
     );
   });
 
-  // Entries
+  router.get(`${base}/scopes`, (c) => {
+    const agentId = agentOf(c);
+    return c.json(
+      immediate(db, () => {
+        const items = entries(orm, agentId);
+        const bindings = readQqBindings(orm).filter((binding) => binding.agentId === agentId);
+        const jobs = orm
+          .select()
+          .from(schema.memoryJobs)
+          .where(
+            and(
+              eq(schema.memoryJobs.agentId, agentId),
+              eq(schema.memoryJobs.userId, DEFAULT_USER_ID),
+            ),
+          )
+          .orderBy(desc(schema.memoryJobs.createdAt))
+          .all();
+        const latestByScope = new Map<string, MemoryJobRow>();
+        for (const job of jobs) {
+          const snapshot = JSON.parse(job.configSnapshot) as { scope_key: string };
+          if (!latestByScope.has(snapshot.scope_key)) latestByScope.set(snapshot.scope_key, job);
+        }
+        const owner = readQqOwnerIdentity(orm);
+        const settings = readQqSettings(orm);
+        const bindingByScope = new Map(
+          bindings.map((binding) => [qqMemoryScopeKey(qqConversationScope(binding)), binding]),
+        );
+        const keys = new Set([
+          agentId,
+          ...bindingByScope.keys(),
+          ...items.map((item) => item.scopeKey),
+          ...latestByScope.keys(),
+        ]);
+        return [...keys].map((key) => {
+          const binding = bindingByScope.get(key);
+          const access = binding ? resolveQqMemoryAccess(binding, owner) : null;
+          const matching = items.filter((item) => item.scopeKey === key);
+          const job = latestByScope.get(key);
+          return {
+            scope_key: key,
+            count: matching.length,
+            active_count: matching.filter((item) => item.status === "active").length,
+            read_scope_keys:
+              key === agentId
+                ? null
+                : access?.kind === "resolved"
+                  ? access.access.readScopes.map(qqMemoryScopeKey)
+                  : [],
+            write_scope_key: key,
+            pending: binding ? pendingObservationCount(orm, qqConversationScope(binding)) : null,
+            binding: binding
+              ? {
+                  id: binding.id,
+                  revision: binding.revision,
+                  memory_batch_size: binding.memoryBatchSize,
+                  paused: binding.paused,
+                  enabled: settings.enabled === 1 && settings.accountId === binding.accountId,
+                }
+              : null,
+            latest_job: job ? jobView(job) : null,
+          };
+        });
+      }),
+    );
+  });
 
-  // pagination applies AFTER the full (already ordered) list.
+  // pagination applies AFTER filtering the agent-owned list.
   router.get(`${base}/entries`, (c) => {
     const agentId = agentOf(c);
     const offset = intQuery(c.req.query("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
     const limit = intQuery(c.req.query("limit"), 100, 1, 200);
+    const scopeKey = c.req.query("scope_key");
+    const search = (c.req.query("search") ?? "").trim().toLocaleLowerCase();
+    const status = c.req.query("status");
+    if (
+      (scopeKey?.length ?? 0) > 2048 ||
+      search.length > 200 ||
+      (status !== undefined && !["active", "suppressed", "replaced", "invalid"].includes(status))
+    )
+      fail("VALIDATION_ERROR", "记忆筛选条件无效", 422);
     return c.json(
       immediate(db, () => {
-        const items = entries(orm, agentId);
+        const items = entries(orm, agentId, undefined, {
+          scopeKeys: scopeKey === undefined ? null : [scopeKey],
+          status,
+        }).filter(
+          (item) =>
+            !search ||
+            `${item.name}\n${item.summary}\n${item.body}\n${item.tags}`
+              .toLocaleLowerCase()
+              .includes(search),
+        );
         return {
           total: items.length,
           items: items.slice(offset, offset + limit).map(entrySummary),

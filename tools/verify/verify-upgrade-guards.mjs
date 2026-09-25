@@ -36,12 +36,20 @@ function test(name, fn) {
   fn();
   checks.push({ name, pass: true });
 }
+// The current business schema, read from the migration directory instead of typed in. This fixture
+// said "23" for three schema bumps in a row, and each bump quietly turned "the policy knows the
+// current version" into a failure nobody saw — this script is not part of the six-item gate, so the
+// only thing that would have noticed was someone running it. Deriving the number means a bump can
+// only fail here if the policy really did drift (which the cases below then report by name).
+const currentSchema = fs
+  .readdirSync(path.join(root, "migrations/versions"))
+  .filter((name) => /^\d{4}_.+\.sql$/.test(name)).length;
 const base = {
   manifestVersion: 1,
   product: "superstring",
   platform: "win32-x64",
   layoutVersion: 1,
-  businessSchemaVersion: 4,
+  businessSchemaVersion: currentSchema,
   version: "0.1.0-dev",
 };
 const holders = [];
@@ -98,18 +106,17 @@ try {
   test("forward version classified", () =>
     assert.equal(checkUpgradeIdentity(base, { ...base, version: "0.1.0" }), "upgrade"));
   test("unknown schema refuses automatic upgrade", () =>
-    assert.throws(() => checkUpgradeIdentity(base, { ...base, businessSchemaVersion: 5 })));
-  test("known v1 to v3 upgrade accepted", () =>
-    assert.equal(
-      checkUpgradeIdentity({ ...base, businessSchemaVersion: 1 }, base),
-      "same-version-reinstall",
+    assert.throws(() =>
+      checkUpgradeIdentity(base, { ...base, businessSchemaVersion: currentSchema + 1 }),
     ));
-  test("known v2 to v3 upgrade accepted", () =>
-    assert.equal(
-      checkUpgradeIdentity({ ...base, businessSchemaVersion: 2 }, base),
-      "same-version-reinstall",
-    ));
-  test("v3 to v2 rejected", () =>
+  for (let version = 1; version < currentSchema; version++) {
+    test(`known v${version} to v${currentSchema} upgrade accepted`, () =>
+      assert.equal(
+        checkUpgradeIdentity({ ...base, businessSchemaVersion: version }, base),
+        "same-version-reinstall",
+      ));
+  }
+  test(`v${currentSchema} to v2 rejected`, () =>
     assert.throws(
       () => checkUpgradeIdentity(base, { ...base, businessSchemaVersion: 2 }),
       /DOWNGRADE/,

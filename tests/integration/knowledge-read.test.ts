@@ -305,6 +305,26 @@ describe("S3 known migration", () => {
     "0002_knowledge.sql",
     "0003_knowledge_read.sql",
     "0004_organization.sql",
+    "0005_qq_transport.sql",
+    "0006_qq_memory_sources.sql",
+    "0007_qq_observation_text.sql",
+    "0008_qq_memory_batch.sql",
+    "0009_qq_transport_config.sql",
+    "0010_qq_schemes.sql",
+    "0011_qq_speech_log.sql",
+    "0012_qq_media_notes.sql",
+    "0013_qq_scheme_triggers.sql",
+    "0014_qq_send_log.sql",
+    "0015_qq_scheme_rhythm.sql",
+    "0016_qq_context_budget.sql",
+    "0017_qq_scheme_prompts.sql",
+    "0018_qq_members.sql",
+    "0019_qq_output_reserve.sql",
+    "0020_qq_scheme_stickers.sql",
+    "0021_qq_stickers.sql",
+    "0022_qq_sticker_authorization.sql",
+    "0023_qq_dispatch.sql",
+    "0024_qq_media_purposes.sql",
   ].map((f) => readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
   it("v2 upgrade seeds existing assistants and preserves all v2 data", () => {
     const db = new Database(":memory:");
@@ -325,7 +345,7 @@ describe("S3 known migration", () => {
         document_ids: "[]",
         revision: 1,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 38 });
       ensureBusinessSchema(db);
       expect(db.query("SELECT count(*) AS n FROM agent_knowledge_read_settings").get()).toEqual({
         n: 1,
@@ -344,7 +364,46 @@ describe("S3 known migration", () => {
       const before = db.query("SELECT * FROM sqlite_master ORDER BY name").all();
       const failure = `${sql[2]}\nCREATE TABLE guard (n INTEGER CHECK(n=0)); INSERT INTO guard SELECT count(*) FROM users;`;
       expect(() =>
-        ensureBusinessSchema(db, [sql[0] ?? "", sql[1] ?? "", failure, sql[3] ?? ""]),
+        ensureBusinessSchema(db, [
+          sql[0] ?? "",
+          sql[1] ?? "",
+          failure,
+          sql[3] ?? "",
+          sql[4] ?? "",
+          sql[5] ?? "",
+          sql[6] ?? "",
+          sql[7] ?? "",
+          sql[8] ?? "",
+          sql[9] ?? "",
+          sql[10] ?? "",
+          sql[11] ?? "",
+          sql[12] ?? "",
+          sql[13] ?? "",
+          sql[14] ?? "",
+          sql[15] ?? "",
+          sql[16] ?? "",
+          sql[17] ?? "",
+          sql[18] ?? "",
+          sql[19] ?? "",
+          sql[20] ?? "",
+          sql[21] ?? "",
+          sql[22] ?? "",
+          sql[23] ?? "",
+          sql[24] ?? "",
+          sql[25] ?? "",
+          sql[26] ?? "",
+          sql[27] ?? "",
+          sql[28] ?? "",
+          sql[29] ?? "",
+          sql[30] ?? "",
+          sql[31] ?? "",
+          sql[32] ?? "",
+          sql[33] ?? "",
+          sql[34] ?? "",
+          sql[35] ?? "",
+          sql[36] ?? "",
+          sql[37] ?? "",
+        ]),
       ).toThrow();
       expect(db.query("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });

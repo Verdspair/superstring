@@ -1,7 +1,9 @@
 import { useI18n } from "../../i18n";
 import type { AgentDraft } from "../../state/types";
+import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
+import { modelOptionLabel } from "../models/model-availability";
 
 export function ChatModelFields({
   draft,
@@ -12,6 +14,10 @@ export function ChatModelFields({
   models: string[];
   patch: (value: Partial<AgentDraft>) => void;
 }) {
+  const availability = {
+    loaded: useSuperstringStore((s) => s.loadedModelNames),
+    external: useSuperstringStore((s) => s.externalModelNames),
+  };
   const t = useI18n();
   const options = [...new Set([...models, ...(draft.model_name ? [draft.model_name] : [])])];
   return (
@@ -29,7 +35,7 @@ export function ChatModelFields({
           )}
           {options.map((name) => (
             <option key={name} value={name}>
-              {name}
+              {modelOptionLabel(name, availability, t)}
             </option>
           ))}
         </select>

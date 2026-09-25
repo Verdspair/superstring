@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppearanceSnapshot } from "../../src/shared/appearance";
 import type { DesktopLifecycleClientOptions, WebSocketLike } from "../../src/web/desktop-lifecycle";
-import { broadcastAppearance, initDesktopLifecycle } from "../../src/web/desktop-lifecycle";
+import {
+  broadcastAppearance,
+  initDesktopLifecycle,
+  isDesktopMode,
+  requestDesktopExit,
+} from "../../src/web/desktop-lifecycle";
 
 class FakeWebSocket implements WebSocketLike {
   url: string;
@@ -17,8 +22,9 @@ class FakeWebSocket implements WebSocketLike {
     this.closed = true;
     this.onclose?.({ code: 1000 });
   }
-  send(): void {
-    /* no-op */
+  sent: string[] = [];
+  send(data: string): void {
+    this.sent.push(data);
   }
 }
 
@@ -266,5 +272,41 @@ describe("desktop appearance sync (client)", () => {
     ws.onclose?.({ code: 1000 });
     broadcastAppearance({ theme: "ocean", mode: "dark" });
     expect(ws.sent).toHaveLength(0);
+  });
+});
+
+describe("explicit exit through the liveness socket", () => {
+  afterEach(() => {
+    created = [];
+    appearanceCreated = [];
+  });
+
+  it("reports that the desktop meta is what enables the mode", () => {
+    expect(isDesktopMode(makeDoc(true))).toBe(true);
+    expect(isDesktopMode(makeDoc(false))).toBe(false);
+    expect(isDesktopMode(null)).toBe(false);
+  });
+
+  it("has no way to ask outside desktop mode", () => {
+    run(false);
+    expect(requestDesktopExit()).toBe(false);
+  });
+
+  it("writes the exact frame the server accepts, once the socket is open", () => {
+    run(true);
+    const ws = created[0];
+    // Before open there is no sink: the request must not be reported as sent.
+    expect(requestDesktopExit()).toBe(false);
+    ws.onopen?.({});
+    expect(requestDesktopExit()).toBe(true);
+    expect(ws.sent).toEqual(['{"exit":true}']);
+  });
+
+  it("stops claiming to have asked after the socket closes", () => {
+    run(true);
+    const ws = created[0];
+    ws.onopen?.({});
+    ws.onclose?.({ code: 1006 });
+    expect(requestDesktopExit()).toBe(false);
   });
 });

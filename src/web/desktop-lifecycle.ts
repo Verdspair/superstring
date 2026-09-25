@@ -49,12 +49,24 @@ export interface DesktopLifecycleClientOptions {
 
 const DEFAULT_LIFETIME_URL = "/__desktop/lifetime";
 
+/** The exact frame the server accepts (see `isExitRequest`); anything else is ignored. */
+export const EXIT_MESSAGE = '{"exit":true}';
+
 /**
  * Sink to the live liveness socket. Set on open, cleared on close. In normal
  * (non-desktop) mode it stays null, so appearance broadcast is a no-op and the
  * browser never opens a connection or writes anything to disk.
  */
 let appearanceSink: ((snapshot: AppearanceSnapshot) => void) | null = null;
+let exitSink: (() => boolean) | null = null;
+
+/** True when the server advertised desktop mode through the injected meta tag. */
+export function isDesktopMode(
+  doc: Document | null = typeof document !== "undefined" ? (document as Document) : null,
+): boolean {
+  if (!doc) return false;
+  return doc.querySelector('meta[name="desktop-mode"]')?.getAttribute("content") === "1";
+}
 
 /** Broadcast the current appearance to the server. Desktop mode only; a no-op
  * before the liveness socket is open or in normal mode. Callers pass the latest
@@ -63,14 +75,26 @@ export function broadcastAppearance(snapshot: AppearanceSnapshot): void {
   appearanceSink?.(snapshot);
 }
 
+/**
+ * Ask the host to quit for good (§12's explicit exit). This is the only client frame that can end
+ * the process, and it travels the same same-origin-checked liveness socket the "last page closed"
+ * promise already trusts.
+ *
+ * Returns whether the request was actually written: a page in normal mode, or one whose socket is
+ * momentarily reconnecting, has no way to ask — and saying "已请求退出" when nothing was sent would
+ * be a lie the user cannot check.
+ */
+export function requestDesktopExit(): boolean {
+  return exitSink?.() ?? false;
+}
+
 export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}): void {
   const doc =
     options.documentRef ?? (typeof document !== "undefined" ? (document as Document) : null);
   if (!doc) return;
 
-  const meta = doc.querySelector('meta[name="desktop-mode"]');
   // Normal mode: do nothing at all. Never log, never connect.
-  if (meta?.getAttribute("content") !== "1") return;
+  if (!isDesktopMode(doc)) return;
 
   const win = options.windowRef ?? (typeof window !== "undefined" ? (window as Window) : null);
   if (!win) return;
@@ -114,6 +138,15 @@ export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}
             /* a failed write must never break liveness */
           }
         };
+        exitSink = () => {
+          if (socket !== ws) return false;
+          try {
+            ws.send(EXIT_MESSAGE);
+            return true;
+          } catch {
+            return false;
+          }
+        };
         // Re-read the CURRENT appearance (not stale in-memory) on (re)connect so
         // a tab restored from bfcache cannot roll the server back to an old value.
         if (getAppearance) {
@@ -138,6 +171,7 @@ export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}
         if (socket !== ws) return;
         socket = null;
         appearanceSink = null;
+        exitSink = null;
         if (!suspended) scheduleReconnect();
       };
     } catch {
@@ -165,6 +199,7 @@ export function initDesktopLifecycle(options: DesktopLifecycleClientOptions = {}
     }
     clearReconnect();
     appearanceSink = null;
+    exitSink = null;
     if (win && getAppearance) {
       win.removeEventListener("storage", onStorage);
     }

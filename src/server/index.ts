@@ -4,6 +4,7 @@ import type { WebSocketHandler } from "bun";
 import { serve } from "bun";
 import type { Hono } from "hono";
 import { isApiPath } from "../shared/api-routes";
+import { readDesktopSettings } from "./db/desktop-repository";
 import { createAppearanceRepository } from "./desktop-appearance";
 import {
   createDesktopLifecycle,
@@ -50,6 +51,10 @@ const runtimeFactory = createRuntime;
 const runtime = runtimeFactory({
   businessDbPath: BUSINESS_DB_PATH,
   browserStateSecretPath: layout?.paths.browserStateKey,
+  qqStickerDirectory: layout?.paths.qqStickersDir,
+  // The transport token is sealed with this key. Passing the resolved layout path is what keeps
+  // it under the installation's own state directory instead of the development default.
+  qqTransportKeyPath: layout?.paths.qqTransportKey,
   businessMigrationSql: layout?.businessMigrationSql,
 });
 
@@ -72,6 +77,9 @@ const desktop = isDesktopToken(process.env.SUPERSTRING_DESKTOP_TOKEN)
       actualPort: () => actualPort,
       onStop: () => void shutdown(),
       onAppearance: appearanceRepo ? (snapshot) => void appearanceRepo.save(snapshot) : undefined,
+      // §12: "stay online in the background" has to mean the server does not stop when the last
+      // page closes. Read per close (not once at boot) so a change in settings applies at once.
+      closeAction: () => readDesktopSettings(runtime.business.orm).close_action,
     })
   : null;
 

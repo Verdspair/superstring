@@ -6,6 +6,11 @@ import { KnowledgeModelPage } from "../features/knowledge/KnowledgeModelPage";
 import { KnowledgeReadPage } from "../features/knowledge/KnowledgeReadPage";
 import { KnowledgeSettings } from "../features/knowledge/KnowledgeSettings";
 import { OrganizationModelPage } from "../features/knowledge/OrganizationModelPage";
+import { ExternalApiSettings } from "../features/models/ExternalApiSettings";
+import { QqJudgementModelPage } from "../features/qq/QqJudgementModelPage";
+import { QqStorageSettings } from "../features/qq/QqStorageSettings";
+import { SchemeSettings } from "../features/qq/SchemeSettings";
+import { StickerLibrary } from "../features/qq/StickerLibrary";
 import { translateNotice, useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { SettingsGroup } from "../ui/Accordion";
@@ -40,6 +45,17 @@ export function SettingsWorkspace() {
   const management =
     routeId === "management" || routeId === "models" || routeId === "knowledge-model";
   const knowledge = routeId === "knowledge-config";
+  // The QQ pages (sticker library, chat schemes) are QQ-global: they have no assistant to
+  // configure, and they report their own errors and notices inside their own flow (§3.3's
+  // document-flow rule) rather than at the bottom of the workspace.
+  // 外部模型 API 是应用级资源：它不随助手切换，所以和 QQ 各页一样不渲染助手选择器（0032）。
+  const externalApi = routeId === "external-api";
+  const stickers = routeId === "qq-stickers";
+  const schemes = routeId === "qq-scheme-config";
+  const storage = routeId === "qq-storage";
+  // The QQ surfaces are global too: no assistant to switch, and the selector above them would
+  // suggest otherwise. 运行模式 is its own view (App.tsx), so it is not part of this list.
+  const globalQq = stickers || schemes || storage || externalApi;
   useEffect(() => {
     const state = useSuperstringStore.getState();
     if (!pageEditor && !state.dirty && persona && editorId !== "__new__") {
@@ -100,7 +116,7 @@ export function SettingsWorkspace() {
       <SettingsHeader onBack={() => navigate("settings", "hub")} />
       <SettingsBody>
         <div className="settings-content settings-workspace agent-settings">
-          {selector}
+          {!globalQq && selector}
           <div className="detail-config workspace-detail">
             <div className="detail-body">
               <div className="config-section workspace-config">
@@ -118,10 +134,12 @@ export function SettingsWorkspace() {
                     </div>
                     <nav className="workspace-anchors" aria-label={t("模型分区跳转")}>
                       <a href="#organization-default">{t("共同整理默认值")}</a>
+                      <a href="#qq-judgement-model">{t("QQ 判断模型")}</a>
                       <a href="#assistant-models">{t("当前助手模型")}</a>
                       <a href="#knowledge-model">{t("知识库整理模型")}</a>
                     </nav>
                     <OrganizationModelPage />
+                    <QqJudgementModelPage />
                     <section
                       id="assistant-models"
                       className="assistant-model-section"
@@ -168,6 +186,26 @@ export function SettingsWorkspace() {
                       <KnowledgeSettings embedded />
                     </SettingsGroup>
                   </>
+                ) : externalApi ? (
+                  <>
+                    <p className="settings-note">{t(meta?.note ?? "")}</p>
+                    <ExternalApiSettings />
+                  </>
+                ) : stickers ? (
+                  <>
+                    <p className="settings-note">{t(meta?.note ?? "")}</p>
+                    <StickerLibrary />
+                  </>
+                ) : schemes ? (
+                  <>
+                    <p className="settings-note">{t(meta?.note ?? "")}</p>
+                    <SchemeSettings />
+                  </>
+                ) : storage ? (
+                  <>
+                    <p className="settings-note">{t(meta?.note ?? "")}</p>
+                    <QqStorageSettings />
+                  </>
                 ) : (
                   meta && (
                     <>
@@ -189,7 +227,7 @@ export function SettingsWorkspace() {
                     {translateNotice(feedback)}
                   </p>
                 )}
-                {error && (
+                {error && !globalQq && (
                   <p role="alert" className="error">
                     {translateNotice(error)}
                   </p>

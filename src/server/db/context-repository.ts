@@ -8,10 +8,17 @@ import type { ContentItem, RuntimeConfig } from "../../shared/contracts";
 import { AppError } from "../errors";
 import { AGENT_LEVEL_SCOPE_KEY } from "../services/memory-contract";
 import { correctionMetadata } from "../services/memory-revision";
+import type { MemoryScopeKeys } from "../services/memory-scope";
 import { compileSystemPrompt } from "../services/runtime-config";
 import { fullCasefold } from "../services/text";
 import { correctionsForTurns, memoryRevision } from "./memory-content-repository";
 import { entries, ownedSession, sessionScope, turns } from "./memory-repository";
+import {
+  acceptsObservationSources,
+  observationContentSources,
+  observationSources,
+  observationSourcesIntact,
+} from "./memory-source-repository";
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -194,50 +201,78 @@ export function history(
   return result;
 }
 
-function validMemoryRows(orm: Orm, agentId: string): ReturnType<typeof entries> {
-  return entries(orm, agentId, undefined, { status: "active" }).filter((entry) => {
+/**
+ * Recall candidates.
+ * `scopeKeys` is the explicit read scope (see memory-scope.ts). `undefined` keeps
+ * the historical agent-level read; `null` is not accepted here because callers
+ * must decide explicitly rather than inheriting a silent fallback.
+ */
+function validMemoryRows(
+  orm: Orm,
+  agentId: string,
+  scopeKeys?: MemoryScopeKeys,
+): ReturnType<typeof entries> {
+  const rows = entries(orm, agentId, undefined, { status: "active", scopeKeys });
+  const observations = observationSources(
+    orm,
+    rows.map((row) => row.id),
+  );
+  return rows.filter((entry) => {
     const sources = orm
       .select()
       .from(schema.memorySources)
       .where(eq(schema.memorySources.memoryId, entry.id))
       .all();
-    if (sources.length === 0) return false;
-    return sources.every((source) => {
-      const turn = orm.select().from(schema.turns).where(eq(schema.turns.id, source.turnId)).get();
-      const session = turn
-        ? orm.select().from(schema.sessions).where(eq(schema.sessions.id, turn.sessionId)).get()
-        : undefined;
-      const user = orm
-        .select()
-        .from(schema.messages)
-        .where(eq(schema.messages.id, source.userMessageId))
-        .get();
-      const assistant = orm
-        .select()
-        .from(schema.messages)
-        .where(eq(schema.messages.id, source.assistantMessageId))
-        .get();
-      return (
-        turn !== undefined &&
-        session !== undefined &&
-        user !== undefined &&
-        assistant !== undefined &&
-        turn.sourceValid === 1 &&
-        turn.contextValid === 1 &&
-        turn.generationStatus === "completed" &&
-        session.agentId === agentId &&
-        session.userId === DEFAULT_USER_ID &&
-        user.turnId === turn.id &&
-        assistant.turnId === turn.id &&
-        user.sessionId === session.id &&
-        assistant.sessionId === session.id &&
-        user.role === "user" &&
-        assistant.role === "assistant" &&
-        user.status === "completed" &&
-        assistant.status === "completed"
-      );
-    });
+    if (sources.length > 0 && sources.every((source) => turnSourceIntact(orm, agentId, source))) {
+      return true;
+    }
+    // A QQ memory may be backed by observations instead; web memory may not.
+    return (
+      acceptsObservationSources(entry.scopeKey, agentId) &&
+      observationSourcesIntact(orm, observations.get(entry.id) ?? [])
+    );
   });
+}
+
+/** The turn, its session and both messages must still be complete and owned. */
+function turnSourceIntact(
+  orm: Orm,
+  agentId: string,
+  source: typeof schema.memorySources.$inferSelect,
+): boolean {
+  const turn = orm.select().from(schema.turns).where(eq(schema.turns.id, source.turnId)).get();
+  const session = turn
+    ? orm.select().from(schema.sessions).where(eq(schema.sessions.id, turn.sessionId)).get()
+    : undefined;
+  const user = orm
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.id, source.userMessageId))
+    .get();
+  const assistant = orm
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.id, source.assistantMessageId))
+    .get();
+  return (
+    turn !== undefined &&
+    session !== undefined &&
+    user !== undefined &&
+    assistant !== undefined &&
+    turn.sourceValid === 1 &&
+    turn.contextValid === 1 &&
+    turn.generationStatus === "completed" &&
+    session.agentId === agentId &&
+    session.userId === DEFAULT_USER_ID &&
+    user.turnId === turn.id &&
+    assistant.turnId === turn.id &&
+    user.sessionId === session.id &&
+    assistant.sessionId === session.id &&
+    user.role === "user" &&
+    assistant.role === "assistant" &&
+    user.status === "completed" &&
+    assistant.status === "completed"
+  );
 }
 
 function parseStringArray(text: string): string[] {
@@ -257,6 +292,7 @@ function asMemoryItem(
     .innerJoin(schema.turns, eq(schema.turns.id, schema.memorySources.turnId))
     .where(eq(schema.memorySources.memoryId, row.id))
     .all();
+  const observations = observationSources(orm, [row.id]).get(row.id) ?? [];
   return {
     id: row.id,
     source_type: "memory",
@@ -267,15 +303,18 @@ function asMemoryItem(
     revision: memoryRevision(row),
     validity: "valid",
     createdAt: row.createdAt,
-    sources: sources.map(({ memory_sources: source, turns: turn }) => ({
-      type: "chat",
-      turn_id: source.turnId,
-      session_id: turn.sessionId,
-      user_message_id: source.userMessageId,
-      assistant_message_id: source.assistantMessageId,
-      sequence_no: source.sequenceNo,
-      valid: true,
-    })),
+    sources: [
+      ...sources.map(({ memory_sources: source, turns: turn }) => ({
+        type: "chat" as const,
+        turn_id: source.turnId,
+        session_id: turn.sessionId,
+        user_message_id: source.userMessageId,
+        assistant_message_id: source.assistantMessageId,
+        sequence_no: source.sequenceNo,
+        valid: true,
+      })),
+      ...observationContentSources(observations),
+    ],
     ...(withBody ? { body: row.body } : {}),
   };
 }
@@ -289,11 +328,31 @@ export function catalog(
     limit?: number;
     afterId?: string | null;
     allEntries?: boolean;
+    scopeKeys?: MemoryScopeKeys;
   } = {},
 ): MemoryItem[] {
   sessionScope(orm, agentId, sessionId);
-  const limit = options.limit ?? 30;
-  let rows = validMemoryRows(orm, agentId);
+  return catalogByScopeKeys(orm, agentId, options.scopeKeys ?? null, {
+    ...options,
+    limit: options.limit ?? 30,
+    withBody: false,
+  });
+}
+
+export function catalogByScopeKeys(
+  orm: Orm,
+  agentId: string,
+  scopeKeys: MemoryScopeKeys,
+  options: {
+    keywords?: string[];
+    limit?: number;
+    afterId?: string | null;
+    allEntries?: boolean;
+    withBody?: boolean;
+  } = {},
+): MemoryItem[] {
+  const limit = options.limit ?? 10;
+  let rows = validMemoryRows(orm, agentId, scopeKeys);
   const afterId = options.afterId;
   if (afterId !== undefined && afterId !== null) {
     rows = rows.filter((row) => row.id > afterId);
@@ -319,15 +378,34 @@ export function catalog(
   } else {
     rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
   }
-  return rows.slice(0, limit).map((row) => asMemoryItem(orm, row));
+  return rows.slice(0, limit).map((row) => asMemoryItem(orm, row, options.withBody ?? true));
 }
 
-/** Fingerprint metadata only, never bodies. */
-export function catalogFingerprint(orm: Orm, agentId: string, sessionId: string): string {
+/**
+ * Fingerprint metadata only, never bodies. The read scope is part of the digest,
+ * so a scope change during a full-catalog scan invalidates the scan.
+ */
+export function catalogFingerprint(
+  orm: Orm,
+  agentId: string,
+  sessionId: string,
+  scopeKeys?: MemoryScopeKeys,
+): string {
   sessionScope(orm, agentId, sessionId);
+  return memoryFingerprintByScopeKeys(orm, agentId, scopeKeys ?? null);
+}
+
+export function memoryFingerprintByScopeKeys(
+  orm: Orm,
+  agentId: string,
+  scopeKeys: MemoryScopeKeys,
+): string {
   const digest = createHash("sha256");
   digest.update(`${agentId}:${AGENT_LEVEL_SCOPE_KEY}`);
-  for (const row of validMemoryRows(orm, agentId).sort((a, b) => a.id.localeCompare(b.id))) {
+  digest.update(`:${!Array.isArray(scopeKeys) ? "agent" : JSON.stringify(scopeKeys)}`);
+  for (const row of validMemoryRows(orm, agentId, scopeKeys).sort((a, b) =>
+    a.id.localeCompare(b.id),
+  )) {
     digest.update(
       JSON.stringify([
         row.id,
@@ -348,9 +426,19 @@ export function memoryBodies(
   agentId: string,
   sessionId: string,
   ids: string[],
+  scopeKeys?: MemoryScopeKeys,
 ): MemoryItem[] {
   sessionScope(orm, agentId, sessionId);
-  const rows = validMemoryRows(orm, agentId).filter((row) => ids.includes(row.id));
+  return memoryBodiesByScopeKeys(orm, agentId, ids, scopeKeys ?? null);
+}
+
+export function memoryBodiesByScopeKeys(
+  orm: Orm,
+  agentId: string,
+  ids: string[],
+  scopeKeys: MemoryScopeKeys,
+): MemoryItem[] {
+  const rows = validMemoryRows(orm, agentId, scopeKeys).filter((row) => ids.includes(row.id));
   if (new Set(rows.map((row) => row.id)).size !== new Set(ids).size) {
     contextFail("已选记忆的权限、状态或来源已变化");
   }

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { Icon } from "../ui/icons";
@@ -108,23 +108,35 @@ export function SettingsBody({ children }: { children: ReactNode }) {
           title: item.title,
           icon: "chip" as const,
           active: view === "workspace" && route === item.id,
-          unavailable: item.state === "unavailable",
+          // Widened on purpose: the filter above narrows the literal type per group, and a group
+          // whose entries all happen to be open is not a reason to stop asking the question.
+          unavailable: (item.state as string) === "unavailable",
           action: () => openRoute(item.id),
         })),
       ]
-    : SETTINGS_ROUTES.filter((item) => item.group === group).map((item) => ({
-        id: item.id,
-        title: item.title,
-        icon:
-          item.group === "management"
-            ? ("chip" as const)
-            : item.group === "persona"
-              ? ("profile" as const)
-              : ("book" as const),
-        active: route === item.id,
-        unavailable: item.state === "unavailable",
-        action: () => openRoute(item.id),
-      }));
+    : SETTINGS_ROUTES.filter((item) => item.group === group).flatMap((item, index, list) => {
+        const previous = index === 0 ? undefined : list[index - 1];
+        // §11.1 groups the QQ entries under "QQ额外配置"; the label marks where that area starts
+        // so the entries read as one area instead of three more assistant settings.
+        const opensQqArea =
+          "area" in item &&
+          item.area === "qq" &&
+          !(previous !== undefined && "area" in previous && previous.area === "qq");
+        const row = {
+          id: item.id,
+          title: item.title,
+          icon:
+            item.group === "management"
+              ? ("chip" as const)
+              : item.group === "persona"
+                ? ("profile" as const)
+                : ("book" as const),
+          active: route === item.id,
+          unavailable: item.state === "unavailable",
+          action: () => openRoute(item.id),
+        };
+        return [opensQqArea ? { ...row, label: "QQ额外配置" } : row];
+      });
   if (page !== "settings") return <>{children}</>;
   return (
     <div className="settings-body">
@@ -136,20 +148,24 @@ export function SettingsBody({ children }: { children: ReactNode }) {
             aria-label={t(management ? "管理入口" : "配置页面")}
           >
             {items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                disabled={busy}
-                className={item.active ? "active" : undefined}
-                aria-current={item.active ? "page" : undefined}
-                onClick={item.action}
-              >
-                <span className="section-row-head">
-                  <Icon name={item.icon} />
-                  <strong>{t(item.title)}</strong>
-                </span>
-                {"unavailable" in item && item.unavailable && <small>{t("未开放")}</small>}
-              </button>
+              <Fragment key={item.id}>
+                {"label" in item && item.label && (
+                  <div className="settings-nav-label">{t(item.label)}</div>
+                )}
+                <button
+                  type="button"
+                  disabled={busy}
+                  className={item.active ? "active" : undefined}
+                  aria-current={item.active ? "page" : undefined}
+                  onClick={item.action}
+                >
+                  <span className="section-row-head">
+                    <Icon name={item.icon} />
+                    <strong>{t(item.title)}</strong>
+                  </span>
+                  {"unavailable" in item && item.unavailable && <small>{t("未开放")}</small>}
+                </button>
+              </Fragment>
             ))}
           </nav>
         )}

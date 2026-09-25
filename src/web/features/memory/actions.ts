@@ -8,6 +8,7 @@ export function createMemoryActions(
 ): Pick<
   SuperstringState,
   | "resetMemoryManagement"
+  | "loadMemoryPolicy"
   | "clearMemoryTurns"
   | "reloadMemory"
   | "loadMemoryContent"
@@ -21,6 +22,9 @@ export function createMemoryActions(
   | "updatePolicy"
   | "governMemories"
   | "mergeMemories"
+  | "patchQqMemoryBatchDraft"
+  | "saveQqMemoryBatchDrafts"
+  | "discardQqMemoryBatchDrafts"
 > {
   let selectionRequest = 0;
   let managementEpoch = 0;
@@ -42,6 +46,55 @@ export function createMemoryActions(
     };
   };
   return {
+    patchQqMemoryBatchDraft: (id, draft) => {
+      if (get().qqMemoryBatchSaving) return;
+      const drafts = { ...get().qqMemoryBatchDrafts };
+      if (draft) drafts[id] = draft;
+      else delete drafts[id];
+      set({ qqMemoryBatchDrafts: drafts });
+    },
+    discardQqMemoryBatchDrafts: () => {
+      if (!get().qqMemoryBatchSaving) set({ qqMemoryBatchDrafts: {} });
+    },
+    saveQqMemoryBatchDrafts: async (ids) => {
+      if (get().qqMemoryBatchSaving) return false;
+      const entries = Object.entries(get().qqMemoryBatchDrafts).filter(
+        ([id]) => !ids || ids.includes(id),
+      );
+      if (
+        entries.some(
+          ([, draft]) =>
+            draft.value.trim() !== "" &&
+            (!Number.isSafeInteger(Number(draft.value)) || Number(draft.value) < 1),
+        )
+      ) {
+        set({ error: msg("条数需为正整数，留空表示关闭。") });
+        return false;
+      }
+      set({ qqMemoryBatchSaving: true, error: null });
+      try {
+        for (const [id, draft] of entries) {
+          const saved = await get().apiClient.updateQqBinding(id, {
+            memory_batch_size: draft.value.trim() === "" ? null : Number(draft.value),
+            expected_revision: draft.revision,
+          });
+          const drafts = { ...get().qqMemoryBatchDrafts };
+          delete drafts[id];
+          set({
+            qqMemoryBatchDrafts: drafts,
+            qqBindings: get().qqBindings.map((binding) =>
+              binding.id === saved.id ? saved : binding,
+            ),
+          });
+        }
+        return true;
+      } catch (error) {
+        set({ error: errorText(error) });
+        return false;
+      } finally {
+        set({ qqMemoryBatchSaving: false });
+      }
+    },
     resetMemoryManagement: () => {
       managementEpoch += 1;
       selectionRequest += 1;
@@ -162,6 +215,26 @@ export function createMemoryActions(
         set({ memoryCorrectionSaving: false });
       }
     },
+    // 记忆页要显示"网页自动整理开没开"，但不需要 `reloadMemory` 那种整页重置（它会清空列表与详情）。
+    // 这一跳只读策略：没有它，网页分区的状态会永远停在"正在读取…"。
+    loadMemoryPolicy: async () => {
+      const id = get().editorAgentId;
+      if (id === "__new__") return;
+      const matches = currentContext();
+      try {
+        const policy = await get().apiClient.getPolicy(id);
+        if (!matches() || get().editorAgentId !== id) return;
+        const editor = get().pageEditor;
+        set({
+          policy,
+          ...(editor && editor.agent.id === id && !editor.policy
+            ? { pageEditor: { ...editor, policy, policyDraft: { ...policy } } }
+            : {}),
+        });
+      } catch {
+        // 读不到就保持"未加载"，面板据此显示重试而不是假装已关闭。
+      }
+    },
     reloadMemory: async () => {
       if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
       get().discardMemoryCorrection();
@@ -249,7 +322,7 @@ export function createMemoryActions(
         });
       }
     },
-    loadMemoryPage: async (page) => {
+    loadMemoryPage: async (page, filters) => {
       if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
       get().discardMemoryCorrection();
       const request = selectionRequest;
@@ -261,7 +334,7 @@ export function createMemoryActions(
         return;
       }
       try {
-        const result = await get().apiClient.listMemoryEntries(id, (page - 1) * 100, 100);
+        const result = await get().apiClient.listMemoryEntries(id, (page - 1) * 100, 100, filters);
         if (
           !matches() ||
           request !== selectionRequest ||

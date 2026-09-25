@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!!node_modules", "!!dist", "!!artifacts", "!!package-lock.json"]
+    "includes": [
+      "**",
+      "!!node_modules",
+      "!!dist",
+      "!!artifacts",
+      "!!package-lock.json",
+      "!!external"
+    ]
   },
   "linter": {
     "enabled": true,

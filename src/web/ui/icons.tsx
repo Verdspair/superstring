@@ -33,7 +33,8 @@ export function Icon({
     | "language"
     | "trash"
     | "edit"
-    | "refresh";
+    | "refresh"
+    | "power";
 }) {
   const paths: Record<typeof name, ReactNode> = {
     edit: <path d="m15 4 5 5M4 20l5-1L21 7l-5-5L4 14v6Z" />,
@@ -188,6 +189,12 @@ export function Icon({
         <circle cx="7.5" cy="11" r="0.7" />
         <circle cx="10" cy="7" r="0.7" />
         <circle cx="15" cy="7.5" r="0.7" />
+      </>
+    ),
+    power: (
+      <>
+        <path d="M12 4v8" />
+        <path d="M7 7a7 7 0 1 0 10 0" />
       </>
     ),
     profile: (

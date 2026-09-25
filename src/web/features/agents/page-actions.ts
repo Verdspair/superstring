@@ -29,6 +29,7 @@ export function createPageActions(
   | "patchPagePolicy"
   | "saveSettingsPage"
   | "saveAllSettingsPages"
+  | "applyDefaultModelToAgent"
   | "discardSettingsPages"
 > {
   const publish = (editor: PageEditor) => {
@@ -163,6 +164,32 @@ export function createPageActions(
     },
     saveSettingsPage: (page) => save([page]),
     saveAllSettingsPages: () => save(dirtyPages(get().pageEditor)),
+    // 一键覆盖（用户 2026-09-25）：四个文本用途一起改，然后立刻保存模型页。走 page 的保存通路
+    // （同一份校验、同一个 expected_version 比较交换），所以它不是一条绕过保存的第二条路。
+    applyDefaultModelToAgent: async (modelName) => {
+      const editor = get().pageEditor;
+      if (!editor || get().settingsSaving || get().editorLoading) return false;
+      if (get().editorAgentId === "__new__") return false;
+      const draft = editor.draft;
+      const already =
+        draft.model_name === modelName &&
+        draft.memory_retrieval_model_name === modelName &&
+        draft.memory_consolidation_model_name === modelName &&
+        draft.context_compression_model_name === modelName;
+      if (already) {
+        set({ feedback: msg("四个文本用途已经是这个模型，无需覆盖。") });
+        return true;
+      }
+      get().patchPageAgent("models", {
+        model_name: modelName,
+        memory_retrieval_model_name: modelName,
+        memory_consolidation_model_name: modelName,
+        context_compression_model_name: modelName,
+      });
+      const saved = await save(["models"]);
+      if (saved) set({ feedback: msg("已把这个默认模型覆盖到当前助手的四个文本用途。") });
+      return saved;
+    },
     discardSettingsPages: () => {
       const editor = get().pageEditor;
       if (get().settingsSaving || !editor) return;

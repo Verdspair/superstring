@@ -4,11 +4,18 @@ import { createAgentActions } from "./features/agents/actions";
 import { createModelActions } from "./features/agents/model-actions";
 import { createPageActions } from "./features/agents/page-actions";
 import { createChatActions } from "./features/chat/actions";
+import { createDesktopSettingsActions } from "./features/general/desktop-state";
 import { createKnowledgeActions } from "./features/knowledge/actions";
 import { createKnowledgeModelActions } from "./features/knowledge/model-actions";
 import { createOrganizationActions } from "./features/knowledge/organization-actions";
 import { createKnowledgeReadActions } from "./features/knowledge/read-actions";
 import { createMemoryActions } from "./features/memory/actions";
+import {
+  createQqAccessActions,
+  createQqSchemeActions,
+  createQqStickerActions,
+  createQqStorageActions,
+} from "./features/qq/actions";
 import { createBootstrapActions } from "./state/bootstrap";
 import { defaultEffects } from "./state/effects";
 import { initial } from "./state/initial";
@@ -41,6 +48,11 @@ export const useSuperstringStore = create<SuperstringState>()((set, get) => ({
   ...createKnowledgeModelActions(set, get),
   ...createKnowledgeReadActions(set, get),
   ...createOrganizationActions(set, get),
+  ...createQqStickerActions(set, get),
+  ...createQqSchemeActions(set, get),
+  ...createQqStorageActions(set, get),
+  ...createQqAccessActions(set, get),
+  ...createDesktopSettingsActions(set, get),
   setNotice: (patch) => set(patch),
   clearMemoryDetail: () => {
     if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;

@@ -153,11 +153,13 @@ describe("general settings and status bar", () => {
   it("shows only supported chat mode as enabled", () => {
     const { container } = render(<OperatingModeSettings />);
     expect(container.querySelector("details")).toBeNull();
+    // 2026-09-25：模式列表里的「第三方聊天（QQ）」取代了原来未开放的「主动聊天模式」占位，它承载总开关
+    // 与连接状态，配置就在同一页的「QQ」分组里（所以这一页的行数是三行，而不是旧的"三模式 + 一行"）。
     expect(container.querySelectorAll(".operating-mode-row")).toHaveLength(3);
     expect(container.querySelectorAll(".operating-mode-row > .icon")).toHaveLength(3);
     expect(container.querySelector(".mode-options")).toBeNull();
     expect(screen.getByText("使用中")).toBeTruthy();
-    expect(screen.getAllByText("未开放")).toHaveLength(2);
+    expect(screen.getAllByText("未开放")).toHaveLength(1);
     expect(screen.getAllByRole("heading", { name: "运行模式" })).toHaveLength(1);
     expect(container.querySelector(".settings-back svg path")?.getAttribute("d")).toBe(
       "m14 6-6 6 6 6",
@@ -165,13 +167,18 @@ describe("general settings and status bar", () => {
     expect(screen.getByRole("button", { name: "对话聊天模式" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
-    expect(
-      (
-        screen.getByRole("button", {
-          name: /主动聊天模式/,
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
+    // QQ 那一行不再是按钮（它承载的是开关而不是跳转），QQ 的配置就在同一页的分组里。
+    expect(screen.queryByRole("button", { name: /主动聊天模式/ })).toBeNull();
+    const qq = container.querySelector("#settings-qq");
+    expect(qq).toBeTruthy();
+    // 「QQ」是这一页里的一层分组，里面的三段（连接 / 群与私聊 / 相关配置）是小标题分段，
+    // 不再各自套一层分组外框（两层标题带就是两层外框）。这一段没有注入 API，读不到设置，
+    // 所以「连接」那一段按设计不渲染（它只在读到设置后才有内容），另两段照常。
+    expect(qq?.querySelectorAll(".qq-access-subsection")).toHaveLength(2);
+    expect(qq?.querySelectorAll(".group")).toHaveLength(0);
+    for (const id of ["qq-access-conversations", "qq-access-links"]) {
+      expect(container.querySelector(`#${id}`)).toBeTruthy();
+    }
     expect((screen.getByRole("button", { name: /任务模式/ }) as HTMLButtonElement).disabled).toBe(
       true,
     );

@@ -26,18 +26,10 @@ export const SETTINGS_ROUTES = [
     id: "external-api",
     group: "management",
     title: "外部模型API",
-    scope: "agent",
-    state: "unavailable",
-    note: "外部模型 API 接入尚未开放。",
-  },
-  {
-    id: "apps",
-    group: "management",
-    title: "第三方App接入",
-    section: "F",
-    scope: "agent",
-    state: "unavailable",
-    note: "外部软件接入暂不可用；现有本地聊天不受影响。",
+    // Application-level resource: a provider serves the whole app, not one assistant (0032).
+    scope: "global",
+    state: "transition",
+    note: "登记 OpenAI 兼容的外部模型服务；每个模型手填上下文窗口，登记后即可在用途里选用。",
   },
   {
     id: "identity",
@@ -65,6 +57,36 @@ export const SETTINGS_ROUTES = [
     scope: "agent",
     state: "unavailable",
     note: "情绪功能尚未开放，当前无需配置。",
+  },
+  // §11.1's QQ 额外配置 area: the three entries live under 人设 and are QQ-global, so none of
+  // them follows the assistant being configured. Only the sticker library is implemented; the
+  // other two keep their entry and say so, rather than pretending to be configurable.
+  {
+    id: "qq-stickers",
+    group: "persona",
+    title: "表情素材",
+    area: "qq",
+    scope: "global",
+    state: "transition",
+    note: "QQ 全局共享素材：导入、补说明、归类与启用。",
+  },
+  {
+    id: "qq-scheme-config",
+    group: "persona",
+    title: "聊天方案",
+    area: "qq",
+    scope: "global",
+    state: "transition",
+    note: "QQ 全局方案：发言与节奏、上下文与记忆、媒体与表达、六段提示词。",
+  },
+  {
+    id: "qq-storage",
+    group: "persona",
+    title: "存储与诊断",
+    area: "qq",
+    scope: "global",
+    state: "transition",
+    note: "QQ 保存了什么、保留多久，以及一个只删过期内容的清理入口。",
   },
   {
     id: "context",

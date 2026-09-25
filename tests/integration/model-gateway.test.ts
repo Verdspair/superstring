@@ -341,16 +341,13 @@ describe("model gateway API token", () => {
       for await (const _chunk of gateway.streamChat({ messages })) {
         /* consume */
       }
-      expect(seen.map((entry) => entry.authorization)).toEqual([
-        "Bearer secret-token",
-        "Bearer secret-token",
-        "Bearer secret-token",
-      ]);
-      expect(seen.map((entry) => entry.path.split("?")[0])).toEqual([
-        "/v1/models",
-        "/api/v1/models",
-        "/v1/chat/completions",
-      ]);
+      // 2026-09-25（模型替补）：聊天调用会先问一次"本地加载了哪些模型"，所以序列里多了一个
+      // /v1/models。这个用例真正要钉的性质没变——**每一个**请求都带配置的令牌。
+      expect(seen.map((entry) => entry.authorization)).toEqual(
+        seen.map(() => "Bearer secret-token"),
+      );
+      expect(seen.filter((entry) => entry.path.startsWith("/v1/chat/completions"))).toHaveLength(1);
+      expect(seen.some((entry) => entry.path.startsWith("/api/v1/models"))).toBe(true);
     } finally {
       await new Promise<void>((resolve) => stub.close(() => resolve()));
     }
@@ -375,5 +372,119 @@ describe("model gateway API token", () => {
     } finally {
       await new Promise<void>((resolve) => stub.close(() => resolve()));
     }
+  });
+});
+
+// 结构化输出的自动降级（用户 2026-09-25）：不是每个 OpenAI 兼容服务都接受严格的 json_schema。
+// 这里用一个"只认 json_object"的服务端钉住这条链：第一次降级要多一次请求，之后同一服务+模型的
+// 调用直接按降级后的档发（进程内记住），而且**只**在 4xx 形状错误时降级。
+describe("structured output falls back when the service rejects json_schema", () => {
+  /** Only the chat calls count: the same stub also answers the model-list probe. */
+  async function withStructuredStub(
+    seen: Array<Record<string, unknown>>,
+    respond: (body: Record<string, unknown>, attempt: number) => { status: number; body: string },
+    check: (gateway: ReturnType<typeof createLmStudioClient>) => Promise<void>,
+  ) {
+    const stub = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        const body = raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
+        const isChat = (req.url ?? "").endsWith("/chat/completions");
+        if (isChat) seen.push(body);
+        const answer = respond(body, seen.length);
+        void isChat;
+        if (answer.status >= 400) {
+          res.writeHead(answer.status, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: answer.body } }));
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(answer.body);
+      });
+    });
+    await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+    const gateway = createLmStudioClient({
+      baseUrl: `http://127.0.0.1:${(stub.address() as { port: number }).port}/v1`,
+      model: "test/model",
+      timeoutSeconds: 5,
+    });
+    try {
+      await check(gateway);
+    } finally {
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+
+  const ok = (content: string) => ({
+    status: 200,
+    body: JSON.stringify({ choices: [{ finish_reason: "stop", message: { content } }] }),
+  });
+
+  it("retries with json_object, then remembers the level for the next call", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    await withStructuredStub(
+      seen,
+      (body) => {
+        const format = body.response_format as { type?: string } | undefined;
+        if (format?.type === "json_schema")
+          return { status: 400, body: "response_format json_schema is not supported" };
+        return ok('{"score":7}');
+      },
+      async (gateway) => {
+        const schema = { type: "object", properties: { score: { type: "integer" } } };
+        expect(await gateway.complete({ messages: [], responseSchema: schema })).toBe(
+          '{"score":7}',
+        );
+        // 第二次调用直接走降级后的档：只多了一次请求。
+        expect(await gateway.complete({ messages: [], responseSchema: schema })).toBe(
+          '{"score":7}',
+        );
+      },
+    );
+    expect(
+      seen.map((body) => (body.response_format as { type?: string } | undefined)?.type),
+    ).toEqual(["json_schema", "json_object", "json_object"]);
+  });
+
+  it("drops response_format entirely when json_object is rejected too", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    await withStructuredStub(
+      seen,
+      (body) => {
+        if (body.response_format !== undefined)
+          return { status: 422, body: "unsupported parameter: response_format" };
+        return ok('{"score":9}');
+      },
+      async (gateway) => {
+        expect(
+          await gateway.complete({
+            messages: [],
+            responseSchema: { type: "object", properties: { score: { type: "integer" } } },
+          }),
+        ).toBe('{"score":9}');
+      },
+    );
+    expect(seen.map((body) => Boolean(body.response_format))).toEqual([true, true, false]);
+  });
+
+  it("does not downgrade on an auth rejection", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    await withStructuredStub(
+      seen,
+      () => ({ status: 401, body: "invalid api key" }),
+      async (gateway) => {
+        await expect(
+          gateway.complete({
+            messages: [],
+            responseSchema: { type: "object", properties: { score: { type: "integer" } } },
+          }),
+        ).rejects.toThrow();
+      },
+    );
+    // 凭据问题降级只会掩盖真正的配置错误：只该有那一次请求。
+    expect(seen).toHaveLength(1);
   });
 });

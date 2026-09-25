@@ -63,17 +63,21 @@ interface FakeWs {
 let lifecycle: ReturnType<typeof createDesktopLifecycle>;
 let timers: FakeTimers;
 let stopped: number;
+/** The stored §12 preference the lifecycle reads when the last page closes. */
+let closePreference: "background" | "exit";
 
 /** Loosely-typed view of the WebSocket handler (bun's handler arity differs). */
 function wsApi(): {
   open: (ws: unknown) => void;
   close: (ws: unknown) => void;
   pong: (ws: unknown) => void;
+  message: (ws: unknown, message: unknown) => void;
 } {
   return lifecycle.websocket as unknown as {
     open: (ws: unknown) => void;
     close: (ws: unknown) => void;
     pong: (ws: unknown) => void;
+    message: (ws: unknown, message: unknown) => void;
   };
 }
 
@@ -95,6 +99,7 @@ function makeFakeWs(autoPong = true): FakeWs {
 function buildLifecycle(overrides: Record<string, number> = {}): void {
   timers = new FakeTimers();
   stopped = 0;
+  closePreference = "exit";
   lifecycle = createDesktopLifecycle({
     token: TOKEN,
     host: "127.0.0.1",
@@ -102,6 +107,7 @@ function buildLifecycle(overrides: Record<string, number> = {}): void {
     onStop: () => {
       stopped++;
     },
+    closeAction: () => closePreference,
     graceMs: overrides.graceMs ?? 40,
     startupWindowMs: overrides.startupWindowMs ?? 120,
     pingIntervalMs: overrides.pingIntervalMs ?? 10,
@@ -189,7 +195,17 @@ describe("desktop control surface (unit, deterministic clock)", () => {
     const ok = await status(TOKEN);
     expect(ok.status).toBe(200);
     const body = await ok.json();
-    expect(body).toEqual({ app: "superstring", desktop: true, state: "ready" });
+    // The two extra fields are what the desktop host needs for §12's dialog: whether a page is
+    // currently connected, and what the stored preference is. Adding them must not break the
+    // launcher's identity check, which reads only app/desktop/state (Readiness.IsIdentityReady).
+    expect(body).toEqual({
+      app: "superstring",
+      desktop: true,
+      state: "ready",
+      page_connections: 0,
+      background_online: false,
+      close_action: "exit",
+    });
     const text = JSON.stringify(body);
     expect(text).not.toContain(TOKEN);
   });
@@ -319,6 +335,76 @@ describe("desktop control surface (unit, deterministic clock)", () => {
     timers.advance(120); // startupWindowMs
     await flush();
     expect(stopped).toBe(1);
+  });
+
+  it("the startup window is not affected by a stored background preference", async () => {
+    // "Nobody ever came" is a failed launch, not a user asking to stay online: the window exists
+    // to avoid a dangling process, so the preference does not lift it.
+    closePreference = "background";
+    lifecycle.start();
+    timers.advance(120);
+    await flush();
+    expect(stopped).toBe(1);
+  });
+
+  it("keeps running when the stored preference says to stay in the background", async () => {
+    closePreference = "background";
+    const ws = makeFakeWs();
+    wsApi().open(ws);
+    lifecycle.start();
+    timers.advance(200);
+    wsApi().close(ws);
+    // No grace is armed at all: the process stays up until someone stops it explicitly.
+    timers.advance(10_000);
+    await flush();
+    expect(stopped).toBe(0);
+    expect(lifecycle.pageConnections()).toBe(0);
+    expect(lifecycle.backgroundOnline()).toBe(true);
+  });
+
+  it("leaves background mode when a page comes back, and stops on the next close", async () => {
+    closePreference = "background";
+    const first = makeFakeWs();
+    wsApi().open(first);
+    wsApi().close(first);
+    expect(lifecycle.backgroundOnline()).toBe(true);
+    const second = makeFakeWs();
+    wsApi().open(second);
+    expect(lifecycle.backgroundOnline()).toBe(false);
+    // The preference is read per close, so a change in settings applies immediately.
+    closePreference = "exit";
+    wsApi().close(second);
+    timers.advance(40);
+    await flush();
+    expect(stopped).toBe(1);
+  });
+
+  it("quits on an explicit exit frame, whatever the stored preference is", async () => {
+    closePreference = "background";
+    const ws = makeFakeWs();
+    wsApi().open(ws);
+    wsApi().message(ws, JSON.stringify({ exit: true }));
+    await flush();
+    expect(stopped).toBe(1);
+  });
+
+  it("ignores frames that are not exactly the exit request", async () => {
+    const ws = makeFakeWs();
+    wsApi().open(ws);
+    for (const frame of [
+      "not json",
+      JSON.stringify({}),
+      JSON.stringify({ exit: false }),
+      JSON.stringify({ exit: true, extra: 1 }),
+      JSON.stringify({ exit: "true" }),
+      JSON.stringify(["exit"]),
+      JSON.stringify({ type: "appearance", theme: "slate", mode: "light", exit: true }),
+      "x".repeat(4096),
+    ]) {
+      wsApi().message(ws, frame);
+    }
+    await flush();
+    expect(stopped).toBe(0);
   });
 
   it("server ping/pong detects a dead link and triggers the grace", async () => {
@@ -486,6 +572,9 @@ describe("desktop lifecycle over a real isolated process", () => {
         app: "superstring",
         desktop: true,
         state: "ready",
+        page_connections: 0,
+        background_online: false,
+        close_action: "exit",
       });
       ws = await openAppearanceWs(s.base);
       expect(ws.readyState).toBe(WebSocket.OPEN);
@@ -526,7 +615,14 @@ describe("desktop lifecycle over a real isolated process", () => {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ app: "superstring", desktop: true, state: "ready" });
+    expect(await ok.json()).toEqual({
+      app: "superstring",
+      desktop: true,
+      state: "ready",
+      page_connections: 0,
+      background_online: false,
+      close_action: "exit",
+    });
 
     // POST /__desktop/stop with token terminates the process.
     const stopRes = await fetch(`${s.base}/__desktop/stop`, {

@@ -135,7 +135,7 @@ describe("R5 记忆状态动作", () => {
 
     await useSuperstringStore.getState().loadMemoryPage(3);
 
-    expect(listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100);
+    expect(listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100, undefined);
     expect(useSuperstringStore.getState().memoryEntryTotal).toBe(205);
     expect(useSuperstringStore.getState().feedback).toBe("共 205 条记忆，当前第 3 页。");
   });

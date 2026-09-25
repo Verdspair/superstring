@@ -20,16 +20,89 @@ import { type BusinessDbHandle, openConnection } from "./connection";
 import * as schema from "./schema";
 
 /** Ordered resources are also supplied explicitly by installed entrypoints. */
-export const BUSINESS_SCHEMA_VERSION = 4 as const;
+export const BUSINESS_SCHEMA_VERSION = 38 as const;
 export const BUSINESS_MIGRATION_FILES = [
   "0001_initial.sql",
   "0002_knowledge.sql",
   "0003_knowledge_read.sql",
   "0004_organization.sql",
+  "0005_qq_transport.sql",
+  "0006_qq_memory_sources.sql",
+  "0007_qq_observation_text.sql",
+  "0008_qq_memory_batch.sql",
+  "0009_qq_transport_config.sql",
+  "0010_qq_schemes.sql",
+  "0011_qq_speech_log.sql",
+  "0012_qq_media_notes.sql",
+  "0013_qq_scheme_triggers.sql",
+  "0014_qq_send_log.sql",
+  "0015_qq_scheme_rhythm.sql",
+  "0016_qq_context_budget.sql",
+  "0017_qq_scheme_prompts.sql",
+  "0018_qq_members.sql",
+  "0019_qq_output_reserve.sql",
+  "0020_qq_scheme_stickers.sql",
+  "0021_qq_stickers.sql",
+  "0022_qq_sticker_authorization.sql",
+  "0023_qq_dispatch.sql",
+  "0024_qq_media_purposes.sql",
+  "0025_desktop_settings.sql",
+  "0026_qq_media_supplement.sql",
+  "0027_qq_event_addressed.sql",
+  "0028_qq_immediate_lease.sql",
+  "0029_qq_module_switches.sql",
+  "0030_qq_sweep_verdicts.sql",
+  "0031_qq_attention.sql",
+  "0032_model_providers.sql",
+  "0033_qq_idle_judgements.sql",
+  "0034_qq_initiative_min_score.sql",
+  "0035_qq_reply_split.sql",
+  "0036_qq_judgement_reuse.sql",
+  "0037_qq_judgement_per_speaker.sql",
+  "0038_qq_judgement_model.sql",
 ] as const;
-export type BusinessMigrationSql = readonly [string, string, string, string];
+export type BusinessMigrationSql = readonly [
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+];
 
-/** Legacy tables followed by the additive knowledge tables (ADR0014). */
+/** Legacy tables followed by the additive knowledge and QQ transport tables. */
 export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "users",
   "agents",
@@ -57,6 +130,32 @@ export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "turn_knowledge_snapshots",
   "agent_knowledge_read_settings",
   "organization_settings",
+  "qq_settings",
+  "qq_schemes",
+  "qq_owner_identities",
+  "qq_bindings",
+  "qq_events",
+  "qq_memory_sources",
+  "qq_observation_text",
+  "qq_processed_events",
+  "qq_speech_log",
+  "qq_media_notes",
+  "qq_send_log",
+  "qq_send_part",
+  "qq_speech_text",
+  "qq_members",
+  "qq_sticker_collections",
+  "qq_sticker_assets",
+  "qq_sticker_collection_items",
+  "qq_scheme_sticker_collections",
+  "qq_dispatch_settings",
+  "qq_dispatch_candidates",
+  "qq_dispatch_lease",
+  "qq_sweep_verdicts",
+  "desktop_settings",
+  "model_providers",
+  "qq_idle_judgements",
+  "qq_judgement_readings",
 ];
 
 function loadMigrationSql(): BusinessMigrationSql {
@@ -66,6 +165,40 @@ function loadMigrationSql(): BusinessMigrationSql {
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[1]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[2]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[3]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[4]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[5]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[6]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[7]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[8]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[9]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[10]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[11]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[12]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[13]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[14]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[15]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[16]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[17]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[18]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[19]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[20]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[21]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[22]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[23]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[24]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[25]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[26]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[27]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[28]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[29]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[30]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[31]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[32]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[33]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[34]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[35]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[36]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[37]), "utf8"),
   ];
 }
 
@@ -73,9 +206,8 @@ function validateResources(migrations: BusinessMigrationSql): void {
   if (migrations.length !== BUSINESS_SCHEMA_VERSION || migrations.some((sql) => !sql.trim())) {
     throw new Error("INVALID_MIGRATION_RESOURCE: incomplete business SQL");
   }
-  for (let version = 1; version <= BUSINESS_SCHEMA_VERSION; version++) {
-    getReferenceObjects(migrations.slice(0, version).join("\n"));
-  }
+  // Every prefix must be buildable; the walk below builds them all in one pass.
+  referenceObjects(migrations, migrations.length);
 }
 
 /**
@@ -141,25 +273,61 @@ function extractSchemaObjects(db: Database): Map<string, SchemaObject> {
   return map;
 }
 
-// The single source of truth: the authoritative DDL run against an isolated
-// in-memory database to obtain the canonical set of schema objects. Built once,
-// lazily, and cached for the lifetime of the process.
-const referenceCache = new Map<string, Map<string, SchemaObject>>();
-function getReferenceObjects(migrationSql: string): Map<string, SchemaObject> {
-  if (!migrationSql.trim()) throw new Error("INVALID_MIGRATION_RESOURCE: empty business SQL");
-  const cached = referenceCache.get(migrationSql);
+// The single source of truth: the authoritative DDL for every prefix of a migration chain. One
+// reference database per chain is walked forward, snapshotting the schema objects after each step,
+// because a single open asks for every prefix at once — `validateResources` validates them all and
+// then each applied migration is verified against its own. Replaying "the first N migrations" into
+// a throwaway database per prefix, with the cache dropped every 8 entries, made every open cost the
+// whole chain over and over: `openBusinessDb()` measured ~1.23 s at 37 migrations (2026-09-25),
+// which is what pushed the backend suite past the gate's per-check ceiling. The walk replays a chain
+// once per process instead.
+interface ReferenceChain {
+  readonly key: string;
+  readonly db: Database;
+  /** `snapshots[n]` holds the objects after the first `n + 1` migrations. */
+  readonly snapshots: Map<string, SchemaObject>[];
+}
+const referenceChains = new Map<string, ReferenceChain>();
+// Bounded so the isolated resource fixtures of tests cannot grow this without limit. The bound
+// counts whole chains (each a few MB at most), not prefixes.
+const REFERENCE_CHAIN_LIMIT = 32;
+
+function referenceChain(migrations: readonly string[]): ReferenceChain {
+  const key = migrations.join("\n");
+  const cached = referenceChains.get(key);
   if (cached) return cached;
-  const ref = new Database(":memory:");
-  try {
-    ref.exec(migrationSql);
-    const objects = extractSchemaObjects(ref);
-    // Bounded cache also supports alternate isolated resource fixtures.
-    if (referenceCache.size >= 8) referenceCache.clear();
-    referenceCache.set(migrationSql, objects);
-    return objects;
-  } finally {
-    ref.close();
+  while (referenceChains.size >= REFERENCE_CHAIN_LIMIT) {
+    const oldest = referenceChains.keys().next().value;
+    if (oldest === undefined) break;
+    referenceChains.get(oldest)?.db.close();
+    referenceChains.delete(oldest);
   }
+  const chain: ReferenceChain = { key, db: new Database(":memory:"), snapshots: [] };
+  referenceChains.set(key, chain);
+  return chain;
+}
+
+/** The canonical objects after the first `count` migrations of this exact chain. */
+function referenceObjects(migrations: readonly string[], count: number): Map<string, SchemaObject> {
+  if (count < 1 || count > migrations.length) {
+    throw new Error(`INVALID_MIGRATION_RESOURCE: migration prefix ${count} is outside the chain`);
+  }
+  const chain = referenceChain(migrations);
+  while (chain.snapshots.length < count) {
+    const next = chain.snapshots.length;
+    try {
+      chain.db.exec(migrations[next]);
+    } catch (error) {
+      // A half-applied step must never become the baseline for a later caller: the previous code
+      // built a throwaway database per prefix, so a failed build left nothing behind. Discarding
+      // the chain keeps that property while still caching successful ones.
+      chain.db.close();
+      referenceChains.delete(chain.key);
+      throw error;
+    }
+    chain.snapshots.push(extractSchemaObjects(chain.db));
+  }
+  return chain.snapshots[count - 1];
 }
 
 /**
@@ -180,8 +348,12 @@ function getReferenceObjects(migrationSql: string): Map<string, SchemaObject> {
  * clauses). Manually-equivalent DDL is intentionally rejected — the precise
  * definition is the contract.
  */
-function verifyBusinessSchemaMatches(db: Database, migrationSql: string): void {
-  const reference = getReferenceObjects(migrationSql);
+function verifyBusinessSchemaMatches(
+  db: Database,
+  migrations: readonly string[],
+  count: number,
+): void {
+  const reference = referenceObjects(migrations, count);
   const actual = extractSchemaObjects(db);
 
   const missing: string[] = [];
@@ -224,11 +396,11 @@ export function ensureBusinessSchema(
         );
       }
     } else {
-      verifyBusinessSchemaMatches(tx, migrationSql.slice(0, version).join("\n"));
+      verifyBusinessSchemaMatches(tx, migrationSql, version);
     }
     for (let next = version; next < BUSINESS_SCHEMA_VERSION; next++) {
       tx.exec(migrationSql[next]);
-      verifyBusinessSchemaMatches(tx, migrationSql.slice(0, next + 1).join("\n"));
+      verifyBusinessSchemaMatches(tx, migrationSql, next + 1);
       // Only v0/v1 databases create the library here. Never rewrite a persisted
       // setting on v2+ reopen; DEFAULT clauses remain frozen for exact DDL gates.
       if (next === 1) {

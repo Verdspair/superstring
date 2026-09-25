@@ -44,7 +44,20 @@ function newHandle(): BusinessDbHandle {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(MIGRATION_SQL);
-  for (const file of ["0002_knowledge.sql", "0003_knowledge_read.sql", "0004_organization.sql"]) {
+  for (const file of [
+    "0002_knowledge.sql",
+    "0003_knowledge_read.sql",
+    "0004_organization.sql",
+    "0005_qq_transport.sql",
+    "0006_qq_memory_sources.sql",
+    "0007_qq_observation_text.sql",
+    "0008_qq_memory_batch.sql",
+    "0009_qq_transport_config.sql",
+    "0010_qq_schemes.sql",
+    "0011_qq_speech_log.sql",
+    "0012_qq_media_notes.sql",
+    "0013_qq_scheme_triggers.sql",
+  ]) {
     db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"));
   }
   return toOrmHandle(db);

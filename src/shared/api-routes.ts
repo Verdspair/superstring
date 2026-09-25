@@ -27,6 +27,13 @@ export const API_PREFIXES = [
   "/knowledge",
   "/organization",
   "/browser-state",
+  // QQ routes existed since P5a, but nothing in the web client called them until the sticker
+  // library page (P5e) — so this entry only became necessary now, and the proxy-coverage test
+  // is what pointed at it rather than a browser seeing an HTML 404.
+  "/qq",
+  // The desktop close preference (§12): the settings page reads and writes it, so the dev proxy
+  // has to forward it even though the value only matters in desktop mode.
+  "/desktop",
 ] as const;
 
 /** Paths that match exactly — `/chat` must not swallow `/chatty`. */

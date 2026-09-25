@@ -293,7 +293,6 @@ describe("设置工作区第一阶段", () => {
       "basic",
       "models",
       "external-api",
-      "apps",
     ]);
     expect(document.querySelector(".settings-primary-nav")?.textContent).not.toContain("模型");
     expect(
