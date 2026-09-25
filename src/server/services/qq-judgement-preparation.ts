@@ -1,6 +1,8 @@
 // Offline preparation for one explicitly classified QQ speech path (ADR0018 P3d).
 // Reads only an already bound conversation. It never calls a model, opens a socket or sends.
+
 import { z } from "zod";
+import type { SourceRef } from "../../shared/contracts/evidence";
 import { readQqBinding } from "../db/qq-binding-repository";
 import { attemptedUnreadMediaCount } from "../db/qq-media-repository";
 import { qqMemberLabels } from "../db/qq-member-repository";
@@ -135,7 +137,11 @@ export type QqJudgementPreparation =
     };
 
 /** Call after a path has been classified. A prepared result is NOT permission to send. */
-export function prepareQqJudgement(orm: Orm, input: unknown): QqJudgementPreparation {
+export function prepareQqJudgement(
+  orm: Orm,
+  input: unknown,
+  options?: { onSources: (sources: SourceRef[]) => void },
+): QqJudgementPreparation {
   const parsed = Input.safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ judgement preparation input");
   const { bindingId, path, nowSeconds } = parsed.data;
@@ -175,6 +181,7 @@ export function prepareQqJudgement(orm: Orm, input: unknown): QqJudgementPrepara
   const messages = conversationMessagesSince(orm, scope, {
     sinceSeconds,
     limit: limits.messageLimit,
+    includeSources: options !== undefined,
   });
   const scopeLabels = qqMemberLabels(
     orm,
@@ -268,6 +275,7 @@ export function prepareQqJudgement(orm: Orm, input: unknown): QqJudgementPrepara
     material = qqJudgementMaterial(orm, {
       binding,
       question: qqJudgementQuestion(messages.map((message) => message.text)),
+      onSources: options?.onSources,
     });
   } else {
     // 被叫到 = **挣来这一轮的那条消息**的发言人（`focusEventKey`；没给就退回最新一条）。匿名发言也是
@@ -293,9 +301,11 @@ export function prepareQqJudgement(orm: Orm, input: unknown): QqJudgementPrepara
     ownSpeech: ownSpeechSince(orm, scope, {
       sinceSeconds,
       limit: limits.messageLimit,
+      includeSources: options !== undefined,
     }),
   });
   const selection = qqSelectContext({ timeline, limits, nowSeconds });
+  options?.onSources(selection.messages.flatMap((m) => m.sources ?? []));
   const runtime = runtimeFromAgent(agent);
   // 提示词按目标一人一份（共用部分只组装一次）。三种情况都归到"一份无对象提示词"：
   //   * 开关关掉——整间会话一次，不加 `@`（旧行为）；

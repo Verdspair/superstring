@@ -1,18 +1,23 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
-import { inspectContext } from "../../src/server/agent/context-access";
+import { canReadRun, inspectContext, sourceAccess } from "../../src/server/agent/context-access";
 import { handleError } from "../../src/server/api/error-handler";
 import { runRoutes } from "../../src/server/api/runs";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
+import { memoryRevision } from "../../src/server/db/memory-content-repository";
 import {
   createSession,
+  DEFAULT_AGENT_ID,
   DEFAULT_USER_ID,
   deleteMessage,
   ensureDefaults,
   prepareTurn,
   saveCompletedAssistantMessage,
 } from "../../src/server/db/repositories";
+import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
@@ -74,6 +79,123 @@ function setup() {
 }
 
 describe("run diagnostics authorization and source lifetime", () => {
+  it("rejects changed memory, observation, media and speech revisions", () => {
+    const { business } = setup();
+    const at = new Date().toISOString(),
+      expiresAt = "2099-01-01T00:00:00.000Z";
+    const owner = {
+      kind: "fixture",
+      id: "fixture",
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    };
+    const principal = { userId: DEFAULT_USER_ID };
+    const hash = (body: string) => createHash("sha256").update(body).digest("hex");
+    const memory = business.orm
+      .insert(schema.memoryEntries)
+      .values({
+        id: "memory",
+        agentId: DEFAULT_AGENT_ID,
+        userId: DEFAULT_USER_ID,
+        name: "test",
+        summary: "test",
+        tags: "[]",
+        kinds: '["semantic"]',
+        body: "original",
+        scope: "reality_user",
+        scopeKey: DEFAULT_AGENT_ID,
+        status: "active",
+        configSnapshot: "{}",
+        createdAt: at,
+      })
+      .returning()
+      .get();
+    if (!memory) throw new Error("Missing memory fixture");
+    business.db
+      .query(
+        "INSERT INTO qq_events(event_key,account_id,conversation_kind,peer_id,agent_id,message_id,occurred_at_seconds,speaker_kind,speaker_id,recorded_at,addressed) VALUES('event','100','private','200',?,'event',1,'member','200',?,1)",
+      )
+      .run(DEFAULT_AGENT_ID, at);
+    business.db
+      .query("INSERT INTO qq_observation_text VALUES('event','original',1,?,?)")
+      .run(expiresAt, at);
+    business.orm
+      .insert(schema.qqMediaNotes)
+      .values({
+        id: "media",
+        eventKey: "event",
+        segmentIndex: 0,
+        segmentKind: "image",
+        sourceRef: "synthetic",
+        note: "original",
+        noteModel: "fixture",
+        attempts: 1,
+        expiresAt,
+        recordedAt: at,
+        updatedAt: at,
+      })
+      .run();
+    business.orm
+      .insert(schema.qqSpeechLog)
+      .values({
+        id: "speech",
+        accountId: "100",
+        conversationKind: "private",
+        peerId: "200",
+        agentId: DEFAULT_AGENT_ID,
+        kind: "direct_reply",
+        spokeAtSeconds: 1,
+        expiresAt,
+        recordedAt: at,
+      })
+      .run();
+    business.orm
+      .insert(schema.qqSpeechText)
+      .values({
+        speechId: "speech",
+        body: "original",
+        spokeAtSeconds: 1,
+        expiresAt,
+        recordedAt: at,
+      })
+      .run();
+    const refs: SourceRef[] = [
+      { kind: "memory", id: "memory", revision: memoryRevision(memory) },
+      { kind: "qq_observation", id: "event", revision: hash("original"), expiresAt },
+      { kind: "qq_media", id: "media", revision: "1", expiresAt },
+      { kind: "qq_speech", id: "speech", revision: hash("original"), expiresAt },
+    ];
+    expect(refs.map((ref) => sourceAccess(business.db, ref, owner, principal, at))).toEqual(
+      Array(4).fill("available"),
+    );
+    business.db.query("UPDATE memory_entries SET body='changed' WHERE id='memory'").run();
+    business.db
+      .query("UPDATE qq_observation_text SET body='changed' WHERE event_key='event'")
+      .run();
+    business.db.query("UPDATE qq_media_notes SET note='changed',attempts=2 WHERE id='media'").run();
+    business.db.query("UPDATE qq_speech_text SET body='changed' WHERE speech_id='speech'").run();
+    expect(refs.map((ref) => sourceAccess(business.db, ref, owner, principal, at))).toEqual(
+      Array(4).fill("revoked"),
+    );
+  });
+
+  it("does not authorize a retired conversation merely from the stored run user ID", () => {
+    const { business } = setup();
+    const session = createSession(business.orm, "owned", { modelName: "test-model" });
+    const conversation = new ConversationEventRepository(business.db).ensureWeb(session.id);
+    if (!conversation) throw new Error("Missing conversation fixture");
+    const owner = {
+      kind: "conversation",
+      id: conversation.id,
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    };
+    expect(canReadRun(business.db, owner, { userId: DEFAULT_USER_ID })).toBe(true);
+    business.db
+      .query("UPDATE conversations SET closed_at=? WHERE id=?")
+      .run(new Date().toISOString(), conversation.id);
+    expect(canReadRun(business.db, owner, { userId: DEFAULT_USER_ID })).toBe(false);
+  });
   it("can inspect its current pending input without treating an incomplete turn as revoked", () => {
     const { business, repository, snapshot } = setup();
     const session = createSession(business.orm, "active input", { modelName: "test-model" });

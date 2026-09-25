@@ -137,8 +137,14 @@ export function recordObservation(
   orm: Orm,
   observation: QqObservation,
   agentId: string,
+  hooks?: { beforeWrite?: () => void; afterWrite?: (result: RecordedObservation) => void },
 ): RecordedObservation {
-  return orm.transaction((tx) => writeObservation(tx, observation, agentId));
+  return orm.transaction((tx) => {
+    hooks?.beforeWrite?.();
+    const result = writeObservation(tx, observation, agentId);
+    hooks?.afterWrite?.(result);
+    return result;
+  });
 }
 
 function writeObservation(

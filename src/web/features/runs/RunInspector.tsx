@@ -35,7 +35,13 @@ const phaseLabels = {
 };
 
 /** The trigger stays mounted so Radix can restore focus after dismissal. */
-export function JobRunLink({ ownerKind, ownerId }: { ownerKind: string; ownerId: string }) {
+export function JobRunLink(props: { ownerKind: string; ownerId: string }) {
+  return <InspectorDialog {...props} />;
+}
+export function RunLink(props: { runId: string }) {
+  return <InspectorDialog {...props} />;
+}
+function InspectorDialog(props: { ownerKind: string; ownerId: string } | { runId: string }) {
   const t = useI18n();
   const [open, setOpen] = useState(false);
   const close = useRef<HTMLButtonElement>(null);
@@ -67,11 +73,15 @@ export function JobRunLink({ ownerKind, ownerId }: { ownerKind: string; ownerId:
             </Dialog.Close>
           </header>
           <div className="run-inspector-body">
-            <OwnerRuns
-              key={runOwnerKey(ownerKind, ownerId)}
-              ownerKind={ownerKind}
-              ownerId={ownerId}
-            />
+            {"runId" in props ? (
+              <RunDetails key={props.runId} runId={props.runId} />
+            ) : (
+              <OwnerRuns
+                key={runOwnerKey(props.ownerKind, props.ownerId)}
+                ownerKind={props.ownerKind}
+                ownerId={props.ownerId}
+              />
+            )}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

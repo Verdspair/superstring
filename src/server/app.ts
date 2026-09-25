@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import type { BrowserStateConfig } from "../shared/contracts";
 import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
+import { ConversationHost } from "./agent/conversation-host";
 import { agentRoutes } from "./api/agents";
+import { chatV2Routes } from "./api/chat-v2";
+import { conversationRoutes } from "./api/conversations";
+import { deliveryRoutes } from "./api/deliveries";
 import { desktopRoutes } from "./api/desktop";
 import { handleError } from "./api/error-handler";
 import { healthRoutes } from "./api/health";
@@ -13,6 +17,7 @@ import { runRoutes } from "./api/runs";
 import { sessionRoutes } from "./api/sessions";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
+import { ConversationEventRepository } from "./db/conversation-event-repository";
 import { createLmStudioClient, type ModelGateway } from "./llm/model-gateway";
 import { createLmStudioVisionClient } from "./llm/vision-client";
 import {
@@ -26,6 +31,8 @@ export interface CreateAppOptions {
   /** Override the LM Studio gateway (tests inject a fake). */
   gateway?: ModelGateway;
   agentRuntime?: AgentRuntime;
+  conversationHost?: ConversationHost;
+  conversationJournal?: ConversationEventRepository;
   /** Stable per-installation browser-state secret, never logged or persisted client-side. */
   browserStateSecret?: string;
   /**
@@ -78,7 +85,15 @@ export function createApp(opts: CreateAppOptions): Hono {
     const runRepository = new AgentRunRepository(business.db);
     const agentRuntime =
       opts.agentRuntime ?? createAgentRuntime({ gateway, vision, repository: runRepository });
+    const journal = opts.conversationJournal ?? new ConversationEventRepository(business.db);
+    const host = opts.conversationHost ?? new ConversationHost({ runtime: agentRuntime });
     app.route("/v2/runs", runRoutes(business.db, runRepository));
+    app.route("/v2/conversations", conversationRoutes(business.db));
+    app.route("/v2/deliveries", deliveryRoutes(business.db));
+    app.route(
+      "/",
+      chatV2Routes({ orm: business.orm, db: business.db, gateway, agentRuntime, host, journal }),
+    );
     app.route(
       "/qq",
       qqRoutes(business.orm, {
@@ -95,7 +110,10 @@ export function createApp(opts: CreateAppOptions): Hono {
     app.route("/", healthRoutes(business.db, gateway));
     app.route(
       "/",
-      sessionRoutes(business.orm, business.db, gateway.config.model, gateway, agentRuntime),
+      sessionRoutes(business.orm, business.db, gateway.config.model, gateway, agentRuntime, {
+        host,
+        journal,
+      }),
     );
   }
 

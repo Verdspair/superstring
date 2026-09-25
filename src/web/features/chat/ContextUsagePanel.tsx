@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 
+import { chatBusy, currentChat } from "./conversation-state";
+
 const COMPONENTS = [
   ["instructions", "指令与人设"],
   ["recent_history", "近期原文"],
@@ -44,10 +46,10 @@ function UsageRing({ percent, large = false }: { percent: number | null; large?:
 
 export function ContextUsagePanel() {
   const t = useI18n();
-  const usage = useSuperstringStore((s) => s.contextUsage);
+  const usage = useSuperstringStore((s) => currentChat(s).contextUsage);
   const sessionId = useSuperstringStore((s) => s.currentSessionId);
-  const sending = useSuperstringStore((s) => s.sending);
-  const composer = useSuperstringStore((s) => s.composer);
+  const sending = useSuperstringStore((s) => chatBusy(currentChat(s)));
+  const composer = useSuperstringStore((s) => currentChat(s).composer);
   const [openedSession, setOpenedSession] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);

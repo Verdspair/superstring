@@ -48,6 +48,11 @@ beforeEach(() => {
     },
     async complete(call) {
       completeCalls.push(call);
+      if (call.messages[0]?.content.includes("Return exactly one JSON decision"))
+        return JSON.stringify({
+          kind: "final",
+          outputs: [{ kind: "generate", targetId: "reply", instructions: "" }],
+        });
       const shape = call.responseSchema?.properties as { ids?: { items?: { enum?: string[] } } };
       return JSON.stringify({ ids: shape?.ids?.items?.enum ?? [] });
     },

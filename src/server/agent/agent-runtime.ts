@@ -13,6 +13,7 @@ import { AgentRunRepository } from "../db/agent-run-repository";
 import { openBusinessDb } from "../db/schema-gate";
 import type { ChatMessage } from "../llm/model-gateway";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
+import { unicodeStrip } from "../services/text";
 import {
   AGENT_DECISION_JSON_SCHEMA,
   AgentDecisionSchema,
@@ -27,6 +28,7 @@ import {
   ContextEngine,
   type ConversationContextSource,
   inputUnits,
+  type RenderedContext,
   textMessage,
 } from "./context-engine";
 import { createModelPort, type ModelPort, type TextModelGateway, textMessages } from "./model-port";
@@ -60,6 +62,10 @@ export interface ConversationInput {
   onEvent?: (event: RunEvent) => void | Promise<void>;
   /** Host-bound scope/budget handlers, never derived from model arguments. */
   actions?: readonly BuiltInAction[];
+  onContext?: (
+    context: RenderedContext,
+    input: { runId: string; phase: "next" | "generate" },
+  ) => void | Promise<void>;
   /** Called before the first output delta, e.g. reserve the Web assistant message ID. */
   prepareOutput?: (
     draft: OutputDraft,
@@ -67,8 +73,22 @@ export interface ConversationInput {
   ) => Promise<{ outputId: string } | { blocked: true; code: string }>;
   /** Last observation checkpoint before a final/none decision becomes externally visible. */
   beforeFinal?: (drafts: readonly OutputDraft[], signal: AbortSignal) => Promise<boolean>;
-  /** Hosts check new relevant observations before committing. True returns to deciding. */
-  reconsider?: (outputs: readonly PreparedOutput[], signal: AbortSignal) => Promise<boolean>;
+  /** True re-observes; no_output suppresses a buffered plan that has no deliverable parts. */
+  reconsider?: (
+    outputs: readonly PreparedOutput[],
+    signal: AbortSignal,
+  ) => Promise<boolean | "no_output">;
+  /** Host transaction for partial text/error state and the same run terminal. */
+  commitFailure?: (
+    error: unknown,
+    runId: string,
+    terminal: {
+      status: "failed" | "cancelled";
+      event: RunEventPayload;
+      errorCode: string;
+      at: string;
+    },
+  ) => Promise<RunEvent | undefined>;
   /** Persists completed messages/intentions. Network delivery belongs to the host. */
   commitOutputs?: (
     outputs: readonly PreparedOutput[],
@@ -230,7 +250,9 @@ export class AgentRuntime {
           material,
           observations,
           input.authorizedTargets,
+          input.outputMode,
         );
+        await input.onContext?.(context, { runId: active.runId, phase: "next" });
         const decision = await this.step(
           active,
           "next",
@@ -334,6 +356,10 @@ export class AgentRuntime {
             }
             this.checkStepBudget(active, spec);
             const messages = this.contextEngine.renderOutput(spec, context, draft);
+            await input.onContext?.(
+              { ...context, messages, units: inputUnits(messages) },
+              { runId: active.runId, phase: "generate" },
+            );
             const generationSpec: LeafAgentSpec = {
               ...spec,
               model: spec.generation?.model ?? spec.model,
@@ -356,11 +382,12 @@ export class AgentRuntime {
                   signal: active.signal,
                 })) {
                   active.signal.throwIfAborted();
+                  if (!delta) continue;
                   text += delta;
                   if (input.outputMode === "stream")
                     await this.emit(active, { type: "output_delta", outputId, text: delta });
                 }
-                if (!text.trim())
+                if (!unicodeStrip(text) && !spec.generation?.allowEmpty)
                   throw new AgentRuntimeError(
                     "MODEL_EMPTY_RESPONSE",
                     "Model returned an empty response",
@@ -385,12 +412,17 @@ export class AgentRuntime {
           }
         }
         active.signal.throwIfAborted();
-        if (await input.reconsider?.(outputs, active.signal)) {
+        const reconsidered = await input.reconsider?.(outputs, active.signal);
+        if (reconsidered) {
           if (input.outputMode === "stream")
             throw new AgentRuntimeError(
               "AGENT_STREAM_RECONSIDERED",
               "Already streamed output cannot be replaced",
             );
+          if (reconsidered === "no_output") {
+            await this.commitAndFinish(active, input, [], "no_output", { type: "no_output" });
+            return { runId: active.runId, status: "no_output", outputs: [] };
+          }
           continue;
         }
         if (!outputs.some((output) => output.status === "prepared")) {
@@ -409,7 +441,7 @@ export class AgentRuntime {
         return { runId: active.runId, status: "completed", outputs };
       }
     } catch (error) {
-      await this.fail(active, error);
+      await this.fail(active, error, input.commitFailure);
       throw error;
     } finally {
       active.dispose();
@@ -546,18 +578,28 @@ export class AgentRuntime {
     if (committed) await active.onEvent?.(committed);
     else await this.finish(active, status, payload);
   }
-  private async fail(active: Running, error: unknown): Promise<void> {
+  private async fail(
+    active: Running,
+    error: unknown,
+    commit?: ConversationInput["commitFailure"],
+  ): Promise<void> {
     // Event consumers may disconnect after the terminal write. Do not mutate a completed run.
     if (this.repository.getRun(active.runId)?.endedAt) return;
     const cancelled = active.callerSignal?.aborted === true;
     const code = errorCode(active.signal.aborted ? active.signal.reason : error);
-    const event = this.repository.finishRun(
-      active.runId,
-      cancelled ? "cancelled" : "failed",
-      cancelled ? { type: "cancelled" } : { type: "failed", code },
-      this.now(),
-      { errorCode: code, conversationId: active.conversationId },
-    );
+    const terminal = {
+      status: cancelled ? ("cancelled" as const) : ("failed" as const),
+      event: cancelled ? { type: "cancelled" as const } : { type: "failed" as const, code },
+      at: this.now(),
+      errorCode: code,
+    };
+    const committed = await commit?.(error, active.runId, terminal);
+    const event =
+      committed ??
+      this.repository.finishRun(active.runId, terminal.status, terminal.event, terminal.at, {
+        errorCode: code,
+        conversationId: active.conversationId,
+      });
     try {
       await active.onEvent?.(event);
     } catch {

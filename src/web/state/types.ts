@@ -10,12 +10,12 @@ import type {
   MemoryTurnRow,
   PersonaResponse,
   PolicyView,
-  RuntimeConfig,
   SessionResponse,
 } from "../../shared/contracts";
-import type { SuperstringApi, streamChat } from "../api";
+import type { SuperstringApi, streamChatV2 } from "../api";
 import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
+import type { ConversationState } from "../features/chat/conversation-state";
 import type { DesktopSettingsState } from "../features/general/desktop-state";
 import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/types";
 import type {
@@ -77,7 +77,8 @@ export interface AgentDraft {
 }
 
 export interface SuperstringState
-  extends RunState,
+  extends ConversationState,
+    RunState,
     KnowledgeState,
     QqStickerState,
     QqSchemeState,
@@ -120,10 +121,6 @@ export interface SuperstringState
   navigationConfirmMessage: string;
   agents: AgentResponse[];
   sessions: SessionResponse[];
-  messages: ChatItem[];
-  runtimeConfig: RuntimeConfig | null;
-  runtimeConfigUnavailable: boolean;
-  contextUsage: import("../../shared/contracts/context-usage").ContextUsage | null;
   selectedNewSessionAgentId: string | null;
   currentSessionId: string | null;
   editorAgentId: string | "__new__";
@@ -160,8 +157,6 @@ export interface SuperstringState
   recalculateCapacityPreview: () => void;
   capacityPreview: string;
   chatContextCapacity: number | null;
-  composer: string;
-  sending: boolean;
   pendingOperations: number;
   browserStateStorage: BrowserStateStorage | null;
   apiClient: SuperstringApi;
@@ -202,12 +197,6 @@ export interface SuperstringState
   retryChat: () => Promise<void>;
   resendKnowledgeChat: () => Promise<void>;
   cancelKnowledgeResend: () => void;
-  failedChat: { sessionId: string; text: string; requestId: string } | null;
-  knowledgeResend: {
-    sessionId: string;
-    text: string;
-    requestId: string;
-  } | null;
   setActiveSection: (section: SectionKey) => void;
   editAgent: (id: string | "__new__") => Promise<boolean>;
   patchDraft: (patch: Partial<AgentDraft>) => void;
@@ -236,7 +225,7 @@ export interface SuperstringState
 }
 
 export interface RuntimeEffects {
-  streamChat: typeof streamChat;
+  streamChatV2: typeof streamChatV2;
   requestId: () => string;
   now: () => string;
 }

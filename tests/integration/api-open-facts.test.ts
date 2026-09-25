@@ -54,7 +54,10 @@ class OracleGateway implements ModelGateway {
     return true;
   }
   async complete() {
-    return "ok";
+    return JSON.stringify({
+      kind: "final",
+      outputs: [{ kind: "generate", targetId: "reply", instructions: "" }],
+    });
   }
   async *streamChat(options: { signal?: AbortSignal }) {
     this.streamCalls++;

@@ -5,12 +5,12 @@ import { ApiError, type SuperstringApi } from "../../src/web/api";
 import { ChatPage } from "../../src/web/features/chat/ChatPage";
 import { selectLocale } from "../../src/web/i18n";
 import type { RuntimeEffects } from "../../src/web/state/types";
-import { useSuperstringStore } from "../../src/web/store";
+import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 const session = "22222222-2222-4222-8222-222222222222";
-let stream: ReturnType<typeof vi.fn<RuntimeEffects["streamChat"]>>;
+let stream: ReturnType<typeof vi.fn<RuntimeEffects["streamChatV2"]>>;
 function reset() {
-  stream = vi.fn<RuntimeEffects["streamChat"]>();
+  stream = vi.fn<RuntimeEffects["streamChatV2"]>();
   let id = 0;
   useSuperstringStore.getState().resetForTests(
     {
@@ -18,7 +18,7 @@ function reset() {
       listMessages: async () => [],
       getSessionRuntime: async () => null,
     } as unknown as SuperstringApi,
-    { streamChat: stream, requestId: () => `request-${++id}` },
+    { streamChatV2: stream, requestId: () => `request-${++id}` },
   );
   useSuperstringStore.setState({
     currentSessionId: session,
@@ -26,12 +26,27 @@ function reset() {
     composer: "原始问题",
   });
 }
-const conflict: RuntimeEffects["streamChat"] = async (_body, onEvent) => {
+const replay: RuntimeEffects["streamChatV2"] = async (body, emit) => {
+  emit({
+    type: "replay",
+    conversationId: `test:${body.session_id}`,
+    sessionId: body.session_id,
+    requestId: body.client_request_id,
+    message: {
+      id: "reply",
+      text: "reply",
+      createdAt: "2026-09-26T00:00:00Z",
+      completedAt: "2026-09-26T00:00:00Z",
+    },
+  });
+};
+const conflict: RuntimeEffects["streamChatV2"] = async (_body, onEvent) => {
   onEvent({
-    event: "error",
-    request_id: _body.client_request_id,
+    type: "failed",
+    runId: `run-${_body.client_request_id}`,
+    seq: 1,
+    at: "2026-09-26T00:00:00Z",
     code: "KNOWLEDGE_ACCESS_CHANGED",
-    message: "资料已撤权",
   });
 };
 beforeEach(() => {
@@ -67,7 +82,7 @@ describe("knowledge access retry", () => {
     expect(stream).toHaveBeenCalledTimes(1);
   });
   it("explicit confirmation sends the earlier text with a fresh id and preserves composer", async () => {
-    stream.mockImplementationOnce(conflict).mockResolvedValueOnce();
+    stream.mockImplementationOnce(conflict).mockImplementationOnce(replay);
     render(<ChatPage />);
     await useSuperstringStore.getState().send();
     useSuperstringStore.setState({ composer: "后续草稿" });
@@ -121,7 +136,7 @@ describe("knowledge access retry", () => {
   it("keeps the stream error visible after refreshing persisted messages", async () => {
     stream.mockImplementationOnce(conflict);
     await useSuperstringStore.getState().send();
-    expect(useSuperstringStore.getState().error).toBe("资料已撤权");
+    expect(useSuperstringStore.getState().error).toBe("KNOWLEDGE_ACCESS_CHANGED");
     expect(useSuperstringStore.getState().failedChat?.requestId).toBe("request-1");
   });
   it("does not reselect the old session when its list refresh arrives late", async () => {
@@ -135,7 +150,7 @@ describe("knowledge access retry", () => {
     useSuperstringStore.setState({
       apiClient: { ...useSuperstringStore.getState().apiClient, listSessions },
     });
-    stream.mockResolvedValueOnce();
+    stream.mockImplementationOnce(replay);
     const sending = useSuperstringStore.getState().send();
     await waitFor(() => expect(listSessions).toHaveBeenCalledOnce());
     await useSuperstringStore.getState().selectSession("other");
@@ -148,7 +163,7 @@ describe("knowledge access retry", () => {
   });
   it("does not let late stream events leak into the newly selected session", async () => {
     let done!: () => void;
-    let event!: Parameters<RuntimeEffects["streamChat"]>[1];
+    let event!: Parameters<RuntimeEffects["streamChatV2"]>[1];
     stream.mockImplementationOnce((_body, onEvent) => {
       event = onEvent;
       return new Promise<void>((resolve) => {
@@ -158,10 +173,11 @@ describe("knowledge access retry", () => {
     const sending = useSuperstringStore.getState().send();
     await useSuperstringStore.getState().selectSession("other");
     event({
-      event: "error",
-      request_id: "request-1",
+      type: "failed",
+      runId: "run-request-1",
+      seq: 1,
+      at: "2026-09-26T00:00:00Z",
       code: "KNOWLEDGE_ACCESS_CHANGED",
-      message: "old conflict",
     });
     done();
     await sending;

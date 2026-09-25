@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type {
   ContextHandle,
   InspectedContext,
@@ -7,7 +8,10 @@ import type {
 } from "../../shared/contracts/agent-run";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { AgentRunRepository } from "../db/agent-run-repository";
+import { ConversationEventRepository } from "../db/conversation-event-repository";
+import { memoryRevision } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
+import { visibleConversation } from "./conversation-access";
 
 export interface ContextPrincipal {
   userId: string;
@@ -17,6 +21,25 @@ type SourceAccess = "available" | "expired" | "revoked";
 
 /** Resolve the application's existing ownership, not a principal supplied in a URL. */
 export function canReadRun(db: Database, owner: RunOwner, principal: ContextPrincipal): boolean {
+  if (owner.userId !== undefined && owner.userId !== principal.userId) return false;
+  if (owner.kind === "conversation") {
+    const conversation = visibleConversation(
+      db,
+      new ConversationEventRepository(db),
+      owner.id,
+      principal,
+      true,
+    );
+    return !!conversation && (!owner.agentId || conversation.agentId === owner.agentId);
+  }
+  if (owner.kind === "qq_binding") {
+    return (
+      principal.userId === DEFAULT_USER_ID &&
+      !!db
+        .query("SELECT 1 FROM qq_bindings WHERE id=? AND (? IS NULL OR agent_id=?)")
+        .get(owner.id, owner.agentId ?? null, owner.agentId ?? null)
+    );
+  }
   if (owner.userId !== undefined) return owner.userId === principal.userId;
   if (principal.userId !== DEFAULT_USER_ID) return false;
   switch (owner.kind) {
@@ -35,8 +58,6 @@ export function canReadRun(db: Database, owner: RunOwner, principal: ContextPrin
     }
     case "knowledge_job":
       return db.query("SELECT 1 FROM knowledge_jobs WHERE id=?").get(owner.id) !== null;
-    case "qq_binding":
-      return db.query("SELECT 1 FROM qq_bindings WHERE id=?").get(owner.id) !== null;
     case "qq_media":
       return db.query("SELECT 1 FROM qq_media_notes WHERE id=?").get(owner.id) !== null;
     case "qq_speech":
@@ -55,6 +76,7 @@ export function sourceAccess(
   owner: RunOwner,
   principal: ContextPrincipal,
   now: string,
+  purpose: "execution" | "inspection" = "execution",
 ): SourceAccess {
   if (source.expiresAt !== undefined && Date.parse(source.expiresAt) <= Date.parse(now)) {
     return "expired";
@@ -88,11 +110,16 @@ export function sourceAccess(
     }
     case "memory": {
       const row = db
-        .query("SELECT user_id,agent_id,status FROM memory_entries WHERE id=?")
-        .get(source.id) as { user_id: string; agent_id: string; status: string } | null;
+        .query(
+          "SELECT user_id,agent_id,id,name,summary,tags,body,status,config_snapshot AS configSnapshot FROM memory_entries WHERE id=?",
+        )
+        .get(source.id) as
+        | (Parameters<typeof memoryRevision>[0] & { user_id: string; agent_id: string })
+        | null;
       return row &&
         row.user_id === principal.userId &&
         row.status !== "invalid" &&
+        memoryRevision(row) === source.revision &&
         (!owner.agentId || owner.agentId === row.agent_id)
         ? "available"
         : "revoked";
@@ -125,9 +152,13 @@ export function sourceAccess(
     }
     case "qq_observation": {
       const row = db
-        .query(`SELECT e.agent_id,t.expires_at FROM qq_events e
+        .query(`SELECT e.agent_id,t.body,t.expires_at FROM qq_events e
         LEFT JOIN qq_observation_text t ON t.event_key=e.event_key WHERE e.event_key=?`)
-        .get(source.id) as { agent_id: string; expires_at: string | null } | null;
+        .get(source.id) as {
+        agent_id: string;
+        body: string | null;
+        expires_at: string | null;
+      } | null;
       if (
         !row ||
         principal.userId !== DEFAULT_USER_ID ||
@@ -136,27 +167,36 @@ export function sourceAccess(
         return "revoked";
       return !row.expires_at || Date.parse(row.expires_at) <= Date.parse(now)
         ? "expired"
-        : "available";
+        : row.body !== null &&
+            createHash("sha256").update(row.body).digest("hex") === source.revision
+          ? "available"
+          : "revoked";
     }
     case "qq_media": {
       const row = db
-        .query(`SELECT n.expires_at,e.agent_id FROM qq_media_notes n
+        .query(`SELECT n.expires_at,n.attempts,e.agent_id FROM qq_media_notes n
         JOIN qq_events e ON e.event_key=n.event_key WHERE n.id=?`)
         .get(source.id) as {
         expires_at: string;
         agent_id: string;
+        attempts: number;
       } | null;
       if (!row) return "expired";
       if (principal.userId !== DEFAULT_USER_ID || (owner.agentId && owner.agentId !== row.agent_id))
         return "revoked";
-      return Date.parse(row.expires_at) <= Date.parse(now) ? "expired" : "available";
+      return Date.parse(row.expires_at) <= Date.parse(now)
+        ? "expired"
+        : String(row.attempts) === source.revision
+          ? "available"
+          : "revoked";
     }
     case "qq_speech": {
       const row = db
-        .query(`SELECT s.agent_id,t.expires_at FROM qq_speech_log s
+        .query(`SELECT s.agent_id,t.body,t.expires_at FROM qq_speech_log s
         LEFT JOIN qq_speech_text t ON t.speech_id=s.id WHERE s.id=?`)
         .get(source.id) as {
         agent_id: string;
+        body: string | null;
         expires_at: string | null;
       } | null;
       if (
@@ -167,7 +207,48 @@ export function sourceAccess(
         return "revoked";
       return !row.expires_at || Date.parse(row.expires_at) <= Date.parse(now)
         ? "expired"
-        : "available";
+        : row.body !== null &&
+            createHash("sha256").update(row.body).digest("hex") === source.revision
+          ? "available"
+          : "revoked";
+    }
+    case "outbound_intent": {
+      const row = db
+        .query(`SELECT i.target,i.expires_at,i.conversation_id,c.user_id,c.closed_at
+        FROM outbound_intents i JOIN conversations c ON c.id=i.conversation_id WHERE i.id=?`)
+        .get(source.id) as {
+        target: string;
+        expires_at: string;
+        conversation_id: string;
+        user_id: string;
+        closed_at: string | null;
+      } | null;
+      if (!row || row.user_id !== principal.userId) return "revoked";
+      if (row.closed_at && (purpose !== "inspection" || !canReadRun(db, owner, principal)))
+        return "revoked";
+      if (Date.parse(row.expires_at) <= Date.parse(now)) return "expired";
+      const target = JSON.parse(row.target) as { agentId: string; bindingId: string };
+      if (
+        (owner.agentId && owner.agentId !== target.agentId) ||
+        (owner.kind === "conversation" && owner.id !== row.conversation_id) ||
+        (owner.kind === "qq_binding" && owner.id !== target.bindingId) ||
+        !db
+          .query("SELECT 1 FROM qq_bindings WHERE id=? AND agent_id=?")
+          .get(target.bindingId, target.agentId)
+      )
+        return "revoked";
+      const parts = db
+        .query(
+          "SELECT payload FROM outbound_parts WHERE intent_id=? AND kind='text' AND status='confirmed' ORDER BY ordinal",
+        )
+        .all(source.id) as { payload: string | null }[];
+      if (!parts.length || parts.some((part) => part.payload === null)) return "expired";
+      const body = parts
+        .map((part) => (JSON.parse(part.payload as string) as { text: string }).text)
+        .join("\n");
+      return createHash("sha256").update(body).digest("hex") === source.revision
+        ? "available"
+        : "revoked";
     }
     case "qq_sticker":
       return principal.userId === DEFAULT_USER_ID &&
@@ -194,7 +275,7 @@ export function inspectContext(
   let status = stored.status;
   if (status === "exact") {
     const states = stored.sources.map((source) =>
-      sourceAccess(db, source, run.owner, principal, now),
+      sourceAccess(db, source, run.owner, principal, now, "inspection"),
     );
     if (states.includes("revoked")) status = "revoked";
     else if (

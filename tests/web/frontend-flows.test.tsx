@@ -3,7 +3,7 @@ import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
-import { useSuperstringStore } from "../../src/web/store";
+import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 const NOW = "2026-09-17T12:00:00.000Z";
 const client = (patch: Partial<SuperstringApi> = {}) => patch as SuperstringApi;
@@ -40,25 +40,66 @@ describe("流程与状态边界", () => {
     expect(renderCount.mock.calls.length).toBeGreaterThan(initial);
   });
   it("stream依赖可注入；发送只执行一次，结束刷新并释放sending", async () => {
-    const refresh = vi.fn().mockResolvedValue(undefined);
+    const refresh = vi.fn().mockResolvedValue([]);
     const stream = vi.fn(async (_body, onEvent) => {
       expect(useSuperstringStore.getState().sending).toBe(true);
       expect(useSuperstringStore.getState().messages).toHaveLength(2);
       await useSuperstringStore.getState().send();
-      onEvent({ event: "delta", request_id: "r", text: "回答" });
       onEvent({
-        event: "done",
-        request_id: "r",
-        message_id: "real",
-        created_at: NOW,
-        completed_at: NOW,
+        type: "output_delta",
+        runId: "run-r",
+        seq: 1,
+        at: NOW,
+        outputId: "real",
+        text: "回答",
+      });
+      onEvent({
+        type: "completed",
+        runId: "run-r",
+        seq: 2,
+        at: NOW,
+        outputs: [],
+        messageId: "real",
+        createdAt: NOW,
+        completedAt: NOW,
       });
     });
-    useSuperstringStore.getState().resetForTests(client(), {
-      streamChat: stream,
-      requestId: () => "r",
-      now: () => NOW,
-    });
+    useSuperstringStore.getState().resetForTests(
+      client({
+        listSessions: refresh,
+        listMessages: async () => [
+          {
+            id: "user",
+            session_id: "s",
+            turn_id: "t",
+            role: "user",
+            content: "问题",
+            sequence_no: 1,
+            status: "completed",
+            error_code: null,
+            created_at: NOW,
+            completed_at: NOW,
+          },
+          {
+            id: "real",
+            session_id: "s",
+            turn_id: "t",
+            role: "assistant",
+            content: "回答",
+            sequence_no: 2,
+            status: "completed",
+            error_code: null,
+            created_at: NOW,
+            completed_at: NOW,
+          },
+        ],
+      }),
+      {
+        streamChatV2: stream,
+        requestId: () => "r",
+        now: () => NOW,
+      },
+    );
     const oldRefresh = useSuperstringStore.getState().refreshSession;
     useSuperstringStore.setState({
       composer: " 问题 ",
@@ -89,11 +130,18 @@ describe("流程与状态边界", () => {
   });
   it("传输失败不自动重试，不丢失部分输出并释放sending", async () => {
     const stream = vi.fn(async (_body, onEvent) => {
-      onEvent({ event: "delta", request_id: "r", text: "部分" });
+      onEvent({
+        type: "output_delta",
+        runId: "run-r",
+        seq: 1,
+        at: NOW,
+        outputId: "partial",
+        text: "部分",
+      });
       throw new Error("断开");
     });
     useSuperstringStore.getState().resetForTests(client(), {
-      streamChat: stream,
+      streamChatV2: stream,
       requestId: () => "r",
       now: () => NOW,
     });
@@ -102,7 +150,7 @@ describe("流程与状态边界", () => {
     expect(stream).toHaveBeenCalledOnce();
     expect(useSuperstringStore.getState()).toMatchObject({
       sending: false,
-      error: "断开",
+      error: "服务端未找到本次请求，可重试原请求。",
     });
     expect(useSuperstringStore.getState().messages[1]).toMatchObject({
       content: "部分",

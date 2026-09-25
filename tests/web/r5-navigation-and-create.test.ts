@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type AgentResponse, P5ConfigSchema } from "../../src/shared/contracts";
 import { ApiError, type SuperstringApi } from "../../src/web/api";
-import { useSuperstringStore } from "../../src/web/store";
+import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 const NOW = "2026-09-12T03:00:00.000Z";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";

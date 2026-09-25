@@ -136,17 +136,11 @@ export function asDatabaseError(error: unknown): Error {
 
 /** Run `fn` inside `BEGIN IMMEDIATE` (see the module header for the rationale). */
 export function immediate<T>(db: Database, fn: () => T): T {
-  db.run("BEGIN IMMEDIATE");
   try {
-    const result = fn();
-    db.run("COMMIT");
-    return result;
+    // Bun uses a SAVEPOINT when another transaction already owns the connection.
+    // Channel commits can therefore include the original turn writes and the Agent journal.
+    return db.transaction(fn).immediate();
   } catch (error) {
-    try {
-      db.run("ROLLBACK");
-    } catch {
-      // A failed rollback must not mask the underlying error.
-    }
     // A raw `bun:sqlite` error leaving the transaction must become a
     // `DatabaseError` so `handleError` downgrades it to DATABASE_UNAVAILABLE
     // (503) instead of a generic 500. `AppError`s keep their own status.
@@ -1157,7 +1151,9 @@ function saveAssistantMessage(
     orm
       .update(schema.messages)
       .set({
-        content,
+        // bun:sqlite string bindings discard a leading BOM; binding bytes preserves
+        // the exact Unicode contract for completed and partial model output.
+        content: sql`CAST(${Buffer.from(content, "utf8")} AS TEXT)`,
         status,
         errorCode,
         completedAt: status === MessageStatus.Completed ? now : null,

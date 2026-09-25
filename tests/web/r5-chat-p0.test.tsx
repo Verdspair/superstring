@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { P5ConfigSchema } from "../../src/shared/contracts";
 import { ChatPage, Sidebar } from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
-import { useSuperstringStore } from "../../src/web/store";
+import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 const NOW = "2026-09-12T03:00:00.000Z";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";

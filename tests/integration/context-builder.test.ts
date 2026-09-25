@@ -3,7 +3,10 @@
 
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
+import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { createApp } from "../../src/server/app";
+import { WebContextSource } from "../../src/server/channels/web-context-source";
+import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import {
   catalog,
   catalogFingerprint,
@@ -74,6 +77,11 @@ class ContextGateway implements ModelGateway {
 
   async complete(call: CompleteCall): Promise<string> {
     this.completeCalls.push(call);
+    if (call.messages[0]?.content.includes("Return exactly one JSON decision"))
+      return JSON.stringify({
+        kind: "final",
+        outputs: [{ kind: "generate", targetId: "reply", instructions: "" }],
+      });
     if (this.completeReply) return this.completeReply(call);
     const title = String(call.responseSchema?.title ?? "");
     if (title === "Selection") {
@@ -689,6 +697,52 @@ describe("R4 ContextBuilder end-to-end", () => {
         expect(ctx.gateway.completeCalls).toHaveLength(0);
       } else {
         expect(ctx.gateway.completeCalls.length).toBeGreaterThan(0);
+      }
+      // The Web context source must preserve each mode's automatic initial injection,
+      // then reuse that material through later Agent steps without re-running selectors.
+      const agentRuntime = createAgentRuntime({
+        gateway: ctx.gateway,
+        repository: new AgentRunRepository(ctx.business.db),
+      });
+      const sourceAdapter = new WebContextSource({
+        db: ctx.business.db,
+        orm: ctx.orm,
+        gateway: ctx.gateway,
+        agentRuntime,
+        builder: builder(ctx),
+        runtime,
+        sessionId,
+        turnId: current.turn.id,
+        generationToken: current.prepared.generationToken ?? "missing",
+        maxSteps: 16,
+      });
+      const material = await sourceAdapter.read({
+        signal: new AbortController().signal,
+        observations: [],
+      });
+      const injectedMaterial = material.history
+        ?.flatMap((message) => message.content)
+        .find((part) => part.kind === "text" && part.text.startsWith("以下是授权的长期记忆数据"));
+      if (expected === 0) expect(injectedMaterial).toBeUndefined();
+      else
+        expect(injectedMaterial).toEqual({
+          kind: "text",
+          text: injected?.content ?? "missing initial memory",
+        });
+      const calls = ctx.gateway.completeCalls.length;
+      expect(
+        await sourceAdapter.read({ signal: new AbortController().signal, observations: [] }),
+      ).toBe(material);
+      expect(ctx.gateway.completeCalls).toHaveLength(calls);
+      if (mode !== "off") {
+        ctx.orm
+          .update(schema.memoryEntries)
+          .set({ body: "changed after first next" })
+          .where(eq(schema.memoryEntries.id, "00000000-0000-4000-8000-000000000001"))
+          .run();
+        await expect(
+          sourceAdapter.read({ signal: new AbortController().signal, observations: [] }),
+        ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
       }
     });
   }

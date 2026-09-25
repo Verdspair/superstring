@@ -18,7 +18,12 @@ import {
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
-export function memoryRevision(row: MemoryEntryRow): string {
+export function memoryRevision(
+  row: Pick<
+    MemoryEntryRow,
+    "id" | "name" | "summary" | "tags" | "body" | "status" | "configSnapshot"
+  >,
+): string {
   return createHash("sha256")
     .update(
       JSON.stringify([

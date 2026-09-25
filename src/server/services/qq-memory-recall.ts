@@ -58,7 +58,7 @@ export async function recallQqReplyMemory(
     sources?: SourceRef[];
     signal?: AbortSignal;
   },
-): Promise<{ material: QqPromptMaterial[]; read?: QqMemoryReadSnapshot }> {
+): Promise<{ material: QqPromptMaterial[]; read?: QqMemoryReadSnapshot; sources?: SourceRef[] }> {
   const { runtime, snapshot } = input;
   if (runtime.p5_config.retrieval_mode === "off") return { material: [] };
   const keys = qqMemoryScopeKeyset(snapshot.access).read as readonly string[];
@@ -114,5 +114,9 @@ export async function recallQqReplyMemory(
     sources: input.sources,
     signal: input.signal,
   });
-  return { material: materialOf(items), read: items.length > 0 ? read : undefined };
+  return {
+    material: materialOf(items),
+    read: items.length > 0 ? read : undefined,
+    sources: items.map((item) => ({ kind: "memory", id: item.id, revision: item.revision })),
+  };
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ContextUsageSchema } from "./context-usage";
 import { SourceRefSchema } from "./evidence";
 
 export const ContextHandleSchema = z.strictObject({ runId: z.string(), stepId: z.string() });
@@ -52,6 +53,7 @@ const envelope = {
   dataStatus: z.enum(["expired", "revoked"]).optional(),
 };
 export const RunEventSchema = z.discriminatedUnion("type", [
+  z.strictObject({ ...envelope, type: z.literal("context_usage"), usage: ContextUsageSchema }),
   z.strictObject({ ...envelope, type: z.literal("started"), requestId: z.string().optional() }),
   z.strictObject({
     ...envelope,
@@ -76,6 +78,8 @@ export const RunEventSchema = z.discriminatedUnion("type", [
     type: z.literal("completed"),
     outputs: z.array(OutputSummarySchema),
     messageId: z.string().optional(),
+    createdAt: z.string().optional(),
+    completedAt: z.string().nullable().optional(),
   }),
   z.strictObject({ ...envelope, type: z.literal("no_output") }),
   z.strictObject({ ...envelope, type: z.literal("failed"), code: z.string() }),

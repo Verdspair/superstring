@@ -1,4 +1,4 @@
-import type { LeafAgentRuntime } from "../agent/agent-runtime";
+import type { AgentRuntime } from "../agent/agent-runtime";
 // Session, message and health routes. Behaviours that must not drift:
 // - `POST /sessions` is idempotent on `client_request_id` and answers 201.
 // - `DELETE /sessions/{id}/messages/{mid}` answers 204 with the three
@@ -15,6 +15,7 @@ import {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
 } from "../../shared/contracts";
+import type { WebChannelOptions } from "../channels/web-channel";
 import {
   createSession,
   deleteMessage as deleteMessageRow,
@@ -87,7 +88,8 @@ export function sessionRoutes(
   db: Database,
   defaultModelName: string,
   gateway: ModelGateway,
-  agentRuntime?: LeafAgentRuntime,
+  agentRuntime?: AgentRuntime,
+  conversation?: Pick<WebChannelOptions, "host" | "journal" | "maxSteps">,
 ): Hono {
   const router = new Hono();
 
@@ -168,6 +170,7 @@ export function sessionRoutes(
       | ((usage: import("../../shared/contracts/context-usage").ContextUsage) => void)
       | undefined;
     const service = new DirectService({
+      ...conversation,
       orm,
       db,
       gateway,

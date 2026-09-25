@@ -11,6 +11,7 @@ export * from "./agent";
 export * from "./agent-run";
 export * from "./browser-state";
 export * from "./chat";
+export * from "./chat-v2";
 export * from "./common";
 export * from "./content";
 export * from "./errors";

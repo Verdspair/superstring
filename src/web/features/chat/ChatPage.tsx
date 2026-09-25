@@ -5,7 +5,9 @@ import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { HeadingIcon, Icon } from "../../ui/icons";
 import { localTime } from "../../ui/local-time";
 import { ProcessingStatus } from "../../ui/ProcessingStatus";
+import { RunLink } from "../runs/RunInspector";
 import { ContextUsagePanel } from "./ContextUsagePanel";
+import { chatBusy, currentChat } from "./conversation-state";
 import { menuPosition } from "./menu-position";
 
 export function ChatPage() {
@@ -23,18 +25,24 @@ export function ChatPage() {
   }, []);
   const sessions = useSuperstringStore((state) => state.sessions);
   const currentSessionId = useSuperstringStore((state) => state.currentSessionId);
-  const messages = useSuperstringStore((state) => state.messages);
-  const runtimeConfig = useSuperstringStore((state) => state.runtimeConfig);
-  const runtimeConfigUnavailable = useSuperstringStore((state) => state.runtimeConfigUnavailable);
-  const composer = useSuperstringStore((state) => state.composer);
-  const sending = useSuperstringStore((state) => state.sending);
+  const canonicalId = useSuperstringStore((state) => state.currentConversationId);
+  const resolving = !!currentSessionId && !canonicalId;
+  const chat = useSuperstringStore(currentChat);
+  const {
+    messages,
+    runtimeConfig,
+    runtimeConfigUnavailable,
+    composer,
+    failedChat,
+    knowledgeResend,
+  } = chat;
+  const sending = chatBusy(chat);
+  const reconcile = useSuperstringStore((state) => state.reconcileChat);
   const pendingOperations = useSuperstringStore((state) => state.pendingOperations);
-  const error = useSuperstringStore((state) => state.error);
-  const feedback = useSuperstringStore((state) => state.feedback);
+  const error = useSuperstringStore((state) => currentChat(state).error ?? state.error);
+  const feedback = useSuperstringStore((state) => currentChat(state).feedback || state.feedback);
   const setComposer = useSuperstringStore((state) => state.setComposer);
   const send = useSuperstringStore((state) => state.send);
-  const failedChat = useSuperstringStore((state) => state.failedChat);
-  const knowledgeResend = useSuperstringStore((state) => state.knowledgeResend);
   const retryChat = useSuperstringStore((state) => state.retryChat);
   const resendKnowledgeChat = useSuperstringStore((state) => state.resendKnowledgeChat);
   const cancelKnowledgeResend = useSuperstringStore((state) => state.cancelKnowledgeResend);
@@ -137,6 +145,7 @@ export function ChatPage() {
             <span>{headingText}</span>
           </h1>
         </div>
+        {chat.runId && <RunLink runId={chat.runId} />}
       </header>
       <div className="chat-content">
         {messages.length === 0 ? (
@@ -239,24 +248,29 @@ export function ChatPage() {
             {translateNotice(error ?? feedback)}
           </div>
         )}
+        {chat.phase === "reconciling" && (
+          <button type="button" onClick={() => void reconcile()}>
+            {t("核对服务端结果")}
+          </button>
+        )}
         <textarea
           value={composer}
           onChange={(event) => setComposer(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void send();
             }
           }}
           placeholder={t("输入消息…")}
           rows={2}
-          disabled={sending}
+          disabled={sending || resolving}
         />
         <div className="composer-actions">
           <span>{t("Enter 发送 · Shift + Enter 换行")}</span>
           <ContextUsagePanel />
           {failedChat?.sessionId === currentSessionId && (
-            <button type="button" disabled={sending} onClick={() => void retryChat()}>
+            <button type="button" disabled={sending || resolving} onClick={() => void retryChat()}>
               {t("重试原请求")}
             </button>
           )}
@@ -264,7 +278,7 @@ export function ChatPage() {
             type="button"
             className="primary"
             aria-label={sending ? t("生成中") : t("发送")}
-            disabled={sending}
+            disabled={sending || resolving}
             onClick={() => void send()}
           >
             {sending ? t("生成中") : t("发送")}

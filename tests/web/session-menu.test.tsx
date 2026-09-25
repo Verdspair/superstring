@@ -6,7 +6,7 @@ import { ChatPage } from "../../src/web/features/chat/ChatPage";
 import { SessionList } from "../../src/web/features/chat/SessionList";
 import { GeneralSettings } from "../../src/web/features/general/GeneralSettings";
 import { selectLocale } from "../../src/web/i18n";
-import { useSuperstringStore as store } from "../../src/web/store";
+import { fixtureStore as store } from "./helpers/chat-fixture";
 
 const a: SessionResponse = {
   id: "a",
@@ -183,8 +183,8 @@ it("动作拒绝空白和超长标题，生成期间拒绝刷新删除", async (
   expect(await store.getState().renameSession("b", " ")).toBe(false);
   expect(await store.getState().renameSession("b", "x".repeat(201))).toBe(false);
   store.setState({ sending: true });
-  expect(await store.getState().deleteSessionById("b")).toBe(false);
-  expect(await store.getState().refreshSessionById("b")).toBe(false);
+  expect(await store.getState().deleteSessionById("a")).toBe(false);
+  expect(await store.getState().refreshSessionById("a")).toBe(false);
   expect(rename).not.toHaveBeenCalled();
   expect(remove).not.toHaveBeenCalled();
   expect(list).not.toHaveBeenCalled();
@@ -215,6 +215,7 @@ it("迟到的会话读取不覆盖新选择", async () => {
   });
   const pending = store.getState().selectSession("b");
   store.setState({ currentSessionId: "a" });
+  await waitFor(() => expect(finish).toBeTypeOf("function"));
   finish([]);
   await pending;
   expect(store.getState().messages).toEqual([message]);

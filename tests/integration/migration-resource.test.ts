@@ -165,6 +165,14 @@ const agentRunsSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0039_agent_runs.sql"),
   "utf8",
 );
+const conversationWakesSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0040_conversation_wakes.sql"),
+  "utf8",
+);
+const outboundIntentsSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0041_outbound_intents.sql"),
+  "utf8",
+);
 const qqStickerAuthorizationSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0022_qq_sticker_authorization.sql"),
   "utf8",
@@ -209,6 +217,8 @@ const resources = [
   qqJudgementPerSpeakerSql,
   qqJudgementModelSql,
   agentRunsSql,
+  conversationWakesSql,
+  outboundIntentsSql,
 ] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
@@ -260,6 +270,8 @@ describe("explicit migration resources", () => {
               qqJudgementPerSpeakerSql,
               qqJudgementModelSql,
               agentRunsSql,
+              conversationWakesSql,
+              outboundIntentsSql,
             ],
           }),
         ).toThrow();
@@ -317,11 +329,13 @@ describe("explicit migration resources", () => {
             qqJudgementPerSpeakerSql,
             qqJudgementModelSql,
             agentRunsSql,
+            conversationWakesSql,
+            outboundIntentsSql,
           ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 39 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 41 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -530,12 +544,20 @@ describe("explicit migration resources", () => {
         path.join(import.meta.dir, "../../migrations/versions/0039_agent_runs.sql"),
         path.join(versions, "0039_agent_runs.sql"),
       );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0040_conversation_wakes.sql"),
+        path.join(versions, "0040_conversation_wakes.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0041_outbound_intents.sql"),
+        path.join(versions, "0041_outbound_intents.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(39);
+      expect(layout?.businessMigrationSql.length).toBe(41);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {

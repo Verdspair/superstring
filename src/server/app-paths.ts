@@ -232,6 +232,18 @@ export function resolveAppPaths(options: AppPathOptions) {
       "0038_qq_judgement_model.sql",
     ),
     agentRunsMigration: path.join(resourceRoot, "migrations", "versions", "0039_agent_runs.sql"),
+    conversationWakesMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0040_conversation_wakes.sql",
+    ),
+    outboundIntentsMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0041_outbound_intents.sql",
+    ),
     // Product layouts carry the ordered business resources, never the R1 probe.
   } as const;
 }

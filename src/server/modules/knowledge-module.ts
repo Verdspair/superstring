@@ -253,6 +253,20 @@ async function chooseKnowledge(
 /** Freeze bounded, authorized source material before any selection-model call. */
 export class KnowledgeContext {
   constructor(private readonly db: Database) {}
+  sourceRefs(turnId: string, agentId: string): SourceRef[] {
+    return (this.read(turnId, agentId)?.candidates ?? []).flatMap((candidate) => [
+      {
+        kind: "knowledge_document",
+        id: candidate.document_id,
+        revision: candidate.items[0].revision,
+      },
+      {
+        kind: "knowledge_grant",
+        id: JSON.stringify([candidate.document_id, agentId]),
+        revision: candidate.token,
+      },
+    ]);
+  }
   private read(turnId: string, agentId: string): Snapshot | null {
     const row = this.db
       .query<SnapshotRow, [string]>(
