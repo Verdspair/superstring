@@ -66,6 +66,14 @@
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
     },
     {
+      "file": "eventsource-parser-LICENSE.txt",
+      "source": "npm:eventsource-parser@4.1.1/LICENSE",
+      "component": "eventsource-parser",
+      "version": "4.1.1",
+      "license": "MIT",
+      "sha256": "835eb611a23301b27115ca1be9f754c876e643ceb7fe63049c6b50609a1cafeb"
+    },
+    {
       "file": "omggif-LICENSE.txt",
       "source": "npm:omggif@1.0.10/README (the package's MIT permission notice; neither the published package nor the upstream repository carries a separate LICENSE file)",
       "component": "omggif",
