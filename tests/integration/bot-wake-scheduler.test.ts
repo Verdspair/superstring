@@ -12,10 +12,22 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const clean of cleanups.splice(0).reverse()) clean();
 });
+/** Windows can hold the SQLite -wal/-shm files for a moment after close(); retry briefly. */
+function removeTempDir(dir: string): void {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      Bun.sleepSync(25);
+    }
+  }
+}
+
 const at = "2030-01-01T00:00:00.000Z";
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "bot-global-lease-"));
-  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  cleanups.push(() => removeTempDir(dir));
   const first = openBusinessDb({ path: join(dir, "business.db") });
   ensureDefaults(first.orm, "model");
   const second = openBusinessDb({ path: join(dir, "business.db") });

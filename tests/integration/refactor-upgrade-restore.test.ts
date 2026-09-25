@@ -27,6 +27,18 @@ import {
 } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 
+/** Windows can hold the SQLite -wal/-shm files for a moment after close(); retry briefly. */
+function removeTempDir(dir: string): void {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      Bun.sleepSync(25);
+    }
+  }
+}
+
 const digest = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
 
@@ -264,10 +276,10 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
   } finally {
     oldDb?.close();
     next?.close();
-    rmSync(dir, { recursive: true, force: true });
+    removeTempDir(dir);
   }
 }
-it.each([false, true])(
-  "v38 history survives upgrade and rebinding (B initially: %s)",
-  verifyUpgrade,
-);
+for (const initiallyBoundToB of [false, true]) {
+  it(`v38 history survives upgrade and rebinding (B initially: ${initiallyBoundToB})`, () =>
+    verifyUpgrade(initiallyBoundToB));
+}
