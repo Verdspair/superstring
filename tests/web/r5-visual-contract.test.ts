@@ -14,6 +14,7 @@ const app = [
   "ui/ConfirmDialog.tsx",
   "ui/ProcessingStatus.tsx",
   "app/Sidebar.tsx",
+  "features/conversations/ConversationHeader.tsx",
   "app/SettingsHeader.tsx",
   "app/SettingsHub.tsx",
   "app/NavigationConfirm.tsx",
@@ -36,18 +37,19 @@ describe("R5 视觉契约", () => {
   it("紧凑一级导航不拉伸行高，统一36px单行高度与3px间隔", () => {
     expect(css).toContain("--ac-nav-height: 36px");
     expect(css).toContain("--ac-nav-gap: 3px");
-    expect(rule(".settings-primary-nav")).toContain("align-content: start");
-    expect(rule(".settings-primary-nav")).toContain("gap: var(--ac-nav-gap)");
-    expect(rule(".settings-navigation")).toContain("border: 0");
-    expect(rule(".settings-navigation")).toContain("padding: 0");
-    expect(rule(".settings-navigation button")).toContain("padding: 5px 10px");
-    expect(rule(".settings-navigation button")).not.toMatch(/(?:^|;)\s*height:\s*\d/);
-    expect(rule(".settings-navigation .icon")).toContain("width: 16px");
+    expect(rule(".app-primary-nav")).toContain("align-content: start");
+    expect(rule(".app-primary-nav")).toContain("gap: var(--ac-nav-gap)");
+    expect(rule(".app-primary-nav")).toContain("border: 0");
+    expect(rule(".app-primary-nav")).toContain("padding: 0");
+    expect(rule(".app-primary-nav button")).toContain("padding: 5px 10px");
+    expect(rule(".app-primary-nav button")).not.toMatch(/(?:^|;)\s*height:\s*\d/);
+    expect(rule(".app-primary-nav .icon")).toContain("width: 16px");
     expect(rule(".settings-body")).toContain("width: 100%");
     expect(rule(".settings-body")).toContain("margin: 0;");
     expect(rule(".settings-body")).not.toContain("880px");
     expect(rule(".settings-body")).not.toContain("1064px");
-    expect(css).toContain("grid-template-columns: 96px minmax(0, 1fr)");
+    expect(rule(".settings-body")).toContain("display: block");
+    expect(css).toContain("grid-template-columns: repeat(5, minmax(0, 1fr))");
   });
   it("正文取消重复外框，公共分组和弹窗保留中性内容面板", () => {
     expect(rule(".workspace-detail")).toContain("border: 0");
@@ -63,7 +65,7 @@ describe("R5 视觉契约", () => {
   it("选中态只用统一内侧标记且悬停不丢失状态", () => {
     expect(css).toContain("--ac-selection-marker: inset 2px 0 var(--ac-accent)");
     for (const selector of [
-      ".settings-navigation button[aria-current]",
+      ".app-primary-nav button[aria-current]",
       ".settings-secondary-nav button.active",
       ".session-list button.active",
     ]) {
@@ -73,7 +75,7 @@ describe("R5 视觉契约", () => {
     }
     // 旧助手列表选中态已随组件退役，不得重新引入。
     expect(css).not.toContain(".agent-editor-list button.active");
-    expect(css).toContain(".settings-navigation button[aria-current]:hover:not(:disabled)");
+    expect(css).toContain(".app-primary-nav button[aria-current]:hover:not(:disabled)");
     expect(css).toContain('button.mode-option[aria-pressed="true"]:hover:not(:disabled)');
     expect(css).toContain(".memory-row:has(input:checked)");
   });
@@ -93,7 +95,7 @@ describe("R5 视觉契约", () => {
     expect(rule("button.danger")).toContain("color: var(--ac-danger)");
     expect(rule(".message.failed .bubble")).toContain("background: var(--ac-danger-soft)");
   });
-  it("一级导航在独立设置栏纵向排列，二级在右侧顶部并带主题选中底色", () => {
+  it("一级导航进入统一侧栏，二级在正文顶部并带主题选中底色", () => {
     const navigation = readFileSync(
       resolve(projectRoot, "src/web/app/SettingsSidebar.tsx"),
       "utf8",
@@ -104,16 +106,14 @@ describe("R5 视觉契约", () => {
     );
     expect(navigation).toContain("<SettingsNavigation />");
     expect(navigation).toContain('className="settings-secondary-nav"');
-    expect(rule(".settings-primary-nav")).toContain("grid-template-columns: minmax(0, 1fr)");
+    expect(rule(".app-primary-nav")).toContain("grid-template-columns: minmax(0, 1fr)");
     expect(rule(".settings-secondary-nav")).toContain("flex-wrap: wrap");
-    expect(navigation.indexOf('t("快捷管理")')).toBeLessThan(
-      navigation.indexOf("SETTINGS_GROUPS.map"),
-    );
-    expect(rule(".settings-body")).toContain("grid-template-columns: 120px minmax(0, 1fr)");
+    expect(navigation).toContain("sectionDestinations(section).map");
+    expect(rule(".settings-body")).toContain("display: block");
     expect(rule(".settings-secondary-nav button.active")).toContain(
       "background: var(--ac-accent-soft)",
     );
-    expect(rule(".settings-navigation button[aria-current]")).toContain(
+    expect(rule(".app-primary-nav button[aria-current]")).toContain(
       "box-shadow: var(--ac-selection-marker)",
     );
     expect(workspace).toContain("<SettingsBody>");
@@ -188,7 +188,8 @@ describe("R5 视觉契约", () => {
       resolve(projectRoot, "src/web/app/SettingsWorkspace.tsx"),
       "utf8",
     );
-    expect(sidebar).toContain("SETTINGS_GROUPS.map");
+    expect(sidebar).toContain("sectionDestinations(section).map");
+    expect(sidebar).not.toContain("SETTINGS_GROUPS.map");
     expect(sidebar).toContain("aria-current");
     expect(sidebar).not.toContain("<details");
     expect(workspace).not.toContain("<details");
@@ -210,10 +211,10 @@ describe("R5 视觉契约", () => {
     expect(workspace).toContain('aria-label={t("知识库分区跳转")}');
     expect(reading).toContain("尚未开放的读取策略");
     expect(reading).toContain("保存助手读取配置");
-    expect(rule(".settings-navigation button")).toContain("background: transparent");
-    expect(rule(".settings-navigation button")).toContain("min-height: var(--ac-nav-height)");
+    expect(rule(".app-primary-nav button")).toContain("background: transparent");
+    expect(rule(".app-primary-nav button")).toContain("min-height: var(--ac-nav-height)");
     const chatSidebar = readFileSync(resolve(projectRoot, "src/web/app/Sidebar.tsx"), "utf8");
-    expect(chatSidebar).toContain("<SessionList />");
+    expect(chatSidebar).toContain("<ConversationList />");
     expect(chatSidebar).not.toContain("SettingsSidebar");
     const header = readFileSync(resolve(projectRoot, "src/web/app/SettingsHeader.tsx"), "utf8");
     expect(header).not.toContain("<SettingsNavigation />");

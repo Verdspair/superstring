@@ -330,12 +330,15 @@ export interface QqAccessState {
    */
   saveQqJudgementModel: (modelName: string | null) => Promise<boolean>;
   refreshQqConnection: () => Promise<void>;
-  saveQqSurface: (patch: {
-    enabled?: boolean;
-    account_id?: string | null;
-    endpoint?: string | null;
-    token?: string | null;
-  }) => Promise<boolean>;
+  saveQqSurface: (
+    patch: {
+      enabled?: boolean;
+      account_id?: string | null;
+      endpoint?: string | null;
+      token?: string | null;
+    },
+    expectedRevision?: number,
+  ) => Promise<boolean>;
   bindQqConversation: (input: {
     conversation: QqConversationListItem;
     agentId: string;

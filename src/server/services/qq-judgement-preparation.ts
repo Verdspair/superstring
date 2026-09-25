@@ -140,7 +140,7 @@ export type QqJudgementPreparation =
 export function prepareQqJudgement(
   orm: Orm,
   input: unknown,
-  options?: { onSources: (sources: SourceRef[]) => void },
+  options?: { onSources?: (sources: SourceRef[]) => void; eligibilityOnly?: boolean },
 ): QqJudgementPreparation {
   const parsed = Input.safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ judgement preparation input");
@@ -272,11 +272,13 @@ export function prepareQqJudgement(
     }
     // 打分口径里排在人物与上下文之后的两层（用户 2026-09-25）：长期记忆与知识库。只在真会跑判断的
     // 两条路径上读；取不到就少一段，绝不因此不判断（与上面那条媒体闸门不同性质）。
-    material = qqJudgementMaterial(orm, {
-      binding,
-      question: qqJudgementQuestion(messages.map((message) => message.text)),
-      onSources: options?.onSources,
-    });
+    material = options?.eligibilityOnly
+      ? []
+      : qqJudgementMaterial(orm, {
+          binding,
+          question: qqJudgementQuestion(messages.map((message) => message.text)),
+          onSources: options?.onSources,
+        });
   } else {
     // 被叫到 = **挣来这一轮的那条消息**的发言人（`focusEventKey`；没给就退回最新一条）。匿名发言也是
     // 一个人，只是没有号（`speakerId: null`，不加 `@`）。
@@ -305,7 +307,7 @@ export function prepareQqJudgement(
     }),
   });
   const selection = qqSelectContext({ timeline, limits, nowSeconds });
-  options?.onSources(selection.messages.flatMap((m) => m.sources ?? []));
+  options?.onSources?.(selection.messages.flatMap((m) => m.sources ?? []));
   const runtime = runtimeFromAgent(agent);
   // 提示词按目标一人一份（共用部分只组装一次）。三种情况都归到"一份无对象提示词"：
   //   * 开关关掉——整间会话一次，不加 `@`（旧行为）；
@@ -314,7 +316,7 @@ export function prepareQqJudgement(
   const splitBySpeaker = schemeReply(scheme).split_by_speaker;
   const promptTargets: readonly (QqReplyTarget | null)[] =
     splitBySpeaker && targets.length > 0 ? targets : [null];
-  const judgementPrompts = promptTargets.map((target) => ({
+  const judgementPrompts = (options?.eligibilityOnly ? [] : promptTargets).map((target) => ({
     target,
     messages: qqPromptMessages(
       buildQqPrompt({

@@ -9,9 +9,15 @@ import {
   type QqStickerFileReference,
   qqTextSegments,
 } from "../services/qq-send-transport";
+import { observationRelevant } from "./observation-relevance";
 
 /** Durable side effects. No model call can occur inside a transport transaction. */
 export class OutboundDelivery {
+  private stopped = false;
+  /** Finish an in-flight receipt, while leaving unstarted work durable for a new worker. */
+  stop(): void {
+    this.stopped = true;
+  }
   constructor(
     private readonly options: {
       orm: Orm;
@@ -107,12 +113,18 @@ export class OutboundDelivery {
     const { repository, journal } = this.options;
     let row = repository.row(id);
     if (!row) return null;
-    while (["planned", "delivering"].includes(row.status)) {
+    while (!this.stopped && ["planned", "delivering"].includes(row.status)) {
       const delivery = repository.get(id)!;
       const target = JSON.parse(row.target) as OutboundTarget;
       const changed = journal
         .eventsAfter(row.conversation_id, row.source_through_seq, Number.MAX_SAFE_INTEGER)
-        .items.some((e) => e.kind === "inbound" || e.kind === "media_revision");
+        .items.some((event) =>
+          observationRelevant(event, {
+            topology: target.conversationKind === "private" ? "direct" : "shared",
+            participantIds: [target.participantId ?? null],
+            attentionMembers: target.attentionMembers,
+          }),
+        );
       if (this.now() >= row.deliver_by || changed || !this.options.authorize(target, delivery)) {
         const stale = repository.db.transaction(() => {
           const result = repository.stale(id, this.now());
@@ -137,7 +149,10 @@ export class OutboundDelivery {
           result = await this.options.port.send({
             kind: target.conversationKind,
             peerId: target.peerId,
-            message: qqTextSegments(claim.payload.text),
+            message: qqTextSegments(
+              claim.payload.text,
+              claim.part.ordinal === 0 ? (target.participantId ?? null) : null,
+            ),
           });
         } else {
           const file =
@@ -185,6 +200,7 @@ export class OutboundDelivery {
   async runOnce(): Promise<number> {
     let count = 0;
     for (const d of this.options.repository.pending()) {
+      if (this.stopped) break;
       await this.deliver(d.id);
       count++;
     }

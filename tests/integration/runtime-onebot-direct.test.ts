@@ -111,22 +111,31 @@ it("production composition shares Web/Bot Agent runtime and dispatches private i
         recordedAt: now,
       })
       .run();
-    await runtime.qqRuntime.runCycle();
+    await runtime.botWorker.runCycle();
     expect(sends).toHaveLength(2);
+    const diagnostics = await (await runtime.app.request("/qq/storage")).json();
+    expect(diagnostics.agent_runtime).toEqual({
+      pending_wakes: 0,
+      leased_wakes: 0,
+      failed_wakes: 0,
+      active_runs: 0,
+      pending_deliveries: 0,
+      unknown_deliveries: 0,
+    });
     expect(business.db.query("SELECT status FROM outbound_intents").all()).toEqual([
       { status: "confirmed" },
     ]);
     expect(
       business.db
         .query(
-          "SELECT spec_id,status FROM agent_runs WHERE spec_id IN('conversation.web','onebot.private.main') ORDER BY rowid",
+          "SELECT spec_id,status FROM agent_runs WHERE spec_id IN('conversation.web','onebot.main') ORDER BY rowid",
         )
         .all(),
     ).toEqual([
       { spec_id: "conversation.web", status: "completed" },
-      { spec_id: "onebot.private.main", status: "completed" },
+      { spec_id: "onebot.main", status: "completed" },
     ]);
-    await runtime.qqRuntime.runCycle();
+    await runtime.botWorker.runCycle();
     expect(sends).toHaveLength(2);
   } finally {
     await runtime.stop();

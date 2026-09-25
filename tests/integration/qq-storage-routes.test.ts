@@ -243,6 +243,14 @@ describe("storage usage reports what exists", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body).toEqual({
+        agent_runtime: {
+          pending_wakes: 0,
+          leased_wakes: 0,
+          failed_wakes: 0,
+          active_runs: 0,
+          pending_deliveries: 0,
+          unknown_deliveries: 0,
+        },
         observations: { messages: 2, text: 2, expired_text: 1 },
         speech: { records: 2, text: 2 },
         sends: { attempts: 2, parts: 2 },

@@ -106,7 +106,7 @@ it("设置中心可进入外观再返回，自定义不提供可操作入口", (
   render(<App />);
   fireEvent.click(
     within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
-      name: "通用",
+      name: "偏好",
     }),
   );
   fireEvent.click(screen.getByText("外观"));
@@ -116,7 +116,7 @@ it("设置中心可进入外观再返回，自定义不提供可操作入口", (
   fireEvent.click(screen.getByRole("button", { name: "返回设置中心" }));
   expect(
     within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
-      name: "快捷管理",
+      name: "Agent",
     }),
   ).toBeTruthy();
 });
@@ -125,15 +125,13 @@ it("设置入口整行可点，返回导航位于主栏页头且仅显示图标"
   useSuperstringStore.setState({ page: "settings", settingsView: "hub" });
   const { container } = render(<App />);
   const row = within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
-    name: "快捷管理",
+    name: "Agent",
   });
   expect(row.classList.contains("settings-entry")).toBe(true);
   expect(row.querySelector("button")).toBeNull();
-  expect(container.querySelectorAll(".settings-list > button")).toHaveLength(5);
+  expect(container.querySelectorAll(".settings-list > button")).toHaveLength(4);
   expect(screen.queryByText("打开配置")).toBeNull();
-  await act(async () =>
-    fireEvent.click(screen.getByText("管理助手、基础信息与全部用途模型；外部接入暂未开放。")),
-  );
+  await act(async () => fireEvent.click(screen.getByText("助手、模型用途、身份表达与上下文。")));
   const back = screen.getByRole("button", { name: "返回设置中心" });
   expect(back.textContent).toBe("");
   expect(back.getAttribute("title")).toBe("返回设置中心");
@@ -143,7 +141,7 @@ it("设置入口整行可点，返回导航位于主栏页头且仅显示图标"
   await act(async () => fireEvent.click(back));
   fireEvent.click(
     within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
-      name: "通用",
+      name: "偏好",
     }),
   );
   fireEvent.click(screen.getByText("外观"));
@@ -229,12 +227,12 @@ it("新会话默认助手并入助手设置的下拉，停用助手不出现", a
     [...container.querySelectorAll(".settings-list > button")].map(
       (button) => button.querySelector("strong")?.textContent,
     ),
-  ).toEqual(["通用", "运行模式", "快捷管理", "人设", "记忆"]);
+  ).toEqual(["Agent", "资料", "接入", "偏好"]);
   expect(screen.queryByRole("button", { name: "新会话" })).toBeNull();
   await act(async () =>
     fireEvent.click(
       within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
-        name: "快捷管理",
+        name: "Agent",
       }),
     ),
   );
@@ -246,7 +244,7 @@ it("新会话默认助手并入助手设置的下拉，停用助手不出现", a
   fireEvent.click(screen.getByRole("button", { name: "返回设置中心" }));
   expect(
     within(screen.getByRole("navigation", { name: "功能设置" })).getByRole("button", {
-      name: "快捷管理",
+      name: "Agent",
     }),
   ).toBeTruthy();
   useSuperstringStore.setState({ editAgent });

@@ -11,7 +11,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
+import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { readQqDispatchCandidate } from "../../src/server/db/qq-dispatch-repository";
 import { mediaNoteRow } from "../../src/server/db/qq-media-repository";
 import {
@@ -22,6 +24,7 @@ import {
 import { ensureDefaults, nowIso } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { WakeRepository } from "../../src/server/db/wake-repository";
 import type { VisionClient } from "../../src/server/llm/vision-client";
 import type { OneBotSocket } from "../../src/server/services/onebot-connection";
 import type { QqObservation } from "../../src/server/services/onebot-protocol";
@@ -645,92 +648,142 @@ describe("the transport runtime drives the event path", () => {
     }
   }, 15_000);
 
-  it("reads an addressed picture end to end over the injected transport", async () => {
-    const s = setup();
-    try {
-      updateQqTransportConfig(s.h.orm, {
-        endpoint: "ws://127.0.0.1:3000/",
-        token: TOKEN,
-        expectedRevision: readQqSettings(s.h.orm).revision,
-        keyPath: s.keyPath,
-      });
-      // The whole chain runs for real except the two ends: NapCat is a fake socket that answers
-      // `get_image` with a data URL, and the model is a fake vision client.
-      const vision = fakeVision(["端到端：图里是一只猫"]);
-      const sockets: FakeSocket[] = [];
-      const events: QqIntakeEvent[] = [];
-      const runtime = new QqIntakeRuntime({
-        orm: s.h.orm,
-        transportKeyPath: s.keyPath,
-        connectTimeoutMs: 500,
-        requestTimeoutMs: 200,
-        cycleIntervalMs: 60_000,
-        nowSeconds: () => NOW,
-        media: { vision },
-        onEvent: (event) => events.push(event),
-        socketFactory: (): OneBotSocket => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-      });
-      const started = runtime.start();
-      const socket = sockets[0];
-      if (!socket) throw new Error("expected a socket");
-      completeHandshake(socket);
-      await started;
-      // Now answer the source resolution the way the bot side would: a data URL of the bytes.
-      const handshakeResponder = socket.onSend;
-      socket.onSend = (request) => {
-        if (request.action === "get_image") {
-          socket.deliver({
-            status: "ok",
-            retcode: 0,
-            data: { file: DATA_URL },
-            echo: request.echo,
-          });
-          return;
+  it.each([
+    [false, false],
+    [true, false],
+    [true, true],
+  ])(
+    "reads media with canonical ingress=%s, supplement retry=%s and one queue owner",
+    async (canonical, retry) => {
+      const s = setup();
+      try {
+        updateQqTransportConfig(s.h.orm, {
+          endpoint: "ws://127.0.0.1:3000/",
+          token: TOKEN,
+          expectedRevision: readQqSettings(s.h.orm).revision,
+          keyPath: s.keyPath,
+        });
+        // The whole chain runs for real except the two ends: NapCat is a fake socket that answers
+        // `get_image` with a data URL, and the model is a fake vision client.
+        s.h.db.exec("UPDATE qq_schemes SET trigger_direct_reply=1,trigger_chiming_in=1");
+        const vision = fakeVision(retry ? ["", "端到端：图里是一只猫"] : ["端到端：图里是一只猫"]);
+        const journal = new ConversationEventRepository(s.h.db);
+        const wakes = new WakeRepository(s.h.db);
+        const adapter = canonical
+          ? new OneBot11Adapter({ orm: s.h.orm, journal, wakes, nowSeconds: () => NOW })
+          : undefined;
+        const sockets: FakeSocket[] = [];
+        const events: QqIntakeEvent[] = [];
+        const runtime = new QqIntakeRuntime({
+          orm: s.h.orm,
+          transportKeyPath: s.keyPath,
+          connectTimeoutMs: 500,
+          requestTimeoutMs: 200,
+          cycleIntervalMs: 60_000,
+          nowSeconds: () => NOW,
+          media: { vision },
+          conversationIngress: adapter,
+          onEvent: (event) => events.push(event),
+          socketFactory: (): OneBotSocket => {
+            const socket = new FakeSocket();
+            sockets.push(socket);
+            return socket;
+          },
+        });
+        const started = runtime.start();
+        const socket = sockets[0];
+        if (!socket) throw new Error("expected a socket");
+        completeHandshake(socket);
+        await started;
+        // Now answer the source resolution the way the bot side would: a data URL of the bytes.
+        const handshakeResponder = socket.onSend;
+        socket.onSend = (request) => {
+          if (request.action === "get_image") {
+            socket.deliver({
+              status: "ok",
+              retcode: 0,
+              data: { file: DATA_URL },
+              echo: request.echo,
+            });
+            return;
+          }
+          handshakeResponder?.(request);
+        };
+        // A non-addressed group message exercises the old chiming-in enqueue as well.
+        socket.deliver(wireMessage({ message_id: -21 }));
+        socket.deliver(
+          wireMessage({
+            message_id: -22,
+            message: [
+              { type: "at", data: { qq: ACCOUNT_ID } },
+              { type: "image", data: { file: "upstream-e2e" } },
+            ],
+          }),
+        );
+        const eventKey = s.h.orm.select().from(schema.qqEvents).all().at(-1)?.eventKey;
+        if (eventKey === undefined) throw new Error("expected a recorded event");
+        // The image sits at its own ORIGINAL position in the message: the `at` segment comes first,
+        // which is exactly why the reader is given a segment index rather than "the media".
+        const readRow = () =>
+          s.h.orm
+            .select()
+            .from(schema.qqMediaNotes)
+            .where(eq(schema.qqMediaNotes.eventKey, eventKey))
+            .all()
+            .find((row) => row.note !== null);
+        if (retry) {
+          for (let attempt = 0; attempt < 60; attempt += 1) {
+            if (events.filter((event) => event.kind === "follow_up").length === 2) break;
+            await Bun.sleep(25);
+          }
+          socket.deliver(
+            wireMessage({
+              message_id: -23,
+              time: NOW + 1,
+              message: [
+                { type: "at", data: { qq: ACCOUNT_ID } },
+                { type: "text", data: { text: "再看看上面的图片" } },
+              ],
+            }),
+          );
         }
-        handshakeResponder?.(request);
-      };
-      socket.deliver(
-        wireMessage({
-          message_id: -22,
-          message: [
-            { type: "at", data: { qq: ACCOUNT_ID } },
-            { type: "image", data: { file: "upstream-e2e" } },
-          ],
-        }),
-      );
-      const eventKey = s.h.orm.select().from(schema.qqEvents).all().at(-1)?.eventKey;
-      if (eventKey === undefined) throw new Error("expected a recorded event");
-      // The image sits at its own ORIGINAL position in the message: the `at` segment comes first,
-      // which is exactly why the reader is given a segment index rather than "the media".
-      const readRow = () =>
-        s.h.orm
-          .select()
-          .from(schema.qqMediaNotes)
-          .where(eq(schema.qqMediaNotes.eventKey, eventKey))
-          .all()
-          .find((row) => row.note !== null);
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        if (readRow()) break;
-        await Bun.sleep(25);
+        for (let attempt = 0; attempt < 60; attempt += 1) {
+          if (readRow()) break;
+          await Bun.sleep(25);
+        }
+        expect(readRow()).toMatchObject({
+          segmentIndex: 1,
+          segmentKind: "image",
+          note: "端到端：图里是一只猫",
+          noteModel: "vision-local",
+          addressed: 1,
+        });
+        // The bytes really travelled through the injected transport: the bot side was asked for the
+        // source, and the answer (a data URL) is what the vision client received.
+        expect(socket.sent.some((request) => request.action === "get_image")).toBe(true);
+        expect(vision.calls).toEqual(retry ? ["vision-local", "vision-local"] : ["vision-local"]);
+        expect(s.h.orm.select().from(schema.qqDispatchCandidates).all()).toHaveLength(
+          canonical ? 0 : 1,
+        );
+        if (canonical) {
+          expect(
+            wakes.peek({ at: new Date(NOW * 1000).toISOString(), cause: "direct_reply" }),
+          ).not.toBeNull();
+          const conversation = journal.ensureOneBot(BINDING_ID)!;
+          const events = journal.eventsAfter(conversation.id, 0, 100);
+          const revision = events.items.find((event) => event.kind === "media_revision");
+          expect(revision).toBeDefined();
+          expect(
+            s.h.db
+              .query("SELECT event_key FROM qq_media_notes WHERE id=?")
+              .get(revision!.source.id),
+          ).toEqual({ event_key: eventKey });
+        }
+        runtime.stop();
+      } finally {
+        s.close();
       }
-      expect(readRow()).toMatchObject({
-        segmentIndex: 1,
-        segmentKind: "image",
-        note: "端到端：图里是一只猫",
-        noteModel: "vision-local",
-        addressed: 1,
-      });
-      // The bytes really travelled through the injected transport: the bot side was asked for the
-      // source, and the answer (a data URL) is what the vision client received.
-      expect(socket.sent.some((request) => request.action === "get_image")).toBe(true);
-      expect(vision.calls).toEqual(["vision-local"]);
-      runtime.stop();
-    } finally {
-      s.close();
-    }
-  }, 15_000);
+    },
+    15_000,
+  );
 });

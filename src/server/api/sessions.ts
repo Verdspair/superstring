@@ -89,7 +89,10 @@ export function sessionRoutes(
   defaultModelName: string,
   gateway: ModelGateway,
   agentRuntime?: AgentRuntime,
-  conversation?: Pick<WebChannelOptions, "host" | "journal" | "maxSteps">,
+  conversation?: Pick<
+    WebChannelOptions,
+    "host" | "journal" | "maxSteps" | "modules" | "resolveSource" | "memory"
+  >,
 ): Hono {
   const router = new Hono();
 

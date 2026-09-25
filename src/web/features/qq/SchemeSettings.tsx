@@ -1,16 +1,17 @@
+import { useQqInput } from "./use-qq-input";
 // QQ 聊天方案页 (§5.2's field groups, §11.2's shared draft; ADR0018 P5f).
 //
-// §11.1 puts this under 人设 → QQ额外配置 and fixes its sections: 方案选择、发言与节奏、上下文与记忆、
-// 知识库使用、媒体与表达、提示词索引. A scheme is a QQ-GLOBAL resource, so the page follows the
+// PR3 places this under 接入 with continuous anchored sections for triggers, rhythm, hours,
+// prompts, output, context and resources. A scheme is a QQ-GLOBAL resource; the page follows the
 // sticker library's rules: no assistant selector, notices in the page's own flow, and no controls
 // for what is undecided or unwired.
 //
 // Two things are deliberately NOT on this page:
 //
-//   * Model selection. §11.1 keeps every model choice in 快捷管理 → 默认模型 and says feature pages
+//   * Model selection. §11.1 keeps every model choice in Agent → 默认模型 and says feature pages
 //     only link there; the page says so and links.
 //   * Rebinding a conversation. §11.1 keeps the group/private list and its bindings in
-//     运行模式 → QQ, so `另存为新方案` ends by pointing there rather than at the scheme list.
+//     接入 → 运行模式与连接, so `另存为新方案` ends by pointing there rather than at the scheme list.
 //     growing a second binding surface here (§11.2's "按用户选择给目标群改绑" happens there).
 //
 // The prompts are edited in the group they belong to ("提示词就近放在相关功能分组") and the 提示词索引
@@ -306,10 +307,10 @@ export function SchemeSettings() {
   const remove = useSuperstringStore((s) => s.deleteQqScheme);
   const discard = useSuperstringStore((s) => s.discardQqSchemeChanges);
   const openRoute = useSuperstringStore((s) => s.openSettingsRoute);
-  const [newName, setNewName] = useState("");
-  const [copyName, setCopyName] = useState("");
-  const [texts, setTexts] = useState<Record<string, string>>({});
-  const [invalid, setInvalid] = useState<Record<string, string>>({});
+  const [newName, setNewName] = useQqInput("schemeNewName");
+  const [copyName, setCopyName] = useQqInput("schemeCopyName");
+  const [texts, setTexts] = useQqInput("schemeTexts");
+  const [invalid, setInvalid] = useQqInput("schemeInvalid");
   const [showPreview, setShowPreview] = useState(true);
   const [pending, setPending] = useState<PendingAction | null>(null);
 
@@ -478,7 +479,7 @@ export function SchemeSettings() {
   return (
     <>
       <p className="settings-note">
-        {t("QQ 全局方案，不随当前助手切换；群与私聊绑定方案后在「运行模式 → QQ」改绑。")}
+        {t("QQ 全局方案，不随当前助手切换；群与私聊绑定方案后在「接入 → 运行模式与连接」改绑。")}
       </p>
       {loading && <p role="status">{t("正在读取聊天方案…")}</p>}
       {error && (
@@ -493,20 +494,39 @@ export function SchemeSettings() {
       )}
 
       {editor && (
-        <nav className="workspace-anchors" aria-label={t("提示词索引")}>
-          <span>{t("提示词索引")}：</span>
-          {PROMPTS.map((row) => (
-            <a key={row.key} href={`#qq-prompt-${row.key}`}>
-              {t(row.label)}
-            </a>
-          ))}
-        </nav>
+        <>
+          <nav className="workspace-anchors" aria-label={t("方案分区")}>
+            {[
+              ["pick", "方案"],
+              ["speech", "何时观察与发言"],
+              ["rhythm", "发言节奏"],
+              ["hours", "主动发言时段"],
+              ["prompts", "决策提示词"],
+              ["output", "输出与受众"],
+              ["context", "上下文与记忆"],
+              ["knowledge", "知识库使用"],
+              ["expression", "媒体与表达"],
+            ].map(([id, label]) => (
+              <a key={id} href={`#qq-scheme-${id}`}>
+                {t(label ?? "")}
+              </a>
+            ))}
+          </nav>
+          <nav className="workspace-anchors" aria-label={t("提示词索引")}>
+            <span>{t("提示词索引")}：</span>
+            {PROMPTS.map((row) => (
+              <a key={row.key} href={`#qq-prompt-${row.key}`}>
+                {t(row.label)}
+              </a>
+            ))}
+          </nav>
+        </>
       )}
 
       <SettingsGroup
         id="qq-scheme-pick"
         title="方案"
-        note="方案是 QQ 全局的命名资源，可以跨助手复用；这里改的是它本身，改绑会话在「运行模式 → QQ」。"
+        note="方案是 QQ 全局的命名资源，可以跨助手复用；这里改的是它本身，改绑会话在「接入 → 运行模式与连接」。"
       >
         <Field label="当前方案" info="切换方案会放弃未保存的改动；有改动时会先问一次。">
           <select
@@ -549,7 +569,7 @@ export function SchemeSettings() {
             </Field>
             <p className="hint" role="status">
               {usage?.schemeId === editor.source.id
-                ? `${t("当前被")}${usage.bindings}${t("个会话使用")}${t("；改绑在「运行模式 → QQ」。")}`
+                ? `${t("当前被")}${usage.bindings}${t("个会话使用")}${t("；改绑在「接入 → 运行模式与连接」。")}`
                 : t("正在读取使用情况…")}
             </p>
             {/* 同类按钮就近按序（用户第 9 项）：另存与新建是同一类"造一个新方案"的动作，挨着；
@@ -644,7 +664,7 @@ export function SchemeSettings() {
         <>
           <SettingsGroup
             id="qq-scheme-speech"
-            title="发言与节奏"
+            title="何时观察与发言"
             note="触发开关决定哪几种发言会出现；节奏参数只约束主动发言，被叫到时的直接回应不受限。"
           >
             <div className="qq-scheme-checks">
@@ -664,10 +684,16 @@ export function SchemeSettings() {
                 </label>
               ))}
             </div>
+          </SettingsGroup>
+          <SettingsGroup id="qq-scheme-rhythm" title="发言节奏">
             <div className="qq-scheme-grid">
               {Object.entries(RHYTHM_KEYS).map(([key, row]) =>
                 numberField("rhythm", { ...row, key }),
               )}
+            </div>
+          </SettingsGroup>
+          <SettingsGroup id="qq-scheme-hours" title="主动发言时段">
+            <div className="qq-scheme-grid">
               <Field
                 label="允许时段"
                 info="默认关闭＝不限；开启后只在这段时间内主动发言。"
@@ -726,6 +752,8 @@ export function SchemeSettings() {
                 );
               })}
             </div>
+          </SettingsGroup>
+          <SettingsGroup id="qq-scheme-prompts" title="决策提示词">
             {PROMPTS.filter((row) => row.group === "speech").map((row) => (
               <Field
                 key={row.key}
@@ -743,6 +771,8 @@ export function SchemeSettings() {
                 />
               </Field>
             ))}
+          </SettingsGroup>
+          <SettingsGroup id="qq-scheme-output" title="输出与受众">
             {/* 用户 2026-09-25：回复任务文案由这个开关选，开关下面就是当前生效的那一份（只读）。 */}
             <div className="qq-scheme-checks">
               <label>
@@ -785,7 +815,7 @@ export function SchemeSettings() {
           <SettingsGroup
             id="qq-scheme-context"
             title="上下文与记忆"
-            note="这里只配置近期原文和输出预留；长期记忆的读取与整理规则统一在「记忆 → 长期记忆」管理。"
+            note="这里只配置近期原文和输出预留；长期记忆的读取与整理规则统一在「资料 → 长期记忆」管理。"
           >
             {(["判断", "回复"] as const).map((part) => (
               <div className="qq-scheme-part" key={part}>
@@ -818,7 +848,7 @@ export function SchemeSettings() {
             note="QQ 里读取知识库仍受当前助手的授权约束：方案只能沿用，不能扩大权限。"
           >
             <p className="hint">
-              {t("资料与授权在「记忆 → 知识库配置」里管理；这里没有独立的开关。")}
+              {t("资料与授权在「资料 → 知识库配置」里管理；这里没有独立的开关。")}
               <button
                 type="button"
                 className="link-button"

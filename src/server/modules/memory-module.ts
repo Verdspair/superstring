@@ -1,5 +1,5 @@
 import type { RuntimeConfig } from "../../shared/contracts";
-import type { Evidence } from "../../shared/contracts/evidence";
+import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
 import {
   catalog,
@@ -36,6 +36,7 @@ export interface SqliteMemoryOptions {
   agentRuntime?: LeafAgentRuntime;
   cost?: (items: MemoryItem[]) => number;
   assertCurrent?: () => void;
+  assertSources?: (sources: readonly SourceRef[]) => void;
 }
 
 /** SQLite compatibility input retains per-turn frozen legacy budgets inside this backend. */
@@ -69,6 +70,7 @@ export class SqliteMemoryModule implements MemoryModule {
     const assertCurrent = () => {
       input.signal?.throwIfAborted();
       this.options.assertCurrent?.();
+      this.options.assertSources?.(input.sources ?? []);
     };
     let capacity: number | undefined;
     const modelCapacity = async () => {
@@ -123,6 +125,8 @@ export class SqliteMemoryModule implements MemoryModule {
               )
                 fail("CONTEXT_AUX_BUDGET", "辅助模型输入与输出预留超过容量，不能截断来源");
               assertCurrent();
+              const sources = [...(input.sources ?? []), ...selectionSources(orm, batch, agentId)];
+              this.options.assertSources?.(sources);
               const text = await this.options.agentRuntime.completeLeaf(
                 {
                   id: "memory.select",
@@ -142,10 +146,11 @@ export class SqliteMemoryModule implements MemoryModule {
                       limit,
                     ),
                   owner: input.owner,
-                  sources: [...(input.sources ?? []), ...selectionSources(orm, batch, agentId)],
+                  sources,
                 },
               );
               assertCurrent();
+              this.options.assertSources?.(sources);
               return text;
             },
           );

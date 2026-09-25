@@ -21,18 +21,18 @@ import {
   qqMemoryScopeKey,
 } from "../../src/server/services/qq-binding-contract";
 import { prepareQqJudgement } from "../../src/server/services/qq-judgement-preparation";
-import { qqImmediateOpenings } from "../../src/server/services/qq-judgement-runner";
 import { enqueueQqMemoryNow } from "../../src/server/services/qq-memory-enqueue";
 import {
   qqMemoryReadIsCurrent,
   recallQqReplyMemory,
 } from "../../src/server/services/qq-memory-recall";
-import { generateQqTextReply } from "../../src/server/services/qq-reply-runner";
-import { pendingQqReview } from "../../src/server/services/qq-review-runner";
-import { checkQqTextPreflight } from "../../src/server/services/qq-send-preflight";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import { MemoryScopeViewSchema } from "../../src/shared/contracts";
 import { memoryScopeIdentity } from "../../src/shared/memory-scope";
+import { qqImmediateOpenings } from "../fixtures/legacy-qq/qq-judgement-runner";
+import { generateQqTextReply } from "../fixtures/legacy-qq/qq-reply-runner";
+import { pendingQqReview } from "../fixtures/legacy-qq/qq-review-runner";
+import { checkQqTextPreflight } from "../fixtures/legacy-qq/qq-send-preflight";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const now = Math.floor(Date.now() / 1000);

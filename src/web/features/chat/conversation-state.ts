@@ -1,6 +1,5 @@
 import type { RuntimeConfig } from "../../../shared/contracts";
 import type { ContextUsage } from "../../../shared/contracts/context-usage";
-import type { ConversationSummary } from "../../../shared/contracts/conversation";
 import type { ChatItem, SuperstringState } from "../../state/types";
 
 export interface ChatRequestRef {
@@ -47,16 +46,13 @@ export function emptyWebConversation(sessionId = ""): WebConversationState {
 }
 export interface ConversationState {
   currentConversationId: string | null;
-  selectedBotConversation: ConversationSummary | null;
   sessionConversationIds: Record<string, string>;
   conversationById: Record<string, WebConversationState>;
   unselectedChat: WebConversationState;
   reconcileChat: (conversationId?: string) => Promise<void>;
 }
 export function currentChat(state: SuperstringState): WebConversationState {
-  const id =
-    state.currentConversationId ??
-    (state.currentSessionId ? state.sessionConversationIds[state.currentSessionId] : null);
+  const id = state.currentConversationId;
   return (id && state.conversationById[id]) || state.unselectedChat;
 }
 export const chatBusy = (chat: WebConversationState) =>
@@ -67,7 +63,6 @@ export function sessionBusy(state: SuperstringState, sessionId: string): boolean
 }
 export const initialConversationState = {
   currentConversationId: null as string | null,
-  selectedBotConversation: null as ConversationSummary | null,
   sessionConversationIds: {} as Record<string, string>,
   conversationById: {} as Record<string, WebConversationState>,
   unselectedChat: emptyWebConversation(),

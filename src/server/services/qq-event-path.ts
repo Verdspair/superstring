@@ -69,7 +69,13 @@ export async function handleQqRecordedMessage(
     readonly observation: QqObservation;
     readonly nowSeconds: number;
   },
-  deps: { readonly media?: QqEventMediaDeps } = {},
+  deps: {
+    readonly media?: QqEventMediaDeps;
+    /** The canonical ingress owns wake creation; legacy callers retain their original classifier. */
+    readonly dispatch?: typeof enqueueQqDispatchFromEvent;
+    /** Notify the changed source, including an older message read after a supplement. */
+    readonly onMediaRead?: (eventKey: string) => void;
+  } = {},
 ): Promise<QqEventPathOutcome> {
   const { observation } = input;
   // Resolved here rather than taken from the caller: recording already resolved it once, and a
@@ -94,7 +100,7 @@ export async function handleQqRecordedMessage(
     };
   }
 
-  const dispatch = enqueueQqDispatchFromEvent(orm, {
+  const dispatch = (deps.dispatch ?? enqueueQqDispatchFromEvent)(orm, {
     bindingId: binding.id,
     conversationKind: observation.conversation.kind,
     speaker: observation.speaker.kind,
@@ -137,6 +143,7 @@ export async function handleQqRecordedMessage(
         modelConfig,
       })
     : null;
+  if (own?.kind === "read") deps.onMediaRead?.(observation.eventKey);
 
   // §7.1's second understanding: the same speaker, inside the scheme's window. `0` turns the
   // wait off while leaving the first read in place. The window is measured BACK from this
@@ -174,5 +181,6 @@ export async function handleQqRecordedMessage(
           modelConfig,
         });
 
+  if (supplementResult?.kind === "read" && supplement) deps.onMediaRead?.(supplement.eventKey);
   return { dispatch, media: { hasMedia, own, supplement: supplementResult } };
 }

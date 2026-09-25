@@ -21,8 +21,11 @@ import { currentUser, memoryBodies, systemPrompt } from "../db/context-repositor
 import { DEFAULT_USER_ID, getChatContext, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
-import { SqliteKnowledgeModule } from "../modules/knowledge-module";
-import { SqliteMemoryModule } from "../modules/memory-module";
+import {
+  createSqliteQueryFactory,
+  type ModuleQueryFactory,
+  type ModuleSourceResolver,
+} from "../modules/composition";
 import { turnSources } from "../modules/provenance";
 
 /** Web's existing compression and initial evidence policy, reusable by the Agent loop. */
@@ -40,6 +43,8 @@ export class WebContextSource implements ConversationContextSource {
       orm: Orm;
       gateway: ModelGateway;
       agentRuntime: AgentRuntime;
+      modules?: ModuleQueryFactory;
+      resolveSource?: ModuleSourceResolver;
       builder: ContextBuilder | null;
       runtime: RuntimeConfig;
       sessionId: string;
@@ -55,17 +60,9 @@ export class WebContextSource implements ConversationContextSource {
       userId: DEFAULT_USER_ID,
       agentId: runtime.agent_id,
     };
-    const memory = new SqliteMemoryModule({
-      orm: options.orm,
-      runtime: () => runtime,
-      gateway: options.gateway,
-      agentRuntime: options.agentRuntime,
-    });
-    const knowledge = new SqliteKnowledgeModule({
-      db: options.db,
-      runtime: () => runtime,
-      gateway: options.gateway,
-      agentRuntime: options.agentRuntime,
+    const { memory, knowledge } = (options.modules ?? createSqliteQueryFactory(options))({
+      runtime,
+      assertSources: (sources) => this.assertSources(sources),
     });
     this.actions = createBuiltInActions({
       ...(runtime.p5_config.retrieval_mode !== "off"
@@ -85,7 +82,7 @@ export class WebContextSource implements ConversationContextSource {
                     budget,
                     owner: this.owner,
                     signal: context.signal,
-                    sources: [...(this.material?.sources ?? [])],
+                    sources: this.sources(),
                   }),
                 ),
             },
@@ -105,7 +102,7 @@ export class WebContextSource implements ConversationContextSource {
                     budget,
                     owner: this.owner,
                     signal: context.signal,
-                    sources: [...(this.material?.sources ?? [])],
+                    sources: this.sources(),
                   }),
                 ),
             },
@@ -183,11 +180,26 @@ export class WebContextSource implements ConversationContextSource {
       generationToken: o.generationToken,
     });
     o.builder?.assertKnowledgeAccess(o.turnId, o.runtime.agent_id);
-    const sources = [
+    this.assertSources(this.sources());
+  }
+  private sources(): SourceRef[] {
+    return [
       ...(this.material?.sources ?? []),
-      ...this.observations.flatMap((o) => o.sources),
+      ...this.observations.flatMap((observation) => observation.sources),
     ];
-    const memoryRefs = sources.filter((source) => source.kind === "memory");
+  }
+  private assertSources(sources: readonly SourceRef[]): void {
+    const o = this.options;
+    currentUser(o.orm, o.runtime.agent_id, o.sessionId, o.turnId, {
+      generationToken: o.generationToken,
+    });
+    const at = new Date().toISOString();
+    const resolved = new Map(
+      sources.map((source) => [source, o.resolveSource?.(source, this.owner, at)]),
+    );
+    const memoryRefs = sources.filter(
+      (source) => source.kind === "memory" && resolved.get(source) === undefined,
+    );
     const memory = new Map(
       (memoryRefs.length
         ? memoryBodies(
@@ -200,17 +212,16 @@ export class WebContextSource implements ConversationContextSource {
       ).map((item) => [item.id, item.revision]),
     );
     for (const source of sources) {
-      if (source.kind === "memory" && memory.get(source.id) !== source.revision)
+      if (
+        source.kind === "memory" &&
+        resolved.get(source) === undefined &&
+        memory.get(source.id) !== source.revision
+      )
         fail("CONTEXT_SOURCE_INVALID", "已选记忆正文或来源发生变化");
       if (source.kind === "web_turn" && source.id === o.turnId) continue;
       if (
-        sourceAccess(
-          o.db,
-          source,
-          this.owner,
-          { userId: DEFAULT_USER_ID },
-          new Date().toISOString(),
-        ) !== "available"
+        (resolved.get(source) ??
+          sourceAccess(o.db, source, this.owner, { userId: DEFAULT_USER_ID }, at)) !== "available"
       )
         fail("CONTEXT_SOURCE_INVALID", "上下文来源已删除或授权已撤销");
     }
@@ -256,6 +267,7 @@ export class WebContextSource implements ConversationContextSource {
     const empty: ActionObservation = {
       id: "00000000-0000-0000-0000-000000000000",
       name,
+      arguments: input,
       value: [],
       sources: [],
     };
@@ -277,6 +289,8 @@ export class WebContextSource implements ConversationContextSource {
     const budget = limit - cost([]);
     if (budget < 1) fail("CONTEXT_BUDGET_EXCEEDED", "没有可用空间读取补充资料");
     const result = await read(budget);
+    this.assertCurrent();
+    this.assertSources(result.flatMap((entry) => entry.sources));
     const full =
       name === "memory.query" &&
       ["full_catalog", "full_body"].includes(this.options.runtime.p5_config.retrieval_mode);

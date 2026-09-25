@@ -7,6 +7,8 @@ import { AGENT_DECISION_JSON_SCHEMA } from "./agent-specs";
 export interface ActionObservation {
   id: string;
   name: string;
+  /** Structured decision input, rendered as data with the result. */
+  arguments?: Record<string, unknown>;
   value: unknown;
   sources: readonly SourceRef[];
 }

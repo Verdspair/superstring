@@ -5,6 +5,7 @@ import {
   knowledgeReadDirty,
   organizationDirty,
 } from "../features/knowledge/types";
+import { qqDraftChanges } from "../features/qq/draft-state";
 import { msg } from "../i18n";
 import { errorText } from "./helpers";
 import type { PendingNavigation, StoreGet, StoreSet, SuperstringState } from "./types";
@@ -69,7 +70,9 @@ async function performNavigation(
     }
     get().discardMemoryCorrection();
     if (pending.page !== "settings") get().discardKnowledgeEditor();
+    if (discard) get().discardQqDrafts();
     set(patch);
+    if (pending.conversationId) await get().selectConversation(pending.conversationId);
     return;
   }
   if (pending.kind === "agent") {
@@ -89,6 +92,7 @@ async function performNavigation(
       activeSection: get().activeSection,
     };
     const changed = await get().editAgent(pending.id);
+    if (changed && discard) get().discardQqDrafts();
     if (!changed) {
       // 读取失败：保留原草稿/位置，并恢复 pendingNavigation 以便可重试或取消，否则弹窗无法重试。
       set({
@@ -128,6 +132,7 @@ async function performNavigation(
   }
   get().discardMemoryCorrection();
   if (discard) get().discardKnowledgeRead();
+  if (discard) get().discardQqDrafts();
   set({ activeSection: pending.section, feedback: "", dirty: false });
 }
 export function createNavigationActions(
@@ -135,6 +140,7 @@ export function createNavigationActions(
   get: StoreGet,
 ): Pick<
   SuperstringState,
+  | "requestConversationNavigation"
   | "openSettingsRoute"
   | "openChat"
   | "openSettings"
@@ -147,11 +153,30 @@ export function createNavigationActions(
   | "confirmDiscardAndContinue"
   | "cancelPendingNavigation"
 > {
+  const guardQqDrafts = (pending: PendingNavigation) => {
+    if (!qqDraftChanges(get()).length) return false;
+    set({
+      pendingNavigation: pending,
+      navigationConfirmOpen: true,
+      navigationConfirmMessage: msg("接入设置有未保存修改，是否保存后继续？"),
+    });
+    return true;
+  };
   return {
+    requestConversationNavigation: async (id) => {
+      get().requestPageNavigation("chat", "hub");
+      const pending = get().pendingNavigation;
+      if (pending?.kind === "page" && pending.page === "chat")
+        set({ pendingNavigation: { ...pending, conversationId: id } });
+      else if (get().page === "chat") await get().selectConversation(id);
+    },
     openSettingsRoute: (settingsRoute) => {
       if (settingsRoute === "knowledge-model" || settingsRoute === "management")
         settingsRoute = "models";
       if (
+        get().qqAccessSaving ||
+        get().qqSchemeSaving ||
+        get().qqStickerSaving ||
         get().settingsSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
@@ -160,6 +185,15 @@ export function createNavigationActions(
         get().memoryCorrectionSaving ||
         get().qqMemoryBatchSaving ||
         get().knowledgeBusy
+      )
+        return;
+      if (
+        !(
+          get().page === "settings" &&
+          get().settingsView === "workspace" &&
+          get().settingsRoute === settingsRoute
+        ) &&
+        guardQqDrafts({ kind: "page", page: "settings", settingsView: "workspace", settingsRoute })
       )
         return;
       if (settingsRoute === "basic") {
@@ -230,6 +264,9 @@ export function createNavigationActions(
         return;
       }
       if (
+        get().qqAccessSaving ||
+        get().qqSchemeSaving ||
+        get().qqStickerSaving ||
         get().settingsSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
@@ -238,6 +275,11 @@ export function createNavigationActions(
         get().memoryCorrectionSaving ||
         get().qqMemoryBatchSaving ||
         get().knowledgeBusy
+      )
+        return;
+      if (
+        !(get().page === page && get().settingsView === settingsView) &&
+        guardQqDrafts({ kind: "page", page, settingsView })
       )
         return;
       if (get().memoryCorrectionDirty || Object.keys(get().qqMemoryBatchDrafts).length > 0) {
@@ -300,6 +342,9 @@ export function createNavigationActions(
     },
     requestAgentNavigation: (id) => {
       if (
+        get().qqAccessSaving ||
+        get().qqSchemeSaving ||
+        get().qqStickerSaving ||
         get().settingsSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
@@ -330,6 +375,9 @@ export function createNavigationActions(
     },
     requestSectionNavigation: (section) => {
       if (
+        get().qqAccessSaving ||
+        get().qqSchemeSaving ||
+        get().qqStickerSaving ||
         get().settingsSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
@@ -366,12 +414,22 @@ export function createNavigationActions(
       const pending = get().pendingNavigation;
       if (
         !pending ||
+        get().qqAccessSaving ||
+        get().qqSchemeSaving ||
+        get().qqStickerSaving ||
         get().settingsSaving ||
         get().editorLoading ||
         get().knowledgeBusy ||
         get().qqMemoryBatchSaving
       )
         return;
+      if (!(await get().saveQqDrafts())) {
+        set({
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
+        });
+        return;
+      }
       if (!(await get().saveQqMemoryBatchDrafts())) {
         set({
           navigationConfirmOpen: true,
@@ -472,6 +530,9 @@ export function createNavigationActions(
       const pending = get().pendingNavigation;
       if (
         !pending ||
+        get().qqAccessSaving ||
+        get().qqSchemeSaving ||
+        get().qqStickerSaving ||
         get().settingsSaving ||
         get().editorLoading ||
         get().knowledgeBusy ||

@@ -21,6 +21,11 @@ import { ConversationEventRepository } from "./db/conversation-event-repository"
 import { createLmStudioClient, type ModelGateway } from "./llm/model-gateway";
 import { createLmStudioVisionClient } from "./llm/vision-client";
 import {
+  createSqliteModules,
+  type ModuleComposition,
+  type ModuleSourceResolver,
+} from "./modules/composition";
+import {
   createQqStickerAnnotator,
   type QqStickerAnnotator,
 } from "./services/qq-sticker-annotation";
@@ -31,6 +36,8 @@ export interface CreateAppOptions {
   /** Override the LM Studio gateway (tests inject a fake). */
   gateway?: ModelGateway;
   agentRuntime?: AgentRuntime;
+  modules?: ModuleComposition;
+  resolveSource?: ModuleSourceResolver;
   conversationHost?: ConversationHost;
   conversationJournal?: ConversationEventRepository;
   /** Stable per-installation browser-state secret, never logged or persisted client-side. */
@@ -85,14 +92,30 @@ export function createApp(opts: CreateAppOptions): Hono {
     const runRepository = new AgentRunRepository(business.db);
     const agentRuntime =
       opts.agentRuntime ?? createAgentRuntime({ gateway, vision, repository: runRepository });
+    const modules =
+      opts.modules ??
+      createSqliteModules({ db: business.db, orm: business.orm, gateway, agentRuntime });
     const journal = opts.conversationJournal ?? new ConversationEventRepository(business.db);
     const host = opts.conversationHost ?? new ConversationHost({ runtime: agentRuntime });
-    app.route("/v2/runs", runRoutes(business.db, runRepository));
-    app.route("/v2/conversations", conversationRoutes(business.db));
-    app.route("/v2/deliveries", deliveryRoutes(business.db));
+    app.route(
+      "/v2/runs",
+      runRoutes(business.db, runRepository, { resolveSource: opts.resolveSource }),
+    );
+    app.route("/v2/conversations", conversationRoutes(business.db, { includeShared: true }));
+    app.route("/v2/deliveries", deliveryRoutes(business.db, { includeShared: true }));
     app.route(
       "/",
-      chatV2Routes({ orm: business.orm, db: business.db, gateway, agentRuntime, host, journal }),
+      chatV2Routes({
+        orm: business.orm,
+        db: business.db,
+        gateway,
+        agentRuntime,
+        host,
+        journal,
+        modules: modules.bind,
+        memory: modules.memory,
+        resolveSource: opts.resolveSource,
+      }),
     );
     app.route(
       "/qq",
@@ -106,13 +129,16 @@ export function createApp(opts: CreateAppOptions): Hono {
     );
     app.route("/", desktopRoutes(business));
     app.route("/", memoryRoutes(business.orm));
-    app.route("/", knowledgeRoutes(business));
+    app.route("/", knowledgeRoutes(business, modules.knowledge));
     app.route("/", healthRoutes(business.db, gateway));
     app.route(
       "/",
       sessionRoutes(business.orm, business.db, gateway.config.model, gateway, agentRuntime, {
         host,
         journal,
+        modules: modules.bind,
+        memory: modules.memory,
+        resolveSource: opts.resolveSource,
       }),
     );
   }

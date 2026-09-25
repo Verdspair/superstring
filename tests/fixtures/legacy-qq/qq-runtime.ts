@@ -1,4 +1,5 @@
-import type { LeafAgentRuntime } from "../agent/agent-runtime";
+// Test-only pre-cutover behavior oracle; never import from production.
+import type { LeafAgentRuntime } from "../../../src/server/agent/agent-runtime";
 // The QQ runtime host (ADR0018 §12, P5): the piece that makes the durable state machine run.
 //
 // Everything the QQ side does was already written and tested, but nothing in the product ever
@@ -22,9 +23,11 @@ import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // sleep and waits, and `runCycle()` is exposed so tests drive the host deterministically instead
 // of racing a timer.
 
-import type { Orm } from "../db/repositories";
-import type { ModelGateway } from "../llm/model-gateway";
-import { type QqIdleSweep, sweepQqIdleTopics } from "./qq-dispatch";
+import type { Orm } from "../../../src/server/db/repositories";
+import type { ModelGateway } from "../../../src/server/llm/model-gateway";
+import { type QqIdleSweep, sweepQqIdleTopics } from "../../../src/server/services/qq-dispatch";
+import type { QqStickerStage } from "../../../src/server/services/qq-sticker-runner";
+import type { QqStickerStore } from "../../../src/server/services/qq-sticker-store";
 import {
   type QqDispatchCycleResult,
   type QqImmediateCycleResult,
@@ -32,8 +35,6 @@ import {
   runQqDispatchCycle,
   runQqImmediateReplyCycle,
 } from "./qq-dispatch-cycle";
-import type { QqStickerStage } from "./qq-sticker-runner";
-import type { QqStickerStore } from "./qq-sticker-store";
 
 /** How often the host wakes up. The sweep's own unit is minutes (the scheme's quiet window). */
 export const QQ_RUNTIME_POLL_MS = 15_000;

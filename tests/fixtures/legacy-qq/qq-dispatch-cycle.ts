@@ -1,4 +1,5 @@
-import type { LeafAgentRuntime } from "../agent/agent-runtime";
+// Test-only pre-cutover behavior oracle; never import from production.
+import type { LeafAgentRuntime } from "../../../src/server/agent/agent-runtime";
 // P3 durable dispatch cycle: run at most one QQ model task, under a persisted lease.
 //
 // The cycle is the only place where the durable lease meets the P3l composition. It
@@ -19,24 +20,27 @@ import {
   recordQqIdleJudgement,
   releaseQqDispatchLease,
   removeQqDispatchCandidate,
-} from "../db/qq-dispatch-repository";
-import type { QqSendRecord } from "../db/qq-send-repository";
-import type { Orm } from "../db/repositories";
-import type { ModelGateway } from "../llm/model-gateway";
+} from "../../../src/server/db/qq-dispatch-repository";
+import type { QqSendRecord } from "../../../src/server/db/qq-send-repository";
+import type { Orm } from "../../../src/server/db/repositories";
+import type { ModelGateway } from "../../../src/server/llm/model-gateway";
 import {
   finishQqDispatchTask,
   nextQqDispatchTask,
   nextQqImmediateReplyTask,
   type QqDispatchTask,
   renewQqDispatchTask,
-} from "./qq-dispatch";
+} from "../../../src/server/services/qq-dispatch";
+import { prepareQqJudgement } from "../../../src/server/services/qq-judgement-preparation";
+import type { QqOutputPlan, QqPlannedOutput } from "../../../src/server/services/qq-output-plan";
+import {
+  planQqPreparedReply,
+  type QqStickerStage,
+} from "../../../src/server/services/qq-sticker-runner";
 import { type QqRoundDraft, runQqInitiativeCycle, runQqReplyPipeline } from "./qq-initiative-cycle";
-import { prepareQqJudgement } from "./qq-judgement-preparation";
 import { qqImmediateOpenings } from "./qq-judgement-runner";
-import type { QqOutputPlan, QqPlannedOutput } from "./qq-output-plan";
 import type { QqPendingReview } from "./qq-reply-runner";
 import { checkQqTextPreflight } from "./qq-send-preflight";
-import { planQqPreparedReply, type QqStickerStage } from "./qq-sticker-runner";
 
 export interface QqDispatchClock {
   conversationKinds?: readonly ("group" | "private")[];

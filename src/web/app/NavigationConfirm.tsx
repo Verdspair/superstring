@@ -1,10 +1,13 @@
 import { useRef, useState } from "react";
+import { qqDraftChanges } from "../features/qq/draft-state";
 import { translateNotice, useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { AlertDialog } from "../ui/AlertDialog";
 
 export function NavigationConfirm() {
   const t = useI18n();
+  const state = useSuperstringStore();
+  const resources = qqDraftChanges(state);
   const navigationConfirmMessage = useSuperstringStore((state) => state.navigationConfirmMessage);
   const confirmSaveAndContinue = useSuperstringStore((state) => state.confirmSaveAndContinue);
   const confirmDiscardAndContinue = useSuperstringStore((state) => state.confirmDiscardAndContinue);
@@ -32,6 +35,27 @@ export function NavigationConfirm() {
     >
       <p>{translateNotice(navigationConfirmMessage)}</p>
       <p>{t("保存成功后继续；放弃将恢复已保存内容；取消保留当前草稿。")}</p>
+      {state.error && (
+        <p role="alert" className="error">
+          {translateNotice(state.error)}
+        </p>
+      )}
+      {!!resources.length && (
+        <div className="navigation-draft-preview">
+          {resources.map((resource) => (
+            <details key={resource.id}>
+              <summary>
+                {translateNotice(resource.resource)} · {t("{0} 项修改", resource.changes.length)}
+              </summary>
+              <ul>
+                {resource.changes.map((change) => (
+                  <li key={change}>{translateNotice(change)}</li>
+                ))}
+              </ul>
+            </details>
+          ))}
+        </div>
+      )}
       <div className="dialog-actions three">
         <button type="button" disabled={busy} onClick={() => void run(confirmSaveAndContinue)}>
           {t("保存并继续")}

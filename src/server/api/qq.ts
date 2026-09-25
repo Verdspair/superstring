@@ -12,6 +12,7 @@
 //
 // Sharing is accepted only for the explicitly configured owner's private conversation.
 
+import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
 import {
   CreateQqBindingRequestSchema,
@@ -45,6 +46,7 @@ import {
   UpdateQqStickerRequestSchema,
   UpdateQqTransportRequestSchema,
 } from "../../shared/contracts/qq";
+import { botDiagnostics } from "../db/bot-diagnostics";
 import { readOrganizationSettings } from "../db/organization-repository";
 import {
   insertQqBinding,
@@ -319,7 +321,12 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
 
   // §11.1's 存储与诊断: what the QQ side keeps (counts only, no invented caches) and the one
   // cleanup entry, which removes expired rows on the windows the rest of the side already follows.
-  router.get("/storage", (c) => c.json(toStorageResponse(qqStorageUsage(orm))));
+  router.get("/storage", (c) =>
+    c.json({
+      ...toStorageResponse(qqStorageUsage(orm)),
+      agent_runtime: botDiagnostics((orm as Orm & { $client: Database }).$client),
+    }),
+  );
 
   router.post("/storage/cleanup", (c) => {
     const removed = qqStorageCleanup(orm);

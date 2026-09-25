@@ -215,6 +215,17 @@ export type QqSweepVerdictEntry = z.infer<typeof QqSweepVerdictEntrySchema>;
  * (`qq-retention.ts`), so the page cannot describe a different rule than the cleanup obeys.
  */
 export const QqStorageUsageResponseSchema = z.strictObject({
+  /** Additive during the v2 rollout; current servers always return this section. */
+  agent_runtime: z
+    .strictObject({
+      pending_wakes: z.number().int().nonnegative(),
+      leased_wakes: z.number().int().nonnegative(),
+      failed_wakes: z.number().int().nonnegative(),
+      active_runs: z.number().int().nonnegative(),
+      pending_deliveries: z.number().int().nonnegative(),
+      unknown_deliveries: z.number().int().nonnegative(),
+    })
+    .optional(),
   observations: z.strictObject({
     messages: z.number().int().nonnegative(),
     text: z.number().int().nonnegative(),

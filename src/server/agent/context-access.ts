@@ -11,6 +11,7 @@ import type { AgentRunRepository } from "../db/agent-run-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { memoryRevision } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
+import type { ModuleSourceResolver } from "../modules/composition";
 import { visibleConversation } from "./conversation-access";
 
 export interface ContextPrincipal {
@@ -267,6 +268,7 @@ export function inspectContext(
   handle: ContextHandle,
   principal: ContextPrincipal,
   now = new Date().toISOString(),
+  resolveSource?: ModuleSourceResolver,
 ): InspectedContext | null {
   const run = repository.getRun(handle.runId);
   if (!run || !canReadRun(db, run.owner, principal)) return null;
@@ -274,8 +276,10 @@ export function inspectContext(
   if (!stored) return null;
   let status = stored.status;
   if (status === "exact") {
-    const states = stored.sources.map((source) =>
-      sourceAccess(db, source, run.owner, principal, now, "inspection"),
+    const states = stored.sources.map(
+      (source) =>
+        resolveSource?.(source, run.owner, now) ??
+        sourceAccess(db, source, run.owner, principal, now, "inspection"),
     );
     if (states.includes("revoked")) status = "revoked";
     else if (

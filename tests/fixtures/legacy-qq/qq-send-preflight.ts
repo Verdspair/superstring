@@ -1,3 +1,4 @@
+// Test-only pre-cutover behavior oracle; never import from production.
 // P3j: read-only send preflight for an internally produced draft (text and/or sticker).
 // This is NOT an atomic submit, a source/capacity audit, or permission to use OneBot.
 //
@@ -7,18 +8,30 @@
 // applied by re-assembling the plan against live facts (`planQqPreparedReply`). The verdict is
 // still just a verdict: no body and no receiver leave this module.
 import { z } from "zod";
-import { readQqBinding } from "../db/qq-binding-repository";
-import { memberEventNeedsReview, newestMemberEventFor } from "../db/qq-observation-intake";
-import { type QqConversationScope, qqMemberEventCount } from "../db/qq-observation-repository";
-import { readQqOwnerIdentity } from "../db/qq-owner-repository";
-import { effectiveQqTriggers, readQqScheme } from "../db/qq-scheme-repository";
-import { readQqSettings } from "../db/qq-settings-repository";
-import { getAgentRow, type Orm } from "../db/repositories";
-import { checkQqTask } from "./qq-binding-contract";
-import { qqMemoryReadIsCurrent } from "./qq-memory-recall";
+import { readQqBinding } from "../../../src/server/db/qq-binding-repository";
+import {
+  memberEventNeedsReview,
+  newestMemberEventFor,
+} from "../../../src/server/db/qq-observation-intake";
+import {
+  type QqConversationScope,
+  qqMemberEventCount,
+} from "../../../src/server/db/qq-observation-repository";
+import { readQqOwnerIdentity } from "../../../src/server/db/qq-owner-repository";
+import { effectiveQqTriggers, readQqScheme } from "../../../src/server/db/qq-scheme-repository";
+import { readQqSettings } from "../../../src/server/db/qq-settings-repository";
+import { getAgentRow, type Orm } from "../../../src/server/db/repositories";
+import { checkQqTask } from "../../../src/server/services/qq-binding-contract";
+import { qqMemoryReadIsCurrent } from "../../../src/server/services/qq-memory-recall";
+import {
+  checkQqSpeechSend,
+  disabledKindsFromTriggers,
+} from "../../../src/server/services/qq-speaking-contract";
+import {
+  planQqPreparedReply,
+  type QqStickerStage,
+} from "../../../src/server/services/qq-sticker-runner";
 import type { QqPendingReview } from "./qq-reply-runner";
-import { checkQqSpeechSend, disabledKindsFromTriggers } from "./qq-speaking-contract";
-import { planQqPreparedReply, type QqStickerStage } from "./qq-sticker-runner";
 
 export type QqSendPreflight =
   | { readonly kind: "blocked"; readonly reason: string }

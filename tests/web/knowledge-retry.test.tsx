@@ -5,7 +5,7 @@ import { ApiError, type SuperstringApi } from "../../src/web/api";
 import { ChatPage } from "../../src/web/features/chat/ChatPage";
 import { selectLocale } from "../../src/web/i18n";
 import type { RuntimeEffects } from "../../src/web/state/types";
-import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
+import { summaryFixture, fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 const session = "22222222-2222-4222-8222-222222222222";
 let stream: ReturnType<typeof vi.fn<RuntimeEffects["streamChatV2"]>>;
@@ -140,21 +140,22 @@ describe("knowledge access retry", () => {
     expect(useSuperstringStore.getState().failedChat?.requestId).toBe("request-1");
   });
   it("does not reselect the old session when its list refresh arrives late", async () => {
-    let resolveList!: (value: Awaited<ReturnType<SuperstringApi["listSessions"]>>) => void;
-    const listSessions = vi.fn(
-      () =>
-        new Promise<Awaited<ReturnType<SuperstringApi["listSessions"]>>>((resolve) => {
-          resolveList = resolve;
-        }),
+    let resolveList!: (value: Awaited<ReturnType<SuperstringApi["listConversations"]>>) => void;
+    const listConversations = vi.fn(({ sourceId }: { sourceId?: string } = {}) =>
+      sourceId
+        ? Promise.resolve({ items: [summaryFixture(sourceId)], nextCursor: null })
+        : new Promise<Awaited<ReturnType<SuperstringApi["listConversations"]>>>((resolve) => {
+            resolveList = resolve;
+          }),
     );
     useSuperstringStore.setState({
-      apiClient: { ...useSuperstringStore.getState().apiClient, listSessions },
+      apiClient: { ...useSuperstringStore.getState().apiClient, listConversations },
     });
     stream.mockImplementationOnce(replay);
     const sending = useSuperstringStore.getState().send();
-    await waitFor(() => expect(listSessions).toHaveBeenCalledOnce());
+    await waitFor(() => expect(listConversations).toHaveBeenCalledOnce());
     await useSuperstringStore.getState().selectSession("other");
-    resolveList([]);
+    resolveList({ items: [], nextCursor: null });
     await sending;
     expect(useSuperstringStore.getState().currentSessionId).toBe("other");
     expect(useSuperstringStore.getState().sending).toBe(false);

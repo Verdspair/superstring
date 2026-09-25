@@ -1,15 +1,16 @@
-import type { LeafAgentRuntime } from "../agent/agent-runtime";
+// Test-only pre-cutover behavior oracle; never import from production.
+import type { LeafAgentRuntime } from "../../../src/server/agent/agent-runtime";
+
 // P3i: one bounded regeneration after a reviewed supplement. No QQ transport or send.
 
-import { qqReplyTaskPrompt } from "../../shared/contracts/qq";
-import { readQqBinding } from "../db/qq-binding-repository";
-import { qqMemberLabels } from "../db/qq-member-repository";
+import { readQqBinding } from "../../../src/server/db/qq-binding-repository";
+import { qqMemberLabels } from "../../../src/server/db/qq-member-repository";
 import {
   conversationMessagesSince,
   type QqConversationScope,
   qqMemberEventCount,
-} from "../db/qq-observation-repository";
-import { readQqOwnerIdentity } from "../db/qq-owner-repository";
+} from "../../../src/server/db/qq-observation-repository";
+import { readQqOwnerIdentity } from "../../../src/server/db/qq-owner-repository";
 import {
   effectiveQqTriggers,
   readQqScheme,
@@ -18,27 +19,38 @@ import {
   schemePrompts,
   schemeReply,
   schemeRhythm,
-} from "../db/qq-scheme-repository";
-import { readQqSettings } from "../db/qq-settings-repository";
-import { ownSpeechSince } from "../db/qq-speech-repository";
-import { getAgentRow, type Orm } from "../db/repositories";
-import type { ModelGateway } from "../llm/model-gateway";
-import { checkQqTask } from "./qq-binding-contract";
-import { checkQqModelCapacity } from "./qq-capacity-preflight";
-import { qqBuildTimeline, qqContextLimits, qqSelectContext } from "./qq-context-contract";
-import { qqJudgementQuestion } from "./qq-judgement-material";
-import { qqMemoryReadIsCurrent, recallQqReplyMemory } from "./qq-memory-recall";
+} from "../../../src/server/db/qq-scheme-repository";
+import { readQqSettings } from "../../../src/server/db/qq-settings-repository";
+import { ownSpeechSince } from "../../../src/server/db/qq-speech-repository";
+import { getAgentRow, type Orm } from "../../../src/server/db/repositories";
+import type { ModelGateway } from "../../../src/server/llm/model-gateway";
+import { checkQqTask } from "../../../src/server/services/qq-binding-contract";
+import { checkQqModelCapacity } from "../../../src/server/services/qq-capacity-preflight";
+import {
+  qqBuildTimeline,
+  qqContextLimits,
+  qqSelectContext,
+} from "../../../src/server/services/qq-context-contract";
+import { qqJudgementQuestion } from "../../../src/server/services/qq-judgement-material";
+import {
+  qqMemoryReadIsCurrent,
+  recallQqReplyMemory,
+} from "../../../src/server/services/qq-memory-recall";
 import {
   buildQqPrompt,
   type QqPromptInput,
   qqPromptMessages,
   qqSpeakerLabel,
-} from "./qq-prompt-contract";
+} from "../../../src/server/services/qq-prompt-contract";
+import { qqRecomputeVerdict } from "../../../src/server/services/qq-rhythm-contract";
+import {
+  checkQqSpeechSend,
+  disabledKindsFromTriggers,
+} from "../../../src/server/services/qq-speaking-contract";
+import { compileSystemPrompt, runtimeFromAgent } from "../../../src/server/services/runtime-config";
+import { qqReplyTaskPrompt } from "../../../src/shared/contracts/qq";
 import type { QqPendingReview } from "./qq-reply-runner";
 import type { QqReviewResult } from "./qq-review-runner";
-import { qqRecomputeVerdict } from "./qq-rhythm-contract";
-import { checkQqSpeechSend, disabledKindsFromTriggers } from "./qq-speaking-contract";
-import { compileSystemPrompt, runtimeFromAgent } from "./runtime-config";
 
 export type QqRecomputeResult =
   | { readonly kind: "blocked"; readonly reason: string }

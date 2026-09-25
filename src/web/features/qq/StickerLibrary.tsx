@@ -1,3 +1,4 @@
+import { useQqInput } from "./use-qq-input";
 // The sticker library surface (§9.2, ADR0018 P5d).
 //
 // A management page rather than a settings form: §9.1's sequence is import → review → describe →
@@ -46,10 +47,10 @@ export function StickerLibrary() {
   const loadBatchImpact = useSuperstringStore((s) => s.loadQqStickerBatchImpact);
   const createCollection = useSuperstringStore((s) => s.createQqStickerCollection);
   const renameCollection = useSuperstringStore((s) => s.renameQqStickerCollection);
-  const [newCollection, setNewCollection] = useState("");
-  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
-  const [batchCollection, setBatchCollection] = useState("");
-  const [batchTag, setBatchTag] = useState("");
+  const [newCollection, setNewCollection] = useQqInput("stickerNewCollection");
+  const [renaming, setRenaming] = useQqInput("stickerRenaming");
+  const [batchCollection, setBatchCollection] = useQqInput("stickerBatchCollection");
+  const [batchTag, setBatchTag] = useQqInput("stickerBatchTag");
   const [confirmingDisable, setConfirmingDisable] = useState(false);
 
   useEffect(() => {
@@ -138,7 +139,11 @@ export function StickerLibrary() {
                       value={renaming.name}
                       aria-label={t("集合名称")}
                       onChange={(event) =>
-                        setRenaming({ id: collection.id, name: event.target.value })
+                        setRenaming({
+                          id: collection.id,
+                          name: event.target.value,
+                          revision: renaming.revision,
+                        })
                       }
                     />
                     <button
@@ -148,7 +153,7 @@ export function StickerLibrary() {
                         void renameCollection(
                           collection.id,
                           renaming.name.trim(),
-                          collection.revision,
+                          renaming.revision,
                         ).then((ok) => {
                           if (ok) setRenaming(null);
                         });
@@ -171,7 +176,13 @@ export function StickerLibrary() {
                       type="button"
                       disabled={saving}
                       aria-label={`${t("重命名集合")}：${collection.name}`}
-                      onClick={() => setRenaming({ id: collection.id, name: collection.name })}
+                      onClick={() =>
+                        setRenaming({
+                          id: collection.id,
+                          name: collection.name,
+                          revision: collection.revision,
+                        })
+                      }
                     >
                       <Icon name="edit" />
                       <span>{t("重命名")}</span>

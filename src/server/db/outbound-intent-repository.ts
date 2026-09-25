@@ -6,6 +6,8 @@ export type OutboundTarget = {
   accountId: string;
   conversationKind: "private" | "group";
   peerId: string;
+  participantId?: string;
+  attentionMembers?: readonly string[];
   agentId: string;
   bindingId: string;
   bindingEpoch: number;
@@ -68,8 +70,12 @@ export class OutboundIntentRepository {
   }
   get(id: string): Delivery | null {
     const r = this.row(id);
+    const target = r ? (JSON.parse(r.target) as OutboundTarget) : null;
     return r
       ? {
+          target: target
+            ? { peerId: target.peerId, participantId: target.participantId ?? null }
+            : null,
           id: r.id,
           runId: r.run_id,
           conversationId: r.conversation_id,

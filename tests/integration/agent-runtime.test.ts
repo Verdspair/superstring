@@ -314,6 +314,59 @@ describe("unified AgentRuntime", () => {
     );
   });
 
+  it("retains invoke arguments as data and inherits parent sources after a context refresh", async () => {
+    let step = 0;
+    const parent = { kind: "question", id: "old-question", revision: "1" };
+    const { runtime, repository } = setup({
+      async complete(request) {
+        if (++step === 1)
+          return JSON.stringify({
+            kind: "invoke",
+            name: "memory.query",
+            arguments: { query: "private query" },
+          });
+        const observation = request.messages.find(
+          (message) =>
+            message.role === "user" &&
+            message.content.some(
+              (part) => part.kind === "text" && part.text.includes("action_observation"),
+            ),
+        );
+        const part = observation?.content[0];
+        if (part?.kind !== "text") throw new Error("Missing observation");
+        expect(JSON.parse(part.text).value).toMatchObject({
+          arguments: { query: "private query" },
+          sources: [parent],
+        });
+        return '{"kind":"none"}';
+      },
+    });
+    const actions = createBuiltInActions({ memory: { query: async () => [] } });
+    const result = await runtime.run(
+      { ...spec, availableActions: actions.map((action) => action.description) },
+      {
+        ...direct,
+        actions,
+        outputMode: "buffered",
+        context: {
+          async read() {
+            return {
+              pending: [textMessage("user", step ? "newer question" : "original question")],
+              sources: step ? [] : [parent],
+            };
+          },
+        },
+      },
+    );
+    const snapshot = repository.getRun(result.runId);
+    const next = snapshot?.steps[1].context;
+    if (!next) throw new Error("Missing second step");
+    expect(repository.getContext(next)?.sources).toContainEqual(parent);
+    expect(JSON.stringify(repository.listEvents(result.runId))).not.toContain("private query");
+    repository.redactSource(parent.kind, parent.id, "revoked");
+    expect(repository.getContext(next)?.messages).toBeNull();
+  });
+
   it("commits an explicit none so a host can acknowledge a wake without creating an output", async () => {
     const { runtime, repository } = setup();
     let committed = false;
@@ -644,6 +697,131 @@ describe("unified AgentRuntime", () => {
     await expect(
       runtime.run({ ...configured, limits: { steps: 1 } }, { ...direct, outputMode: "buffered" }),
     ).rejects.toMatchObject({ code: "AGENT_STEP_LIMIT" });
+  });
+
+  it("prepares trusted target-specific generation without replacing shared context or leaking configuration between outputs", async () => {
+    const requests: ModelRequest[] = [];
+    const { runtime, repository } = setup({
+      async complete() {
+        return JSON.stringify({
+          kind: "final",
+          outputs: [
+            { kind: "generate", targetId: "alice", instructions: "answer Alice" },
+            { kind: "generate", targetId: "bob", instructions: "answer Bob" },
+          ],
+        });
+      },
+      async *streamText(request) {
+        requests.push(request);
+        yield "answer";
+      },
+    });
+    const result = await runtime.run(
+      { ...spec, generation: { temperature: 0.4, maxTokens: 512 } },
+      {
+        ...direct,
+        authorizedTargets: ["alice", "bob"],
+        outputMode: "buffered",
+        async prepareGeneration(draft, input) {
+          expect(input.context.messages.at(-1)).toEqual(textMessage("user", "hello"));
+          expect(input.outputId).toBeString();
+          return {
+            instructions: `Trusted host target ${draft.targetId}`,
+            model: `${draft.targetId}-reply`,
+            ...(draft.targetId === "alice" ? { temperature: 0.7, maxTokens: 256 } : {}),
+          };
+        },
+      },
+    );
+    expect(
+      requests.map((request) => [request.model, request.temperature, request.maxTokens]),
+    ).toEqual([
+      ["alice-reply", 0.7, 256],
+      ["bob-reply", 0.4, 512],
+    ]);
+    for (const [index, target] of ["alice", "bob"].entries()) {
+      expect(JSON.stringify(requests[index].messages[0])).toContain(
+        `Trusted host target ${target}`,
+      );
+      expect(requests[index].messages.at(-1)).toEqual(textMessage("user", "hello"));
+    }
+    expect(repository.getRun(result.runId)?.steps.map((step) => step.model)).toEqual([
+      "chat",
+      "alice-reply",
+      "bob-reply",
+    ]);
+  });
+
+  it("keeps other targets when one trusted generation preparation cannot fit its model", async () => {
+    const { runtime, repository } = setup({
+      async complete() {
+        return JSON.stringify({
+          kind: "final",
+          outputs: [
+            { kind: "generate", targetId: "alice", instructions: "answer" },
+            { kind: "generate", targetId: "bob", instructions: "answer" },
+          ],
+        });
+      },
+    });
+    const result = await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["alice", "bob"],
+      outputMode: "buffered",
+      async prepareGeneration(draft) {
+        return { inputUnits: draft.targetId === "alice" ? 1 : 10000 };
+      },
+    });
+    expect(result.outputs).toMatchObject([
+      { targetId: "alice", status: "failed", code: "AGENT_CONTEXT_LIMIT" },
+      { targetId: "bob", status: "prepared", text: "answer" },
+    ]);
+    expect(repository.getRun(result.runId)?.status).toBe("completed");
+  });
+
+  it("persists the actual trusted generation phase view and charges its final envelope", async () => {
+    const source = { kind: "test_source", id: "reply-history", revision: "1" };
+    let generated: readonly import("../../src/shared/contracts/agent-run").ModelMessage[] = [];
+    const { runtime, repository } = setup({
+      async complete(request) {
+        expect(JSON.stringify(request.messages)).not.toContain("longer reply history");
+        return '{"kind":"final","outputs":[{"kind":"generate","targetId":"web","instructions":"answer"}]}';
+      },
+      async *streamText(request) {
+        generated = request.messages;
+        yield "answer";
+      },
+    });
+    const phase = {
+      messages: [
+        textMessage("system", "unused decision rule"),
+        textMessage("user", "longer reply history"),
+      ],
+      sources: [source],
+      units: 0,
+    };
+    const result = await runtime.run(spec, {
+      ...direct,
+      async prepareGeneration() {
+        return { context: phase, instructions: "trusted reply policy" };
+      },
+    });
+    const step = repository.getRun(result.runId)?.steps.find((step) => step.phase === "generate");
+    if (!step) throw new Error("Missing generation step");
+    expect(repository.getContext(step.context)).toMatchObject({
+      messages: generated,
+      sources: [source],
+    });
+    expect(generated.at(-1)).toEqual(textMessage("user", "longer reply history"));
+    expect(JSON.stringify(generated[0])).not.toContain("unused decision rule");
+    await expect(
+      runtime.run(spec, {
+        ...direct,
+        async prepareGeneration() {
+          return { context: phase, inputUnits: inputUnits(phase.messages) };
+        },
+      }),
+    ).rejects.toMatchObject({ code: "AGENT_CONTEXT_LIMIT" });
   });
 
   it("lets a buffered channel prepare a sticker-only empty body while Web retains its empty-response contract", async () => {

@@ -10,12 +10,44 @@ export function projectConversationEvent(
 ): ConversationEventView {
   const base: ConversationEventView = {
     ...event,
+    wake: null,
     text: null,
     messageStatus: null,
     contentState: "unavailable",
     media: [],
     deliveryStatus: null,
   };
+  if (event.kind === "wake" && event.source.kind === "wake") {
+    const wake = db
+      .query(
+        "SELECT id,cause,status,ready_at,error_code FROM wake_signals WHERE id=? AND conversation_id=?",
+      )
+      .get(event.source.id, event.conversationId) as {
+      id: string;
+      cause: string;
+      status: NonNullable<ConversationEventView["wake"]>["status"];
+      ready_at: string;
+      error_code: string | null;
+    } | null;
+    if (!wake) return { ...base, contentState: "revoked" };
+    const run = db
+      .query(
+        "SELECT run_id FROM agent_runs WHERE wake_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(wake.id, event.conversationId) as { run_id: string } | null;
+    return {
+      ...base,
+      contentState: "active",
+      runId: run?.run_id ?? null,
+      wake: {
+        id: wake.id,
+        cause: wake.cause,
+        status: wake.status,
+        readyAt: wake.ready_at,
+        errorCode: wake.error_code,
+      },
+    };
+  }
   const expired = (until: string | null | undefined) => !!until && until <= at;
   if (expired(event.source.expiresAt)) return { ...base, contentState: "expired" };
   if (event.source.kind === "web_message") {

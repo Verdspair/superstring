@@ -1,3 +1,5 @@
+import type { SessionResponse } from "../../../src/shared/contracts";
+import type { ConversationSummary } from "../../../src/shared/contracts/conversation";
 import type { SuperstringApi } from "../../../src/web/api";
 import { ApiError, api } from "../../../src/web/api";
 import {
@@ -6,38 +8,61 @@ import {
   emptyWebConversation,
   type WebConversationState,
 } from "../../../src/web/features/chat/conversation-state";
+import { currentSessionId } from "../../../src/web/features/conversations/directory-state";
 import type { RuntimeEffects, SuperstringState } from "../../../src/web/state/types";
 import { useSuperstringStore as actual } from "../../../src/web/store";
 
 // Test-only fixture projection: old behavior assertions target the canonical keyed store.
 // No compatibility fields are installed on the production store.
-type Flat = Partial<SuperstringState & WebConversationState & { sending: boolean }>;
+type Flat = Partial<
+  SuperstringState &
+    WebConversationState & {
+      sending: boolean;
+      sessions: SessionResponse[];
+      currentSessionId: string | null;
+    }
+>;
+export function summaryFixture(
+  sourceId: string,
+  session?: Partial<SessionResponse>,
+): ConversationSummary {
+  return {
+    id: `test:${sourceId}`,
+    channel: "web",
+    topology: "direct",
+    sourceId,
+    agentId: session?.agent_id ?? "agent",
+    bindingEpoch: 1,
+    title: session?.title ?? sourceId,
+    participants: [],
+    updatedAt: session?.updated_at ?? "2026-09-26T00:00:00Z",
+    lastSeq: 0,
+    consumedSeq: 0,
+  };
+}
 export function chatApi(client: Partial<SuperstringApi> = {}): SuperstringApi {
   return {
     ...client,
     listConversations:
       client.listConversations && client.listConversations !== api.listConversations
         ? client.listConversations
-        : async ({ sourceId } = {}) => ({
-            items: sourceId
-              ? [
-                  {
-                    id: `test:${sourceId}`,
-                    channel: "web",
-                    topology: "direct",
-                    sourceId,
-                    agentId: "agent",
-                    bindingEpoch: 0,
-                    title: sourceId,
-                    participants: [],
-                    updatedAt: "2026-09-26T00:00:00Z",
-                    lastSeq: 0,
-                    consumedSeq: 0,
-                  },
-                ]
-              : [],
-            nextCursor: null,
-          }),
+        : async ({ sourceId } = {}) => {
+            const sessions =
+              !sourceId && client.listSessions && client.listSessions !== api.listSessions
+                ? await client.listSessions()
+                : [];
+            return {
+              items: sourceId
+                ? [
+                    summaryFixture(
+                      sourceId,
+                      sessions.find((item) => item.id === sourceId),
+                    ),
+                  ]
+                : sessions.map((item) => summaryFixture(item.id, item)),
+              nextCursor: null,
+            };
+          },
     getRunByRequest:
       client.getRunByRequest && client.getRunByRequest !== api.getRunByRequest
         ? client.getRunByRequest
@@ -53,6 +78,11 @@ export const fixtureStore = {
     return {
       ...state,
       ...chat,
+      currentSessionId: currentSessionId(state),
+      sessions: state.directoryIds
+        .map((id) => state.summaryById[id])
+        .filter((item) => item.channel === "web")
+        .map((item) => ({ id: item.sourceId, title: item.title, agent_id: item.agentId })),
       error: chat.error ?? state.error,
       feedback: chat.feedback || state.feedback,
       sending: chatBusy(chat),
@@ -71,11 +101,26 @@ export const fixtureStore = {
       failedChat,
       knowledgeResend,
       sending,
+      sessions,
+      currentSessionId: selectedSession,
       ...rest
     } = patch;
+    if (selectedSession !== undefined) rest.selectionRevision = state.selectionRevision + 1;
     if (rest.apiClient) rest.apiClient = chatApi(rest.apiClient);
-    const sessionId =
-      patch.currentSessionId === undefined ? state.currentSessionId : patch.currentSessionId;
+    const sessionId = selectedSession === undefined ? currentSessionId(state) : selectedSession;
+    const summaries = sessions?.map((session) => summaryFixture(session.id, session));
+    if (summaries)
+      Object.assign(rest, {
+        summaryById: {
+          ...state.summaryById,
+          ...Object.fromEntries(summaries.map((item) => [item.id, item])),
+        },
+        directoryIds: summaries.map((item) => item.id),
+        sessionConversationIds: {
+          ...state.sessionConversationIds,
+          ...Object.fromEntries(summaries.map((item) => [item.sourceId, item.id])),
+        },
+      });
     const changes = {
       ...(messages !== undefined ? { messages } : {}),
       ...(composer !== undefined ? { composer } : {}),
@@ -93,7 +138,14 @@ export const fixtureStore = {
       actual.setState({
         ...rest,
         currentConversationId: id,
-        sessionConversationIds: { ...state.sessionConversationIds, [sessionId]: id },
+        summaryById: {
+          ...(rest.summaryById ?? state.summaryById),
+          [id]: (rest.summaryById ?? state.summaryById)[id] ?? summaryFixture(sessionId),
+        },
+        sessionConversationIds: {
+          ...(rest.sessionConversationIds ?? state.sessionConversationIds),
+          [sessionId]: id,
+        },
         conversationById: {
           ...state.conversationById,
           [id]: { ...(state.conversationById[id] ?? emptyWebConversation(sessionId)), ...changes },

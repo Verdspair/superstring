@@ -17,6 +17,7 @@ import { unicodeStrip } from "../services/text";
 import {
   AGENT_DECISION_JSON_SCHEMA,
   AgentDecisionSchema,
+  type AgentGenerationConfig,
   type AgentSpec,
   type LeafAgentSpec,
   type OutputDraft,
@@ -30,6 +31,7 @@ import {
   inputUnits,
   type RenderedContext,
   textMessage,
+  uniqueSources,
 } from "./context-engine";
 import { createModelPort, type ModelPort, type TextModelGateway, textMessages } from "./model-port";
 
@@ -51,6 +53,10 @@ export interface PreparedOutput extends OutputSummary {
   text?: string;
   stickerIds?: readonly string[];
 }
+export interface PreparedGeneration extends AgentGenerationConfig {
+  /** Explicit host-provided phase projection from the same authorized context source. */
+  context?: RenderedContext;
+}
 export interface ConversationInput {
   owner: RunOwner;
   context: ConversationContextSource;
@@ -71,6 +77,11 @@ export interface ConversationInput {
     draft: OutputDraft,
     ordinal: number,
   ) => Promise<{ outputId: string } | { blocked: true; code: string }>;
+  /** Trusted host configuration and explicit phase view for this authorized output. */
+  prepareGeneration?: (
+    draft: Extract<OutputDraft, { kind: "generate" }>,
+    input: { context: RenderedContext; outputId: string; signal: AbortSignal },
+  ) => Promise<PreparedGeneration | undefined>;
   /** Last observation checkpoint before a final/none decision becomes externally visible. */
   beforeFinal?: (drafts: readonly OutputDraft[], signal: AbortSignal) => Promise<boolean>;
   /** True re-observes; no_output suppresses a buffered plan that has no deliverable parts. */
@@ -298,7 +309,13 @@ export class AgentRuntime {
             signal: active.signal,
           });
           active.signal.throwIfAborted();
-          const observation = { ...result, id: randomUUID(), name: decision.name };
+          const observation = {
+            ...result,
+            id: randomUUID(),
+            name: decision.name,
+            arguments: decision.arguments,
+            sources: uniqueSources([...context.sources, ...result.sources]),
+          };
           observations.push(observation);
           await this.emit(active, {
             type: "action_result",
@@ -355,24 +372,35 @@ export class AgentRuntime {
               continue;
             }
             this.checkStepBudget(active, spec);
-            const messages = this.contextEngine.renderOutput(spec, context, draft);
+            const prepared = await input.prepareGeneration?.(draft, {
+              context,
+              outputId,
+              signal: active.signal,
+            });
+            const generation = { ...spec.generation, ...prepared };
+            const generationContext = prepared?.context ?? context;
+            const messages = this.contextEngine.renderOutput(
+              { ...spec, generation },
+              generationContext,
+              draft,
+            );
             await input.onContext?.(
-              { ...context, messages, units: inputUnits(messages) },
+              { ...generationContext, messages, units: inputUnits(messages) },
               { runId: active.runId, phase: "generate" },
             );
             const generationSpec: LeafAgentSpec = {
               ...spec,
-              model: spec.generation?.model ?? spec.model,
-              temperature: spec.generation?.temperature ?? spec.temperature,
-              maxTokens: spec.generation?.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
-              limits: { inputUnits: spec.generation?.inputUnits ?? spec.limits.inputUnits },
+              model: generation.model ?? spec.model,
+              temperature: generation.temperature ?? spec.temperature,
+              maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
+              limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
             };
             let text = "";
             await this.step(
               active,
               "generate",
               messages,
-              context.sources,
+              generationContext.sources,
               async () => {
                 for await (const delta of this.options.model.streamText({
                   messages,
@@ -387,7 +415,7 @@ export class AgentRuntime {
                   if (input.outputMode === "stream")
                     await this.emit(active, { type: "output_delta", outputId, text: delta });
                 }
-                if (!unicodeStrip(text) && !spec.generation?.allowEmpty)
+                if (!unicodeStrip(text) && !generation.allowEmpty)
                   throw new AgentRuntimeError(
                     "MODEL_EMPTY_RESPONSE",
                     "Model returned an empty response",

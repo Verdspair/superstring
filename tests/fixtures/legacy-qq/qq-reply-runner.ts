@@ -1,4 +1,6 @@
-import type { LeafAgentRuntime } from "../agent/agent-runtime";
+// Test-only pre-cutover behavior oracle; never import from production.
+import type { LeafAgentRuntime } from "../../../src/server/agent/agent-runtime";
+
 // Generate the sentence of a reply after an explicit, readable initiative judgement (ADR0018 P3f).
 // This is not a sender: no socket, receipt, speech log, or send ledger is touched.
 //
@@ -7,16 +9,18 @@ import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // context selection — can tell whether that is possible. Whether the reply has anything to say at
 // all is decided when the assembled output is read, not here.
 
-import { qqReplyTaskPrompt } from "../../shared/contracts/qq";
-import { readQqBinding } from "../db/qq-binding-repository";
-import { qqMemberLabels } from "../db/qq-member-repository";
-import { memberEventNeedsReview, newestMemberEventFor } from "../db/qq-observation-intake";
+import { readQqBinding } from "../../../src/server/db/qq-binding-repository";
+import { qqMemberLabels } from "../../../src/server/db/qq-member-repository";
+import {
+  memberEventNeedsReview,
+  newestMemberEventFor,
+} from "../../../src/server/db/qq-observation-intake";
 import {
   conversationMessagesSince,
   type QqConversationScope,
   qqMemberEventCount,
-} from "../db/qq-observation-repository";
-import { readQqOwnerIdentity } from "../db/qq-owner-repository";
+} from "../../../src/server/db/qq-observation-repository";
+import { readQqOwnerIdentity } from "../../../src/server/db/qq-owner-repository";
 import {
   effectiveQqTriggers,
   readQqScheme,
@@ -24,35 +28,43 @@ import {
   schemeOutputReserve,
   schemePrompts,
   schemeReply,
-} from "../db/qq-scheme-repository";
-import { readQqSettings } from "../db/qq-settings-repository";
-import { ownSpeechSince } from "../db/qq-speech-repository";
-import { getAgentRow, type Orm } from "../db/repositories";
-import type { ModelGateway } from "../llm/model-gateway";
-import { captureQqTask, checkQqTask, type QqTaskSnapshot } from "./qq-binding-contract";
-import { checkQqModelCapacity } from "./qq-capacity-preflight";
+} from "../../../src/server/db/qq-scheme-repository";
+import { readQqSettings } from "../../../src/server/db/qq-settings-repository";
+import { ownSpeechSince } from "../../../src/server/db/qq-speech-repository";
+import { getAgentRow, type Orm } from "../../../src/server/db/repositories";
+import type { ModelGateway } from "../../../src/server/llm/model-gateway";
+import {
+  captureQqTask,
+  checkQqTask,
+  type QqTaskSnapshot,
+} from "../../../src/server/services/qq-binding-contract";
+import { checkQqModelCapacity } from "../../../src/server/services/qq-capacity-preflight";
 import {
   type QqContextSelection,
   qqBuildTimeline,
   qqContextLimits,
   qqSelectContext,
-} from "./qq-context-contract";
-import { attentionTriggerFilter } from "./qq-dispatch";
-import { qqJudgementQuestion } from "./qq-judgement-material";
-import type { QqJudgementRun, QqReplyOpening } from "./qq-judgement-runner";
+} from "../../../src/server/services/qq-context-contract";
+import { attentionTriggerFilter } from "../../../src/server/services/qq-dispatch";
+import { qqJudgementQuestion } from "../../../src/server/services/qq-judgement-material";
 import {
   type QqMemoryReadSnapshot,
   qqMemoryReadIsCurrent,
   recallQqReplyMemory,
-} from "./qq-memory-recall";
+} from "../../../src/server/services/qq-memory-recall";
 import {
   buildQqPrompt,
   type QqPromptInput,
   qqPromptMessages,
   qqSpeakerLabel,
-} from "./qq-prompt-contract";
-import { checkQqSpeechSend, disabledKindsFromTriggers } from "./qq-speaking-contract";
-import { compileSystemPrompt, runtimeFromAgent } from "./runtime-config";
+} from "../../../src/server/services/qq-prompt-contract";
+import {
+  checkQqSpeechSend,
+  disabledKindsFromTriggers,
+} from "../../../src/server/services/qq-speaking-contract";
+import { compileSystemPrompt, runtimeFromAgent } from "../../../src/server/services/runtime-config";
+import { qqReplyTaskPrompt } from "../../../src/shared/contracts/qq";
+import type { QqJudgementRun, QqReplyOpening } from "./qq-judgement-runner";
 
 export interface QqPendingReview {
   /** The model's sentence, or null when it wrote nothing (a sticker may still speak, §8.1-2). */

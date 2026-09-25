@@ -1,5 +1,67 @@
 // Chinese source keys are the default-locale catalog; English must cover every key.
 export const english = {
+  "当前 Agent 运行时": "Current Agent runtime",
+  "当前 Bot 会话的唤醒、运行和投递状态；生成结束不代表已送达。":
+    "Wake, run and delivery state for Bot conversations. Generation completing does not confirm delivery.",
+  等待处理的唤醒: "Pending wakes",
+  正在处理的唤醒: "Active wakes",
+  处理失败的唤醒: "Failed wakes",
+  进行中的运行: "Active runs",
+  等待完成的投递: "Pending deliveries",
+  结果待确认的投递: "Unconfirmed deliveries",
+  历史调度与媒体记录: "Historical scheduling and media records",
+  "原调度记录继续保留供诊断；这些候选与单链状态不代表当前 Agent 运行数。":
+    "Original scheduling records remain available for diagnostics. These candidates and single-chain states do not count current Agent runs.",
+  方案分区: "Scheme sections",
+  主动发言时段: "Proactive speaking hours",
+  何时观察与发言: "When to observe and speak",
+  发言节奏: "Speaking rhythm",
+  决策提示词: "Decision prompts",
+  输出与受众: "Output and audience",
+
+  会话与导航: "Conversations and navigation",
+  "选择会话或打开功能设置。": "Choose a conversation or open settings.",
+  关闭导航: "Close navigation",
+  主导航: "Main navigation",
+  对话: "Conversations",
+  资料: "Materials",
+  接入: "Access",
+  偏好: "Preferences",
+  运行模式与连接: "Modes and connections",
+  "Web、私聊与群聊的消息和运行活动。":
+    "Messages and run activity across Web, direct and group conversations.",
+  "助手、模型用途、身份表达与上下文。": "Agents, model roles, persona and context.",
+  "长期记忆、知识库与资料授权。": "Long-term memory, knowledge and source access.",
+  "连接、会话绑定、发言方案、素材与存储。":
+    "Connections, bindings, speaking schemes, assets and storage.",
+  "语言、外观与桌面行为。": "Language, appearance and desktop behavior.",
+  "输出 {0}": "Output {0}",
+  送达会话: "Destination conversation",
+  回应成员: "Recipient",
+  目标信息未记录: "Recipient information was not recorded",
+  "部分内容已送达，请查看各部分结果。": "Some parts were delivered. Check each part's outcome.",
+  直接请求: "Direct request",
+  私聊消息: "Private message",
+  提及助手: "Assistant mentioned",
+  回复助手: "Reply to assistant",
+  历史记录标记为面向助手: "Historical record addressed to the assistant",
+  提及: "Mentions",
+  引用消息: "Referenced message",
+  处理完成: "Processing completed",
+  处理失败: "Processing failed",
+  唤醒原因: "Wake reason",
+  计划处理时间: "Scheduled processing time",
+  "访问令牌将被替换（不显示内容）": "Access token will be replaced (content hidden)",
+  "请先修正方案中的无效数字，再保存。": "Correct invalid scheme numbers before saving.",
+  "请填写重要人物名单，或关闭此模式。": "Enter the important people list, or turn this mode off.",
+  "接入设置有未保存修改，是否保存后继续？":
+    "Access settings have unsaved changes. Save before continuing?",
+  "{0} 项修改": "{0} changes",
+  "OneBot 群聊": "OneBot group chats",
+  "Web · 私聊": "Web · Direct",
+  "OneBot · 私聊": "OneBot · Direct",
+  "OneBot · 群聊": "OneBot · Group",
+  刷新会话目录: "Refresh conversations",
   结果待确认: "Result unconfirmed",
   "OneBot 私聊": "OneBot direct chats",
   "暂无 OneBot 私聊记录。": "No OneBot direct conversations yet.",
@@ -992,11 +1054,11 @@ export const english = {
   已新建集合: "Collection created",
   已保存集合名称: "Collection name saved",
   // QQ chat schemes (§5.2/§11.2, P5f).
-  "QQ 全局方案，不随当前助手切换；群与私聊绑定方案后在「运行模式 → QQ」改绑。":
+  "QQ 全局方案，不随当前助手切换；群与私聊绑定方案后在「接入 → 运行模式与连接」改绑。":
     "QQ-wide schemes, independent of the assistant being configured. Rebinding a group or private chat happens in Quick management → Third-party app access.",
   "正在读取聊天方案…": "Loading chat schemes…",
   方案: "Schemes",
-  "方案是 QQ 全局的命名资源，可以跨助手复用；这里改的是它本身，改绑会话在「运行模式 → QQ」。":
+  "方案是 QQ 全局的命名资源，可以跨助手复用；这里改的是它本身，改绑会话在「接入 → 运行模式与连接」。":
     "A scheme is a QQ-wide named resource that assistants share; this page edits the scheme itself, and conversations are rebound on the third-party app page.",
   当前方案: "Current scheme",
   "切换方案会放弃未保存的改动。": "Switching schemes discards unsaved changes.",
@@ -1009,7 +1071,7 @@ export const english = {
   "正在读取使用情况…": "Loading usage…",
   将要保存的变更: "Changes about to be saved",
   "还没有任何方案；新建一个才能配置。": "No schemes yet; create one to configure.",
-  "把当前草稿存成新方案，不动原来那个；改绑在「运行模式 → QQ」。":
+  "把当前草稿存成新方案，不动原来那个；改绑在「接入 → 运行模式与连接」。":
     "Save the current draft as a new scheme without touching the old one; rebinding happens on the third-party app page.",
   新方案名称: "New scheme name",
   另存: "Save as",
@@ -1101,8 +1163,8 @@ export const english = {
   "这里设置网页会话的触发频率；QQ 每个群或私聊的条数在上方记忆分区内设置。":
     "Set the web trigger frequency here. Configure each QQ group or private chat in its memory partition above.",
   前往记忆分区: "Go to memory partitions",
-  "这里只配置近期原文和输出预留；长期记忆的读取与整理规则统一在「记忆 → 长期记忆」管理。":
-    "Only recent messages and output reservations are configured here. Manage long-term retrieval and consolidation under Memory → Long-term memory.",
+  "这里只配置近期原文和输出预留；长期记忆的读取与整理规则统一在「资料 → 长期记忆」管理。":
+    "Only recent messages and output reservations are configured here. Manage long-term retrieval and consolidation under Materials → Long-term memory.",
   "需要 {0}–{1} 之间的整数": "Needs a whole number between {0} and {1}",
   "有 {0} 处输入还需要改对，改好才能保存。":
     "{0} input(s) still need fixing before this can be saved.",
@@ -1122,7 +1184,8 @@ export const english = {
   "删除方案「{0}」；参数会一起删掉，不能撤销。":
     "Delete the scheme “{0}”? Its settings go with it and this cannot be undone.",
   "；没有会话在用它。": "; no conversation is using it.",
-  "；改绑在「运行模式 → QQ」。": "; rebind conversations under Operating mode → QQ.",
+  "；改绑在「接入 → 运行模式与连接」。":
+    "; rebind conversations under Access → Operating mode and connection.",
   时段开始: "Window starts",
   时段结束: "Window ends",
   "按本机时间填写；开始与结束相同＝全天，结束早于开始＝跨过午夜。":
@@ -1183,7 +1246,7 @@ export const english = {
   知识库使用: "Knowledge use",
   "QQ 里读取知识库仍受当前助手的授权约束：方案只能沿用，不能扩大权限。":
     "Reading knowledge inside QQ still follows the assistant's own authorization: a scheme may narrow it, never widen it.",
-  "资料与授权在「记忆 → 知识库配置」里管理；这里没有独立的开关。":
+  "资料与授权在「资料 → 知识库配置」里管理；这里没有独立的开关。":
     "Documents and grants live in Memory → Knowledge configuration; there is no separate switch here. ",
   前往知识库配置: "Go to knowledge configuration",
   媒体与表达: "Media and expression",

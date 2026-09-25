@@ -122,8 +122,13 @@ describe("聊天方案页", () => {
     await renderPage();
     expect(screen.getByLabelText("当前方案")).toBeTruthy();
     expect(screen.getByText(/不随当前助手切换/)).toBeTruthy();
-    // The six prompts are editable in place and indexed at the top (§11.1/§3.3).
+    // Five prompts are editable; the sixth is derived read-only. All remain indexed in place.
     expect(screen.getByRole("navigation", { name: "提示词索引" })).toBeTruthy();
+    const sections = screen.getByRole("navigation", { name: "方案分区" });
+    for (const link of sections.querySelectorAll("a")) {
+      expect(document.querySelector(link.getAttribute("href") ?? "")).toBeTruthy();
+    }
+    expect(sections.querySelectorAll("a")).toHaveLength(9);
     expect(screen.getByLabelText("场景与行为")).toBeTruthy();
     expect(screen.getByLabelText("媒体说明任务")).toBeTruthy();
     for (const key of ["scene", "judge", "reply", "review", "sticker", "media"]) {

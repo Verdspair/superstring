@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { canReadRun, inspectContext, sourceAccess } from "../../src/server/agent/context-access";
 import { handleError } from "../../src/server/api/error-handler";
 import { runRoutes } from "../../src/server/api/runs";
+import { createApp } from "../../src/server/app";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
@@ -79,6 +80,75 @@ function setup() {
 }
 
 describe("run diagnostics authorization and source lifetime", () => {
+  it("uses the application's module resolver for inspection without bypassing owner or fallback checks", async () => {
+    const { business, repository, snapshot } = setup();
+    let current = true;
+    const resolved: string[] = [];
+    const app = createApp({
+      business,
+      browserStateSecret: "synthetic-source-resolver",
+      resolveSource(source, owner) {
+        resolved.push(source.id);
+        expect(owner.userId).toBe(DEFAULT_USER_ID);
+        return source.kind === "external_document"
+          ? current
+            ? "available"
+            : "revoked"
+          : undefined;
+      },
+    });
+    const source = { kind: "external_document", id: "remote-document", revision: "version-1" };
+    const handle = snapshot([source]);
+    const url = `/v2/runs/${handle.runId}/context/${handle.stepId}`;
+    expect((await (await app.request(url)).json()).status).toBe("exact");
+    expect(repository.getContext(handle)?.messages?.[0].content).toContainEqual({
+      kind: "text",
+      text: "private original",
+    });
+    const foreign = snapshot([source], {
+      kind: "memory_job",
+      id: "foreign",
+      userId: "another-user",
+    });
+    const calls = resolved.length;
+    expect((await app.request(`/v2/runs/${foreign.runId}/context/${foreign.stepId}`)).status).toBe(
+      404,
+    );
+    expect(resolved).toHaveLength(calls);
+    const unknown = snapshot([{ kind: "unhandled", id: "unknown", revision: "1" }]);
+    expect(
+      (await (await app.request(`/v2/runs/${unknown.runId}/context/${unknown.stepId}`)).json())
+        .status,
+    ).toBe("revoked");
+    current = false;
+    expect((await (await app.request(url)).json()).status).toBe("revoked");
+    expect(repository.getContext(handle)?.messages).toBeNull();
+    expect(repository.getContext(handle)?.layout.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the retained source expiry authoritative when a module returns available", () => {
+    const { business, repository, snapshot } = setup();
+    const handle = snapshot([
+      {
+        kind: "external_document",
+        id: "remote",
+        revision: "1",
+        expiresAt: "2030-01-01T00:00:00.000Z",
+      },
+    ]);
+    expect(
+      inspectContext(
+        business.db,
+        repository,
+        handle,
+        { userId: DEFAULT_USER_ID },
+        "2030-01-02T00:00:00.000Z",
+        () => "available",
+      )?.status,
+    ).toBe("expired");
+    expect(repository.getContext(handle)?.messages).toBeNull();
+  });
+
   it("rejects changed memory, observation, media and speech revisions", () => {
     const { business } = setup();
     const at = new Date().toISOString(),

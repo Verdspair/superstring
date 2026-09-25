@@ -38,6 +38,10 @@ export interface KnowledgeSource {
   revision: string;
   payload: unknown;
 }
+export interface SourceReceipt {
+  source: SourceRef;
+  created: boolean;
+}
 export interface MaintenanceResult {
   didWork: boolean;
 }
@@ -45,11 +49,11 @@ export interface MaintenanceResult {
 /** Query is the only mandatory capability: a read-only backend has no fake mutation methods. */
 export interface MemoryModule {
   query(input: MemoryQuery): Promise<readonly Evidence[]>;
-  observe?(source: SourceEvent): Promise<void>;
+  observe?(source: SourceEvent): SourceReceipt | Promise<SourceReceipt>;
   maintain?(target?: string): Promise<MaintenanceResult>;
 }
 export interface KnowledgeModule {
   query(input: KnowledgeQuery): Promise<readonly Evidence[]>;
-  ingest?(source: KnowledgeSource): Promise<void>;
+  ingest?(source: KnowledgeSource): SourceReceipt | Promise<SourceReceipt>;
   maintain?(target?: string): Promise<MaintenanceResult>;
 }

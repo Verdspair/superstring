@@ -4,13 +4,18 @@ import { canReadRun, inspectContext, visibleRun } from "../agent/context-access"
 import { AgentRunRepository } from "../db/agent-run-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
+import type { ModuleSourceResolver } from "../modules/composition";
 import { parseUuidParam, validationFailed } from "./validation";
 
 /** Local app principal, consistent with the existing session and memory APIs. */
 const principal = { userId: DEFAULT_USER_ID };
 const notFound = { error: { code: "RUN_NOT_FOUND", message: "运行不存在或不可访问" } };
 
-export function runRoutes(db: Database, repository = new AgentRunRepository(db)): Hono {
+export function runRoutes(
+  db: Database,
+  repository = new AgentRunRepository(db),
+  options: { resolveSource?: ModuleSourceResolver } = {},
+): Hono {
   const router = new Hono();
   router.use("*", async (c, next) => {
     c.header("cache-control", "no-store");
@@ -65,6 +70,8 @@ export function runRoutes(db: Database, repository = new AgentRunRepository(db))
         stepId: parseUuidParam(c.req.param("stepId")),
       },
       principal,
+      new Date().toISOString(),
+      options.resolveSource,
     );
     return context ? c.json(context) : c.json(notFound, 404);
   });

@@ -129,11 +129,28 @@ export function QqStorageSettings() {
         </SettingsGroup>
       )}
 
+      {usage?.agent_runtime && (
+        <SettingsGroup
+          id="qq-storage-agent-runtime"
+          title="当前 Agent 运行时"
+          note="当前 Bot 会话的唤醒、运行和投递状态；生成结束不代表已送达。"
+        >
+          <dl className="qq-storage-list">
+            {row("等待处理的唤醒", String(usage.agent_runtime.pending_wakes))}
+            {row("正在处理的唤醒", String(usage.agent_runtime.leased_wakes))}
+            {row("处理失败的唤醒", String(usage.agent_runtime.failed_wakes))}
+            {row("进行中的运行", String(usage.agent_runtime.active_runs))}
+            {row("等待完成的投递", String(usage.agent_runtime.pending_deliveries))}
+            {row("结果待确认的投递", String(usage.agent_runtime.unknown_deliveries))}
+          </dl>
+        </SettingsGroup>
+      )}
+
       {usage && (
         <SettingsGroup
           id="qq-storage-waiting"
-          title="QQ 侧在等什么"
-          note="这些是真实的待办状态：安静的会话在等开场，收到媒体在等一次理解。"
+          title="历史调度与媒体记录"
+          note="原调度记录继续保留供诊断；这些候选与单链状态不代表当前 Agent 运行数。"
         >
           <dl className="qq-storage-list">
             {row(

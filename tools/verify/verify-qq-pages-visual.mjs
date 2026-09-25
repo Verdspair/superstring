@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// §15 page matrix for the 0.3.0 settings pages (ADR0018 follow-through).
+// §15 page matrix for the current five-section navigation and settings pages.
 //
 // What it does: opens every settings page this version added or changed in a real browser — at
 // 1920/1440/390/320, in both languages — and then applies every theme in light and dark on the
@@ -8,12 +8,14 @@
 // report for a person to look at. Pixel judgement stays with the person.
 //
 // Why a separate tool: only a real browser can be given a viewport, so this cannot be an assertion
-// inside tests/web — and the in-app browser used for behaviour checks cannot set one.
+// inside tests/web. This complements the in-app browser interaction checks.
 //
 // Usage (the Playwright module is not a project dependency, so point the tool at a directory that
 // has one; nothing is installed by this script):
 //   SUPERSTRING_PLAYWRIGHT=<dir with node_modules/playwright> \
 //   SUPERSTRING_VISUAL_URL=http://127.0.0.1:17861 node tools/verify/verify-qq-pages-visual.mjs
+// Defaults to bundled Chromium; optionally set SUPERSTRING_VISUAL_BROWSER_CHANNEL=msedge
+// or SUPERSTRING_VISUAL_BROWSER_EXECUTABLE for an existing isolated verification browser.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -35,40 +37,45 @@ mkdirSync(outputDir, { recursive: true });
 
 /** Pages this version touched, with the nav labels a click needs and one content probe each. */
 const PAGES = [
-  { id: "general", zh: ["通用"], en: ["General"], probe: null },
+  { id: "general", zh: ["偏好", "通用"], en: ["Preferences", "General"], probe: null },
   {
     // 运行模式现在是模式列表 + 「QQ」分组（2026-09-25 用户指示：第三方App接入整体搬到这里，
     // 取代原来未开放的「主动聊天模式」占位），所以这一页的探针落在那三段 QQ 配置上。
     id: "operating-mode",
-    zh: ["运行模式"],
-    en: ["Operating mode"],
+    zh: ["接入", "运行模式与连接"],
+    en: ["Access", "Modes and connections"],
     probe: "#qq-access-conversations",
   },
   {
     id: "models",
-    zh: ["快捷管理", "默认模型"],
-    en: ["Quick management", "Default models"],
+    zh: ["Agent", "默认模型"],
+    en: ["Agent", "Default models"],
     probe: ".model-page-toolbar",
   },
   {
     id: "qq-stickers",
-    zh: ["人设", "表情素材"],
-    en: ["Persona", "Sticker library"],
+    zh: ["接入", "表情素材"],
+    en: ["Access", "Sticker library"],
     probe: "#qq-stickers",
   },
   {
     id: "qq-scheme-config",
-    zh: ["人设", "聊天方案"],
-    en: ["Persona", "Chat schemes"],
+    zh: ["接入", "聊天方案"],
+    en: ["Access", "Chat schemes"],
     probe: "#qq-scheme-speech",
   },
   {
     id: "qq-storage",
-    zh: ["人设", "存储与诊断"],
-    en: ["Persona", "Storage and diagnostics"],
+    zh: ["接入", "存储与诊断"],
+    en: ["Access", "Storage and diagnostics"],
     probe: "#qq-storage-verdicts",
   },
-  { id: "long-memory", zh: ["记忆", "长期记忆"], en: ["Memory", "Long-term memory"], probe: null },
+  {
+    id: "long-memory",
+    zh: ["资料", "长期记忆"],
+    en: ["Materials", "Long-term memory"],
+    probe: null,
+  },
 ];
 const VIEWPORTS = [
   { name: "1920x1080", width: 1920, height: 1080 },
@@ -87,28 +94,30 @@ if (themesBlock === undefined)
   throw new Error("THEMES block not found in src/shared/appearance.ts");
 const THEMES = [...themesBlock.matchAll(/\{ id: "([a-z]+)", name: "/g)].map((match) => match[1]);
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 const slug = (value) => value.replace(/[^a-z0-9-]/gi, "-");
 
 async function openPage(page, labels) {
-  await page.locator(".settings-button").click({ timeout: 5000 });
+  // The primary navigation is rendered once, inside a Radix dialog at <=760px.
+  const compactTrigger = page.locator(".mobile-navigation-bar button");
+  const compact = await compactTrigger.isVisible();
+  if (compact) await compactTrigger.click();
   await page
-    .locator(".settings-primary-nav button", {
-      hasText: new RegExp(`^${escapeRegExp(labels[0])}$`),
-    })
-    .click({ timeout: 5000 });
-  if (labels.length > 1) {
-    await page
-      .locator(".settings-secondary-nav button", {
-        hasText: new RegExp(`^${escapeRegExp(labels[1])}$`),
-      })
-      .click({ timeout: 5000 });
+    .locator(".app-primary-nav")
+    .getByRole("button", { name: labels[0], exact: true })
+    .click();
+  // Selecting the current section can leave the same destination active. Close its
+  // navigation dialog explicitly before using the secondary page links behind it.
+  if (compact) {
+    await page.keyboard.press("Escape");
+    await page.locator(".mobile-navigation-dialog").waitFor({ state: "hidden" });
   }
+  await page
+    .locator(".settings-secondary-nav")
+    .getByRole("button", { name: labels[1], exact: true })
+    .click();
 }
 
 /** What every visit must satisfy, plus the numbers worth reporting when it does not. */
@@ -194,7 +203,12 @@ const contextOptions = async (browser, { locale, theme, mode, viewport }) => {
   return context;
 };
 
-const browser = await chromium.launch({ channel: "msedge", headless: true });
+const executablePath = process.env.SUPERSTRING_VISUAL_BROWSER_EXECUTABLE;
+const channel = process.env.SUPERSTRING_VISUAL_BROWSER_CHANNEL ?? "chromium";
+const browser = await chromium.launch({
+  ...(executablePath ? { executablePath } : { channel }),
+  headless: true,
+});
 const results = [];
 const screenshots = [];
 try {
@@ -241,6 +255,7 @@ try {
           screenshots.push(file);
         }
         results.push({ name, passed: true, metrics, focus });
+        console.log(`[PASS] ${name}`);
       }
       await context.close();
     }
@@ -276,6 +291,7 @@ try {
         `${name}: ${metrics.probeClipDetail} clips its content by ${metrics.probeClipped}px`,
       );
       results.push({ name, passed: true, metrics });
+      console.log(`[PASS] ${name}`);
       if (theme === firstTheme || theme === lastTheme) {
         const file = `qq-pages-${slug(name)}.png`;
         await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
@@ -290,6 +306,11 @@ try {
     timestamp,
     scope: `§15 page matrix: ${PAGES.length} settings pages x ${VIEWPORTS.length} viewports x ${LOCALES.length} languages, plus ${THEMES.length} themes x 2 modes`,
     url,
+    browser: {
+      engine: "chromium",
+      version: browser.version(),
+      channel: executablePath ? "custom executable" : channel,
+    },
     passed: true,
     screenshots,
     results,
