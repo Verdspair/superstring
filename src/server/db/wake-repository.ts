@@ -171,11 +171,12 @@ export class WakeRepository {
   ): void {
     const r = this.get(id);
     if (!r || !this.owns(id, token, at)) throw new Error("WAKE_LEASE_LOST");
-    this.db
+    const completed = this.db
       .query(
-        "UPDATE wake_signals SET status=?,lease_token=NULL,lease_expires_at=NULL,completed_at=? WHERE id=?",
+        "UPDATE wake_signals SET status=?,lease_token=NULL,lease_expires_at=NULL,completed_at=? WHERE id=? AND status='leased' AND lease_token=?",
       )
-      .run(status, at, id);
+      .run(status, at, id, token).changes;
+    if (completed === 0) throw new Error("WAKE_LEASE_LOST");
     // Opportunities covered by this successful observation are consumed, not their source messages.
     this.db
       .query(
@@ -186,11 +187,12 @@ export class WakeRepository {
   /** Waiting for a configured cadence is not a failed model attempt. */
   defer(id: string, token: string, readyAt: string, at: string): void {
     if (!this.owns(id, token, at)) throw new Error("WAKE_LEASE_LOST");
-    this.db
+    const deferred = this.db
       .query(
-        "UPDATE wake_signals SET status='pending',lease_token=NULL,lease_expires_at=NULL,ready_at=?,attempts=MAX(0,attempts-1) WHERE id=?",
+        "UPDATE wake_signals SET status='pending',lease_token=NULL,lease_expires_at=NULL,ready_at=?,attempts=MAX(0,attempts-1) WHERE id=? AND status='leased' AND lease_token=?",
       )
-      .run(readyAt, id);
+      .run(readyAt, id, token).changes;
+    if (deferred === 0) throw new Error("WAKE_LEASE_LOST");
   }
   fail(
     id: string,
@@ -199,17 +201,18 @@ export class WakeRepository {
   ): boolean {
     const r = this.get(id);
     if (!r || r.status !== "leased" || r.leaseToken !== token) return false;
-    this.db
+    const failed = this.db
       .query(
-        "UPDATE wake_signals SET status=?,lease_token=NULL,lease_expires_at=NULL,error_code=?,ready_at=? WHERE id=?",
+        "UPDATE wake_signals SET status=?,lease_token=NULL,lease_expires_at=NULL,error_code=?,ready_at=? WHERE id=? AND status='leased' AND lease_token=?",
       )
       .run(
         r.attempts >= input.maxAttempts ? "failed" : "pending",
         input.errorCode,
         new Date(Date.parse(input.at) + input.retryDelayMs).toISOString(),
         id,
-      );
-    return true;
+        token,
+      ).changes;
+    return failed > 0;
   }
   recover(input: { at: string; maxAttempts: number; retryDelayMs: number }): number {
     const rows = this.db
