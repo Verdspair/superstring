@@ -385,6 +385,7 @@ export class SqliteKnowledgeModule implements KnowledgeModule {
       gateway: Pick<ModelGateway, "loadedContextCapacity">;
       agentRuntime: LeafAgentRuntime;
       runtime: (agentId: string) => RuntimeConfig;
+      assertSources?: (sources: readonly SourceRef[]) => void;
     },
   ) {}
 
@@ -410,6 +411,7 @@ export class SqliteKnowledgeModule implements KnowledgeModule {
     ]);
     const assertAccess = () => {
       input.signal?.throwIfAborted();
+      this.options.assertSources?.([...(input.sources ?? []), ...sources]);
       for (const candidate of snapshot.candidates) {
         const current = this.options.db
           .query<{ token: string; content_version: number }, [string, string]>(

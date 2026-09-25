@@ -28,6 +28,9 @@ import {
   ModelUnavailableError,
 } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import type { ModuleQueryFactory, ModuleSourceResolver } from "../modules/composition";
+import type { MemoryModule } from "../modules/contracts";
+import { turnSources } from "../modules/provenance";
 import { unicodeStrip } from "../services/text";
 import { WebContextSource } from "./web-context-source";
 
@@ -39,6 +42,9 @@ export interface WebChannelOptions {
   host?: ConversationHost;
   journal?: ConversationEventRepository;
   contextBuilder?: ContextBuilder | null;
+  modules?: ModuleQueryFactory;
+  memory?: Pick<MemoryModule, "observe">;
+  resolveSource?: ModuleSourceResolver;
   leaseSeconds?: number;
   heartbeatIntervalMs?: number;
   /** Configurable Agent iteration budget; model/token/time policies retain existing settings. */
@@ -122,6 +128,8 @@ export class WebChannel {
                 db: this.db,
                 gateway: options.gateway,
                 agentRuntime: this.runtime,
+                modules: options.modules,
+                resolveSource: options.resolveSource,
               })
             : null));
   }
@@ -227,6 +235,8 @@ export class WebChannel {
       gateway: o.gateway,
       agentRuntime: this.runtime,
       builder: this.builder,
+      modules: o.modules,
+      resolveSource: o.resolveSource,
       runtime: args.runtime,
       sessionId: args.sessionId,
       turnId: args.turnId,
@@ -400,6 +410,25 @@ export class WebChannel {
               );
             });
             committed = true;
+            // The turn is durable before a backend consumes it. SQLite maintenance also scans
+            // its durable source cursor, so a failed notification does not erase the input.
+            const ref = turnSources(o.orm, [args.turnId])[0];
+            if (ref && o.memory?.observe) {
+              try {
+                await o.memory.observe({
+                  source: ref,
+                  payload: {
+                    kind: "web_turn",
+                    turnId: args.turnId,
+                    agentId: args.conversation.agentId,
+                  },
+                });
+              } catch {
+                console.warn(
+                  "memory observation notification failed; completed turn remains available to maintenance",
+                );
+              }
+            }
             return event;
           },
         });

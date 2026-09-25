@@ -1,3 +1,4 @@
+// Test-only pre-cutover behavior oracle; never import from production.
 // One model judgement per reply target, over an already classified initiative path (ADR0018 P3e).
 // The gateway is injected. This module cannot send a QQ message or start the transport.
 //
@@ -13,17 +14,24 @@
 // does not erase another person's readable one. The single-value kinds (`silent`, `unreadable`, …) are
 // therefore only returned when NO target produced an opening — the most informative of what happened.
 
-import { readQqScheme, schemeOutputReserve, schemeRhythm } from "../db/qq-scheme-repository";
-import type { Orm } from "../db/repositories";
-import type { ModelGateway } from "../llm/model-gateway";
-import { checkQqModelCapacity } from "./qq-capacity-preflight";
-import { prepareQqJudgement, type QqJudgementPreparation } from "./qq-judgement-preparation";
+import {
+  readQqScheme,
+  schemeOutputReserve,
+  schemeRhythm,
+} from "../../../src/server/db/qq-scheme-repository";
+import type { Orm } from "../../../src/server/db/repositories";
+import type { ModelGateway } from "../../../src/server/llm/model-gateway";
+import { checkQqModelCapacity } from "../../../src/server/services/qq-capacity-preflight";
+import {
+  prepareQqJudgement,
+  type QqJudgementPreparation,
+} from "../../../src/server/services/qq-judgement-preparation";
 import {
   QQ_JUDGEMENT_RESPONSE_SCHEMA,
   qqJudgeAllowsSpeech,
   qqJudgeOutcome,
-} from "./qq-prompt-contract";
-import type { QqReplyTarget } from "./qq-reply-targets";
+} from "../../../src/server/services/qq-prompt-contract";
+import type { QqReplyTarget } from "../../../src/server/services/qq-reply-targets";
 
 /** 一个要回的对象 + 判断给它的分数（`null` 表示这条路径不跑判断：被叫到就是决定）。 */
 export interface QqReplyOpening {

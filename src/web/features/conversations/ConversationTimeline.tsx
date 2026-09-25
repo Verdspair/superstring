@@ -9,6 +9,7 @@ import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
 import { localTime } from "../../ui/local-time";
 import { RunLink } from "../runs/RunInspector";
+import { ConversationHeader } from "./ConversationHeader";
 import { useConversationEvents } from "./use-conversation-events";
 
 const contentLabels = {
@@ -38,7 +39,9 @@ export function timelineRows(items: ConversationEventView[]): ConversationEventV
       ? `output:${item.outputId}`
       : item.kind === "inbound" || item.kind === "outbound"
         ? `source:${item.source.kind}:${item.source.id}`
-        : `event:${item.seq}`;
+        : item.wake
+          ? `wake:${item.wake.id}`
+          : `event:${item.seq}`;
     latest.set(key, item);
   }
   return [...latest.values()]
@@ -66,17 +69,20 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
   const rows = timelineRows(items);
   return (
     <section className="page conversation-page">
-      <header className="page-header">
-        <div>
-          <h1>{conversation.title}</h1>
-          <p>
-            {t("OneBot 私聊")} · {t("只读消息记录")}
-          </p>
-        </div>
-        <button type="button" disabled={loading} onClick={() => void refresh()}>
-          {t("刷新记录")}
-        </button>
-      </header>
+      <ConversationHeader
+        title={conversation.title}
+        detail={
+          <>
+            {t(conversation.topology === "shared" ? "OneBot 群聊" : "OneBot 私聊")} ·{" "}
+            {t("只读消息记录")}
+          </>
+        }
+        actions={
+          <button type="button" disabled={loading} onClick={() => void refresh()}>
+            {t("刷新记录")}
+          </button>
+        }
+      />
       <details className="conversation-source">
         <summary>{t("会话来源与参与者")}</summary>
         <dl className="run-metadata">
@@ -122,6 +128,7 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
           return (
             <li
               key={item.seq}
+              id={`source-${item.source.kind}-${item.source.id}`}
               className={message ? "conversation-message" : "conversation-activity"}
             >
               <header>
@@ -130,6 +137,13 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                 </strong>
                 <time dateTime={item.occurredAt}>{localTime(item.occurredAt)}</time>
               </header>
+              {item.participant && conversation.topology === "shared" && (
+                <small className="conversation-member-id">
+                  <code>{item.participant.id}</code>
+                </small>
+              )}
+              <Addressing item={item} rows={rows} conversation={conversation} />
+              {item.wake && <WakeActivity wake={item.wake} />}
               {item.messageStatus === "failed" && <p className="error">{t("[生成失败]")}</p>}
               {item.messageStatus === "cancelled" && <p className="hint">{t("[生成已取消]")}</p>}
               {item.deliveryStatus && (
@@ -137,11 +151,12 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                   {t(deliveryLabels[item.deliveryStatus])}
                 </p>
               )}
-              {item.contentState !== "active" ? (
-                <p className="hint">{t(contentLabels[item.contentState])}</p>
-              ) : (
-                item.text && <p className="conversation-text">{item.text}</p>
-              )}
+              {item.kind !== "wake" &&
+                (item.contentState !== "active" ? (
+                  <p className="hint">{t(contentLabels[item.contentState])}</p>
+                ) : (
+                  item.text && <p className="conversation-text">{item.text}</p>
+                ))}
               {!!item.media.length && (
                 <ul className="conversation-media">
                   {item.media.map((media) => (
@@ -174,6 +189,7 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                   <DeliveryDetails
                     key={`${item.outputId}:${item.deliveryStatus}`}
                     outputId={item.outputId}
+                    conversation={conversation}
                   />
                 )}
               </div>
@@ -200,7 +216,13 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
   );
 }
 
-function DeliveryDetails({ outputId }: { outputId: string }) {
+function DeliveryDetails({
+  outputId,
+  conversation,
+}: {
+  outputId: string;
+  conversation: ConversationSummary;
+}) {
   const t = useI18n();
   const api = useSuperstringStore((s) => s.apiClient);
   const [delivery, setDelivery] = useState<Delivery | null>(null),
@@ -231,6 +253,30 @@ function DeliveryDetails({ outputId }: { outputId: string }) {
       {delivery && (
         <>
           <p>{t(deliveryLabels[delivery.status])}</p>
+          <p>
+            {t("输出 {0}", delivery.ordinal + 1)} ·{" "}
+            {delivery.target ? (
+              <>
+                {t("送达会话")}: <code>{delivery.target.peerId}</code>
+                {delivery.target.participantId && (
+                  <>
+                    {" "}
+                    · {t("回应成员")}:{" "}
+                    {conversation.participants.find(
+                      (person) => person.id === delivery.target?.participantId,
+                    )?.label ?? ""}{" "}
+                    <code>{delivery.target.participantId}</code>
+                  </>
+                )}
+              </>
+            ) : (
+              t("目标信息未记录")
+            )}
+          </p>
+          {delivery.parts.some((part) => part.status === "confirmed") &&
+            delivery.parts.some((part) => part.status !== "confirmed") && (
+              <p className="hint">{t("部分内容已送达，请查看各部分结果。")}</p>
+            )}
           <ol>
             {delivery.parts.map((part) => (
               <li key={part.id}>
@@ -258,5 +304,96 @@ function DeliveryDetails({ outputId }: { outputId: string }) {
         {t("刷新送达结果")}
       </button>
     </details>
+  );
+}
+
+function Addressing({
+  item,
+  rows,
+  conversation,
+}: {
+  item: ConversationEventView;
+  rows: ConversationEventView[];
+  conversation: ConversationSummary;
+}) {
+  const t = useI18n();
+  const { reasons, mentionIds, replyTo } = item.addressing;
+  const labels = {
+    request: "直接请求",
+    private: "私聊消息",
+    mention: "提及助手",
+    reply_to_agent: "回复助手",
+    legacy_addressed: "历史记录标记为面向助手",
+  };
+  const reference =
+    replyTo &&
+    rows.find(
+      (row) =>
+        row.source.id === replyTo.sourceId ||
+        row.sources.some((source) => source.id === replyTo.sourceId),
+    );
+  if (!reasons.length && !mentionIds.length && !replyTo) return null;
+  return (
+    <div className="conversation-addressing">
+      {reasons.map((reason) => (
+        <span key={reason}>{t(labels[reason])}</span>
+      ))}
+      {!!mentionIds.length && (
+        <span>
+          {t("提及")}:{" "}
+          {mentionIds.map((id) => (
+            <span key={id}>
+              {conversation.participants.find((person) => person.id === id)?.label ?? id}{" "}
+              <code>{id}</code>{" "}
+            </span>
+          ))}
+        </span>
+      )}
+      {replyTo && (
+        <span>
+          {t("引用消息")}:{" "}
+          {reference ? (
+            <a href={`#source-${reference.source.kind}-${reference.source.id}`}>
+              {reference.participant?.label ?? replyTo.sourceId}
+            </a>
+          ) : (
+            <code>{replyTo.sourceId}</code>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+function WakeActivity({ wake }: { wake: NonNullable<ConversationEventView["wake"]> }) {
+  const t = useI18n();
+  const labels = {
+    pending: "等待处理",
+    leased: "正在处理",
+    completed: "处理完成",
+    no_output: "本次未发言",
+    failed: "处理失败",
+  };
+  const causes: Record<string, string> = {
+    direct_reply: "直接回应",
+    follow_up: "连续交谈",
+    chiming_in: "自主接话",
+    idle_topic: "冷场发起",
+    mention: "提及助手",
+    private: "私聊消息",
+    reply_to_agent: "回复助手",
+  };
+  return (
+    <div className="wake-activity" data-status={wake.status}>
+      <p role="status">{t(labels[wake.status])}</p>
+      <small>
+        {t("唤醒原因")}: {t(causes[wake.cause] ?? wake.cause)}
+      </small>
+      {wake.status === "pending" && (
+        <p>
+          {t("计划处理时间")}: <time dateTime={wake.readyAt}>{localTime(wake.readyAt)}</time>
+        </p>
+      )}
+      {wake.errorCode && <p className="error">{wake.errorCode}</p>}
+    </div>
   );
 }

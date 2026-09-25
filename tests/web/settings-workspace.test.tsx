@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse, PersonaResponse } from "../../src/shared/contracts";
 import { Sidebar } from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
+import { APP_SECTIONS, routeSection } from "../../src/web/app/app-routes";
 import { SettingsHeader } from "../../src/web/app/SettingsHeader";
 import { SettingsHub } from "../../src/web/app/SettingsHub";
 import { SettingsBody } from "../../src/web/app/SettingsSidebar";
 import { SettingsWorkspace } from "../../src/web/app/SettingsWorkspace";
 import { KNOWLEDGE_PLANNED_FIELDS, SETTINGS_ROUTES } from "../../src/web/app/settings-routes";
 import { selectLocale } from "../../src/web/i18n";
-import { useSuperstringStore as store } from "../../src/web/store";
+import { fixtureStore as store } from "./helpers/chat-fixture";
 
 const originalActions = {
   reloadMemory: store.getState().reloadMemory,
@@ -44,7 +45,7 @@ afterEach(() => {
 });
 
 describe("设置工作区第一阶段", () => {
-  it("设置保留对话侧栏，一级在设置内部左侧、二级在右侧顶部且可达全部页面", () => {
+  it("统一一级导航保留对话目录，每个原有设置页面均由所属二级导航可达", () => {
     const { container } = render(
       <>
         <Sidebar />
@@ -59,47 +60,48 @@ describe("设置工作区第一阶段", () => {
     const aside = screen.getByRole("complementary");
     expect(within(aside).getByRole("button", { name: "新建任务" })).toBeTruthy();
     expect(within(aside).getByRole("navigation", { name: "历史会话" })).toBeTruthy();
-    expect(aside.querySelector(".settings-navigation")).toBeNull();
-    expect(container.querySelector(".settings-navigation details")).toBeNull();
-    const nav = within(container.querySelector(".settings-navigation") as HTMLElement);
-    for (const [group, title] of [
-      ["management", "快捷管理"],
-      ["persona", "人设"],
-      ["memory", "记忆"],
-    ]) {
-      fireEvent.click(nav.getByRole("button", { name: title }));
-      for (const route of SETTINGS_ROUTES.filter((r) => r.group === group)) {
-        const secondary = within(container.querySelector(".settings-secondary-nav") as HTMLElement);
-        fireEvent.click(secondary.getByRole("button", { name: new RegExp(route.title) }));
-        if (route.id === "basic") expect(store.getState().settingsView).toBe("agents");
-        else expect(store.getState().settingsRoute).toBe(route.id);
-      }
+    const primary = within(within(aside).getByRole("navigation", { name: "主导航" }));
+    expect(primary.getAllByRole("button").map((el) => el.textContent)).toEqual(
+      APP_SECTIONS.map((section) => section.title),
+    );
+    for (const route of SETTINGS_ROUTES) {
+      const section = APP_SECTIONS.find((item) => item.id === routeSection(route.id));
+      expect(section).toBeDefined();
+      if (!section) throw new Error(`No section for ${route.id}`);
+      fireEvent.click(primary.getByRole("button", { name: section.title }));
+      const secondary = within(screen.getByRole("navigation", { name: "配置页面" }));
+      fireEvent.click(secondary.getByRole("button", { name: new RegExp(route.title) }));
+      if (route.id === "basic") expect(store.getState().settingsView).toBe("agents");
+      else expect(store.getState().settingsRoute).toBe(route.id);
     }
     expect(store.getState().editorAgentId).toBe("A");
-    expect(container.querySelector(".settings-navigation .settings-secondary-nav")).toBeNull();
     expect(aside.querySelector(".settings-secondary-nav")).toBeNull();
     expect(
       container.querySelector(".settings-body > .settings-body-content > .settings-secondary-nav"),
     ).toBeTruthy();
-    expect(
-      [...container.querySelectorAll(".settings-primary-nav button")].map((el) => el.textContent),
-    ).toEqual(["设置中心", "通用", "运行模式", "快捷管理", "人设", "记忆"]);
-    expect(container.querySelector(".settings-body")?.firstElementChild?.className).toBe(
-      "settings-navigation",
-    );
-    expect(container.querySelector(".settings-header .settings-navigation")).toBeNull();
+    expect(container.querySelector(".settings-header nav")).toBeNull();
+    expect(container.querySelector(".settings-navigation")).toBeNull();
+    fireEvent.click(primary.getByRole("button", { name: "接入" }));
+    expect(store.getState().settingsView).toBe("operating-mode");
+    fireEvent.click(primary.getByRole("button", { name: "偏好" }));
+    expect(store.getState().settingsView).toBe("general");
     fireEvent.click(screen.getByRole("button", { name: "返回对话" }));
     expect(screen.getByRole("button", { name: "新建任务" })).toBeTruthy();
-    expect(container.querySelector(".settings-navigation")).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "配置页面" })).toBeNull();
   });
-  it("设置中心合并模型后提供三个功能根类别", () => {
+  it("设置中心按 Agent、资料、接入与偏好提供入口，原页面继续可达", () => {
     render(<SettingsHub />);
     const hub = within(screen.getByRole("navigation", { name: "功能设置" }));
-    expect(hub.queryByRole("button", { name: "模型" })).toBeNull();
-    for (const title of ["人设", "记忆", "快捷管理"])
-      expect(hub.getByRole("button", { name: title })).toBeTruthy();
-    fireEvent.click(hub.getByRole("button", { name: "人设" }));
-    expect(store.getState().settingsRoute).toBe("identity");
+    for (const [title, view, route] of [
+      ["Agent", "workspace", "models"],
+      ["资料", "workspace", "long-memory"],
+      ["接入", "operating-mode", null],
+      ["偏好", "general", null],
+    ] as const) {
+      fireEvent.click(hub.getByRole("button", { name: title }));
+      expect(store.getState().settingsView).toBe(view);
+      if (route) expect(store.getState().settingsRoute).toBe(route);
+    }
   });
   it("共用选择器不改变当前会话及新会话助手", async () => {
     store.setState({
@@ -264,7 +266,7 @@ describe("设置工作区第一阶段", () => {
     expect(screen.getByRole("heading", { name: "默认模型" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "共同整理默认值" })).toBeTruthy();
   });
-  it("统一模型页归快捷管理，原模型分类不再重复展示", async () => {
+  it("统一模型页归 Agent，原模型分类不再重复展示", async () => {
     store.setState({
       settingsRoute: "models",
       apiClient: {
@@ -281,12 +283,15 @@ describe("设置工作区第一阶段", () => {
       } as SuperstringApi,
     });
     await act(async () => {
-      render(<SettingsWorkspace />);
+      render(
+        <>
+          <Sidebar />
+          <SettingsWorkspace />
+        </>,
+      );
     });
     expect(screen.getByRole("heading", { name: "默认模型" })).toBeTruthy();
-    expect(document.querySelector(".settings-primary-nav [aria-current]")?.textContent).toBe(
-      "快捷管理",
-    );
+    expect(document.querySelector(".app-primary-nav [aria-current]")?.textContent).toBe("Agent");
     expect(screen.getByRole("combobox", { name: "知识库整理模型" })).toBeTruthy();
     expect(screen.queryByRole("spinbutton", { name: "知识库上下文预算" })).toBeNull();
     expect(SETTINGS_ROUTES.filter((r) => r.group === "management").map((r) => r.id)).toEqual([
@@ -294,7 +299,7 @@ describe("设置工作区第一阶段", () => {
       "models",
       "external-api",
     ]);
-    expect(document.querySelector(".settings-primary-nav")?.textContent).not.toContain("模型");
+    expect(document.querySelector(".app-primary-nav")?.textContent).not.toContain("模型");
     expect(
       document
         .querySelector(".settings-workspace")
@@ -305,20 +310,27 @@ describe("设置工作区第一阶段", () => {
     expect(screen.getByRole("spinbutton", { name: "知识库上下文预算" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "前往默认模型" })).toBeTruthy();
   });
-  it("短期上下文排在长期记忆前，页签仍指向原页面", () => {
+  it("短期上下文与长期记忆各归所属页面，均保留原设置入口", () => {
     store.setState({ settingsRoute: "long-memory" });
-    render(<SettingsWorkspace />);
-    const tabs = Array.from(document.querySelectorAll(".settings-secondary-nav button"));
-    expect(tabs.map((tab) => tab.textContent)).toEqual([
-      "短期上下文",
-      "长期记忆",
-      "知识库配置",
-      "用户画像未开放",
-    ]);
-    fireEvent.click(tabs[0]);
+    render(
+      <>
+        <Sidebar />
+        <SettingsWorkspace />
+      </>,
+    );
+    const primary = within(screen.getByRole("navigation", { name: "主导航" }));
+    expect(
+      Array.from(document.querySelectorAll(".settings-secondary-nav button")).map(
+        (tab) => tab.textContent,
+      ),
+    ).toEqual(["长期记忆", "知识库配置", "用户画像未开放"]);
+    fireEvent.click(primary.getByRole("button", { name: "Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "短期上下文" }));
     expect(store.getState().settingsRoute).toBe("context");
-    fireEvent.click(tabs[1]);
+    fireEvent.click(primary.getByRole("button", { name: "资料" }));
+    fireEvent.click(screen.getByRole("button", { name: "长期记忆" }));
     expect(store.getState().settingsRoute).toBe("long-memory");
+    expect(store.getState().editorAgentId).toBe("A");
   });
   it("英文新侧栏与知识页面没有中文界面词条", () => {
     selectLocale("en");

@@ -10,6 +10,7 @@ import {
   type BotConversationPolicy,
   createOneBotConversationRuntime,
 } from "./channels/onebot11/create-runtime";
+import { BotWorker } from "./conversation/bot-worker";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
@@ -22,13 +23,15 @@ import {
   resolveLmStudioConfig,
 } from "./llm/model-gateway";
 import { createLmStudioVisionClient } from "./llm/vision-client";
+import {
+  createSqliteModules,
+  type ModuleComposition,
+  type ModuleSourceResolver,
+} from "./modules/composition";
 import { DEFAULT_MODEL_PROVIDER_KEY_PATH } from "./secret-box";
-import { KnowledgeOrganizer } from "./services/knowledge-organizer";
 import { MemoryService } from "./services/memory-service";
-import { peekQqImmediateReplyTask, sweepQqIdleTopics } from "./services/qq-dispatch";
 import { QqIntakeRuntime } from "./services/qq-intake";
-import { QqRuntime, qqDispatchRunner, qqImmediateRunner } from "./services/qq-runtime";
-import { type QqSendPort, qqReplySender } from "./services/qq-send-transport";
+import type { QqSendPort } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
 
 export const DEFAULT_BUSINESS_DB_PATH = path.resolve("data/superstring.sqlite");
@@ -48,8 +51,10 @@ export interface RuntimeOptions {
   gateway?: ModelGateway;
   business?: BusinessDbHandle;
   memoryService?: MemoryService;
-  /** The QQ state-machine host (sweep + dispatch). Tests inject a fake to pin start/stop. */
-  qqRuntime?: QqRuntime;
+  modules?: ModuleComposition;
+  resolveSource?: ModuleSourceResolver;
+  /** Timer/lifecycle host; model work is exclusively owned by AgentRuntime. */
+  botWorker?: BotWorker;
   /**
    * The inbound transport runtime (P5m). Tests inject a fake; production resolves the saved
    * endpoint and token itself, so it never takes a credential from its caller.
@@ -77,8 +82,9 @@ export interface SuperstringRuntime {
   business: BusinessDbHandle;
   gateway: ModelGateway;
   memoryService: MemoryService;
+  modules: ModuleComposition;
   agentRuntime: AgentRuntime;
-  qqRuntime: QqRuntime;
+  botWorker: BotWorker;
   qqIntake: QqIntakeRuntime;
   start(): void;
   stop(): Promise<void>;
@@ -98,10 +104,10 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let gateway: ModelGateway;
   let memoryService: MemoryService;
   let agentRuntime: AgentRuntime;
-  let qqRuntime: QqRuntime;
+  let botWorker: BotWorker;
   let qqIntake: QqIntakeRuntime;
   let app: Hono;
-  let knowledgeOrganizer: KnowledgeOrganizer;
+  let modules: ModuleComposition;
   let bot: ReturnType<typeof createOneBotConversationRuntime>;
   let stopping = false;
   try {
@@ -134,7 +140,15 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     memoryService =
       options.memoryService ??
       new MemoryService({ orm: business.orm, db: business.db, gateway, agentRuntime });
-    knowledgeOrganizer = new KnowledgeOrganizer({ db: business.db, gateway, agentRuntime });
+    modules =
+      options.modules ??
+      createSqliteModules({
+        db: business.db,
+        orm: business.orm,
+        gateway,
+        agentRuntime,
+        memoryWorker: memoryService,
+      });
     const stickerStore = new QqStickerStore({
       directory: options.qqStickerDirectory ?? DEFAULT_QQ_STICKER_DIRECTORY,
     });
@@ -143,11 +157,6 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         qqIntake.connection?.send(request) ??
         Promise.resolve({ kind: "not_sent" as const, reason: "not_ready" as const }),
     };
-    const sender = qqReplySender({
-      orm: business.orm,
-      store: stickerStore,
-      ports: port,
-    });
     bot = createOneBotConversationRuntime({
       orm: business.orm,
       db: business.db,
@@ -157,63 +166,26 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       journal,
       store: stickerStore,
       port,
-      wake: () => qqRuntime.wake(),
+      wake: () => botWorker.wake(),
       policy: options.botConversationPolicy,
+      modules: modules.bind,
+      resolveSource: options.resolveSource,
     });
-    const groupDispatch = qqDispatchRunner({
-      orm: business.orm,
-      gateway: withCapacityCache(gateway),
-      agentRuntime,
-      store: stickerStore,
-      sender,
-      conversationKinds: ["group"],
-    });
-    const groupImmediate = qqImmediateRunner({
-      orm: business.orm,
-      gateway: withCapacityCache(gateway),
-      agentRuntime,
-      store: stickerStore,
-      sender,
-      conversationKinds: ["group"],
-    });
-    qqRuntime =
-      options.qqRuntime ??
-      new QqRuntime({
-        orm: business.orm,
-        // The chain runs only while a QQ connection is live: without one an authorized draft has
-        // nowhere to go, and the model calls behind it would be spent on nothing (P5o).
+    botWorker =
+      options.botWorker ??
+      new BotWorker({
         canAdvance: () => qqIntake.state.phase === "ready",
-        sweep(nowSeconds) {
-          const direct = bot.adapter.sweep(nowSeconds);
-          const shared = sweepQqIdleTopics(
-            business.orm,
-            { nowSeconds },
-            { conversationKinds: ["group"] },
-          );
-          return {
-            scheduled: [...direct.scheduled, ...shared.scheduled],
-            skipped: [...direct.skipped, ...shared.skipped],
-          };
+        sweep: (nowSeconds) => {
+          bot.adapter.sweep(nowSeconds);
         },
-        async advance(nowSeconds) {
-          if (stopping) return { immediate: null, dispatch: null };
+        async advance() {
+          if (stopping) return;
           await bot.delivery.runOnce();
-          if (stopping) return { immediate: null, dispatch: null };
-          const direct = bot.scheduler.peek("direct_reply");
-          const shared = peekQqImmediateReplyTask(business.orm, { nowSeconds }, ["group"]);
-          const privateFirst =
-            direct && (!shared || Date.parse(direct.createdAt) >= shared.occurredAtSeconds * 1000);
-          if (privateFirst) await bot.scheduler.runOnce({ cause: "direct_reply" });
-          if (stopping) return { immediate: null, dispatch: null };
-          const immediate = await groupImmediate({ nowSeconds });
-          if (stopping) return { immediate, dispatch: null };
-          if (!privateFirst) await bot.scheduler.runOnce({ cause: "direct_reply" });
-          if (stopping) return { immediate, dispatch: null };
-          await bot.scheduler.runOnce({ cause: "idle_topic" });
-          if (stopping) return { immediate, dispatch: null };
-          const dispatch = await groupDispatch({ nowSeconds });
-          return { immediate, dispatch };
+          while (!stopping && qqIntake.state.phase === "ready" && (await bot.scheduler.runOnce())) {
+            // The scheduler supplies priority, coalescing and durable leases for all topologies.
+          }
         },
+        onError: () => console.warn("bot worker cycle failed; retrying next check"),
       });
     qqIntake =
       options.qqIntake ??
@@ -226,8 +198,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         // it to the intake runtime is what turns "media is recorded" into "media is understood".
         media: { vision: visionClient, agentRuntime },
         conversationIngress: bot.adapter,
+        memory: modules.memory,
         // 「被 @ 了别等轮询」（2026-09-25）：入站路径记下一条冲着她来的消息就叫醒宿主跑一轮。
-        onAddressedMessage: () => qqRuntime.wake(),
+        onAddressedMessage: () => botWorker.wake(),
       });
     app = createApp({
       business,
@@ -236,6 +209,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       agentRuntime,
       conversationHost: host,
       conversationJournal: journal,
+      modules,
+      resolveSource: options.resolveSource,
       qqTransportKeyPath: options.qqTransportKeyPath,
       modelProviderKeyPath: options.modelProviderKeyPath,
       // The page reads the transport's own state; nothing is inferred from a saved endpoint.
@@ -257,8 +232,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     business,
     gateway,
     memoryService,
+    modules,
     agentRuntime,
-    qqRuntime,
+    botWorker,
     qqIntake,
     start(): void {
       if (started || stopped) return;
@@ -268,9 +244,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         bot.delivery.housekeep();
       }, 60_000);
       contextSweep.unref();
-      memoryService.start();
-      knowledgeOrganizer.start();
-      qqRuntime.start();
+      modules.start();
+      botWorker.start();
       // Refuses on its own while the third-party switch is off or the saved configuration is
       // incomplete, so an unconfigured installation produces no traffic and no login.
       void qqIntake.start().catch(() => {});
@@ -280,10 +255,11 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       stopped = true;
       stopping = true;
       if (contextSweep !== null) clearInterval(contextSweep);
+      bot.delivery.stop();
       qqIntake.stop();
       bot.scheduler.stop();
-      if (started)
-        await Promise.all([memoryService.stop(), knowledgeOrganizer.stop(), qqRuntime.stop()]);
+      await botWorker.stop();
+      if (started) await modules.stop();
       business.close();
     },
   };

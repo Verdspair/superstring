@@ -1,12 +1,12 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
-import { SessionList } from "../features/chat/SessionList";
-import { BotConversationList } from "../features/conversations/BotConversationList";
+import { ConversationList } from "../features/conversations/ConversationList";
 import { translateNotice, useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { Field } from "../ui/Field";
 import { HeadingIcon, Icon, NewSessionButtonIcon, NewSessionDialogIcon } from "../ui/icons";
 import { localTime } from "../ui/local-time";
+import { PrimaryNavigation } from "./PrimaryNavigation";
 
 export function Sidebar({ version }: { version: string }) {
   const t = useI18n();
@@ -55,6 +55,7 @@ export function Sidebar({ version }: { version: string }) {
           <strong>superstring</strong>
         </div>
         <div className="version">v{version}</div>
+        <PrimaryNavigation />
         {noActiveAgent && (
           <p className="sidebar-empty">
             {t("当前没有启用的助手，无法新建对话；请到设置中启用或新建助手。")}
@@ -131,8 +132,7 @@ export function Sidebar({ version }: { version: string }) {
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root>
-        <SessionList />
-        <BotConversationList />
+        <ConversationList />
       </div>
       <button
         className="settings-button"

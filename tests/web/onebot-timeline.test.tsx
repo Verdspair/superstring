@@ -35,6 +35,7 @@ afterEach(() => {
 });
 const source = { kind: "qq_event", id: "source", revision: "1" };
 const observed: ConversationEventView = {
+  wake: null,
   conversationId: "bot",
   seq: 1,
   eventKey: "one",
@@ -97,6 +98,7 @@ it("OneBot timeline revalidates expired bodies on refresh and clears projections
 });
 it("unknown text/sticker delivery shows independent receipt facts and offers no resend", async () => {
   const delivery: Delivery = {
+    target: null,
     id: "output",
     runId: "run",
     conversationId: "bot",
@@ -139,7 +141,7 @@ it("unknown text/sticker delivery shows independent receipt facts and offers no 
   render(<ConversationTimeline conversation={bot} />);
   const trigger = await screen.findByText("送达详情");
   fireEvent.click(trigger);
-  expect(await screen.findByText(/已送达/)).toBeTruthy();
+  expect((await screen.findByText("platform")).closest("li")?.textContent).toContain("已送达");
   expect(screen.getByText("platform")).toBeTruthy();
   expect(screen.getByText("sticker-id")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
@@ -170,4 +172,119 @@ it("source and output revisions update one row while retaining unrelated observa
   };
   const confirmed = { ...planned, seq: 5, deliveryStatus: "confirmed" as const };
   expect(timelineRows([planned, confirmed])).toEqual([confirmed]);
+});
+
+it("shared conversations distinguish same-name members and preserve mention and unavailable reply references", async () => {
+  const people = [
+    { id: "member-a", label: "小林", role: "member" as const },
+    { id: "member-b", label: "小林", role: "member" as const },
+  ];
+  const item = {
+    ...observed,
+    participant: people[0],
+    addressing: {
+      reasons: ["mention" as const, "legacy_addressed" as const],
+      mentionIds: ["member-b"],
+      replyTo: { sourceId: "expired-platform-message" },
+    },
+  };
+  setup({ getConversationEvents: async () => ({ items: [item], nextSeq: 1, hasMore: false }) });
+  render(
+    <ConversationTimeline conversation={{ ...bot, topology: "shared", participants: people }} />,
+  );
+  expect(await screen.findByText("历史记录标记为面向助手")).toBeTruthy();
+  expect(screen.getAllByText("member-a").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("member-b").length).toBeGreaterThan(0);
+  expect(screen.getByText("expired-platform-message")).toBeTruthy();
+  expect(screen.getByText(/OneBot 群聊/)).toBeTruthy();
+});
+it("a wake no-output revision updates one activity and creates no empty message bubble", async () => {
+  const pending: ConversationEventView = {
+    ...observed,
+    seq: 2,
+    kind: "wake",
+    participant: null,
+    text: null,
+    contentState: "unavailable",
+    wake: { id: "wake", cause: "idle_topic", status: "pending", readyAt: now, errorCode: null },
+  };
+  const silent: ConversationEventView = {
+    ...pending,
+    seq: 3,
+    wake: { id: "wake", cause: "idle_topic", status: "no_output", readyAt: now, errorCode: null },
+  };
+  setup({
+    getConversationEvents: async () => ({ items: [pending, silent], nextSeq: 3, hasMore: false }),
+  });
+  const { container } = render(
+    <ConversationTimeline conversation={{ ...bot, topology: "shared" }} />,
+  );
+  expect(await screen.findByText("本次未发言")).toBeTruthy();
+  expect(container.querySelectorAll(".conversation-activity")).toHaveLength(1);
+  expect(container.querySelectorAll(".conversation-message")).toHaveLength(0);
+  expect(screen.queryByText("原文暂不可用")).toBeNull();
+  expect(screen.getByText(/冷场发起/)).toBeTruthy();
+});
+it("separate group output targets show their own partial and unknown outcomes", async () => {
+  const first: Delivery = {
+    id: "one",
+    runId: "run",
+    conversationId: "bot",
+    ordinal: 0,
+    target: { peerId: "group-peer", participantId: "member-a" },
+    status: "failed",
+    sourceThroughSeq: 1,
+    deliverBy: now,
+    createdAt: now,
+    parts: [
+      {
+        id: "text",
+        ordinal: 0,
+        kind: "text",
+        status: "confirmed",
+        platformMessageId: "sent-text",
+        attemptedAt: now,
+        finishedAt: now,
+        stickerId: null,
+      },
+      {
+        id: "sticker",
+        ordinal: 1,
+        kind: "sticker",
+        status: "failed",
+        platformMessageId: null,
+        attemptedAt: now,
+        finishedAt: now,
+        stickerId: "asset",
+      },
+    ],
+  };
+  const second: Delivery = {
+    ...first,
+    id: "two",
+    ordinal: 1,
+    target: { peerId: "group-peer", participantId: "member-b" },
+    status: "unknown",
+    parts: [{ ...first.parts[0], id: "other-text", status: "unknown", platformMessageId: null }],
+  };
+  setup({
+    getConversationEvents: async () => ({
+      items: [
+        { ...observed, seq: 2, kind: "delivery", outputId: "one", deliveryStatus: "failed" },
+        { ...observed, seq: 3, kind: "delivery", outputId: "two", deliveryStatus: "unknown" },
+      ],
+      nextSeq: 3,
+      hasMore: false,
+    }),
+    getDelivery: async (id) => (id === "one" ? first : second),
+  });
+  render(<ConversationTimeline conversation={{ ...bot, topology: "shared" }} />);
+  const details = await screen.findAllByText("送达详情");
+  for (const detail of details) fireEvent.click(detail);
+  expect(await screen.findByText("member-a")).toBeTruthy();
+  expect(await screen.findByText("member-b")).toBeTruthy();
+  expect(screen.getByText("部分内容已送达，请查看各部分结果。")).toBeTruthy();
+  expect(screen.getByText("sent-text")).toBeTruthy();
+  expect(screen.getAllByText("发送结果待确认").length).toBeGreaterThan(0);
+  expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
 });

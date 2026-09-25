@@ -371,7 +371,7 @@ it("failed pending-run lookup stays unresolved and the check action retries only
   expect(listRuns).toHaveBeenCalledTimes(2);
 });
 it("a late sidebar refresh cannot recreate a session deleted while another chat completes", async () => {
-  let finishList!: (items: Awaited<ReturnType<SuperstringApi["listSessions"]>>) => void;
+  let finishList!: (items: Awaited<ReturnType<SuperstringApi["listConversations"]>>) => void;
   const sessions = ["a", "b"].map((id) => ({
     id,
     title: id,
@@ -381,14 +381,14 @@ it("a late sidebar refresh cannot recreate a session deleted while another chat 
     created_at: now,
     updated_at: now,
   }));
-  const listSessions = vi.fn(
+  const listConversations = vi.fn(
     () =>
-      new Promise<Awaited<ReturnType<SuperstringApi["listSessions"]>>>((resolve) => {
+      new Promise<Awaited<ReturnType<SuperstringApi["listConversations"]>>>((resolve) => {
         finishList = resolve;
       }),
   );
   setup(
-    { listSessions, deleteSession: async () => {} },
+    { listConversations, deleteSession: async () => {} },
     {
       streamChatV2: async (body, emit) => {
         emit({
@@ -401,14 +401,16 @@ it("a late sidebar refresh cannot recreate a session deleted while another chat 
       },
     },
   );
-  store.setState({ sessions });
+  for (const session of sessions) store.getState().rememberConversation(summary(session.id));
   await compose();
   const send = store.getState().send();
   await waitFor(() => expect(finishList).toBeTypeOf("function"));
   await store.getState().deleteSessionById("b");
-  finishList(sessions);
+  finishList({ items: sessions.map((item) => summary(item.id)), nextCursor: null });
   await send;
-  expect(store.getState().sessions.map((item) => item.id)).toEqual(["a"]);
+  expect(
+    store.getState().directoryIds.map((id) => store.getState().summaryById[id].sourceId),
+  ).toEqual(["a"]);
 });
 
 it("read-only recovery settles a completed message when the earlier run lookup failed", async () => {

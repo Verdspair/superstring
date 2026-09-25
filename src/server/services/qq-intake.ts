@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
 import { AgentRunRepository } from "../db/agent-run-repository";
+import * as schema from "../db/schema";
 // The intake runtime: connection events in, durable observations out.
 //
 // This is the assembly point the plan lists as P2's remaining item. It connects three
@@ -191,6 +193,7 @@ export function qqIntakeCycle(orm: Orm, now?: string): QqMemoryScheduleResult & 
 }
 
 export interface QqIntakeRuntimeOptions {
+  memory?: Pick<import("../modules/contracts").MemoryModule, "observe">;
   conversationIngress?: ConversationIngress;
   orm: Orm;
   /**
@@ -455,6 +458,24 @@ export class QqIntakeRuntime {
     if (outcome.kind !== "recorded" || !outcome.recorded) return;
     if (message.kind !== "message") return;
     const observation = message.observation;
+    const observe = this.#options.memory?.observe?.bind(this.#options.memory);
+    if (observe) {
+      const row = this.#options.orm
+        .select()
+        .from(schema.qqEvents)
+        .where(eq(schema.qqEvents.eventKey, observation.eventKey))
+        .get();
+      if (row) {
+        void Promise.resolve()
+          .then(() =>
+            observe({
+              source: { kind: "qq_event", id: row.eventKey, revision: row.recordedAt },
+              payload: { kind: "qq_event", eventKey: row.eventKey, agentId: row.agentId },
+            }),
+          )
+          .catch(() => this.#options.onEvent?.({ kind: "follow_up_failed" }));
+      }
+    }
     const media: QqEventMediaDeps | undefined = (() => {
       const agentRuntime = this.#mediaRuntime;
       if (!agentRuntime) return undefined;
@@ -476,16 +497,22 @@ export class QqIntakeRuntime {
     void handleQqRecordedMessage(
       this.#options.orm,
       { observation, nowSeconds: this.#now() },
-      media ? { media } : {},
+      {
+        media,
+        onMediaRead: (eventKey) => {
+          const binding = readBindingByConversation(this.#options.orm, {
+            accountId: observation.accountId,
+            kind: observation.conversation.kind,
+            peerId: observation.conversation.peerId,
+          });
+          if (binding) this.#options.conversationIngress?.afterMedia(binding.id, eventKey);
+        },
+        ...(this.#options.conversationIngress
+          ? { dispatch: () => ({ kind: "not_scheduled" as const, reason: "conversation_ingress" }) }
+          : {}),
+      },
     )
       .then((result) => {
-        const binding = readBindingByConversation(this.#options.orm, {
-          accountId: observation.accountId,
-          kind: observation.conversation.kind,
-          peerId: observation.conversation.peerId,
-        });
-        if (binding)
-          this.#options.conversationIngress?.afterMedia(binding.id, observation.eventKey);
         this.#options.onEvent?.({
           kind: "follow_up",
           hasMedia: result.media.hasMedia,

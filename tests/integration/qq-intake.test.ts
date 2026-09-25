@@ -26,6 +26,7 @@ import {
 import { createSession, ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import type { SourceEvent } from "../../src/server/modules/contracts";
 import {
   OneBotConnection,
   type OneBotSendRequest,
@@ -751,6 +752,57 @@ describe("the assembled runtime over an injected transport", () => {
       runtime.stop();
       expect(socket.terminations).toBe(1);
     } finally {
+      closeSetup(h);
+    }
+  });
+
+  it("notifies an asynchronous stateful memory module after committing each unique observation", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      const events: QqIntakeEvent[] = [];
+      class MemoryObserver {
+        observed: SourceEvent[] = [];
+        async observe(source: SourceEvent) {
+          const row = h.business.db
+            .query("SELECT event_key FROM qq_events WHERE event_key=?")
+            .get(source.source.id);
+          expect(row).toEqual({ event_key: source.source.id });
+          await Promise.resolve();
+          this.observed.push(source);
+          return { source: source.source, created: false };
+        }
+      }
+      const memory = new MemoryObserver();
+      runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        memory,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        cycleIntervalMs: 60_000,
+        socketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        onEvent: (event) => events.push(event),
+      });
+      const started = runtime.start();
+      completeHandshake(sockets[0]);
+      await started;
+      sockets[0].deliver(wireMessage());
+      sockets[0].deliver(wireMessage());
+      await Bun.sleep(0);
+      expect(memory.observed).toHaveLength(1);
+      expect(memory.observed[0].source.kind).toBe("qq_event");
+      expect(events).not.toContainEqual({ kind: "follow_up_failed" });
+      expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(1);
+    } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   });

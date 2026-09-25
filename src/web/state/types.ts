@@ -10,14 +10,15 @@ import type {
   MemoryTurnRow,
   PersonaResponse,
   PolicyView,
-  SessionResponse,
 } from "../../shared/contracts";
 import type { SuperstringApi, streamChatV2 } from "../api";
 import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
 import type { ConversationState } from "../features/chat/conversation-state";
+import type { ConversationDirectoryState } from "../features/conversations/directory-state";
 import type { DesktopSettingsState } from "../features/general/desktop-state";
 import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/types";
+import type { QqDraftState } from "../features/qq/draft-state";
 import type {
   QqAccessState,
   QqSchemeState,
@@ -43,6 +44,7 @@ export type PendingNavigation =
       page: Page;
       settingsView: SettingsView;
       settingsRoute?: SettingsRoute;
+      conversationId?: string;
     }
   | { kind: "agent"; id: string | "__new__" }
   | { kind: "section"; section: SectionKey }
@@ -78,12 +80,14 @@ export interface AgentDraft {
 
 export interface SuperstringState
   extends ConversationState,
+    ConversationDirectoryState,
     RunState,
     KnowledgeState,
     QqStickerState,
     QqSchemeState,
     QqStorageState,
     QqAccessState,
+    QqDraftState,
     DesktopSettingsState {
   pageEditor: import("../features/agents/page-drafts").PageEditor | null;
   settingsSaving: boolean;
@@ -120,9 +124,7 @@ export interface SuperstringState
   navigationConfirmOpen: boolean;
   navigationConfirmMessage: string;
   agents: AgentResponse[];
-  sessions: SessionResponse[];
   selectedNewSessionAgentId: string | null;
-  currentSessionId: string | null;
   editorAgentId: string | "__new__";
   editorDraft: AgentDraft | null;
   editorLoading: boolean;

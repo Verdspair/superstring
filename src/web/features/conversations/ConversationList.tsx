@@ -4,19 +4,23 @@ import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { AlertDialog } from "../../ui/AlertDialog";
 import { Icon } from "../../ui/icons";
-import { sessionBusy } from "./conversation-state";
-import { menuPosition } from "./menu-position";
+import { sessionBusy } from "../chat/conversation-state";
+import { menuPosition } from "../chat/menu-position";
 
 type Target = { id: string; title: string };
 type Menu = Target & { x: number; y: number };
 
-export function SessionList() {
+export function ConversationList() {
   const t = useI18n();
-  const sessions = useSuperstringStore((state) => state.sessions);
-  const currentId = useSuperstringStore((state) => state.currentSessionId);
-  const openChat = useSuperstringStore((state) => state.openChat);
-  const botSelected = useSuperstringStore((state) => !!state.selectedBotConversation);
-  const select = useSuperstringStore((state) => state.selectSession);
+  const ids = useSuperstringStore((state) => state.directoryIds);
+  const summaries = useSuperstringStore((state) => state.summaryById);
+  const sessions = ids.map((id) => summaries[id]).filter(Boolean);
+  const currentId = useSuperstringStore((state) => state.currentConversationId);
+  const select = useSuperstringStore((state) => state.requestConversationNavigation);
+  const load = useSuperstringStore((state) => state.loadConversations);
+  const loading = useSuperstringStore((state) => state.directoryLoading);
+  const error = useSuperstringStore((state) => state.directoryError);
+  const cursor = useSuperstringStore((state) => state.directoryCursor);
   const rename = useSuperstringStore((state) => state.renameSession);
   const remove = useSuperstringStore((state) => state.deleteSessionById);
   const refresh = useSuperstringStore((state) => state.refreshSessionById);
@@ -128,26 +132,42 @@ export function SessionList() {
           <div className="session-row" key={session.id}>
             <button
               type="button"
-              className={session.id === currentId && !botSelected ? "active" : ""}
-              aria-current={session.id === currentId && !botSelected ? "page" : undefined}
-              aria-haspopup="menu"
+              className={session.id === currentId ? "active" : ""}
+              aria-current={session.id === currentId ? "page" : undefined}
+              aria-haspopup={session.channel === "web" ? "menu" : undefined}
               title={session.title}
-              hidden={editing?.id === session.id}
+              aria-label={session.title}
+              aria-describedby={`channel-${session.id}`}
+              hidden={editing?.id === session.sourceId}
               disabled={busy || editing !== null}
               onClick={() => {
-                void select(session.id);
-                openChat();
+                select(session.id);
               }}
-              onContextMenu={(event) => openMenu(event, session)}
+              onContextMenu={(event) => {
+                if (session.channel === "web")
+                  openMenu(event, { id: session.sourceId, title: session.title });
+              }}
               onKeyDown={(event) => {
-                if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
-                  openMenu(event, session);
+                if (
+                  session.channel === "web" &&
+                  (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+                )
+                  openMenu(event, { id: session.sourceId, title: session.title });
               }}
             >
               {session.title}
+              <small id={`channel-${session.id}`} className="conversation-channel">
+                {t(
+                  session.channel === "web"
+                    ? "Web · 私聊"
+                    : session.topology === "shared"
+                      ? "OneBot · 群聊"
+                      : "OneBot · 私聊",
+                )}
+              </small>
             </button>
-            <SessionActivity sessionId={session.id} />
-            {editing?.id === session.id && (
+            {session.channel === "web" && <SessionActivity sessionId={session.sourceId} />}
+            {editing?.id === session.sourceId && (
               <form
                 className="session-rename"
                 aria-label={t("重命名会话")}
@@ -190,6 +210,22 @@ export function SessionList() {
           </div>
         ))}
       </nav>
+      {loading && <p role="status">{t("正在读取会话…")}</p>}
+      {error && (
+        <p role="alert" className="error">
+          {translateNotice(error)}
+        </p>
+      )}
+      <div className="conversation-directory-actions">
+        <button type="button" disabled={loading} onClick={() => void load()}>
+          {t("刷新会话目录")}
+        </button>
+        {cursor && (
+          <button type="button" disabled={loading} onClick={() => void load("more")}>
+            {t("加载更多会话")}
+          </button>
+        )}
+      </div>
       {notice && !deleting && (
         <p className="session-notice" role="alert">
           {translateNotice(notice)}
@@ -271,7 +307,9 @@ export function SessionList() {
               {t("删除会话")}
             </button>
           </div>,
-          document.body,
+          // A compact directory lives in a Radix modal. Its existing menu must stay within
+          // that focus/pointer boundary; desktop keeps the original body portal.
+          triggerRef.current?.closest<HTMLElement>('[role="dialog"]') ?? document.body,
         )}
       {deleting && (
         <AlertDialog

@@ -1,3 +1,4 @@
+// Test-only pre-cutover behavior oracle; never import from production.
 // P3l synthetic-only orchestration of classified initiative: no transport and no submit.
 //
 // 0037（用户 2026-09-25）：这一轮要回几个人，就各跑一遍回复管线——**每人一次生成、一人一条消息**。
@@ -10,18 +11,22 @@
 // sentence must not silently survive. The loop therefore picks after each (re)generation and
 // keeps the pick across a review that changed nothing.
 import { z } from "zod";
-import type { LeafAgentRuntime } from "../agent/agent-runtime";
-import { readQqBinding } from "../db/qq-binding-repository";
-import type { Orm } from "../db/repositories";
-import type { ModelGateway } from "../llm/model-gateway";
-import { qqConversationKey } from "./qq-binding-contract";
+import type { LeafAgentRuntime } from "../../../src/server/agent/agent-runtime";
+import { readQqBinding } from "../../../src/server/db/qq-binding-repository";
+import type { Orm } from "../../../src/server/db/repositories";
+import type { ModelGateway } from "../../../src/server/llm/model-gateway";
+import { qqConversationKey } from "../../../src/server/services/qq-binding-contract";
+import type { QqOutputPlan } from "../../../src/server/services/qq-output-plan";
+import {
+  planQqPreparedReply,
+  type QqStickerStage,
+  selectQqSticker,
+} from "../../../src/server/services/qq-sticker-runner";
 import { type QqJudgementRun, type QqReplyOpening, runQqJudgement } from "./qq-judgement-runner";
-import type { QqOutputPlan } from "./qq-output-plan";
 import { recomputeQqReply } from "./qq-recompute-runner";
 import { generateQqTextReply, type QqPendingReview } from "./qq-reply-runner";
 import { pendingQqReview, reviewQqSupplement } from "./qq-review-runner";
 import { checkQqTextPreflight } from "./qq-send-preflight";
-import { planQqPreparedReply, type QqStickerStage, selectQqSticker } from "./qq-sticker-runner";
 
 const Input = z.strictObject({
   bindingId: z.uuid(),

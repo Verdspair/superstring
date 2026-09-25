@@ -2683,25 +2683,19 @@ button.settings-entry > .icon {
   border-radius: var(--ac-radius);
 }
 
-.settings-navigation {
+.app-primary-nav {
   min-width: 0;
-  margin: 0;
+  margin: 1rem 0;
   padding: 0;
   border: 0;
   background: transparent;
   align-self: start;
-}
-.settings-navigation-inner {
-  width: 100%;
-  margin: 0;
-}
-.settings-primary-nav {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: var(--ac-nav-gap);
 }
-.settings-navigation button {
+.app-primary-nav button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -2716,29 +2710,26 @@ button.settings-entry > .icon {
   text-align: left;
   overflow-wrap: anywhere;
 }
-.settings-navigation button[aria-current] {
+.app-primary-nav button[aria-current] {
   border-color: var(--superstring-tone-line);
   background: var(--ac-accent-soft);
   box-shadow: var(--ac-selection-marker);
   font-weight: 600;
 }
-.settings-navigation .icon {
+.app-primary-nav .icon {
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
   color: var(--superstring-tone-deep);
   stroke-width: 1.7;
 }
-.settings-navigation small {
+.app-primary-nav small {
   color: var(--ac-muted);
   font-size: 11px;
   font-weight: 400;
 }
 .settings-body {
-  display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
-  align-items: start;
-  gap: 16px;
+  display: block;
   width: 100%;
   margin: 0;
   padding-top: 16px;
@@ -2835,19 +2826,11 @@ button.settings-entry > .icon {
 .page-editor > .hint {
   margin: 8px 0;
 }
-@media (max-width: 1100px) {
-  .settings-body {
-    grid-template-columns: 120px minmax(0, 1fr);
-    gap: 12px;
-  }
-}
 @media (max-width: 600px) {
   .settings-body {
-    grid-template-columns: 96px minmax(0, 1fr);
-    gap: 8px;
     padding-top: 6px;
   }
-  .settings-navigation button {
+  .app-primary-nav button {
     padding: 5px 6px;
     gap: 5px;
   }
@@ -3024,13 +3007,13 @@ button.settings-entry > .icon {
 .knowledge-category-heading {
   border-bottom: 1px solid var(--superstring-tone-line);
 }
-.settings-navigation button:not([aria-current]):hover:not(:disabled),
+.app-primary-nav button:not([aria-current]):hover:not(:disabled),
 .settings-secondary-nav button:not(.active):hover:not(:disabled) {
   background: var(--superstring-tone-soft);
   border-color: var(--superstring-tone-line);
 }
 /* Keep selection visible on hover; a second border must not double the inset marker. */
-.settings-navigation button[aria-current]:hover:not(:disabled),
+.app-primary-nav button[aria-current]:hover:not(:disabled),
 .settings-secondary-nav button.active:hover:not(:disabled),
 .session-list button.active:hover:not(:disabled),
 button.mode-option[aria-pressed="true"],
@@ -3748,4 +3731,94 @@ input[aria-invalid="true"] {
   padding: 0 10px 5px;
   font-size: 10px;
   color: var(--ac-muted);
+}
+
+.navigation-draft-preview {
+  max-height: 35dvh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.navigation-draft-preview details + details {
+  margin-top: 0.75rem;
+}
+.conversation-channel {
+  display: block;
+  color: var(--ac-muted);
+  font-size: 0.75rem;
+}
+.conversation-directory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.conversation-header {
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.conversation-header > div {
+  min-width: 0;
+}
+.conversation-header h1 {
+  overflow-wrap: anywhere;
+}
+.conversation-header-actions,
+.conversation-addressing {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.conversation-addressing {
+  color: var(--ac-muted);
+  font-size: 0.8rem;
+}
+.conversation-member-id {
+  color: var(--ac-muted);
+}
+.wake-activity p {
+  margin: 0.25rem 0;
+}
+
+.settings-area-label {
+  color: var(--ac-muted);
+  padding: 0.75rem 1rem 0;
+  font-size: 0.8rem;
+}
+@media (max-width: 720px) {
+  .app-primary-nav {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .app-primary-nav button {
+    padding: 0.4rem 0.2rem;
+    justify-content: center;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+  }
+}
+
+.mobile-navigation-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--superstring-tone-line);
+}
+.mobile-navigation-dialog {
+  position: fixed;
+  z-index: 101;
+  inset: 0 auto 0 0;
+  width: min(100%, 26rem);
+  height: 100dvh;
+  background: var(--ac-surface);
+}
+.mobile-navigation-dialog .sidebar {
+  height: 100%;
+  max-height: none;
+  padding-top: 3.25rem;
+}
+.mobile-navigation-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.75rem;
 }

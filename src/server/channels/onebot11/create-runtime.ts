@@ -2,10 +2,11 @@ import type { Database } from "bun:sqlite";
 import type { AgentRuntime } from "../../agent/agent-runtime";
 import { sourceAccess } from "../../agent/context-access";
 import type { ConversationHost } from "../../agent/conversation-host";
+import { observationRelevant } from "../../conversation/observation-relevance";
 import { OutboundDelivery } from "../../conversation/outbound-delivery";
 import { WakeScheduler } from "../../conversation/wake-scheduler";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
-import { OutboundIntentRepository } from "../../db/outbound-intent-repository";
+import { OutboundIntentRepository, type OutboundTarget } from "../../db/outbound-intent-repository";
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { readQqDispatchSettings } from "../../db/qq-dispatch-repository";
 import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
@@ -14,13 +15,14 @@ import { readQqSettings } from "../../db/qq-settings-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import { WakeRepository } from "../../db/wake-repository";
 import type { ModelGateway } from "../../llm/model-gateway";
+import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
 import { QQ_OBSERVATION_RETENTION_DAYS } from "../../services/qq-retention";
 import { type QqSendPort, qqStickerFileReference } from "../../services/qq-send-transport";
 import { qqStickerSelectionForScheme } from "../../services/qq-sticker-candidates";
 import { qqStickerUsable } from "../../services/qq-sticker-contract";
 import type { QqStickerStore } from "../../services/qq-sticker-store";
 import { OneBot11Adapter } from "./adapter";
-import { OneBotPrivateHost } from "./private-host";
+import { OneBotHost } from "./bot-host";
 
 export interface BotConversationPolicy {
   maxSteps: number;
@@ -28,6 +30,7 @@ export interface BotConversationPolicy {
   retentionDays: number;
   retryDelayMs: number;
   maxAttempts: number;
+  globalConcurrency: number;
 }
 
 export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
@@ -36,6 +39,7 @@ export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
   retentionDays: QQ_OBSERVATION_RETENTION_DAYS,
   retryDelayMs: 15_000,
   maxAttempts: 3,
+  globalConcurrency: 1,
 };
 
 /** Production composition of protocol ingress, Agent activation and durable delivery. */
@@ -50,13 +54,15 @@ export function createOneBotConversationRuntime(options: {
   port: QqSendPort;
   wake: () => void;
   policy?: Partial<BotConversationPolicy>;
+  modules?: ModuleQueryFactory;
+  resolveSource?: ModuleSourceResolver;
 }) {
   const { orm, db, journal } = options;
   const policy = { ...DEFAULT_BOT_CONVERSATION_POLICY, ...options.policy };
   const wakes = new WakeRepository(db);
   const outbox = new OutboundIntentRepository(db);
   const adapter = new OneBot11Adapter({ orm, journal, wakes, wake: options.wake });
-  const host = new OneBotPrivateHost({
+  const host = new OneBotHost({
     ...options,
     wakes,
     outbox,
@@ -132,22 +138,47 @@ export function createOneBotConversationRuntime(options: {
       };
       return (target.sources ?? []).every(
         (source) =>
-          sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, new Date().toISOString()) ===
-          "available",
+          (options.resolveSource?.(source, owner, new Date().toISOString()) ??
+            sourceAccess(
+              db,
+              source,
+              owner,
+              { userId: DEFAULT_USER_ID },
+              new Date().toISOString(),
+            )) === "available",
       );
     },
     onStale(intent) {
       const conversation = journal.get(intent.conversationId);
       const row = outbox.row(intent.id);
       if (!conversation || !row || journal.row(conversation.id)?.closed_at) return;
-      // A stale plan is never resent. The Agent gets a fresh opportunity to inspect current facts.
+      // Bind recovery to actual input, never to the delivery revision just appended above.
+      // A later unrelated group message cannot change either the intended recipient or freshness.
+      const target = JSON.parse(row.target) as OutboundTarget;
+      const source = journal
+        .eventsAfter(conversation.id, 0, Number.MAX_SAFE_INTEGER)
+        .items.filter((event) =>
+          observationRelevant(event, {
+            topology: conversation.topology,
+            participantIds: [target.participantId ?? null],
+            attentionMembers: target.attentionMembers,
+          }),
+        )
+        .at(-1);
+      if (!source) return;
       wakes.enqueue({
         conversationId: conversation.id,
         cause: row.speech_kind,
-        throughSeq: conversation.lastSeq,
+        throughSeq: source.seq,
         dedupeKey: `stale:${intent.id}`,
         readyAt: new Date().toISOString(),
-        priority: row.speech_kind === "direct_reply" ? 100 : 0,
+        at: source.occurredAt,
+        priority:
+          row.speech_kind === "direct_reply" || row.speech_kind === "follow_up"
+            ? 100
+            : row.speech_kind === "chiming_in"
+              ? 50
+              : 0,
       });
       options.wake();
     },
@@ -161,6 +192,7 @@ export function createOneBotConversationRuntime(options: {
         renewMs: Math.max(1, Math.floor(leaseMs / 3)),
         retryDelayMs: policy.retryDelayMs,
         maxAttempts: policy.maxAttempts,
+        globalConcurrency: policy.globalConcurrency,
       };
     },
     async activate(wake, signal) {

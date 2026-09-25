@@ -4,6 +4,7 @@ import { ApiError } from "../../api";
 import { msg } from "../../i18n";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import { currentSessionId } from "../conversations/directory-state";
 import {
   type ChatRequestRef,
   chatBusy,
@@ -49,16 +50,22 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
           }
         : {};
     });
-  let sessionListRevision = 0;
   const syncSessions = async () => {
-    const revision = ++sessionListRevision;
-    const sessions = await get().apiClient.listSessions();
-    if (revision === sessionListRevision) set({ sessions });
-    return get().sessions;
+    if (!(await get().loadConversations("refresh-loaded")) && get().directoryError)
+      throw new Error(get().directoryError ?? "");
   };
   const ensureConversation = async (sessionId: string): Promise<string> => {
     const existing = get().sessionConversationIds[sessionId];
-    if (existing) return existing;
+    if (existing) {
+      if (!get().conversationById[existing])
+        set((state) => ({
+          conversationById: {
+            ...state.conversationById,
+            [existing]: emptyWebConversation(sessionId),
+          },
+        }));
+      return existing;
+    }
     const { items } = await get().apiClient.listConversations({
       channel: "web",
       sourceId: sessionId,
@@ -66,6 +73,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
     const summary = items.find((item) => item.sourceId === sessionId && item.channel === "web");
     if (!summary)
       throw new ApiError(404, "CONVERSATION_NOT_FOUND", msg("未找到对应会话，请刷新后重试。"));
+    get().rememberConversation(summary);
     set((state) => ({
       sessionConversationIds: { ...state.sessionConversationIds, [sessionId]: summary.id },
       conversationById: {
@@ -374,19 +382,17 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       }
     },
     selectSession: async (sessionId) => {
-      set({
-        selectedBotConversation: null,
-        currentSessionId: sessionId,
-        currentConversationId: get().sessionConversationIds[sessionId] ?? null,
-        error: null,
-      });
-      persistBrowserState(get().browserStateStorage, "superstring-session", sessionId);
+      const revision = get().selectionRevision + 1;
+      set({ selectionRevision: revision });
       try {
         const id = await ensureConversation(sessionId);
-        if (get().currentSessionId === sessionId) set({ currentConversationId: id });
+        if (get().selectionRevision !== revision) return;
+        set({ currentConversationId: id, error: null });
+        persistBrowserState(get().browserStateStorage, "superstring-session", sessionId);
+        persistBrowserState(get().browserStateStorage, "superstring-conversation", id);
         await reload(id);
       } catch (reason) {
-        if (get().currentSessionId === sessionId) set({ error: errorText(reason) });
+        set({ error: errorText(reason) });
       }
     },
     createSession: async (title) => {
@@ -407,13 +413,9 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
           mode: "chat",
           client_request_id: get().effects.requestId(),
         });
-        sessionListRevision++;
-        set((state) => ({
-          sessions: [created, ...state.sessions.filter((item) => item.id !== created.id)],
-          error: null,
-          feedback: "",
-        }));
-        await get().selectSession(created.id);
+        const id = await ensureConversation(created.id);
+        set({ error: null, feedback: "" });
+        await get().requestConversationNavigation(id);
         return true;
       } catch (reason) {
         set({ error: null, feedback: errorText(reason) || msg("新建会话失败，请检查后端服务") });
@@ -426,12 +428,18 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         set({ error: msg("名称须为 1–200 个字符。") });
         return false;
       }
-      if (get().sessions.find((item) => item.id === id)?.title === parsed.data.title) return true;
+      if (get().summaryById[get().sessionConversationIds[id]]?.title === parsed.data.title)
+        return true;
       try {
         const updated = await get().apiClient.renameSession(id, parsed.data.title);
-        sessionListRevision++;
+        const summary = get().summaryById[get().sessionConversationIds[id]];
+        if (summary)
+          get().rememberConversation({
+            ...summary,
+            title: updated.title,
+            updatedAt: updated.updated_at,
+          });
         set((state) => ({
-          sessions: state.sessions.map((item) => (item.id === id ? updated : item)),
           memorySessions: state.memorySessions.map((item) =>
             item.id === id ? { ...item, title: updated.title } : item,
           ),
@@ -451,10 +459,9 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       }
       try {
         await get().apiClient.deleteSession(sessionId);
-        sessionListRevision++;
-        const sessions = get().sessions.filter((item) => item.id !== sessionId);
+
         const id = get().sessionConversationIds[sessionId];
-        const wasCurrent = get().currentSessionId === sessionId;
+        const wasCurrent = currentSessionId(get()) === sessionId;
         set((state) => {
           const { [sessionId]: _session, ...sessionConversationIds } = state.sessionConversationIds;
           const { [id]: _view, ...conversationById } = state.conversationById;
@@ -466,19 +473,24 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
             ),
           );
           return {
-            sessions,
+            summaryById: Object.fromEntries(
+              Object.entries(state.summaryById).filter(([key]) => key !== id),
+            ),
+            directoryIds: state.directoryIds.filter((key) => key !== id),
+            directoryRevision: state.directoryRevision + 1,
             sessionConversationIds,
             conversationById,
             runById,
             error: null,
             feedback: msg("会话已删除"),
-            ...(wasCurrent ? { currentSessionId: null, currentConversationId: null } : {}),
+            ...(wasCurrent ? { currentConversationId: null } : {}),
           };
         });
         if (wasCurrent) {
-          const next = sessions[0];
-          persistBrowserState(get().browserStateStorage, "superstring-session", next?.id ?? null);
-          if (next) await get().selectSession(next.id);
+          const next = get().directoryIds[0];
+          persistBrowserState(get().browserStateStorage, "superstring-session", null);
+          persistBrowserState(get().browserStateStorage, "superstring-conversation", next ?? null);
+          if (next) await get().selectConversation(next);
         }
         return true;
       } catch (reason) {
@@ -487,7 +499,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       }
     },
     deleteCurrentSession: async () => {
-      const id = get().currentSessionId;
+      const id = currentSessionId(get());
       if (id) await get().deleteSessionById(id);
     },
     refreshSessionById: async (sessionId) => {
@@ -513,17 +525,12 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
     },
     refreshSession: async () => {
       try {
-        const sessions = await syncSessions();
-        const current = get().currentSessionId;
-        const next = sessions.find((item) => item.id === current) ?? sessions[0];
-        if (next) await get().selectSession(next.id);
-        else
-          set({
-            currentSessionId: null,
-            currentConversationId: null,
-            error: null,
-            feedback: msg("请先新建或选择会话"),
-          });
+        await syncSessions();
+        const current = get().currentConversationId;
+        const next =
+          current && get().directoryIds.includes(current) ? current : get().directoryIds[0];
+        if (next) await get().selectConversation(next);
+        else set({ currentConversationId: null, error: null, feedback: msg("请先新建或选择会话") });
       } catch (reason) {
         set({ error: errorText(reason) });
       }
@@ -537,7 +544,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       const view = currentChat(get());
       if (chatBusy(view)) return;
       const text = view.composer.trim();
-      const sessionId = get().currentSessionId;
+      const sessionId = currentSessionId(get());
       if (!text) {
         set({ error: null, feedback: msg("消息不能为空") });
         return;

@@ -154,3 +154,40 @@ describe("存储与诊断", () => {
     ).toBeGreaterThanOrEqual(2);
   });
 });
+
+it("reports real Agent runtime counters separately from all original diagnostics", async () => {
+  await renderPage({
+    ...usage,
+    agent_runtime: {
+      pending_wakes: 21,
+      leased_wakes: 22,
+      failed_wakes: 23,
+      active_runs: 24,
+      pending_deliveries: 25,
+      unknown_deliveries: 26,
+    },
+  });
+  const section = screen.getByRole("region", { name: "当前 Agent 运行时" });
+  for (const [label, value] of [
+    ["等待处理的唤醒", 21],
+    ["正在处理的唤醒", 22],
+    ["处理失败的唤醒", 23],
+    ["进行中的运行", 24],
+    ["等待完成的投递", 25],
+    ["结果待确认的投递", 26],
+  ] as const) {
+    const labelNode = [...section.querySelectorAll("dt")].find(
+      (item) => item.textContent === label,
+    );
+    expect(labelNode?.nextElementSibling?.textContent).toBe(String(value));
+  }
+  expect(screen.getByRole("region", { name: "历史调度与媒体记录" })).toBeTruthy();
+  expect(screen.getByText("排队中的会话")).toBeTruthy();
+  expect(screen.getByText(/其中 0 个现在可跑/)).toBeTruthy();
+});
+
+it("an older response without runtime counters never renders invented zeros", async () => {
+  await renderPage();
+  expect(screen.queryByRole("region", { name: "当前 Agent 运行时" })).toBeNull();
+  expect(screen.getByText("排队中的会话")).toBeTruthy();
+});

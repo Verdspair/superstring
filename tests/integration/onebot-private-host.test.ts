@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import { sourceAccess } from "../../src/server/agent/context-access";
-import { inputUnits, textMessage } from "../../src/server/agent/context-engine";
+import { inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
-import { OneBotPrivateHost } from "../../src/server/channels/onebot11/private-host";
+import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { WakeScheduler } from "../../src/server/conversation/wake-scheduler";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
@@ -99,7 +99,7 @@ function setup(model?: Partial<ModelPort>, options: { stickersAvailable?: boolea
     wakes,
     nowSeconds: () => clock.seconds,
   });
-  const host = new OneBotPrivateHost({
+  const host = new OneBotHost({
     orm: h.orm,
     journal,
     wakes,
@@ -151,7 +151,9 @@ describe("OneBot private common host", () => {
     expect(h.receive("1")).toMatchObject({ kind: "recorded", recorded: true });
     h.receive("1");
     const conversation = h.journal.ensureOneBot(bindingId)!;
-    expect(h.journal.eventsAfter(conversation.id).items).toHaveLength(1);
+    expect(
+      h.journal.eventsAfter(conversation.id).items.filter((e) => e.kind === "inbound"),
+    ).toHaveLength(1);
     const scheduler = new WakeScheduler({
       repository: h.wakes,
       policy: () => ({ leaseMs: 120000, renewMs: 30000, maxAttempts: 3, retryDelayMs: 1000 }),
@@ -172,9 +174,9 @@ describe("OneBot private common host", () => {
     expect(h.db.query("SELECT * FROM qq_send_log").all()).toEqual([]);
     expect(h.requests).toHaveLength(2);
     expect(h.requests[0]!.messages[0]!.content).not.toEqual(h.requests[1]!.messages[0]!.content);
-    expect(
-      h.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.private.main'").get(),
-    ).toEqual({ status: "completed" });
+    expect(h.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.main'").get()).toEqual({
+      status: "completed",
+    });
   });
   it("re-enters deciding for a same-second inbound message during generation", async () => {
     let receive: ReturnType<typeof setup>["receive"];
@@ -229,6 +231,84 @@ describe("durable per-part delivery", () => {
     await h.host.activate(wake, new AbortController().signal);
     return { ...h, id: h.outbox.list({})[0]!.id };
   }
+  it.each(["confirmed", "unknown"] as const)(
+    "stop settles an in-flight %s receipt and preserves unstarted outputs",
+    async (status) => {
+      const h = await prepared();
+      const row = h.outbox.row(h.id)!;
+      const second = h.outbox.commit({
+        runId: row.run_id,
+        conversationId: row.conversation_id,
+        ordinal: 1,
+        target: JSON.parse(row.target),
+        speechKind: row.speech_kind,
+        sourceThroughSeq: row.source_through_seq,
+        deliverBy: row.deliver_by,
+        createdAt: row.created_at,
+        expiresAt: row.expires_at,
+        parts: [{ kind: "text", text: "another recipient" }],
+      });
+      let settle!: (
+        value: { kind: "confirmed"; messageId: string } | { kind: "unknown"; reason: "timeout" },
+      ) => void;
+      let began!: () => void;
+      const sending = new Promise<void>((resolve) => {
+        began = resolve;
+      });
+      let calls = 0;
+      const common = {
+        orm: h.orm,
+        repository: h.outbox,
+        journal: h.journal,
+        stickerFile: () => null,
+        authorize: () => true,
+        now: () => stamp(),
+      };
+      const delivery = new OutboundDelivery({
+        ...common,
+        port: {
+          async send() {
+            calls++;
+            began();
+            return await new Promise((resolve) => {
+              settle = resolve;
+            });
+          },
+        },
+      });
+      const running = delivery.runOnce();
+      await sending;
+      delivery.stop();
+      settle(
+        status === "confirmed"
+          ? { kind: "confirmed", messageId: "first" }
+          : { kind: "unknown", reason: "timeout" },
+      );
+      await running;
+      expect(calls).toBe(1);
+      expect(h.outbox.get(h.id)!.parts.map((part) => part.status)).toEqual(
+        status === "confirmed" ? ["confirmed", "planned"] : ["unknown", "not_sent"],
+      );
+      expect(h.outbox.get(second.id)?.status).toBe("planned");
+      expect(await delivery.runOnce()).toBe(0);
+      await delivery.deliver(second.id);
+      expect(calls).toBe(1);
+      const resumed = new OutboundDelivery({
+        ...common,
+        port: {
+          async send() {
+            calls++;
+            return { kind: "confirmed", messageId: `next-${calls}` };
+          },
+        },
+      });
+      resumed.recover();
+      await resumed.runOnce();
+      expect(h.outbox.get(second.id)?.status).toBe("confirmed");
+      expect(calls).toBe(status === "confirmed" ? 3 : 2);
+      expect(h.outbox.get(h.id)?.status).toBe(status);
+    },
+  );
   it("writes sending before network, projects receipts once, appends delivery revisions", async () => {
     const h = await prepared();
     let sends = 0;
@@ -517,7 +597,7 @@ describe("private feature preservation", () => {
       h.db.query("DELETE FROM memory_entries WHERE id=?").run(id);
     };
     h.receive("1", "apples");
-    await expect(activate(h)).rejects.toThrow("CONTEXT_SOURCE_INVALID");
+    await expect(activate(h)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
     expect(h.outbox.list({})).toEqual([]);
     expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
     expect(
@@ -681,59 +761,72 @@ describe("private feature preservation", () => {
 });
 
 describe("private initiative and cancellation", () => {
-  it("uses the global judgement model with memory and granted knowledge in the original score prompt", async () => {
-    let stage = 0;
-    let judgement: ModelRequest | undefined;
-    const h = setup({
-      complete: async (req) => {
-        if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score) {
-          judgement = req;
-          return '{"score":0}';
-        }
-        return ++stage === 1
-          ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-          : '{"kind":"none"}';
-      },
-    });
-    setMemoryMode(h, "off");
-    addMemory(h);
-    const repo = new KnowledgeRepository(h.db);
-    const doc = repo.importDocument({
-      name: "apples manual",
-      category_id: "default",
-      original_text: "apples knowledge line",
-    });
-    repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
-    updateQqSettings(h.orm, { judgementModelName: "global-judge", expectedRevision: 2 });
-    h.receive("1", "apples");
-    h.db.exec("UPDATE wake_signals SET status='no_output'");
-    h.clock.seconds += 16 * 60;
-    const c = h.journal.ensureOneBot(bindingId)!;
-    h.wakes.enqueue({
-      conversationId: c.id,
-      cause: "idle_topic",
-      throughSeq: c.lastSeq,
-      dedupeKey: "idle-eval",
-      readyAt: stamp(h.clock.seconds),
-      at: stamp(h.clock.seconds),
-      priority: 0,
-    });
-    const result = await activate(h);
-    expect(result.status).toBe("no_output");
-    expect(judgement?.model).toBe("global-judge");
-    const text = JSON.stringify(judgement?.messages);
-    expect(text).toContain("apples are green");
-    expect(text).toContain("apples knowledge line");
-    expect(h.outbox.list({})).toEqual([]);
-    const sources = h.db
-      .query(
-        "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.initiative.evaluate'",
-      )
-      .get() as { source_refs: string };
-    expect(JSON.parse(sources.source_refs).map((r: { kind: string }) => r.kind)).toEqual(
-      expect.arrayContaining(["memory", "knowledge_document", "knowledge_grant", "qq_observation"]),
-    );
-  });
+  it.each(["off", "full_body"])(
+    "uses the global judgement model and respects %s in the score context",
+    async (mode) => {
+      let stage = 0;
+      let judgement: ModelRequest | undefined;
+      const h = setup({
+        complete: async (req) => {
+          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
+            const text = req.messages[1]!.content.find((p) => p.kind === "text");
+            const data = JSON.parse(text?.kind === "text" ? text.text : "{}");
+            return JSON.stringify({ ids: data.candidates.map((c: { id: string }) => c.id) });
+          }
+          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score) {
+            judgement = req;
+            return '{"score":0}';
+          }
+          return ++stage === 1
+            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
+            : '{"kind":"none"}';
+        },
+      });
+      setMemoryMode(h, mode);
+      addMemory(h);
+      const repo = new KnowledgeRepository(h.db);
+      const doc = repo.importDocument({
+        name: "apples manual",
+        category_id: "default",
+        original_text: "apples knowledge line",
+      });
+      repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
+      updateQqSettings(h.orm, { judgementModelName: "global-judge", expectedRevision: 2 });
+      h.receive("1", "apples");
+      h.db.exec("UPDATE wake_signals SET status='no_output'");
+      h.clock.seconds += 16 * 60;
+      const c = h.journal.ensureOneBot(bindingId)!;
+      h.wakes.enqueue({
+        conversationId: c.id,
+        cause: "idle_topic",
+        throughSeq: c.lastSeq,
+        dedupeKey: "idle-eval",
+        readyAt: stamp(h.clock.seconds),
+        at: stamp(h.clock.seconds),
+        priority: 0,
+      });
+      const result = await activate(h);
+      expect(result.status).toBe("no_output");
+      expect(judgement?.model).toBe("global-judge");
+      const text = JSON.stringify(judgement?.messages);
+      expect(text.includes("apples are green")).toBe(mode !== "off");
+      expect(text).toContain("apples knowledge line");
+      expect(h.outbox.list({})).toEqual([]);
+      const sources = h.db
+        .query(
+          "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.initiative.evaluate'",
+        )
+        .get() as { source_refs: string };
+      expect(JSON.parse(sources.source_refs).map((r: { kind: string }) => r.kind)).toEqual(
+        expect.arrayContaining([
+          ...(mode === "off" ? [] : ["memory"]),
+          "knowledge_document",
+          "knowledge_grant",
+          "qq_observation",
+        ]),
+      );
+    },
+  );
   it("cancellation during generation records a cancelled run without advancing source cursor", async () => {
     const controller = new AbortController();
     const h = setup({
@@ -748,9 +841,9 @@ describe("private initiative and cancellation", () => {
     await expect(h.host.activate(wake, controller.signal)).rejects.toThrow();
     expect(h.outbox.list({})).toEqual([]);
     expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
-    expect(
-      h.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.private.main'").get(),
-    ).toEqual({ status: "cancelled" });
+    expect(h.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.main'").get()).toEqual({
+      status: "cancelled",
+    });
   });
   it("retention during an in-flight send erases payload but still accepts the eventual receipt", async () => {
     const h = setup();
@@ -771,8 +864,88 @@ describe("private initiative and cancellation", () => {
 });
 
 describe("Bot production knowledge reading settings", () => {
+  it.each([2200, 6500])(
+    "bounds cumulative knowledge envelopes across repeated actions and reobservation at %s units",
+    async (budget) => {
+      const mainRequests: ModelRequest[] = [];
+      let decisions = 0;
+      let h: ReturnType<typeof setup>;
+      h = setup({
+        complete: async (request) => {
+          if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
+            const part = request.messages[1]!.content.find((part) => part.kind === "text");
+            const data = JSON.parse(part?.kind === "text" ? part.text : "{}");
+            return JSON.stringify({ ids: data.candidates.map((item: { id: string }) => item.id) });
+          }
+          mainRequests.push(request);
+          decisions++;
+          if (decisions <= 2)
+            return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+          // The next read rebuilds initial material while keeping previous action observations.
+          if (decisions === 3) h.receive("2", "apples additional detail");
+          return '{"kind":"none"}';
+        },
+      });
+      const library = new KnowledgeRepository(h.db);
+      const body = "apples " + "Q".repeat(1000);
+      const doc = library.importDocument({
+        name: "apples",
+        category_id: "default",
+        original_text: body,
+      });
+      library.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
+      h.db
+        .query("UPDATE agent_knowledge_read_settings SET context_budget=? WHERE agent_id=?")
+        .run(budget, DEFAULT_AGENT_ID);
+      h.receive("1", "apples");
+      expect((await activate(h)).status).toBe("no_output");
+      expect(decisions).toBe(4);
+      if (budget === 6500) {
+        const finalMessages = mainRequests[mainRequests.length - 1].messages;
+        expect(
+          finalMessages.some((message) =>
+            message.content.some((part) => {
+              if (part.kind !== "text") return false;
+              try {
+                const data = JSON.parse(part.text);
+                return data.kind === "action_observation" && data.value.value.length > 0;
+              } catch {
+                return false;
+              }
+            }),
+          ),
+        ).toBe(true);
+      }
+      expect(JSON.stringify(mainRequests[0]!.messages)).toContain(body);
+      for (const request of mainRequests) {
+        const knowledgeMessages = request.messages.filter((message) =>
+          message.content.some((part) => {
+            if (part.kind !== "text") return false;
+            try {
+              const data = JSON.parse(part.text);
+              return (
+                data.kind === "evidence" ||
+                (data.kind === "action_observation" &&
+                  data.value.name === "knowledge.query" &&
+                  data.value.value.length > 0)
+              );
+            } catch {
+              return false;
+            }
+          }),
+        );
+        // Count the messages actually delivered to the model, not backend estimates or bodies alone.
+        expect(inputUnits(knowledgeMessages) - 3).toBeLessThanOrEqual(budget);
+        expect(JSON.stringify(request.messages)).toContain("knowledge_grant");
+      }
+      const last = JSON.stringify(mainRequests.at(-1)!.messages);
+      expect(last).toContain("apples additional detail");
+      expect(last.match(/action_observation/g)).toHaveLength(2);
+      expect(h.outbox.list({})).toHaveLength(0);
+    },
+  );
   for (const mode of ["disabled", "selected", "tiny_budget", "frozen"] as const)
-    it(`applies ${mode} knowledge settings to Agent action reads`, async () => {
+    it(`applies ${mode} knowledge settings to initial and Agent action reads`, async () => {
       const seen: ModelRequest[] = [];
       let decisions = 0;
       let h: ReturnType<typeof setup>;
@@ -829,75 +1002,9 @@ describe("Bot production knowledge reading settings", () => {
       );
       expect(selectors.length > 0).toBe(mode === "selected" || mode === "frozen");
       if (mode === "disabled") expect(text).not.toContain("knowledge.query");
-      if (mode === "frozen") expect(selectors).toHaveLength(1);
+      if (mode === "frozen") expect(selectors).toHaveLength(2);
     });
 });
-
-it.each([2000, 1])(
-  "caps cumulative knowledge action observations within frozen budget %i",
-  async (budget) => {
-    const main: ModelRequest[] = [];
-    let decisions = 0;
-    const h = setup({
-      complete: async (request) => {
-        if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
-          const part = request.messages[1]!.content.find((part) => part.kind === "text");
-          const data = JSON.parse(part?.kind === "text" ? part.text : "{}");
-          return JSON.stringify({ ids: data.candidates.map((item: { id: string }) => item.id) });
-        }
-        main.push(request);
-        return ++decisions <= 3
-          ? '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}'
-          : '{"kind":"none"}';
-      },
-    });
-    const library = new KnowledgeRepository(h.db);
-    const doc = library.importDocument({
-      name: "apples",
-      category_id: "default",
-      original_text: "apples " + "a".repeat(500),
-    });
-    library.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
-    h.db
-      .query("UPDATE agent_knowledge_read_settings SET context_budget=? WHERE agent_id=?")
-      .run(budget, DEFAULT_AGENT_ID);
-    h.receive("1", "apples");
-    expect((await activate(h)).status).toBe("no_output");
-    const observations = main.at(-1)!.messages.flatMap((message) =>
-      message.content.flatMap((part) => {
-        if (part.kind !== "text") return [];
-        try {
-          const data = JSON.parse(part.text);
-          return data.kind === "action_observation" && data.value.name === "knowledge.query"
-            ? [data.value]
-            : [];
-        } catch {
-          return [];
-        }
-      }),
-    );
-    expect(observations).toHaveLength(3);
-    expect(observations[0].value).toHaveLength(budget === 2000 ? 1 : 0);
-    expect(observations[1].value).toHaveLength(0);
-    expect(observations[2].value).toHaveLength(0);
-    expect(
-      inputUnits(
-        observations
-          .filter((observation) => observation.value.length > 0)
-          .map((observation) =>
-            textMessage(
-              "user",
-              JSON.stringify({
-                kind: "action_observation",
-                trust: "data_only",
-                value: observation,
-              }),
-            ),
-          ),
-      ) - 3,
-    ).toBeLessThanOrEqual(budget);
-  },
-);
 
 it("private conversation commits one logical output while retaining all transport parts", async () => {
   const h = setup({
@@ -925,20 +1032,52 @@ it("private conversation commits one logical output while retaining all transpor
   ]);
 });
 
-it("keeps a failed private generation failed without consuming the wake or source cursor", async () => {
-  const h = setup({
-    async *streamText() {
-      yield "unfinished partial";
-      throw new Error("MODEL_UNAVAILABLE");
+describe("optional Bot retrieval failure", () => {
+  it.each(["unavailable", "revoked", "cancelled"])(
+    "%s retrieval preserves valid raw context without swallowing authority/cancellation",
+    async (failure) => {
+      const controller = new AbortController();
+      let h: ReturnType<typeof setup>,
+        decisions = 0;
+      const main: ModelRequest[] = [];
+      h = setup({
+        complete: async (request) => {
+          if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
+            if (failure === "revoked") h.db.exec("DELETE FROM knowledge_grants");
+            if (failure === "cancelled") controller.abort();
+            throw new Error("MODEL_FAILED");
+          }
+          main.push(request);
+          return ++decisions === 1
+            ? '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}'
+            : '{"kind":"none"}';
+        },
+      });
+      setMemoryMode(h, "off");
+      const library = new KnowledgeRepository(h.db);
+      const doc = library.importDocument({
+        name: "apples",
+        category_id: "default",
+        original_text: "apples optional knowledge",
+      });
+      library.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
+      h.receive("1", "valid raw question");
+      const wake = h.wakes.claim({ at: stamp(h.clock.seconds), leaseMs: 120000 })!;
+      const result = h.host.activate(wake, controller.signal);
+      if (failure === "unavailable") {
+        expect((await result).status).toBe("no_output");
+        expect(JSON.stringify(main)).toContain("valid raw question");
+        expect(JSON.stringify(main)).toContain("retrieval_status");
+        expect(JSON.stringify(main)).toContain("MODEL_FAILED");
+        expect(JSON.stringify(main)).not.toContain("apples optional knowledge");
+      } else {
+        if (failure === "revoked")
+          await expect(result).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+        else await expect(result).rejects.toBeDefined();
+        expect(main).toHaveLength(0);
+        expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
+      }
+      expect(h.outbox.list({})).toHaveLength(0);
     },
-  });
-  h.receive("1");
-  const conversation = h.journal.ensureOneBot(bindingId)!;
-  await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_OUTPUT_FAILED" });
-  expect(h.outbox.list({})).toHaveLength(0);
-  expect(h.journal.get(conversation.id)!.consumedSeq).toBe(0);
-  expect(
-    h.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.private.main'").get(),
-  ).toEqual({ status: "failed" });
-  expect(h.db.query("SELECT status FROM wake_signals").get()).toEqual({ status: "leased" });
+  );
 });

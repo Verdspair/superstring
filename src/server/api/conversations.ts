@@ -55,6 +55,7 @@ export function conversationRoutes(db: Database, options: { includeShared?: bool
     const sourceId = rawSourceId === undefined ? undefined : parseUuidParam(rawSourceId);
     const cursor = pageCursor(c.req.query("cursor"));
     const limit = pageNumber(c.req.query("limit"), 50, 1);
+    repository.discover(principal.userId);
     // Existing/new Web sessions receive canonical identity before the first client send.
     if (channel === "web" && sourceId) repository.ensureWeb(sourceId, principal.userId);
     if (channel === "onebot11" && sourceId) {

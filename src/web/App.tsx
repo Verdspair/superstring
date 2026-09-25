@@ -1,22 +1,18 @@
 import { useEffect } from "react";
 import { NavigationConfirm } from "./app/NavigationConfirm";
+import { ResponsiveSidebar } from "./app/ResponsiveSidebar";
 import { SettingsHub } from "./app/SettingsHub";
 import { SettingsWorkspace } from "./app/SettingsWorkspace";
 import { Sidebar as SidebarView } from "./app/Sidebar";
 import { StatusBar } from "./app/StatusBar";
 import { AgentSettings } from "./features/agents/AgentSettings";
-import { dirtyPages } from "./features/agents/page-drafts";
 import { AppearanceSettings } from "./features/appearance/AppearanceSettings";
 import { ChatPage } from "./features/chat/ChatPage";
-import { ConversationTimeline } from "./features/conversations/ConversationTimeline";
+import { ConversationShell } from "./features/conversations/ConversationShell";
 import { GeneralSettings } from "./features/general/GeneralSettings";
 import { OperatingModeSettings } from "./features/general/OperatingModeSettings";
 import { KnowledgeSettings } from "./features/knowledge/KnowledgeSettings";
-import {
-  knowledgeModelDirty,
-  knowledgeReadDirty,
-  organizationDirty,
-} from "./features/knowledge/types";
+import { settingsHaveDrafts } from "./features/qq/draft-state";
 import { useI18n } from "./i18n";
 import { useSuperstringStore } from "./store";
 import { Icon } from "./ui/icons";
@@ -32,7 +28,6 @@ export function Sidebar() {
 function App() {
   const t = useI18n();
   const status = useSuperstringStore((state) => state.status);
-  const botConversation = useSuperstringStore((state) => state.selectedBotConversation);
   const page = useSuperstringStore((state) => state.page);
   const settingsView = useSuperstringStore((state) => state.settingsView);
   const bootstrap = useSuperstringStore((state) => state.bootstrap);
@@ -40,16 +35,7 @@ function App() {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
-  const unsaved = useSuperstringStore(
-    (state) =>
-      state.dirty ||
-      state.memoryCorrectionDirty ||
-      state.knowledgeDirty ||
-      dirtyPages(state.pageEditor).length > 0 ||
-      organizationDirty(state.organizationEditor) ||
-      knowledgeModelDirty(state.knowledgeModelEditor) ||
-      knowledgeReadDirty(state.knowledgeReadEditor),
-  );
+  const unsaved = useSuperstringStore(settingsHaveDrafts);
   useEffect(() => {
     if (!unsaved) return;
     const warn = (event: BeforeUnloadEvent) => {
@@ -72,14 +58,10 @@ function App() {
     );
   return (
     <div id="superstring-shell">
-      <Sidebar />
+      <ResponsiveSidebar version={VERSION} />
       <main className="main-area">
         {page === "chat" ? (
-          botConversation ? (
-            <ConversationTimeline key={botConversation.id} conversation={botConversation} />
-          ) : (
-            <ChatPage />
-          )
+          <ConversationShell />
         ) : settingsView === "hub" ? (
           <SettingsHub />
         ) : settingsView === "workspace" ? (

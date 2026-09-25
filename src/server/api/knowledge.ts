@@ -20,11 +20,35 @@ import {
   updateOrganizationSettings,
 } from "../db/organization-repository";
 import { fail } from "../errors";
+import type { KnowledgeModule } from "../modules/contracts";
 import { parseBody, parseUuidParam, readJsonBody } from "./validation";
 
-export function knowledgeRoutes(business: BusinessDbHandle): Hono {
+export function knowledgeRoutes(
+  business: BusinessDbHandle,
+  module?: Pick<KnowledgeModule, "ingest">,
+): Hono {
   const router = new Hono();
   const repository = new KnowledgeRepository(business.db);
+  const ingest = async (
+    input: Parameters<KnowledgeRepository["importDocument"]>[0],
+    importType: "text" | "txt" | "md" = "text",
+  ) => {
+    const document = repository.importDocument(input, importType);
+    if (module?.ingest) {
+      try {
+        await module.ingest({
+          id: document.id,
+          revision: String(document.content_version),
+          payload: { input, importType },
+        });
+      } catch {
+        // Import success is already durable; preserve its identity rather than tell the user to
+        // retry an upload that exists. The default backend's maintenance consumes the same queue.
+        console.warn("knowledge ingestion notification failed; imported document remains queued");
+      }
+    }
+    return document;
+  };
   router.get("/organization/settings", (c) => c.json(readOrganizationSettings(business.orm)));
   router.put("/organization/settings", async (c) =>
     c.json(
@@ -58,10 +82,7 @@ export function knowledgeRoutes(business: BusinessDbHandle): Hono {
   });
   router.get("/knowledge/documents", (c) => c.json(repository.documents()));
   router.post("/knowledge/documents", async (c) =>
-    c.json(
-      repository.importDocument(parseBody(KnowledgeImportSchema, await readJsonBody(c.req.raw))),
-      201,
-    ),
+    c.json(await ingest(parseBody(KnowledgeImportSchema, await readJsonBody(c.req.raw))), 201),
   );
   router.post("/knowledge/import", async (c) => {
     let form: FormData;
@@ -99,7 +120,7 @@ export function knowledgeRoutes(business: BusinessDbHandle): Hono {
       category_id: form.get("category_id"),
       original_text: original,
     });
-    return c.json(repository.importDocument(body, extension), 201);
+    return c.json(await ingest(body, extension), 201);
   });
   router.post("/knowledge/grants/batch", async (c) =>
     c.json(

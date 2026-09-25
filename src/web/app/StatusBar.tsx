@@ -1,16 +1,21 @@
 import { currentChat } from "../features/chat/conversation-state";
+import {
+  selectedConversation,
+  currentSessionId as selectedSessionId,
+} from "../features/conversations/directory-state";
 import { useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { Icon } from "../ui/icons";
 
 export function StatusBar() {
   const t = useI18n();
-  const sessionId = useSuperstringStore((state) => state.currentSessionId);
+  const sessionId = useSuperstringStore(selectedSessionId);
   const runtime = useSuperstringStore((state) => currentChat(state).runtimeConfig);
   const unavailable = useSuperstringStore((state) => currentChat(state).runtimeConfigUnavailable);
-  const bot = useSuperstringStore((state) => state.selectedBotConversation);
+  const selected = useSuperstringStore(selectedConversation);
+  const bot = selected?.channel === "onebot11" ? selected : null;
   const mode = bot
-    ? t("OneBot 私聊")
+    ? t(bot.topology === "shared" ? "OneBot 群聊" : "OneBot 私聊")
     : !sessionId
       ? t("对话聊天模式")
       : unavailable || !runtime

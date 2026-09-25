@@ -8,12 +8,14 @@
 
 import type { QqSchemeResponse, QqStickerAssetResponse } from "../../../shared/contracts/qq";
 import type { StoreGet, StoreSet } from "../../state/types";
+import { invalidSchemeInputs } from "./draft-state";
 import {
   type QqAccessState,
   type QqSchemeEditor,
   type QqSchemeState,
   type QqStickerState,
   type QqStorageState,
+  qqSchemeDirty,
   qqSchemeEditorFrom,
   qqStickerEditorFrom,
   qqStickerEditorTags,
@@ -336,6 +338,7 @@ export function createQqSchemeActions(
   const openEditor = (scheme: QqSchemeResponse) => {
     set({
       qqSchemeEditor: qqSchemeEditorFrom(scheme),
+      qqInputs: { ...get().qqInputs, schemeTexts: {}, schemeInvalid: {} },
       qqSchemeUsage: null,
       error: null,
       feedback: "",
@@ -357,7 +360,13 @@ export function createQqSchemeActions(
         set({ qqSchemes: schemes });
         const current = get().qqSchemeEditor?.source.id;
         const next = schemes.find((row) => row.id === current) ?? schemes[0];
-        if (next) openEditor(next);
+        if (
+          next &&
+          !qqSchemeDirty(get().qqSchemeEditor) &&
+          !Object.keys(get().qqInputs.schemeTexts).length
+        )
+          openEditor(next);
+        else if (next) void loadUsage(next.id);
         else set({ qqSchemeEditor: null, qqSchemeUsage: null });
       } catch (error) {
         if (get().qqSchemesReadId !== id) return;
@@ -406,6 +415,10 @@ export function createQqSchemeActions(
     saveQqScheme: async () => {
       const editor = get().qqSchemeEditor;
       if (!editor || get().qqSchemeSaving) return false;
+      if (Object.keys(get().qqInputs.schemeInvalid).length || invalidSchemeInputs(get()).length) {
+        set({ error: "请先修正方案中的无效数字，再保存。" });
+        return false;
+      }
       set({ qqSchemeSaving: true, error: null, feedback: "" });
       try {
         const saved = await get().apiClient.updateQqScheme(editor.source.id, {
@@ -422,7 +435,11 @@ export function createQqSchemeActions(
           expected_revision: editor.source.revision,
         });
         replaceScheme(saved);
-        set({ qqSchemeEditor: qqSchemeEditorFrom(saved), feedback: "已保存方案" });
+        set({
+          qqSchemeEditor: qqSchemeEditorFrom(saved),
+          qqInputs: { ...get().qqInputs, schemeTexts: {}, schemeInvalid: {} },
+          feedback: "已保存方案",
+        });
         return true;
       } catch (error) {
         report(error);
@@ -666,20 +683,32 @@ export function createQqAccessActions(
         report(error);
       }
     },
-    saveQqSurface: async (patch) => {
+    saveQqSurface: async (patch, expectedRevision) => {
       const settings = get().qqSettings;
       if (!settings || get().qqAccessSaving) return false;
       set({ qqAccessSaving: true, error: null, feedback: "" });
       try {
         // Two requests, one revision chain: the settings call may bump the revision, so the
         // transport call uses whatever came back rather than the revision the page started with.
-        let current = settings;
+        let current = { ...settings, revision: expectedRevision ?? settings.revision };
         if (patch.enabled !== undefined || patch.account_id !== undefined) {
           current = await get().apiClient.updateQqSettings({
             ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
             ...(patch.account_id === undefined ? {} : { account_id: patch.account_id }),
             expected_revision: current.revision,
           });
+          set((state) => ({
+            qqSettings: current,
+            qqInputs: {
+              ...state.qqInputs,
+              connection:
+                state.qqInputs.connection &&
+                state.qqInputs.connection.source.revision ===
+                  (expectedRevision ?? settings.revision)
+                  ? { ...state.qqInputs.connection, source: current }
+                  : state.qqInputs.connection,
+            },
+          }));
         }
         if (patch.endpoint !== undefined || patch.token !== undefined) {
           current = await get().apiClient.updateQqTransport({

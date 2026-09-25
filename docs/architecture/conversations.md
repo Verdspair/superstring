@@ -1,6 +1,6 @@
 # Conversations, wake scheduling and delivery
 
-Web and OneBot private conversations use the same conversational AgentRuntime. Group conversations retain the previous production dispatcher until stage 3. Web owns HTTP/SSE and turn leases; the private OneBot host owns platform addressing and durable wake opportunities.
+Web and OneBot use the same conversational AgentRuntime. Web owns HTTP/SSE and turn leases; OneBot owns platform addressing and durable wake opportunities. Neither transport owns a separate model loop.
 
 ~~~mermaid
 flowchart LR

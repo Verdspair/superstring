@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SessionResponse } from "../../src/shared/contracts";
 import { api, type SuperstringApi } from "../../src/web/api";
 import { ChatPage } from "../../src/web/features/chat/ChatPage";
-import { SessionList } from "../../src/web/features/chat/SessionList";
+import { ConversationList as SessionList } from "../../src/web/features/conversations/ConversationList";
 import { GeneralSettings } from "../../src/web/features/general/GeneralSettings";
 import { selectLocale } from "../../src/web/i18n";
 import { fixtureStore as store } from "./helpers/chat-fixture";
@@ -214,8 +214,8 @@ it("迟到的会话读取不覆盖新选择", async () => {
     getSessionRuntime: vi.fn().mockResolvedValue(null),
   });
   const pending = store.getState().selectSession("b");
-  store.setState({ currentSessionId: "a" });
   await waitFor(() => expect(finish).toBeTypeOf("function"));
+  store.setState({ currentSessionId: "a" });
   finish([]);
   await pending;
   expect(store.getState().messages).toEqual([message]);

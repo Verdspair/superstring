@@ -21,6 +21,7 @@ import {
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { WakeRepository } from "../../src/server/db/wake-repository";
 import {
   ConversationEventsSchema,
   ConversationListSchema,
@@ -32,19 +33,115 @@ afterEach(() => {
   for (const handle of handles.splice(0)) handle.close();
 });
 
-function setup() {
+function setup(includeShared = false) {
   const business = openBusinessDb();
   handles.push(business);
   const session = createSession(business.orm, "canonical", { modelName: "fixture" });
   const journal = new ConversationEventRepository(business.db);
   const app = new Hono()
     .onError(handleError)
-    .route("/v2/conversations", conversationRoutes(business.db))
-    .route("/v2/deliveries", deliveryRoutes(business.db));
+    .route("/v2/conversations", conversationRoutes(business.db, { includeShared }))
+    .route("/v2/deliveries", deliveryRoutes(business.db, { includeShared }));
   return { business, session, journal, app };
 }
 
 describe("canonical conversation read APIs", () => {
+  it("discovers empty Web and shared sources, paginates their canonical IDs and reflects source edits", async () => {
+    const { app, business, session } = setup(true);
+    const another = createSession(business.orm, "never opened", { modelName: "fixture" });
+    const scheme = createQqScheme(business.orm, { name: "group fixture" });
+    const bindingId = crypto.randomUUID();
+    business.orm
+      .insert(schema.qqBindings)
+      .values({
+        id: bindingId,
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "30003",
+        agentId: DEFAULT_AGENT_ID,
+        schemeId: scheme.id,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      })
+      .run();
+    const pages = [];
+    let cursor: string | null = null;
+    do {
+      const page = ConversationListSchema.parse(
+        await (
+          await app.request(`/v2/conversations?limit=1${cursor ? `&cursor=${cursor}` : ""}`)
+        ).json(),
+      );
+      pages.push(...page.items);
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(new Set(pages.map((item) => item.sourceId))).toEqual(
+      new Set([session.id, another.id, bindingId]),
+    );
+    const group = pages.find((item) => item.sourceId === bindingId)!;
+    expect(group.topology).toBe("shared");
+    expect(group.participants).toEqual([
+      { id: DEFAULT_AGENT_ID, label: group.participants[0].label, role: "agent" },
+    ]);
+    expect((await app.request(`/v2/conversations/${group.id}/events`)).status).toBe(200);
+    business.db
+      .query("UPDATE sessions SET title='renamed',updated_at='2099-01-01T00:00:00.000Z' WHERE id=?")
+      .run(another.id);
+    const updated = ConversationListSchema.parse(
+      await (await app.request("/v2/conversations")).json(),
+    );
+    expect(updated.items[0]).toMatchObject({ sourceId: another.id, title: "renamed" });
+    expect(updated.items[0].id).toBe(pages.find((item) => item.sourceId === another.id)!.id);
+    expect(business.db.query("SELECT COUNT(*) AS n FROM agent_runs").get()).toEqual({ n: 0 });
+  });
+
+  it("projects current wake state and only links an actually associated run", async () => {
+    const { app, business, session, journal } = setup(true);
+    const conversation = journal.ensureWeb(session.id)!;
+    const now = nowIso();
+    const wakes = new WakeRepository(business.db);
+    const wake = wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "fixture",
+      throughSeq: 0,
+      dedupeKey: "fixture",
+      priority: 0,
+      readyAt: now,
+    });
+    journal.append({
+      conversationId: conversation.id,
+      eventKey: `wake:${wake.id}`,
+      kind: "wake",
+      source: { kind: "wake", id: wake.id, revision: "1" },
+      occurredAt: now,
+    });
+    const read = async () =>
+      ConversationEventsSchema.parse(
+        await (await app.request(`/v2/conversations/${conversation.id}/events`)).json(),
+      ).items[0];
+    expect(await read()).toMatchObject({
+      wake: { status: "pending", cause: "fixture" },
+      runId: null,
+    });
+    const runId = crypto.randomUUID();
+    new AgentRunRepository(business.db).createRun({
+      runId,
+      specId: "fixture",
+      specVersion: "1",
+      owner: {
+        kind: "conversation",
+        id: conversation.id,
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      },
+      at: now,
+    });
+    business.db
+      .query("UPDATE agent_runs SET wake_id=?,conversation_id=? WHERE run_id=?")
+      .run(wake.id, conversation.id, runId);
+    business.db.query("UPDATE wake_signals SET status='no_output' WHERE id=?").run(wake.id);
+    expect(await read()).toMatchObject({ wake: { status: "no_output" }, runId, text: null });
+  });
   it("resolves a Web session before the first send and preserves that identity", async () => {
     const { app, session } = setup();
     const url = `/v2/conversations?channel=web&sourceId=${session.id}`;
@@ -182,7 +279,9 @@ describe("canonical conversation read APIs", () => {
     const response = await app.request(`/v2/deliveries/${intent.id}`);
     const text = await response.text();
     expect(text).not.toContain("private outgoing body");
-    expect(DeliverySchema.parse(JSON.parse(text)).parts[0].status).toBe("planned");
+    const parsed = DeliverySchema.parse(JSON.parse(text));
+    expect(parsed.parts[0].status).toBe("planned");
+    expect(parsed.target).toEqual({ peerId: "20002", participantId: null });
     expect(
       (await (await app.request(`/v2/deliveries?conversationId=${conversation.id}`)).json()).items,
     ).toHaveLength(1);

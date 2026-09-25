@@ -2,6 +2,7 @@ import { z } from "zod";
 import { SourceRefSchema } from "./evidence";
 
 export const ConversationChannelSchema = z.enum(["web", "onebot11"]);
+export const WakeStatusSchema = z.enum(["pending", "leased", "completed", "no_output", "failed"]);
 export const ConversationParticipantSchema = z.strictObject({
   id: z.string(),
   label: z.string(),
@@ -42,6 +43,15 @@ export const ConversationEventSchema = z.strictObject({
   outputId: z.string().nullable(),
 });
 export const ConversationEventViewSchema = ConversationEventSchema.extend({
+  wake: z
+    .strictObject({
+      id: z.string(),
+      cause: z.string(),
+      status: WakeStatusSchema,
+      readyAt: z.string(),
+      errorCode: z.string().nullable(),
+    })
+    .nullable(),
   text: z.string().nullable(),
   messageStatus: z.enum(["completed", "failed", "cancelled"]).nullable(),
   contentState: z.enum(["active", "expired", "revoked", "unavailable"]),
@@ -76,7 +86,7 @@ export const WakeSignalSchema = z.strictObject({
   readyAt: z.string(),
   createdAt: z.string(),
   priority: z.number().int(),
-  status: z.enum(["pending", "leased", "completed", "no_output", "failed"]),
+  status: WakeStatusSchema,
   attempts: z.number().int().nonnegative(),
   leaseToken: z.string().nullable(),
   leaseExpiresAt: z.string().nullable(),
@@ -93,6 +103,7 @@ export const DeliveryPartSchema = z.strictObject({
   stickerId: z.string().nullable(),
 });
 export const DeliverySchema = z.strictObject({
+  target: z.strictObject({ peerId: z.string(), participantId: z.string().nullable() }).nullable(),
   id: z.string(),
   runId: z.string(),
   conversationId: z.string(),

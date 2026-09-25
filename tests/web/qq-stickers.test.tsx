@@ -300,8 +300,8 @@ describe("素材库页面", () => {
   });
 });
 
-describe("人设下的 QQ 额外配置区", () => {
-  it("标出区域标题，未开放的入口照实说明", () => {
+describe("接入下的 QQ 资源", () => {
+  it("全部 QQ 资源移入接入，保留原配置入口", () => {
     store.getState().resetForTests(client());
     store.setState({
       page: "settings",
@@ -313,15 +313,14 @@ describe("人设下的 QQ 额外配置区", () => {
         <span>content</span>
       </SettingsBody>,
     );
-    expect(screen.getByText("QQ额外配置")).toBeTruthy();
+    expect(screen.getByText("接入")).toBeTruthy();
     // It is a section caption, not an entry: the three links below are what gets clicked, so the
     // caption must not be a button (2026-09-25, after it read as a button that did nothing).
-    expect(screen.getByText("QQ额外配置").closest("button")).toBeNull();
+    expect(screen.getByText("接入").closest("button")).toBeNull();
     expect(screen.getByRole("button", { name: /表情素材/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /聊天方案/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /存储与诊断/ })).toBeTruthy();
-    // 情绪 is the persona group's own unopened entry; all three QQ entries became editable
-    // during P5e—P5h.
-    expect(screen.getAllByText("未开放").length).toBe(1);
+    expect(screen.getByRole("button", { name: "运行模式与连接" })).toBeTruthy();
+    expect(screen.queryByText("未开放")).toBeNull();
   });
 });

@@ -12,12 +12,8 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { BUSINESS_SCHEMA_VERSION, openBusinessDb } from "../../src/server/db/schema-gate";
-import {
-  QqRuntime,
-  type QqRuntimeEvent,
-  qqDispatchRunner,
-} from "../../src/server/services/qq-runtime";
 import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
+import { QqRuntime, type QqRuntimeEvent, qqDispatchRunner } from "../fixtures/legacy-qq/qq-runtime";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const bindingId = "11111111-1111-4111-8111-111111111111";
@@ -222,8 +218,9 @@ describe("the queue advance is an injected capability", () => {
       path.join(import.meta.dir, "../../src/server/runtime.ts"),
       "utf8",
     );
-    expect(runtimeSource).toContain("qqDispatchRunner(");
-    expect(runtimeSource).toContain("qqReplySender(");
+    expect(runtimeSource).toContain("new BotWorker(");
+    expect(runtimeSource).not.toContain("qqDispatchRunner(");
+    expect(runtimeSource).toContain("createOneBotConversationRuntime(");
     expect(runtimeSource).toContain('canAdvance: () => qqIntake.state.phase === "ready"');
     // The sender goes through the transport's own send, and never invents a request of its own.
     expect(runtimeSource).toContain("qqIntake.connection?.send(request)");
@@ -270,7 +267,7 @@ describe("the queue advance is an injected capability", () => {
       path.join(import.meta.dir, "../../src/server/runtime.ts"),
       "utf8",
     );
-    expect(runtimeSource).toContain("onAddressedMessage: () => qqRuntime.wake()");
+    expect(runtimeSource).toContain("onAddressedMessage: () => botWorker.wake()");
   });
 
   it("does not call the runner while the gate says the transport is not connected", async () => {

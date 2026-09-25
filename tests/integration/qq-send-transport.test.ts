@@ -19,7 +19,7 @@ import type {
   OneBotSendResult,
 } from "../../src/server/services/onebot-connection";
 import type { QqPlannedOutput } from "../../src/server/services/qq-output-plan";
-import { sendQqPreparedReply } from "../../src/server/services/qq-send-transport";
+import { sendQqPreparedReply } from "../fixtures/legacy-qq/qq-send-transport";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const BINDING_ID = "11111111-1111-4111-8111-111111111111";

@@ -40,7 +40,7 @@ import {
   renewQqDispatchTask,
   sweepQqIdleTopics,
 } from "../../src/server/services/qq-dispatch";
-import { runQqDispatchCycle } from "../../src/server/services/qq-dispatch-cycle";
+import { runQqDispatchCycle } from "../fixtures/legacy-qq/qq-dispatch-cycle";
 
 // The sticker stage's two seams, pinned to "no library copies": these cases are about the text
 // path, so no sticker call may appear (P4i). `counts` is explicit because U13 has no default.

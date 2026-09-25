@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
+import { currentSessionId as selectedSessionId } from "../conversations/directory-state";
 
 import { chatBusy, currentChat } from "./conversation-state";
 
@@ -47,7 +48,7 @@ function UsageRing({ percent, large = false }: { percent: number | null; large?:
 export function ContextUsagePanel() {
   const t = useI18n();
   const usage = useSuperstringStore((s) => currentChat(s).contextUsage);
-  const sessionId = useSuperstringStore((s) => s.currentSessionId);
+  const sessionId = useSuperstringStore(selectedSessionId);
   const sending = useSuperstringStore((s) => chatBusy(currentChat(s)));
   const composer = useSuperstringStore((s) => currentChat(s).composer);
   const [openedSession, setOpenedSession] = useState<string | null>(null);

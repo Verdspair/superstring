@@ -1,3 +1,5 @@
+import { parseAttentionMembers, type QqInputs } from "./draft-state";
+import { useQqInput } from "./use-qq-input";
 // 快捷管理 → 第三方App接入 (§11.1, P5q).
 //
 // The plan puts four things on this page: the QQ connection, the list of groups and private chats,
@@ -16,7 +18,7 @@
 //   * The switch appears here as §11.1's 基础启停快捷字段 and on 运行模式 as the master one. One
 //     value, two surfaces, both compare-and-swap on the revision the page saved.
 
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect } from "react";
 import type { QqBindingResponse, QqConversationListItem } from "../../../shared/contracts/qq";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
@@ -41,14 +43,6 @@ const PHASE_LABELS: Record<string, string> = {
   closed: "连接已关闭",
 };
 
-/** A hand-typed list of QQ numbers: every common separator splits, empty parts disappear. */
-function parsePeerList(text: string): string[] {
-  return text
-    .split(/[\s,，、;；]+/)
-    .map((part) => part.trim())
-    .filter((part) => part !== "");
-}
-
 export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
   const t = useI18n();
   const settings = useSuperstringStore((s) => s.qqSettings);
@@ -69,29 +63,33 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
   const updateRow = useSuperstringStore((s) => s.updateQqBindingRow);
   const openRoute = useSuperstringStore((s) => s.openSettingsRoute);
 
-  const [endpoint, setEndpoint] = useState("");
-  const [token, setToken] = useState("");
-  const [accountId, setAccountId] = useState("");
-  const [choices, setChoices] = useState<Record<string, { agentId: string; schemeId: string }>>({});
-  const [manualKind, setManualKind] = useState<"group" | "private">("group");
-  const [manualPeer, setManualPeer] = useState("");
-  const [manualAgentId, setManualAgentId] = useState("");
-  const [manualSchemeId, setManualSchemeId] = useState("");
-  // The attention editor keeps a draft per binding, because the members travel as one text field
-  // and typing must not save on every keystroke (0031).
-  const [attentionDrafts, setAttentionDrafts] = useState<
-    Record<string, { mode: QqBindingResponse["attention"]["mode"]; members: string }>
-  >({});
+  const [connectionDraft, setConnectionDraft] = useQqInput("connection");
+  const endpoint = connectionDraft?.endpoint ?? settings?.transport.endpoint ?? "";
+  const accountId = connectionDraft?.accountId ?? settings?.account_id ?? "";
+  const token = connectionDraft?.token ?? "";
+  const connectionPatch = (patch: Partial<NonNullable<QqInputs["connection"]>>) => {
+    if (!settings) return;
+    setConnectionDraft((current) => ({
+      source: current?.source ?? settings,
+      endpoint,
+      accountId,
+      token,
+      ...patch,
+    }));
+  };
+  const setEndpoint = (endpoint: string) => connectionPatch({ endpoint });
+  const setAccountId = (accountId: string) => connectionPatch({ accountId });
+  const setToken = (token: string) => connectionPatch({ token });
+  const [choices, setChoices] = useQqInput("choices");
+  const [manualKind, setManualKind] = useQqInput("manualKind");
+  const [manualPeer, setManualPeer] = useQqInput("manualPeer");
+  const [manualAgentId, setManualAgentId] = useQqInput("manualAgentId");
+  const [manualSchemeId, setManualSchemeId] = useQqInput("manualSchemeId");
+  const [attentionDrafts, setAttentionDrafts] = useQqInput("attention");
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  useEffect(() => {
-    if (!settings) return;
-    setEndpoint(settings.transport.endpoint ?? "");
-    setAccountId(settings.account_id ?? "");
-  }, [settings]);
 
   const bindingOf = (conversation: QqConversationListItem) =>
     bindings.find(
@@ -121,7 +119,15 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
     key: string,
     base: { agentId: string; schemeId: string },
     patch: { agentId?: string; schemeId?: string },
-  ) => setChoices((current) => ({ ...current, [key]: { ...base, ...patch } }));
+  ) =>
+    setChoices((current) => ({
+      ...current,
+      [key]: {
+        ...base,
+        source: current[key]?.source ?? bindings.find((item) => item.id === key),
+        ...patch,
+      },
+    }));
 
   // The list is the union of what the intake saw and what was bound by number: a binding whose
   // conversation has not spoken yet has no observation row to appear from, and hiding it would
@@ -156,10 +162,11 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
    */
   const attentionEditor = (binding: QqBindingResponse) => {
     const draft = attentionDrafts[binding.id] ?? {
+      source: binding,
       mode: binding.attention.mode,
       members: binding.attention.members.join(" "),
     };
-    const members = parsePeerList(draft.members);
+    const members = parseAttentionMembers(draft.members);
     return (
       <div className="qq-access-triggers" id={`qq-access-attention-${binding.id}`}>
         <span className="hint">{t("重要的人")}</span>
@@ -208,7 +215,7 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
           type="button"
           disabled={saving || (draft.mode !== "off" && members.length === 0)}
           onClick={() =>
-            void updateRow(binding, {
+            void updateRow(draft.source, {
               attention:
                 draft.mode === "off" ? { mode: "off", members: [] } : { mode: draft.mode, members },
             }).then((ok) => {
@@ -353,12 +360,15 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                 type="button"
                 disabled={saving}
                 onClick={() => {
-                  void save({
-                    account_id: accountId.trim() === "" ? null : accountId.trim(),
-                    endpoint: endpoint.trim() === "" ? null : endpoint.trim(),
-                    ...(token === "" ? {} : { token }),
-                  }).then((ok) => {
-                    if (ok) setToken("");
+                  void save(
+                    {
+                      account_id: accountId.trim() === "" ? null : accountId.trim(),
+                      endpoint: endpoint.trim() === "" ? null : endpoint.trim(),
+                      ...(token === "" ? {} : { token }),
+                    },
+                    connectionDraft?.source.revision,
+                  ).then((ok) => {
+                    if (ok) setConnectionDraft(null);
                   });
                 }}
               >
@@ -577,9 +587,15 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                             type="button"
                             disabled={saving}
                             onClick={() =>
-                              void updateRow(binding, {
+                              void updateRow(choices[key]?.source ?? binding, {
                                 agent_id: choice.agentId,
                                 scheme_id: choice.schemeId,
+                              }).then((ok) => {
+                                if (ok)
+                                  setChoices((current) => {
+                                    const { [key]: _saved, ...next } = current;
+                                    return next;
+                                  });
                               })
                             }
                           >

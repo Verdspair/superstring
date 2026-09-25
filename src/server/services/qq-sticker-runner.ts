@@ -21,9 +21,11 @@
 //
 // This module cannot send: no transport, no ledger, no speech record, no platform request.
 
+import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import type { SourceRef } from "../../shared/contracts/evidence";
-import type { LeafAgentRuntime } from "../agent/agent-runtime";
+import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
+import { AgentRunRepository } from "../db/agent-run-repository";
 import { readQqBinding } from "../db/qq-binding-repository";
 import { qqMemberLabels } from "../db/qq-member-repository";
 import type { QqConversationScope } from "../db/qq-observation-repository";
@@ -35,8 +37,8 @@ import { checkQqModelCapacity } from "./qq-capacity-preflight";
 import { ContextMessageSchema } from "./qq-context-contract";
 import type { QqSendPartResult } from "./qq-output-contract";
 import { planQqOutput, type QqOutputPlan } from "./qq-output-plan";
+import type { QqPreparedReply } from "./qq-prepared-reply";
 import { buildQqPrompt, qqPromptMessages } from "./qq-prompt-contract";
-import type { QqPendingReview } from "./qq-reply-runner";
 import { type QqStickerSelection, qqStickerSelectionForScheme } from "./qq-sticker-candidates";
 import { qqStickerChoice, qqStickerUsable } from "./qq-sticker-contract";
 import { compileSystemPrompt, runtimeFromAgent } from "./runtime-config";
@@ -190,36 +192,41 @@ export async function selectQqSticker(
 
   let raw: string;
   try {
-    raw = execution
-      ? await execution.agentRuntime.completeLeaf(
-          { id: "onebot.sticker.select", model: runtime.model_name },
-          {
-            messages,
-            signal: execution.signal,
-            owner: {
-              kind: "qq_binding",
-              id: binding.id,
-              userId: DEFAULT_USER_ID,
-              agentId: binding.agentId,
-            },
-            sources: [
-              ...(execution.sources ?? []),
-              ...value.messages.flatMap((m) => m.sources ?? []),
-              ...offered.flatMap((c) => {
-                const asset = metadata.get(c.id);
-                return asset ? [{ kind: "qq_sticker", id: c.id, revision: asset.updatedAt }] : [];
-              }),
-            ],
-            validate: (raw) => {
-              const choice = qqStickerChoice(raw, offered.length);
-              if (choice.kind !== "picked" && choice.reason !== "declined")
-                throw new Error("STICKER_SELECTION_INVALID");
-              return choice;
-            },
-          },
-        )
-      : await gateway.complete({ model: runtime.model_name, messages });
+    const agentRuntime =
+      execution?.agentRuntime ??
+      createAgentRuntime({
+        gateway,
+        repository: new AgentRunRepository((orm as Orm & { $client: Database }).$client),
+      });
+    raw = await agentRuntime.completeLeaf(
+      { id: "onebot.sticker.select", model: runtime.model_name },
+      {
+        messages,
+        signal: execution?.signal,
+        owner: {
+          kind: "qq_binding",
+          id: binding.id,
+          userId: DEFAULT_USER_ID,
+          agentId: binding.agentId,
+        },
+        sources: [
+          ...(execution?.sources ?? []),
+          ...value.messages.flatMap((m) => m.sources ?? []),
+          ...offered.flatMap((c) => {
+            const asset = metadata.get(c.id);
+            return asset ? [{ kind: "qq_sticker", id: c.id, revision: asset.updatedAt }] : [];
+          }),
+        ],
+        validate: (raw) => {
+          const choice = qqStickerChoice(raw, offered.length);
+          if (choice.kind !== "picked" && choice.reason !== "declined")
+            throw new Error("STICKER_SELECTION_INVALID");
+          return choice;
+        },
+      },
+    );
   } catch {
+    execution?.signal?.throwIfAborted();
     return { kind: "model_error" };
   }
   const choice = qqStickerChoice(raw, offered.length);
@@ -271,7 +278,7 @@ function offeredStickers(selection: QqStickerSelection): readonly {
  */
 export function planQqPreparedReply(
   orm: Orm,
-  prepared: QqPendingReview,
+  prepared: QqPreparedReply,
   stage: QqStickerStage,
 ): QqOutputPlan {
   const pick = prepared.stickerId ?? null;

@@ -183,11 +183,12 @@ export class KnowledgeRepository {
   importDocument(
     input: KnowledgeImport,
     importType: "text" | "txt" | "md" = "text",
+    sourceId?: string,
   ): KnowledgeDocumentDetail {
     return this.db
       .transaction(() => {
         this.category(input.category_id);
-        const id = newId();
+        const id = sourceId ?? newId();
         const now = nowIso();
         // Binding a JS string through bun:sqlite strips its leading BOM. Bind bytes instead.
         this.db

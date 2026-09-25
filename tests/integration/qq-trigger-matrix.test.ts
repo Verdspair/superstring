@@ -25,13 +25,13 @@ import {
   nextQqImmediateReplyTask,
   sweepQqIdleTopics,
 } from "../../src/server/services/qq-dispatch";
-import {
-  runQqDispatchCycle,
-  runQqImmediateReplyCycle,
-} from "../../src/server/services/qq-dispatch-cycle";
 import type { QqSpeechKind } from "../../src/server/services/qq-speaking-contract";
 import type { QqStickerStage } from "../../src/server/services/qq-sticker-runner";
 import type { QqSpeechTriggers } from "../../src/shared/contracts/qq";
+import {
+  runQqDispatchCycle,
+  runQqImmediateReplyCycle,
+} from "../fixtures/legacy-qq/qq-dispatch-cycle";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const bindingId = "11111111-1111-4111-8111-111111111111";
