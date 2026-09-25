@@ -3,10 +3,16 @@
 import path from "node:path";
 import type { Hono } from "hono";
 import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
+import { ConversationHost } from "./agent/conversation-host";
 import { createApp } from "./app";
 import { browserStateSecret } from "./browser-state";
+import {
+  type BotConversationPolicy,
+  createOneBotConversationRuntime,
+} from "./channels/onebot11/create-runtime";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
+import { ConversationEventRepository } from "./db/conversation-event-repository";
 import { resolveModelProviderRoute } from "./db/model-provider-repository";
 import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import { withCapacityCache } from "./llm/capacity-cache";
@@ -19,9 +25,10 @@ import { createLmStudioVisionClient } from "./llm/vision-client";
 import { DEFAULT_MODEL_PROVIDER_KEY_PATH } from "./secret-box";
 import { KnowledgeOrganizer } from "./services/knowledge-organizer";
 import { MemoryService } from "./services/memory-service";
+import { peekQqImmediateReplyTask, sweepQqIdleTopics } from "./services/qq-dispatch";
 import { QqIntakeRuntime } from "./services/qq-intake";
 import { QqRuntime, qqDispatchRunner, qqImmediateRunner } from "./services/qq-runtime";
-import { qqReplySender } from "./services/qq-send-transport";
+import { type QqSendPort, qqReplySender } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
 
 export const DEFAULT_BUSINESS_DB_PATH = path.resolve("data/superstring.sqlite");
@@ -62,6 +69,7 @@ export interface RuntimeOptions {
   /** Imported sticker copies; the entrypoint passes the resolved layout path. */
   qqStickerDirectory?: string;
   businessMigrationSql?: BusinessMigrationSql;
+  botConversationPolicy?: Partial<BotConversationPolicy>;
 }
 
 export interface SuperstringRuntime {
@@ -94,6 +102,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let qqIntake: QqIntakeRuntime;
   let app: Hono;
   let knowledgeOrganizer: KnowledgeOrganizer;
+  let bot: ReturnType<typeof createOneBotConversationRuntime>;
+  let stopping = false;
   try {
     // The external-provider resolver is bound to this database and its key file (0032): a model
     // name declared on the 外部模型API page routes to that provider, everything else stays local.
@@ -118,6 +128,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     runRepository.expireContexts();
     runRepository.recoverInterrupted();
     agentRuntime = createAgentRuntime({ gateway, vision: visionClient, repository: runRepository });
+    const journal = new ConversationEventRepository(business.db);
+    journal.backfill();
+    const host = new ConversationHost({ runtime: agentRuntime });
     memoryService =
       options.memoryService ??
       new MemoryService({ orm: business.orm, db: business.db, gateway, agentRuntime });
@@ -125,14 +138,43 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     const stickerStore = new QqStickerStore({
       directory: options.qqStickerDirectory ?? DEFAULT_QQ_STICKER_DIRECTORY,
     });
+    const port: QqSendPort = {
+      send: (request) =>
+        qqIntake.connection?.send(request) ??
+        Promise.resolve({ kind: "not_sent" as const, reason: "not_ready" as const }),
+    };
     const sender = qqReplySender({
       orm: business.orm,
       store: stickerStore,
-      ports: {
-        send: (request) =>
-          qqIntake.connection?.send(request) ??
-          Promise.resolve({ kind: "not_sent" as const, reason: "not_ready" as const }),
-      },
+      ports: port,
+    });
+    bot = createOneBotConversationRuntime({
+      orm: business.orm,
+      db: business.db,
+      gateway: withCapacityCache(gateway),
+      agentRuntime,
+      host,
+      journal,
+      store: stickerStore,
+      port,
+      wake: () => qqRuntime.wake(),
+      policy: options.botConversationPolicy,
+    });
+    const groupDispatch = qqDispatchRunner({
+      orm: business.orm,
+      gateway: withCapacityCache(gateway),
+      agentRuntime,
+      store: stickerStore,
+      sender,
+      conversationKinds: ["group"],
+    });
+    const groupImmediate = qqImmediateRunner({
+      orm: business.orm,
+      gateway: withCapacityCache(gateway),
+      agentRuntime,
+      store: stickerStore,
+      sender,
+      conversationKinds: ["group"],
     });
     qqRuntime =
       options.qqRuntime ??
@@ -141,23 +183,37 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         // The chain runs only while a QQ connection is live: without one an authorized draft has
         // nowhere to go, and the model calls behind it would be spent on nothing (P5o).
         canAdvance: () => qqIntake.state.phase === "ready",
-        dispatch: qqDispatchRunner({
-          orm: business.orm,
-          // 一轮里同一个模型的容量只探一次（2026-09-25）：判断、写回复、选图、复核各问一次，
-          // 本地模型每次都是一条 HTTP。缓存只包住 QQ 这两条链，网页那侧保持原样。
-          gateway: withCapacityCache(gateway),
-          agentRuntime,
-          store: stickerStore,
-          sender,
-        }),
-        // The immediate paths (被@直接回应 / 连续交谈) run under the same slot and the same gate.
-        immediate: qqImmediateRunner({
-          orm: business.orm,
-          gateway: withCapacityCache(gateway),
-          agentRuntime,
-          store: stickerStore,
-          sender,
-        }),
+        sweep(nowSeconds) {
+          const direct = bot.adapter.sweep(nowSeconds);
+          const shared = sweepQqIdleTopics(
+            business.orm,
+            { nowSeconds },
+            { conversationKinds: ["group"] },
+          );
+          return {
+            scheduled: [...direct.scheduled, ...shared.scheduled],
+            skipped: [...direct.skipped, ...shared.skipped],
+          };
+        },
+        async advance(nowSeconds) {
+          if (stopping) return { immediate: null, dispatch: null };
+          await bot.delivery.runOnce();
+          if (stopping) return { immediate: null, dispatch: null };
+          const direct = bot.scheduler.peek("direct_reply");
+          const shared = peekQqImmediateReplyTask(business.orm, { nowSeconds }, ["group"]);
+          const privateFirst =
+            direct && (!shared || Date.parse(direct.createdAt) >= shared.occurredAtSeconds * 1000);
+          if (privateFirst) await bot.scheduler.runOnce({ cause: "direct_reply" });
+          if (stopping) return { immediate: null, dispatch: null };
+          const immediate = await groupImmediate({ nowSeconds });
+          if (stopping) return { immediate, dispatch: null };
+          if (!privateFirst) await bot.scheduler.runOnce({ cause: "direct_reply" });
+          if (stopping) return { immediate, dispatch: null };
+          await bot.scheduler.runOnce({ cause: "idle_topic" });
+          if (stopping) return { immediate, dispatch: null };
+          const dispatch = await groupDispatch({ nowSeconds });
+          return { immediate, dispatch };
+        },
       });
     qqIntake =
       options.qqIntake ??
@@ -169,6 +225,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         // The media seam. The vision client is the same one the sticker annotation uses; giving
         // it to the intake runtime is what turns "media is recorded" into "media is understood".
         media: { vision: visionClient, agentRuntime },
+        conversationIngress: bot.adapter,
         // 「被 @ 了别等轮询」（2026-09-25）：入站路径记下一条冲着她来的消息就叫醒宿主跑一轮。
         onAddressedMessage: () => qqRuntime.wake(),
       });
@@ -177,6 +234,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       gateway,
       vision: visionClient,
       agentRuntime,
+      conversationHost: host,
+      conversationJournal: journal,
       qqTransportKeyPath: options.qqTransportKeyPath,
       modelProviderKeyPath: options.modelProviderKeyPath,
       // The page reads the transport's own state; nothing is inferred from a saved endpoint.
@@ -204,10 +263,10 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     start(): void {
       if (started || stopped) return;
       started = true;
-      contextSweep = setInterval(
-        () => new AgentRunRepository(business.db).expireContexts(),
-        60_000,
-      );
+      contextSweep = setInterval(() => {
+        new AgentRunRepository(business.db).expireContexts();
+        bot.delivery.housekeep();
+      }, 60_000);
       contextSweep.unref();
       memoryService.start();
       knowledgeOrganizer.start();
@@ -219,8 +278,10 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     async stop(): Promise<void> {
       if (stopped) return;
       stopped = true;
+      stopping = true;
       if (contextSweep !== null) clearInterval(contextSweep);
       qqIntake.stop();
+      bot.scheduler.stop();
       if (started)
         await Promise.all([memoryService.stop(), knowledgeOrganizer.stop(), qqRuntime.stop()]);
       business.close();

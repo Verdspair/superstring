@@ -72,6 +72,8 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0037_qq_judgement_per_speaker.sql",
     "versions/0038_qq_judgement_model.sql",
     "versions/0039_agent_runs.sql",
+    "versions/0040_conversation_wakes.sql",
+    "versions/0041_outbound_intents.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

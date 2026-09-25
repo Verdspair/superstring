@@ -60,7 +60,7 @@ describe("设置工作区第一阶段", () => {
     expect(within(aside).getByRole("button", { name: "新建任务" })).toBeTruthy();
     expect(within(aside).getByRole("navigation", { name: "历史会话" })).toBeTruthy();
     expect(aside.querySelector(".settings-navigation")).toBeNull();
-    expect(container.querySelector("details")).toBeNull();
+    expect(container.querySelector(".settings-navigation details")).toBeNull();
     const nav = within(container.querySelector(".settings-navigation") as HTMLElement);
     for (const [group, title] of [
       ["management", "快捷管理"],

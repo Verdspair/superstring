@@ -1609,11 +1609,56 @@ export const qqJudgementReadings = sqliteTable(
   ],
 );
 
+// 0040–0041: canonical conversations and durable effects.
+export const conversations = sqliteTable("conversations", {
+  id: text("id").primaryKey().notNull(),
+  channel: text("channel").notNull(),
+  topology: text("topology").notNull(),
+  sourceId: text("source_id").notNull(),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  bindingEpoch: integer("binding_epoch").notNull(),
+  sourceWatermark: integer("source_watermark").notNull().default(0),
+  nextSeq: integer("next_seq").notNull().default(1),
+  consumedSeq: integer("consumed_seq").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  closedAt: text("closed_at"),
+});
+
+export const wakeSignals = sqliteTable("wake_signals", {
+  id: text("id").primaryKey().notNull(),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  cause: text("cause").notNull(),
+  throughSeq: integer("through_seq").notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  readyAt: text("ready_at").notNull(),
+  priority: integer("priority").notNull(),
+  status: text("status").notNull(),
+  leaseToken: text("lease_token"),
+  leaseExpiresAt: text("lease_expires_at"),
+  attempts: integer("attempts").notNull().default(0),
+  errorCode: text("error_code"),
+  createdAt: text("created_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
 // 0039: inference ownership and source-bound input snapshots.
 export const agentRuns = sqliteTable(
   "agent_runs",
   {
     runId: text("run_id").primaryKey().notNull(),
+    conversationId: text("conversation_id").references(() => conversations.id, {
+      onDelete: "set null",
+    }),
+    wakeId: text("wake_id").references(() => wakeSignals.id, { onDelete: "set null" }),
+    observedSeq: integer("observed_seq"),
     specId: text("spec_id").notNull(),
     specVersion: text("spec_version").notNull(),
     ownerKind: text("owner_kind").notNull(),
@@ -1699,7 +1744,69 @@ export const runEvents = sqliteTable(
   ],
 );
 
+export const conversationEvents = sqliteTable(
+  "conversation_events",
+  {
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    eventKey: text("event_key").notNull(),
+    kind: text("kind").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    sourceExpiresAt: text("source_expires_at"),
+    sources: text("sources").notNull(),
+    participant: text("participant"),
+    addressing: text("addressing").notNull(),
+    occurredAt: text("occurred_at").notNull(),
+    recordedAt: text("recorded_at").notNull(),
+    runId: text("run_id").references(() => agentRuns.runId, { onDelete: "set null" }),
+    outputId: text("output_id"),
+  },
+  (t) => [primaryKey({ columns: [t.conversationId, t.seq] })],
+);
+
+export const outboundIntents = sqliteTable("outbound_intents", {
+  id: text("id").primaryKey().notNull(),
+  runId: text("run_id")
+    .notNull()
+    .references(() => agentRuns.runId, { onDelete: "cascade" }),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  outputOrdinal: integer("output_ordinal").notNull(),
+  target: text("target").notNull(),
+  speechKind: text("speech_kind").notNull(),
+  sourceThroughSeq: integer("source_through_seq").notNull(),
+  deliverBy: text("deliver_by").notNull(),
+  status: text("status").notNull(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  legacySendId: text("legacy_send_id"),
+});
+
+export const outboundParts = sqliteTable("outbound_parts", {
+  id: text("id").primaryKey().notNull(),
+  intentId: text("intent_id")
+    .notNull()
+    .references(() => outboundIntents.id, { onDelete: "cascade" }),
+  ordinal: integer("ordinal").notNull(),
+  kind: text("kind").notNull(),
+  payload: text("payload"),
+  status: text("status").notNull(),
+  platformMessageId: text("platform_message_id"),
+  attemptedAt: text("attempted_at"),
+  finishedAt: text("finished_at"),
+});
+
 export const businessTables = {
+  conversations,
+  conversationEvents,
+  wakeSignals,
+  outboundIntents,
+  outboundParts,
   agentRuns,
   agentSteps,
   contextSnapshots,

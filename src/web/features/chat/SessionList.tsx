@@ -4,6 +4,7 @@ import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { AlertDialog } from "../../ui/AlertDialog";
 import { Icon } from "../../ui/icons";
+import { sessionBusy } from "./conversation-state";
 import { menuPosition } from "./menu-position";
 
 type Target = { id: string; title: string };
@@ -13,7 +14,8 @@ export function SessionList() {
   const t = useI18n();
   const sessions = useSuperstringStore((state) => state.sessions);
   const currentId = useSuperstringStore((state) => state.currentSessionId);
-  const sending = useSuperstringStore((state) => state.sending);
+  const openChat = useSuperstringStore((state) => state.openChat);
+  const botSelected = useSuperstringStore((state) => !!state.selectedBotConversation);
   const select = useSuperstringStore((state) => state.selectSession);
   const rename = useSuperstringStore((state) => state.renameSession);
   const remove = useSuperstringStore((state) => state.deleteSessionById);
@@ -21,6 +23,9 @@ export function SessionList() {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [editing, setEditing] = useState<Target | null>(null);
   const [deleting, setDeleting] = useState<Target | null>(null);
+  const sending = useSuperstringStore((state) =>
+    sessionBusy(state, menu?.id ?? deleting?.id ?? ""),
+  );
   const [title, setTitle] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -123,13 +128,16 @@ export function SessionList() {
           <div className="session-row" key={session.id}>
             <button
               type="button"
-              className={session.id === currentId ? "active" : ""}
-              aria-current={session.id === currentId ? "page" : undefined}
+              className={session.id === currentId && !botSelected ? "active" : ""}
+              aria-current={session.id === currentId && !botSelected ? "page" : undefined}
               aria-haspopup="menu"
               title={session.title}
               hidden={editing?.id === session.id}
-              disabled={sending || busy || editing !== null}
-              onClick={() => void select(session.id)}
+              disabled={busy || editing !== null}
+              onClick={() => {
+                void select(session.id);
+                openChat();
+              }}
               onContextMenu={(event) => openMenu(event, session)}
               onKeyDown={(event) => {
                 if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
@@ -138,6 +146,7 @@ export function SessionList() {
             >
               {session.title}
             </button>
+            <SessionActivity sessionId={session.id} />
             {editing?.id === session.id && (
               <form
                 className="session-rename"
@@ -307,5 +316,18 @@ export function SessionList() {
         </AlertDialog>
       )}
     </>
+  );
+}
+
+function SessionActivity({ sessionId }: { sessionId: string }) {
+  const t = useI18n();
+  const phase = useSuperstringStore(
+    (s) => s.conversationById[s.sessionConversationIds[sessionId]]?.phase,
+  );
+  if (!phase || phase === "idle") return null;
+  return (
+    <span className="session-activity" role="status">
+      {t(phase === "failed" ? "运行失败" : phase === "reconciling" ? "结果待确认" : "正在处理")}
+    </span>
   );
 }

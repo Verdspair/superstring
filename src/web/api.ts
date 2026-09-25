@@ -1,3 +1,4 @@
+import { createParser } from "eventsource-parser";
 import { z } from "zod";
 import {
   type AgentResponse,
@@ -47,6 +48,12 @@ import {
   RunEventSchema,
   RunSnapshotSchema,
 } from "../shared/contracts/agent-run";
+import { type ChatV2Event, ChatV2EventSchema } from "../shared/contracts/chat-v2";
+import {
+  ConversationEventsSchema,
+  ConversationListSchema,
+  DeliverySchema,
+} from "../shared/contracts/conversation";
 import { DesktopSettingsSchema, type DesktopSettingsUpdate } from "../shared/contracts/desktop";
 import {
   AgentKnowledgeReadSettingsSchema,
@@ -138,6 +145,40 @@ function json(method: string, body: unknown): RequestInit {
 }
 
 export const api = {
+  listConversations: (
+    filters: {
+      channel?: "web" | "onebot11";
+      sourceId?: string;
+      cursor?: string;
+      limit?: number;
+    } = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(`/v2/conversations?${query}`, ConversationListSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  getConversationEvents: (id: string, afterSeq = 0, signal?: AbortSignal) =>
+    requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/events?${new URLSearchParams({ afterSeq: String(afterSeq) })}`,
+      ConversationEventsSchema,
+      { signal, cache: "no-store" },
+    ),
+  getDelivery: (id: string, signal?: AbortSignal) =>
+    requestJson(`/v2/deliveries/${encodeURIComponent(id)}`, DeliverySchema, {
+      signal,
+      cache: "no-store",
+    }),
+  getRunByRequest: (sessionId: string, clientRequestId: string, signal?: AbortSignal) =>
+    requestJson(
+      `/v2/runs/by-request?${new URLSearchParams({ sessionId, clientRequestId })}`,
+      RunSnapshotSchema,
+      { signal, cache: "no-store" },
+    ),
   listRuns: (ownerKind: string, ownerId: string, signal?: AbortSignal) =>
     requestJson(
       `/v2/runs?${new URLSearchParams({ ownerKind, ownerId })}`,
@@ -516,6 +557,34 @@ export async function streamChat(
   if (buffer.trim()) {
     const parsed = parseFrame(buffer);
     if (parsed) onEvent(parsed);
+  }
+}
+
+/** Framing is delegated to eventsource-parser; request ownership/recovery stays in chat actions. */
+export async function streamChatV2(
+  body: { session_id: string; message: string; client_request_id: string },
+  onEvent: (event: ChatV2Event) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch("/v2/chat", { ...json("POST", body), signal });
+  if (!response.ok) throw await responseError(response);
+  if (!response.body) throw new ApiError(502, "MODEL_STREAM_INTERRUPTED", msg("模型流中断"));
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = createParser({
+    onEvent: (frame) => onEvent(ChatV2EventSchema.parse(JSON.parse(frame.data))),
+  });
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      const text = decoder.decode(value, { stream: !done });
+      if (text) parser.feed(text);
+      if (done) break;
+    }
+    parser.reset({ consume: true });
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }
 

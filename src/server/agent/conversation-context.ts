@@ -667,6 +667,9 @@ export class ContextBuilder {
     generationToken?: string | null;
     signal?: AbortSignal;
     onUsage?: (usage: ContextUsage) => void;
+    /** Runtime protocol/action envelope space, accounted before the existing compression policy. */
+    reservedInputUnits?: number;
+    onSources?: (sources: SourceRef[]) => void;
   }): Promise<ContextMessage[]> {
     const state: BuildState = {
       runtime: args.runtime,
@@ -697,13 +700,17 @@ export class ContextBuilder {
       currentTurnId: string;
       runtime: RuntimeConfig;
       onUsage?: (usage: ContextUsage) => void;
+      reservedInputUnits?: number;
+      onSources?: (sources: SourceRef[]) => void;
     },
   ): Promise<ContextMessage[]> {
     let runtime = args.runtime;
     requireChat(runtime.mode);
     const originalCfg = runtime.p5_config;
     const capacity = await this.capacity(state, runtime.model_name, originalCfg, { main: true });
-    const limit = this.inputLimit(capacity, originalCfg.max_output_tokens, originalCfg);
+    const limit =
+      this.inputLimit(capacity, originalCfg.max_output_tokens, originalCfg) -
+      (args.reservedInputUnits ?? 0);
     if (limit <= 0) {
       fail("CONTEXT_CAPACITY_INSUFFICIENT", "模型容量不足以容纳回复预留和安全余量");
     }
@@ -951,6 +958,11 @@ export class ContextBuilder {
       }
     }
     knowledge.assertAccess(args.currentTurnId, runtime.agent_id);
+    args.onSources?.([
+      ...turnSources(this.orm, [args.currentTurnId, ...historical.map((turn) => turn.id)]),
+      ...memory.map((item) => ({ kind: "memory", id: item.id, revision: item.revision })),
+      ...knowledge.sourceRefs(args.currentTurnId, runtime.agent_id),
+    ]);
     const marginal = (messages: ContextMessage[]) => estimateMessages(messages) - 3;
     const inputUnits = estimateMessages(result);
     args.onUsage?.({

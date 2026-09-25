@@ -28,7 +28,7 @@ import {
 } from "../../src/web/i18n";
 import { english } from "../../src/web/i18n/en";
 import { registerError } from "../../src/web/i18n/errors";
-import { useSuperstringStore } from "../../src/web/store";
+import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 beforeEach(() => {
   selectLocale("zh-CN");

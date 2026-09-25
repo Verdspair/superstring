@@ -10,6 +10,7 @@
 // fact about the conversation; dropping it would make "why did that reply never appear"
 // unanswerable, and §10 asks for exactly that kind of record.
 
+import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import { fail } from "../errors";
 import {
@@ -90,6 +91,7 @@ export function recordQqSend(
   orm: Orm,
   input: QqSendInput,
   retentionDays: number = QQ_OBSERVATION_RETENTION_DAYS,
+  transactionDb?: Database,
 ): QqSendRecord {
   const kind = parseQqSpeechKind(input.kind);
   if (!Number.isInteger(input.sentAtSeconds) || input.sentAtSeconds < 0) {
@@ -107,51 +109,51 @@ export function recordQqSend(
   const effect = qqSendOutcomeEffect(summary.outcome);
   const expiresAt = speechExpiresAt(input.sentAtSeconds, retentionDays);
 
-  const log = orm.transaction(
-    (tx) => {
-      const row = tx
-        .insert(schema.qqSendLog)
-        .values({
-          id: crypto.randomUUID(),
-          accountId: input.scope.accountId,
-          conversationKind: input.scope.conversationKind,
-          peerId: input.scope.peerId,
-          agentId: input.scope.agentId,
-          kind,
-          outcome: summary.outcome,
-          deliveryMessageId: summary.deliveryMessageId,
-          sentAtSeconds: input.sentAtSeconds,
-          expiresAt,
-          recordedAt: nowIso(),
-        })
-        .returning()
-        .get();
-      if (!row) fail("DATABASE_UNAVAILABLE", "数据服务暂不可用，请检查数据库", 503);
-      tx.insert(schema.qqSendPart)
-        .values(
-          parts.map((part, index) => ({
-            sendId: row.id,
-            partIndex: index,
-            partKind: part.kind,
-            result: part.result,
-            platformMessageId: part.messageId,
-            stickerId: part.stickerId,
-          })),
-        )
-        .run();
-      // A confirmed utterance and its speech record are one local fact. Never commit
-      // the attempt first and create the no-reply record in a later transaction.
-      if (effect.entersUnresponded === true) {
-        recordQqSpeech(
-          tx,
-          { scope: input.scope, kind, spokeAtSeconds: input.sentAtSeconds, text: input.text },
-          retentionDays,
-        );
-      }
-      return row;
-    },
-    { behavior: "immediate" },
-  );
+  const writeRows = (tx: Orm) => {
+    const row = tx
+      .insert(schema.qqSendLog)
+      .values({
+        id: crypto.randomUUID(),
+        accountId: input.scope.accountId,
+        conversationKind: input.scope.conversationKind,
+        peerId: input.scope.peerId,
+        agentId: input.scope.agentId,
+        kind,
+        outcome: summary.outcome,
+        deliveryMessageId: summary.deliveryMessageId,
+        sentAtSeconds: input.sentAtSeconds,
+        expiresAt,
+        recordedAt: nowIso(),
+      })
+      .returning()
+      .get();
+    if (!row) fail("DATABASE_UNAVAILABLE", "数据服务暂不可用，请检查数据库", 503);
+    tx.insert(schema.qqSendPart)
+      .values(
+        parts.map((part, index) => ({
+          sendId: row.id,
+          partIndex: index,
+          partKind: part.kind,
+          result: part.result,
+          platformMessageId: part.messageId,
+          stickerId: part.stickerId,
+        })),
+      )
+      .run();
+    // A confirmed utterance and its speech record are one local fact. Never commit
+    // the attempt first and create the no-reply record in a later transaction.
+    if (effect.entersUnresponded === true) {
+      recordQqSpeech(
+        tx,
+        { scope: input.scope, kind, spokeAtSeconds: input.sentAtSeconds, text: input.text },
+        retentionDays,
+      );
+    }
+    return row;
+  };
+  const log = transactionDb
+    ? transactionDb.transaction(() => writeRows(orm)).immediate()
+    : orm.transaction(writeRows, { behavior: "immediate" });
 
   if (effect.entersUnresponded === "pending") {
     return {

@@ -39,6 +39,7 @@ import { checkQqTextPreflight } from "./qq-send-preflight";
 import { planQqPreparedReply, type QqStickerStage } from "./qq-sticker-runner";
 
 export interface QqDispatchClock {
+  conversationKinds?: readonly ("group" | "private")[];
   nowSeconds: number;
   /** Wall clock used by lease renewals; injectable so tests never depend on timing. */
   clockSeconds?: () => number;
@@ -96,7 +97,7 @@ export async function runQqImmediateReplyCycle(
   agentRuntime?: LeafAgentRuntime,
 ): Promise<QqImmediateCycleResult> {
   const now = input.nowSeconds;
-  const task = nextQqImmediateReplyTask(orm, { nowSeconds: now });
+  const task = nextQqImmediateReplyTask(orm, { nowSeconds: now }, input.conversationKinds);
   if (!task) return { kind: "idle" };
   const clock = input.clockSeconds ?? (() => Math.floor(Date.now() / 1000));
   const intervalMs = input.renewIntervalMs ?? qqDispatchRenewSeconds(task.leaseSeconds) * 1000;
@@ -199,7 +200,11 @@ export async function runQqDispatchCycle(
   sender?: QqReplySender,
   agentRuntime?: LeafAgentRuntime,
 ): Promise<QqDispatchCycleResult> {
-  const task: QqDispatchTask | null = nextQqDispatchTask(orm, input.nowSeconds);
+  const task: QqDispatchTask | null = nextQqDispatchTask(
+    orm,
+    input.nowSeconds,
+    input.conversationKinds,
+  );
   if (!task) return { kind: "idle" };
   // The basis this task judges, read before anything consumes the candidate: a silent outcome is
   // remembered against it so the timed sweep does not judge the same quiet episode again (0033).

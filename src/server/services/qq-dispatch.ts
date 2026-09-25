@@ -210,10 +210,11 @@ export interface QqImmediateReplyTask {
  *                      user's definition of 连续交谈 (P3k).
  * A message that is neither is left to the initiative sweep.
  */
-export function nextQqImmediateReplyTask(
+export function peekQqImmediateReplyTask(
   orm: Orm,
   input: { nowSeconds: number },
-): QqImmediateReplyTask | null {
+  conversationKinds?: readonly ("group" | "private")[],
+) {
   const parsed = z.strictObject({ nowSeconds: z.number().int().nonnegative() }).safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ immediate reply input");
   const now = parsed.data.nowSeconds;
@@ -231,6 +232,7 @@ export function nextQqImmediateReplyTask(
   } | null = null;
 
   for (const binding of readQqBindings(orm)) {
+    if (conversationKinds && !conversationKinds.includes(binding.kind)) continue;
     if (settings.accountId !== binding.accountId) continue;
     // A paused conversation still observes; it simply does not answer, immediate or otherwise.
     if (binding.paused) continue;
@@ -303,7 +305,17 @@ export function nextQqImmediateReplyTask(
       };
     }
   }
-  if (best === null) return null;
+  return best;
+}
+
+export function nextQqImmediateReplyTask(
+  orm: Orm,
+  input: { nowSeconds: number },
+  conversationKinds?: readonly ("group" | "private")[],
+): QqImmediateReplyTask | null {
+  const best = peekQqImmediateReplyTask(orm, input, conversationKinds);
+  if (!best) return null;
+  const now = input.nowSeconds;
 
   const conversationKey = qqConversationKey({
     accountId: best.accountId,
@@ -346,11 +358,19 @@ export interface QqDispatchTask {
  * task exists at a time: while another live owner holds the lease this returns `null`, and
  * every candidate whose `ready_at` has not arrived is left for a later call.
  */
-export function nextQqDispatchTask(orm: Orm, nowSeconds: number): QqDispatchTask | null {
+export function nextQqDispatchTask(
+  orm: Orm,
+  nowSeconds: number,
+  conversationKinds?: readonly ("group" | "private")[],
+): QqDispatchTask | null {
   reapExpiredQqDispatchLease(orm, nowSeconds);
   const settings = readQqDispatchSettings(orm);
   if (qqDispatchLeaseIsHeld(readQqDispatchLease(orm), nowSeconds)) return null;
   for (const candidate of listQqDispatchCandidates(orm)) {
+    if (conversationKinds) {
+      const binding = readQqBinding(orm, candidate.bindingId);
+      if (!binding || !conversationKinds.includes(binding.kind)) continue;
+    }
     if (candidate.readyAtSeconds > nowSeconds) continue;
     if (candidate.path !== "chiming_in" && candidate.path !== "idle_topic") continue;
     const token = newQqDispatchToken();
@@ -461,7 +481,20 @@ export interface QqIdleSweep {
  * would bump `generation` on every sweep, which both invalidates whatever is in flight and
  * pushes `ready_at` forward for ever — the sweep would starve the very task it kept creating.
  */
-export function sweepQqIdleTopics(orm: Orm, input: QqIdleSweepInput): QqIdleSweep {
+export function sweepQqIdleTopics(
+  orm: Orm,
+  input: QqIdleSweepInput,
+  options?: {
+    conversationKinds?: readonly ("group" | "private")[];
+    hasPending?: (binding: QqBinding) => boolean;
+    enqueue?: (input: {
+      binding: QqBinding;
+      conversationKey: string;
+      nowSeconds: number;
+      basisSeconds: number;
+    }) => QqDispatchScheduled;
+  },
+): QqIdleSweep {
   const parsed = z.strictObject({ nowSeconds: z.number().int().nonnegative() }).safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ idle sweep input");
   const value = parsed.data;
@@ -472,6 +505,7 @@ export function sweepQqIdleTopics(orm: Orm, input: QqIdleSweepInput): QqIdleSwee
   // verbatim reason, and what the decision was looking at when it stopped.
   const verdicts: QqSweepVerdictInput[] = [];
   for (const binding of readQqBindings(orm)) {
+    if (options?.conversationKinds && !options.conversationKinds.includes(binding.kind)) continue;
     const conversationKey = qqConversationKey({
       accountId: binding.accountId,
       kind: binding.kind,
@@ -557,20 +591,31 @@ export function sweepQqIdleTopics(orm: Orm, input: QqIdleSweepInput): QqIdleSwee
       skip(rhythm.reason, newest, rhythm.readyAtSeconds);
       continue;
     }
-    if (readQqDispatchCandidate(orm, conversationKey) !== null) {
+    if (
+      options?.hasPending
+        ? options.hasPending(binding)
+        : readQqDispatchCandidate(orm, conversationKey) !== null
+    ) {
       skip("candidate_pending", newest);
       continue;
     }
     // Already quiet by the scheme's own number, so the candidate is runnable now: the merge
     // window exists to batch new messages, and there is no new message here.
-    const candidate = upsertQqDispatchCandidate(orm, {
-      conversationKey,
-      bindingId: binding.id,
-      eventKey: null,
-      path: "idle_topic",
-      readyAtSeconds: value.nowSeconds,
-      observedAtSeconds: newest,
-    });
+    const candidate = options?.enqueue
+      ? options.enqueue({
+          binding,
+          conversationKey,
+          nowSeconds: value.nowSeconds,
+          basisSeconds: newest,
+        })
+      : upsertQqDispatchCandidate(orm, {
+          conversationKey,
+          bindingId: binding.id,
+          eventKey: null,
+          path: "idle_topic",
+          readyAtSeconds: value.nowSeconds,
+          observedAtSeconds: newest,
+        });
     scheduled.push({
       kind: "scheduled",
       conversationKey,
@@ -595,7 +640,13 @@ export function sweepQqIdleTopics(orm: Orm, input: QqIdleSweepInput): QqIdleSwee
   // that is no longer bound must not keep a "judged" note that would silence a future re-bind.
   forgetQqIdleJudgementsExcept(
     orm,
-    verdicts.map((verdict) => verdict.conversationKey),
+    readQqBindings(orm).map((binding) =>
+      qqConversationKey({
+        accountId: binding.accountId,
+        kind: binding.kind,
+        peerId: binding.peerId,
+      }),
+    ),
   );
   // 0036 的判断读数随绑定收敛这一步**已撤掉**（用户 2026-09-25 取消判断间隔与复用）：没有代码再读写
   // 那两列，收敛一张永远为空的表只会让人以为它还在起作用。表与列保留在 schema 里，不迁移。

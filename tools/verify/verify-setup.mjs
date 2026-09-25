@@ -303,6 +303,12 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0039_agent_runs.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0040_conversation_wakes.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0041_outbound_intents.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

@@ -46,7 +46,10 @@ class ScriptedGateway implements ModelGateway {
     return true;
   }
   async complete(): Promise<string> {
-    return this.script.deltas.join("");
+    return JSON.stringify({
+      kind: "final",
+      outputs: [{ kind: "generate", targetId: "reply", instructions: "" }],
+    });
   }
   async *streamChat(options: {
     messages: Array<{ role: string; content: string }>;

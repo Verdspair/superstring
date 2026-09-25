@@ -40,7 +40,7 @@ import {
   type OneBotConnectionState,
   type OneBotSocketFactory,
 } from "./onebot-connection";
-import type { QqMessageResult } from "./onebot-protocol";
+import type { QqMessageResult, QqObservation } from "./onebot-protocol";
 import { handleQqRecordedMessage, type QqEventMediaDeps } from "./qq-event-path";
 import { createQqMediaAdapter } from "./qq-media-adapter";
 import { createQqMediaSourceFetcher } from "./qq-media-source";
@@ -74,7 +74,13 @@ export type RecordOutcome =
     }
   | { kind: "discarded"; reason: "duplicate_key_conflict" | "invalid_observation" };
 
+export interface ConversationIngress {
+  beforeRecord(bindingId: string): void;
+  afterRecord(bindingId: string, observation: QqObservation): void;
+  afterMedia(bindingId: string, eventKey: string): void;
+}
 export interface RecordInboundOptions {
+  conversationIngress?: ConversationIngress;
   /**
    * The account this connection is attached to. A message claiming another account is
    * refused: the observation's account is part of its identity, and accepting a
@@ -152,7 +158,10 @@ export function recordInbound(
   try {
     // Note the deliberate absence of a `paused` check: a paused conversation keeps
     // observing and only stops being *triggered*.
-    recorded = recordObservation(orm, observation, binding.agentId);
+    recorded = recordObservation(orm, observation, binding.agentId, {
+      beforeWrite: () => options.conversationIngress?.beforeRecord(binding.id),
+      afterWrite: () => options.conversationIngress?.afterRecord(binding.id, observation),
+    });
   } catch {
     // A reused event key describing a different message is a refusal by design; it is
     // reported as a discard so the transport stays healthy.
@@ -182,6 +191,7 @@ export function qqIntakeCycle(orm: Orm, now?: string): QqMemoryScheduleResult & 
 }
 
 export interface QqIntakeRuntimeOptions {
+  conversationIngress?: ConversationIngress;
   orm: Orm;
   /**
    * Where the token ciphertext's key file lives. The runtime never takes the endpoint
@@ -320,7 +330,11 @@ export class QqIntakeRuntime {
             // the storage boundary and the follow-up path see it. A reply to anybody else's
             // message, or to a target we never sent, is left exactly as it was.
             const message = withReplyAsAddressed(orm, raw, saved.accountId);
-            const outcome = recordInbound(orm, message, { accountId: saved.accountId, onEvent });
+            const outcome = recordInbound(orm, message, {
+              accountId: saved.accountId,
+              onEvent,
+              conversationIngress: this.#options.conversationIngress,
+            });
             // 一条落库的、冲着她来的消息：叫醒运行宿主，别让"被 @ 了"干等下一次轮询（2026-09-25）。
             if (
               outcome.kind === "recorded" &&
@@ -464,15 +478,22 @@ export class QqIntakeRuntime {
       { observation, nowSeconds: this.#now() },
       media ? { media } : {},
     )
-      .then((result) =>
+      .then((result) => {
+        const binding = readBindingByConversation(this.#options.orm, {
+          accountId: observation.accountId,
+          kind: observation.conversation.kind,
+          peerId: observation.conversation.peerId,
+        });
+        if (binding)
+          this.#options.conversationIngress?.afterMedia(binding.id, observation.eventKey);
         this.#options.onEvent?.({
           kind: "follow_up",
           hasMedia: result.media.hasMedia,
           dispatch: result.dispatch.kind,
           own: result.media.own?.kind ?? "none",
           supplement: result.media.supplement?.kind ?? "none",
-        }),
-      )
+        });
+      })
       .catch(() => this.#options.onEvent?.({ kind: "follow_up_failed" }));
   }
 

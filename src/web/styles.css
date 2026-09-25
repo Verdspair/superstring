@@ -3647,3 +3647,105 @@ input[aria-invalid="true"] {
     gap: 0.2rem;
   }
 }
+
+/* Conversation read surfaces reuse the same typography and theme tokens as Web chat. */
+.new-session-modal {
+  position: fixed;
+  z-index: 101;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 22px;
+  gap: 14px;
+}
+.bot-conversation-list {
+  margin: 18px 5px;
+  font-size: 12px;
+}
+.bot-conversation-list summary {
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.bot-conversation-list .session-list small {
+  display: block;
+  font-size: 10px;
+  color: var(--ac-muted);
+}
+.conversation-page {
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  overflow-wrap: anywhere;
+}
+.conversation-page .page-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+.conversation-timeline {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 20px;
+}
+.conversation-timeline > li {
+  border: 1px solid var(--superstring-tone-line);
+  border-radius: var(--ac-radius);
+  padding: 16px;
+  min-width: 0;
+}
+.conversation-timeline header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.conversation-timeline time,
+.conversation-source {
+  color: var(--ac-muted);
+  font-size: 12px;
+}
+.conversation-text {
+  white-space: pre-wrap;
+}
+.conversation-timeline > .conversation-activity {
+  background: var(--superstring-tone-soft);
+  border-style: dashed;
+}
+.conversation-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: 16px;
+  margin: 12px 0;
+}
+.conversation-media {
+  padding-left: 20px;
+}
+.conversation-media p {
+  margin: 6px 0;
+  white-space: pre-wrap;
+}
+.delivery-details {
+  flex: 1;
+  min-width: 160px;
+}
+.delivery-details summary,
+.conversation-source summary {
+  cursor: pointer;
+}
+.delivery-status[data-status="failed"],
+.delivery-status[data-status="unknown"] {
+  font-weight: 600;
+}
+
+.session-activity {
+  display: block;
+  padding: 0 10px 5px;
+  font-size: 10px;
+  color: var(--ac-muted);
+}

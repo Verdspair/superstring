@@ -69,6 +69,7 @@ export function qqDispatchRunner(input: {
   gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity">;
   store: QqStickerStore;
   agentRuntime?: LeafAgentRuntime;
+  conversationKinds?: readonly ("group" | "private")[];
   /** Omitted means this build cannot deliver, and an authorized draft is dropped (P5o). */
   sender?: QqReplySender;
 }): QqDispatchRunner {
@@ -80,7 +81,11 @@ export function qqDispatchRunner(input: {
     runQqDispatchCycle(
       input.orm,
       input.gateway,
-      { nowSeconds, clockSeconds: () => Math.floor(Date.now() / 1000) },
+      {
+        nowSeconds,
+        clockSeconds: () => Math.floor(Date.now() / 1000),
+        conversationKinds: input.conversationKinds,
+      },
       stage,
       input.sender,
       input.agentRuntime,
@@ -93,6 +98,7 @@ export function qqImmediateRunner(input: {
   gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity">;
   store: QqStickerStore;
   agentRuntime?: LeafAgentRuntime;
+  conversationKinds?: readonly ("group" | "private")[];
   sender?: QqReplySender;
 }): QqImmediateRunner {
   const stage: QqStickerStage = {
@@ -103,7 +109,11 @@ export function qqImmediateRunner(input: {
     runQqImmediateReplyCycle(
       input.orm,
       input.gateway,
-      { nowSeconds, clockSeconds: () => Math.floor(Date.now() / 1000) },
+      {
+        nowSeconds,
+        clockSeconds: () => Math.floor(Date.now() / 1000),
+        conversationKinds: input.conversationKinds,
+      },
       stage,
       input.sender,
       input.agentRuntime,
@@ -146,6 +156,9 @@ export interface QqRuntimeOptions {
    */
   canAdvance?: () => boolean;
   onEvent?: (event: QqRuntimeEvent) => void;
+  /** Transitional composition: one timer drives migrated direct and remaining group work. */
+  sweep?: (nowSeconds: number) => QqIdleSweep;
+  advance?: (nowSeconds: number) => Promise<Pick<QqRuntimeCycle, "immediate" | "dispatch">>;
 }
 
 export class QqRuntime {
@@ -156,6 +169,8 @@ export class QqRuntime {
   readonly #immediate: QqImmediateRunner | undefined;
   readonly #canAdvance: (() => boolean) | undefined;
   readonly #onEvent: ((event: QqRuntimeEvent) => void) | undefined;
+  readonly #sweep: (nowSeconds: number) => QqIdleSweep;
+  readonly #advance: QqRuntimeOptions["advance"];
 
   #loopPromise: Promise<void> | null = null;
   #stopped = false;
@@ -171,6 +186,8 @@ export class QqRuntime {
     this.#immediate = options.immediate;
     this.#canAdvance = options.canAdvance;
     this.#onEvent = options.onEvent;
+    this.#sweep = options.sweep ?? ((nowSeconds) => sweepQqIdleTopics(this.#orm, { nowSeconds }));
+    this.#advance = options.advance;
   }
 
   start(): void {
@@ -213,14 +230,25 @@ export class QqRuntime {
    */
   async runCycle(nowSeconds?: number): Promise<QqRuntimeCycle> {
     const now = nowSeconds ?? this.#clockSeconds();
-    const sweep = sweepQqIdleTopics(this.#orm, { nowSeconds: now });
+    const sweep = this.#sweep(now);
     const advance =
-      (this.#dispatch !== undefined || this.#immediate !== undefined) &&
+      (this.#advance !== undefined ||
+        this.#dispatch !== undefined ||
+        this.#immediate !== undefined) &&
       (this.#canAdvance?.() ?? true);
     // Immediate first: a message aimed at the assistant is answered before any queued opener, and
     // both share the one global slot, so the order here is what makes "被叫到先答" true.
-    const immediate = advance ? ((await this.#immediate?.({ nowSeconds: now })) ?? null) : null;
-    const dispatch = advance ? ((await this.#dispatch?.({ nowSeconds: now })) ?? null) : null;
+    const result = advance && this.#advance ? await this.#advance(now) : null;
+    const immediate = result
+      ? result.immediate
+      : advance
+        ? ((await this.#immediate?.({ nowSeconds: now })) ?? null)
+        : null;
+    const dispatch = result
+      ? result.dispatch
+      : advance
+        ? ((await this.#dispatch?.({ nowSeconds: now })) ?? null)
+        : null;
     this.#onEvent?.({
       kind: "cycle",
       swept: sweep.scheduled.length,

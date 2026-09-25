@@ -3,7 +3,7 @@ import { afterEach, expect, it } from "vitest";
 import { ContextUsageSchema } from "../../src/shared/contracts/context-usage";
 import { ContextUsagePanel } from "../../src/web/features/chat/ContextUsagePanel";
 import { selectLocale } from "../../src/web/i18n";
-import { useSuperstringStore as store } from "../../src/web/store";
+import { fixtureStore as store } from "./helpers/chat-fixture";
 
 afterEach(() => {
   cleanup();

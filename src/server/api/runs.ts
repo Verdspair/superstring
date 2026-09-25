@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
 import { canReadRun, inspectContext, visibleRun } from "../agent/context-access";
 import { AgentRunRepository } from "../db/agent-run-repository";
+import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { parseUuidParam, validationFailed } from "./validation";
 
@@ -19,10 +20,30 @@ export function runRoutes(db: Database, repository = new AgentRunRepository(db))
     const ownerKind = c.req.query("ownerKind");
     const ownerId = c.req.query("ownerId");
     if (!ownerKind || !ownerId) throw validationFailed();
-    const runs = repository
-      .listRuns({ ownerKind, ownerId })
-      .filter((run) => canReadRun(db, run.owner, principal));
+    const ownerIds =
+      ownerKind === "conversation"
+        ? new ConversationEventRepository(db).historyRows(ownerId).map((row) => row.id)
+        : [ownerId];
+    const runs = ownerIds
+      .flatMap((id) => repository.listRuns({ ownerKind, ownerId: id }))
+      .filter((run) => canReadRun(db, run.owner, principal))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.runId.localeCompare(a.runId));
     return c.json({ runs });
+  });
+  router.get("/by-request", (c) => {
+    const sessionId = parseUuidParam(c.req.query("sessionId") ?? "");
+    const requestId = c.req.query("clientRequestId");
+    if (!requestId?.trim() || requestId.length > 64) throw validationFailed();
+    const turn = db
+      .query(`SELECT t.id FROM turns t JOIN sessions s ON s.id=t.session_id
+        WHERE t.session_id=? AND t.client_request_id=? AND s.user_id=?`)
+      .get(sessionId, requestId, principal.userId) as { id: string } | null;
+    const run = turn
+      ? repository
+          .listRuns({ ownerKind: "web_turn", ownerId: turn.id })
+          .find((candidate) => canReadRun(db, candidate.owner, principal))
+      : undefined;
+    return run ? c.json(run) : c.json(notFound, 404);
   });
   router.get("/:id", (c) => {
     const run = visibleRun(db, repository, parseUuidParam(c.req.param("id")), principal);

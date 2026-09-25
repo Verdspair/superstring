@@ -9,11 +9,11 @@ import type {
   MemoryTurnRow,
   PersonaResponse,
   PolicyView,
-  RuntimeConfig,
   SessionResponse,
 } from "../../shared/contracts";
 import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
+import { initialConversationState } from "../features/chat/conversation-state";
 import { desktopSettingsInitial } from "../features/general/desktop-state";
 import { knowledgeInitial } from "../features/knowledge/types";
 import {
@@ -25,7 +25,6 @@ import {
 import { initialRunState } from "../features/runs/slice";
 import type {
   AgentDraft,
-  ChatItem,
   LoadStatus,
   Page,
   PendingNavigation,
@@ -35,6 +34,7 @@ import type {
 
 export const initial = {
   ...initialRunState,
+  ...initialConversationState,
   ...knowledgeInitial,
   ...qqStickerInitial,
   ...qqSchemeInitial,
@@ -56,10 +56,6 @@ export const initial = {
   navigationConfirmMessage: "",
   agents: [] as AgentResponse[],
   sessions: [] as SessionResponse[],
-  messages: [] as ChatItem[],
-  runtimeConfig: null as RuntimeConfig | null,
-  runtimeConfigUnavailable: false,
-  contextUsage: null as import("../../shared/contracts/context-usage").ContextUsage | null,
   selectedNewSessionAgentId: null as string | null,
   currentSessionId: null as string | null,
   editorAgentId: "__new__" as const,
@@ -85,18 +81,6 @@ export const initial = {
   modelStatus: "模型列表将在打开配置时加载。",
   capacityPreview: "",
   chatContextCapacity: null as number | null,
-  composer: "",
-  sending: false,
-  failedChat: null as {
-    sessionId: string;
-    text: string;
-    requestId: string;
-  } | null,
-  knowledgeResend: null as {
-    sessionId: string;
-    text: string;
-    requestId: string;
-  } | null,
   pendingOperations: 0,
   browserStateStorage: null as BrowserStateStorage | null,
 };
