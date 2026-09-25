@@ -48,6 +48,6 @@ Media reading, sticker annotation and sticker selection use the same leaf runtim
 
 WakeScheduler owns durable opportunities and leases. OneBot ingress owns protocol normalization; the host owns the current binding, targets and output transaction. The default production worker is serial. A concurrency capacity setting alone does not create parallel worker execution, and slow runs can delay other Bot conversations.
 
-The frontend retains the established navigation and mode model. Conversation history, run inspection and delivery states are separate projections. Advanced diagnostics do not turn model completion into a delivery confirmation; unknown delivery remains unresolved until reconciled.
+The frontend groups navigation into conversations, Agents, resources, connections and preferences, while retaining the existing mode and configuration capabilities. Conversation history, run inspection and delivery states are separate projections. Advanced diagnostics do not turn model completion into a delivery confirmation; unknown delivery remains unresolved until reconciled.
 
 Synthetic tests cover run decisions, source changes, media, target isolation, history restoration and delivery recovery. Legacy QQ fixtures are comparison oracles only. Real model latency/quality and real OneBot receipts require separate measurement; no exactly-once network guarantee is claimed.
