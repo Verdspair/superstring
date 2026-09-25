@@ -23,6 +23,7 @@
 //     something was there and was NOT read, instead of a message that merely looks empty.
 
 import { z } from "zod";
+import { SourceRefSchema } from "../../shared/contracts/evidence";
 import { estimateTokens } from "./token-estimate";
 
 /**
@@ -47,6 +48,7 @@ export const ContextMessageSchema = z
     mediaNotes: z.array(z.string().min(1)),
     /** How many of this message's media are still unread. Must not be claimed as understood. */
     mediaUnread: z.number().int().nonnegative(),
+    sources: z.array(SourceRefSchema).optional(),
   })
   .superRefine((message, ctx) => {
     // The same rule the observation tables enforce: a member is identified by a number, an
@@ -136,6 +138,7 @@ export function qqBuildTimeline(input: unknown): readonly QqContextMessage[] {
         z.strictObject({
           occurredAtSeconds: z.number().int().nonnegative(),
           text: z.string().min(1),
+          sources: z.array(SourceRefSchema).optional(),
         }),
       ),
     }),
@@ -148,6 +151,7 @@ export function qqBuildTimeline(input: unknown): readonly QqContextMessage[] {
     text: entry.text,
     mediaNotes: [],
     mediaUnread: 0,
+    ...(entry.sources ? { sources: entry.sources } : {}),
   }));
   return Object.freeze(
     [...value.messages, ...own].sort(

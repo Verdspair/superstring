@@ -1,3 +1,4 @@
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // Streaming chat orchestration
 // Model streaming races a heartbeat monitor, as in the contract.
 // AbortController and an interval preserve these observable guarantees:
@@ -56,6 +57,7 @@ export type StreamEvent =
 export interface DirectServiceOptions {
   orm: Orm;
   gateway: ModelGateway;
+  agentRuntime?: LeafAgentRuntime;
   /** Production injects the business SQLite handle so ContextBuilder is active. */
   db?: Database;
   /** Explicit low-level tests may provide a custom builder or omit both fields. */
@@ -87,6 +89,7 @@ export class DirectService {
             orm: options.orm,
             db: options.db,
             gateway: options.gateway,
+            agentRuntime: options.agentRuntime,
           })
         : null);
     this.leaseSeconds = options.leaseSeconds ?? DEFAULT_LEASE_SECONDS;

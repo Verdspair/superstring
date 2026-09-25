@@ -16,7 +16,7 @@ import { newId, nowIso } from "./repositories";
 
 type DocumentMetadata = Omit<
   KnowledgeDocument,
-  "agent_ids" | "summary" | "tags" | "organization_status" | "error_code"
+  "agent_ids" | "summary" | "tags" | "organization_status" | "error_code" | "latest_job_id"
 >;
 type DocumentRow = DocumentMetadata & { original_text: string };
 const DOCUMENT_COLUMNS =
@@ -233,12 +233,13 @@ export class KnowledgeRepository {
     const job = this.db
       .query<
         {
+          id: string;
           status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
           error_code: string | null;
         },
         [string, number]
       >(
-        "SELECT status, error_code FROM knowledge_jobs WHERE document_id = ? AND content_version = ? ORDER BY rowid DESC LIMIT 1",
+        "SELECT id, status, error_code FROM knowledge_jobs WHERE document_id = ? AND content_version = ? ORDER BY rowid DESC LIMIT 1",
       )
       .get(row.id, row.content_version);
     return {
@@ -259,6 +260,7 @@ export class KnowledgeRepository {
             ? "pending"
             : (job?.status ?? "pending"),
       error_code: job?.status === "failed" ? job.error_code : null,
+      latest_job_id: job?.id ?? null,
     };
   }
 

@@ -20,13 +20,15 @@
 // decide something the plan leaves open. ADR0018 records it as pending.
 
 import { z } from "zod";
+import type { SourceRef } from "../../shared/contracts/evidence";
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 import {
   type QqStickerAssetView,
   readQqStickerAsset,
   saveQqStickerDraft,
   saveQqStickerTagsDraft,
 } from "../db/qq-sticker-repository";
-import type { Orm } from "../db/repositories";
+import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import type { ModelGateway } from "../llm/model-gateway";
 import { sampleQqAnimationFrames } from "./qq-animation-frames";
 import { checkQqModelCapacity } from "./qq-capacity-preflight";
@@ -57,6 +59,9 @@ export const QQ_STICKER_ANNOTATION_RESPONSE_SCHEMA = Object.freeze({
 });
 
 export interface QqStickerAnnotatorInput {
+  readonly assetId?: string;
+  readonly sources?: SourceRef[];
+  readonly signal?: AbortSignal;
   readonly model: string;
   readonly prompt: string;
   readonly images: readonly { readonly mimeType: string; readonly bytes: Uint8Array }[];
@@ -64,6 +69,32 @@ export interface QqStickerAnnotatorInput {
 
 /** The injected multimodal call. It may constrain the output; this module still parses strictly. */
 export type QqStickerAnnotator = (input: QqStickerAnnotatorInput) => Promise<string>;
+
+class InvalidStickerAnnotation extends Error {}
+
+/** Production annotation uses the same persisted runtime as text and maintenance tasks. */
+export function createQqStickerAnnotator(agentRuntime: LeafAgentRuntime): QqStickerAnnotator {
+  return (input) =>
+    agentRuntime.completeVisionLeaf(
+      {
+        id: "sticker.annotate",
+        version: "1",
+        responseSchema: QQ_STICKER_ANNOTATION_RESPONSE_SCHEMA,
+      },
+      {
+        model: input.model,
+        prompt: input.prompt,
+        images: input.images,
+        signal: input.signal,
+        sources: input.sources,
+        validate: (text) => {
+          if (readAnswer(text) === null)
+            throw new InvalidStickerAnnotation("Invalid sticker annotation result");
+        },
+        owner: { kind: "qq_sticker", id: input.assetId ?? "unbound", userId: DEFAULT_USER_ID },
+      },
+    );
+}
 
 export type QqStickerAnnotationRejection =
   | "model_not_configured"
@@ -131,6 +162,7 @@ export async function annotateQqSticker(
   annotate: QqStickerAnnotator,
   store: QqStickerStore,
   input: unknown,
+  signal?: AbortSignal,
 ): Promise<QqStickerAnnotationResult> {
   const request = z
     .strictObject({
@@ -168,9 +200,19 @@ export async function annotateQqSticker(
   }
   let raw: string;
   try {
-    raw = await annotate({ model, prompt: QQ_STICKER_ANNOTATION_PROMPT, images });
-  } catch {
-    return { kind: "rejected", reason: "model_error" };
+    raw = await annotate({
+      model,
+      prompt: QQ_STICKER_ANNOTATION_PROMPT,
+      images,
+      signal,
+      assetId: asset.id,
+      sources: [{ kind: "qq_sticker", id: asset.id, revision: asset.updatedAt }],
+    });
+  } catch (error) {
+    return {
+      kind: "rejected",
+      reason: error instanceof InvalidStickerAnnotation ? "unreadable_answer" : "model_error",
+    };
   }
   const answer = readAnswer(raw);
   if (answer === null) return { kind: "rejected", reason: "unreadable_answer" };

@@ -189,6 +189,10 @@ const QQ_JUDGEMENT_MODEL_SQL = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0038_qq_judgement_model.sql"),
   "utf8",
 );
+const AGENT_RUNS_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0039_agent_runs.sql"),
+  "utf8",
+);
 /** Every ordered business migration, joined for a complete reference database. */
 const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
 ${QQ_DISPATCH_SQL}
@@ -206,7 +210,8 @@ ${QQ_INITIATIVE_MIN_SCORE_SQL}
 ${QQ_REPLY_SPLIT_SQL}
 ${QQ_JUDGEMENT_REUSE_SQL}
 ${QQ_JUDGEMENT_PER_SPEAKER_SQL}
-${QQ_JUDGEMENT_MODEL_SQL}`;
+${QQ_JUDGEMENT_MODEL_SQL}
+${AGENT_RUNS_SQL}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };

@@ -1,7 +1,9 @@
 // QQ observation text: storage, retention sweep and the "offered to consolidation"
 // marker. See qq-retention.ts for why text and dedup identity have separate lives.
 
+import { createHash } from "node:crypto";
 import { and, asc, count, desc, eq, gt, inArray, isNull, lte, max } from "drizzle-orm";
+import type { SourceRef } from "../../shared/contracts/evidence";
 import { fail } from "../errors";
 import type { QqMemoryScope } from "../services/qq-binding-contract";
 import {
@@ -20,6 +22,7 @@ export type QqObservationTextRow = typeof schema.qqObservationText.$inferSelect;
 /** One message of a conversation, as the context selection needs it (P3b-2). */
 export interface QqConversationMessageRow {
   readonly eventKey: string;
+  readonly sources?: SourceRef[];
   readonly occurredAtSeconds: number;
   readonly speaker: "member" | "anonymous";
   readonly speakerId: string | null;
@@ -47,7 +50,7 @@ export interface QqConversationMessageRow {
 export function conversationMessagesSince(
   orm: Orm,
   scope: QqConversationScope,
-  input: { sinceSeconds: number; limit: number },
+  input: { sinceSeconds: number; limit: number; includeSources?: boolean },
 ): QqConversationMessageRow[] {
   if (!Number.isInteger(input.sinceSeconds) || input.sinceSeconds < 0) {
     throw new TypeError("Invalid QQ conversation query input");
@@ -62,6 +65,7 @@ export function conversationMessagesSince(
       speakerKind: schema.qqEvents.speakerKind,
       speakerId: schema.qqEvents.speakerId,
       body: schema.qqObservationText.body,
+      expiresAt: schema.qqObservationText.expiresAt,
     })
     .from(schema.qqEvents)
     .leftJoin(
@@ -85,6 +89,9 @@ export function conversationMessagesSince(
 
   const notes = orm
     .select({
+      id: schema.qqMediaNotes.id,
+      expiresAt: schema.qqMediaNotes.expiresAt,
+      attempts: schema.qqMediaNotes.attempts,
       eventKey: schema.qqMediaNotes.eventKey,
       note: schema.qqMediaNotes.note,
       noteModel: schema.qqMediaNotes.noteModel,
@@ -109,6 +116,30 @@ export function conversationMessagesSince(
     const media = byEvent.get(row.eventKey) ?? { notes: [], unread: 0 };
     return {
       eventKey: row.eventKey,
+      ...(input.includeSources
+        ? {
+            sources: [
+              ...(row.body !== null && row.expiresAt !== null
+                ? [
+                    {
+                      kind: "qq_observation",
+                      id: row.eventKey,
+                      revision: createHash("sha256").update(row.body).digest("hex"),
+                      expiresAt: row.expiresAt,
+                    },
+                  ]
+                : []),
+              ...notes
+                .filter((note) => note.eventKey === row.eventKey && note.note !== null)
+                .map((note) => ({
+                  kind: "qq_media",
+                  id: note.id,
+                  revision: String(note.attempts),
+                  expiresAt: note.expiresAt,
+                })),
+            ],
+          }
+        : {}),
       occurredAtSeconds: row.occurredAtSeconds,
       speaker: row.speakerKind === "anonymous" ? ("anonymous" as const) : ("member" as const),
       speakerId: row.speakerId ?? null,

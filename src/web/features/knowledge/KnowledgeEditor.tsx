@@ -1,6 +1,7 @@
 import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { Field } from "../../ui/Field";
+import { JobRunLink } from "../runs/RunInspector";
 
 export function KnowledgeEditor() {
   const t = useI18n();
@@ -27,6 +28,9 @@ export function KnowledgeEditor() {
   return (
     <section className="knowledge-editor" aria-label={t(title)}>
       <h3>{t(title)}</h3>
+      {editor.kind === "document" && editor.source.latest_job_id && (
+        <JobRunLink ownerKind="knowledge_job" ownerId={editor.source.latest_job_id} />
+      )}
       <fieldset disabled={busy}>
         {"name" in editor && (
           <Field label={t(editor.kind.startsWith("category") ? "分类名称" : "资料名称")}>

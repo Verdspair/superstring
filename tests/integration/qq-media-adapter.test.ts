@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import upstream from "omggif";
+import { createEphemeralAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { recordMediaSegment } from "../../src/server/db/qq-media-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
@@ -63,7 +64,7 @@ describe("the QQ media adapter", () => {
     const { calls, client } = visionClient();
     const adapter = createQqMediaAdapter({
       fetchSource: async () => ({ bytes: gifBytes() }),
-      vision: client as never,
+      agentRuntime: createEphemeralAgentRuntime({ vision: client }),
       prompt: "如实说明这条消息里的媒体内容。",
     });
     expect(await adapter.read({ kind: "image", sourceRef: "ref", model: "vision-local" })).toBe(
@@ -82,7 +83,7 @@ describe("the QQ media adapter", () => {
     // frames — or smaller ones — gets them, and the defaults are what the fixtures above use.
     const adapter = createQqMediaAdapter({
       fetchSource: async () => ({ bytes: gifBytes() }),
-      vision: client as never,
+      agentRuntime: createEphemeralAgentRuntime({ vision: client }),
       prompt: "如实说明这条消息里的媒体内容。",
       frames: 1,
       maxDimension: 64,
@@ -97,7 +98,7 @@ describe("the QQ media adapter", () => {
     expect(() =>
       createQqMediaAdapter({
         fetchSource: async () => ({ bytes: PNG }),
-        vision: visionClient().client as never,
+        agentRuntime: createEphemeralAgentRuntime({ vision: visionClient().client }),
         prompt: "如实说明这条消息里的媒体内容。",
         frames: 0,
       }),
@@ -105,7 +106,7 @@ describe("the QQ media adapter", () => {
     expect(() =>
       createQqMediaAdapter({
         fetchSource: async () => ({ bytes: PNG }),
-        vision: visionClient().client as never,
+        agentRuntime: createEphemeralAgentRuntime({ vision: visionClient().client }),
         prompt: "如实说明这条消息里的媒体内容。",
         maxDimension: 4096,
       }),
@@ -116,7 +117,7 @@ describe("the QQ media adapter", () => {
     const { calls, client } = visionClient();
     const adapter = createQqMediaAdapter({
       fetchSource: async () => ({ bytes: PNG }),
-      vision: client as never,
+      agentRuntime: createEphemeralAgentRuntime({ vision: client }),
       prompt: "说明媒体",
     });
     await adapter.read({ kind: "image", sourceRef: "ref", model: "vision-local" });
@@ -127,7 +128,7 @@ describe("the QQ media adapter", () => {
     const { calls, client } = visionClient();
     const adapter = createQqMediaAdapter({
       fetchSource: async () => ({ bytes: PNG }),
-      vision: client as never,
+      agentRuntime: createEphemeralAgentRuntime({ vision: client }),
       prompt: "说明媒体",
     });
     await expect(
@@ -142,7 +143,7 @@ describe("the QQ media adapter", () => {
   it("refuses bytes whose header cannot be read", async () => {
     const adapter = createQqMediaAdapter({
       fetchSource: async () => ({ bytes: new TextEncoder().encode("not an image") }),
-      vision: visionClient().client as never,
+      agentRuntime: createEphemeralAgentRuntime({ vision: visionClient().client }),
       prompt: "说明媒体",
     });
     await expect(

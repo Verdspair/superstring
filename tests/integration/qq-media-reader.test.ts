@@ -332,10 +332,12 @@ describe("one injected QQ media reading", () => {
           model: string;
         }) => {
           calls++;
-          expect(input).toEqual({
+          expect(input).toMatchObject({
             kind: "image",
             sourceRef: "upstream-ref",
             model: "vision-local",
+            source: { kind: "qq_media", revision: "1" },
+            owner: { kind: "qq_media" },
           });
           return "橘猫";
         },

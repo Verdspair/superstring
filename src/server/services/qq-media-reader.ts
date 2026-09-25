@@ -2,10 +2,11 @@
 // neither opens a network connection nor treats a text-only conversation model as vision.
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import type { SourceRef } from "../../shared/contracts/evidence";
 import { readBindingByConversation } from "../db/qq-binding-repository";
 import { mediaNoteRow, recordMediaAttempt, recordMediaNote } from "../db/qq-media-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
-import { getAgentRow, type Orm } from "../db/repositories";
+import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../db/repositories";
 import { qqEvents } from "../db/schema";
 import { checkQqMediaRetry, qqMediaFailureOutcome, qqMediaModelFor } from "./qq-media-contract";
 
@@ -29,6 +30,9 @@ export interface QqMediaReadAdapter {
     kind: "image" | "record" | "video";
     sourceRef: string;
     model: string;
+    source?: SourceRef;
+    owner?: { kind: string; id: string; userId?: string; agentId?: string };
+    signal?: AbortSignal;
   }): Promise<string>;
 }
 
@@ -47,6 +51,7 @@ export async function readQqMediaOnce(
   orm: Orm,
   adapter: QqMediaReadAdapter,
   input: unknown,
+  signal?: AbortSignal,
 ): Promise<QqMediaReadResult> {
   const parsed = Input.safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ media read input");
@@ -128,6 +133,14 @@ export async function readQqMediaOnce(
       kind,
       sourceRef: row.sourceRef,
       model: choice.model,
+      signal,
+      owner: { kind: "qq_media", id: row.id, userId: DEFAULT_USER_ID, agentId: event.agentId },
+      source: {
+        kind: "qq_media",
+        id: row.id,
+        revision: String(claimed.attempts),
+        expiresAt: row.expiresAt,
+      },
     });
     if (typeof generated !== "string") throw new Error("invalid media description");
     const note = generated.trim();

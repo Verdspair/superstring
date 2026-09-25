@@ -26,7 +26,11 @@ export interface VisionImage {
 }
 
 export interface VisionRequest {
+  readonly systemPrompt?: string;
+  readonly temperature?: number;
+  readonly maxTokens?: number;
   readonly model: string;
+  readonly signal?: AbortSignal;
   readonly prompt: string;
   readonly images: readonly VisionImage[];
   /** Sent as a strict `json_schema` response format, the same shape the gateway uses. */
@@ -72,6 +76,9 @@ export function createLmStudioVisionClient(
   };
   return {
     async annotate(request: VisionRequest): Promise<string> {
+      request.signal?.throwIfAborted();
+      const timeout = AbortSignal.timeout(config.timeoutSeconds * 1000);
+      const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
       const content: unknown[] = [{ type: "text", text: request.prompt }];
       for (const image of request.images) {
         content.push({
@@ -84,8 +91,14 @@ export function createLmStudioVisionClient(
       const send = async (level: StructuredOutputLevel) => {
         const body: Record<string, unknown> = {
           model: request.model,
-          messages: [{ role: "user", content }],
-          temperature: 0.2,
+          messages: [
+            ...(request.systemPrompt === undefined
+              ? []
+              : [{ role: "system", content: request.systemPrompt }]),
+            { role: "user", content },
+          ],
+          temperature: request.temperature ?? 0.2,
+          ...(request.maxTokens === undefined ? {} : { max_tokens: request.maxTokens }),
         };
         if (request.responseSchema !== undefined && level !== "none") {
           body.response_format =
@@ -108,7 +121,7 @@ export function createLmStudioVisionClient(
             authorization: `Bearer ${(routed.apiKey ?? "").trim() || DEFAULT_LM_STUDIO_API_KEY}`,
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(config.timeoutSeconds * 1000),
+          signal,
         });
         if (!response.ok) {
           // 结构化输出的自动降级要能认出"形状被拒绝"，所以状态码必须跟着错误一起走。

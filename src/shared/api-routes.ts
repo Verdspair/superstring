@@ -21,6 +21,7 @@
 /** Paths matched anywhere below the prefix (`/agents/...`, `/sessions/...`). */
 export const API_PREFIXES = [
   "/__dev",
+  "/v2",
   "/agents",
   "/sessions",
   "/models",

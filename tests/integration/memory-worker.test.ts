@@ -817,7 +817,7 @@ describe("job execution", () => {
   });
 
   it("checks suppression in bounded chunks of 8, never truncating", async () => {
-    const { orm, gateway, service } = setup();
+    const { business, orm, gateway, service } = setup();
     const sessionId = newSession(orm);
     configureAuto(orm, AGENT_ID, 1);
     completedTurn(orm, sessionId, "t1");
@@ -834,6 +834,19 @@ describe("job execution", () => {
     const third = gateway.calls[2].messages[1].content;
     expect((JSON.parse(second) as { blocked: unknown[] }).blocked).toHaveLength(8);
     expect((JSON.parse(third) as { blocked: unknown[] }).blocked).toHaveLength(1);
+    const snapshots = business.db
+      .query<{ source_refs: string }, []>(
+        "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id = c.step_id JOIN agent_runs r ON r.run_id = s.run_id WHERE r.spec_id = 'memory.suppression' ORDER BY r.started_at,r.rowid",
+      )
+      .all();
+    expect(
+      snapshots.map(
+        (snapshot) =>
+          JSON.parse(snapshot.source_refs).filter(
+            (source: { kind: string }) => source.kind === "memory",
+          ).length,
+      ),
+    ).toEqual([8, 1]);
     expect(jobs(orm)[0].status).toBe("succeeded");
     expect(entries(orm, AGENT_ID).filter((e) => e.status === "active")).toHaveLength(1);
   });

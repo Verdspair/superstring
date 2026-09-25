@@ -1,3 +1,4 @@
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // P3 durable dispatch cycle: run at most one QQ model task, under a persisted lease.
 //
 // The cycle is the only place where the durable lease meets the P3l composition. It
@@ -92,6 +93,7 @@ export async function runQqImmediateReplyCycle(
   input: QqDispatchClock,
   stage: QqStickerStage,
   sender?: QqReplySender,
+  agentRuntime?: LeafAgentRuntime,
 ): Promise<QqImmediateCycleResult> {
   const now = input.nowSeconds;
   const task = nextQqImmediateReplyTask(orm, { nowSeconds: now });
@@ -132,6 +134,7 @@ export async function runQqImmediateReplyCycle(
       { kind: "candidate", prepared: preparation, openings: qqImmediateOpenings(preparation) },
       now,
       stage,
+      agentRuntime,
     );
     if (outcome.kind !== "prepared_only" || outcome.drafts.length === 0) {
       releaseQqDispatchLease(orm, task.token);
@@ -194,6 +197,7 @@ export async function runQqDispatchCycle(
   stage: QqStickerStage,
   /** Omitted means "this build cannot deliver": the draft is dropped after the commit (P5o). */
   sender?: QqReplySender,
+  agentRuntime?: LeafAgentRuntime,
 ): Promise<QqDispatchCycleResult> {
   const task: QqDispatchTask | null = nextQqDispatchTask(orm, input.nowSeconds);
   if (!task) return { kind: "idle" };
@@ -230,6 +234,7 @@ export async function runQqDispatchCycle(
       gateway,
       { bindingId: task.bindingId, path: task.path, nowSeconds: input.nowSeconds },
       stage,
+      agentRuntime,
     );
     if (outcome.kind !== "prepared_only" || outcome.drafts.length === 0) {
       // Release first: the lease row references the candidate, so it must stop naming it

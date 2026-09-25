@@ -1,3 +1,6 @@
+import type { Database } from "bun:sqlite";
+import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
+import { AgentRunRepository } from "../db/agent-run-repository";
 // The intake runtime: connection events in, durable observations out.
 //
 // This is the assembly point the plan lists as P2's remaining item. It connects three
@@ -205,7 +208,7 @@ export interface QqIntakeRuntimeOptions {
    * The media reading seam (P5m). Omitted, media is still recorded and never read — the same
    * shape P4b left behind, because a caller without a vision client must not silently read.
    */
-  media?: { vision: VisionClient };
+  media?: { vision: VisionClient; agentRuntime?: LeafAgentRuntime };
   /** Seconds since epoch, the unit the dispatch rows use. Injectable so tests own the clock. */
   nowSeconds?: () => number;
   onEvent?: (event: QqIntakeEvent) => void;
@@ -235,9 +238,20 @@ export class QqIntakeRuntime {
   #timer: ReturnType<typeof setInterval> | null = null;
   #supervise: unknown = null;
   #stopped = true;
+  readonly #mediaRuntime?: LeafAgentRuntime;
 
   constructor(options: QqIntakeRuntimeOptions) {
     this.#options = options;
+    if (options.media) {
+      this.#mediaRuntime =
+        options.media.agentRuntime ??
+        createAgentRuntime({
+          vision: options.media.vision,
+          repository: new AgentRunRepository(
+            (options.orm as unknown as { $client: Database }).$client,
+          ),
+        });
+    }
   }
 
   get connection(): OneBotConnection | null {
@@ -428,15 +442,15 @@ export class QqIntakeRuntime {
     if (message.kind !== "message") return;
     const observation = message.observation;
     const media: QqEventMediaDeps | undefined = (() => {
-      const vision = this.#options.media?.vision;
-      if (!vision) return undefined;
+      const agentRuntime = this.#mediaRuntime;
+      if (!agentRuntime) return undefined;
       return {
         adapterFor: ({ mediaPrompt, frames, maxDimension }) =>
           createQqMediaAdapter({
             prompt: mediaPrompt,
             frames,
             maxDimension,
-            vision,
+            agentRuntime,
             fetchSource: createQqMediaSourceFetcher({
               resolveSource: (request): Promise<OneBotMediaSourceResult> =>
                 this.#connection?.resolveMediaSource(request) ??

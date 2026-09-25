@@ -4,6 +4,7 @@ import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { Field } from "../../ui/Field";
+import { ModelUseHint } from "../models/ModelUseHint";
 import { modelOptionLabel } from "../models/model-availability";
 import { organizationDirty } from "./types";
 
@@ -137,6 +138,11 @@ export function OrganizationModelPage() {
               ))}
             </select>
           </Field>
+          <ModelUseHint
+            purpose="vision"
+            configured={editor.visionModelName}
+            saved={editor.source.vision_model_name}
+          />
           <Field label={t("语音转写模型")} info={t("用于把语音转成文字；未配置＝不能转写。")}>
             <select
               aria-label={t("语音转写模型")}
@@ -156,6 +162,11 @@ export function OrganizationModelPage() {
               ))}
             </select>
           </Field>
+          <ModelUseHint
+            purpose="transcription"
+            configured={editor.transcriptionModelName}
+            saved={editor.source.transcription_model_name}
+          />
           <div className="workspace-links">
             <button
               className="primary"

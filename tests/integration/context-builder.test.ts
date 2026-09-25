@@ -542,7 +542,16 @@ describe("R4 ContextBuilder end-to-end", () => {
           usage = value;
         },
       });
-      expect(messages.filter((message) => message.role === "user")).toHaveLength(2);
+      // The recent user turn, current question and summary data are all lower-trust input.
+      expect(messages.filter((message) => message.role === "user")).toHaveLength(3);
+      expect(messages.find((message) => message.content.includes("有损分段摘要数据"))?.role).toBe(
+        "user",
+      );
+      expect(
+        messages
+          .filter((message) => message.role === "system")
+          .some((message) => message.content.includes("source_ids")),
+      ).toBe(false);
       if (!usage) throw new Error("Missing context usage");
       expect(usage.components.summaries).toBeGreaterThan(0);
       expect(usage.components.summaries).toBeLessThanOrEqual(500);
@@ -835,4 +844,32 @@ describe("R4 ContextBuilder end-to-end", () => {
       listMessages(business.orm, sessionId).find((item) => item.role === "assistant")?.content,
     ).toBe("回答");
   });
+});
+
+it("marks a malformed context selector failed in the shared runtime", async () => {
+  const ctx = setup();
+  try {
+    const sessionId = newSession(ctx.orm);
+    const source = completedTurn(ctx.orm, sessionId, "selection-source");
+    seedMemory(ctx.orm, source.id, 1, "记忆正文");
+    const current = activeTurn(ctx.orm, sessionId, "selection-current", "qwen strasse");
+    ctx.gateway.completeReply = () => '{"ids":["outside-candidates"]}';
+    await expect(
+      builder(ctx).build({
+        sessionId,
+        currentTurnId: current.turn.id,
+        runtime: current.prepared.runtime,
+        generationToken: current.prepared.generationToken,
+      }),
+    ).rejects.toThrow();
+    expect(
+      ctx.business.db
+        .query<{ status: string }, []>(
+          "SELECT status FROM agent_runs WHERE spec_id = 'context.select'",
+        )
+        .get()?.status,
+    ).toBe("failed");
+  } finally {
+    ctx.business.close();
+  }
 });

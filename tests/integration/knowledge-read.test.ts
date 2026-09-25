@@ -345,7 +345,7 @@ describe("S3 known migration", () => {
         document_ids: "[]",
         revision: 1,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 38 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 39 });
       ensureBusinessSchema(db);
       expect(db.query("SELECT count(*) AS n FROM agent_knowledge_read_settings").get()).toEqual({
         n: 1,
@@ -403,6 +403,7 @@ describe("S3 known migration", () => {
           sql[35] ?? "",
           sql[36] ?? "",
           sql[37] ?? "",
+          sql[38] ?? "",
         ]),
       ).toThrow();
       expect(db.query("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);

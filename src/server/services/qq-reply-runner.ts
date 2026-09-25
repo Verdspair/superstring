@@ -1,3 +1,4 @@
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // Generate the sentence of a reply after an explicit, readable initiative judgement (ADR0018 P3f).
 // This is not a sender: no socket, receipt, speech log, or send ledger is touched.
 //
@@ -146,6 +147,7 @@ export async function generateQqTextReply(
   judgement: Extract<QqJudgementRun, { kind: "candidate" }>,
   opening: QqReplyOpening,
   nowSeconds: number,
+  agentRuntime?: LeafAgentRuntime,
 ): Promise<QqReplyDraft> {
   if (!Number.isSafeInteger(nowSeconds) || nowSeconds < 0)
     throw new TypeError("Invalid QQ reply clock");
@@ -194,8 +196,13 @@ export async function generateQqTextReply(
     messages: conversationMessagesSince(orm, scope, {
       sinceSeconds,
       limit: limits.messageLimit,
+      includeSources: true,
     }).map(({ eventKey: _eventKey, ...message }) => message),
-    ownSpeech: ownSpeechSince(orm, scope, { sinceSeconds, limit: limits.messageLimit }),
+    ownSpeech: ownSpeechSince(orm, scope, {
+      sinceSeconds,
+      limit: limits.messageLimit,
+      includeSources: true,
+    }),
   });
   const selection = qqSelectContext({ timeline, limits, nowSeconds });
   // The comparison sits after the context read so a held draft can still carry the selection its
@@ -268,6 +275,8 @@ export async function generateQqTextReply(
   let memory: Awaited<ReturnType<typeof recallQqReplyMemory>>;
   try {
     memory = await recallQqReplyMemory(orm, gateway, {
+      agentRuntime,
+      sources: selection.messages.flatMap((message) => message.sources ?? []),
       runtime,
       snapshot,
       question: qqJudgementQuestion(selection.messages.map((message) => message.text)),

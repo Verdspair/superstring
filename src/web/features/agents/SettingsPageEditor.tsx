@@ -6,6 +6,7 @@ import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
 import { SectionB } from "../memory/SectionB";
+import { ModelUseHint } from "../models/ModelUseHint";
 import { ChatModelFields } from "./ChatModelFields";
 import { MemoryPageFields } from "./MemoryPageFields";
 import { dirtyPages, type EditablePage } from "./page-drafts";
@@ -129,6 +130,21 @@ export function SettingsPageEditor({
             </option>
           ))}
         </select>
+        <ModelUseHint
+          purpose={
+            key === "memory_consolidation_model_name"
+              ? "memory_organization"
+              : key === "memory_retrieval_model_name"
+                ? "retrieval"
+                : key === "context_compression_model_name"
+                  ? "compression"
+                  : "chat"
+          }
+          configured={value}
+          saved={editor.agent[key]}
+          chatModel={draft.model_name}
+          savedChatModel={editor.agent.model_name}
+        />
       </Field>
     );
   };
