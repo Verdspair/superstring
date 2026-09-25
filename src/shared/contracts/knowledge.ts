@@ -88,6 +88,7 @@ export const KnowledgeDocumentSchema = z.strictObject({
     "disabled",
   ]),
   error_code: z.string().nullable(),
+  latest_job_id: UuidSchema.nullable().optional(),
 });
 export const KnowledgeDocumentDetailSchema = KnowledgeDocumentSchema.extend({
   original_text: z.string(),

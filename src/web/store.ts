@@ -16,6 +16,7 @@ import {
   createQqStickerActions,
   createQqStorageActions,
 } from "./features/qq/actions";
+import { createRunActions } from "./features/runs/slice";
 import { createBootstrapActions } from "./state/bootstrap";
 import { defaultEffects } from "./state/effects";
 import { initial } from "./state/initial";
@@ -44,6 +45,7 @@ export const useSuperstringStore = create<SuperstringState>()((set, get) => ({
   ...createPageActions(set, get),
   ...createModelActions(set, get),
   ...createMemoryActions(set, get),
+  ...createRunActions(set, get),
   ...createKnowledgeActions(set, get),
   ...createKnowledgeModelActions(set, get),
   ...createKnowledgeReadActions(set, get),

@@ -107,6 +107,7 @@ namespace Superstring.Setup
         "app/resources/migrations/versions/0036_qq_judgement_reuse.sql",
         "app/resources/migrations/versions/0037_qq_judgement_per_speaker.sql",
         "app/resources/migrations/versions/0038_qq_judgement_model.sql",
+        "app/resources/migrations/versions/0039_agent_runs.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

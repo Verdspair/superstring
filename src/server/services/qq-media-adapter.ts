@@ -13,8 +13,9 @@
 // full video understanding and there is no video decoder). Both refuse loudly — the reader records
 // the attempt and stays silent in the conversation, which is §7.1's failure path.
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { VisionClient } from "../llm/vision-client";
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 import { sampleQqAnimationFrames } from "./qq-animation-frames";
 import { QQ_STICKER_CONTENT_TYPES, readQqImageHeader } from "./qq-image-header";
 import type { QqMediaReadAdapter } from "./qq-media-reader";
@@ -40,7 +41,7 @@ export type QqMediaSourceFetcher = (input: {
 
 export interface QqMediaAdapterOptions {
   readonly fetchSource: QqMediaSourceFetcher;
-  readonly vision: VisionClient;
+  readonly agentRuntime: LeafAgentRuntime;
   /** The instruction that travels with the picture — the scheme's media slot, assembled upstream. */
   readonly prompt: string;
   /** §7.1's 可改 sampling, from the conversation's scheme; omitted means the defaults above. */
@@ -88,19 +89,30 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
     .max(2048)
     .parse(options.maxDimension ?? QQ_MEDIA_READ_MAX_DIMENSION);
   return {
-    async read({ kind, sourceRef, model }): Promise<string> {
+    async read({ kind, sourceRef, model, source: reference, owner, signal }): Promise<string> {
       if (kind === "record") {
         throw new Error("QQ media adapter cannot transcribe voice: the protocol is undecided");
       }
       if (kind === "video") {
         throw new Error("QQ media adapter does not read video");
       }
+      signal?.throwIfAborted();
       const source = await options.fetchSource({ kind, sourceRef });
-      return options.vision.annotate({
-        model,
-        prompt,
-        images: imagesFor(source.bytes, frames, maxDimension),
-      });
+      signal?.throwIfAborted();
+      // The transport reference can contain a signed URL or a data URL. Only the source
+      // identity and the runtime's image hashes are persisted in a ContextHandle.
+      const sourceId = reference?.id ?? createHash("sha256").update(sourceRef).digest("hex");
+      return options.agentRuntime.completeVisionLeaf(
+        { id: "media.describe", version: "1" },
+        {
+          model,
+          prompt,
+          images: imagesFor(source.bytes, frames, maxDimension),
+          signal,
+          owner: owner ?? { kind: "qq_media", id: sourceId },
+          sources: reference ? [reference] : [],
+        },
+      );
     },
   };
 }

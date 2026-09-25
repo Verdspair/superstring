@@ -1,3 +1,4 @@
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // P3i: one bounded regeneration after a reviewed supplement. No QQ transport or send.
 
 import { qqReplyTaskPrompt } from "../../shared/contracts/qq";
@@ -58,6 +59,7 @@ export async function recomputeQqReply(
   pending: QqPendingReview,
   verdict: Extract<QqReviewResult, { kind: "recompute_needed" }>,
   nowSeconds: number,
+  agentRuntime?: LeafAgentRuntime,
 ): Promise<QqRecomputeResult> {
   if (!Number.isSafeInteger(nowSeconds) || nowSeconds < 0)
     throw new TypeError("Invalid QQ recompute clock");
@@ -105,8 +107,13 @@ export async function recomputeQqReply(
     messages: conversationMessagesSince(orm, scope, {
       sinceSeconds,
       limit: limits.messageLimit,
+      includeSources: true,
     }).map(({ eventKey: _eventKey, ...message }) => message),
-    ownSpeech: ownSpeechSince(orm, scope, { sinceSeconds, limit: limits.messageLimit }),
+    ownSpeech: ownSpeechSince(orm, scope, {
+      sinceSeconds,
+      limit: limits.messageLimit,
+      includeSources: true,
+    }),
   });
   const selection = qqSelectContext({ timeline, limits, nowSeconds });
   if (qqMemberEventCount(orm, scope) !== eventCount) return { kind: "review_required" };
@@ -166,6 +173,8 @@ export async function recomputeQqReply(
   let memory: Awaited<ReturnType<typeof recallQqReplyMemory>>;
   try {
     memory = await recallQqReplyMemory(orm, gateway, {
+      agentRuntime,
+      sources: selection.messages.flatMap((message) => message.sources ?? []),
       runtime,
       snapshot,
       question: qqJudgementQuestion(selection.messages.map((message) => message.text)),

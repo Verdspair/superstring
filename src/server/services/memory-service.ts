@@ -12,6 +12,9 @@
 
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, lte } from "drizzle-orm";
+import type { SourceRef } from "../../shared/contracts/evidence";
+import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
+import { AgentRunRepository } from "../db/agent-run-repository";
 import {
   claim,
   enqueue,
@@ -33,6 +36,7 @@ import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories
 import * as schema from "../db/schema";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import { memoryEntrySources, observationSourcesForRun, turnSources } from "../modules/provenance";
 import {
   buildConsolidationPrompt,
   type ConsolidationConfig,
@@ -60,6 +64,7 @@ export interface MemoryServiceOptions {
   /** The raw handle, needed for the explicit `BEGIN IMMEDIATE` transactions. */
   db: Database;
   gateway: ModelGateway;
+  agentRuntime?: LeafAgentRuntime;
   /** How long an idle cycle waits before the next poll. */
   pollIntervalMs?: number;
   /** How often the heartbeat renews the lease. */
@@ -80,12 +85,14 @@ export interface MemoryInputs {
   config: ConsolidationConfig;
   sources: Array<Record<string, unknown>>;
   blocked: Array<Record<string, unknown>>;
+  sourceRefs: SourceRef[];
+  blockedRefs: SourceRef[][];
 }
 
 export class MemoryService {
   private readonly orm: Orm;
   private readonly db: Database;
-  private readonly gateway: ModelGateway;
+  private readonly agentRuntime: LeafAgentRuntime;
   private readonly pollIntervalMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly jobTimeoutMs: number;
@@ -98,7 +105,12 @@ export class MemoryService {
   constructor(options: MemoryServiceOptions) {
     this.orm = options.orm;
     this.db = options.db;
-    this.gateway = options.gateway;
+    this.agentRuntime =
+      options.agentRuntime ??
+      createAgentRuntime({
+        gateway: options.gateway,
+        repository: new AgentRunRepository(options.db),
+      });
     this.pollIntervalMs = options.pollIntervalMs ?? 5_000;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
     this.jobTimeoutMs = options.jobTimeoutMs ?? 3_600_000;
@@ -324,6 +336,7 @@ export class MemoryService {
       // another group — a cross-scope content leak, not just a governance detail.
       const scopeKeys = snapshot.scope_key === undefined ? undefined : [snapshot.scope_key];
       let sources: Array<Record<string, unknown>>;
+      let sourceRefs: SourceRef[];
       if (job.kind === "merge") {
         const selected = entries(this.orm, agentId, JSON.parse(job.memoryIds) as string[], {
           scopeKeys,
@@ -332,6 +345,7 @@ export class MemoryService {
           fail("MEMORY_STATE_CONFLICT", "来源记忆已变化");
         }
         validateEntrySources(this.orm, selected);
+        sourceRefs = memoryEntrySources(this.orm, selected);
         sources = selected.map((entry) => ({
           name: entry.name,
           summary: entry.summary,
@@ -354,6 +368,7 @@ export class MemoryService {
         if (missing.length > 0) {
           fail("MEMORY_SOURCE_INVALID", "观察正文已过期或缺失，不能整理为长期记忆");
         }
+        sourceRefs = observationSourcesForRun(this.orm, eventIds);
         sources = ownedObservations(this.orm, agentId, eventIds, scopeKey).map((event) => ({
           message_id: event.messageId,
           speaker_kind: event.speakerKind,
@@ -361,19 +376,31 @@ export class MemoryService {
           body: bodies.get(event.eventKey) ?? "",
         }));
       } else {
+        sourceRefs = turnSources(this.orm, JSON.parse(job.turnIds) as string[]);
         sources = sourceData(
           turns(this.orm, agentId, job.sessionId, {
             ids: JSON.parse(job.turnIds) as string[],
           }),
         );
       }
-      const blocked = entries(this.orm, agentId, undefined, { scopeKeys }).flatMap((entry) => [
-        ...(entry.status === "suppressed" || entry.status === "replaced"
-          ? [{ name: entry.name, summary: entry.summary, body: entry.body }]
-          : []),
-        ...(correctionMetadata(entry.configSnapshot)?.rejected ?? []),
-      ]);
-      return { kind: job.kind, config, sources, blocked };
+      const existing = entries(this.orm, agentId, undefined, { scopeKeys });
+      const blockedWithRefs = existing.flatMap((entry) => {
+        const values = [
+          ...(entry.status === "suppressed" || entry.status === "replaced"
+            ? [{ name: entry.name, summary: entry.summary, body: entry.body }]
+            : []),
+          ...(correctionMetadata(entry.configSnapshot)?.rejected ?? []),
+        ];
+        return values.map((value) => ({ value, refs: memoryEntrySources(this.orm, [entry]) }));
+      });
+      return {
+        kind: job.kind,
+        config,
+        sources,
+        blocked: blockedWithRefs.map((entry) => entry.value),
+        sourceRefs,
+        blockedRefs: blockedWithRefs.map((entry) => entry.refs),
+      };
     });
 
     if (codePointLength(stringifyJsonSpaced(loaded.sources)) > MAX_SOURCE_CHARS) {
@@ -398,15 +425,29 @@ export class MemoryService {
     config: ConsolidationConfig,
     sources: Array<Record<string, unknown>>,
     blocked: Array<Record<string, unknown>>,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    context: {
+      owner: { kind: string; id: string; userId?: string; agentId?: string };
+      sources: SourceRef[];
+      blockedSources: SourceRef[][];
+    },
   ): Promise<MemoryDraft | null> {
-    const text = await this.gateway.complete({
-      messages: buildConsolidationPrompt(kind, config, sources),
-      model: config.model,
-      temperature: 0,
-      responseSchema: DRAFT_RESULT_JSON_SCHEMA,
-      signal,
-    });
+    const text = await this.agentRuntime.completeLeaf(
+      {
+        id: "memory.consolidate",
+        version: "1",
+        model: config.model,
+        temperature: 0,
+        responseSchema: DRAFT_RESULT_JSON_SCHEMA,
+      },
+      {
+        messages: buildConsolidationPrompt(kind, config, sources),
+        signal,
+        owner: context.owner,
+        sources: context.sources,
+        validate: parseResult,
+      },
+    );
     const draft = parseResult(text);
     if (draft === null) return null;
 
@@ -419,13 +460,22 @@ export class MemoryService {
     }
 
     for (let start = 0; start < blocked.length; start += 8) {
-      const response = await this.gateway.complete({
-        messages: suppressionPrompt(draft, blocked.slice(start, start + 8)),
-        model: config.model,
-        temperature: 0,
-        responseSchema: SUPPRESSION_RESULT_JSON_SCHEMA,
-        signal,
-      });
+      const response = await this.agentRuntime.completeLeaf(
+        {
+          id: "memory.suppression",
+          version: "1",
+          model: config.model,
+          temperature: 0,
+          responseSchema: SUPPRESSION_RESULT_JSON_SCHEMA,
+        },
+        {
+          messages: suppressionPrompt(draft, blocked.slice(start, start + 8)),
+          signal,
+          owner: context.owner,
+          sources: [...context.sources, ...context.blockedSources.slice(start, start + 8).flat()],
+          validate: (text) => SuppressionResultSchema.parse(JSON.parse(text)),
+        },
+      );
       if (SuppressionResultSchema.parse(JSON.parse(response)).blocked) return null;
     }
     return draft;
@@ -512,6 +562,11 @@ export class MemoryService {
         inputs.sources,
         inputs.blocked,
         jobAbort.signal,
+        {
+          owner: { kind: "memory_job", id: jobId, userId: DEFAULT_USER_ID, agentId },
+          sources: inputs.sourceRefs,
+          blockedSources: inputs.blockedRefs,
+        },
       ).then(
         (value) => {
           workDone = true;

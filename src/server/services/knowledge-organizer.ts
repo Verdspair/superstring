@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { newId, nowIso } from "../db/repositories";
+import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
+import { AgentRunRepository } from "../db/agent-run-repository";
+import { DEFAULT_USER_ID, newId, nowIso } from "../db/repositories";
 import { AppError } from "../errors";
 import type { ChatMessage, ModelGateway } from "../llm/model-gateway";
 import { knowledgeSegments, utf8Size } from "./knowledge-segments";
@@ -30,6 +32,7 @@ class OrganizerFailure extends Error {
 export interface KnowledgeOrganizerOptions {
   db: Database;
   gateway: ModelGateway;
+  agentRuntime?: LeafAgentRuntime;
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   leaseMs?: number;
@@ -44,8 +47,15 @@ export class KnowledgeOrganizer {
   private wake: (() => void) | null = null;
   private stopped = false;
   private readonly leaseMs: number;
+  private readonly agentRuntime: LeafAgentRuntime;
   constructor(private readonly options: KnowledgeOrganizerOptions) {
     this.leaseMs = options.leaseMs ?? 30000;
+    this.agentRuntime =
+      options.agentRuntime ??
+      createAgentRuntime({
+        gateway: options.gateway,
+        repository: new AgentRunRepository(options.db),
+      });
     if (this.leaseMs <= (options.heartbeatIntervalMs ?? 100))
       throw new Error("Heartbeat must precede lease expiry");
   }
@@ -230,14 +240,37 @@ export class KnowledgeOrganizer {
         if (output < 128 || cost + output + 256 > capacity)
           throw new OrganizerFailure("KNOWLEDGE_INPUT_TOO_LARGE");
         const text = await this.call(signal, () =>
-          this.options.gateway.complete({
-            messages,
-            model: job.model_name,
-            temperature: 0,
-            maxTokens: output,
-            responseSchema: RESPONSE_SCHEMA,
-            signal,
-          }),
+          this.agentRuntime.completeLeaf(
+            {
+              id: "knowledge.organize",
+              version: "1",
+              model: job.model_name,
+              temperature: 0,
+              maxTokens: output,
+              responseSchema: RESPONSE_SCHEMA,
+            },
+            {
+              messages,
+              signal,
+              validate: (text) => {
+                try {
+                  DraftSchema.parse(JSON.parse(text));
+                } catch {
+                  throw new OrganizerFailure("KNOWLEDGE_INVALID_RESULT");
+                }
+                if (utf8Size(text) > output)
+                  throw new OrganizerFailure("KNOWLEDGE_OUTPUT_TOO_LARGE");
+              },
+              owner: { kind: "knowledge_job", id: job.id, userId: DEFAULT_USER_ID },
+              sources: [
+                {
+                  kind: "knowledge_document",
+                  id: job.document_id,
+                  revision: String(job.content_version),
+                },
+              ],
+            },
+          ),
         );
         this.check(job, signal);
         let parsed: z.infer<typeof DraftSchema>;

@@ -6,6 +6,7 @@ import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
 import { localTime } from "../../ui/local-time";
+import { JobRunLink } from "../runs/RunInspector";
 import { QqMemoryControls } from "./QqMemoryControls";
 import { memoryScopeLabel } from "./scope-label";
 
@@ -167,6 +168,7 @@ export function MemoryScopePanel({
                 )
               : t("此分区还没有整理记录。")}
           </p>
+          {latest && <JobRunLink ownerKind="memory_job" ownerId={latest.id} />}
           {latest?.status === "succeeded" && !latest.result_id && (
             <p className="hint">{t("本次整理完成，但没有需要长期保留的新信息。")}</p>
           )}

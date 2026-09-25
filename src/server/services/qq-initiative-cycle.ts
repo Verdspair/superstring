@@ -10,6 +10,7 @@
 // sentence must not silently survive. The loop therefore picks after each (re)generation and
 // keeps the pick across a review that changed nothing.
 import { z } from "zod";
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 import { readQqBinding } from "../db/qq-binding-repository";
 import type { Orm } from "../db/repositories";
 import type { ModelGateway } from "../llm/model-gateway";
@@ -58,6 +59,7 @@ export async function runQqInitiativeCycle(
    * would answer U13 and silently skip §8.1-5.
    */
   stage: QqStickerStage,
+  agentRuntime?: LeafAgentRuntime,
 ): Promise<QqInitiativeCycle> {
   const parsed = Input.safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ initiative cycle input");
@@ -80,7 +82,7 @@ export async function runQqInitiativeCycle(
         kind: "held",
         reason: judgement.kind === "blocked" ? judgement.reason : judgement.kind,
       };
-    return await runQqReplyPipeline(orm, gateway, judgement, nowSeconds, stage);
+    return await runQqReplyPipeline(orm, gateway, judgement, nowSeconds, stage, agentRuntime);
   } finally {
     entries.delete(key);
   }
@@ -102,12 +104,21 @@ export async function runQqReplyPipeline(
   judgement: Extract<QqJudgementRun, { kind: "candidate" }>,
   nowSeconds: number,
   stage: QqStickerStage,
+  agentRuntime?: LeafAgentRuntime,
 ): Promise<QqInitiativeCycle> {
   const drafts: QqRoundDraft[] = [];
   let failure: string | null = null;
   let recomputesUsed = 0;
   for (const opening of judgement.openings) {
-    const one = await prepareOneReply(orm, gateway, judgement, opening, nowSeconds, stage);
+    const one = await prepareOneReply(
+      orm,
+      gateway,
+      judgement,
+      opening,
+      nowSeconds,
+      stage,
+      agentRuntime,
+    );
     if (one.kind === "held") {
       failure = one.reason;
       console.warn(
@@ -134,11 +145,19 @@ async function prepareOneReply(
   opening: QqReplyOpening,
   nowSeconds: number,
   stage: QqStickerStage,
+  agentRuntime?: LeafAgentRuntime,
 ): Promise<
   | { readonly kind: "draft"; readonly draft: QqRoundDraft }
   | { readonly kind: "held"; readonly reason: string }
 > {
-  const reply = await generateQqTextReply(orm, gateway, judgement, opening, nowSeconds);
+  const reply = await generateQqTextReply(
+    orm,
+    gateway,
+    judgement,
+    opening,
+    nowSeconds,
+    agentRuntime,
+  );
   if (reply.kind !== "draft" && reply.kind !== "review_required")
     return { kind: "held", reason: reply.kind === "blocked" ? reply.reason : reply.kind };
   let pending: QqPendingReview = reply.kind === "draft" ? pendingQqReview(reply) : reply.draft;
@@ -185,7 +204,14 @@ async function prepareOneReply(
       continue;
     }
     if (review.kind !== "recompute_needed") return { kind: "held", reason: review.kind };
-    const refreshed = await recomputeQqReply(orm, gateway, pending, review, nowSeconds);
+    const refreshed = await recomputeQqReply(
+      orm,
+      gateway,
+      pending,
+      review,
+      nowSeconds,
+      agentRuntime,
+    );
     if (refreshed.kind === "blocked") return { kind: "held", reason: refreshed.reason };
     if (refreshed.kind !== "draft") return { kind: "held", reason: refreshed.kind };
     // A regenerated sentence invalidates the pick: the loop runs the stage again.

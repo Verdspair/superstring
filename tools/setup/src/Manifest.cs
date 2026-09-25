@@ -15,7 +15,7 @@ namespace Superstring.Setup
     {
         internal const int SupportedManifestVersion = 1;
         internal const int SupportedLayoutVersion = 1;
-        internal const int SupportedSchemaVersion = 24;
+        internal const int SupportedSchemaVersion = 39;
         internal const string Product = "superstring";
         internal const string Platform = "win32-x64";
 
@@ -154,6 +154,8 @@ namespace Superstring.Setup
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0037_qq_judgement_per_speaker.sql");
             if (manifest.SchemaVersion >= 38 && !seen.Contains("app/resources/migrations/versions/0038_qq_judgement_model.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0038_qq_judgement_model.sql");
+            if (manifest.SchemaVersion >= 39 && !seen.Contains("app/resources/migrations/versions/0039_agent_runs.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0039_agent_runs.sql");
             var launcher = root.ContainsKey("launcher") ? root["launcher"] as Dictionary<string, object> : null;
             if (launcher == null) throw new InvalidDataException("MANIFEST_MISSING_LAUNCHER");
             manifest.Launcher = new FileRecord

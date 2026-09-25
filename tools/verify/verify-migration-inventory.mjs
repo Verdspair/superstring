@@ -1,19 +1,23 @@
 // Migration inventory completeness check (ADR0018; see product policy).
 //
 // Why this exists: a schema version bump has to be mirrored in roughly 25 hardcoded lists.
-// Most of them are covered by `verify-all`, but the C# files and `verify-setup.mjs` are NOT
-// part of the gate's five checks, and `node --check` only proves those files parse. Two real
+// C# files and `verify-setup.mjs` are not executed by the portable gate, and
+// `node --check` only proves JavaScript parses. Two real
 // mistakes got past both of those: a bulk replace that REPLACED an existing migration entry
 // instead of appending after it, and a repair that put `&&` inside an `existsSync()` argument
 // so the older entry was never checked at all. Green gate, valid syntax, wrong inventory.
 //
 // So this script asserts the inventories directly, from the filesystem, and is meant to be run
-// after every schema change (and can be wired into the gate later).
+// after every schema change. `verify-all` includes it as a required check.
 //
 // Usage: bun tools/verify/verify-migration-inventory.mjs   (cwd = dev root)
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import {
+  checkInstallerSchemaVersions,
+  checkSetupMigrationExistence,
+} from "./migration-inventory-checks.mjs";
 
 const root = path.resolve(import.meta.dir, "../..");
 const migrations = readdirSync(path.join(root, "migrations/versions"))
@@ -119,32 +123,11 @@ for (const file of fullInventories) {
   }
 }
 
-// 4. verify-setup.mjs: the existence check must be its own call per migration. A `&&` inside
-//    the argument list would silently check only the last path.
-{
-  const text = read("tools/verify/verify-setup.mjs");
-  const wrong = [...text.matchAll(/existsSync\(\s*path\.join\([^)]*\)\s*&&/g)];
-  if (wrong.length) problems.push("verify-setup.mjs: `&&` inside an existsSync() argument");
-  for (const name of migrations) {
-    const count = text.split(name).length - 1;
-    if (count !== 1) problems.push(`verify-setup.mjs: ${name} referenced ${count} times`);
-  }
-}
+// 4. Every setup migration must be checked as the only argument of its own existence call.
+problems.push(...checkSetupMigrationExistence(read("tools/verify/verify-setup.mjs"), migrations));
 
-// 5. The installer policy must accept exactly the current version.
-{
-  const policy = read("tools/installer/upgrade-policy.mjs");
-  const accepted = policy.match(/businessSchemaVersion !== (\d+)/)?.[1];
-  if (Number(accepted) !== migrations.length) {
-    problems.push(`upgrade-policy accepts ${accepted}, filesystem has ${migrations.length}`);
-  }
-  for (const file of ["tools/installer/build-service.mjs", "tools/installer/build-package.mjs"]) {
-    const declared = read(file).match(/businessSchemaVersion: (\d+)/)?.[1];
-    if (Number(declared) !== migrations.length) {
-      problems.push(`${file} declares ${declared}, filesystem has ${migrations.length}`);
-    }
-  }
-}
+// 5. Package builders, upgrade acceptance and both native consumers agree on the version.
+problems.push(...checkInstallerSchemaVersions(read, migrations.length));
 
 // 6. `db-schema.test.ts` assembles its reference database from one constant per migration, so a
 //    filename appearing somewhere in the file proves nothing: the constant has to be *used* by

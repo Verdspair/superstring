@@ -1,3 +1,4 @@
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // Session, message and health routes. Behaviours that must not drift:
 // - `POST /sessions` is idempotent on `client_request_id` and answers 201.
 // - `DELETE /sessions/{id}/messages/{mid}` answers 204 with the three
@@ -86,6 +87,7 @@ export function sessionRoutes(
   db: Database,
   defaultModelName: string,
   gateway: ModelGateway,
+  agentRuntime?: LeafAgentRuntime,
 ): Hono {
   const router = new Hono();
 
@@ -169,6 +171,7 @@ export function sessionRoutes(
       orm,
       db,
       gateway,
+      agentRuntime,
       onContextUsage: (usage) => sendContext?.(usage),
     });
 

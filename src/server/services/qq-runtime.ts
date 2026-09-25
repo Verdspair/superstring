@@ -1,3 +1,4 @@
+import type { LeafAgentRuntime } from "../agent/agent-runtime";
 // The QQ runtime host (ADR0018 §12, P5): the piece that makes the durable state machine run.
 //
 // Everything the QQ side does was already written and tested, but nothing in the product ever
@@ -67,6 +68,7 @@ export function qqDispatchRunner(input: {
   orm: Orm;
   gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity">;
   store: QqStickerStore;
+  agentRuntime?: LeafAgentRuntime;
   /** Omitted means this build cannot deliver, and an authorized draft is dropped (P5o). */
   sender?: QqReplySender;
 }): QqDispatchRunner {
@@ -81,6 +83,7 @@ export function qqDispatchRunner(input: {
       { nowSeconds, clockSeconds: () => Math.floor(Date.now() / 1000) },
       stage,
       input.sender,
+      input.agentRuntime,
     );
 }
 
@@ -89,6 +92,7 @@ export function qqImmediateRunner(input: {
   orm: Orm;
   gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity">;
   store: QqStickerStore;
+  agentRuntime?: LeafAgentRuntime;
   sender?: QqReplySender;
 }): QqImmediateRunner {
   const stage: QqStickerStage = {
@@ -102,6 +106,7 @@ export function qqImmediateRunner(input: {
       { nowSeconds, clockSeconds: () => Math.floor(Date.now() / 1000) },
       stage,
       input.sender,
+      input.agentRuntime,
     );
 }
 

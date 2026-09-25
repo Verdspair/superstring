@@ -22,6 +22,7 @@ import {
   qqStickerInitial,
   qqStorageInitial,
 } from "../features/qq/types";
+import { initialRunState } from "../features/runs/slice";
 import type {
   AgentDraft,
   ChatItem,
@@ -33,6 +34,7 @@ import type {
 } from "./types";
 
 export const initial = {
+  ...initialRunState,
   ...knowledgeInitial,
   ...qqStickerInitial,
   ...qqSchemeInitial,

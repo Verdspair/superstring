@@ -16,7 +16,6 @@ import type {
 import type { SuperstringApi, streamChat } from "../api";
 import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
-
 import type { DesktopSettingsState } from "../features/general/desktop-state";
 import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/types";
 import type {
@@ -25,6 +24,7 @@ import type {
   QqStickerState,
   QqStorageState,
 } from "../features/qq/types";
+import type { RunState } from "../features/runs/slice";
 
 export type Page = "chat" | "settings";
 export type SettingsView =
@@ -77,7 +77,8 @@ export interface AgentDraft {
 }
 
 export interface SuperstringState
-  extends KnowledgeState,
+  extends RunState,
+    KnowledgeState,
     QqStickerState,
     QqSchemeState,
     QqStorageState,

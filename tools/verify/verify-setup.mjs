@@ -284,11 +284,25 @@ try {
         path.join(
           installRoot,
           "app/resources/migrations/versions/0034_qq_initiative_min_score.sql",
-          "app/resources/migrations/versions/0035_qq_reply_split.sql",
-          "app/resources/migrations/versions/0036_qq_judgement_reuse.sql",
-          "app/resources/migrations/versions/0037_qq_judgement_per_speaker.sql",
-          "app/resources/migrations/versions/0038_qq_judgement_model.sql",
         ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0035_qq_reply_split.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0036_qq_judgement_reuse.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0037_qq_judgement_per_speaker.sql",
+        ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0038_qq_judgement_model.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0039_agent_runs.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

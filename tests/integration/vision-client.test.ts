@@ -109,3 +109,43 @@ describe("the multimodal request shape", () => {
     expect(formats).toEqual(["json_schema", "json_object"]);
   });
 });
+
+it("propagates caller cancellation to the in-flight vision request", async () => {
+  const controller = new AbortController();
+  let reached!: () => void;
+  const started = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let upstream: AbortSignal | undefined;
+  const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    upstream = init?.signal ?? undefined;
+    reached();
+    return await new Promise<Response>((_resolve, reject) => {
+      upstream?.addEventListener("abort", () => reject(upstream?.reason), { once: true });
+    });
+  }) as typeof fetch;
+  const client = createLmStudioVisionClient(config, fetchImpl);
+  const pending = client.annotate({
+    model: "vision",
+    prompt: "describe",
+    images: [],
+    signal: controller.signal,
+  });
+  await started;
+  controller.abort(new Error("stop media task"));
+  await expect(pending).rejects.toThrow("stop media task");
+  expect(upstream?.aborted).toBe(true);
+});
+
+it("does not begin a vision request after its caller has cancelled", async () => {
+  let calls = 0;
+  const client = createLmStudioVisionClient(config, (async () => {
+    calls++;
+    return new Response("{}");
+  }) as unknown as typeof fetch);
+  const signal = AbortSignal.abort(new Error("already cancelled"));
+  await expect(
+    client.annotate({ model: "vision", prompt: "describe", images: [], signal }),
+  ).rejects.toThrow("already cancelled");
+  expect(calls).toBe(0);
+});

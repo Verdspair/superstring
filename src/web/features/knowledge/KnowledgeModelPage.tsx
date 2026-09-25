@@ -3,6 +3,7 @@ import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
+import { ModelUseHint } from "../models/ModelUseHint";
 import { modelOptionLabel } from "../models/model-availability";
 import { knowledgeModelDirty } from "./types";
 
@@ -59,6 +60,11 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
                   ),
                 )}
               </select>
+              <ModelUseHint
+                purpose="knowledge_organization"
+                configured={editor.modelName}
+                saved={editor.source.model_name}
+              />
             </Field>
           ) : (
             <div className="knowledge-rule-grid">

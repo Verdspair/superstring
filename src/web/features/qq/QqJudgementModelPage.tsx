@@ -11,6 +11,7 @@ import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
+import { ModelUseHint } from "../models/ModelUseHint";
 import { modelOptionLabel } from "../models/model-availability";
 
 export function QqJudgementModelPage() {
@@ -72,6 +73,11 @@ export function QqJudgementModelPage() {
           ))}
         </select>
       </Field>
+      <ModelUseHint
+        purpose="qq_judgement"
+        configured={settings.judgement_model_name}
+        saved={settings.judgement_model_name}
+      />
       {settings.enabled ? (
         <p className="hint" role="status">
           {t("当前判断模型：{0}", value === "" ? t("跟随对话模型") : value)}

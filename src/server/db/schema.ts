@@ -1609,7 +1609,101 @@ export const qqJudgementReadings = sqliteTable(
   ],
 );
 
+// 0039: inference ownership and source-bound input snapshots.
+export const agentRuns = sqliteTable(
+  "agent_runs",
+  {
+    runId: text("run_id").primaryKey().notNull(),
+    specId: text("spec_id").notNull(),
+    specVersion: text("spec_version").notNull(),
+    ownerKind: text("owner_kind").notNull(),
+    ownerId: text("owner_id").notNull(),
+    userId: text("user_id"),
+    agentId: text("agent_id"),
+    status: text("status").notNull(),
+    startedAt: text("started_at").notNull(),
+    endedAt: text("ended_at"),
+    errorCode: text("error_code"),
+  },
+  (t) => [
+    index("ix_agent_runs_owner").on(t.ownerKind, t.ownerId, t.startedAt),
+    index("ix_agent_runs_user").on(t.userId, t.startedAt),
+    check(
+      "agent_runs_status",
+      sql`${t.status} IN ('prepared','deciding','observing','generating','completed','no_output','failed','cancelled')`,
+    ),
+  ],
+);
+export const agentSteps = sqliteTable(
+  "agent_steps",
+  {
+    stepId: text("step_id").primaryKey().notNull(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => agentRuns.runId, { onDelete: "cascade" }),
+    stepNo: integer("step_no").notNull(),
+    model: text("model").notNull(),
+    phase: text("phase").notNull(),
+    status: text("status").notNull(),
+    startedAt: text("started_at").notNull(),
+    endedAt: text("ended_at"),
+    errorCode: text("error_code"),
+    decision: text("decision"),
+  },
+  (t) => [
+    unique("agent_steps_run_no").on(t.runId, t.stepNo),
+    check("agent_steps_no", sql`${t.stepNo} > 0`),
+    check("agent_steps_phase", sql`${t.phase} IN ('leaf','next','generate','vision')`),
+    check("agent_steps_status", sql`${t.status} IN ('running','completed','failed','cancelled')`),
+  ],
+);
+export const contextSnapshots = sqliteTable(
+  "context_snapshots",
+  {
+    stepId: text("step_id")
+      .primaryKey()
+      .notNull()
+      .references(() => agentSteps.stepId, { onDelete: "cascade" }),
+    sourceRefs: text("source_refs").notNull(),
+    layout: text("layout").notNull(),
+    expiresAt: text("expires_at"),
+    protectedMessages: text("protected_messages"),
+    status: text("status").notNull(),
+  },
+  (t) => [
+    index("ix_context_snapshots_expiry").on(t.expiresAt),
+    check("context_snapshots_refs", sql`json_valid(${t.sourceRefs})`),
+    check("context_snapshots_layout", sql`json_valid(${t.layout})`),
+    check(
+      "context_snapshots_messages",
+      sql`${t.protectedMessages} IS NULL OR json_valid(${t.protectedMessages})`,
+    ),
+    check("context_snapshots_status", sql`${t.status} IN ('exact','expired','revoked')`),
+  ],
+);
+export const runEvents = sqliteTable(
+  "run_events",
+  {
+    runId: text("run_id")
+      .notNull()
+      .references(() => agentRuns.runId, { onDelete: "cascade" }),
+    seq: integer("seq").notNull(),
+    type: text("type").notNull(),
+    at: text("at").notNull(),
+    payload: text("payload").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.runId, t.seq] }),
+    check("run_events_seq", sql`${t.seq} > 0`),
+    check("run_events_payload", sql`json_valid(${t.payload})`),
+  ],
+);
+
 export const businessTables = {
+  agentRuns,
+  agentSteps,
+  contextSnapshots,
+  runEvents,
   users,
   agents,
   agentPersonas,

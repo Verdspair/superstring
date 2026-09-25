@@ -179,6 +179,7 @@ describe("schema4 additive migration", () => {
     string,
     string,
     string,
+    string,
   ];
   it("upgrades exact v3 without overwriting existing overrides", () => {
     const db = new Database(":memory:");
@@ -197,7 +198,7 @@ describe("schema4 additive migration", () => {
         vision_model_name: null,
         transcription_model_name: null,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 38 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 39 });
     } finally {
       db.close();
     }

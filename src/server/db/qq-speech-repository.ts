@@ -5,7 +5,9 @@
 // relevant fact", so the contract can be applied to it: when this assistant last took
 // the initiative here, and whether a real partner has spoken since.
 
+import { createHash } from "node:crypto";
 import { and, count, desc, eq, gt, inArray, lte, max } from "drizzle-orm";
+import type { SourceRef } from "../../shared/contracts/evidence";
 import { fail } from "../errors";
 import { QQ_OBSERVATION_RETENTION_DAYS, speechExpiresAt } from "../services/qq-retention";
 import { QQ_RHYTHM_HOUR_SECONDS } from "../services/qq-rhythm-contract";
@@ -99,8 +101,8 @@ export function recordQqSpeech(
 export function ownSpeechSince(
   orm: Orm,
   scope: QqConversationScope,
-  input: { sinceSeconds: number; limit: number },
-): Array<{ occurredAtSeconds: number; text: string }> {
+  input: { sinceSeconds: number; limit: number; includeSources?: boolean },
+): Array<{ occurredAtSeconds: number; text: string; sources?: SourceRef[] }> {
   if (!Number.isInteger(input.sinceSeconds) || input.sinceSeconds < 0) {
     throw new TypeError("Invalid QQ own-speech query input");
   }
@@ -109,6 +111,8 @@ export function ownSpeechSince(
   }
   return orm
     .select({
+      id: schema.qqSpeechLog.id,
+      expiresAt: schema.qqSpeechText.expiresAt,
       occurredAtSeconds: schema.qqSpeechLog.spokeAtSeconds,
       text: schema.qqSpeechText.body,
     })
@@ -117,7 +121,22 @@ export function ownSpeechSince(
     .where(and(...conditions(scope), gt(schema.qqSpeechLog.spokeAtSeconds, input.sinceSeconds)))
     .orderBy(desc(schema.qqSpeechLog.spokeAtSeconds), desc(schema.qqSpeechLog.id))
     .limit(input.limit)
-    .all();
+    .all()
+    .map(({ id, expiresAt, ...row }) => ({
+      ...row,
+      ...(input.includeSources
+        ? {
+            sources: [
+              {
+                kind: "qq_speech",
+                id,
+                revision: createHash("sha256").update(row.text).digest("hex"),
+                expiresAt,
+              },
+            ],
+          }
+        : {}),
+    }));
 }
 
 /** The most recent thing this assistant said here, whatever kind it was. */

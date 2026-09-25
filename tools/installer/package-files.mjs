@@ -71,6 +71,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0036_qq_judgement_reuse.sql",
     "versions/0037_qq_judgement_per_speaker.sql",
     "versions/0038_qq_judgement_model.sql",
+    "versions/0039_agent_runs.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

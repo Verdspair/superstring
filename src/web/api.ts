@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z } from "zod";
 import {
   type AgentResponse,
   AgentResponseSchema,
@@ -41,6 +41,12 @@ import {
   TurnsListSchema,
   type UpdateModelProviderRequest,
 } from "../shared/contracts";
+import {
+  type ContextHandle,
+  InspectedContextSchema,
+  RunEventSchema,
+  RunSnapshotSchema,
+} from "../shared/contracts/agent-run";
 import { DesktopSettingsSchema, type DesktopSettingsUpdate } from "../shared/contracts/desktop";
 import {
   AgentKnowledgeReadSettingsSchema,
@@ -132,6 +138,29 @@ function json(method: string, body: unknown): RequestInit {
 }
 
 export const api = {
+  listRuns: (ownerKind: string, ownerId: string, signal?: AbortSignal) =>
+    requestJson(
+      `/v2/runs?${new URLSearchParams({ ownerKind, ownerId })}`,
+      z.strictObject({ runs: RunSnapshotSchema.array() }),
+      { signal, cache: "no-store" },
+    ),
+  getRun: (runId: string, signal?: AbortSignal) =>
+    requestJson(`/v2/runs/${encodeURIComponent(runId)}`, RunSnapshotSchema, {
+      signal,
+      cache: "no-store",
+    }),
+  getRunEvents: (runId: string, afterSeq = 0, signal?: AbortSignal) =>
+    requestJson(
+      `/v2/runs/${encodeURIComponent(runId)}/events?${new URLSearchParams({ afterSeq: String(afterSeq) })}`,
+      z.strictObject({ events: RunEventSchema.array() }),
+      { signal, cache: "no-store" },
+    ),
+  inspectRunContext: (handle: ContextHandle, signal?: AbortSignal) =>
+    requestJson(
+      `/v2/runs/${encodeURIComponent(handle.runId)}/context/${encodeURIComponent(handle.stepId)}`,
+      InspectedContextSchema,
+      { signal, cache: "no-store" },
+    ),
   getOrganizationSettings: () => requestJson("/organization/settings", OrganizationSettingsSchema),
   saveOrganizationSettings: (body: OrganizationSettingsUpdate) =>
     requestJson("/organization/settings", OrganizationSettingsSchema, json("PUT", body)),

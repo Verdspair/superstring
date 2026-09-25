@@ -3,6 +3,7 @@ import type { AgentDraft } from "../../state/types";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
 import { Field } from "../../ui/Field";
+import { ModelUseHint } from "../models/ModelUseHint";
 import { modelOptionLabel } from "../models/model-availability";
 
 export function ChatModelFields({
@@ -19,6 +20,7 @@ export function ChatModelFields({
     external: useSuperstringStore((s) => s.externalModelNames),
   };
   const t = useI18n();
+  const saved = useSuperstringStore((s) => s.pageEditor?.agent.model_name ?? null);
   const options = [...new Set([...models, ...(draft.model_name ? [draft.model_name] : [])])];
   return (
     <SettingsGroup id="settings-chat-model" title="对话模型">
@@ -40,6 +42,7 @@ export function ChatModelFields({
           ))}
         </select>
       </Field>
+      <ModelUseHint purpose="chat" configured={draft.model_name} saved={saved} />
       <Field
         label={t("回复随机度")}
         info={t("越低越稳定，越高越多样。对应 temperature，默认 0.7。")}
