@@ -224,7 +224,7 @@ it("shared conversations distinguish same-name members and preserve mention and 
   render(
     <ConversationTimeline conversation={{ ...bot, topology: "shared", participants: people }} />,
   );
-  expect(await screen.findByText("历史记录标记为面向助手")).toBeTruthy();
+  expect(await screen.findByText("历史记录标记为面向 Agent")).toBeTruthy();
   expect(screen.getAllByText("member-a").length).toBeGreaterThan(0);
   expect(screen.getAllByText("member-b").length).toBeGreaterThan(0);
   expect(screen.getByText("expired-platform-message")).toBeTruthy();

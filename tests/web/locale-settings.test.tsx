@@ -63,7 +63,9 @@ describe("locale catalog and preferences", () => {
   it("translates stored notices after changing language but preserves user parameters", () => {
     const text = msg("已创建助手「{0}」，可继续配置记忆、上下文与人设。", "中文助手");
     selectLocale("en");
-    expect(translateNotice(text)).toContain("Assistant “中文助手” created");
+    expect(text).toBe("已创建 Agent「中文助手」，可继续配置记忆、上下文与人设。");
+    expect(translateNotice(text)).toContain("Agent “中文助手” created");
+    expect(formatMessage("en", "选择助手：{0}", "Assistant")).toBe("Select Agent: Assistant");
     expect(formatMessage("en", "消息 {0}", "{0} 中文")).toBe("Message {0} 中文");
   });
   it("maps known API errors and preserves unknown diagnostics", () => {

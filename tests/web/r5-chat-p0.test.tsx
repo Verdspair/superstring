@@ -57,7 +57,7 @@ describe("聊天空白状态文案", () => {
     });
     render(<ChatPage />);
     expect(screen.getByRole("button", { name: "新建对话" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "认识你的助手" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "认识你的 Agent" })).toBeTruthy();
     expect(screen.queryByText("对话与记忆，留在你的本地工作空间")).toBeNull();
     expect(screen.getByRole("textbox", { name: "输入消息…" })).toBeTruthy();
   });
@@ -67,7 +67,7 @@ describe("聊天空白状态文案", () => {
     render(<ChatPage />);
     expect(screen.getByRole("heading", { name: "从一句话开始。" })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "输入消息…" })).toBeTruthy();
-    expect(screen.queryByText("点击“新建任务”，开启与助手的对话。")).toBeNull();
+    expect(screen.queryByText("点击“新建任务”，开启与 Agent 的对话。")).toBeNull();
   });
 });
 

@@ -29,8 +29,8 @@ describe("binding memory tasks", () => {
     ["nothing_to_organise", "当前没有待整理内容"],
     ["switch_off", "接入已关闭，无法整理"],
     ["paused", "此会话已暂停"],
-    ["busy", "助手已有整理任务"],
-    ["agent_disabled", "助手已停用"],
+    ["busy", "Agent 已有整理任务"],
+    ["agent_disabled", "Agent 已停用"],
   ] as const)("renders %s as a verdict, not success", async (status, label) => {
     setupLibrary({
       organiseQqMemory: vi.fn().mockResolvedValue({ status, job_id: null, pending: 4 }),

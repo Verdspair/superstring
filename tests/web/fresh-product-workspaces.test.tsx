@@ -52,7 +52,7 @@ describe("fresh assistant studio", () => {
   it("preserves agent drafts when the studio returns to its directory", async () => {
     await act(async () => render(<AssistantWorkspace />));
     fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Draft name" } });
-    fireEvent.click(screen.getByRole("button", { name: "所有助手" }));
+    fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
     expect(store.getState().pageEditor?.draft.name).toBe("Draft name");
     expect(store.getState().pageEditor?.agent.name).toBe("Agent A");
   });
@@ -134,7 +134,7 @@ describe("fresh library tasks", () => {
   it("document access names selected agents and saves grants only", async () => {
     const client = setupLibrary();
     await act(async () => render(<KnowledgeLibrary />));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "1 助手" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "1 Agent" })));
     fireEvent.click(screen.getByRole("checkbox", { name: "Agent B" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
     expect(client.saveKnowledgeGrants).toHaveBeenCalledWith(D, 3, [A, B]);
