@@ -17,6 +17,10 @@ compose them in task screens instead of building a parallel component or CSS sys
   Run `npm run check:i18n` (official i18next CLI) before submitting UI changes.
   `notices` preserves state-message compatibility; i18next owns interpolation for both namespaces.
 - `services/`: Effect-backed abortable reads and foreground polling, without a second data cache.
+- Conversation avatars: official Avatar/Dialog/RadioGroup compositions with local DiceBear
+  generators. The six CC0 style sources are listed in `screens/conversations/avatar-licenses.md`.
+  Uploads and chosen designs persist through the server conversation API; components own only
+  the unsaved draft. The product Logo remains unchanged.
 
 Motion handles visual transitions; it never owns mutations, drafts or protected input/output data.
 Use standard Tailwind layout utilities and semantic colors. Preserve existing field permissions,

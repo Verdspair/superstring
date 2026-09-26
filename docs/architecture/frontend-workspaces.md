@@ -76,6 +76,34 @@ flowchart TD
   requested/resolved model, attempts and unknown delivery status. Filters change
   the displayed evidence, not the running Agent.
 
+## Conversation appearance
+
+Product copy calls the configured identity **Agent** in both languages. User names,
+stored prompt text, API fields and the model protocol's `assistant` role are not
+rewritten.
+
+Conversation avatars use the official shadcn Avatar/Dialog/RadioGroup components
+and six CC0 DiceBear styles, generated locally without an external avatar service.
+The conversation ID supplies a stable default; users can select another design,
+upload a PNG/JPEG/WebP/GIF, or restore the default. The project Logo is separate.
+
+Appearance is server-owned metadata on the canonical conversation history anchor.
+Schema 44 stores a generated style/seed or the original image bytes in SQLite.
+`PUT /v2/conversations/:id/avatar` saves or resets it; the conversation summary
+includes the resulting metadata, and the corresponding GET serves uploaded bytes.
+The normal conversation access check applies to both metadata and image requests.
+Rebinding to another Agent isolates appearance; switching back restores that
+Agent's conversation appearance. Deleting its source removes avatar data.
+
+The directory's existing summary cache is the only frontend cache. A completed
+write merges only the avatar field, invalidates stale directory reads, and stays
+attached to its original conversation if the user navigates away. Other clients
+receive the shared value when they load or refresh the directory. Concurrent
+clients use last-successful-write semantics. Uploaded image URLs contain a content
+revision; replaced revisions are not served. File recognition and dimensions use
+`file-type` and `image-size`; accepted uploads are limited to 8 MiB, 8192 pixels per
+dimension and 40 million pixels. Original GIF animation bytes are preserved.
+
 ## Internationalization
 
 New UI uses `useTranslation()` or `<Trans>` directly with stable keys in standard
