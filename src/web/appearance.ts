@@ -30,6 +30,7 @@ import {
   resolveTheme,
   THEME_STORAGE_KEY,
 } from "../shared/appearance";
+import { persistDesktopPreference } from "./desktop-preferences";
 
 const properties = [
   "--superstring-tone-deep",
@@ -68,6 +69,7 @@ export function selectTheme(id: ThemeId): boolean {
   applyTheme(id);
   try {
     localStorage.setItem(THEME_STORAGE_KEY, id);
+    void persistDesktopPreference(THEME_STORAGE_KEY, id);
     delete document.documentElement.dataset.themeUnsaved;
     return true;
   } catch {
@@ -113,6 +115,7 @@ export function selectMode(mode: AppearanceMode): boolean {
   applyMode(mode);
   try {
     localStorage.setItem(MODE_STORAGE_KEY, mode);
+    void persistDesktopPreference(MODE_STORAGE_KEY, mode);
     delete document.documentElement.dataset.modeUnsaved;
     return true;
   } catch {

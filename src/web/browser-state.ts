@@ -1,4 +1,5 @@
 import type { BrowserStateConfig } from "../shared/contracts";
+import { persistDesktopPreference } from "./desktop-preferences";
 
 export interface BrowserStateStorage {
   read(storageKey: string): Promise<string | null>;
@@ -65,7 +66,9 @@ export function createBrowserStateStorage(config: BrowserStateConfig): BrowserSt
     async write(storageKey, value) {
       if (value === null) return;
       try {
-        localStorage.setItem(storageKey, await encrypt(value, config.secret));
+        const encrypted = await encrypt(value, config.secret);
+        localStorage.setItem(storageKey, encrypted);
+        await persistDesktopPreference(storageKey, encrypted);
       } catch {
         // Persistence failure is non-fatal to the action.
       }
