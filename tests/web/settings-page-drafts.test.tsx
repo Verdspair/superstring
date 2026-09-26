@@ -1,4 +1,5 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+// Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
+import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentResponse,
@@ -7,8 +8,7 @@ import {
   PersonaResponseSchema,
 } from "../../src/shared/contracts";
 import type { SuperstringApi } from "../../src/web/api";
-import { SettingsWorkspace } from "../../src/web/app/SettingsWorkspace";
-import { AgentSettings } from "../../src/web/features/agents/AgentSettings";
+
 import {
   dirtyPages,
   newPageEditor,
@@ -132,80 +132,6 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   selectLocale("zh-CN");
-});
-
-describe("容量预览与集中对话模型回归", () => {
-  it("M3：预算输入即时重算容量，不重复请求模型", async () => {
-    store.setState({ settingsRoute: "context" });
-    await act(async () => render(<SettingsWorkspace />));
-    expect(store.getState().capacityPreview).toContain("32768");
-    const probes = vi.mocked(client.getModelCapacity).mock.calls.length;
-    await act(async () =>
-      fireEvent.change(screen.getByRole("spinbutton", { name: "回复预留（token）" }), {
-        target: { value: "2000" },
-      }),
-    );
-    expect(store.getState().capacityPreview).toContain("回复预留 2000");
-    await act(async () =>
-      fireEvent.change(screen.getByRole("spinbutton", { name: "安全余量比例" }), {
-        target: { value: "0.1" },
-      }),
-    );
-    expect(store.getState().capacityPreview).toContain("27491");
-    expect(client.getModelCapacity).toHaveBeenCalledTimes(probes);
-    expect(client.updateAgent).not.toHaveBeenCalled();
-  });
-  it("M3：同模型切助手仍重新探测，不能复用旧助手缓存", async () => {
-    store.setState({ settingsRoute: "context" });
-    await act(async () => render(<SettingsWorkspace />));
-    const probes = vi.mocked(client.getModelCapacity).mock.calls.length;
-    await act(async () => {
-      await store.getState().editAgent("B");
-    });
-    expect(vi.mocked(client.getModelCapacity).mock.calls.length).toBeGreaterThan(probes);
-    await act(async () =>
-      fireEvent.change(screen.getByRole("spinbutton", { name: "回复预留（token）" }), {
-        target: { value: "2345" },
-      }),
-    );
-    expect(store.getState().capacityPreview).toContain("回复预留 2345");
-  });
-  it("新建模型在默认模型页使用统一分组，往返保留且离开有守卫", async () => {
-    await store.getState().editAgent("__new__");
-    store.setState({ settingsView: "agents", modelNames: ["model", "other-model"] });
-    store.getState().patchDraft({ name: "new assistant" });
-    const overview = render(<AgentSettings />);
-    expect(screen.queryByRole("combobox", { name: "对话模型" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "设置使用模型" }));
-    expect(store.getState().settingsRoute).toBe("models");
-    expect(store.getState().navigationConfirmOpen).toBe(false);
-    overview.unmount();
-    await act(async () => render(<SettingsWorkspace />));
-    fireEvent.change(screen.getByRole("combobox", { name: "对话模型" }), {
-      target: { value: "other-model" },
-    });
-    const temperature = screen.getByRole("slider", { name: "回复随机度" });
-    fireEvent.keyDown(temperature, { key: "Home" });
-    for (let step = 0; step < 8; step++) fireEvent.keyDown(temperature, { key: "ArrowRight" });
-    expect(document.querySelector("#settings-chat-model.workspace-group")).not.toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "返回助手管理继续创建" }));
-    expect(store.getState()).toMatchObject({
-      settingsView: "agents",
-      dirty: true,
-      editorDraft: { name: "new assistant", model_name: "other-model", temperature: 0.4 },
-    });
-    store.getState().openSettingsRoute("models");
-    store.getState().openChat();
-    expect(store.getState().navigationConfirmOpen).toBe(true);
-    store.getState().cancelPendingNavigation();
-    expect(store.getState().editorDraft?.model_name).toBe("other-model");
-    store.getState().openSettingsRoute("context");
-    await act(async () => {
-      await store.getState().confirmDiscardAndContinue();
-    });
-    expect(store.getState().dirty).toBe(false);
-    expect(store.getState().editorDraft?.name).not.toBe("new assistant");
-  });
 });
 
 describe("页面草稿与白名单保存", () => {
@@ -380,85 +306,12 @@ describe("页面草稿与白名单保存", () => {
     expect(await saving).toBe(false);
     expect(store.getState().knowledgeModelEditor?.modelName).toBe("new-session");
   });
-  it("新增三页英文内容完整且不依赖助手加载全局模型", async () => {
-    selectLocale("en");
-    // User-authored/default prompt contents are intentionally NOT translated.
-    store.getState().patchPageAgent("long-memory", {
-      memory_retrieval_prompt: "fixture retrieval",
-      memory_consolidation_prompt: "fixture consolidation",
-    });
-    store.setState({ settingsRoute: "long-memory" });
-    const { container } = render(<SettingsWorkspace />);
-    expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
-    await act(async () => store.getState().openSettingsRoute("context"));
-    expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
-    await act(async () => {
-      store.setState({
-        agents: [],
-        editorAgentId: "__new__",
-        editorDraft: null,
-        pageEditor: null,
-        persona: null,
-      });
-      store.getState().openSettingsRoute("knowledge-model");
-    });
-    expect(
-      screen.getByRole("combobox", {
-        name: "Shared default organization model",
-      }),
-    ).toBeTruthy();
-    expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
-  });
+
   it("新记忆与全局页面不显示旧策略即时保存提示", async () => {
     await store.getState().reloadMemory();
     expect(store.getState().feedback).toBe("");
   });
-  it("长期记忆页平铺且自动整理不再即时保存", () => {
-    store.setState({ settingsRoute: "long-memory" });
-    const { container } = render(<SettingsWorkspace />);
-    expect(container.querySelector("details")).toBeNull();
-    expect(container.querySelectorAll(".workspace-anchors a")).toHaveLength(4);
-    expect(container.querySelector("#settings-memory-management")).toBeTruthy();
-    fireEvent.change(screen.getByRole("spinbutton", { name: "触发间隔（完整轮数）" }), {
-      target: { value: "30" },
-    });
-    expect(client.updatePolicy).not.toHaveBeenCalled();
-    expect(store.getState().pageEditor?.policyDraft?.every_turns).toBe(30);
-  });
-  it("全量读取细节置底、说明清楚且保留独立保存", async () => {
-    store.setState({ settingsRoute: "long-memory" });
-    const { container } = render(<SettingsWorkspace />);
-    expect(container.querySelector("#settings-catalog-limits")).toBeNull();
-    fireEvent.change(screen.getByRole("combobox", { name: "默认读取强度" }), {
-      target: { value: "full_catalog" },
-    });
-    const details = container.querySelector("#settings-catalog-limits");
-    const automatic = container.querySelector("#settings-policy");
-    if (!details || !automatic) throw new Error("Missing sections");
-    expect(
-      automatic.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(details.querySelector("details")).toBeNull();
-    expect(details.textContent).toContain("通常无需调整");
-    expect(details.textContent).toContain("不是最终使用条数");
-    fireEvent.change(screen.getByRole("spinbutton", { name: "最多检查多少批记忆" }), {
-      target: { value: "77" },
-    });
-    fireEvent.change(screen.getByRole("spinbutton", { name: "每批检查多少条" }), {
-      target: { value: "22" },
-    });
-    act(() => store.getState().openSettingsRoute("context"));
-    expect(screen.queryByRole("spinbutton", { name: "最多检查多少批记忆" })).toBeNull();
-    act(() => store.getState().openSettingsRoute("long-memory"));
-    expect(
-      (screen.getByRole("spinbutton", { name: "每批检查多少条" }) as HTMLInputElement).value,
-    ).toBe("22");
-    await act(async () => {
-      expect(await store.getState().saveSettingsPage("long-memory")).toBe(true);
-    });
-    expect(persisted.p5_config?.max_catalog_batches).toBe(77);
-    expect(persisted.p5_config?.catalog_batch_size).toBe(22);
-  });
+
   it("基础页不提交模型或人设草稿，并推进公共版本", async () => {
     store.getState().patchPageAgent("basic", { name: "new name", model_name: "forbidden" });
     store.getState().patchPageAgent("models", { model_name: "next model" });
@@ -476,20 +329,7 @@ describe("页面草稿与白名单保存", () => {
     expect(await store.getState().saveSettingsPage("models")).toBe(true);
     expect(persisted.config_version).toBe(3);
   });
-  it("加载详情刷新目录基线，过渡保存后不会恢复过时字段", async () => {
-    persisted = {
-      ...persisted,
-      model_name: "latest server model",
-      config_version: 8,
-    };
-    await store.getState().editAgent("A");
-    expect(store.getState().agents.find((a) => a.id === "A")?.config_version).toBe(8);
-    store.getState().openAgentSettings();
-    await store.getState().savePersona({ persona_intensity: 80 });
-    act(() => store.getState().openSettingsRoute("models"));
-    render(<SettingsWorkspace />);
-    expect(store.getState().pageEditor?.draft.model_name).toBe("latest server model");
-  });
+
   it("改回保存值立即消除当前页dirty", () => {
     store.getState().patchPageAgent("basic", { name: "changed" });
     store.getState().patchPageAgent("basic", { name: "A" });
@@ -646,55 +486,7 @@ describe("页面草稿与白名单保存", () => {
       store.setState({ saveMemoryCorrection: original });
     }
   });
-  it("合并页保留全局和资料稿，基础信息保存只提交白名单", async () => {
-    await store.getState().loadKnowledgeModel();
-    store.getState().patchKnowledgeModel("global draft");
-    store.setState({ knowledgeDirty: true });
-    store.getState().patchPageAgent("models", { model_name: "model draft" });
-    store.getState().openSettingsRoute("basic");
-    render(<AgentSettings />);
-    fireEvent.change(screen.getByRole("textbox", { name: "助手名称" }), {
-      target: { value: "edited" },
-    });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存当前页" })));
-    expect(client.updateAgent).toHaveBeenLastCalledWith("A", {
-      name: "edited",
-      description: "",
-      is_active: true,
-      expected_version: 1,
-    });
-    expect(store.getState().pageEditor?.draft.model_name).toBe("model draft");
-    expect(store.getState().knowledgeModelEditor?.modelName).toBe("global draft");
-    expect(store.getState().knowledgeDirty).toBe(true);
-    expect(store.getState().navigationConfirmOpen).toBe(false);
-  });
-  it("四页平铺、字段隔离、锚点与保存按钮可用", async () => {
-    const { container } = render(<SettingsWorkspace />);
-    expect(container.querySelector("details")).toBeNull();
-    fireEvent.change(screen.getByRole("textbox", { name: "助手名称" }), {
-      target: { value: "new name" },
-    });
-    act(() => store.getState().openSettingsRoute("identity"));
-    expect(screen.queryByRole("textbox", { name: "助手名称" })).toBeNull();
-    expect(screen.getByRole("textbox", { name: "补充指令" })).toBeTruthy();
-    expect(screen.queryByRole("textbox", { name: "沟通风格" })).toBeNull();
-    act(() => store.getState().openSettingsRoute("expression"));
-    expect(screen.getByRole("textbox", { name: "沟通风格" })).toBeTruthy();
-    await act(async () => store.getState().openSettingsRoute("models"));
-    // Seven assistant/knowledge choices plus the two media purposes (P5i). The QQ judgement
-    // select (0038) is absent here because this fixture's client has no QQ settings route.
-    expect(screen.getAllByRole("combobox")).toHaveLength(9);
-    // Four model sections now: 共同整理默认值, QQ 判断模型 (0038), 当前助手模型, 知识库整理模型.
-    expect(screen.getAllByRole("link")).toHaveLength(4);
-    act(() => store.getState().openSettingsRoute("basic"));
-    cleanup();
-    render(<AgentSettings />);
-    expect((screen.getByRole("textbox", { name: "助手名称" }) as HTMLInputElement).value).toBe(
-      "new name",
-    );
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存当前页" })));
-    expect(persisted.name).toBe("new name");
-  });
+
   it("资料内部保存或放弃不连带处理助手页草稿", async () => {
     store.getState().patchPageAgent("basic", { name: "assistant draft" });
     store.setState({ settingsView: "knowledge", knowledgeDirty: true });
@@ -704,51 +496,7 @@ describe("页面草稿与白名单保存", () => {
     expect(client.updateAgent).not.toHaveBeenCalled();
     expect(store.getState().settingsView).toBe("workspace");
   });
-  it("过渡人设保存后重新进入工作区使用新的强度与人设", async () => {
-    store.getState().openAgentSettings();
-    store.getState().patchPersona({ communication_style: "legacy saved" });
-    await store.getState().savePersona({ persona_intensity: 85 });
-    act(() => store.getState().openSettingsRoute("expression"));
-    render(<SettingsWorkspace />);
-    expect(store.getState().pageEditor?.draft.persona_intensity).toBe(85);
-    expect(store.getState().pageEditor?.personaDraft.communication_style).toBe("legacy saved");
-  });
-  it.each(["A", "B", "C", "D"] as const)("旧%s区退役编辑控件，保留跳转与管理", (section) => {
-    store.setState({
-      settingsView: "agents",
-      activeSection: section,
-    });
-    const { container } = render(<AgentSettings />);
-    expect(screen.queryByRole("button", { name: "保存当前分区配置" })).toBeNull();
-    expect(container.querySelectorAll(".section-content textarea:not([readonly])")).toHaveLength(0);
-    expect(container.querySelectorAll(".section-content input[type=range]")).toHaveLength(0);
-    expect(screen.queryByText("按完整对话轮数自动整理；选项修改后立即保存。")).toBeNull();
-    expect(screen.getByRole("heading", { name: "助手管理" })).toBeTruthy();
-    expect(container.querySelector(".section-nav")).toBeNull();
-    expect(screen.queryByText("详细配置")).toBeNull();
-    expect(container.querySelector(".memory-management")).toBeNull();
-    expect(store.getState().settingsView).toBe("agents");
-    expect(store.getState().editorAgentId).toBe("A");
-    expect(client.updateAgent).not.toHaveBeenCalled();
-    expect(client.updatePolicy).not.toHaveBeenCalled();
-    expect(client.savePersona).not.toHaveBeenCalled();
-  });
-  it("长期记忆页切页拦截未保存纠正，取消不丢稿", () => {
-    store.setState({
-      settingsView: "workspace",
-      settingsRoute: "long-memory",
-      memoryCorrectionDirty: true,
-    });
-    render(<SettingsWorkspace />);
-    act(() => store.getState().openSettingsRoute("context"));
-    expect(store.getState().settingsRoute).toBe("long-memory");
-    expect(store.getState().pendingNavigation).toMatchObject({
-      settingsView: "workspace",
-      settingsRoute: "context",
-    });
-    act(() => store.getState().cancelPendingNavigation());
-    expect(store.getState().memoryCorrectionDirty).toBe(true);
-  });
+
   it.each(["save", "discard"] as const)("记忆纠正%s后切页保留其他配置草稿", async (choice) => {
     store.getState().patchPageAgent("long-memory", {
       memory_retrieval_prompt: "unsaved config",
@@ -777,230 +525,4 @@ describe("页面草稿与白名单保存", () => {
       store.setState({ saveMemoryCorrection: originalSave });
     }
   });
-  it("当前助手详情先于完整列表，行选择不改变会话与批量勾选", async () => {
-    store.setState({ settingsView: "agents", selectedNewSessionAgentId: "A" });
-    render(<AgentSettings />);
-    const current = screen.getByRole("region", { name: "当前助手" });
-    const list = screen.getByRole("region", { name: "所有助手" });
-    expect(current.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(current.querySelectorAll(".workspace-group,.workspace-anchors")).toHaveLength(0);
-    const selector = screen.getByRole("combobox", { name: "正在配置的助手" });
-    expect((selector as HTMLSelectElement).value).toBe("A");
-    expect(
-      selector.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(within(list).getAllByRole("button", { name: /^编辑助手：/ })).toHaveLength(2);
-    fireEvent.click(screen.getByRole("checkbox", { name: "选择助手：A" }));
-    expect(store.getState().editorAgentId).toBe("A");
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "编辑助手：B" })));
-    expect(store.getState().editorAgentId).toBe("B");
-    expect(store.getState().selectedNewSessionAgentId).toBe("A");
-    expect((screen.getByRole("textbox", { name: "助手名称" }) as HTMLInputElement).value).toBe("B");
-    expect(screen.getByRole("button", { name: "编辑助手：B" }).getAttribute("aria-pressed")).toBe(
-      "true",
-    );
-    expect(screen.getByRole("checkbox", { name: "选择助手：A" }).getAttribute("aria-checked")).toBe(
-      "true",
-    );
-    expect(screen.getByText("已选 1 / 2 个助手")).toBeTruthy();
-  });
-  it("顶部下拉切换详情与列表选中态，保留批量勾选和新会话候选", async () => {
-    store.setState({ settingsView: "agents", selectedNewSessionAgentId: "A" });
-    render(<AgentSettings />);
-    fireEvent.click(screen.getByRole("checkbox", { name: "选择助手：A" }));
-    const selector = screen.getByRole("combobox", { name: "正在配置的助手" });
-    await act(async () => fireEvent.change(selector, { target: { value: "B" } }));
-    expect(store.getState().editorAgentId).toBe("B");
-    expect(store.getState().selectedNewSessionAgentId).toBe("A");
-    expect((screen.getByRole("textbox", { name: "助手名称" }) as HTMLInputElement).value).toBe("B");
-    expect(screen.getByRole("button", { name: "编辑助手：B" }).getAttribute("aria-pressed")).toBe(
-      "true",
-    );
-    expect(screen.getByRole("checkbox", { name: "选择助手：A" }).getAttribute("aria-checked")).toBe(
-      "true",
-    );
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "编辑助手：A" })));
-    expect((selector as HTMLSelectElement).value).toBe("A");
-  });
-  it("下拉切换走未保存守卫，取消保留选择和草稿，放弃才切换", async () => {
-    store.setState({ settingsView: "agents" });
-    render(<AgentSettings />);
-    fireEvent.change(screen.getByRole("textbox", { name: "描述" }), {
-      target: { value: "dropdown draft" },
-    });
-    const selector = screen.getByRole("combobox", { name: "正在配置的助手" });
-    fireEvent.change(selector, { target: { value: "B" } });
-    expect(store.getState().navigationConfirmOpen).toBe(true);
-    expect((selector as HTMLSelectElement).value).toBe("A");
-    fireEvent.click(screen.getByRole("button", { name: "取消离开" }));
-    expect(store.getState().pageEditor?.draft.description).toBe("dropdown draft");
-    fireEvent.change(selector, { target: { value: "B" } });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "放弃修改并继续" })));
-    expect((selector as HTMLSelectElement).value).toBe("B");
-    expect(client.updateAgent).not.toHaveBeenCalled();
-  });
-  it("列表切换仍走未保存守卫，取消保稿、放弃后切换", async () => {
-    store.setState({ settingsView: "agents" });
-    render(<AgentSettings />);
-    fireEvent.change(screen.getByRole("textbox", { name: "描述" }), {
-      target: { value: "keep this" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "编辑助手：B" }));
-    expect(store.getState().navigationConfirmOpen).toBe(true);
-    expect(store.getState().editorAgentId).toBe("A");
-    fireEvent.click(screen.getByRole("button", { name: "取消离开" }));
-    expect((screen.getByRole("textbox", { name: "描述" }) as HTMLTextAreaElement).value).toBe(
-      "keep this",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "编辑助手：B" }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "放弃修改并继续" })));
-    expect(store.getState().editorAgentId).toBe("B");
-    expect(client.updateAgent).not.toHaveBeenCalled();
-  });
-  it("模型入口保留基础信息草稿，管理页不重复显示对话模型", () => {
-    store.setState({ settingsView: "agents" });
-    store.getState().patchPageAgent("models", { model_name: "unsaved-model" });
-    render(<AgentSettings />);
-    fireEvent.change(screen.getByRole("textbox", { name: "描述" }), {
-      target: { value: "draft" },
-    });
-    expect(document.querySelector(".agent-model-summary strong")).toBeNull();
-    expect(screen.queryByRole("combobox", { name: "对话模型" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "设置使用模型" }));
-    expect(store.getState().settingsRoute).toBe("models");
-    expect(store.getState().pageEditor?.draft.description).toBe("draft");
-    expect(store.getState().pageEditor?.draft.model_name).toBe("unsaved-model");
-    expect(client.updateAgent).not.toHaveBeenCalled();
-  });
-  it("批量选择和清空独立，删除确认列出目标，受保护项保留", async () => {
-    const deleteMany = vi.fn(async () => ({
-      deleted_count: 1,
-      failed_count: 1,
-      results: [
-        { id: "A", deleted: false, message: "protected" },
-        { id: "B", deleted: true },
-      ],
-    }));
-    store.setState({
-      settingsView: "agents",
-      apiClient: {
-        ...client,
-        deleteAgents: deleteMany,
-      } as unknown as SuperstringApi,
-    });
-    render(<AgentSettings />);
-    expect((screen.getByRole("button", { name: "删除所选" }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "全选" }));
-    expect(screen.getByText("已选 2 / 2 个助手")).toBeTruthy();
-    expect(store.getState().editorAgentId).toBe("A");
-    fireEvent.click(screen.getByRole("button", { name: "取消全选" }));
-    expect(screen.getByText("已选 0 / 2 个助手")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "全选" }));
-    fireEvent.click(screen.getByRole("button", { name: "删除所选" }));
-    expect(screen.getByRole("alertdialog").textContent).toContain("删除对象：A / B");
-    fireEvent.click(
-      within(screen.getByRole("alertdialog")).getByRole("button", {
-        name: "取消",
-      }),
-    );
-    expect(deleteMany).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "删除所选" }));
-    await act(async () =>
-      fireEvent.click(
-        within(screen.getByRole("alertdialog")).getByRole("button", {
-          name: "删除所选",
-        }),
-      ),
-    );
-    expect(deleteMany).toHaveBeenCalledExactlyOnceWith(["A", "B"]);
-    expect(screen.queryByRole("button", { name: "编辑助手：B" })).toBeNull();
-    expect(screen.getByRole("button", { name: "编辑助手：A" })).toBeTruthy();
-    expect(screen.getByText("已选 0 / 1 个助手")).toBeTruthy();
-    expect(store.getState().feedback).toContain("成功 1 个，失败 1 个");
-  });
-  it("保存或读取期间禁止列表切换、勾选和删除，停用助手仍可管理", () => {
-    store.setState({
-      settingsView: "agents",
-      agents: [persisted, { ...agent("B"), is_active: false }],
-      selectedNewSessionAgentId: "A",
-      settingsSaving: true,
-    });
-    render(<AgentSettings />);
-    expect(screen.getByRole("combobox", { name: "正在配置的助手" }).matches(":disabled")).toBe(
-      true,
-    );
-    expect(
-      within(screen.getByRole("combobox", { name: "正在配置的助手" })).getByRole("option", {
-        name: "B（停用）",
-      }),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "编辑助手：B" }).matches(":disabled")).toBe(true);
-    expect(screen.getByRole("checkbox", { name: "选择助手：B" }).matches(":disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "删除当前 Agent" }).matches(":disabled")).toBe(true);
-    expect(screen.getByRole("combobox", { name: "新会话使用的助手" }).matches(":disabled")).toBe(
-      true,
-    );
-    expect(
-      within(screen.getByRole("combobox", { name: "新会话使用的助手" })).queryByRole("option", {
-        name: "B",
-      }),
-    ).toBeNull();
-    act(() => store.setState({ settingsSaving: false }));
-    expect(screen.getByRole("button", { name: "编辑助手：B" }).matches(":disabled")).toBe(false);
-    expect(screen.getByRole("button", { name: "编辑助手：B" }).textContent).toContain("停用");
-  });
-  it("单个删除确认显示当前助手名称且取消不发请求", () => {
-    store.setState({ settingsView: "agents" });
-    render(<AgentSettings />);
-    fireEvent.click(screen.getByRole("button", { name: "删除当前 Agent" }));
-    expect(screen.getByRole("alertdialog").textContent).toContain("确认删除助手「A」");
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(store.getState().agents).toHaveLength(2);
-  });
-  it("原新建入口仍显示创建表单，已有助手不再显示", async () => {
-    await store.getState().editAgent("__new__");
-    store.setState({ settingsView: "agents" });
-    render(<AgentSettings />);
-    expect(screen.getByRole("textbox", { name: "助手名称" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "创建助手" })).toBeTruthy();
-    expect(document.querySelector(".section-nav")).toBeNull();
-    await act(async () => {
-      await store.getState().editAgent("A");
-    });
-    expect(screen.getByRole("textbox", { name: "助手名称" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "保存当前页" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "创建助手" })).toBeNull();
-    expect(screen.getByRole("region", { name: "当前助手" })).toBeTruthy();
-  });
-  it("旧配置跳转及记忆管理英文完整", () => {
-    selectLocale("en");
-    store.setState({ settingsView: "agents" });
-    const { container } = render(<AgentSettings />);
-    for (const activeSection of ["A", "B", "C", "D"] as const) {
-      act(() => store.setState({ activeSection }));
-      expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
-    }
-  });
-  it("新页面英文词条完整", () => {
-    selectLocale("en");
-    const { container } = render(<SettingsWorkspace />);
-    for (const page of ["basic", "models", "identity", "expression"] as const) {
-      act(() => store.getState().openSettingsRoute(page));
-      expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
-    }
-  });
-});
-
-it.each([
-  ["models", "回复随机度"],
-  ["expression", "性格强度"],
-] as const)("保存中 %s 页的滑块不可操作", async (settingsRoute, label) => {
-  store.setState({ settingsRoute, settingsSaving: true });
-  await act(async () => render(<SettingsWorkspace />));
-  const slider = screen.getByRole("slider", { name: label });
-  expect(slider.hasAttribute("data-disabled")).toBe(true);
-  expect(slider.hasAttribute("tabindex")).toBe(false);
 });

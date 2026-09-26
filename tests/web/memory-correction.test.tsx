@@ -1,8 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+// Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
+import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemoryContentResponse, MemoryEntryResponse } from "../../src/shared/contracts";
 import { api } from "../../src/web/api";
-import { MemoryCorrection } from "../../src/web/features/memory/MemoryCorrection";
+
 import { selectLocale } from "../../src/web/i18n";
 import { useSuperstringStore as store } from "../../src/web/store";
 
@@ -163,19 +164,7 @@ describe("memory correction UI and navigation", () => {
     expect(reload).not.toHaveBeenCalled();
     expect(store.getState().memoryCorrectionDirty).toBe(true);
   });
-  it("renders editable content and English UI without translating user text", async () => {
-    render(<MemoryCorrection />);
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "查看来源与纠正内容" }));
-    });
-    fireEvent.change(screen.getByLabelText("记忆正文"), { target: { value: "新正文" } });
-    expect(store.getState().memoryCorrectionDirty).toBe(true);
-    act(() => {
-      selectLocale("en");
-    });
-    expect(screen.getByRole("button", { name: "Save correction" })).toBeTruthy();
-    expect(screen.getByDisplayValue("新正文")).toBeTruthy();
-  });
+
   it("disables navigation and edits until a save finishes", async () => {
     let done!: (value: MemoryContentResponse) => void;
     store.setState({

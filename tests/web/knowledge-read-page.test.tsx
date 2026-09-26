@@ -1,4 +1,5 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+// Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
+import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema, PersonaResponseSchema } from "../../src/shared/contracts";
 import {
@@ -6,13 +7,13 @@ import {
   type AgentKnowledgeReadSettings,
 } from "../../src/shared/contracts/knowledge";
 import { ApiError, type SuperstringApi } from "../../src/web/api";
-import { SettingsWorkspace } from "../../src/web/app/SettingsWorkspace";
+
 import { knowledgeReadDirty } from "../../src/web/features/knowledge/types";
 import { selectLocale } from "../../src/web/i18n";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const DOC = "11111111-1111-4111-8111-111111111111";
-const LOST = "22222222-2222-4222-8222-222222222222";
+
 const agent = (id: string) =>
   AgentResponseSchema.parse({
     id,
@@ -257,42 +258,7 @@ describe("S3知识库读取页面", () => {
     expect(await saving).toBe(false);
     expect(state().knowledgeReadEditor).toBeNull();
   });
-  it("页面平铺三组和锚点，关闭保留预算与范围，五策略无控件", async () => {
-    await act(async () => {
-      render(<SettingsWorkspace />);
-    });
-    expect(document.querySelectorAll(".settings-workspace .workspace-anchors a")).toHaveLength(3);
-    expect(document.querySelector(".knowledge-read-page .workspace-anchors")).toBeNull();
-    expect(document.querySelectorAll(".knowledge-read-page section")).toHaveLength(3);
-    expect(document.querySelector("details")).toBeNull();
-    fireEvent.change(screen.getByLabelText("预算来源"), { target: { value: "assistant" } });
-    fireEvent.change(screen.getByLabelText("助手读取预算"), { target: { value: "8192" } });
-    fireEvent.change(screen.getByLabelText("资料范围"), { target: { value: "selected" } });
-    fireEvent.click(screen.getByLabelText("Reference"));
-    fireEvent.click(screen.getByLabelText("允许当前助手读取知识库"));
-    expect(state().knowledgeReadEditor?.draft).toMatchObject({
-      enabled: false,
-      context_budget: 8192,
-      document_ids: [DOC],
-    });
-    expect(document.querySelector(".knowledge-planned")?.textContent).toContain("尚未开放");
-    expect(
-      document.querySelector(".knowledge-planned input, .knowledge-planned select"),
-    ).toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByText("保存助手读取配置"));
-    });
-    expect(dirty()).toBe(false);
-  });
-  it("失效ID不借用全局资料名称，可直接取消选择", async () => {
-    state().patchKnowledgeRead({ scope: "selected", document_ids: [LOST] });
-    await act(async () => {
-      render(<SettingsWorkspace />);
-    });
-    expect(screen.getByLabelText(`已失效资料：${LOST}`)).toBeTruthy();
-    fireEvent.click(screen.getByLabelText(`已失效资料：${LOST}`));
-    expect(state().knowledgeReadEditor?.draft.document_ids).toEqual([]);
-  });
+
   it("统一保存先成功的页面不回滚，读取失败重试不重复提交成功页", async () => {
     vi.mocked(client.updateAgent).mockImplementation(async (id, body) => ({
       ...agent(id),
@@ -321,14 +287,5 @@ describe("S3知识库读取页面", () => {
     expect(state().knowledgeReadLoading).toBe(false);
     await state().loadKnowledgeRead();
     expect(state().knowledgeReadEditor?.source.revision).toBe(1);
-  });
-  it("英文控件提示没有中文残留", async () => {
-    selectLocale("en");
-    await act(async () => {
-      render(<SettingsWorkspace />);
-    });
-    fireEvent.change(screen.getByLabelText("Budget source"), { target: { value: "assistant" } });
-    fireEvent.change(screen.getByLabelText("Document scope"), { target: { value: "selected" } });
-    expect(document.body.textContent).not.toMatch(/[\u3400-\u9fff]/);
   });
 });
