@@ -21,6 +21,7 @@ export interface DesktopPreferencesOptions {
   webContents: () => WebContents | null;
   origin: () => string | null;
   onError?: (code: DesktopPreferencesError) => void;
+  onLocaleChange?: (locale: "zh-CN" | "en" | null) => void;
   onBootstrapError?: (code: "DESKTOP_PREFERENCES_BOOTSTRAP_FAILED") => void;
 }
 
@@ -69,6 +70,8 @@ export async function installDesktopPreferences(
       "superstring-agent": { type: ["string", "null"] },
     },
   });
+  const storedLocale = store.get("superstring-locale");
+  if (storedLocale === "zh-CN" || storedLocale === "en") options.onLocaleChange?.(storedLocale);
   const fail = (code: DesktopPreferencesError): never => {
     options.onError?.(code);
     throw new Error(code);
@@ -100,6 +103,7 @@ export async function installDesktopPreferences(
     try {
       // A stored null is a tombstone. On another port it must clear an older local value.
       store.set(key, value);
+      if (key === "superstring-locale") options.onLocaleChange?.(value as "zh-CN" | "en" | null);
     } catch {
       return fail("DESKTOP_PREFERENCES_WRITE_FAILED");
     }

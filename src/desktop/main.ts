@@ -32,6 +32,7 @@ if (
 }
 if (customProfile) {
   if (!path.isAbsolute(customProfile)) throw new Error("DESKTOP_PROFILE_MUST_BE_ABSOLUTE");
+  mkdirSync(customProfile, { recursive: true, mode: 0o700 });
   app.setPath("userData", customProfile);
 }
 mkdirSync(app.getPath("userData"), { recursive: true, mode: 0o700 });
@@ -206,6 +207,7 @@ function openWindow(): BrowserWindow {
 }
 
 function installMenus(): void {
+  tray?.destroy();
   const show = () => {
     if (!quitting && backend?.origin) openWindow();
   };
@@ -444,6 +446,13 @@ if (!app.requestSingleInstanceLock()) {
         webContents: () => window?.webContents ?? null,
         origin: () => backend?.origin ?? null,
         onError: (code) => log.error(code),
+        onLocaleChange: (locale) => {
+          void i18next
+            .changeLanguage(locale ?? (app.getLocale().startsWith("zh") ? "zh-CN" : "en"))
+            .then(() => {
+              if (configured && !quitting) installMenus();
+            });
+        },
         onBootstrapError: (code) => {
           void fail(code);
         },
