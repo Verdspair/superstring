@@ -29,9 +29,11 @@ import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
 import { ModelUnavailableError } from "../errors";
 import {
+  announceStrictSchemaSkip,
   nextStructuredOutputLevel,
   rememberStructuredOutput,
   type StructuredOutputLevel,
+  strictSchemaAccepted,
   structuredOutputKey,
   structuredOutputRejected,
   structuredOutputStart,
@@ -588,6 +590,16 @@ export function createLmStudioClient(
       const isExternal = routeOfExternal(used) !== null;
       const cfg = routeFor(used);
       const key = structuredOutputKey(cfg.baseUrl, used);
+      // External providers that proxy OpenAI's strict mode reject an optional property
+      // (`required` must list every key). The rewritten schema says the same thing in their
+      // dialect — required, but nullable — and this side reads both the same way. The local
+      // service keeps the frozen schema byte for byte. Rewritten once per call, not per attempt.
+      const outboundSchema =
+        options.responseSchema === undefined
+          ? undefined
+          : isExternal
+            ? toStrictRequiredSchema(options.responseSchema)
+            : options.responseSchema;
       const send = async (level: StructuredOutputLevel) => {
         const body: Record<string, unknown> = {
           model: used,
@@ -599,22 +611,12 @@ export function createLmStudioClient(
           body.max_tokens = options.maxTokens;
         }
         if (options.responseSchema !== undefined && level !== "none") {
-          const schema =
-            level === "json_object"
-              ? undefined
-              : isExternal
-                ? // External providers that proxy OpenAI's strict mode reject an optional property
-                  // (`required` must list every key). The rewritten schema says the same thing in
-                  // their dialect — required, but nullable — and this side reads both the same way.
-                  // The local service keeps the frozen schema byte for byte.
-                  toStrictRequiredSchema(options.responseSchema)
-                : options.responseSchema;
           body.response_format =
             level === "json_object"
               ? { type: "json_object" }
               : {
                   type: "json_schema",
-                  json_schema: { name: "superstring_result", strict: true, schema },
+                  json_schema: { name: "superstring_result", strict: true, schema: outboundSchema },
                 };
         }
         return (await requestJson(
@@ -633,11 +635,17 @@ export function createLmStudioClient(
       if (options.responseSchema === undefined) {
         payload = await send("none");
       } else {
-        let level = structuredOutputStart(key);
+        // 形状注定被严格模式整单拒绝的 schema（判别联合的 oneOf）不去白撞一次 400：直接起步于
+        // json_object（用户 2026-09-26 云端报错）。本地路由不参与这个判断。
+        const strictAccepted = !isExternal || strictSchemaAccepted(outboundSchema);
+        if (!strictAccepted) announceStrictSchemaSkip(key, used);
+        let level = structuredOutputStart(key, strictAccepted);
+        // 只有"这一轮真的撞过更严的档"才值得记住并提示；直接跳过不算。
+        const attemptedStrict = level === "json_schema";
         for (;;) {
           try {
             payload = await send(level);
-            if (level !== "json_schema") {
+            if (level !== "json_schema" && attemptedStrict) {
               rememberStructuredOutput(key, level);
               console.warn(
                 `[model-structured] ${used} 本进程起改用 ${level}（该服务不接受更严的档）`,

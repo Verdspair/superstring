@@ -6,7 +6,13 @@
 // optional ones nullable. These cases pin the rewrite and the fact that it is a pure function —
 // the local route's schema is never touched.
 import { describe, expect, it } from "bun:test";
-import { toStrictRequiredSchema } from "../../src/server/llm/strict-json-schema";
+import { AGENT_DECISION_JSON_SCHEMA } from "../../src/server/agent/agent-specs";
+import {
+  rememberStructuredOutput,
+  strictSchemaAccepted,
+  structuredOutputStart,
+  toStrictRequiredSchema,
+} from "../../src/server/llm/strict-json-schema";
 import { QQ_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
 
 describe("外部 provider 的严格 JSON schema 适配", () => {
@@ -68,5 +74,65 @@ describe("外部 provider 的严格 JSON schema 适配", () => {
     };
     expect(after.required).toEqual(["mode"]);
     expect(after.properties.mode).toEqual({ enum: ["a", "b"] });
+  });
+});
+
+// 用户的云端 provider 按 OpenAI 严格模式校验：`oneOf` 一律不收，整单 400
+// （"Invalid schema for response_format 'superstring_result': In context=(), 'oneOf' is not
+// permitted."，2026-09-26）。这些用例钉住"哪些形状会被跳过"和"跳过时从哪一档起步"。
+describe("严格模式不收的 schema 形状（云端 oneOf 400）", () => {
+  it("根或嵌套的 oneOf 判为不兼容，普通对象判为兼容", () => {
+    expect(
+      strictSchemaAccepted({
+        type: "object",
+        additionalProperties: false,
+        required: ["a"],
+        properties: { a: { type: "string" } },
+      }),
+    ).toBe(true);
+    expect(strictSchemaAccepted({ oneOf: [{ type: "object" }, { type: "object" }] })).toBe(false);
+    expect(
+      strictSchemaAccepted({
+        type: "object",
+        additionalProperties: false,
+        required: ["out"],
+        properties: { out: { type: "array", items: { oneOf: [{ type: "string" }] } } },
+      }),
+    ).toBe(false);
+  });
+
+  it("属性名恰好叫 oneOf 不算关键字，也不误伤 $defs 里的判别联合", () => {
+    expect(
+      strictSchemaAccepted({
+        type: "object",
+        additionalProperties: false,
+        required: ["oneOf"],
+        properties: { oneOf: { type: "string" } },
+      }),
+    ).toBe(true);
+    expect(
+      strictSchemaAccepted({
+        type: "object",
+        additionalProperties: false,
+        required: ["value"],
+        properties: { value: { $ref: "#/$defs/decision" } },
+        $defs: { decision: { oneOf: [{ type: "object" }, { type: "object" }] } },
+      }),
+    ).toBe(false);
+  });
+
+  it("两个真实形状：判断 schema 兼容，Agent 决策 schema（判别联合）不兼容", () => {
+    expect(strictSchemaAccepted(QQ_JUDGEMENT_RESPONSE_SCHEMA)).toBe(true);
+    expect(strictSchemaAccepted(AGENT_DECISION_JSON_SCHEMA)).toBe(false);
+  });
+
+  it("起档：兼容时仍是 json_schema，不兼容时直接 json_object；已记住的档优先", () => {
+    const key = "strict-start-fixture|model";
+    expect(structuredOutputStart(key, true)).toBe("json_schema");
+    expect(structuredOutputStart(key, false)).toBe("json_object");
+    // 记住的结论来自实测，优先于形状判断（也不会因为"跳过"而被写脏）。
+    rememberStructuredOutput(key, "none");
+    expect(structuredOutputStart(key, true)).toBe("none");
+    expect(structuredOutputStart(key, false)).toBe("none");
   });
 });

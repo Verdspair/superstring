@@ -12,9 +12,11 @@
 
 import { DEFAULT_LM_STUDIO_API_KEY, type LmStudioConfig } from "./model-gateway";
 import {
+  announceStrictSchemaSkip,
   nextStructuredOutputLevel,
   rememberStructuredOutput,
   type StructuredOutputLevel,
+  strictSchemaAccepted,
   structuredOutputKey,
   structuredOutputRejected,
   structuredOutputStart,
@@ -86,6 +88,7 @@ export function createLmStudioVisionClient(
           image_url: { url: `data:${image.mimeType};base64,${toBase64(image.bytes)}` },
         });
       }
+      const external = options.externalModel?.(request.model) ?? null;
       const routed = routeFor(request.model);
       const key = structuredOutputKey(routed.baseUrl, request.model);
       const send = async (level: StructuredOutputLevel) => {
@@ -138,11 +141,16 @@ export function createLmStudioVisionClient(
       if (request.responseSchema === undefined) {
         payload = await send("none");
       } else {
-        let level = structuredOutputStart(key);
+        // 与网关同一条规则：形状注定被严格模式整单拒绝的 schema 直接起步于 json_object
+        // （用户 2026-09-26 的云端 400）；本地模型服务不参与这个判断。
+        const strictAccepted = external === null || strictSchemaAccepted(request.responseSchema);
+        if (!strictAccepted) announceStrictSchemaSkip(key, request.model);
+        let level = structuredOutputStart(key, strictAccepted);
+        const attemptedStrict = level === "json_schema";
         for (;;) {
           try {
             payload = await send(level);
-            if (level !== "json_schema") {
+            if (level !== "json_schema" && attemptedStrict) {
               rememberStructuredOutput(key, level);
               console.warn(
                 `[model-structured] ${request.model} 本进程起改用 ${level}（该服务不接受更严的档）`,
