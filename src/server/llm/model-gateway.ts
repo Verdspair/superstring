@@ -97,6 +97,7 @@ export interface ModelGateway {
     responseSchema?: Record<string, unknown>;
     /** Propagated to the underlying fetch so a caller cancellation aborts the call. */
     signal?: AbortSignal;
+    onModelResolved?: (model: string) => void;
   }): Promise<string>;
   streamChat(options: {
     messages: ChatMessage[];
@@ -105,8 +106,18 @@ export interface ModelGateway {
     maxTokens?: number;
     /** Propagated to the underlying fetch so a caller cancellation aborts the stream. */
     signal?: AbortSignal;
+    onModelResolved?: (model: string) => void;
   }): AsyncGenerator<string, void, unknown>;
   readonly config: LmStudioConfig;
+}
+
+/** Routing diagnostics cannot change whether an authorized model request executes. */
+function reportResolvedModel(callback: ((model: string) => void) | undefined, model: string): void {
+  try {
+    callback?.(model);
+  } catch {
+    console.warn("model routing diagnostic write failed");
+  }
 }
 
 /**
@@ -572,6 +583,7 @@ export function createLmStudioClient(
     async complete(options): Promise<string> {
       const requested = options.model || config.model;
       const used = await effectiveModel(requested);
+      reportResolvedModel(options.onModelResolved, used);
       const isExternal = routeOfExternal(used) !== null;
       const cfg = routeFor(used);
       const key = structuredOutputKey(cfg.baseUrl, used);
@@ -658,6 +670,7 @@ export function createLmStudioClient(
 
     async *streamChat(options): AsyncGenerator<string, void, unknown> {
       const used = await effectiveModel(options.model || config.model);
+      reportResolvedModel(options.onModelResolved, used);
       const cfg = routeFor(used);
       const body: Record<string, unknown> = {
         model: used,
