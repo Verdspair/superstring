@@ -331,9 +331,13 @@ async function smoke(created: BrowserWindow): Promise<void> {
     rejected.status !== 403
   )
     throw new Error("DESKTOP_SMOKE_FAILED");
-  const backgroundSaved = await created.webContents.executeJavaScript(`fetch('/desktop/settings', {
-    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({close_action:'background'})
-  }).then(r => r.ok)`);
+  const backgroundSaved = await created.webContents.executeJavaScript(`(async () => {
+    const saved = await fetch('/desktop/settings').then(r => r.json());
+    return fetch('/desktop/settings', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({close_action:'background', expected_revision: saved.revision})
+    }).then(r => r.ok);
+  })()`);
   if (!backgroundSaved) throw new Error("DESKTOP_SMOKE_BACKGROUND_SETTING_FAILED");
   await new Promise<void>((resolve) => {
     created.once("closed", resolve);
