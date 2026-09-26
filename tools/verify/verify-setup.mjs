@@ -318,6 +318,9 @@ try {
           installRoot,
           "app/resources/migrations/versions/0043_protected_model_results.sql",
         ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0044_conversation_avatars.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

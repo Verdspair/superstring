@@ -231,6 +231,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0038_qq_judgement_model.sql",
     ),
+    conversationAvatarsMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0044_conversation_avatars.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

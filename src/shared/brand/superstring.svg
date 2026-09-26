@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>Superstring</title>
+  <style>:root { color: #26364f; } @media (prefers-color-scheme: dark) { :root { color: #e2e8f0; } }</style>
+  <g id="mark" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 10H25C27.21 10 29 11.79 29 14V21C29 23.21 27.21 25 25 25H14L9 29V25H7C4.79 25 3 23.21 3 21V14C3 11.79 4.79 10 7 10Z"/>
+    <g fill="currentColor" stroke="none">
+      <path d="M8 3H5.75L4.5 5.5V7H7.5V4.75H7Z"/>
+      <path d="M12.5 3H10.25L9 5.5V7H12V4.75H11.5Z"/>
+      <path d="M19.5 7H21.75L23 4.5V3H20V5.25H20.5Z"/>
+      <path d="M24 7H26.25L27.5 4.5V3H24.5V5.25H25Z"/>
+    </g>
+    <path d="M7 19C8.5 19 9 15 11 15C15 15 17 20 21 20C23 20 23.5 16 25 16"/>
+    <circle cx="11" cy="15" r="2" fill="currentColor" stroke="none"/>
+    <circle cx="21" cy="20" r="2" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

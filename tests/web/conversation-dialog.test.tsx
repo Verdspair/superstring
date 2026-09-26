@@ -1,29 +1,43 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { Sidebar } from "../../src/web/app/Sidebar";
+import type { AgentResponse } from "../../src/shared/contracts";
+import { CreateConversation } from "../../src/web/screens/conversations/CreateConversation";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const realCreate = store.getState().createSession;
-beforeEach(() => store.getState().resetForTests());
+beforeEach(() => {
+  store.getState().resetForTests();
+  store.setState({
+    agents: [{ id: "agent", name: "Assistant", is_active: true } as AgentResponse],
+    selectedNewSessionAgentId: "agent",
+  });
+});
 afterEach(() => {
   cleanup();
   store.setState({ createSession: realCreate });
 });
-it("new-session dialog preserves name choices, focuses custom input, and restores trigger on Escape", async () => {
-  render(<Sidebar version="test" />);
-  const trigger = screen.getByRole("button", { name: "新建任务" });
+it("new-conversation dialog presents the identity and optional name, and restores focus on Escape", async () => {
+  render(<CreateConversation />);
+  const trigger = screen.getByRole("button", { name: "新建对话" });
   await userEvent.click(trigger);
-  expect(screen.getByRole("dialog", { name: "新建任务" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "暂时使用默认名称" })).toBeTruthy();
-  await userEvent.click(screen.getByRole("button", { name: "使用自定义名称" }));
-  const input = screen.getByRole("textbox", { name: "任务名称" });
-  expect(document.activeElement).toBe(input);
+  expect(screen.getByRole("dialog", { name: "开始新的对话" })).toBeTruthy();
+  expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("agent");
+  expect((screen.getByRole("textbox", { name: "会话名称" }) as HTMLInputElement).value).toBe("");
   await userEvent.keyboard("{Escape}");
-  expect(screen.queryByRole("dialog")).toBeNull();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(document.activeElement).toBe(trigger);
 });
-it("IME does not create a session; submitted naming disables duplicate actions until completion", async () => {
+it("empty name retains automatic naming, without editing the current conversation identity", async () => {
+  const create = vi.fn().mockResolvedValue(true);
+  store.setState({ createSession: create, editorAgentId: "different-agent" });
+  render(<CreateConversation />);
+  await userEvent.click(screen.getByRole("button", { name: "新建对话" }));
+  await userEvent.click(screen.getByRole("button", { name: "开始对话" }));
+  expect(create).toHaveBeenCalledWith(expect.stringMatching(/^新会话/));
+  expect(store.getState().editorAgentId).toBe("different-agent");
+});
+it("IME does not create a conversation; submitted naming disables duplicate actions until completion", async () => {
   let finish!: (value: boolean) => void;
   const create = vi.fn(
     () =>
@@ -32,10 +46,9 @@ it("IME does not create a session; submitted naming disables duplicate actions u
       }),
   );
   store.setState({ createSession: create });
-  render(<Sidebar version="test" />);
-  await userEvent.click(screen.getByRole("button", { name: "新建任务" }));
-  await userEvent.click(screen.getByRole("button", { name: "使用自定义名称" }));
-  const input = screen.getByRole("textbox", { name: "任务名称" });
+  render(<CreateConversation />);
+  await userEvent.click(screen.getByRole("button", { name: "新建对话" }));
+  const input = screen.getByRole("textbox", { name: "会话名称" });
   fireEvent.change(input, { target: { value: "架构讨论" } });
   fireEvent.keyDown(input, { key: "Enter", isComposing: true });
   expect(create).not.toHaveBeenCalled();
@@ -46,4 +59,12 @@ it("IME does not create a session; submitted naming disables duplicate actions u
   expect(screen.getByRole("dialog")).toBeTruthy();
   finish(true);
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+it("keyboard creation cannot bypass a missing assistant selection", async () => {
+  const create = vi.fn();
+  store.setState({ createSession: create, selectedNewSessionAgentId: null });
+  render(<CreateConversation />);
+  await userEvent.click(screen.getByRole("button", { name: "新建对话" }));
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  expect(create).not.toHaveBeenCalled();
 });

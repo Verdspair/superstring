@@ -18,6 +18,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  blob,
   check,
   index,
   integer,
@@ -1849,7 +1850,33 @@ export const runtimeSpans = sqliteTable(
   ],
 );
 
+export const conversationAvatars = sqliteTable(
+  "conversation_avatars",
+  {
+    conversationId: text("conversation_id")
+      .primaryKey()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    style: text("style"),
+    seed: text("seed"),
+    imageBytes: blob("image_bytes", { mode: "buffer" }),
+    mediaType: text("media_type"),
+    width: integer("width"),
+    height: integer("height"),
+    revision: text("revision").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    check("conversation_avatar_kind", sql`${t.kind} IN ('generated','uploaded')`),
+    check(
+      "conversation_avatar_shape",
+      sql`(${t.kind}='generated' AND ${t.style} IS NOT NULL AND ${t.seed} IS NOT NULL AND ${t.imageBytes} IS NULL AND ${t.mediaType} IS NULL AND ${t.width} IS NULL AND ${t.height} IS NULL) OR (${t.kind}='uploaded' AND ${t.style} IS NULL AND ${t.seed} IS NULL AND ${t.imageBytes} IS NOT NULL AND ${t.mediaType} IS NOT NULL AND ${t.width}>0 AND ${t.height}>0)`,
+    ),
+  ],
+);
+
 export const businessTables = {
+  conversationAvatars,
   runtimeSpans,
   conversations,
   conversationEvents,

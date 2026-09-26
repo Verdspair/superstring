@@ -1,12 +1,15 @@
 import { useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import { english } from "./en";
 import { translateError } from "./errors";
+import { i18n, messages } from "./runtime";
 
 export type Locale = "zh-CN" | "en";
 export type MessageKey = keyof typeof english;
 export const LOCALE_STORAGE_KEY = "superstring-locale";
 const listeners = new Set<() => void>();
 let current: Locale = readLocale();
+void i18n.changeLanguage(current);
 if (typeof document !== "undefined") document.documentElement.lang = current;
 
 export function readLocale(): Locale {
@@ -21,6 +24,7 @@ export function getLocale(): Locale {
 }
 function applyLocale(locale: Locale) {
   current = locale;
+  void i18n.changeLanguage(locale);
   if (typeof document !== "undefined") document.documentElement.lang = locale;
   for (const notify of listeners) notify();
 }
@@ -51,8 +55,11 @@ export function useLocale(): Locale {
   return useSyncExternalStore(subscribe, getLocale, () => "zh-CN");
 }
 export function formatMessage(locale: Locale, key: MessageKey, ...values: unknown[]): string {
-  const template = locale === "en" ? english[key] : key;
-  return template.replace(/\{(\d+)\}/g, (_, index: string) => String(values[Number(index)] ?? ""));
+  return i18n.t(key, {
+    lng: locale,
+    ns: "notices",
+    ...Object.fromEntries(values.map((value, index) => [String(index), value])),
+  });
 }
 // Store feedback remains a string for the existing public store contract. Only
 // messages explicitly authored here are registered; arbitrary user text is not scanned.
@@ -79,10 +86,16 @@ export function translateNotice(text: string): string {
   );
 }
 export function translate(key: string, ...values: unknown[]): string {
+  if (Object.hasOwn(messages, key))
+    return i18n.t(key, {
+      lng: current,
+      ...Object.fromEntries(values.map((value, index) => [String(index), value])),
+    });
   if (Object.hasOwn(english, key)) return formatMessage(current, key as MessageKey, ...values);
   return key;
 }
 export function useI18n(): typeof translate {
+  useTranslation(undefined, { i18n, useSuspense: false });
   useLocale();
   return translate;
 }

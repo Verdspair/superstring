@@ -2,8 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { P5ConfigSchema } from "../../src/shared/contracts";
-import { ChatPage, Sidebar } from "../../src/web/App";
 import type { SuperstringApi } from "../../src/web/api";
+import { ConversationIndex as Sidebar } from "../../src/web/screens/conversations/ConversationIndex";
+import { DirectConversation as ChatPage } from "../../src/web/screens/conversations/DirectConversation";
 import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 const NOW = "2026-09-12T03:00:00.000Z";
@@ -48,30 +49,30 @@ beforeEach(() => {
 });
 
 describe("聊天空白状态文案", () => {
-  it("未新建会话时显示准确入口，不展示宣传语", () => {
+  it("未选择会话时提供实际创建入口与助手目录", () => {
     useSuperstringStore.setState({
       sessions: [],
       currentSessionId: null,
       messages: [],
     });
     render(<ChatPage />);
-    expect(screen.getByRole("heading", { name: "开始一段对话" })).toBeTruthy();
-    expect(screen.getByText("点击“新建任务”，开启与助手的对话。")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新建对话" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "认识你的 Agent" })).toBeTruthy();
     expect(screen.queryByText("对话与记忆，留在你的本地工作空间")).toBeNull();
-    expect(screen.getByPlaceholderText("输入消息…")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "输入消息…" })).toBeTruthy();
   });
 
   it("已有空会话时不再提示新建会话", () => {
     useSuperstringStore.setState({ messages: [] });
     render(<ChatPage />);
-    expect(screen.getByRole("heading", { name: "开始对话" })).toBeTruthy();
-    expect(screen.getByText("在下方输入消息，开始与助手交流。")).toBeTruthy();
-    expect(screen.queryByText("点击“新建任务”，开启与助手的对话。")).toBeNull();
+    expect(screen.getByRole("heading", { name: "从一句话开始。" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "输入消息…" })).toBeTruthy();
+    expect(screen.queryByText("点击“新建任务”，开启与 Agent 的对话。")).toBeNull();
   });
 });
 
 describe("R5 聊天区 P0 交互", () => {
-  it("按原版显示模型角色与聊天模式标题", () => {
+  it("会话名称与绑定助手和模式分别呈现，消息保留角色", () => {
     useSuperstringStore.setState({
       runtimeConfig: {
         agent_id: "11111111-1111-4111-8111-111111111111",
@@ -106,9 +107,12 @@ describe("R5 聊天区 P0 交互", () => {
     });
     render(<ChatPage />);
 
-    expect(screen.getByRole("heading", { name: "测试会话 · 测试助手 · 聊天" })).toBeTruthy();
-    expect(screen.getByText(/模型 ·/)).toBeTruthy();
-    expect(document.querySelector(".message-meta")?.textContent).not.toContain("助手 ·");
+    expect(screen.getByRole("heading", { name: "测试会话" })).toBeTruthy();
+    expect(screen.getByText("Web · 私聊")).toBeTruthy();
+    expect(screen.getAllByText("测试助手").length).toBeGreaterThan(0);
+    expect(screen.getByText("聊天")).toBeTruthy();
+    expect(screen.getByRole("article", { name: "消息 模型" })).toBeTruthy();
+    expect(screen.getByText("qwen/test")).toBeTruthy();
   });
 
   it("无会话发送和删除均显示原版提示而不请求后端", async () => {
@@ -134,9 +138,7 @@ describe("R5 聊天区 P0 交互", () => {
     const processing = screen.getByRole("status", { name: "正在处理" });
     expect(processing.getAttribute("aria-live")).toBe("polite");
     expect(processing.getAttribute("aria-atomic")).toBe("true");
-    expect(processing.querySelector(".superstring-loading-ring")?.getAttribute("aria-hidden")).toBe(
-      "true",
-    );
+    expect(processing.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("其他异步操作期间也显示全局正在处理状态", () => {
@@ -213,7 +215,7 @@ describe("R5 聊天区 P0 交互", () => {
     expect(deleteSession).not.toHaveBeenCalled();
   });
 
-  it("Escape 和外部 pointerdown 会关闭右键菜单", () => {
+  it("Escape 和外部 pointerdown 会关闭右键菜单", async () => {
     render(<ChatPage />);
     const bubble = screen.getByText("需要删除的消息");
     fireEvent.contextMenu(bubble);
@@ -222,7 +224,8 @@ describe("R5 聊天区 P0 交互", () => {
     expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull();
 
     fireEvent.contextMenu(bubble);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     fireEvent.pointerDown(document.body);
-    expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull());
   });
 });

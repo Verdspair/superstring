@@ -1,12 +1,13 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { applyMode, applyTheme, readMode, readTheme } from "./appearance";
+import { applyMode, applyTheme, observeSystemAppearance, readMode, readTheme } from "./appearance";
 import { initDesktopLifecycle } from "./desktop-lifecycle";
 import "./styles.css";
 
 applyTheme(readTheme());
 applyMode(readMode());
+observeSystemAppearance();
 // Cross-tab preference changes also update actual colours outside Settings.
 window.addEventListener("storage", (event) => {
   if (event.storageArea && event.storageArea !== localStorage) return;

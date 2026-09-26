@@ -1,12 +1,12 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
-import { NavigationConfirm } from "../../src/web/app/NavigationConfirm";
 import { qqDraftChanges, settingsHaveDrafts } from "../../src/web/features/qq/draft-state";
-import { QqAppAccess } from "../../src/web/features/qq/QqAppAccess";
 import { qqSchemeDirty, qqSchemeEditorFrom } from "../../src/web/features/qq/types";
+import { ConnectionWorkspace as QqAppAccess } from "../../src/web/screens/connections/ConnectionWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
 import { qqSchemeFixture } from "./helpers/qq-fixture";
 
 const settings: QqSettingsResponse = {
@@ -26,6 +26,12 @@ beforeEach(() => {
   store.getState().resetForTests({
     ...api,
     getQqSettings: async () => settings,
+    getQqOwner: async () => ({
+      configured: false,
+      account_id: null,
+      peer_id: null,
+      revision: null,
+    }),
     getQqStatus: async () => ({ connection: null }) as never,
     listQqConversations: async () => [],
     listQqBindings: async () => [],
@@ -68,7 +74,8 @@ it("connection draft survives remount and server refresh while retaining its ori
   });
   const view = render(<QqAppAccess />);
   await act(async () => {});
-  expect((screen.getByLabelText("WebSocket 地址") as HTMLInputElement).value).toBe(
+  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
+  expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
   );
   view.unmount();
@@ -84,7 +91,8 @@ it("connection draft survives remount and server refresh while retaining its ori
   });
   render(<QqAppAccess />);
   await act(async () => {});
-  expect((screen.getByLabelText("WebSocket 地址") as HTMLInputElement).value).toBe(
+  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
+  expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
   );
   expect(store.getState().qqInputs.connection?.source.revision).toBe(3);
@@ -148,4 +156,24 @@ it("QQ automatic organization drafts participate in the same unload decision", (
   expect(settingsHaveDrafts(store.getState())).toBe(false);
   store.getState().patchQqMemoryBatchDraft("binding", { value: "", revision: 2 });
   expect(settingsHaveDrafts(store.getState())).toBe(true);
+});
+
+it("a failed transport save stays visible inside the active dialog and retains the draft", async () => {
+  const save = vi.fn().mockRejectedValue(Error("TRANSPORT_TEST_FAILURE"));
+  store.setState({
+    apiClient: { ...store.getState().apiClient, updateQqSettings: save },
+    qqInputs: { ...store.getState().qqInputs, connection: connection() },
+  });
+  render(<QqAppAccess />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
+  const dialog = screen.getByRole("dialog");
+  await act(async () =>
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存接入设置" })),
+  );
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(within(dialog).getByRole("alert").textContent).toContain("TRANSPORT_TEST_FAILURE");
+  expect(
+    (within(dialog).getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value,
+  ).toBe("ws://localhost:4000");
 });

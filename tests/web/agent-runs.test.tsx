@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectedContext, RunEvent, RunSnapshot } from "../../src/shared/contracts/agent-run";
 import { api } from "../../src/web/api";
 import { resolveModelUse } from "../../src/web/features/models/model-use";
-import { JobRunLink, runStatusLabel } from "../../src/web/features/runs/RunInspector";
 import { mergeRunSnapshot, reduceRunEvent } from "../../src/web/features/runs/run-state";
 import { selectLocale } from "../../src/web/i18n";
+import { i18n } from "../../src/web/i18n/runtime";
+import { JobRunLink, RunWorkspace, runStatusLabel } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const now = "2026-09-26T00:00:00.000Z";
@@ -214,9 +215,9 @@ describe("run inspector", () => {
 
 describe("run phase language", () => {
   it("distinguishes maintenance and image tasks from conversation reply generation", () => {
-    expect(runStatusLabel("generating", "leaf")).toBe("正在处理");
-    expect(runStatusLabel("generating", "vision")).toBe("正在理解图片");
-    expect(runStatusLabel("generating", "generate")).toBe("正在回复");
+    expect(i18n.t(runStatusLabel("generating", "leaf"))).toBe("正在处理");
+    expect(i18n.t(runStatusLabel("generating", "vision"))).toBe("正在理解图片");
+    expect(i18n.t(runStatusLabel("generating", "generate"))).toBe("正在回复");
   });
 });
 
@@ -251,4 +252,18 @@ describe("model scope and precedence", () => {
       source: "agent",
     });
   });
+});
+
+it("updates the visible run from the shared live reducer without waiting for metadata polling", async () => {
+  const current = snapshot("live-run", "generating", 3);
+  store.getState().resetForTests({ ...api, getRun: async () => current });
+  render(<RunWorkspace runId="live-run" />);
+  await screen.findByText("正在处理");
+  act(() =>
+    store
+      .getState()
+      .receiveRunEvent({ type: "failed", runId: "live-run", seq: 4, at: now, code: "MODEL_ERROR" }),
+  );
+  expect(screen.getByText("运行失败")).toBeTruthy();
+  expect(screen.getByText("MODEL_ERROR")).toBeTruthy();
 });

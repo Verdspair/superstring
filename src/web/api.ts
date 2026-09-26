@@ -54,6 +54,10 @@ import {
   ConversationListSchema,
   DeliverySchema,
 } from "../shared/contracts/conversation";
+import {
+  ConversationAvatarSchema,
+  type GeneratedAvatar,
+} from "../shared/contracts/conversation-avatar";
 import { DesktopSettingsSchema, type DesktopSettingsUpdate } from "../shared/contracts/desktop";
 import {
   AgentKnowledgeReadSettingsSchema,
@@ -152,6 +156,19 @@ function json(method: string, body: unknown): RequestInit {
 }
 
 export const api = {
+  saveConversationAvatar: (id: string, value: GeneratedAvatar | File | null) => {
+    let init: RequestInit;
+    if (value instanceof File) {
+      const body = new FormData();
+      body.set("file", value);
+      init = { method: "PUT", body };
+    } else init = json("PUT", value);
+    return requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/avatar`,
+      ConversationAvatarSchema,
+      init,
+    );
+  },
   listConversations: (
     filters: {
       channel?: "web" | "onebot11";
@@ -401,8 +418,8 @@ export const api = {
   listModels() {
     return requestJson("/models/local", LocalModelCatalogResponseSchema);
   },
-  listModelProviders() {
-    return requestJson("/models/providers", ModelProviderResponseSchema.array());
+  listModelProviders(signal?: AbortSignal) {
+    return requestJson("/models/providers", ModelProviderResponseSchema.array(), { signal });
   },
   createModelProvider(body: CreateModelProviderRequest) {
     return requestJson("/models/providers", ModelProviderResponseSchema, json("POST", body));
@@ -414,12 +431,11 @@ export const api = {
     const response = await fetch(`/models/providers/${id}`, { method: "DELETE" });
     if (!response.ok) throw await responseError(response);
   },
-  testModelProvider(id: string) {
-    return requestJson(
-      `/models/providers/${id}/test`,
-      ModelProviderTestResponseSchema,
-      json("POST", {}),
-    );
+  testModelProvider(id: string, signal?: AbortSignal) {
+    return requestJson(`/models/providers/${id}/test`, ModelProviderTestResponseSchema, {
+      ...json("POST", {}),
+      signal,
+    });
   },
   getModelCapacity(model: string): Promise<ModelCapacityResponse> {
     return requestJson(
@@ -566,6 +582,8 @@ export const api = {
   organiseQqMemory: (id: string): Promise<QqMemoryOrganiseResponse> =>
     requestJson(`/qq/bindings/${id}/memory`, QqMemoryOrganiseResponseSchema, { method: "POST" }),
   getQqOwner: () => requestJson("/qq/owner", QqOwnerResponseSchema),
+  updateQqOwner: (body: { peer_id: string; expected_revision?: number }) =>
+    requestJson("/qq/owner", QqOwnerResponseSchema, json("PUT", body)),
   getQqStorage: () => requestJson("/qq/storage", QqStorageUsageResponseSchema),
   runQqStorageCleanup: () =>
     requestJson("/qq/storage/cleanup", QqStorageCleanupResponseSchema, { method: "POST" }),

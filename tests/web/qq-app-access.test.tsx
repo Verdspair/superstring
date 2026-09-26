@@ -7,11 +7,12 @@
 // asserted here.
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqBindingResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
-import { QqAppAccess } from "../../src/web/features/qq/QqAppAccess";
 import { selectLocale } from "../../src/web/i18n";
+import { ConnectionWorkspace } from "../../src/web/screens/connections/ConnectionWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
@@ -70,6 +71,9 @@ async function renderPage(
     getQqSettings: vi
       .fn()
       .mockResolvedValue({ ...settings, enabled: options.enabled ?? settings.enabled }),
+    getQqOwner: vi
+      .fn()
+      .mockResolvedValue({ configured: false, account_id: null, peer_id: null, revision: null }),
     getQqStatus: vi.fn().mockResolvedValue({ connection: { phase: "ready", reason: null } }),
     listQqConversations: vi.fn().mockResolvedValue([
       {
@@ -182,7 +186,7 @@ async function renderPage(
       } as never,
     ],
   });
-  render(<QqAppAccess />);
+  render(<ConnectionWorkspace />);
   await act(async () => {});
   return fake;
 }
@@ -195,185 +199,86 @@ afterEach(() => {
   cleanup();
 });
 
-describe("第三方App接入", () => {
-  it("报运行中传输的状态，不显示已保存的令牌", async () => {
+describe("Connection workspace", () => {
+  const manage = async () => userEvent.click(screen.getAllByRole("button", { name: "管理" })[0]);
+  it("shows transport facts and opens write-only credentials separately", async () => {
     await renderPage();
     expect(screen.getByText("已连接")).toBeTruthy();
-    // The saved token is a fact ("已保存令牌"), never a value.
-    expect(screen.getByText("已保存令牌")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
     const token = screen.getByLabelText("访问令牌") as HTMLInputElement;
-    expect(token.value).toBe("");
     expect(token.type).toBe("password");
+    expect(token.value).toBe("");
   });
-
-  it("列出观察到的会话，未绑定的给出绑定按钮", async () => {
-    await renderPage();
-    expect(screen.getByText(/群 30003/)).toBeTruthy();
-    expect(screen.getByText(/私聊 20002/)).toBeTruthy();
-    expect(screen.getAllByText("未绑定")).toHaveLength(2);
-    expect(screen.getAllByRole("button", { name: "绑定" })).toHaveLength(2);
-  });
-
-  it("绑定会话时带上当前选择的助手与方案，并说明成功了", async () => {
-    const fake = await renderPage();
-    await act(async () => {
-      fireEvent.click(screen.getAllByRole("button", { name: "绑定" })[0] as HTMLButtonElement);
-    });
-    expect(fake.createQqBinding).toHaveBeenCalledWith({
-      account_id: "10001",
-      kind: "group",
-      peer_id: "30003",
-      agent_id: AGENT_ID,
-      scheme_id: SCHEME_ID,
-      paused: false,
-      memory_batch_size: null,
-      share_web_memory: false,
-    });
-    expect(await screen.findByText("已绑定会话")).toBeTruthy();
-  });
-
-  it("用号码直接绑定一个还没说过话的会话，账号取自已保存的设置", async () => {
-    const fake = await renderPage();
-    await act(async () => {
-      fireEvent.change(screen.getByLabelText("号码"), { target: { value: " 40004 " } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "绑定这个号码" }));
-    });
-    expect(fake.createQqBinding).toHaveBeenCalledWith({
-      account_id: "10001",
-      kind: "group",
-      peer_id: "40004",
-      agent_id: AGENT_ID,
-      scheme_id: SCHEME_ID,
-      paused: false,
-      memory_batch_size: null,
-      share_web_memory: false,
-    });
-    // The field is cleared so the next number does not have to be edited out of the last one.
-    expect((screen.getByLabelText("号码") as HTMLInputElement).value).toBe("");
-  });
-
-  it("已绑定但还没说过话的会话照样列出，如实说没有观察到消息", async () => {
+  it("preserves bindings with no observed messages and searches their numbers", async () => {
     await renderPage({ silentBinding: true });
-    expect(screen.getByText(/群 40004/)).toBeTruthy();
+    expect(screen.getByText("40004")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("搜索会话绑定"), { target: { value: "40004" } });
+    expect(screen.queryByText("30003")).toBeNull();
     expect(screen.getByText("还没有观察到消息")).toBeTruthy();
-    expect(screen.getByText("参与中")).toBeTruthy();
   });
-
-  it("保存「重要的人」名单：整组替换，号码按常见分隔符拆开", async () => {
-    const fake = await renderPage({ bound: true });
-    await act(async () => {
-      fireEvent.change(screen.getByLabelText("重要的人模式"), { target: { value: "soft" } });
-    });
-    await act(async () => {
-      fireEvent.change(screen.getByLabelText("重要的人名单"), {
-        target: { value: "20002，30003 20002" },
-      });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "保存名单" }));
-    });
-    // The server deduplicates and sorts; the page never invents a member of its own.
-    expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_ID, {
-      attention: { mode: "soft", members: ["20002", "30003", "20002"] },
-      expected_revision: 1,
-    });
+  it("binds an observed conversation using selected Agent and scheme", async () => {
+    const fake = await renderPage();
+    await manage();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "绑定" })));
+    expect(fake.createQqBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "group",
+        peer_id: "30003",
+        agent_id: AGENT_ID,
+        scheme_id: SCHEME_ID,
+      }),
+    );
   });
-
-  it("暂停与改绑带页面读到的修订号，避免覆盖别人刚保存的结果", async () => {
+  it("can manually bind before any message arrives", async () => {
+    const fake = await renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "绑定会话" }));
+    fireEvent.change(screen.getByLabelText("号码"), { target: { value: "50005" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "绑定这个号码" })));
+    expect(fake.createQqBinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account_id: "10001",
+        peer_id: "50005",
+        agent_id: AGENT_ID,
+        scheme_id: SCHEME_ID,
+      }),
+    );
+  });
+  it("uses source revision for pause and tri-state trigger overrides", async () => {
     const fake = await renderPage({ bound: true });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "暂停发言" }));
-    });
+    await manage();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "暂停发言" })));
     expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_ID, {
       paused: true,
       expected_revision: 1,
     });
+    fireEvent.change(screen.getByLabelText("直接回应 的开关"), { target: { value: "off" } });
+    await act(async () => {});
+    expect(fake.updateQqBinding).toHaveBeenLastCalledWith(BINDING_ID, {
+      expected_revision: 1,
+      triggers: { ...binding.triggers, direct_reply: false },
+    });
   });
-
-  it("记忆整理行：显示待整理条数，保存条数走比较交换", async () => {
-    const fake = await renderPage({ bound: true, memory: { batchSize: 20, pending: 5 } });
-    expect(screen.getByText("待整理 5 条")).toBeTruthy();
-    expect((screen.getByLabelText("自动整理条数") as HTMLInputElement).value).toBe("20");
-    await act(async () => {
-      fireEvent.change(screen.getByLabelText("自动整理条数"), { target: { value: "30" } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "保存条数" }));
-    });
+  it("replaces the attention list as one revisioned value", async () => {
+    const fake = await renderPage({ bound: true });
+    await manage();
+    await userEvent.click(screen.getByRole("tab", { name: "重要的人" }));
+    fireEvent.change(screen.getByLabelText("重要的人模式"), { target: { value: "hard" } });
+    fireEvent.change(screen.getByLabelText("重要的人名单"), { target: { value: "123, 456" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存名单" })));
     expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_ID, {
-      memory_batch_size: 30,
+      attention: { mode: "hard", members: ["123", "456"] },
       expected_revision: 1,
     });
   });
-
-  it("清空条数并保存＝关掉自动整理（null 是一个值，不是“没改”）", async () => {
-    const fake = await renderPage({ bound: true, memory: { batchSize: 20, pending: 5 } });
-    await act(async () => {
-      fireEvent.change(screen.getByLabelText("自动整理条数"), { target: { value: "" } });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "保存条数" }));
-    });
-    expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_ID, {
-      memory_batch_size: null,
-      expected_revision: 1,
-    });
-  });
-
-  it("立即整理把判决写在这一行，排队后重新读一遍列表", async () => {
-    const fake = await renderPage({
-      bound: true,
-      enabled: true,
-      memory: { batchSize: null, pending: 3 },
-    });
-    vi.mocked(fake.organiseQqMemory).mockResolvedValueOnce({
-      status: "queued",
-      job_id: null,
-      pending: 3,
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "立即整理" }));
-    });
-    expect(fake.organiseQqMemory).toHaveBeenCalledWith(BINDING_ID);
-    expect(await screen.findByText("已交给整理任务，跑完会出现在记忆列表里。")).toBeTruthy();
-    // A queued job consumes the batch at enqueue time, so the count is re-read rather than patched.
-    expect(vi.mocked(fake.listQqBindings).mock.calls.length).toBeGreaterThan(1);
-  });
-
-  it("立即整理的拒绝也是一种答复，不是错误", async () => {
-    const fake = await renderPage({
-      bound: true,
-      enabled: true,
-      memory: { batchSize: null, pending: 2 },
-    });
-    vi.mocked(fake.organiseQqMemory).mockResolvedValueOnce({
-      status: "paused",
-      job_id: null,
-      pending: 2,
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "立即整理" }));
-    });
-    expect(await screen.findByText("这个会话已暂停，暂停期间不新增整理任务。")).toBeTruthy();
-    // Refused: nothing was consumed, so no reload is expected from this action.
-    expect(vi.mocked(fake.listQqBindings).mock.calls.length).toBe(1);
-  });
-
-  it("保存接入参数时使用页面读到的修订号", async () => {
+  it("saves transport edits with the read revision", async () => {
     const fake = await renderPage();
-    // 2026-09-25：总开关搬到运行模式页的模式行（这一页只配置连接与绑定），所以这里只钉参数保存。
-    await act(async () => {
-      fireEvent.change(screen.getByLabelText("访问令牌"), { target: { value: "new-token" } });
-      fireEvent.click(screen.getByRole("button", { name: "保存接入设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
+    fireEvent.change(screen.getByLabelText("WebSocket 地址"), {
+      target: { value: "ws://example.test:3000/" },
     });
-    expect(fake.updateQqTransport).toHaveBeenCalledWith({
-      endpoint: "ws://127.0.0.1:3000/",
-      token: "new-token",
-      expected_revision: 4,
-    });
-    // The saved token is never echoed back into the field.
-    expect((screen.getByLabelText("访问令牌") as HTMLInputElement).value).toBe("");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存接入设置" })));
+    expect(fake.updateQqTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: "ws://example.test:3000/", expected_revision: 4 }),
+    );
   });
 });

@@ -12,7 +12,6 @@ import type {
   PolicyView,
 } from "../../shared/contracts";
 import type { SuperstringApi, streamChatV2 } from "../api";
-import type { SettingsRoute } from "../app/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
 import type { ConversationState } from "../features/chat/conversation-state";
 import type { ConversationDirectoryState } from "../features/conversations/directory-state";
@@ -26,6 +25,7 @@ import type {
   QqStorageState,
 } from "../features/qq/types";
 import type { RunState } from "../features/runs/slice";
+import type { SettingsRoute } from "../workspace/settings-routes";
 
 export type Page = "chat" | "settings";
 export type SettingsView =
