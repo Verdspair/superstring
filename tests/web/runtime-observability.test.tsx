@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
@@ -7,10 +7,11 @@ import type {
   RuntimeTrace,
 } from "../../src/shared/contracts/runtime-observability";
 import { api, type SuperstringApi } from "../../src/web/api";
-import { APP_SECTIONS, currentAppSection, sectionDestinations } from "../../src/web/app/app-routes";
-import { ConversationRuntimeSummary } from "../../src/web/features/observability/ConversationRuntimeSummary";
-import { TraceExplorer } from "../../src/web/features/observability/TraceExplorer";
 import { localDateTime } from "../../src/web/features/observability/trace-filters";
+import { i18n } from "../../src/web/i18n/runtime";
+import { ConversationRuntimeSummary } from "../../src/web/screens/observability/ConversationActivity";
+import { ExecutionWorkspace } from "../../src/web/screens/observability/ObservabilityWorkspace";
+import { DeliveryDetails } from "../../src/web/screens/runs/DeliveryEvidence";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const now = "2026-09-26T00:00:00Z";
@@ -107,176 +108,14 @@ const setup = (client: Partial<SuperstringApi>) =>
   });
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  void i18n.changeLanguage("zh-CN");
 });
 afterEach(() => {
   cleanup();
-  vi.useRealTimers();
   vi.restoreAllMocks();
 });
-it("searches the full server data set with typed filters and preserves applied URL filters", async () => {
-  const list = vi.fn().mockResolvedValue(page());
-  setup({ listRuntimeSpans: list });
-  const view = render(<TraceExplorer />);
-  await screen.findByText("Model generation");
-  expect(screen.getByText("共 123 条链路 · 活跃 2 · 含失败 3 · 123 个阶段命中")).toBeTruthy();
-  fireEvent.change(screen.getByLabelText("搜索运行记录"), { target: { value: "retry wake-id" } });
-  fireEvent.change(screen.getByLabelText("来源通道"), { target: { value: "memory" } });
-  fireEvent.change(screen.getByLabelText("处理阶段"), { target: { value: "model" } });
-  fireEvent.change(screen.getByLabelText("处理状态"), { target: { value: "failed" } });
-  fireEvent.click(screen.getByText("模型、时间与关联筛选"));
-  fireEvent.change(screen.getByLabelText("模型（精确匹配）"), { target: { value: "local/model" } });
-  fireEvent.change(screen.getByLabelText("开始时间（本地）"), {
-    target: { value: localDateTime(now) },
-  });
-  fireEvent.change(screen.getByLabelText("Trace ID"), { target: { value: traceId } });
-  fireEvent.click(screen.getByRole("button", { name: "应用筛选" }));
-  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-  expect(list.mock.calls[1][0]).toEqual({
-    q: "retry wake-id",
-    channel: "memory",
-    stage: "model",
-    status: "failed",
-    model: "local/model",
-    from: new Date(now).toISOString(),
-    traceId,
-    beforeId: undefined,
-    limit: 100,
-  });
-  expect(new URLSearchParams(window.location.search).get("trace-q")).toBe("retry wake-id");
-  view.unmount();
-  render(<TraceExplorer />);
-  expect((screen.getByLabelText("搜索运行记录") as HTMLInputElement).value).toBe("retry wake-id");
-  await screen.findByText("Model generation");
-});
-it("clearing a scoped filter retains the conversation and ignores global URL filters", async () => {
-  window.history.replaceState(null, "", "/?trace-channel=web&trace-q=global");
-  const list = vi.fn().mockResolvedValue(page());
-  setup({ listRuntimeSpans: list });
-  render(<TraceExplorer conversationId={conversationId} />);
-  await screen.findByText("Model generation");
-  expect(list.mock.calls[0][0]).toEqual({ conversationId, beforeId: undefined, limit: 100 });
-  fireEvent.change(screen.getByLabelText("搜索运行记录"), { target: { value: "scoped" } });
-  fireEvent.click(screen.getByRole("button", { name: "应用筛选" }));
-  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-  fireEvent.click(screen.getByRole("button", { name: "清除筛选" }));
-  await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
-  expect(list.mock.calls[2][0]).toEqual({ conversationId, beforeId: undefined, limit: 100 });
-  expect(window.location.search).toContain("trace-q=global");
-});
-it("new filters abort old requests and cannot display late results", async () => {
-  let resolve!: (value: RuntimeSpansPage) => void;
-  const list = vi
-    .fn()
-    .mockImplementationOnce(
-      () =>
-        new Promise((done) => {
-          resolve = done;
-        }),
-    )
-    .mockResolvedValue(page([span(11, { name: "New scope" })]));
-  setup({ listRuntimeSpans: list });
-  render(<TraceExplorer />);
-  fireEvent.change(screen.getByLabelText("处理状态"), { target: { value: "unknown" } });
-  fireEvent.click(screen.getByRole("button", { name: "应用筛选" }));
-  await screen.findByText("New scope");
-  await act(async () => resolve(page([span(10, { name: "Old unauthorized scope" })])));
-  expect(list.mock.calls[0][1].aborted).toBe(true);
-  expect(screen.queryByText("Old unauthorized scope")).toBeNull();
-});
-it("revalidates every loaded trace page and clears unverifiable records on a failed refresh", async () => {
-  const list = vi
-    .fn()
-    .mockResolvedValueOnce(page([span(20)], { hasMore: true }))
-    .mockResolvedValueOnce(page([span(10, { name: "Earlier model" })], { hasMore: true }))
-    .mockResolvedValueOnce(page([span(30, { name: "Newest model" }), span(20)], { hasMore: true }))
-    .mockResolvedValueOnce(page([span(10, { name: "Earlier model" })], { hasMore: true }))
-    .mockRejectedValue(new Error("Access revoked"));
-  setup({ listRuntimeSpans: list });
-  render(<TraceExplorer />);
-  await screen.findByText("Model generation");
-  fireEvent.click(screen.getByRole("button", { name: "加载更早运行记录" }));
-  await screen.findByText("Earlier model");
-  expect(list.mock.calls[1][0].beforeId).toBe(20);
-  fireEvent.click(screen.getByRole("button", { name: "刷新运行记录" }));
-  await screen.findByText("Newest model");
-  expect(list.mock.calls[3][0].beforeId).toBe(20);
-  expect(screen.getByText("Earlier model")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "刷新运行记录" }));
-  await screen.findByRole("alert");
-  expect(screen.queryByText("Earlier model")).toBeNull();
-  expect(screen.queryByText("Newest model")).toBeNull();
-});
-it("opens a complete trace with parent relationships, unknown outcomes and keyboard close", async () => {
-  const trace = vi.fn().mockResolvedValue(
-    page([
-      span(11, {
-        name: "Sticker delivery",
-        stage: "delivery",
-        status: "unknown",
-        code: "DELIVERY_UNKNOWN",
-        parentSpanId: "span-10",
-      }),
-      span(10, { name: "Parent generation" }),
-    ]),
-  );
-  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: trace });
-  render(<TraceExplorer />);
-  const user = userEvent.setup();
-  const trigger = await screen.findByRole("button", { name: "展开时序链路" });
-  await user.click(trigger);
-  const dialog = await screen.findByRole("region", { name: "追踪链路" });
-  await within(dialog).findByText("Sticker delivery");
-  expect(trace.mock.calls[0][0]).toBe(traceId);
-  const child = within(dialog).getByText("Sticker delivery").closest("li");
-  expect(child?.parentElement?.closest("li")?.id).toBe("trace-span-span-10");
-  if (!child) throw new Error("Expected child step");
-  fireEvent.click(within(child).getByRole("button", { name: "查看步骤详情" }));
-  expect(
-    within(dialog).getByText("结果尚未确认，不等同于失败；请沿追踪链路核对后续结果。"),
-  ).toBeTruthy();
-  await user.keyboard("{Escape}");
-  expect(screen.queryByRole("region", { name: "追踪链路" })).toBeNull();
-  expect(document.activeElement).toBe(trigger);
-});
-it("shows actual connection/window/queue state separately from trace counts", async () => {
-  setup({
-    getConversationRuntimeStatus: async () => ({
-      pendingWakes: 2,
-      activeRuns: 1,
-      failedWakes: 3,
-      unknownDeliveries: 1,
-      nextReadyAt: "2026-09-26T00:01:00Z",
-      lastActivityAt: now,
-      now,
-      connectionPhase: "closed",
-    }),
-  });
-  render(<ConversationRuntimeSummary conversationId={conversationId} />);
-  await screen.findByText("连接已断开");
-  expect(screen.getByText("进行中 1 · 排队 2")).toBeTruthy();
-  fireEvent.click(screen.getByText("连接已断开"));
-  expect(screen.getByText("等待窗口至")).toBeTruthy();
-  expect(screen.getByText("待确认投递 1")).toBeTruthy();
-});
-it("adds a guarded Agent destination without changing the five primary sections", async () => {
-  setup({});
-  store.setState({
-    page: "settings",
-    settingsView: "workspace",
-    settingsRoute: "qq-scheme-config",
-    qqInputs: { ...store.getState().qqInputs, schemeTexts: { "rhythm.hourly_speech_limit": "-" } },
-  });
-  const destination = sectionDestinations("agent").find((item) => item.id === "observability");
-  expect(APP_SECTIONS).toHaveLength(5);
-  destination?.open(store.getState());
-  expect(store.getState().navigationConfirmOpen).toBe(true);
-  expect(store.getState().settingsView).toBe("workspace");
-  store.getState().cancelPendingNavigation();
-  expect(store.getState().qqInputs.schemeTexts["rhythm.hourly_speech_limit"]).toBe("-");
-  store.setState({ settingsView: "observability" });
-  expect(currentAppSection(store.getState())).toBe("agent");
-});
+const pointer = async (target: HTMLElement) =>
+  userEvent.setup().pointer({ target, keys: "[MouseLeft]", coords: { x: 100, y: 100 } });
 it("serializes directional history and observation filters into no-store requests", async () => {
   const fetcher = vi
     .spyOn(globalThis, "fetch")
@@ -303,91 +142,217 @@ it("serializes directional history and observation filters into no-store request
   expect(traceUrl.searchParams.get("model")).toBe("local/model");
   expect(fetcher.mock.calls[1][1]?.cache).toBe("no-store");
 });
-it("applies a native local-time range as ISO and offers recent-time presets", async () => {
+it("applies all typed server filters through the new query bar and preserves URL scope", async () => {
   const list = vi.fn().mockResolvedValue(page());
   setup({ listRuntimeSpans: list });
-  render(<TraceExplorer />);
-  await screen.findByText("Model generation");
-  fireEvent.click(screen.getByText("模型、时间与关联筛选"));
-  expect(screen.getByLabelText("开始时间（本地）").getAttribute("type")).toBe("datetime-local");
-  fireEvent.click(screen.getByRole("button", { name: "最近 15 分钟" }));
-  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-  const filters = list.mock.calls[1][0];
-  expect(Date.parse(filters.to) - Date.parse(filters.from)).toBe(15 * 60_000);
-  expect(new URLSearchParams(window.location.search).get("trace-from")).toBe(filters.from);
+  render(<ExecutionWorkspace />);
+  await screen.findByRole("table", { name: "执行记录" });
+  fireEvent.change(screen.getByRole("textbox", { name: "搜索运行记录" }), {
+    target: { value: "wake & retry" },
+  });
+  await pointer(screen.getByRole("button", { name: "添加筛选" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "来源通道" }), {
+    target: { value: "onebot11" },
+  });
+  fireEvent.change(screen.getByRole("combobox", { name: "处理阶段" }), {
+    target: { value: "model" },
+  });
+  fireEvent.change(screen.getByRole("combobox", { name: "处理状态" }), {
+    target: { value: "failed" },
+  });
+  fireEvent.change(screen.getByRole("textbox", { name: "模型（精确匹配）" }), {
+    target: { value: "local/model" },
+  });
+  fireEvent.change(screen.getByRole("textbox", { name: "会话 ID" }), {
+    target: { value: conversationId },
+  });
+  await pointer(screen.getByRole("button", { name: "应用筛选" }));
+  await waitFor(() =>
+    expect(list.mock.calls.at(-1)?.[0]).toMatchObject({
+      q: "wake & retry",
+      channel: "onebot11",
+      stage: "model",
+      status: "failed",
+      model: "local/model",
+      conversationId,
+    }),
+  );
+  expect(new URLSearchParams(window.location.search).get("trace-q")).toBe("wake & retry");
 });
-
-it("keeps a selected trace open when completion removes its filtered result row", async () => {
-  window.history.replaceState(null, "", "/?trace-status=started");
+it("keeps a locked conversation scope while clearing user filters", async () => {
+  window.history.replaceState(null, "", "/?trace-q=global");
+  const list = vi.fn().mockResolvedValue(page());
+  setup({ listRuntimeSpans: list });
+  render(<ExecutionWorkspace conversationId={conversationId} />);
+  await screen.findByRole("table", { name: "执行记录" });
+  expect(list.mock.calls[0][0]).toMatchObject({ conversationId });
+  expect(list.mock.calls[0][0].q).toBeUndefined();
+  fireEvent.change(screen.getByRole("textbox", { name: "搜索运行记录" }), {
+    target: { value: "local" },
+  });
+  await pointer(screen.getByRole("button", { name: "搜索" }));
+  await screen.findByRole("button", { name: "清除筛选" });
+  await pointer(screen.getByRole("button", { name: "清除筛选" }));
+  await waitFor(() => expect(list.mock.calls.at(-1)?.[0]).toMatchObject({ conversationId }));
+  expect(list.mock.calls.at(-1)?.[0].q).toBeUndefined();
+});
+it("aborts obsolete queries and refuses their late result", async () => {
+  let finish: (value: RuntimeSpansPage) => void = () => {};
   const list = vi
     .fn()
-    .mockResolvedValueOnce(page([span(10, { status: "started" })]))
-    .mockResolvedValue(page([]));
-  const trace = vi
-    .fn()
-    .mockResolvedValueOnce(page([span(10, { status: "started" })]))
-    .mockResolvedValue(page([span(10, { name: "Completed trace step" })]));
-  setup({ listRuntimeSpans: list, getRuntimeTrace: trace });
-  render(<TraceExplorer />);
-  const trigger = await screen.findByRole("button", { name: "展开时序链路" });
-  fireEvent.click(trigger);
-  const dialog = await screen.findByRole("region", { name: "追踪链路" });
-  await within(dialog).findAllByText("Model generation");
-  fireEvent.click(screen.getByRole("button", { name: "刷新运行记录" }));
-  fireEvent.click(within(dialog).getByRole("button", { name: "刷新当前链路" }));
-  await within(dialog).findAllByText("Completed trace step");
-  expect(trigger.isConnected).toBe(false);
-  expect(screen.getByRole("region", { name: "追踪链路" })).toBe(dialog);
-  await within(dialog).findAllByText("Completed trace step");
-  fireEvent.click(within(dialog).getByRole("button", { name: "关闭追踪链路" }));
-  await waitFor(() => expect(screen.queryByRole("region", { name: "追踪链路" })).toBeNull());
-  expect(document.activeElement).toBe(screen.getByRole("button", { name: "刷新运行记录" }));
-});
-
-it("retains trace selection across blur while clearing and revalidating its source data", async () => {
-  const trace = vi
-    .fn()
-    .mockResolvedValueOnce(page([span(10, { name: "Private trace metadata" })]))
-    .mockRejectedValue(new Error("Trace access expired"));
-  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: trace });
-  render(<TraceExplorer />);
-  fireEvent.click(await screen.findByRole("button", { name: "展开时序链路" }));
-  const dialog = await screen.findByRole("region", { name: "追踪链路" });
-  await within(dialog).findAllByText("Private trace metadata");
-  fireEvent.blur(window);
-  expect(screen.getByRole("region", { name: "追踪链路" })).toBe(dialog);
-  expect(within(dialog).queryByText("Private trace metadata")).toBeNull();
-  fireEvent.focus(window);
-  await within(dialog).findByText("Trace access expired");
-  expect(within(dialog).queryByText("Private trace metadata")).toBeNull();
-});
-
-it("preserves trace selection and revalidates it when applied filters change", async () => {
-  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: async () => page() });
-  render(<TraceExplorer />);
-  const status = screen.getByLabelText("处理状态");
-  const apply = screen.getByRole("button", { name: "应用筛选" });
-  fireEvent.click(await screen.findByRole("button", { name: "展开时序链路" }));
-  const pane = await screen.findByRole("region", { name: "追踪链路" });
-  fireEvent.change(status, { target: { value: "failed" } });
-  fireEvent.click(apply);
-  await within(pane).findAllByText("Model generation");
-  expect(screen.getByRole("region", { name: "追踪链路" })).toBe(pane);
-});
-
-it("restores focus only after the narrow-layout directory is visible again", async () => {
-  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: async () => page() });
-  render(<TraceExplorer />);
-  const trigger = await screen.findByRole("button", { name: "展开时序链路" });
-  fireEvent.click(trigger);
-  const pane = await screen.findByRole("region", { name: "追踪链路" });
-  const atFocus: string[] = [];
-  const originalFocus = trigger.focus.bind(trigger);
-  vi.spyOn(trigger, "focus").mockImplementation(() => {
-    atFocus.push(trigger.closest(".trace-workspace")?.getAttribute("data-inspecting") ?? "missing");
-    originalFocus();
+    .mockImplementationOnce(
+      () =>
+        new Promise<RuntimeSpansPage>((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue(page([span(11, { name: "fresh" })]));
+  setup({ listRuntimeSpans: list });
+  render(<ExecutionWorkspace />);
+  await waitFor(() => expect(list).toHaveBeenCalledOnce());
+  fireEvent.change(screen.getByRole("textbox", { name: "搜索运行记录" }), {
+    target: { value: "fresh" },
   });
-  fireEvent.click(within(pane).getByRole("button", { name: "关闭追踪链路" }));
-  expect(atFocus).toEqual(["false"]);
-  expect(document.activeElement).toBe(trigger);
+  await pointer(screen.getByRole("button", { name: "搜索" }));
+  await screen.findByRole("button", { name: /fresh/ });
+  expect(list.mock.calls[0][1].aborted).toBe(true);
+  await act(async () => finish(page([span(9, { name: "late revoked" })])));
+  expect(screen.queryByText("late revoked")).toBeNull();
+});
+it("revalidates the entire loaded cursor range and removes unverifiable metadata", async () => {
+  const list = vi
+    .fn()
+    .mockResolvedValueOnce(page([span(100)], { hasMore: true, nextBeforeId: 100 }))
+    .mockResolvedValueOnce(page([span(50)], { nextBeforeId: 50 }))
+    .mockResolvedValueOnce(page([span(110)], { hasMore: true, nextBeforeId: 100 }))
+    .mockResolvedValueOnce(page([span(50)], { nextBeforeId: 50 }))
+    .mockRejectedValueOnce(new Error("READ_FAILED"));
+  setup({ listRuntimeSpans: list });
+  render(<ExecutionWorkspace />);
+  await pointer(await screen.findByRole("button", { name: "加载更早运行记录" }));
+  await waitFor(() => expect(screen.getByText(/已加载 2 条链路/)).toBeTruthy());
+  await pointer(screen.getByRole("button", { name: "刷新运行记录" }));
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(4));
+  expect(list.mock.calls[3][0].beforeId).toBe(100);
+  await pointer(screen.getByRole("button", { name: "刷新运行记录" }));
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("table", { name: "执行记录" })).toBeNull();
+});
+it("shows the real connection, queue, pending window and unknown delivery status", async () => {
+  setup({
+    getConversationRuntimeStatus: async () => ({
+      pendingWakes: 3,
+      activeRuns: 2,
+      failedWakes: 4,
+      unknownDeliveries: 5,
+      nextReadyAt: "2026-09-26T00:01:00Z",
+      lastActivityAt: now,
+      connectionPhase: "ready",
+      now,
+    }),
+  });
+  render(<ConversationRuntimeSummary conversationId={conversationId} />);
+  await screen.findByText("连接已就绪");
+  expect(screen.getByText("进行中 2 · 排队 3")).toBeTruthy();
+  expect(screen.getByText(/等待窗口至/)).toBeTruthy();
+  expect(screen.getByText("处理失败的唤醒").nextElementSibling?.textContent).toBe("4");
+  expect(screen.getByText("结果待确认的投递").nextElementSibling?.textContent).toBe("5");
+});
+it("normalizes precise local time bounds and rejects a reversed interval", async () => {
+  const list = vi.fn().mockResolvedValue(page());
+  setup({ listRuntimeSpans: list });
+  render(<ExecutionWorkspace />);
+  await screen.findByRole("table", { name: "执行记录" });
+  await pointer(screen.getByRole("button", { name: "添加筛选" }));
+  fireEvent.change(screen.getByLabelText("开始时间（本地）"), {
+    target: { value: localDateTime(now) },
+  });
+  fireEvent.change(screen.getByLabelText("结束时间（本地）"), {
+    target: { value: localDateTime("2026-09-26T00:00:05Z") },
+  });
+  await pointer(screen.getByRole("button", { name: "应用筛选" }));
+  await waitFor(() =>
+    expect(list.mock.calls.at(-1)?.[0]).toMatchObject({
+      from: "2026-09-26T00:00:00.000Z",
+      to: "2026-09-26T00:00:05.000Z",
+    }),
+  );
+  fireEvent.change(screen.getByLabelText("结束时间（本地）"), {
+    target: { value: localDateTime("2026-09-25T00:00:00Z") },
+  });
+  const calls = list.mock.calls.length;
+  await pointer(screen.getByRole("button", { name: "应用筛选" }));
+  expect(list).toHaveBeenCalledTimes(calls);
+  expect(screen.getByRole("alert")).toBeTruthy();
+});
+it("compares two trace identities with independent complete metadata reads", async () => {
+  const first = span(),
+    second = span(20, { name: "Second activity" });
+  const detail = vi
+    .fn()
+    .mockImplementation(async (id) => page([id === first.traceId ? first : second]));
+  setup({ listRuntimeSpans: async () => page([first, second]), getRuntimeTrace: detail });
+  render(<ExecutionWorkspace />);
+  await screen.findByRole("table", { name: "执行记录" });
+  await pointer(screen.getByRole("checkbox", { name: `比较 ${first.traceId}` }));
+  await pointer(screen.getByRole("checkbox", { name: `比较 ${second.traceId}` }));
+  await pointer(screen.getByRole("button", { name: "比较已选 2 条" }));
+  await waitFor(() => expect(detail).toHaveBeenCalledTimes(2));
+  expect(new Set(detail.mock.calls.map((call) => call[0]))).toEqual(
+    new Set([first.traceId, second.traceId]),
+  );
+  expect(await screen.findByRole("region", { name: first.traceId })).toBeTruthy();
+  expect(screen.getByRole("region", { name: second.traceId })).toBeTruthy();
+});
+it("retains investigation identity across foreground clearing without preserving stale details", async () => {
+  const detail = vi.fn().mockResolvedValue(page());
+  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: detail });
+  render(<ExecutionWorkspace />);
+  await pointer(await screen.findByRole("button", { name: /Model generation/ }));
+  await screen.findByRole("button", { name: /下一个命中/ });
+  fireEvent.blur(window);
+  expect(screen.queryByRole("button", { name: /下一个命中/ })).toBeNull();
+  expect(screen.getByRole("region", { name: "追踪链路" })).toBeTruthy();
+  fireEvent.focus(window);
+  await screen.findByRole("button", { name: /下一个命中/ });
+  expect(detail).toHaveBeenCalledTimes(2);
+});
+it("shows confirmed and unknown parts independently and aborts delivery inspection on close", async () => {
+  const delivery = {
+    id: "out",
+    runId: "run",
+    conversationId,
+    ordinal: 0,
+    target: { peerId: "group", participantId: "b" },
+    status: "unknown" as const,
+    sourceThroughSeq: 2,
+    deliverBy: now,
+    createdAt: now,
+    parts: ["confirmed", "unknown"].map((status, ordinal) => ({
+      id: String(ordinal),
+      ordinal,
+      kind: "text" as const,
+      status: status as "confirmed" | "unknown",
+      platformMessageId: ordinal === 0 ? "receipt" : null,
+      attemptedAt: now,
+      finishedAt: now,
+      stickerId: null,
+    })),
+  };
+  const read = vi.fn().mockResolvedValue(delivery);
+  setup({ getDelivery: read });
+  render(
+    <DeliveryDetails
+      outputId="out"
+      conversation={{ participants: [{ id: "b", label: "Member B", role: "member" }] }}
+    />,
+  );
+  expect(read).not.toHaveBeenCalled();
+  await pointer(screen.getByRole("button", { name: /送达详情/ }));
+  await screen.findByText("receipt");
+  expect(screen.getByText(/Member B/)).toBeTruthy();
+  expect(screen.getByText("已送达")).toBeTruthy();
+  expect(screen.getAllByText("发送结果待确认").length).toBe(2);
+  fireEvent.blur(window);
+  expect(screen.queryByText("receipt")).toBeNull();
 });
