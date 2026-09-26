@@ -458,7 +458,7 @@ function KnowledgeEditorPanel() {
                         </NativeSelect>
                       </Field>
                       <Tabs defaultValue="original">
-                        <TabsList>
+                        <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
                           <TabsTrigger value="original">{t("library.edit.original")}</TabsTrigger>
                           <TabsTrigger value="draft">{t("library.organized.draft")}</TabsTrigger>
                           <TabsTrigger value="sources">{t("library.sources")}</TabsTrigger>

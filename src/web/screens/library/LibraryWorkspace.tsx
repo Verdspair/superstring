@@ -38,7 +38,7 @@ export function LibraryWorkspace() {
           )
         }
       >
-        <TabsList className="h-auto flex-wrap">
+        <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
           <TabsTrigger value="knowledge">
             <BookOpen />
             {t("library.documents")}

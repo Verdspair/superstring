@@ -522,7 +522,7 @@ export function MemoryDetail() {
                 {content?.retired && <Badge variant="secondary">{t("library.retired")}</Badge>}
               </div>
               <Tabs defaultValue="content">
-                <TabsList>
+                <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
                   <TabsTrigger value="content">{t("library.content")}</TabsTrigger>
                   <TabsTrigger value="sources">{t("library.sources")}</TabsTrigger>
                   <TabsTrigger value="edit">{t("library.correct")}</TabsTrigger>

@@ -267,7 +267,7 @@ export function AssistantWorkspace() {
             }
             className="gap-6"
           >
-            <TabsList className="h-auto flex-wrap">
+            <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
               <TabsTrigger value="identity">{t("library.identity.expression")}</TabsTrigger>
               <TabsTrigger value="capabilities">{t("library.models.context")}</TabsTrigger>
               <TabsTrigger value="resources">{t("library.resource.rules")}</TabsTrigger>
