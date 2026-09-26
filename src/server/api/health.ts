@@ -16,7 +16,7 @@ import { BUSINESS_SCHEMA_VERSION } from "../db/schema-gate";
 import type { ModelGateway } from "../llm/model-gateway";
 
 /** Product SemVer; keep identical to package.json and the installer version. */
-export const APP_VERSION = "0.2.1";
+export const APP_VERSION = "0.3.0-beta";
 
 /** Generated once per process. */
 export const PROCESS_INSTANCE_ID = crypto.randomUUID();

@@ -625,7 +625,7 @@ describe("health route", () => {
     expect(body.schema).toBe("ok");
     expect(body.model_service).toBe("ok");
     expect(body.model_loaded).toBe(true);
-    expect(body.version).toBe("0.2.1");
+    expect(body.version).toBe("0.3.0-beta");
     expect(typeof body.instance_id).toBe("string");
   });
 

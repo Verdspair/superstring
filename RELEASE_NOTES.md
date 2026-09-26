@@ -1,77 +1,101 @@
-# v0.2.1
+# v0.3.0-beta
 
 [English](#english) · [简体中文](#简体中文)
 
 ## English
 
-Changes relative to the published `v0.2.0-alpha`. Full before/after tables and upgrade steps: [UPGRADING.md](UPGRADING.md).
+This prerelease expands the local chat application into an Agent workspace with QQ conversations, connected execution records and native desktop package targets. Changes below compare with the published **v0.2.1**, not intermediate development builds.
 
-### New
+### QQ conversations and proactive participation
 
-- **Knowledge library:** import text/Markdown or paste text, edit originals, organize by category, and authorize assistants individually or in batches. Imports are not authorized by default.
-- **Knowledge organization and reading:** generate drafts with linked source passages, then let each assistant use original or organized content, all authorized documents or a subset, and its own budget. Retries recheck access after revocation.
-- **Memory correction:** edit remembered content and view its sources without deleting the original conversation.
-- **Context usage:** the ring beside the chat input shows estimated usage, model capacity, and the input breakdown; unknown capacity stays unknown.
-- **Shared organization model:** one default for memory and knowledge organization, with separate overrides.
+- Connect a OneBot 11 WebSocket service and bind QQ groups or private chats to Agents and shared, named chat schemes.
+- Control direct responses, follow-up conversation, spontaneous participation and idle-topic initiation separately. Initiative uses a configurable interest threshold; a trigger is not a promise that the Agent will speak.
+- Configure reply grouping, timing, per-conversation module switches and attention lists. Edit the scheme's seven prompt roles without changing another binding's history.
+- Keep judgement and reply context windows separate. Older reply-window messages accumulate into bounded compression packages rather than being summarized on every wake.
+- Import, review, enable and authorize sticker collections; send text, a sticker or both. Supported image descriptions and sampled animated-image frames can inform replies.
 
-### Improved
+### Unified workspace and execution inspection
 
-- Settings use left navigation and top tabs with expanded parameter groups, jump links, and per-page saving that keeps drafts across pages without carrying other pages' unsaved edits.
-- Conversation, retrieval, organization, and compression models are selected in one place; assistant and long-term memory management are consolidated on their own pages.
-- Selection states, spacing, panels, and labels are more consistent across settings and management views.
-- Defaults rise across the board — recent turns 6 → 10, summary 1024 → 2048, memory target 300 → 1200 characters, recall presets raised to 30/6/2048, 60/10/4096 and 120/16/8192, auxiliary timeout 300 → 900 s, model-call timeout 60 → 1200 s, organization budget 600 → 3600 s and idle limit 10 → 120 s — and the new knowledge library starts at a 16384-unit context budget, while existing values are kept.
+- Web, private-chat and group conversations share a conversation workspace, with persistent custom or generated avatars.
+- Agents can read authorized memory and knowledge before answering through a common action loop. Recipients, access checks and delivery remain controlled by the application.
+- A dedicated Runs workspace groups model calls and related tasks into execution waterfalls. Inspect the actual model input and output while the referenced sources remain available and authorized, and distinguish generation from confirmed delivery.
+- The interface is reorganized around Conversations, Agents, Library, Connections and Runs, with separate Model services and Preferences. Existing English/Simplified Chinese and 16-theme appearance settings remain available.
 
-### Fixed
+### Memory and model services
 
-- Fixed long replies and memory organization being cut off at 60 seconds, and connections dropping before the first token arrived.
-- Fixed cases where an occupied port made the app unusable.
-- Fixed LM Studio authentication failing entirely and authorization errors being reported as a disconnected service.
-- Fixed failure messages covering the retry button.
-- Fixed delayed memory responses overwriting a newer view, and memory source, list, and pagination state going out of sync.
-- Fixed budget edits not refreshing the capacity preview, and malformed stored configuration silently falling back to defaults.
+- Manage web and QQ memories through visible source partitions. QQ scopes remain isolated by conversation and bound Agent; sharing with your own private chat is explicit.
+- Register external OpenAI-compatible model services, credentials and model capacities alongside local LM Studio models. Choose models by task and inspect their availability from Model services.
+- Improve compatibility with providers that differ in structured-output and native-tool-call support. Invalid model output remains visible as a coded failure instead of being mistaken for a successful action.
+- Preserve valid settings and data when upgrading; existing memory correction and knowledge authorization continue to apply.
+
+### Desktop platforms
+
+- Add native macOS and Linux desktop packaging, menu/tray integration, profile isolation and an authenticated local backend; retain the Windows C# launcher and installer.
+- Keep supported desktop sessions online in the background when selected, and wait for owned service work to settle on explicit exit.
+- Add migration-time profile backups to native macOS/Linux startup. Installation and data paths are documented in [Desktop distributions](docs/reference/desktop.md).
+
+Use the architecture-specific assets actually attached to the release. Model servers, model weights and the QQ service are separate installations.
+
+### Reliability
+
+- Improve long-lived streaming connections and recovery of interrupted work.
+- Enforce source access and revision checks when inspecting stored model inputs or using retrieved material.
+- Keep delivery failures and unknown receipts distinguishable, without blindly resending uncertain messages.
 
 ### Upgrading
 
-Close the app, back up `userdata`, and install the new package into the same directory. Known schema-1 databases migrate to schema 4, keeping conversations, memories, and settings; unsupported structures and downgrades are rejected. Review model settings and authorize imported documents. Set `LM_STUDIO_API_KEY` if your LM Studio requires a token.
+Fully exit the application and back up the complete data directory before upgrading. A known v0.2.1 database upgrades from schema **4 to 47**, preserving application data; unsupported structures and downgrades are rejected. A rollback requires the older application **and its matching pre-upgrade data backup**. See [UPGRADING.md](UPGRADING.md).
 
 ---
 
 ## 简体中文
 
-相对已发布 `v0.2.0-alpha` 的更新。完整前后对照表和升级步骤见 [UPGRADING.md](UPGRADING.md)。
+本次预发布将本地聊天应用扩展为支持 QQ 会话、执行追踪与原生桌面分发的 Agent 工作区。以下变化直接对比已发布的 **v0.2.1**，不把开发过程中的修修补补列为独立新功能。
 
-### 新增
+### QQ 会话与主动参与
 
-- **知识库：** 导入文本、Markdown 或粘贴内容，编辑原文、分类管理，并按助手逐份或批量授权；导入不会自动授权。
-- **资料整理与读取：** 生成带原文来源的整理稿，助手可选择原文或整理内容、全部授权资料或指定子集，并使用独立预算；撤权后重试重新检查权限。
-- **记忆内容纠正：** 修改记错的内容并查看来源，无需删除原聊天记录。
-- **上下文用量：** 输入框旁的圆环展示估算用量、模型容量和输入组成，未知容量显示为未知。
-- **共同默认整理模型：** 记忆与知识库共用一个默认模型，也可分别覆盖。
+- 连接 OneBot 11 WebSocket 服务，将 QQ 群和私聊绑定到 Agent 与可复用的命名聊天方案。
+- 分别控制直接回应、连续交谈、自主接话和冷场发起；主动参与使用可配置的兴趣门槛，触发唤醒不代表一定发言。
+- 配置回复分组、节奏、会话级模块开关与关注名单；编辑方案的七类提示词，不改变其他绑定的历史。
+- 区分判断与回复上下文窗口；回复窗口外的旧消息达到水位后压成有限数量的上下文包，不在每次唤醒时重复摘要。
+- 导入、检查、启用并授权表情集合，支持文字、表情或混合发送；可将受支持图片与动图抽帧的描述用于回复。
 
-### 改进
+### 统一工作区与执行检查
 
-- 设置改为左侧导航与顶部页签，参数分组展开、长页面提供锚点；按页保存，跨页保留草稿，且不夹带其他页未保存的修改。
-- 对话、读取、整理、压缩模型集中一处选择；助手管理和长期记忆管理各自集中到对应页面。
-- 统一设置与管理页的选中状态、间距、面板和说明文字。
-- 默认参数整体上调——近期原文 6 → 10 轮、摘要 1024 → 2048、记忆整理 300 → 1200 字、检索预设调整为 30/6/2048、60/10/4096、120/16/8192、辅助调用超时 300 → 900 秒、模型调用超时 60 → 1200 秒、整理任务预算 600 → 3600 秒、空闲上限 10 → 120 秒——新增知识库默认上下文预算 16384 单位，已有数值保持不变。
+- 网页、私聊与群聊共用会话工作区，支持持久保存上传或生成的会话头像。
+- Agent 可先读取已授权的记忆和知识，再通过共同的动作循环决定回答；收件人、授权复查与投递仍由程序控制。
+- 新增运行工作区，将模型调用和关联任务汇总为执行瀑布；来源仍有效且授权可读时，可检查实际模型输入输出，并区分生成完成与平台确认送达。
+- 界面按对话、Agent、资料、接入、运行组织，模型服务和偏好单独设入口；保留简体中文／English 与 16 主题外观配置。
 
-### 修复
+### 记忆与模型服务
 
-- 修复了长回答和记忆整理在 60 秒后被截断、以及模型尚未输出首字就断开连接的问题。
-- 修复了部分情况下端口被占用导致软件无法使用的问题。
-- 修复了 LM Studio 鉴权无法使用、以及鉴权失败被误报为服务未连接的问题。
-- 修复了失败提示遮挡“重试原请求”按钮的问题。
-- 修复了迟到的记忆响应覆盖新页面，以及记忆来源、列表与分页状态不同步的问题。
-- 修复了修改预算不刷新容量预览，以及损坏的已存配置静默改用默认值的问题。
+- 以可见来源分区统一管理网页与 QQ 记忆；QQ 仍按会话和绑定 Agent 隔离，与本人私聊共享须显式开启。
+- 在本地 LM Studio 之外登记外部 OpenAI 兼容模型服务、凭据与容量；在模型服务页选择各用途模型并查看可用状态。
+- 改善不同服务的结构化输出与原生工具调用兼容性；不合要求的模型输出仍以明确错误码记录，不伪装成成功动作。
+- 升级保留有效配置与数据；已有的记忆纠正、知识授权规则继续生效。
+
+### 桌面平台
+
+- 新增原生 macOS/Linux 桌面打包、菜单与托盘、资料目录隔离和本地后端鉴权；Windows 保留 C# 启动器与安装器。
+- 支持按偏好关闭窗口后继续后台在线；明确退出时等待所管理的服务完成安全收尾。
+- 原生 macOS/Linux 启动在需要迁移时先备份资料目录；安装方式与数据位置见[桌面发行说明](docs/reference/desktop.md)。
+
+请使用版本页面实际附带的对应架构文件；模型服务、模型文件与 QQ 接入服务均需另行安装。
+
+### 稳定性
+
+- 改善长连接流式对话与中断任务的恢复。
+- 在查看保存的模型输入、使用检索资料时，复查来源权限与修订状态。
+- 区分投递失败与回执未知，不对不确定送达盲目重发。
 
 ### 升级
 
-关闭应用、备份 `userdata`，将新版安装包安装到原目录。已知结构版本 1 的数据库迁移到 4，保留会话、记忆和设置；不支持的结构与降级会被拒绝。检查模型设置并授权已导入的资料；LM Studio 需要 token 时设置 `LM_STUDIO_API_KEY`。
+升级前完整退出应用，并备份整个数据目录。已知 v0.2.1 数据库从结构版本 **4 升级到 47**，保留应用数据；不支持的结构与降级会被拒绝。回退需要旧程序和**匹配的升级前数据备份**，不能只替换程序文件。详见 [UPGRADING.md](UPGRADING.md)。
 
 ---
 
 ## Thanks / 致谢
 
-Thanks to [nkanf-dev](https://github.com/nkanf-dev) for continued support, the macOS/Linux source launcher contributed in [#1](https://github.com/Verdspair/superstring/pull/1), and for reporting that an occupied port could make the app unusable in some cases.
+Thanks to [nkanf-dev](https://github.com/nkanf-dev) for refactoring and optimizing the front-end and back-end workflows and interface while preserving existing functionality, for his multi-platform support (macOS/Linux source launch and native desktop distributions), and for the early and ongoing discussions that shaped the project's direction — see the [pull request history](https://github.com/Verdspair/superstring/pulls).
 
-感谢 [nkanf-dev](https://github.com/nkanf-dev) 的持续支持，以及在 [#1](https://github.com/Verdspair/superstring/pull/1) 中贡献 macOS/Linux 源码启动入口；也感谢他发现部分情况下端口被占用导致软件无法使用的问题。
+感谢 [nkanf-dev](https://github.com/nkanf-dev)：在保留原有功能的前提下，重构并优化了前后端流程与界面，贡献了多平台支持（macOS/Linux 源码启动与原生桌面分发），并在项目早期及后续开发中共同讨论、确定了项目的发展方向（详见 [PR 记录](https://github.com/Verdspair/superstring/pulls)）。

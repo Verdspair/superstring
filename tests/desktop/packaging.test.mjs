@@ -3,6 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { renderBrandAssets } from "../../tools/desktop/build/brand-assets.mjs";
+import { buildBrand } from "../../tools/desktop/build/cross-platform/brand.mjs";
 import { writeChecksums } from "../../tools/desktop/build/cross-platform/checksums.mjs";
 import {
   checkMacReleaseCredentials,
@@ -18,6 +21,47 @@ import {
   resolveProjectBun,
 } from "../../tools/desktop/build/cross-platform/runtime-tools.mjs";
 import { validateSmokeReport } from "../../tools/desktop/build/cross-platform/smoke-contract.mjs";
+
+test("Windows, Linux and macOS icon inputs share the same brand artwork", () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-brand-parity-"));
+  try {
+    const frames = renderBrandAssets(root, path.join(directory, "windows"));
+    const linux = path.join(directory, "linux");
+    buildBrand(root, linux, "linux", () => assert.fail("Linux icons require no native encoder"));
+    const mac = path.join(directory, "mac");
+    const commands = [];
+    buildBrand(root, mac, "darwin", (command, args) => commands.push([command, args]));
+    assert.deepEqual(commands, [
+      [
+        "iconutil",
+        [
+          "--convert",
+          "icns",
+          path.join(mac, "icon.iconset"),
+          "--output",
+          path.join(mac, "icon.icns"),
+        ],
+      ],
+    ]);
+    for (const size of [16, 32, 128, 256]) {
+      const frame = frames.find((candidate) => candidate.size === size);
+      assert.ok(frame);
+      const expected = fs.readFileSync(frame.file);
+      assert.deepEqual(fs.readFileSync(path.join(linux, "icons", `${size}x${size}.png`)), expected);
+      assert.deepEqual(
+        fs.readFileSync(path.join(mac, "icon.iconset", `icon_${size}x${size}.png`)),
+        expected,
+      );
+    }
+    assert.deepEqual(
+      fs.readFileSync(path.join(linux, "icon.png")),
+      fs.readFileSync(path.join(mac, "icon.png")),
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("all native targets keep bundled host dependencies external to builder and select one matching architecture", async () => {
   for (const { platform, arch } of TARGETS) {

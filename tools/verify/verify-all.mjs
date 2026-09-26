@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveProjectBun } from "../desktop/build/cross-platform/runtime-tools.mjs";
 
 // Development gate runner. Fixed absolute executors so it does not depend on the
 // host shell PATH; never touches anything outside this tree, the real database
@@ -11,7 +12,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const require = createRequire(resolve(root, "package.json"));
 const packageBin = (name, file) => resolve(dirname(require.resolve(`${name}/package.json`)), file);
 const node = process.execPath;
-const bun = process.env.SUPERSTRING_BUN_EXE ?? packageBin("bun", "bin/bun.exe");
+const bun = process.env.SUPERSTRING_BUN_EXE ?? resolveProjectBun(root);
 
 const checks = [
   ["biome-check", node, [packageBin("@biomejs/biome", "bin/biome"), "check", "."]],
@@ -24,7 +25,22 @@ const checks = [
   // verify-setup.mjs are outside this runner's own checks, so the inventory is asserted here
   // instead of relying on anyone remembering. See the script's header for what it caught.
   ["migration-inventory", bun, ["tools/verify/verify-migration-inventory.mjs"]],
-  ["bun-tests", bun, ["test", "tests/integration", "tests/contracts"]],
+  [
+    "bun-tests",
+    bun,
+    [
+      "test",
+      "tests/integration",
+      "tests/contracts",
+      "tests/desktop/backend.test.ts",
+      "tests/desktop/security.test.ts",
+    ],
+  ],
+  [
+    "desktop-packaging",
+    node,
+    ["--test", "tests/desktop/packaging.test.mjs", "tests/desktop/palette.test.mjs"],
+  ],
   ["web-tests", node, [packageBin("vitest", "vitest.mjs"), "run", "--config", "vitest.config.ts"]],
   ["web-build", node, [packageBin("vite", "bin/vite.js"), "build"]],
 ];
@@ -69,7 +85,7 @@ const timestamp = new Date().toISOString();
 const report = {
   timestamp,
   scope:
-    "Development gate: static check, types, Bun tests, web tests, web build. Not a release or visual acceptance.",
+    "Development gate: static check, types, migrations, Bun integration/contracts/desktop tests, desktop packaging, web tests and web build. Not release or visual acceptance.",
   node: process.version,
   platform: `${process.platform}-${process.arch}`,
   passed: results.every((r) => r.passed),

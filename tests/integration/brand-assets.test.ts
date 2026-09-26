@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,6 +18,21 @@ afterEach(() => {
 });
 
 describe("shared SVG desktop build assets", () => {
+  it("preserves the original 24-unit geometry in the shared master", () => {
+    const svg = readFileSync(
+      path.resolve(import.meta.dir, "../../src/shared/brand/superstring.svg"),
+      "utf8",
+    );
+    expect(svg).toContain('viewBox="0 0 24 24"');
+    const mark = svg
+      .slice(svg.indexOf('<g id="mark"'), svg.lastIndexOf("</svg>"))
+      .replace(/\s+/g, " ")
+      .trim();
+    expect(createHash("sha256").update(mark).digest("hex")).toBe(
+      "79d965ccfa297aeae761d6e0857fbbe98f1d5b787b1e57ea218d9be4227c094c",
+    );
+  });
+
   it("renders all native icon resolutions directly from the shared brand source", () => {
     const frames = renderBrandAssets(path.resolve(import.meta.dir, "../.."), temporary());
     expect(frames.map((frame: { size: number }) => frame.size)).toEqual([

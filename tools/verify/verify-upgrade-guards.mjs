@@ -97,6 +97,21 @@ try {
     assert.equal(compareVersions("1.0.0-rc.10", "1.0.0-rc.2"), 1));
   test("build metadata does not affect order", () =>
     assert.equal(compareVersions("1.0.0+abc", "1.0.0+xyz"), 0));
+  test("beta upgrades the published version without bypassing downgrade protection", () => {
+    assert.equal(compareVersions("0.3.0-beta", "0.2.1"), 1);
+    assert.equal(compareVersions("0.3.0-beta", "0.3.0"), -1);
+    assert.equal(
+      checkUpgradeIdentity(
+        { ...base, version: "0.2.1", businessSchemaVersion: 4 },
+        { ...base, version: "0.3.0-beta" },
+      ),
+      "upgrade",
+    );
+    assert.throws(
+      () => checkUpgradeIdentity({ ...base, version: "0.3.0" }, { ...base, version: "0.3.0-beta" }),
+      /DOWNGRADE/,
+    );
+  });
   test("leading zero prerelease rejected", () =>
     assert.throws(() => compareVersions("1.0.0-01", "1.0.0")));
   test("downgrade refused", () =>

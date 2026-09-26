@@ -6,7 +6,7 @@ export function BrandLogo(props: SVGProps<SVGSVGElement>) {
   return (
     <svg
       className="icon brand-mark"
-      viewBox="0 0 32 32"
+      viewBox="0 0 24 24"
       aria-hidden="true"
       focusable="false"
       {...props}

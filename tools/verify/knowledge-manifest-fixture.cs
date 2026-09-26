@@ -47,6 +47,10 @@ internal static class KnowledgeManifestFixture
     {
         int current = Migrations.Length;
         Check(Manifest.SupportedSchemaVersion == current);
+        Check(SemVer.IsValid("0.3.0-beta"));
+        Check(SemVer.Compare("0.3.0-beta", "0.2.1") > 0);
+        Check(SemVer.Compare("0.3.0-beta", "0.3.0") < 0);
+        Check(Manifest.Parse(Json(current).Replace("0.2.1", "0.3.0-beta")).Version == "0.3.0-beta");
         for (int version = 1; version <= current; version++)
         {
             int v = version;

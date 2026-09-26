@@ -1,151 +1,135 @@
-# v0.2.1 — Update guide / 升级说明
+# v0.3.0-beta — Update guide / 升级说明
 
 [English](#english) · [简体中文](#简体中文)
 
 ## English
 
-**Comparison baseline:** the published `v0.2.0-alpha` release. This guide describes changes in the current development source relative to that release.
+**Version:** `0.3.0-beta` — prerelease. **Comparison baseline:** published `v0.2.1`.
 
-**Version:** `0.2.1`. Downloads and source use: see [README.md](README.md).
+### What changes from v0.2.1
 
-The main additions are a permission-controlled knowledge library, editable long-term memories, and a context-usage panel. Settings and model selection have been reorganized, with fixes for interrupted generation, model authentication, and memory-page state.
-
-### 1. New features
-
-| Feature | Previous release | This update |
+| Area | v0.2.1 | v0.3.0-beta |
 |---|---|---|
-| Knowledge library | No document library | Import UTF-8 `.txt` / `.md` files or paste text; retain and edit originals; organize documents into categories |
-| Document permissions | No per-document assistant access | Grant or revoke access per assistant, individually or in batches; importing does not automatically grant access |
-| Knowledge organization and retrieval | No knowledge-library retrieval pipeline | Generate organized drafts, inspect linked source passages, and choose original or organized content; use original passages when no valid draft exists |
-| Assistant-specific knowledge reading | Not available | Enable or disable reading, use all authorized documents or a selected subset, and override the context budget per assistant |
-| Memory correction | Memory management without a content-correction workflow | Edit incorrect memory content and inspect its sources, without deleting the original conversation |
-| Context-usage panel | No usage ring beside the chat input | Open the ring to inspect estimated usage, loaded model capacity, and the input breakdown; unknown capacity is shown as unknown |
-| Shared organization model | No shared default across memory and knowledge organization | Set one common default, with separate assistant and knowledge-library overrides |
+| Conversations | Local web chat | Shared workspace for web, QQ private and group conversations, with editable avatars |
+| QQ access | No active QQ connection workflow | OneBot 11 transport, Agent bindings, named schemes and per-conversation controls |
+| Participation | Replies to web requests | Four independently controlled QQ triggers; initiative uses an interest threshold and final delivery checks |
+| Context | Web recent history, summaries and retrieval | QQ judgement/reply windows plus bounded reply-window compression packages |
+| Memory | Agent-owned web memory and correction | Visible web/QQ source partitions; conversation-scoped QQ memory and explicit own-private-chat sharing |
+| Models | Local OpenAI-compatible service configuration | Registered external providers with credentials, declared capacities and per-task model choices |
+| Execution | Web response and task status | Shared Agent actions, run history, causal waterfalls and protected model input/output inspection |
+| Desktop | Windows installer; macOS/Linux source launch | Windows installer plus native macOS/Linux packaging and isolated native profiles |
+| Navigation | Settings categories and page tabs | Conversations, Agents, Library, Connections and Runs, with Model services and Preferences |
 
-**Where to find them:** Knowledge library → **Settings → Memory → Knowledge settings**; memory correction → **Memory → Long-term memory**; model selection → **Quick management → Default models**.
+The knowledge library, memory correction, context-usage ring, English/Simplified Chinese and 16 themes already existed in v0.2.1. They continue in the reorganized workspace rather than being introduced again. Saved valid values are retained; upgrading does not automatically enable QQ speech or grant access to imported material.
 
-Knowledge access is checked again on retry. If a referenced document has been revoked or deleted, send a new request using current permissions.
+### Before upgrading
 
-### 2. Improvements to existing features
+1. Finish or cancel active work and **fully quit the application**, including background mode. Closing only the browser/window may leave the local service running.
+2. Back up the complete data directory, including the database, its SQLite sidecars if present, encryption keys, settings and imported materials. Do not make a database-only copy while the service is writing.
+3. Keep the v0.2.1 installer and its matching data backup if you may need to roll back. Beta-to-stable version ordering does not make a newer database readable by an older program.
+4. Verify the downloaded package against the checksum file supplied with that release.
 
-| Area | Previous release | This update |
-|---|---|---|
-| Settings navigation | Assistant configuration spread across lettered sections and detailed settings | Left-side categories and top tabs; grouped parameters stay expanded, with jump links for long pages |
-| Model selection | Conversation, memory-reading, organization, and compression models configured in separate places | Select all model roles on the Default models page; feature pages retain their rules and budgets |
-| Assistant management | Assistant identity and configuration controls split across views | Select the editing target from a dropdown or list; manage identity, creation, deletion, and the new-conversation choice together |
-| Saving settings | Configuration saved through the old section structure | Save each page's field group independently; retain drafts across pages and on conflicts; do not include another page's unsaved changes |
-| Memory management | Reading rules, organization settings, and management controls spread across sections | Group reading, manual/automatic organization, and stored-memory management on the Long-term memory page |
-| Appearance | Existing theme system and mixed layout density | More consistent selection states, form spacing, panel styling, and concise labels across settings and management views |
+### Install or update
 
-Default values are raised across the board — recent turns 6 → 10, summary target 1024 → 2048 units, memory-organization target 300 → 1200 characters, the three recall presets 15/3/1024 → 30/6/2048, 30/5/2048 → 60/10/4096 and 60/8/4096 → 120/16/8192, auxiliary-call timeout 300 → 900 seconds, model-call timeout 60 → 1200 seconds, organization-task budget 600 → 3600 seconds and server idle limit 10 → 120 seconds — the new knowledge library starts at a 16384-unit context budget, these values compare the published release directly with the current source, and existing saved settings and environment overrides are kept.
+#### Windows x64
 
-Saved assistant settings still apply to the next new turn; retrying the original request retains its original configuration. This behavior is preserved, not newly introduced.
+Run `superstring-setup-0.3.0-beta.exe` and choose the existing installation directory. The installer checks the existing layout and version, backs up the closed installation as part of upgrade, and replaces application files without importing a development checkout's data.
 
-### 3. Bug fixes
+Data remains under `userdata` in that installation. The backup of **all of userdata** matters: encrypted credentials cannot be recovered from a database copy alone if its keys are missing.
 
-- **Long replies and memory organization stopped after 60 seconds.** The model transport timer previously ended an otherwise active request at that limit. Its default is now 1200 seconds, allowing slower generation and organization to continue. It remains a total-call limit, including the streamed response, not an unlimited wait.
-- **Generation disconnected before the first text arrived.** The server previously used a 10-second idle limit, which could close a connection during model preparation. The idle limit is now 120 seconds; it is separate from the model-call timeout.
-- **An occupied port could make the app unusable.** In some cases the desktop launcher could not bind its preferred port and the app failed to start. It now selects a free port and opens the matching address without stopping other software.
-- **LM Studio authentication prevented normal use.** The previous gateway used a fixed token, and capacity detection omitted authentication. Set `LM_STUDIO_API_KEY` to use your token consistently for model listing, capacity detection, and generation.
-- **Authentication failures looked like a disconnected model service.** HTTP 401/403 now produce token-setting guidance; the source-launch precheck distinguishes authorization failure from an unreachable server.
-- **Failure messages covered the retry button.** Messages now sit above the chat input instead of floating over the retry controls.
-- **Delayed memory requests could update the wrong view after switching assistants or pages.** Stale success and failure responses no longer replace the current list, details, or status message.
-- **Memory source selection and displayed turns could get out of sync after leaving and returning.** Source, list, and pagination state now reset together.
-- **Changing a budget did not immediately update the capacity preview.** Once capacity is known, budget edits recalculate the preview locally; switching assistants refreshes the capacity check even when the model is the same.
-- **Malformed stored assistant configuration could silently fall back to defaults.** Invalid stored configurations now return a configuration error rather than producing an unintended request configuration; valid older configurations remain readable.
+#### macOS and Linux
 
-### 4. Changed or removed behavior
+Use the release asset matching your operating system and CPU architecture. Quit the application before replacing the macOS app or updating its Linux package. Native profiles use the operating system's application-data directory; they do not automatically discover or migrate data from a source checkout.
 
-- **Removed automatic reinsertion of original conversation passages during summary reading.** Original chat history is retained; recent-turn context, summary compression, long-term memory, and knowledge retrieval remain available.
-- Removed the old lettered assistant-navigation sections and duplicate configuration controls in favor of the unified settings pages.
-- English and Simplified Chinese, 16 themes, conversation context menus, and macOS/Linux source launchers already existed. They remain supported and are not counted as new features here.
+See [Desktop distributions](docs/reference/desktop.md) for DMG/ZIP, DEB/AppImage, sandbox requirements and native profile recovery. The Windows installer is not a cross-platform data-transfer tool.
 
-### 5. Upgrading and configuration
+#### Source launch
 
-1. Fully close the application and back up `userdata`. Run the new installer against the same installation directory; do not delete the old database to create a new one.
-2. The update adds knowledge and model-setting structures, migrating known databases from schema 1 to schema 4 while retaining conversations, memories, and saved settings. Unsupported structures and downgrades are rejected. Historical default values were only changed during development and never shipped, so no released version is affected.
-3. Review **Quick management → Default models**, import reference material in **Memory → Knowledge settings**, and explicitly authorize the assistants that may use it. Upgrading does not overwrite existing values; to adopt the larger defaults, save the affected settings yourself.
+Update the source, install its pinned dependencies with `npm ci`, then use `start.cmd` or `./start.sh`. Preserve the existing source-mode data and state paths; changing a command-line database path selects another database, not a migration of files. Do not start two processes against the same profile.
 
-For an LM Studio server with **Require API token** enabled, set the token before launching. PowerShell example:
+### Database and rollback
 
-```powershell
-$env:LM_STUDIO_API_KEY = "your-lm-studio-token"
-& "D:\superstring\superstring.exe"
-```
+The published v0.2.1 uses business schema **4**; this version uses **47**. The ordered migration chain handles known schemas and validates structure before proceeding. Unsupported structures or attempts to use an older application with a newer schema are rejected rather than silently rebuilding the database.
 
-This sets the token for that launch only. For shortcut launches, add `LM_STUDIO_API_KEY` to Windows user environment variables and sign out and back in. The default model endpoint remains `http://127.0.0.1:1234/v1`.
+For rollback, stop the new application, preserve its current data separately, restore one complete pre-upgrade backup, and launch the corresponding older application. Do not combine a database and encryption keys from different backups.
+
+### Review these settings
+
+- **Model services:** confirm endpoints, model names, context windows and task-specific defaults. If local LM Studio requires a token, set `LM_STUDIO_API_KEY`; credentials for registered external providers are edited in the application.
+- **Agents:** check identity, expression, memory/knowledge access and recent context. Model output quality and latency depend on the selected provider and model.
+- **Library:** confirm source partitions and knowledge grants. Imported sticker collections need review, enablement and scheme authorization before they can be used.
+- **Connections:** install a QQ client and an OneBot 11 service separately (the validated combination is NapCat v4.18.28 with QQ 9.9.26.44343; see [README.md](README.md)), then bind a QQ conversation to an Agent and scheme. Enable only the triggers you want. A direct response bypasses interest scoring but still permits the Agent to choose silence.
+- **Preferences:** check language, appearance and supported desktop close behavior. Choose background mode only if connected Agents should stay online after the window closes.
+
+Image descriptions require a configured vision model. Voice transcription and full-video understanding remain unavailable. QQ automation may be limited by the platform or account; do not treat an active transport connection as a guarantee of delivery.
 
 ---
 
 ## 简体中文
 
-**对比基线：** 已发布的 `v0.2.0-alpha`。本文说明当前开发源码相对该版本的变化。
+**版本：** `0.3.0-beta`，预发布版。**对比基线：** 已发布 `v0.2.1`。
 
-**版本：** `0.2.1`。下载与源码使用见 [README.md](README.md)。
+### 相对 v0.2.1 的变化
 
-本次主要新增带授权管理的知识库、长期记忆内容纠正、上下文用量面板；重组设置和模型配置入口，并修复生成中断、模型鉴权、记忆页面状态等问题。
-
-### 1. 新功能
-
-| 功能 | 上一版 | 本次更新 |
+| 方面 | v0.2.1 | v0.3.0-beta |
 |---|---|---|
-| 知识库 | 没有资料库 | 导入 UTF-8 `.txt`、`.md` 文件或粘贴文本，保留和编辑原文，按分类管理资料 |
-| 资料授权 | 没有按资料划分的助手权限 | 按助手逐份或批量授予、撤回访问权限；导入不等于自动授权 |
-| 资料整理与检索 | 没有知识库检索流程 | 生成整理稿，查看对应原文片段，选择使用原文或整理内容；无有效整理稿时读取原文片段 |
-| 助手独立读取配置 | 不支持 | 每个助手可开关知识库读取，选择全部授权资料或指定子集，并单独覆盖上下文预算 |
-| 记忆内容纠正 | 可以管理记忆，但没有内容纠正流程 | 直接修改记错的内容并查看来源，不需要删除原聊天记录 |
-| 上下文用量面板 | 输入框旁没有用量圆环 | 点击圆环查看估算用量、已加载模型容量及输入组成；未知容量明确显示未知 |
-| 共同默认整理模型 | 没有跨记忆与知识库的共同默认值 | 设置一个共同整理模型，助手记忆整理和全局知识库整理仍可分别覆盖 |
+| 对话 | 本地网页聊天 | 网页、QQ 私聊与群聊共用工作区，可编辑会话头像 |
+| QQ 接入 | 没有可用的 QQ 连接流程 | OneBot 11 连接、Agent 绑定、命名方案和会话级控制 |
+| 发言 | 响应网页请求 | 四种 QQ 触发独立控制，主动发言受兴趣门槛与提交检查约束 |
+| 上下文 | 网页近期原文、摘要与检索 | 新增 QQ 判断／回复窗口及回复档上下文压缩包 |
+| 记忆 | Agent 所属网页记忆与纠正 | 可见的网页／QQ 来源分区，QQ 会话级隔离与本人私聊显式共享 |
+| 模型 | 本地 OpenAI 兼容服务配置 | 登记外部服务、凭据、容量，并按用途选择模型 |
+| 执行检查 | 网页响应与任务状态 | 统一 Agent 动作、运行记录、因果瀑布与受来源授权保护的模型输入输出 |
+| 桌面 | Windows 安装器，macOS/Linux 源码启动 | 保留 Windows 安装器，新增原生 macOS/Linux 打包与独立资料目录 |
+| 导航 | 设置分类和页签 | 对话、Agent、资料、接入、运行，另设模型服务与偏好 |
 
-**使用入口：** 知识库在“**设置 → 记忆 → 知识库配置**”；记忆纠正在“**记忆 → 长期记忆**”；模型选择在“**快捷管理 → 默认模型**”。
+知识库、记忆纠正、上下文用量圆环、中英界面与 16 种主题在 v0.2.1 已有，本次保留并整合到新工作区，不重复列为新增。有效的已有设置继续保留；升级不会自动开启 QQ 发言，也不会自动授权已导入资料。
 
-知识库资料在重试时会再次检查权限。引用资料已撤权或删除时，需要按当前权限重新发送。
+### 升级前
 
-### 2. 原有功能改进
+1. 完成或取消在途任务，**完整退出应用**，包括后台模式。只关闭浏览器或窗口可能不会停止本地服务。
+2. 备份整个数据目录，包括数据库、存在的 SQLite 附属文件、加密密钥、设置和导入素材；不要在服务写入时只复制数据库文件。
+3. 如需回退，保留 v0.2.1 安装包及其匹配的数据备份；版本排序正确不代表旧程序能读新结构数据库。
+4. 使用所选版本附带的校验清单核对下载文件。
 
-| 方面 | 上一版 | 本次更新 |
-|---|---|---|
-| 设置导航 | 助手配置分散在字母分区和详细配置中 | 改为左侧分类、顶部页签；参数分组展开，长页面可通过锚点跳转 |
-| 模型选择 | 对话、记忆读取、整理、压缩模型分散配置 | 全部集中到“默认模型”页；各功能页保留规则和预算 |
-| 助手管理 | 助手身份和配置操作分散 | 下拉框与列表共同选择编辑对象，集中管理基本信息、新建、删除和新会话候选 |
-| 设置保存 | 沿用旧配置分区保存 | 按页独立保存，跨页保留草稿，冲突时保留编辑内容，不夹带其他页未保存的修改 |
-| 记忆管理 | 读取、整理配置与管理操作分散 | 在“长期记忆”页集中配置读取、手动整理、自动整理和已存记忆管理 |
-| 界面样式 | 已有主题体系，但布局密度不统一 | 统一设置与管理页的选中状态、表单间距、面板样式，精简重复说明 |
+### 安装或更新
 
-默认参数同步整体上调——近期原文 6 → 10 轮、摘要目标 1024 → 2048 单位、记忆整理目标 300 → 1200 字、三档检索预设 15/3/1024 → 30/6/2048、30/5/2048 → 60/10/4096、60/8/4096 → 120/16/8192、辅助调用超时 300 → 900 秒、模型调用超时 60 → 1200 秒、整理任务预算 600 → 3600 秒、连接空闲上限 10 → 120 秒——新增知识库默认上下文预算 16384 单位，数值直接比较上一发布版与当前源码，已保存的设置和环境变量覆盖值保持不变。
+#### Windows x64
 
-助手配置仍在下一新轮生效，重试原请求仍使用当时的配置。这是保留的原有行为，不是本次新增功能。
+运行 `superstring-setup-0.3.0-beta.exe`，选择现有安装目录。安装器检查布局与版本，在升级流程中备份已关闭的安装内容，再替换程序文件；不会从开发目录导入资料。
 
-### 3. 问题修复
+数据仍位于该安装目录的 `userdata`。备份**完整 userdata** 很重要：只留数据库而丢失对应密钥，不能恢复加密保存的凭据。
 
-- **长回答和记忆整理在 60 秒后被截断。** 旧版模型传输计时器会在到达上限时结束仍正常进行的请求。默认上限现为 1200 秒，为慢模型生成和整理留出时间。它仍是包含完整流式回复的单次调用总耗时上限，不是无限等待。
-- **模型尚未输出首字，连接就断开。** 旧版服务器使用 10 秒空闲上限，模型准备期间可能被断开。现改为 120 秒；该限制与模型调用超时分别生效。
-- **修复了部分情况下端口被占用导致软件无法使用的问题。** 桌面启动器原先可能因无法绑定首选端口而启动失败；现在会自动选择空闲端口并打开对应地址，不关闭其他软件。
-- **LM Studio 开启鉴权后无法正常使用。** 旧版固定使用预设 token，容量探测还缺少鉴权信息。现在可通过 `LM_STUDIO_API_KEY` 配置自己的 token，模型列表、容量探测和生成统一携带。
-- **鉴权失败被误报为模型服务未连接。** 401/403 现在明确提示配置 token；源码启动预检也区分“需要授权”和“服务不可达”。
-- **失败提示遮挡“重试原请求”按钮。** 提示移到输入框上方，不再浮动覆盖重试操作。
-- **切换助手或页面后，迟到的记忆请求覆盖当前界面。** 旧请求的成功和失败结果不再替换新页面的列表、详情或提示。
-- **离开记忆页再返回，来源选择与显示轮次不一致。** 来源、列表和分页状态现在一起复位。
-- **修改预算后，容量预览没有立即变化。** 容量已知后在本地即时重算；切换助手时，即使模型相同也重新检查容量。
-- **已存助手配置损坏时，部分路径静默改用默认值。** 非法配置现在明确报配置错误，不再悄悄生成另一套请求配置；合法旧配置仍可读取。
+#### macOS 与 Linux
 
-### 4. 行为调整与移除
+使用版本页面中匹配系统与处理器架构的文件，替换 macOS 应用或更新 Linux 包前先退出。原生资料目录使用系统应用数据位置，不会自动发现或搬迁源码目录中的旧数据。
 
-- **移除摘要读取中的原文自动回注。** 原始聊天记录仍保留；近期原文、摘要压缩、长期记忆读取和知识库检索继续使用。
-- 移除旧字母分区导航和重复配置控件，统一从新的设置页面操作。
-- 应用支持简体中文与 English、16 种主题、会话右键菜单、macOS/Linux 源码启动。这些上一版已有，本次保留，不列为新增。
+DMG/ZIP、DEB/AppImage、沙箱要求与资料恢复见[桌面发行说明](docs/reference/desktop.md)。Windows 安装器不是跨平台数据搬迁工具。
 
-### 5. 升级与配置
+#### 源码启动
 
-1. 完整退出应用并备份 `userdata`，运行新版安装包并选择原安装目录，不要删掉旧数据库重新建库。
-2. 本次增加知识库和模型设置结构，将已知旧库从结构版本 1 迁移到 4，保留会话、记忆和已存配置；不支持的结构和降级会被拒绝。历史数据库默认值的调整只在开发阶段出现，未随任何已发布版本发布。
-3. 到“**快捷管理 → 默认模型**”检查各用途模型；到“**记忆 → 知识库配置**”导入资料，并明确授权给需要使用的助手。升级不会覆盖已有数值，如需采用较大的新默认值，请自行检查并保存配置。
+更新源码后运行 `npm ci` 安装锁定依赖，再运行 `start.cmd` 或 `./start.sh`。保留现有源码模式数据与状态路径；指定另一数据库路径是在选择另一数据库，不是在搬迁文件。不要同时让两个进程使用同一资料目录。
 
-LM Studio 开启 **Require API token** 时，先设置 token 再启动。PowerShell 示例：
+### 数据库与回退
 
-```powershell
-$env:LM_STUDIO_API_KEY = "your-lm-studio-token"
-& "D:\superstring\superstring.exe"
-```
+已发布 v0.2.1 的业务结构版本为 **4**，本版为 **47**。程序按顺序处理已知迁移，并在继续前验证结构；未知结构、旧程序打开新结构等情况会拒绝执行，不会静默重建数据库。
 
-此设置仅对本次启动生效。使用快捷方式时，在 Windows 用户环境变量中添加 `LM_STUDIO_API_KEY`，再注销并重新登录。模型服务默认地址仍为 `http://127.0.0.1:1234/v1`。
+需要回退时，停止新程序，单独保存其当前数据，恢复一份完整的升级前备份，再使用与备份对应的旧程序。不要混用不同备份的数据库与加密密钥。
+
+### 建议检查的配置
+
+- **模型服务**：核对端点、模型名、上下文容量和各用途默认模型。本地 LM Studio 需要 token 时设置 `LM_STUDIO_API_KEY`；外部服务凭据在应用内修改。
+- **Agent**：检查身份、表达、记忆／知识读取权限与近期上下文配置。输出质量和延迟仍取决于所选模型与服务商。
+- **资料**：核对来源分区和知识授权；导入的表情集合需检查、启用并授权给方案后才能使用。
+- **接入**：需单独安装 QQ 客户端与 OneBot 11 服务（已验证组合为 NapCat v4.18.28 与 QQ 9.9.26.44343，见 [README.md](README.md)），再将 QQ 会话绑定到 Agent 和方案，只开启需要的触发。直接回应无需兴趣评分，但仍允许 Agent 选择沉默。
+- **偏好**：检查语言、外观与支持的桌面关闭行为；只有希望关窗口后保持在线时才选择后台模式。
+
+图片描述需要配置视觉模型；语音转写和完整视频理解仍未开放。QQ 自动化可能受平台或账号限制，连接就绪不等于消息一定送达。
+
+---
+
+## Thanks / 致谢
+
+Thanks to [nkanf-dev](https://github.com/nkanf-dev) for refactoring and optimizing the front-end and back-end workflows and interface while preserving existing functionality, for his multi-platform support (macOS/Linux source launch and native desktop distributions), and for the early and ongoing discussions that shaped the project's direction — see the [pull request history](https://github.com/Verdspair/superstring/pulls).
+
+感谢 [nkanf-dev](https://github.com/nkanf-dev)：在保留原有功能的前提下，重构并优化了前后端流程与界面，贡献了多平台支持（macOS/Linux 源码启动与原生桌面分发），并在项目早期及后续开发中共同讨论、确定了项目的发展方向（详见 [PR 记录](https://github.com/Verdspair/superstring/pulls)）。
