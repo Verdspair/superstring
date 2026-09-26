@@ -36,13 +36,21 @@ export interface AgentSpec extends LeafAgentSpec {
   limits: { inputUnits?: number; outputTokens?: number; steps: number; deadlineMs?: number };
 }
 
-const outputBase = { targetId: z.string().min(1) };
+const outputBase = {
+  targetId: z.string().min(1),
+  stickerIds: z
+    .array(z.string().min(1))
+    .nullable()
+    .optional()
+    .describe(
+      "Both output kinds: null/omitted=auto; []=no sticker; [id]=select a disclosed sticker.search/pending_plan ID.",
+    ),
+};
 export const OutputDraftSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     ...outputBase,
     kind: z.literal("inline"),
     text: z.string(),
-    stickerIds: z.array(z.string()),
   }),
   z.strictObject({ ...outputBase, kind: z.literal("generate"), instructions: z.string() }),
 ]);

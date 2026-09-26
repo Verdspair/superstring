@@ -89,6 +89,8 @@ export interface BotContextSourceOptions {
   runtime: RuntimeConfig;
   spec: AgentSpec;
   path: QqSpeechKind;
+  /** Original ingress that scheduled this activation; re-observation does not relabel it as latest. */
+  trigger?: { sourceId: string; seq: number; participantId: string | null };
   /** Private direct uses reply; shared judgement keeps its separately configured window. */
   decisionTier: QqContextTier;
   targets: () => readonly BotContextTarget[];
@@ -575,10 +577,37 @@ export class BotContextSource {
     const selection = qqSelectContext({ timeline, limits, nowSeconds });
     const cost = (material: ContextMaterial) =>
       this.cost(tier, material, this.observations, selection.messages);
-    const raw = (materials: QqPromptMaterial[] = []) =>
-      qqPromptMessages(buildQqPrompt(this.prompt(selection.messages, undefined, materials)))
+    const raw = (materials: QqPromptMaterial[] = []) => {
+      const messages = qqPromptMessages(
+        buildQqPrompt(this.prompt(selection.messages, undefined, materials)),
+      )
         .filter((message) => message.role === "user")
         .map((message) => textMessage("user", message.content));
+      const trigger = o.trigger;
+      if (trigger) {
+        const input = selection.messages.find((message) =>
+          message.sources?.some(
+            (source) => source.kind === "qq_observation" && source.id === trigger.sourceId,
+          ),
+        );
+        messages.push(
+          textMessage(
+            "user",
+            contextDumps({
+              kind: "activation_trigger",
+              trust: "data_only",
+              value: {
+                ...trigger,
+                cause: o.path,
+                text: input?.text ?? null,
+                contentState: input ? "in_selected_context" : "outside_selected_context",
+              },
+            }),
+          ),
+        );
+      }
+      return messages;
+    };
     let material: ContextMaterial = {
       pending: raw(),
       sources: selection.messages.flatMap((message) => message.sources ?? []),
@@ -831,6 +860,35 @@ export class BotContextSource {
       if (fits([...kept, ...group])) kept = [...kept, ...group];
     }
     return kept;
+  }
+  /** Fit a channel action's actual result envelope against both decision and reply projections. */
+  async actionResultFitter(
+    name: string,
+    arguments_: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<(value: unknown, sources: readonly SourceRef[]) => boolean> {
+    this.assertCurrent();
+    const deciding = await this.view(this.options.decisionTier, signal);
+    await this.view("reply", signal);
+    const parents = this.engine.render(
+      this.options.spec,
+      this.withPendingPlan(deciding.material),
+      this.observations,
+      this.targetIds(),
+    ).sources;
+    return (value, sources) => {
+      const observation: ActionObservation = {
+        id: "00000000-0000-0000-0000-000000000000",
+        name,
+        arguments: arguments_,
+        value,
+        sources: uniqueSources([...parents, ...sources]),
+      };
+      return [...this.views].every(
+        ([tier, view]) =>
+          this.cost(tier, view.material, [...this.observations, observation]) <= view.limit,
+      );
+    };
   }
   private async query(
     name: "memory.query" | "knowledge.query",
