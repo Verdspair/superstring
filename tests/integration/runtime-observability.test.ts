@@ -12,7 +12,11 @@ import {
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { RuntimeTelemetry } from "../../src/server/observability/runtime-telemetry";
 import { RuntimeSpanRepository } from "../../src/server/observability/span-repository";
-import { RuntimeSpansPageSchema } from "../../src/shared/contracts/runtime-observability";
+import {
+  RuntimeSpansPageSchema,
+  RuntimeTraceDetailSchema,
+  RuntimeTracesPageSchema,
+} from "../../src/shared/contracts/runtime-observability";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -32,6 +36,141 @@ function setup() {
 }
 
 describe("execution observability", () => {
+  it("pages independent traces by stable creation cursor and expands complete filter-matched causality", async () => {
+    const { telemetry, repository, app } = setup();
+    const first = telemetry.start("request-one", { channel: "web", stage: "ingress" });
+    first.within(() => {
+      telemetry.record("selector", {
+        channel: "memory",
+        stage: "model",
+        model: "target-model",
+        status: "completed",
+      });
+      for (let i = 0; i < 205; i++)
+        telemetry.record("context", { channel: "web", stage: "context" });
+    });
+    first.end("completed");
+    telemetry.record("request-two", { channel: "onebot11", stage: "run", status: "no_output" });
+    const read = async (query: string) =>
+      RuntimeTracesPageSchema.parse(
+        await (await app.request(`/v2/observability/traces?${query}`)).json(),
+      );
+    const newest = await read("limit=1");
+    expect(newest.items).toHaveLength(1);
+    expect(newest.summary.totalTraces).toBe(2);
+    expect(newest.hasMore).toBe(true);
+    // A late continuation must not move the old trace back to the newest page.
+    telemetry.record("delivery", { channel: "web", stage: "delivery", parent: first });
+    expect((await read("limit=1")).items[0]!.traceId).toBe(newest.items[0]!.traceId);
+    const older = await read(`limit=1&beforeId=${newest.nextBeforeId}`);
+    expect(older.items[0]!.traceId).toBe(first.traceId);
+    expect(older.hasMore).toBe(false);
+    const filtered = await read("model=target-model&stage=model");
+    expect(filtered.items).toHaveLength(1);
+    expect(filtered.items[0]).toMatchObject({
+      spanCount: 208,
+      matchedSpanCount: 1,
+      traceId: first.traceId,
+    });
+    expect(filtered.summary).toMatchObject({ totalTraces: 1, matchedSpans: 1 });
+    const detail = RuntimeTraceDetailSchema.parse(
+      await (
+        await app.request(
+          `/v2/observability/traces/${first.traceId}/waterfall?model=target-model&limit=1`,
+        )
+      ).json(),
+    );
+    expect(detail.items).toHaveLength(208);
+    expect(detail.matchedSpanIds).toHaveLength(1);
+    expect(
+      detail.items.find((item) => item.spanId === detail.matchedSpanIds[0])?.parentSpanId,
+    ).toBe(first.spanId);
+    expect(detail.items.some((item) => item.name === "request-two")).toBe(false);
+    expect(repository.waterfall(first.traceId, { q: "not-matched" })?.items).toHaveLength(208);
+    expect(repository.waterfall(first.traceId, { q: "not-matched" })?.matchedSpanIds).toEqual([]);
+  });
+  it("derives trigger and task labels from authorized child spans when the ingress root has neither", () => {
+    const { telemetry, repository } = setup();
+    const root = telemetry.start("bot.ingress", {
+      channel: "onebot11",
+      stage: "ingress",
+      details: { kind: "message" },
+    });
+    root.within(() => {
+      telemetry.record("wake.offer", {
+        channel: "onebot11",
+        stage: "wake",
+        details: { cause: "chiming_in" },
+      });
+      telemetry.record("agent.run", {
+        channel: "onebot11",
+        stage: "run",
+        details: { specId: "onebot.main" },
+      });
+      telemetry.record("agent.model", {
+        channel: "onebot11",
+        stage: "model",
+        details: { specId: "onebot.main" },
+      });
+      telemetry.record("agent.run", {
+        channel: "memory",
+        stage: "run",
+        details: { specId: "memory.select" },
+      });
+    });
+    root.end("completed");
+    telemetry.record("other-request", {
+      channel: "web",
+      stage: "run",
+      details: { specId: "unrelated" },
+    });
+    const group = repository.traces({ q: "chiming_in" }).items[0];
+    expect(group.root.details).not.toHaveProperty("cause");
+    expect(group).toMatchObject({
+      causes: ["chiming_in"],
+      specIds: ["onebot.main", "memory.select"],
+      matchedSpanCount: 1,
+    });
+    expect(repository.waterfall(root.traceId, {})?.trace.specIds).toEqual(group.specIds);
+  });
+  it("keeps the owning run's no_output outcome when its nested model task completed", () => {
+    const { telemetry, repository } = setup();
+    const root = telemetry.start("wake.activate", { channel: "onebot11", stage: "wake" });
+    root.within(() => {
+      const main = telemetry.start("agent.run", { channel: "onebot11", stage: "run" });
+      main.within(() =>
+        telemetry.record("agent.run", { channel: "onebot11", stage: "run", status: "completed" }),
+      );
+      main.end("no_output");
+    });
+    root.end("no_output");
+    expect(repository.traces({}).items[0].status).toBe("no_output");
+  });
+  it("uses the same ownership and retention boundary for trace counts, detail and match identifiers", async () => {
+    const { telemetry, repository, h, app } = setup();
+    h.db
+      .query("INSERT INTO users(id,name,created_at) VALUES(?,?,?)")
+      .run("someone-else", "other", new Date().toISOString());
+    telemetry.record("private", { channel: "memory", stage: "run", userId: "someone-else" });
+    const privateTrace = (
+      h.db.query("SELECT trace_id FROM runtime_spans").get() as { trace_id: string }
+    ).trace_id;
+    expect(repository.traces({}).summary.totalTraces).toBe(0);
+    expect(repository.waterfall(privateTrace, {})).toBeNull();
+    expect((await app.request(`/v2/observability/traces/${privateTrace}/waterfall`)).status).toBe(
+      404,
+    );
+    const expiry = new Date(Date.now() + 1000).toISOString();
+    const root = telemetry.start("retained", {
+      channel: "onebot11",
+      stage: "run",
+      sources: [{ kind: "qq_observation", id: "source", revision: "1", expiresAt: expiry }],
+    });
+    root.end("completed");
+    expect(repository.traces({}).summary.totalTraces).toBe(1);
+    expect(repository.traces({}, DEFAULT_USER_ID, expiry).summary.totalTraces).toBe(0);
+    expect(repository.waterfall(root.traceId, {}, DEFAULT_USER_ID, expiry)).toBeNull();
+  });
   it("persists live stages, isolates parallel traces and propagates parent spans through awaits", async () => {
     const { telemetry, repository } = setup();
     let release!: () => void;

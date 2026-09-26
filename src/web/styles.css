@@ -4027,7 +4027,145 @@ input[aria-invalid="true"] {
 .trace-dialog .run-inspector-body {
   overflow-anchor: auto;
 }
+.trace-models {
+  font-size: 13px;
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+.trace-models code,
+.trace-group dd code {
+  display: inline-block;
+  margin-right: 8px;
+}
+.waterfall-dialog {
+  width: min(1180px, calc(100vw - 32px));
+}
+.trace-waterfall {
+  margin-top: 20px;
+  --waterfall-label-width: minmax(240px, 42%);
+}
+.trace-waterfall ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.trace-waterfall ol[hidden] {
+  display: none;
+}
+.waterfall-ruler,
+.waterfall-row {
+  display: grid;
+  grid-template-columns: var(--waterfall-label-width) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+}
+.waterfall-ruler {
+  color: var(--ac-muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--superstring-tone-line);
+  padding-bottom: 10px;
+}
+.waterfall-ruler > div {
+  display: flex;
+  justify-content: space-between;
+}
+.waterfall-node {
+  min-width: 0;
+  scroll-margin-top: 12px;
+}
+.waterfall-node:target {
+  outline: 2px solid var(--ac-accent);
+}
+.waterfall-row {
+  padding: 12px 0 6px;
+  border-top: 1px solid var(--superstring-tone-line);
+}
+.waterfall-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding-left: calc(var(--waterfall-depth) * 12px);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.waterfall-label small {
+  display: block;
+  color: var(--ac-muted);
+  margin-top: 4px;
+}
+.waterfall-branch {
+  flex: 0 0 24px;
+  padding: 0 2px;
+  min-height: 24px;
+}
+.waterfall-track {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--superstring-tone-soft);
+  border-left: 1px solid var(--superstring-tone-line);
+  border-right: 1px solid var(--superstring-tone-line);
+}
+.waterfall-bar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--ac-accent);
+  opacity: 0.8;
+}
+.waterfall-bar[data-running="true"] {
+  background: repeating-linear-gradient(
+    120deg,
+    var(--ac-accent),
+    var(--ac-accent) 4px,
+    transparent 4px,
+    transparent 7px
+  );
+  border: 1px solid var(--ac-accent);
+}
+.waterfall-node[data-status="failed"] > .waterfall-row .waterfall-bar {
+  background: var(--ac-danger);
+}
+.waterfall-node[data-status="unknown"] > .waterfall-row .waterfall-bar {
+  border: 1px dashed var(--ac-muted);
+}
+.waterfall-timing small {
+  display: block;
+  color: var(--ac-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 5px;
+}
+.waterfall-details {
+  padding: 0 0 10px;
+}
+.waterfall-details > section {
+  border: 1px solid var(--superstring-tone-line);
+  padding: 12px;
+  margin-top: 8px;
+  border-radius: var(--ac-radius);
+}
+.run-model-result pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 420px;
+  overflow: auto;
+}
 @media (max-width: 720px) {
+  .waterfall-dialog {
+    width: calc(100vw - 16px);
+  }
+  .waterfall-row,
+  .waterfall-ruler {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .waterfall-label {
+    padding-left: calc(var(--waterfall-depth) * 6px);
+  }
   .conversation-page .page-header {
     gap: 6px;
   }

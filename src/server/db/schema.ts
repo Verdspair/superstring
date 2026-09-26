@@ -1713,6 +1713,8 @@ export const contextSnapshots = sqliteTable(
     layout: text("layout").notNull(),
     expiresAt: text("expires_at"),
     protectedMessages: text("protected_messages"),
+    protectedOutput: text("protected_output"),
+    outputRecorded: integer("output_recorded").notNull().default(0),
     status: text("status").notNull(),
   },
   (t) => [
@@ -1723,6 +1725,11 @@ export const contextSnapshots = sqliteTable(
       "context_snapshots_messages",
       sql`${t.protectedMessages} IS NULL OR json_valid(${t.protectedMessages})`,
     ),
+    check(
+      "context_snapshots_output",
+      sql`${t.protectedOutput} IS NULL OR json_valid(${t.protectedOutput})`,
+    ),
+    check("context_snapshots_output_recorded", sql`${t.outputRecorded} IN (0,1)`),
     check("context_snapshots_status", sql`${t.status} IN ('exact','expired','revoked')`),
   ],
 );

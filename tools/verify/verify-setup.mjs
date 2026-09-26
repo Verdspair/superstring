@@ -312,6 +312,12 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0042_runtime_observability.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0043_protected_model_results.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

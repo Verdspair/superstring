@@ -54,6 +54,7 @@ function event(
   return { runId, seq, at: now, ...payload };
 }
 const exact: InspectedContext = {
+  result: { status: "exact", format: "text", text: "private model output" },
   status: "exact",
   layout: [{ role: "user", units: 18, sourceIds: ["source-one"] }],
   sourceVersions: [{ id: "source-one", revision: "1" }],
@@ -168,7 +169,7 @@ describe("run inspector", () => {
     expect((screen.getByRole("combobox", { name: "运行尝试" }) as HTMLSelectElement).value).toBe(
       "run-one",
     );
-    await user.click(screen.getByRole("button", { name: "查看实际输入" }));
+    await user.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
     await screen.findByText("private source text");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -181,9 +182,9 @@ describe("run inspector", () => {
       .mockResolvedValueOnce({ ...exact, status: "revoked", exactMessages: undefined });
     setup(inspect);
     fireEvent.click(screen.getByRole("button", { name: "运行详情" }));
-    fireEvent.click(await screen.findByRole("button", { name: "查看实际输入" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看实际输入与输出" }));
     await screen.findByText("private source text");
-    fireEvent.click(screen.getByRole("button", { name: "重新核对实际输入" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新核对实际输入与输出" }));
     await screen.findByText("来源已撤权或删除，实际输入不可查看；仅保留允许的元数据。");
     expect(screen.queryByText("private source text")).toBeNull();
     act(() => window.dispatchEvent(new Event("blur")));
@@ -201,7 +202,7 @@ describe("run inspector", () => {
     );
     setup(inspect);
     fireEvent.click(screen.getByRole("button", { name: "运行详情" }));
-    fireEvent.click(await screen.findByRole("button", { name: "查看实际输入" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看实际输入与输出" }));
     fireEvent.change(screen.getByRole("combobox", { name: "运行尝试" }), {
       target: { value: "run-previous" },
     });

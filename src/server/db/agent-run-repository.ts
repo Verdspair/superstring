@@ -3,6 +3,7 @@ import type {
   AgentStepSnapshot,
   ContextHandle,
   ModelMessage,
+  ProtectedModelOutput,
   RunEvent,
   RunEventPayload,
   RunOwner,
@@ -44,6 +45,8 @@ type ContextRow = {
   layout: string;
   expires_at: string | null;
   protected_messages: string | null;
+  protected_output: string | null;
+  output_recorded: number;
   status: StoredContext["status"];
 };
 
@@ -150,20 +153,35 @@ export class AgentRunRepository {
     stepId: string,
     status: AgentStepSnapshot["status"],
     at: string,
-    options: { errorCode?: string; decision?: unknown } = {},
+    options: { errorCode?: string; decision?: unknown; output?: ProtectedModelOutput } = {},
   ): void {
     // Decisions contain only typed control information. Bodies and action results belong to
     // source-bound snapshots, never an unbounded diagnostics log.
+    this.db.transaction(() => {
+      this.db
+        .query(`UPDATE agent_steps SET status=?,ended_at=?,error_code=?,decision=?
+        WHERE step_id=? AND status='running'`)
+        .run(
+          status,
+          at,
+          options.errorCode ?? null,
+          options.decision === undefined ? null : JSON.stringify(options.decision),
+          stepId,
+        );
+      // A source may have been revoked while inference was in flight. Never
+      // restore content to a redacted snapshot, even when the model returns later.
+      this.db
+        .query(`UPDATE context_snapshots SET output_recorded=1,protected_output=
+        CASE WHEN status='exact' AND protected_messages IS NOT NULL AND
+        (expires_at IS NULL OR expires_at>?) THEN ? ELSE NULL END WHERE step_id=?`)
+        .run(at, options.output === undefined ? null : JSON.stringify(options.output), stepId);
+    })();
+  }
+
+  resolveStepModel(stepId: string, model: string): void {
     this.db
-      .query(`UPDATE agent_steps SET status=?,ended_at=?,error_code=?,decision=?
-      WHERE step_id=? AND status='running'`)
-      .run(
-        status,
-        at,
-        options.errorCode ?? null,
-        options.decision === undefined ? null : JSON.stringify(options.decision),
-        stepId,
-      );
+      .query("UPDATE agent_steps SET model=? WHERE step_id=? AND status='running'")
+      .run(model, stepId);
   }
 
   appendEvent(
@@ -301,6 +319,8 @@ export class AgentRunRepository {
       sources: JSON.parse(row.source_refs),
       layout: JSON.parse(row.layout),
       messages: row.protected_messages === null ? null : JSON.parse(row.protected_messages),
+      output: row.protected_output === null ? null : JSON.parse(row.protected_output),
+      outputRecorded: row.output_recorded === 1,
       expiresAt: row.expires_at,
       status: row.status,
     };
@@ -309,7 +329,7 @@ export class AgentRunRepository {
   redactContext(handle: ContextHandle, status: "expired" | "revoked"): void {
     this.db.transaction(() => {
       this.db
-        .query(`UPDATE context_snapshots SET protected_messages=NULL,status=? WHERE step_id=?
+        .query(`UPDATE context_snapshots SET protected_messages=NULL,protected_output=NULL,status=? WHERE step_id=?
         AND EXISTS (SELECT 1 FROM agent_steps WHERE step_id=? AND run_id=?)`)
         .run(status, handle.stepId, handle.stepId, handle.runId);
       this.db

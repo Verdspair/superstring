@@ -231,6 +231,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0038_qq_judgement_model.sql",
     ),
+    protectedModelResultsMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0043_protected_model_results.sql",
+    ),
     runtimeObservabilityMigration: path.join(
       resourceRoot,
       "migrations",

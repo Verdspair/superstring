@@ -125,7 +125,21 @@ export const ContextLayoutSchema = z.array(
     units: z.number().int().nonnegative(),
   }),
 );
+export const ProtectedModelOutputSchema = z.strictObject({
+  text: z.string(),
+  format: z.enum(["text", "json"]),
+  complete: z.boolean(),
+});
+export type ProtectedModelOutput = z.infer<typeof ProtectedModelOutputSchema>;
+export const InspectedModelResultSchema = z.strictObject({
+  status: z.enum(["exact", "partial", "unavailable", "expired", "revoked"]),
+  text: z.string().optional(),
+  format: z.enum(["text", "json"]).optional(),
+  reason: z.enum(["not_recorded", "pending", "no_response"]).optional(),
+});
+export type InspectedModelResult = z.infer<typeof InspectedModelResultSchema>;
 export const InspectedContextSchema = z.strictObject({
+  result: InspectedModelResultSchema,
   status: z.enum(["exact", "partial", "expired", "revoked"]),
   layout: ContextLayoutSchema,
   exactMessages: z.array(ModelMessageSchema).optional(),
@@ -146,6 +160,8 @@ export const StoredContextSchema = z.strictObject({
   sources: z.array(SourceRefSchema),
   layout: ContextLayoutSchema,
   messages: z.array(ModelMessageSchema).nullable(),
+  output: ProtectedModelOutputSchema.nullable(),
+  outputRecorded: z.boolean(),
   expiresAt: z.string().nullable(),
   status: z.enum(["exact", "expired", "revoked"]),
 });

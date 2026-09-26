@@ -108,6 +108,8 @@ import {
   ConversationRuntimeStatusSchema,
   type RuntimeSpanFilters,
   RuntimeSpansPageSchema,
+  RuntimeTraceDetailSchema,
+  RuntimeTracesPageSchema,
 } from "../shared/contracts/runtime-observability";
 import { msg } from "./i18n";
 
@@ -202,6 +204,29 @@ export const api = {
       signal,
       cache: "no-store",
     });
+  },
+  listRuntimeTraces: (filters: RuntimeSpanFilters = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(`/v2/observability/traces?${query}`, RuntimeTracesPageSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  getRuntimeWaterfall: (
+    traceId: string,
+    filters: RuntimeSpanFilters = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(
+      `/v2/observability/traces/${encodeURIComponent(traceId)}/waterfall?${query}`,
+      RuntimeTraceDetailSchema,
+      { signal, cache: "no-store" },
+    );
   },
   getRuntimeTrace: (traceId: string, beforeId?: number, signal?: AbortSignal) => {
     const query = new URLSearchParams({ limit: "100" });

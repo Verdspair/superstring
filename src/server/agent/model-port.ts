@@ -9,6 +9,10 @@ export interface ModelRequest {
   maxTokens?: number;
   responseSchema?: Record<string, unknown>;
   signal?: AbortSignal;
+  /** Reports the model sent by the adapter after routing or local fallback. */
+  onModelResolved?: (model: string) => void;
+  /** Retains returned text even when a completion terminates with a protocol error. */
+  onResponseText?: (text: string, complete: boolean) => void;
 }
 export interface MultimodalRequest {
   systemPrompt?: string;
