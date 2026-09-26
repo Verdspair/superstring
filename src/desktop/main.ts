@@ -354,6 +354,7 @@ async function smoke(created: BrowserWindow): Promise<void> {
   quitting = true;
   reopened.destroy();
   await backend.stop();
+  if (backend.exitCode !== 0) throw new Error("DESKTOP_SMOKE_SHUTDOWN_FAILED");
   writeFileSync(
     smokeReport,
     JSON.stringify(
@@ -389,6 +390,7 @@ function launch(): Promise<void> {
       resourceRoot: path.join(serviceRoot, "resources"),
       log: (message) => log.info(message),
       onExit: (expected, code, signal) => {
+        if (code !== 0) log.error(`Service exited: ${code ?? signal ?? "unknown"}`);
         if (!expected && !quitting)
           void fail(`DESKTOP_SERVICE_EXIT:${code ?? signal ?? "unknown"}`);
       },

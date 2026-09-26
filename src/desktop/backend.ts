@@ -88,6 +88,7 @@ export function childEnvironment(
 export class DesktopBackend {
   readonly token = randomBytes(32).toString("hex");
   origin: string | null = null;
+  exitCode: number | null = null;
   private child: ChildProcessWithoutNullStreams | null = null;
   private exited: Promise<void> = Promise.resolve();
   private stopping: Promise<void> | null = null;
@@ -115,6 +116,7 @@ export class DesktopBackend {
     child.stdin.on("error", (error) => this.log(`stdin: ${error.message}`));
     this.exited = new Promise<void>((resolve) => {
       child.once("close", (code, signal) => {
+        this.exitCode = code;
         this.child = null;
         resolve();
         this.options.onExit(this.expectedExit, code, signal);
@@ -173,6 +175,8 @@ export class DesktopBackend {
       value?.app !== "superstring" ||
       value.desktop !== true ||
       value.state !== "ready" ||
+      !Number.isInteger(value.page_connections) ||
+      value.page_connections < 0 ||
       (value.close_action !== "background" && value.close_action !== "exit")
     ) {
       throw new Error("DESKTOP_SERVICE_IDENTITY_MISMATCH");

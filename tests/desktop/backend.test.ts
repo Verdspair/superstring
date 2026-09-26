@@ -38,7 +38,7 @@ const server=http.createServer((req,res)=>{
  if(req.headers.authorization!=='Bearer '+process.env.SUPERSTRING_DESKTOP_TOKEN) {res.writeHead(403).end();return;}
  if(req.url==='/__desktop/stop') {res.end('ok');server.close(()=>process.exit(0));return;}
  res.setHeader('content-type','application/json');
- res.end(JSON.stringify({app:'superstring',desktop:true,state:'ready',close_action:'background'}));
+ res.end(JSON.stringify({app:'superstring',desktop:true,state:'ready',close_action:'background',page_connections:1}));
 });
 process.stdin.resume();
 process.stdin.on('end',()=>server.close(()=>process.exit(0)));
@@ -79,6 +79,7 @@ describe("native desktop service owner", () => {
     expect((await host.status()).close_action).toBe("background");
     await Promise.all([host.stop(), host.stop()]);
     expect(exits).toEqual([true]);
+    expect(host.exitCode).toBe(0);
     await expect(localRequest(origin, "/__desktop/status")).rejects.toThrow();
   });
 

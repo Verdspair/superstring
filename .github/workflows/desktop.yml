@@ -72,6 +72,7 @@ jobs:
           npm run typecheck
           node_modules/.bin/bun tools/verify/verify-migration-inventory.mjs
           node --test tests/desktop/palette.test.mjs
+          node --input-type=module -e "await import('./tools/desktop/build/cross-platform/sign.mjs')"
       - name: Desktop contracts and existing startup invariants
         run: >-
           node_modules/.bin/bun test
