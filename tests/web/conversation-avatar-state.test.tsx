@@ -16,12 +16,10 @@ const selected: GeneratedAvatar = { kind: "generated", style: "rings", seed: "se
 const first = { ...summaryFixture("first"), avatar: original };
 const second = summaryFixture("second");
 function setup(client: Partial<SuperstringApi> = {}) {
-  store
-    .getState()
-    .resetForTests({
-      saveConversationAvatar: vi.fn(async () => selected),
-      ...client,
-    } as unknown as SuperstringApi);
+  store.getState().resetForTests({
+    saveConversationAvatar: vi.fn(async () => selected),
+    ...client,
+  } as unknown as SuperstringApi);
   store.setState({
     summaryById: { [first.id]: first, [second.id]: second },
     directoryIds: [first.id, second.id],
