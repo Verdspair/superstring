@@ -7,7 +7,13 @@ import { Arch, build, Platform } from "electron-builder";
 import { collectPackageFiles, readPackageVersion } from "../../../installer/package-files.mjs";
 import { buildBrand } from "./brand.mjs";
 import { writeChecksums } from "./checksums.mjs";
-import { checkMacReleaseCredentials, createConfiguration, getTarget, HOMEPAGE } from "./config.mjs";
+import {
+  checkMacReleaseCredentials,
+  createConfiguration,
+  getTarget,
+  HOMEPAGE,
+  normalizeMacSigningEnvironment,
+} from "./config.mjs";
 import { writeProductionNotices } from "./licenses.mjs";
 import { resolveProjectBun } from "./runtime-tools.mjs";
 
@@ -25,7 +31,10 @@ getTarget(platform, arch);
 if (platform !== process.platform || arch !== process.arch) {
   throw new Error("Build and smoke each desktop target on its native CI runner");
 }
-if (release && platform === "darwin") checkMacReleaseCredentials(process.env);
+if (platform === "darwin") {
+  normalizeMacSigningEnvironment(process.env);
+  if (release) checkMacReleaseCredentials(process.env);
+}
 const version = readPackageVersion(root);
 const stage = path.join(root, "artifacts/desktop", `${platform}-${arch}`);
 const output = path.join(root, "dist/desktop-packages", `${platform}-${arch}`);

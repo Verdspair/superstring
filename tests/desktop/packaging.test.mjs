@@ -9,6 +9,7 @@ import {
   createConfiguration,
   expectedArtifacts,
   getTarget,
+  normalizeMacSigningEnvironment,
   TARGETS,
 } from "../../tools/desktop/build/cross-platform/config.mjs";
 import { publicLicenseInventory } from "../../tools/desktop/build/cross-platform/licenses.mjs";
@@ -18,7 +19,7 @@ import {
 } from "../../tools/desktop/build/cross-platform/runtime-tools.mjs";
 import { validateSmokeReport } from "../../tools/desktop/build/cross-platform/smoke-contract.mjs";
 
-test("all native targets keep service binaries outside ASAR and select one matching architecture", () => {
+test("all native targets keep bundled host dependencies external to builder and select one matching architecture", async () => {
   for (const { platform, arch } of TARGETS) {
     const config = createConfiguration({
       root: "/project",
@@ -31,6 +32,8 @@ test("all native targets keep service binaries outside ASAR and select one match
     assert.equal(config.extraResources[0].to, "service");
     assert.equal(config.extraResources[0].from, "/stage/service");
     assert.equal(config.electronFuses.runAsNode, false);
+    assert.notEqual(config.npmRebuild, false);
+    assert.equal(await config.beforeBuild(), false);
     for (const target of (platform === "darwin" ? config.mac : config.linux).target)
       assert.deepEqual(target.arch, [arch]);
   }
@@ -38,6 +41,14 @@ test("all native targets keep service binaries outside ASAR and select one match
 });
 
 test("mac release mode requires identity and complete notarization credentials", () => {
+  const blank = { CSC_LINK: "  ", CSC_KEY_PASSWORD: "" };
+  normalizeMacSigningEnvironment(blank);
+  assert.equal(Object.hasOwn(blank, "CSC_LINK"), false);
+  assert.equal(blank.CSC_KEY_PASSWORD, "");
+  assert.throws(() => checkMacReleaseCredentials(blank), /SIGNING/);
+  const configured = { CSC_LINK: "certificate" };
+  normalizeMacSigningEnvironment(configured);
+  assert.equal(configured.CSC_LINK, "certificate");
   assert.throws(() => checkMacReleaseCredentials({}), /SIGNING/);
   assert.throws(() => checkMacReleaseCredentials({ CSC_LINK: "certificate" }), /NOTARIZATION/);
   assert.throws(
@@ -66,6 +77,8 @@ test("mac release mode requires identity and complete notarization credentials",
 });
 
 test("release checksum assembly rejects partial, extra and wrong-version distributions", () => {
+  assert.ok(expectedArtifacts("0.2.1").includes("superstring-0.2.1-linux-amd64.deb"));
+  assert.ok(expectedArtifacts("0.2.1").includes("superstring-0.2.1-linux-x86_64.AppImage"));
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-checksums-"));
   try {
     assert.throws(() => writeChecksums(directory, "0.2.1"), /asset set mismatch/);

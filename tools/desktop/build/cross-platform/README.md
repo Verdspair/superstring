@@ -18,6 +18,8 @@ Run only the command matching that runner. `--dir` produces an unpacked
 application for development. Outputs are in `dist/desktop-packages/<platform>-<arch>`.
 The generated `build-result.json` identifies the package and the native app.
 Desktop builds require macOS 13 or later; Linux packages target glibc desktops.
+Linux x64 artifacts use the package-format conventions `amd64.deb` and
+`x86_64.AppImage`; the CI lane and smoke identity remain `linux-x64`.
 
 The CI workflow is the intended place to build all architectures. It does not
 require a developer workstation to download Electron runtimes for other
@@ -47,7 +49,10 @@ production dependency closure, including the frontend and host. The package adds
 `production-dependencies.json` and a readable `production-dependencies.txt`, with
 original license and NOTICE text but no build-machine paths. A missing direct
 dependency or license text fails the build. Existing pinned notices, including
-Bun's, remain present. Electron's distribution includes its own and Chromium's
+Bun's, remain present, alongside the project's original MIT `LICENSE`. The official
+`beforeBuild` hook marks the complete JS bundles as externally prepared, preventing
+builder from collecting a second copy of the repository's dependencies. Electron's
+distribution includes its own and Chromium's
 notices. Binary hashes are taken
 from final distributables after signing, not from an unsigned sidecar that
 codesign will subsequently change.

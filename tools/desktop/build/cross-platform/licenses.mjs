@@ -47,6 +47,7 @@ export async function writeProductionNotices(root, service) {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   const inventory = publicLicenseInventory(packages, manifest);
   const outputs = {
+    "superstring-LICENSE.txt": fs.readFileSync(path.join(root, "LICENSE"), "utf8"),
     "production-dependencies.json": `${JSON.stringify(inventory, null, 2)}\n`,
     "production-dependencies.txt": Object.entries(inventory)
       .map(

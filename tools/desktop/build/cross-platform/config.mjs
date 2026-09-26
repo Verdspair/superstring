@@ -15,8 +15,15 @@ export function getTarget(platform, arch) {
   return target;
 }
 
+export function normalizeMacSigningEnvironment(env) {
+  // An unset Actions secret expands to "". Builder interprets a defined empty
+  // CSC_LINK as the working directory, then attempts to import it as a file.
+  if (env.CSC_LINK !== undefined && !env.CSC_LINK.trim()) delete env.CSC_LINK;
+}
+
 export function checkMacReleaseCredentials(env) {
-  if (!env.CSC_LINK && !env.CSC_NAME) throw new Error("MACOS_SIGNING_IDENTITY_REQUIRED");
+  if (!env.CSC_LINK?.trim() && !env.CSC_NAME?.trim())
+    throw new Error("MACOS_SIGNING_IDENTITY_REQUIRED");
   const groups = [
     ["APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER"],
     ["APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"],
@@ -43,7 +50,9 @@ export function createConfiguration({ root, stage, output, platform, arch, relea
     files: ["package.json", "main.cjs", "preload.cjs"],
     extraResources: [{ from: path.join(stage, "service"), to: "service", filter: ["**/*"] }],
     asar: true,
-    npmRebuild: false,
+    // Both entry points are complete bundles. The official hook also prevents
+    // builder from falling back to the repository's production node_modules.
+    beforeBuild: async () => false,
     publish: null,
     // biome-ignore lint/suspicious/noTemplateCurlyInString: electron-builder expands these macros.
     artifactName: "superstring-${version}-${os}-${arch}.${ext}",
@@ -83,10 +92,12 @@ export function createConfiguration({ root, stage, output, platform, arch, relea
 export function expectedArtifacts(version) {
   return [
     ...TARGETS.flatMap(({ platform, arch, extensions }) =>
-      extensions.map(
-        (ext) =>
-          `superstring-${version}-${platform === "darwin" ? "mac" : platform}-${arch}.${ext}`,
-      ),
+      extensions.map((ext) => {
+        // electron-builder's getArtifactArchName follows each package format.
+        const artifactArch =
+          arch === "x64" ? ({ deb: "amd64", AppImage: "x86_64" }[ext] ?? arch) : arch;
+        return `superstring-${version}-${platform === "darwin" ? "mac" : platform}-${artifactArch}.${ext}`;
+      }),
     ),
     `superstring-setup-${version}.exe`,
   ];

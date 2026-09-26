@@ -62,6 +62,11 @@ try {
   stopped = true;
 } catch (error) {
   console.error(`Smoke failed; isolated profile retained at ${temporary}`);
+  const logfile = path.join(temporary, "profile/logs/desktop.log");
+  if (fs.existsSync(logfile)) {
+    console.error("Desktop smoke log (synthetic profile, final 64 KiB):");
+    console.error(fs.readFileSync(logfile).subarray(-65_536).toString("utf8"));
+  }
   throw error;
 } finally {
   // Only diagnostics from this synthetic profile are uploaded, never its DB,
