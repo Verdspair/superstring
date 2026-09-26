@@ -82,13 +82,14 @@ describe("managed desktop access", () => {
 
   it("does not accept URL, cookie, malformed, duplicate or unrelated bearer credentials", () => {
     const access = gate();
-    for (const headers of [
+    const credentials: Record<string, string>[] = [
       { [DESKTOP_ACCESS_HEADER]: "b2".repeat(32) },
       { [DESKTOP_ACCESS_HEADER]: `${TOKEN}, ${TOKEN}` },
       { [DESKTOP_ACCESS_HEADER]: "é".repeat(64) },
       { authorization: `Bearer ${TOKEN}` },
       { cookie: `${DESKTOP_ACCESS_HEADER}=${TOKEN}` },
-    ]) {
+    ];
+    for (const headers of credentials) {
       expect(access(request(`/browser-state/config?token=${TOKEN}`, headers))?.status).toBe(403);
     }
   });
