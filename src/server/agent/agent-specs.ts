@@ -73,10 +73,14 @@ export function parseAgentDecision(raw: string): AgentDecision {
   return AgentDecisionSchema.parse(JSON.parse(fence?.[1] ?? text));
 }
 
-export const AGENT_DECISION_JSON_SCHEMA = z.toJSONSchema(AgentDecisionSchema) as Record<
-  string,
-  unknown
->;
+// Ask structured-output models to emit null for auto. The parser also accepts omitted
+// fields from providers using JSON-object/plain-text mode or older pending plans.
+export const AGENT_DECISION_JSON_SCHEMA = z.toJSONSchema(AgentDecisionSchema, {
+  override({ zodSchema, jsonSchema }) {
+    if (OutputDraftSchema.options.some((option) => option === zodSchema))
+      jsonSchema.required = [...(jsonSchema.required ?? []), "stickerIds"];
+  },
+}) as Record<string, unknown>;
 
 export function leafSpec(id: string, options: Omit<LeafAgentSpec, "id"> = {}): LeafAgentSpec {
   return { id, ...options };
