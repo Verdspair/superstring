@@ -12,7 +12,7 @@ import type {
   QqStickerCollectionResponse,
 } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
-import { SettingsBody } from "../../src/web/app/SettingsSidebar";
+import { Sidebar } from "../../src/web/app/Sidebar";
 import { StickerLibrary } from "../../src/web/features/qq/StickerLibrary";
 import { selectLocale } from "../../src/web/i18n";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -308,15 +308,11 @@ describe("接入下的 QQ 资源", () => {
       settingsView: "workspace",
       settingsRoute: "qq-stickers",
     });
-    render(
-      <SettingsBody>
-        <span>content</span>
-      </SettingsBody>,
-    );
-    expect(screen.getByText("接入")).toBeTruthy();
+    render(<Sidebar version="test" />);
+    expect(screen.getByRole("navigation", { name: "配置页面" })).toBeTruthy();
     // It is a section caption, not an entry: the three links below are what gets clicked, so the
     // caption must not be a button (2026-09-25, after it read as a button that did nothing).
-    expect(screen.getByText("接入").closest("button")).toBeNull();
+    expect(screen.getByText("接入", { selector: ".session-heading" }).closest("button")).toBeNull();
     expect(screen.getByRole("button", { name: /表情素材/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /聊天方案/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /存储与诊断/ })).toBeTruthy();

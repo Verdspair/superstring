@@ -83,6 +83,7 @@ describe("locale catalog and preferences", () => {
     useSuperstringStore.getState().patchDraft({ name: "用户写的中文" });
     useSuperstringStore.setState({ composer: "保留我的输入" });
     const draft = useSuperstringStore.getState().editorDraft;
+    useSuperstringStore.setState({ page: "settings", settingsView: "general" });
     render(<GeneralSettings />);
     const language = screen.getByText("界面语言", { selector: "strong" }).closest("details");
     if (!language) throw new Error("Missing language details");
@@ -102,6 +103,7 @@ describe("locale catalog and preferences", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw Error("blocked");
     });
+    useSuperstringStore.setState({ page: "settings", settingsView: "general" });
     render(<GeneralSettings />);
     const language = screen.getByText("界面语言", { selector: "strong" }).closest("details");
     if (!language) throw new Error("Missing language details");
@@ -114,6 +116,7 @@ describe("locale catalog and preferences", () => {
     expect(screen.getByText(/storage is blocked/)).toBeTruthy();
   });
   it("reacts to cross-tab storage changes", () => {
+    useSuperstringStore.setState({ page: "settings", settingsView: "general" });
     render(<GeneralSettings />);
     act(() => {
       localStorage.setItem(LOCALE_STORAGE_KEY, "en");
@@ -150,6 +153,7 @@ describe("locale catalog and preferences", () => {
 
 describe("general settings and status bar", () => {
   it("shows only supported chat mode as enabled", () => {
+    useSuperstringStore.setState({ page: "settings", settingsView: "operating-mode" });
     const { container } = render(<OperatingModeSettings />);
     expect(container.querySelector("details")).toBeNull();
     // 2026-09-25：模式列表里的「第三方聊天（QQ）」取代了原来未开放的「主动聊天模式」占位，它承载总开关
@@ -159,7 +163,7 @@ describe("general settings and status bar", () => {
     expect(container.querySelector(".mode-options")).toBeNull();
     expect(screen.getByText("使用中")).toBeTruthy();
     expect(screen.getAllByText("未开放")).toHaveLength(1);
-    expect(screen.getAllByRole("heading", { name: "运行模式" })).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { name: "运行模式与连接" })).toHaveLength(1);
     expect(container.querySelector(".settings-back svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(screen.getByRole("button", { name: "对话聊天模式" }).getAttribute("aria-pressed")).toBe(
       "true",
@@ -246,6 +250,7 @@ describe("section identities", () => {
       editorAgentId: "fixture",
       activeSection: "knowledge",
     });
+    useSuperstringStore.setState({ page: "settings", settingsView: "agents" });
     render(<AgentSettings />);
     expect(screen.getByRole("heading", { name: "助手管理" })).toBeTruthy();
     expect(screen.queryByText("当前助手暂无已授权资料。")).toBeNull();
