@@ -359,6 +359,18 @@
 .conversation-header {
   flex-wrap: wrap;
 }
+.conversation-header h1 {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.conversation-header h1 > .heading-icon-host {
+  margin-top: 2px;
+}
+.conversation-header h1 > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .conversation-header > div {
   min-width: 0;
 }
