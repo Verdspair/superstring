@@ -92,6 +92,7 @@ export class DesktopBackend {
   private exited: Promise<void> = Promise.resolve();
   private stopping: Promise<void> | null = null;
   private expectedExit = false;
+  private ready = false;
 
   constructor(private readonly options: BackendOptions) {}
 
@@ -155,6 +156,7 @@ export class DesktopBackend {
         child.once("error", fail);
         child.once("close", onClose);
       });
+      this.ready = true;
       return origin;
     } catch (error) {
       // EOF is also understood during startup, including a migration failure.
@@ -184,7 +186,7 @@ export class DesktopBackend {
     this.stopping = (async () => {
       const child = this.child;
       if (!child) return;
-      if (this.origin) {
+      if (this.ready && this.origin) {
         try {
           await localRequest(this.origin, "/__desktop/stop", this.token, "POST");
         } catch (error) {
