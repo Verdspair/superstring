@@ -407,6 +407,7 @@ describe("S3 known migration", () => {
           sql[39] ?? "",
           sql[40] ?? "",
           sql[41] ?? "",
+          sql[42] ?? "",
         ]),
       ).toThrow();
       expect(db.query("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);

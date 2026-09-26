@@ -183,6 +183,7 @@ describe("schema4 additive migration", () => {
     string,
     string,
     string,
+    string,
   ];
   it("upgrades exact v3 without overwriting existing overrides", () => {
     const db = new Database(":memory:");
