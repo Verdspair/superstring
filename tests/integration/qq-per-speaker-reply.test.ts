@@ -1,4 +1,4 @@
-// 每人一条消息（0037，用户 2026-09-25）：不同人的消息分开成各自的任务来跑。
+// 每人一条消息（0037，）：不同人的消息分开成各自的任务来跑。
 //
 // 用户看到的问题是"一次生成写多行、按行切开"这种做法**在结构上**允许搞混：模型要自己记住谁说了
 // 什么、该 @ 谁。这一组用例钉的是新的骨架：
@@ -183,7 +183,7 @@ describe("one task and one message per speaker (0037)", () => {
     try {
       message(h.orm, "a1", now - 1200, zhang);
       message(h.orm, "b1", now - 900, li);
-      // 2026-09-25（用户决定）：判断不再复用上次分数，所以两个人各问一次、一共四回请求。
+      // 2026-09-25：判断不再复用上次分数，所以两个人各问一次、一共四回请求。
       const gw = scripted(['{"score":8}', '{"score":8}', "张三你好", "李四你好"]);
       const result = await run(h.orm, gw.gateway);
       const drafts = result.kind === "prepared_only" ? result.drafts : [];

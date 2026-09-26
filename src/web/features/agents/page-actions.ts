@@ -164,7 +164,7 @@ export function createPageActions(
     },
     saveSettingsPage: (page) => save([page]),
     saveAllSettingsPages: () => save(dirtyPages(get().pageEditor)),
-    // 一键覆盖（用户 2026-09-25）：四个文本用途一起改，然后立刻保存模型页。走 page 的保存通路
+    // 一键覆盖：四个文本用途一起改，然后立刻保存模型页。走 page 的保存通路
     // （同一份校验、同一个 expected_version 比较交换），所以它不是一条绕过保存的第二条路。
     applyDefaultModelToAgent: async (modelName) => {
       const editor = get().pageEditor;

@@ -51,7 +51,7 @@ export const QQ_RHYTHM_DEFAULT: QqSchemeRhythm = Object.freeze({
    * arrives, which is the closest thing to the behaviour before this column existed.
    */
   /**
-   * 0036 的"判断间隔"：**已不再被任何代码读取**（用户 2026-09-25 取消间隔与复用——每个人的合并窗口
+   * 0036 的"判断间隔"：**已不再被任何代码读取**（取消间隔与复用——每个人的合并窗口
    * 一结束就为他真判一次）。列与契约保留是为了不改 schema 与线上形状，不是还在生效的旋钮。
    */
   judgement_interval_turns: 3,

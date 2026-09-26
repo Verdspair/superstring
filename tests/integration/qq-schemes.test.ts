@@ -16,7 +16,10 @@
 // exercise them through raw SQL as well as through the repository, so a broken trigger
 // cannot hide behind the repository's own pre-checks.
 
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import {
   createQqScheme,
@@ -32,7 +35,11 @@ import {
 } from "../../src/server/db/qq-scheme-repository";
 import { createSession, ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { openBusinessDb } from "../../src/server/db/schema-gate";
+import {
+  BUSINESS_MIGRATION_FILES,
+  ensureBusinessSchema,
+  openBusinessDb,
+} from "../../src/server/db/schema-gate";
 import { createQqBinding } from "../../src/server/services/qq-binding-contract";
 import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
@@ -72,6 +79,42 @@ function insertBinding(orm: Orm, schemeId: string, id = BINDING_ID) {
     .run();
 }
 
+/**
+ * 0016 把两档「最近条数」的 CHECK 上限写死在 200/500，契约放宽到 1 万之后写库才会被
+ * 拒绝（用户看到的是一句原生约束错误）。0047 重建这两列并把上限抬到 1 万——**旧值必须原样搬回**，
+ * 用户可能已经把判断设成 200、回复设成 300。
+ */
+describe("context limit caps (0047)", () => {
+  it("keeps the stored values while raising the caps, and still refuses out-of-range writes", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const file of BUSINESS_MIGRATION_FILES.slice(0, 46))
+        db.exec(
+          readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
+        );
+      db.exec("PRAGMA user_version = 46");
+      db.exec(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,judgement_message_limit,reply_message_limit) VALUES ('old','旧方案',3,'then','then',137,321)",
+      );
+      ensureBusinessSchema(db);
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
+      expect(
+        db
+          .query(
+            "SELECT name, revision, judgement_message_limit AS j, reply_message_limit AS r FROM qq_schemes",
+          )
+          .get(),
+      ).toEqual({ name: "旧方案", revision: 3, j: 137, r: 321 });
+      // 新上限（契约那一侧）真的写得进去，越界仍旧被拒。
+      db.exec("UPDATE qq_schemes SET judgement_message_limit = 10000, reply_message_limit = 10000");
+      expect(() => db.exec("UPDATE qq_schemes SET judgement_message_limit = 10001")).toThrow();
+      expect(() => db.exec("UPDATE qq_schemes SET reply_message_limit = 0")).toThrow();
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("scheme identity", () => {
   it("stores exactly the two decided parameter groups, and nothing still pending", () => {
     const h = setup();
@@ -105,10 +148,8 @@ describe("scheme identity", () => {
         "active_hours_end_minutes",
         "max_recompute_count",
         "max_sticker_count",
-        "judgement_message_limit",
         "judgement_window_minutes",
         "judgement_token_budget",
-        "reply_message_limit",
         "reply_window_minutes",
         "reply_token_budget",
         "prompt_scene",
@@ -127,6 +168,14 @@ describe("scheme identity", () => {
         "initiative_min_score",
         "split_reply_by_speaker",
         "judgement_interval_turns",
+        // 0046：压缩与装配（水位触发条数、包上限、装配冗余 + 水位压缩提示词）。
+        "summary_watermark_trigger",
+        "summary_package_limit",
+        "headroom_ratio",
+        "prompt_compress",
+        // 0047 为抬高上限重建过这两列，SQLite 只能追加，所以它们排在表尾。
+        "judgement_message_limit",
+        "reply_message_limit",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -231,7 +280,7 @@ describe("scheme identity", () => {
   it("round-trips the reply shape and treats a no-op save as no change", () => {
     const h = setup();
     try {
-      // 新建默认开着（用户 2026-09-25：不同人分开回答是"现在的要求"）。
+      // 新建默认开着。
       const created = createQqScheme(h.orm, { name: "默认方案" });
       expect(schemeReply(created)).toEqual({ split_by_speaker: true });
       const off = updateQqScheme(h.orm, created.id, {

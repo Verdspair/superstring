@@ -148,6 +148,7 @@ describe("QQ scheme routes", () => {
       // speaker, because that is the behaviour the user asked for.
       expect(created.reply).toEqual({ split_by_speaker: true });
       expect(Object.keys(created).sort()).toEqual([
+        "compression",
         "context",
         "created_at",
         "description",

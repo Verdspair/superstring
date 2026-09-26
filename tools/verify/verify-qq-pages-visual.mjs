@@ -39,7 +39,7 @@ mkdirSync(outputDir, { recursive: true });
 const PAGES = [
   { id: "general", zh: ["偏好", "通用"], en: ["Preferences", "General"], probe: null },
   {
-    // 运行模式现在是模式列表 + 「QQ」分组（2026-09-25 用户指示：第三方App接入整体搬到这里，
+    // 运行模式现在是模式列表 + 「QQ」分组（第三方 App 接入整体搬到这里，
     // 取代原来未开放的「主动聊天模式」占位），所以这一页的探针落在那三段 QQ 配置上。
     id: "operating-mode",
     zh: ["接入", "运行模式与连接"],

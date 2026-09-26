@@ -31,15 +31,15 @@ export function ResourceRules() {
   const t = useTranslation().t;
   useEffect(() => {
     if (s.editorAgentId !== "__new__") {
-      void s.loadMemoryPolicy();
+      // 记忆整理策略（自动整理/轮数/目标字符）自 2026-09-26 起在资料库→记忆的网页分区编辑，
+      // 这里不再加载它；本页只留读取规则与知识访问。
       void s.loadKnowledgeRead();
     }
-  }, [s.editorAgentId, s.loadMemoryPolicy, s.loadKnowledgeRead]);
+  }, [s.editorAgentId, s.loadKnowledgeRead]);
   const editor = s.pageEditor;
   if (!editor) return null;
   const d = editor.draft,
-    p5 = d.p5_config,
-    policy = editor.policyDraft;
+    p5 = d.p5_config;
   const patch = (value: Partial<typeof p5>) =>
     s.patchPageAgent("long-memory", { p5_config: { ...p5, ...value } });
   const read = s.knowledgeReadEditor?.agentId === editor.agent.id ? s.knowledgeReadEditor : null;
@@ -166,66 +166,6 @@ export function ResourceRules() {
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("library.memory.maintenance")}</CardTitle>
-            <CardDescription>
-              {t("library.web.conversations.use.a.turn.based.policy.connected.conversations")}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            {policy && (
-              <>
-                <Field label="library.automatically.organize.web.memories">
-                  <Checkbox
-                    checked={policy.auto_enabled}
-                    onCheckedChange={(v) => s.patchPagePolicy({ auto_enabled: v === true })}
-                  />
-                </Field>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="library.organize.every.n.turns">
-                    <Input
-                      type="number"
-                      min={1}
-                      max={200}
-                      value={policy.every_turns}
-                      onChange={(e) => s.patchPagePolicy({ every_turns: Number(e.target.value) })}
-                    />
-                  </Field>
-                  <Field label="library.target.memory.characters">
-                    <Input
-                      type="number"
-                      min={50}
-                      max={4000}
-                      value={policy.target_chars}
-                      onChange={(e) => s.patchPagePolicy({ target_chars: Number(e.target.value) })}
-                    />
-                  </Field>
-                </div>
-              </>
-            )}
-            <Field label="library.memory.organization.prompt">
-              <Textarea
-                rows={6}
-                value={d.memory_consolidation_prompt}
-                onChange={(e) =>
-                  s.patchPageAgent("long-memory", { memory_consolidation_prompt: e.target.value })
-                }
-              />
-            </Field>
-            <Field label="library.additional.organization.instructions">
-              <Textarea
-                rows={3}
-                value={d.memory_consolidation_additional_instructions}
-                onChange={(e) =>
-                  s.patchPageAgent("long-memory", {
-                    memory_consolidation_additional_instructions: e.target.value,
-                  })
-                }
-              />
-            </Field>
           </CardContent>
         </Card>
       </div>

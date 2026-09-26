@@ -315,10 +315,7 @@ export function BindingEditor({
                         <option value="hard">{t("connections.onlyReplyToTheList")}</option>
                       </NativeSelect>
                     </Field>
-                    <Field
-                      label="connections.attentionList"
-                      info="connections.softPriorityOnlyMakesTheirMessagesStandOutIn"
-                    >
+                    <Field label="connections.attentionList" info="connections.softPriorityHint">
                       <Input
                         value={attentionValue.members}
                         disabled={saving || attentionValue.mode === "off"}

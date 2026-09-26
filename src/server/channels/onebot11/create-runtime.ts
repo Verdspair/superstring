@@ -247,6 +247,16 @@ export function createOneBotConversationRuntime(options: {
   const scheduler = new WakeScheduler({
     repository: wakes,
     telemetry: options.telemetry,
+    // 唤醒失败以前只在唤醒记录里留一个码，控制台一声不响。这里补一行原因
+    // （码在记录里、这里给错误名与消息），重置预算耗尽后不会再自动重试的那次尤其需要被看见。
+    onError: (error, wake) => {
+      const name = error instanceof Error ? error.name : typeof error;
+      const message = error instanceof Error ? error.message : String(error);
+      const oneLine = message.replace(/\s+/g, " ").trim().slice(0, 300);
+      console.warn(
+        `[qq-wake] ${wake.cause} 唤醒失败（wake ${wake.id.slice(0, 8)}）：${name}: ${oneLine}`,
+      );
+    },
     policy: () => {
       const leaseMs = readQqDispatchSettings(orm).leaseSeconds * 1000;
       return {

@@ -90,7 +90,7 @@ describe("R6 局部 bootstrap", () => {
       apiClient: fakeClient({
         listAgents: vi.fn().mockResolvedValue([]),
         listSessions: vi.fn().mockResolvedValue([]),
-        // LM Studio 关着：这正是用户 2026-09-25 报的场景（对话模型已切到外部 API）。
+        // LM Studio 关着：这正是报的场景（对话模型已切到外部 API）。
         listModels: vi
           .fn()
           .mockRejectedValue(

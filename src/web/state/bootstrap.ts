@@ -72,7 +72,7 @@ export function createBootstrapActions(
           ...new Set(providers.flatMap((provider) => provider.models.map((model) => model.name))),
         ];
         const reported = [...new Set([...local, ...external])];
-        // 本地模型目录连不上不等于"没有模型可用"（用户 2026-09-25）：只要还登记着外部模型，它就是
+        // 本地模型目录连不上不等于"没有模型可用"：只要还登记着外部模型，它就是
         // 一条提示（`modelStatus`），不是错误。一个模型来源都拿不到时才按错误报出来。
         const catalogFailure =
           catalogResult.status === "rejected" ? errorText(catalogResult.reason) : null;

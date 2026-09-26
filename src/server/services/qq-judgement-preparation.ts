@@ -119,7 +119,7 @@ export type QqJudgementPreparation =
       /**
        * 「按发言人分开回答」开着（0037）：判断与生成**每人各一次**，一人一条消息。
        *
-       * 关掉时这一轮仍然按人算合并窗口（用户要求"按 id 来算"），但只跑**一次**生成、用程序内置的默认
+       * 关掉时这一轮仍然按人算合并窗口（按 id 来算），但只跑**一次**生成、用程序内置的默认
        * 回复文案，写出来的话回整间会话、不加 `@`——那是这个开关关掉时本来就在做的事。
        */
       readonly splitBySpeaker: boolean;
@@ -246,7 +246,7 @@ export function prepareQqJudgement(
     },
     new Date(nowSeconds * 1000).toISOString(),
   );
-  // 这一轮要回谁（0037，用户 2026-09-25：不同人的消息分开来跑）。
+  // 这一轮要回谁（0037，不同人的消息分开来跑）。
   //   * 自主接话：按**人**算合并窗口——他自己的最后一条消息过完窗口就算说完了；她上次开口之后说过话
   //     的人才是这一轮的活（回过的人不会因为别人又开一次口被重新翻出来）。
   //   * 冷场发起：她是往安静的房间里开话题，没有回话对象，因此不设目标。
@@ -320,20 +320,34 @@ export function prepareQqJudgement(
             reason: cadence.reason,
             readyAtSeconds: cadence.readyAtSeconds,
           };
-    // 用户 2026-09-25：读过了却没读出（在途或失败）就不要主动开口——没读懂那张图就没有资格
-    // 自主接话，§7.1 也不允许假装知道。只约束两条主动路径：被叫到或被回复时必须应答，那是别人的
-    // 问题，不是她的主动性。此检查放在合并窗口与节奏之后，是为了给在途的读取留出这段时间。
-    const failedMedia = attemptedUnreadMediaCount(
-      orm,
-      messages.map((message) => message.eventKey),
-    );
-    if (failedMedia > 0) {
-      console.warn(
-        `[qq-media] ${path} 放弃开口：本轮有 ${failedMedia} 项媒体读取未成功（会话 ${scope.conversationKind}:${scope.peerId}）`,
+    // 读过了却没读出（在途或失败）就不要主动开口——没读懂那张图就没有资格
+    // 自主接话，§7.1 也不允许假装知道。被叫到或被回复时必须应答，那是别人的问题，不是她的主动性。
+    // 此检查放在合并窗口与节奏之后，是为了给在途的读取留出这段时间。
+    //
+    // 这条闸门只约束**有回话对象**的主动路径。两处收窄：
+    //   * 原来按**判断窗口**里的全部消息（60 分钟）算，于是一张 14:43 读失败的图把 15:09–15:32 的
+    //     每一轮 chiming_in 都按住了——五十分钟前别人发的东西与"这一轮要回谁"无关。现在只看**这一轮
+    //     真正要回应的那一串**：本轮目标发言人、且在她上次开口之后说的话。
+    //   * 冷场发起不回应任何具体消息，没有"你要回应的那张图"这个对象，因此完全不看这条闸门（模型仍
+    //     看得见那条没有描述的图片，§7.1 照旧禁止假装知道）。
+    if (targets.length > 0) {
+      const mediaScope = messages.filter(
+        (message) =>
+          (lastSpeechSeconds === null || message.occurredAtSeconds >= lastSpeechSeconds) &&
+          targets.some((target) => target.speakerId === message.speakerId),
       );
-      return { kind: "blocked", reason: "media_read_failed" };
+      const failedMedia = attemptedUnreadMediaCount(
+        orm,
+        mediaScope.map((message) => message.eventKey),
+      );
+      if (failedMedia > 0) {
+        console.warn(
+          `[qq-media] ${path} 放弃开口：本轮有 ${failedMedia} 项媒体读取未成功（会话 ${scope.conversationKind}:${scope.peerId}）`,
+        );
+        return { kind: "blocked", reason: "media_read_failed" };
+      }
     }
-    // 打分口径里排在人物与上下文之后的两层（用户 2026-09-25）：长期记忆与知识库。只在真会跑判断的
+    // 打分口径里排在人物与上下文之后的两层：长期记忆与知识库。只在真会跑判断的
     // 两条路径上读；取不到就少一段，绝不因此不判断（与上面那条媒体闸门不同性质）。
     material = options?.eligibilityOnly
       ? []

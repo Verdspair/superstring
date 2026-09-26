@@ -9,7 +9,6 @@ import { projectConversationEvent } from "../../src/server/conversation/conversa
 import { toOrmHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
-import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { recordQqSend } from "../../src/server/db/qq-send-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
@@ -78,10 +77,16 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
     });
     knowledge.replaceGrants(document.id, document.revision, [DEFAULT_AGENT_ID]);
     updateQqSettings(handle.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
-    const scheme = createQqScheme(handle.orm, {
-      name: "所有触发保留",
-      triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
-    });
+    // 方案行用裸 SQL 写：这是 v38 的库，ORM 模型带的是**当前**列（0046 起还有压缩与装配三栏），
+    // 拿现在的模型去写旧库正是这个升级用例要避免的事。
+    const schemeId = crypto.randomUUID();
+    const schemeCreatedAt = nowIso();
+    oldDb
+      .query(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,trigger_direct_reply,trigger_follow_up,trigger_chiming_in,trigger_idle_topic) VALUES (?,?,1,?,?,1,1,1,1)",
+      )
+      .run(schemeId, "所有触发保留", schemeCreatedAt, schemeCreatedAt);
+    const scheme = { id: schemeId };
     const bindingId = crypto.randomUUID();
     const now = nowIso();
     const seconds = Math.floor(Date.now() / 1000);

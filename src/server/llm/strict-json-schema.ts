@@ -1,4 +1,4 @@
-// 外部模型 API 的结构化输出适配（0032 后续，用户 2026-09-25）。
+// 外部模型 API 的结构化输出适配（0032 后续，）。
 //
 // Why this exists: the project's own response schemas mark genuinely optional fields as optional
 // (`required` lists only what must always come back). OpenAI's strict structured-output mode — and
@@ -61,7 +61,7 @@ function withNullableType(rewritten: unknown, original: unknown): unknown {
   return { ...(rewritten as SchemaNode), type: nullable(source.type) };
 }
 
-// ---- 结构化输出的降级链（用户 2026-09-25）----------------------------------------------------------
+// ---- 结构化输出的降级链----------------------------------------------------------
 //
 // 现实：不是每个 OpenAI 兼容的服务都接受 `response_format: {type:"json_schema", strict:true}`——
 // 有的只支持 `json_object`，有的一见这个字段就 4xx。而本项目的解析**本来就是严格的**：约束少给
@@ -71,7 +71,7 @@ function withNullableType(rewritten: unknown, original: unknown): unknown {
 // 只在**客户端错误**（4xx，且不是 401/403 鉴权失败）时降级；5xx、超时、网络中断不是形状的问题，
 // 原样抛出。某一档一旦成功就记住"这个服务+模型要从这一档起"，后续调用不再白撞一次。
 
-// ---- 与严格模式不兼容的 schema 形状（用户 2026-09-26 云端 400）-------------------------------------
+// ---- 与严格模式不兼容的 schema 形状-------------------------------------
 //
 // 用户的云端 provider 按 OpenAI 严格模式校验 response_format：`oneOf` 一律不收，整单 400
 // （"Invalid schema for response_format 'superstring_result': In context=(), 'oneOf' is not

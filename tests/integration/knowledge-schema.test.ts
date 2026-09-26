@@ -188,6 +188,18 @@ const v44 = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0044_conversation_avatars.sql"),
   "utf8",
 );
+const v45 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0045_qq_conversation_summaries.sql"),
+  "utf8",
+);
+const v46 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0046_qq_context_compression.sql"),
+  "utf8",
+);
+const v47 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0047_qq_context_limit_caps.sql"),
+  "utf8",
+);
 const ddl = (db: Database) =>
   db
     .query(
@@ -280,6 +292,9 @@ describe("frozen schema defaults and product initialization", () => {
     v42,
     v43,
     v44,
+    v45,
+    v46,
+    v47,
   ] as const;
   // Independent snapshots: v1 matches published v0.2.0-alpha; v2-v4 are the
   // accepted pre-ADR0016 development schemas; v5 onwards are the additive QQ
@@ -355,6 +370,9 @@ describe("frozen schema defaults and product initialization", () => {
     "bea5eee844e444bf092ba8ac08d30422504b5186e51d55c3def3b92ae49a10fe",
     // v44: independently stored conversation presentation, no changes to existing tables.
     "ca68e4fec6c0f2e115f969a65915adb1ffd17d138cb59a9a392f0520672bb45d",
+    "2f425b57986fb7be2ae69c50bfb26c235664f933da7e20e9e402cdd609cc0d57",
+    "8e77cee725d0c3792bbf1e6624f1a3bfc11c3fbae239da579b289c8c93b2670d",
+    "23d92757a8dd17107dca121d5e7e299db0f067fc177aa72677cbf0c3f313c6f7",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
@@ -379,7 +397,7 @@ describe("frozen schema defaults and product initialization", () => {
           target_chars: 300,
         });
         ensureBusinessSchema(db);
-        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
         expect(db.query("SELECT target_chars FROM memory_policies").get()).toEqual({
           target_chars: 300,
         });
@@ -412,7 +430,7 @@ describe("knowledge schema v2 migration", () => {
         old.query(`SELECT * FROM ${table}`).all(),
       );
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
       expect(ddl(old)).toEqual(ddl(fresh.db));
       expect(
         BUSINESS_TABLE_NAMES.slice(0, 16).map((table) => old.query(`SELECT * FROM ${table}`).all()),
@@ -489,13 +507,16 @@ describe("knowledge schema v2 migration", () => {
           v42,
           v43,
           v44,
+          v45,
+          v46,
+          v47,
         ]),
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
       expect(db.query("SELECT body FROM memory_entries").get()).toEqual({ body: "旧记忆" });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
     } finally {
       db.close();
     }

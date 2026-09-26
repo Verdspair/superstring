@@ -216,7 +216,10 @@ ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0040_conver
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0041_outbound_intents.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0042_runtime_observability.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0043_protected_model_results.sql"), "utf8")}
-${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0044_conversation_avatars.sql"), "utf8")}`;
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0044_conversation_avatars.sql"), "utf8")}
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0045_qq_conversation_summaries.sql"), "utf8")}
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0046_qq_context_compression.sql"), "utf8")}
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0047_qq_context_limit_caps.sql"), "utf8")}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };

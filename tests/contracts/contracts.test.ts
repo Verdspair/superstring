@@ -46,6 +46,11 @@ import {
   UUID_REGEX,
   UuidSchema,
 } from "../../src/shared/contracts";
+import {
+  QQ_REPLY_DEFAULT_PROMPT,
+  QQ_REPLY_SPLIT_PROMPT,
+  qqEffectiveReplyPrompt,
+} from "../../src/shared/contracts/qq";
 
 const UUID = "123e4567-e89b-12d3-a456-426614174000";
 const TS = "2026-01-01T00:00:00.123456Z";
@@ -913,12 +918,12 @@ describe("Model catalog + error envelope", () => {
 // Regression guard: the api-contract.md v1 revision listed only 24 codes and
 // silently dropped every code raised from db/*
 // and
-// These tests pin the corrected 66-code taxonomy so the
+// These tests pin the corrected 67-code taxonomy so the
 // defect cannot silently return.
-describe("Error code taxonomy (66 codes, api-contract §6.2 v2)", () => {
-  it("contains exactly 66 distinct codes", () => {
-    expect(ERROR_CODES.length).toBe(66);
-    expect(new Set(ERROR_CODES).size).toBe(66);
+describe("Error code taxonomy (67 codes, api-contract §6.2 v2)", () => {
+  it("contains exactly 67 distinct codes", () => {
+    expect(ERROR_CODES.length).toBe(67);
+    expect(new Set(ERROR_CODES).size).toBe(67);
   });
 
   it("includes the previously missing context-builder and repository codes", () => {
@@ -968,8 +973,8 @@ describe("Error code taxonomy (66 codes, api-contract §6.2 v2)", () => {
   it("documents the HTTP status for every HTTP-layer code", () => {
     const jobOnly = new Set<string>(JOB_LEVEL_ERROR_CODES);
     const statusKeys = Object.keys(ERROR_HTTP_STATUS);
-    // 57 HTTP-layer codes = 66 - 1 SSE-only - 2 message-only(new) - 6 job-only
-    expect(statusKeys.length).toBe(57);
+    // 58 HTTP-layer codes = 67 - 1 SSE-only - 2 message-only(new) - 6 job-only
+    expect(statusKeys.length).toBe(58);
     for (const key of statusKeys) {
       expect(jobOnly.has(key)).toBe(false);
     }
@@ -1086,5 +1091,21 @@ describe("SSE events discriminated union", () => {
       session_id: UUID,
     });
     expect(start.event).toBe("start");
+  });
+});
+
+/**
+ * 回复任务文案的取用规则。
+ * 界面显示与服务端取用共用这个函数——所以这里钉住三段：未改过跟随开关、改过以写的为准。
+ */
+describe("QQ effective reply task", () => {
+  it("derives from the reply mode only while the scheme keeps the default text", () => {
+    expect(qqEffectiveReplyPrompt(QQ_REPLY_DEFAULT_PROMPT, false)).toBe(QQ_REPLY_DEFAULT_PROMPT);
+    expect(qqEffectiveReplyPrompt(QQ_REPLY_DEFAULT_PROMPT, true)).toBe(QQ_REPLY_SPLIT_PROMPT);
+  });
+
+  it("uses the edited text as written, whatever the reply mode says", () => {
+    expect(qqEffectiveReplyPrompt("只写一句，带喵。", true)).toBe("只写一句，带喵。");
+    expect(qqEffectiveReplyPrompt("只写一句，带喵。", false)).toBe("只写一句，带喵。");
   });
 });

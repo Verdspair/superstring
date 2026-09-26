@@ -208,7 +208,8 @@ describe("shared Bot model-controlled conversation", () => {
         peerId: "30003",
         message: [
           { type: "at", data: { qq: "20002" } },
-          { type: "text", data: { text: "answer line" } },
+          // `@` 与后面那句话之间补一个空格。
+          { type: "text", data: { text: " answer line" } },
         ],
       },
     ]);

@@ -34,6 +34,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import {
   ContextBuilder,
+  type ContextDiagnostic,
   contextDumps,
   contextKeywords,
   estimateMessages,
@@ -923,6 +924,43 @@ it("marks a malformed context selector failed in the shared runtime", async () =
         )
         .get()?.status,
     ).toBe("failed");
+  } finally {
+    ctx.business.close();
+  }
+});
+
+/**
+ * （与 QQ 侧同一纪律）：记忆是可选材料——它自己的预算检查（选中的正文超过本轮可用
+ * 额度）不该让整轮失败。降级成"这一轮没有记忆"，回答照常，并把降级原因写进诊断。
+ */
+it("answers without memory when the memory read exceeds its own budget", async () => {
+  const ctx = setup();
+  try {
+    const sourceSession = newSession(ctx.orm);
+    const source = completedTurn(ctx.orm, sourceSession, "budget-source");
+    seedMemory(ctx.orm, source.id, 1, "很长的一段记忆正文");
+    const chatSession = newSession(ctx.orm);
+    const current = activeTurn(ctx.orm, chatSession, "budget-current", "问题");
+    const runtime = structuredClone(current.prepared.runtime);
+    // 记忆预算是 min(剩余, 预置 max_tokens)：把预置压到 1，任何一条正文都放不下。
+    runtime.p5_config.retrieval_presets.standard.max_tokens = 1;
+    const diagnostics: ContextDiagnostic[] = [];
+    const built = await new ContextBuilder({
+      orm: ctx.orm,
+      db: ctx.business.db,
+      gateway: ctx.gateway,
+      diagnosticSink: (record) => diagnostics.push(record),
+    }).build({
+      sessionId: chatSession,
+      currentTurnId: current.turn.id,
+      runtime,
+      generationToken: current.prepared.generationToken,
+    });
+    expect(JSON.stringify(built)).not.toContain("很长的一段记忆正文");
+    const ready = diagnostics.at(-1);
+    expect(ready?.status).toBe("ready");
+    expect(ready?.error_code).toBe("CONTEXT_MEMORY_BUDGET");
+    expect(ready?.memory_ids).toEqual([]);
   } finally {
     ctx.business.close();
   }

@@ -2,10 +2,10 @@
 // One model judgement per reply target, over an already classified initiative path (ADR0018 P3e).
 // The gateway is injected. This module cannot send a QQ message or start the transport.
 //
-// 0037（用户 2026-09-25）：判断改成**按发言人**各问一次——"我值不值得回他"。所以一次 `runQqJudgement`
+// 0037：判断改成**按发言人**各问一次——"我值不值得回他"。所以一次 `runQqJudgement`
 // 会对预备阶段算出的每个目标跑一遍，每人一次真判断。
 //
-// 2026-09-25（用户决定）：**取消 0036 的"判断间隔 + 复用上次分数"**。用户的理由是语义要简单：每个人的
+// 2026-09-25：**取消 0036 的"判断间隔 + 复用上次分数"**。理由是语义要简单：每个人的
 // 合并窗口一结束就为他判一次门槛。此前的复用会让人看到"这个人明明刚说了话，她却按几分钟前的旧分数
 // 决定要不要开口"——省一次调用的代价是分数与当下脱节。`qq_schemes.judgement_interval_turns` 与读数表
 // 仍留在存储里（不迁移），但**没有任何代码再读写它们**。

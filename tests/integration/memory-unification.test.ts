@@ -210,7 +210,7 @@ describe("unified memory scopes and recall", () => {
       h.close();
     }
   });
-  // 用户 2026-09-25 明确：回复侧的记忆**始终受读取强度影响**（关闭/保守/标准/宽泛/全目录/全部正文）。
+  // 明确：回复侧的记忆**始终受读取强度影响**（关闭/保守/标准/宽泛/全目录/全部正文）。
   // 这一组是那个口径的证据：模式决定"要不要问记忆读取模型、最多给多少"，资格仍然只有一处来源
   // （绑定的读范围）。
   it.each(["conservative", "standard", "broad", "full_catalog", "full_body", "off"] as const)(

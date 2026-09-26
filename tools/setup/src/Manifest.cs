@@ -15,7 +15,7 @@ namespace Superstring.Setup
     {
         internal const int SupportedManifestVersion = 1;
         internal const int SupportedLayoutVersion = 1;
-        internal const int SupportedSchemaVersion = 44;
+        internal const int SupportedSchemaVersion = 47;
         internal const string Product = "superstring";
         internal const string Platform = "win32-x64";
 
@@ -164,6 +164,12 @@ namespace Superstring.Setup
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0043_protected_model_results.sql");
             if (manifest.SchemaVersion >= 44 && !seen.Contains("app/resources/migrations/versions/0044_conversation_avatars.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0044_conversation_avatars.sql");
+            if (manifest.SchemaVersion >= 45 && !seen.Contains("app/resources/migrations/versions/0045_qq_conversation_summaries.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0045_qq_conversation_summaries.sql");
+            if (manifest.SchemaVersion >= 46 && !seen.Contains("app/resources/migrations/versions/0046_qq_context_compression.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0046_qq_context_compression.sql");
+            if (manifest.SchemaVersion >= 47 && !seen.Contains("app/resources/migrations/versions/0047_qq_context_limit_caps.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0047_qq_context_limit_caps.sql");
             if (manifest.SchemaVersion >= 41 && !seen.Contains("app/resources/migrations/versions/0041_outbound_intents.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0041_outbound_intents.sql");
             var launcher = root.ContainsKey("launcher") ? root["launcher"] as Dictionary<string, object> : null;

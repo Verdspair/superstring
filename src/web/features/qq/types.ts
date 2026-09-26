@@ -9,6 +9,7 @@ import type {
   QqBindingResponse,
   QqConversationListItem,
   QqMemoryOrganiseResponse,
+  QqSchemeCompression,
   QqSchemeContext,
   QqSchemeOutputReserve,
   QqSchemePrompts,
@@ -156,6 +157,7 @@ export interface QqSchemeEditor {
   triggers: QqSpeechTriggers;
   rhythm: QqSchemeRhythm;
   context: QqSchemeContext;
+  compression: QqSchemeCompression;
   outputReserve: QqSchemeOutputReserve;
   stickers: QqSchemeStickers;
   stickerCollectionIds: string[];
@@ -171,6 +173,7 @@ export function qqSchemeEditorFrom(scheme: QqSchemeResponse): QqSchemeEditor {
     triggers: { ...scheme.triggers },
     rhythm: { ...scheme.rhythm },
     context: { ...scheme.context },
+    compression: { ...scheme.compression },
     outputReserve: { ...scheme.output_reserve },
     stickers: { ...scheme.stickers },
     stickerCollectionIds: [...scheme.sticker_collections.collection_ids],
@@ -216,6 +219,9 @@ export function qqSchemeChanges(editor: QqSchemeEditor | null): readonly QqSchem
   for (const key of Object.keys(editor.context) as (keyof QqSchemeContext)[]) {
     compare(`context.${key}`, editor.source.context[key], editor.context[key]);
   }
+  for (const key of Object.keys(editor.compression) as (keyof QqSchemeCompression)[]) {
+    compare(`compression.${key}`, editor.source.compression[key], editor.compression[key]);
+  }
   for (const key of Object.keys(editor.outputReserve) as (keyof QqSchemeOutputReserve)[]) {
     compare(`output_reserve.${key}`, editor.source.output_reserve[key], editor.outputReserve[key]);
   }
@@ -242,6 +248,7 @@ export type QqSchemeGroupKey =
   | "triggers"
   | "rhythm"
   | "context"
+  | "compression"
   | "outputReserve"
   | "stickers"
   | "prompts"
@@ -325,7 +332,7 @@ export interface QqAccessState {
    */
   loadQqSettings: () => Promise<void>;
   /**
-   * The QQ-global judgement model (0038, 用户 2026-09-25): one choice for the whole QQ side,
+   * The QQ-global judgement model (0038, ): one choice for the whole QQ side,
    * saved immediately because it is a single select rather than a page of fields.
    */
   saveQqJudgementModel: (modelName: string | null) => Promise<boolean>;

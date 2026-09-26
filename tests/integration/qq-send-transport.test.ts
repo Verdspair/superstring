@@ -327,7 +327,7 @@ describe("the ledger is what the rest of the side reads", () => {
 
 // The store is only touched through the port in these cases; a real copy round-trip lives in the
 // sticker tests, so this file stays about the send decision.
-// 用户 2026-09-25：分开回给不同的人时要真的 @ 到对方。回复文案里写的是 [CQ:at,qq=号码]，
+// 分开回给不同的人时要真的 @ 到对方。回复文案里写的是 [CQ:at,qq=号码]，
 // 而数组形态的 message 不解析文本里的 CQ 码，所以发送通路必须显式拆段——否则群里看到的是一串
 // 字面量。这一段钉的就是"拆成什么"和"什么绝不拆"。
 describe("a mention written as a CQ code travels as an at segment", () => {
