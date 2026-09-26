@@ -12,18 +12,6 @@ A local Agent workspace for web conversations, QQ groups and private chats, memo
 
 [English](#english) · [简体中文](#简体中文)
 
-## Screenshots / 界面预览
-
-| Conversations / 对话 | Agents / Agent | Library / 资料 |
-| --- | --- | --- |
-| ![Conversations](docs/screenshots/conversation.png) | ![Agents](docs/screenshots/agents.png) | ![Library](docs/screenshots/library.png) |
-| **Runs / 运行** | **Execution waterfall / 执行瀑布** | **Connections / 接入** |
-| ![Runs](docs/screenshots/runs.png) | ![Execution waterfall](docs/screenshots/runs-detail.png) | ![Connections](docs/screenshots/connections.png) |
-| **Model services / 模型服务** | **Dark theme / 深色主题** | **Narrow layout / 窄屏** |
-| ![Model services](docs/screenshots/models.png) | ![Dark theme](docs/screenshots/conversation-dark.png) | ![Narrow layout](docs/screenshots/conversation-mobile.png) |
-
-All screenshots come from an isolated instance seeded with synthetic content. / 以上截图来自一个灌入合成内容的隔离实例。
-
 ## English
 
 ### Conversations, with context
@@ -32,9 +20,13 @@ Keep web conversations and connected QQ conversations in one workspace. Choose a
 
 Superstring does not bundle model weights or a QQ client, create a cloud account, or synchronize your data to a Superstring cloud service.
 
+![Web conversation with context usage](docs/screenshots/conversation.png)
+
 ### QQ groups and private chats
 
 Connect a separately running OneBot 11 WebSocket service, such as NapCat, then bind a group or private chat to an Agent and a named chat scheme.
+
+![Connected QQ conversations and their bindings](docs/screenshots/connections.png)
 
 - Control direct responses, follow-up conversation, spontaneous participation and idle-topic initiation independently. A direct response triggers the Agent without an interest-score requirement; the Agent may still choose silence.
 - Set the initiative threshold, quiet periods, cooldown, active hours and reply grouping. The application controls recipients and mentions; a model cannot invent a destination.
@@ -64,6 +56,8 @@ Voice transcription, full-video understanding, image generation and arbitrary ex
 ### Workspace and diagnostics
 
 The navigation separates **Conversations**, **Agents**, **Library**, **Connections** and **Runs**, with **Model services** and **Preferences** available alongside them. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
+
+![Execution waterfall with model calls and their evidence](docs/screenshots/runs-detail.png)
 
 English and Simplified Chinese, 16 themes, light/dark/system appearance, keyboard navigation and narrow layouts are supported. The original Superstring logo follows the selected theme throughout the workspace.
 
@@ -129,9 +123,13 @@ For source-only work, `ELECTRON_SKIP_BINARY_DOWNLOAD=1` skips the Electron runti
 
 Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号，也不把资料同步到 Superstring 云服务。
 
+![网页对话与上下文用量](docs/screenshots/conversation.png)
+
 ### QQ 群聊与私聊
 
 连接独立运行的 OneBot 11 WebSocket 服务（例如 NapCat），再将群或私聊绑定到 Agent 和命名聊天方案。
+
+![已连接的 QQ 会话与绑定](docs/screenshots/connections.png)
 
 - 独立控制直接回应、连续交谈、自主接话和冷场发起。直接回应不要求兴趣评分，但 Agent 仍可选择沉默。
 - 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。收件人和提及由程序确定，模型不能自行指定任意目标。
@@ -161,6 +159,8 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 ### 工作区与诊断
 
 导航按**对话、Agent、资料、接入、运行**组织，另设**模型服务**与**偏好**入口。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
+
+![执行瀑布：模型调用与证据](docs/screenshots/runs-detail.png)
 
 支持简体中文与 English、16 种主题、浅色／深色／跟随系统、键盘导航及窄屏布局；原版 Superstring logo 在工作区内随主题配色。
 
