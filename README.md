@@ -12,6 +12,18 @@ A local Agent workspace for web conversations, QQ groups and private chats, memo
 
 [English](#english) · [简体中文](#简体中文)
 
+## Screenshots / 界面预览
+
+| Conversations / 对话 | Agents / Agent | Library / 资料 |
+| --- | --- | --- |
+| ![Conversations](docs/screenshots/conversation.png) | ![Agents](docs/screenshots/agents.png) | ![Library](docs/screenshots/library.png) |
+| **Runs / 运行** | **Execution waterfall / 执行瀑布** | **Connections / 接入** |
+| ![Runs](docs/screenshots/runs.png) | ![Execution waterfall](docs/screenshots/runs-detail.png) | ![Connections](docs/screenshots/connections.png) |
+| **Model services / 模型服务** | **Dark theme / 深色主题** | **Narrow layout / 窄屏** |
+| ![Model services](docs/screenshots/models.png) | ![Dark theme](docs/screenshots/conversation-dark.png) | ![Narrow layout](docs/screenshots/conversation-mobile.png) |
+
+All screenshots come from an isolated instance seeded with synthetic content. / 以上截图来自一个灌入合成内容的隔离实例。
+
 ## English
 
 ### Conversations, with context
