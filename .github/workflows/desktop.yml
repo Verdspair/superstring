@@ -261,9 +261,23 @@ jobs:
         with:
           name: signed-desktop-release
           path: dist/desktop-release
+      - name: Compose release notes
+        env:
+          MACOS_SIGNED: ${{ secrets.MACOS_CERTIFICATE != '' }}
+        run: |
+          {
+            cat RELEASE_NOTES.md
+            printf '\n---\n\n'
+            if [ "$MACOS_SIGNED" = "true" ]; then
+              printf 'The macOS packages in this release are Developer ID signed and notarized.\n'
+            else
+              printf 'The macOS packages in this release are ad-hoc signed and not notarized; open them with the Finder Open action (or allow the app under System Settings → Privacy & Security).\n'
+            fi
+            printf '\n本版的 macOS 安装包为%s。\n' "$([ "$MACOS_SIGNED" = "true" ] && echo '开发者签名并已公证' || echo '临时签名、未公证，首次打开请用访达的「打开」放行')"
+          } > "$RUNNER_TEMP/release-notes.md"
       - name: Create explicit existing-tag draft release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes "Native desktop distributions. See SHA256SUMS and per-platform smoke reports. macOS packages are ${{ secrets.MACOS_CERTIFICATE != '' && 'signed and notarized' || 'ad-hoc signed and not notarized; open them with the Finder Open action' }}." dist/desktop-release/*
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" dist/desktop-release/*
