@@ -98,6 +98,7 @@ export interface ModelGateway {
     /** Propagated to the underlying fetch so a caller cancellation aborts the call. */
     signal?: AbortSignal;
     onModelResolved?: (model: string) => void;
+    onResponseText?: (text: string, complete: boolean) => void;
   }): Promise<string>;
   streamChat(options: {
     messages: ChatMessage[];
@@ -656,6 +657,16 @@ export function createLmStudioClient(
         }
       }
       const choice = payload.choices?.[0];
+      if (typeof choice?.message?.content === "string") {
+        try {
+          options.onResponseText?.(
+            choice.message.content,
+            choice.finish_reason == null || choice.finish_reason === "stop",
+          );
+        } catch {
+          console.warn("model response diagnostic write failed");
+        }
+      }
       if (choice?.finish_reason === "length") {
         throw new ModelUnavailableError(
           "MODEL_OUTPUT_LIMIT",

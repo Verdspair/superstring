@@ -6,6 +6,7 @@ import { createLmStudioClient } from "../../src/server/llm/model-gateway";
 it("reports the model actually requested after fallback for completion and streaming", async () => {
   const received: string[] = [];
   const reported: string[] = [];
+  let finishReason = "stop";
   const server = http.createServer(async (request, response) => {
     if (request.url === "/v1/models") {
       response.setHeader("content-type", "application/json");
@@ -23,7 +24,11 @@ it("reports the model actually requested after fallback for completion and strea
       response.end('data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n');
     } else {
       response.setHeader("content-type", "application/json");
-      response.end('{"choices":[{"finish_reason":"stop","message":{"content":"answer"}}]}');
+      response.end(
+        JSON.stringify({
+          choices: [{ finish_reason: finishReason, message: { content: "answer" } }],
+        }),
+      );
     }
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -59,6 +64,20 @@ it("reports the model actually requested after fallback for completion and strea
       }),
     ).toBe("answer");
     expect(received).toHaveLength(3);
+    for (const [reason, code] of [
+      ["length", "MODEL_OUTPUT_LIMIT"],
+      ["content_filter", "MODEL_FINISH_UNSUPPORTED"],
+    ]) {
+      finishReason = reason;
+      const captured: { text: string; complete: boolean }[] = [];
+      await expect(
+        port.complete({
+          ...request,
+          onResponseText: (text, complete) => captured.push({ text, complete }),
+        }),
+      ).rejects.toMatchObject({ code });
+      expect(captured).toEqual([{ text: "answer", complete: false }]);
+    }
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
