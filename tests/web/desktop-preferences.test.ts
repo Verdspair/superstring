@@ -28,6 +28,7 @@ describe("desktop preference bootstrap and mutations", () => {
           resolve = done;
         }),
       save: vi.fn().mockResolvedValue(undefined),
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
     };
     const evaluated: Array<string | null> = [];
     const render = vi.fn(async () => {
@@ -50,6 +51,7 @@ describe("desktop preference bootstrap and mutations", () => {
     window.superstringPreferences = {
       load: async () => ({ "superstring-locale": "en", "superstring-agent": null }),
       save,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
     };
     await restoreDesktopPreferences();
     expect(localStorage.getItem("superstring-locale")).toBe("en");
@@ -60,7 +62,11 @@ describe("desktop preference bootstrap and mutations", () => {
 
   it("forwards appearance, locale and encrypted IDs without sending plaintext IDs or their key", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
-    window.superstringPreferences = { load: async () => ({}), save };
+    window.superstringPreferences = {
+      load: async () => ({}),
+      save,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
     selectTheme("jade");
     selectMode("dark");
     selectLocale("en");
@@ -94,26 +100,46 @@ describe("desktop preference bootstrap and mutations", () => {
     expect(render).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem("superstring-locale")).toBe("en");
     const save = vi.fn().mockResolvedValue(undefined);
-    window.superstringPreferences = { load: async () => ({}), save };
+    window.superstringPreferences = {
+      load: async () => ({}),
+      save,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
     await persistDesktopPreference("arbitrary-secret", "value");
     expect(save).not.toHaveBeenCalled();
   });
 
-  it("renders from existing local preferences when the bridge fails without logging protected values", async () => {
+  it("reports failed desktop restoration to native UI without evaluating App or exposing the error", async () => {
     localStorage.setItem("superstring-locale", "en");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const bootstrapFailed = vi.fn().mockResolvedValue(undefined);
     window.superstringPreferences = {
       load: vi.fn().mockRejectedValue(new Error("sensitive-path")),
       save: vi.fn().mockRejectedValue(new Error("sensitive-value")),
+      bootstrapFailed,
     };
     const render = vi.fn().mockResolvedValue(undefined);
     await bootstrapWebApplication(render);
     await persistDesktopPreference("superstring-agent", "ciphertext");
-    expect(render).toHaveBeenCalledTimes(1);
+    expect(render).not.toHaveBeenCalled();
+    expect(bootstrapFailed.mock.calls).toEqual([[]]);
     expect(localStorage.getItem("superstring-locale")).toBe("en");
-    expect(warn.mock.calls).toEqual([
-      ["DESKTOP_PREFERENCES_READ_FAILED"],
-      ["DESKTOP_PREFERENCES_WRITE_FAILED"],
-    ]);
+    expect(warn.mock.calls).toEqual([["DESKTOP_PREFERENCES_WRITE_FAILED"]]);
+  });
+
+  it("also reports failed App imports, while ordinary browser import failures still propagate", async () => {
+    const failure = new Error("private-module-error");
+    const render = vi.fn().mockRejectedValue(failure);
+    const bootstrapFailed = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({}),
+      save: vi.fn().mockResolvedValue(undefined),
+      bootstrapFailed,
+    };
+    await bootstrapWebApplication(render);
+    expect(render).toHaveBeenCalledTimes(1);
+    expect(bootstrapFailed.mock.calls).toEqual([[]]);
+    delete window.superstringPreferences;
+    await expect(bootstrapWebApplication(render)).rejects.toBe(failure);
   });
 });

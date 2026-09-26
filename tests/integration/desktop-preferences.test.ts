@@ -6,6 +6,7 @@ import path from "node:path";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import { installDesktopPreferences } from "../../src/desktop/preferences";
 import {
+  DESKTOP_PREFERENCES_BOOTSTRAP_FAILED,
   DESKTOP_PREFERENCES_LOAD,
   DESKTOP_PREFERENCES_SAVE,
 } from "../../src/shared/desktop-preferences";
@@ -48,6 +49,7 @@ async function fixture(profileDirectory = directory()) {
   let owned: WebContents | null = contents;
   const event = { sender: contents, senderFrame: frame } as unknown as IpcMainInvokeEvent;
   const errors: string[] = [];
+  const bootstrapErrors: string[] = [];
   const dispose = await installDesktopPreferences({
     ipcMain,
     profileDirectory,
@@ -55,6 +57,9 @@ async function fixture(profileDirectory = directory()) {
     origin: () => origin,
     onError: (code) => {
       errors.push(code);
+    },
+    onBootstrapError: (code) => {
+      bootstrapErrors.push(code);
     },
   });
   disposers.push(dispose);
@@ -64,6 +69,7 @@ async function fixture(profileDirectory = directory()) {
     contents,
     event,
     errors,
+    bootstrapErrors,
     dispose,
     handlers,
     call(name: string, ...args: unknown[]) {
@@ -178,13 +184,29 @@ describe("desktop profile preference IPC", () => {
     expect(current.errors).toEqual(["DESKTOP_PREFERENCES_WRITE_FAILED"]);
   });
 
-  it("preserves explicit removal as a tombstone and disposes both IPC handlers", async () => {
+  it("preserves explicit removal as a tombstone and disposes all IPC handlers", async () => {
     const current = await fixture();
     current.call(DESKTOP_PREFERENCES_SAVE, "superstring-agent", "ciphertext");
     current.call(DESKTOP_PREFERENCES_SAVE, "superstring-agent", null);
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({ "superstring-agent": null });
     current.dispose();
     expect(current.handlers.size).toBe(0);
+  });
+
+  it("accepts only a trusted zero-argument bootstrap-failure signal", async () => {
+    const current = await fixture();
+    expect(() => current.call(DESKTOP_PREFERENCES_BOOTSTRAP_FAILED, "private error")).toThrow(
+      "DESKTOP_PREFERENCE_INVALID",
+    );
+    expect(() =>
+      current.from(
+        { ...current.event, sender: {} } as unknown as IpcMainInvokeEvent,
+        DESKTOP_PREFERENCES_BOOTSTRAP_FAILED,
+      ),
+    ).toThrow("DESKTOP_PREFERENCES_FORBIDDEN");
+    expect(current.bootstrapErrors).toEqual([]);
+    current.call(DESKTOP_PREFERENCES_BOOTSTRAP_FAILED);
+    expect(current.bootstrapErrors).toEqual(["DESKTOP_PREFERENCES_BOOTSTRAP_FAILED"]);
   });
 
   it("does not silently reset a corrupt profile store", async () => {

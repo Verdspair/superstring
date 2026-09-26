@@ -3,6 +3,7 @@ import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import { MODE_IDS, THEME_IDS } from "../shared/appearance";
 import {
   DESKTOP_PREFERENCE_KEYS,
+  DESKTOP_PREFERENCES_BOOTSTRAP_FAILED,
   DESKTOP_PREFERENCES_LOAD,
   DESKTOP_PREFERENCES_SAVE,
   type DesktopPreferenceSnapshot,
@@ -20,6 +21,7 @@ export interface DesktopPreferencesOptions {
   webContents: () => WebContents | null;
   origin: () => string | null;
   onError?: (code: DesktopPreferencesError) => void;
+  onBootstrapError?: (code: "DESKTOP_PREFERENCES_BOOTSTRAP_FAILED") => void;
 }
 
 function assertSender(event: IpcMainInvokeEvent, options: DesktopPreferencesOptions): void {
@@ -102,8 +104,14 @@ export async function installDesktopPreferences(
       return fail("DESKTOP_PREFERENCES_WRITE_FAILED");
     }
   });
+  options.ipcMain.handle(DESKTOP_PREFERENCES_BOOTSTRAP_FAILED, (event, ...args: unknown[]) => {
+    assertSender(event, options);
+    if (args.length !== 0) throw new Error("DESKTOP_PREFERENCE_INVALID");
+    options.onBootstrapError?.("DESKTOP_PREFERENCES_BOOTSTRAP_FAILED");
+  });
   return () => {
     options.ipcMain.removeHandler(DESKTOP_PREFERENCES_LOAD);
     options.ipcMain.removeHandler(DESKTOP_PREFERENCES_SAVE);
+    options.ipcMain.removeHandler(DESKTOP_PREFERENCES_BOOTSTRAP_FAILED);
   };
 }
