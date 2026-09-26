@@ -1,5 +1,63 @@
 import fs from "node:fs";
 import path from "node:path";
+import { blend, converter, formatHex } from "culori";
+import postcss from "postcss";
+
+// These are native semantic roles, not a parallel color palette. Personal
+// theme accents are applied from shared/appearance.ts by DesktopAppearance.
+const roles = {
+  Surface: "--background",
+  Text: "--foreground",
+  Muted: "--muted-foreground",
+  Deep: "--primary",
+  Line: "--border",
+  Soft: "--muted",
+  Accent: "--ring",
+};
+const rgb = converter("rgb");
+
+/** Convert current shadcn CSS tokens into opaque GDI colors at build time. */
+export function readCssPalette(css) {
+  const document = postcss.parse(css);
+  const light = new Map();
+  const dark = new Map();
+  document.each((rule) => {
+    if (rule.type !== "rule") return;
+    for (const [selector, values] of [
+      [":root", light],
+      [".dark", dark],
+    ]) {
+      if (!rule.selectors.includes(selector)) continue;
+      rule.each((node) => {
+        if (node.type === "decl" && node.prop.startsWith("--")) {
+          values.set(node.prop, node.value);
+        }
+      });
+    }
+  });
+  if (!light.size || !dark.size) throw new Error("CSS light/dark theme rules not found");
+  const resolve = (values, mode) => {
+    const color = (key) => {
+      const value = values.get(key);
+      const parsed = value && rgb(value);
+      if (!parsed) throw new Error(`CSS color missing or unsupported: ${mode} ${key}`);
+      return parsed;
+    };
+    const surface = color(roles.Surface);
+    if ((surface.alpha ?? 1) !== 1) {
+      throw new Error(`CSS background must be opaque: ${mode}`);
+    }
+    return Object.fromEntries(
+      Object.entries(roles).map(([role, key]) => [
+        role,
+        // GDI ColorTranslator does not accept OKLCH or CSS alpha. Use Culori's
+        // source-over compositing in sRGB, matching an element on this surface.
+        formatHex(blend([surface, color(key)], "normal", "rgb")),
+      ]),
+    );
+  };
+  return { light: resolve(light, "light"), dark: resolve(new Map([...light, ...dark]), "dark") };
+}
 
 // Compile-time adapter, not a second hand-maintained palette. Fail closed if the
 // web contract changes shape; generated C# is written into the caller's outDir
@@ -25,28 +83,12 @@ export function generatePalette(root, outDir) {
     modes.join(",") !== "system,light,dark"
   )
     throw new Error("Unexpected shared theme contract");
-  const light = css.match(/:root\s*\{([^}]+)\}/)?.[1];
-  const dark = css.match(/:root\.dark,\s*\.dark\s*\{([^}]+)\}/)?.[1];
-  const system = css.match(/:root:not\(\.light\)\s*\{([^}]+)\}/)?.[1];
-  const names = {
-    Surface: "ac-surface",
-    Text: "ac-text",
-    Muted: "ac-muted",
-    Deep: "superstring-tone-deep",
-    Line: "superstring-tone-line",
-    Soft: "superstring-tone-soft",
-    Accent: "ac-accent",
-  };
-  function token(block, key) {
-    const value = block?.match(new RegExp(`--${key}:\\s*(#[\\da-fA-F]{6})\\s*;`))?.[1];
-    if (!value) throw new Error(`CSS token missing: ${key}`);
-    return value;
-  }
-  for (const key of Object.values(names))
-    if (token(dark, key) !== token(system, key)) throw new Error(`System/dark token drift: ${key}`);
+  // The web resolves system mode by applying .dark at runtime. There is no
+  // duplicated prefers-color-scheme palette to scrape or keep in sync.
+  const { light, dark } = readCssPalette(css);
   const base = (block) =>
-    Object.entries(names)
-      .map(([name, key]) => `${name} = ColorTranslator.FromHtml("${token(block, key)}")`)
+    Object.entries(block)
+      .map(([name, value]) => `${name} = ColorTranslator.FromHtml("${value}")`)
       .join(",\n                ");
   const code = `// Generated from src/shared/appearance.ts and src/web/styles.css. Do not edit.\nusing System.Drawing;\nnamespace Superstring.Desktop\n{\n    internal static class DesktopPaletteData\n    {\n        internal static readonly string[,] Themes = new string[,]\n        {\n${themes.map((t) => `            { ${t.map((v) => JSON.stringify(v)).join(", ")} }`).join(",\n")}\n        };\n        internal static readonly string[] Modes = new string[] { ${modes.map((m) => JSON.stringify(m)).join(", ")} };\n        internal static DesktopAppearance.ResolvedPalette Base(bool dark)\n        {\n            return dark ? new DesktopAppearance.ResolvedPalette\n            {\n                ${base(dark)}, IsDark = true\n            } : new DesktopAppearance.ResolvedPalette\n            {\n                ${base(light)}, IsDark = false\n            };\n        }\n    }\n}\n`;
   const target = path.join(outDir, "DesktopPaletteData.g.cs");
