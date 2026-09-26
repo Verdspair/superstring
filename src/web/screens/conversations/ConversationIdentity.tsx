@@ -1,4 +1,4 @@
-import { Info, MessageCircle, Users } from "lucide-react";
+import { Info } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
@@ -12,6 +12,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "../../components/ui/sheet";
+import { ConversationAvatarButton } from "./avatar-control";
 export function ConversationIdentity({
   conversation,
   agentName,
@@ -28,13 +29,12 @@ export function ConversationIdentity({
   directory?: ReactNode;
 }) {
   const { t } = useTranslation();
-  const Glyph = conversation?.topology === "shared" ? Users : MessageCircle;
   return (
     <header className="flex min-h-20 shrink-0 items-center gap-3 border-b bg-background px-4 py-4 md:px-7">
       {directory}
-      <div className="hidden size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary sm:flex">
-        <Glyph className="size-5" />
-      </div>
+      {conversation && (
+        <ConversationAvatarButton key={conversation.id} conversation={conversation} />
+      )}
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-base font-semibold tracking-tight">
           {conversation?.title ?? t("workspace.your_next_conversation")}
@@ -65,7 +65,7 @@ export function ConversationIdentity({
       <div className="flex shrink-0 items-center gap-3">
         {actions}
         {conversation && (
-          <Sheet>
+          <Sheet key={conversation.id}>
             <SheetTrigger asChild>
               <Button
                 size="icon-sm"
@@ -81,6 +81,11 @@ export function ConversationIdentity({
                 <SheetDescription>{conversation.title}</SheetDescription>
               </SheetHeader>
               <div className="space-y-6 overflow-auto px-5 pb-5 text-sm">
+                <ConversationAvatarButton
+                  key={conversation.id}
+                  conversation={conversation}
+                  detailed
+                />
                 <dl className="space-y-4">
                   {[
                     ["workspace.conversation_id", conversation.id],

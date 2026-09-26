@@ -1,12 +1,12 @@
 import {
   Bot,
+  Camera,
   Check,
   Edit3,
   MessageCircle,
   RefreshCw,
   Search,
   Trash2,
-  Users,
   X,
 } from "lucide-react";
 import { useRef, useState } from "react";
@@ -29,6 +29,8 @@ import { sessionBusy } from "../../features/chat/conversation-state";
 import { translateNotice } from "../../i18n";
 import { cn } from "../../lib/utils";
 import { useSuperstringStore } from "../../store";
+import { ConversationAvatar } from "./avatar";
+import { ConversationAvatarDialog } from "./avatar-control";
 import { CreateConversation } from "./CreateConversation";
 import { RecordActions } from "./RecordActions";
 import { useDirectoryManagement } from "./use-directory-management";
@@ -46,6 +48,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
   const select = useSuperstringStore((s) => s.requestConversationNavigation);
   const [query, setQuery] = useState("");
   const [channel, setChannel] = useState("all");
+  const [avatarId, setAvatarId] = useState<string | null>(null);
   const management = useDirectoryManagement();
   const header = useRef<HTMLHeadingElement>(null);
   const deleteBusy = useSuperstringStore((s) =>
@@ -165,6 +168,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             onRename={() => management.rename(item)}
             onRefresh={() => void management.refresh(item)}
             onDelete={() => management.remove(item)}
+            onAvatar={() => setAvatarId(item.id)}
           />
         ))}
       </nav>
@@ -250,6 +254,16 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {avatarId && summaries[avatarId] && (
+        <ConversationAvatarDialog
+          key={avatarId}
+          conversation={summaries[avatarId]}
+          open
+          onOpenChange={(open) => {
+            if (!open) setAvatarId(null);
+          }}
+        />
+      )}
       {management.deleting && (
         <AlertDialog
           title={t("workspace.delete_chat")}
@@ -302,6 +316,7 @@ function IndexRecord({
   onRename,
   onRefresh,
   onDelete,
+  onAvatar,
 }: {
   item: ConversationSummary;
   selected: boolean;
@@ -311,27 +326,37 @@ function IndexRecord({
   onRename: () => void;
   onRefresh: () => void;
   onDelete: () => void;
+  onAvatar: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const busy = useSuperstringStore((s) => sessionBusy(s, item.sourceId));
   const phase = useSuperstringStore(
     (s) => s.conversationById[s.sessionConversationIds[item.sourceId]]?.phase,
   );
-  const Glyph = item.topology === "shared" ? Users : MessageCircle;
   return (
     <RecordActions
       label={t("workspace.conversation_actions", { "0": item.title })}
-      disabled={disabled || item.channel !== "web"}
+      disabled={disabled}
       actions={[
-        { label: t("workspace.rename"), icon: Edit3, run: onRename },
-        { label: t("workspace.refresh_chat"), icon: RefreshCw, disabled: busy, run: onRefresh },
-        {
-          label: t("workspace.delete_chat"),
-          icon: Trash2,
-          disabled: busy,
-          destructive: true,
-          run: onDelete,
-        },
+        { label: t("avatar.edit"), icon: Camera, run: onAvatar },
+        ...(item.channel === "web"
+          ? [
+              { label: t("workspace.rename"), icon: Edit3, run: onRename },
+              {
+                label: t("workspace.refresh_chat"),
+                icon: RefreshCw,
+                disabled: busy,
+                run: onRefresh,
+              },
+              {
+                label: t("workspace.delete_chat"),
+                icon: Trash2,
+                disabled: busy,
+                destructive: true,
+                run: onDelete,
+              },
+            ]
+          : []),
       ]}
     >
       {(trigger) => (
@@ -351,12 +376,7 @@ function IndexRecord({
             onClick={onSelect}
           >
             <div className="flex items-center gap-2">
-              <Glyph
-                className={cn(
-                  "size-4 shrink-0",
-                  selected ? "text-primary" : "text-muted-foreground",
-                )}
-              />
+              <ConversationAvatar conversation={item} value={item.avatar} className="size-9" />
               <strong className="truncate text-sm font-medium">{item.title}</strong>
             </div>
             <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">

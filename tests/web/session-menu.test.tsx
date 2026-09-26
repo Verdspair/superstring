@@ -78,6 +78,7 @@ it("右击非当前会话不切换，重命名成功仅更新目标和记忆列�
   openOther();
   expect(store.getState().currentSessionId).toBe(a.id);
   expect(screen.getAllByRole("menuitem").map((el) => el.textContent)).toEqual([
+    "更换会话头像",
     "重命名",
     "刷新会话",
     "删除会话",
@@ -151,7 +152,9 @@ it("菜单支持键盘导航与Escape恢复焦点", async () => {
   const button = screen.getByRole("button", { name: b.title });
   button.focus();
   fireEvent.keyDown(button, { key: "F10", shiftKey: true });
-  expect(document.activeElement?.textContent).toBe("重命名");
+  expect(document.activeElement?.textContent).toBe("更换会话头像");
+  await userEvent.keyboard("{ArrowDown}");
+  await waitFor(() => expect(document.activeElement?.textContent).toBe("重命名"));
   await userEvent.keyboard("{ArrowDown}");
   await waitFor(() => expect(document.activeElement?.textContent).toBe("刷新会话"));
   await userEvent.keyboard("{Escape}");
@@ -230,6 +233,7 @@ it("visible overflow opens the same actions without selecting another conversati
   await userEvent.click(screen.getByRole("button", { name: "会话操作：另一会话" }));
   expect(store.getState().currentSessionId).toBe(a.id);
   expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "更换会话头像",
     "重命名",
     "刷新会话",
     "删除会话",
