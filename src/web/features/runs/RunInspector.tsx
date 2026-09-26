@@ -2,6 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentStepSnapshot,
+  ContextHandle,
   InspectedContext,
   RunStatus,
 } from "../../../shared/contracts/agent-run";
@@ -228,7 +229,7 @@ export function RunDetails({ runId }: { runId: string }) {
                 </div>
                 <p className="hint">{t("模型：{0}", step.model)}</p>
                 {step.errorCode && <p className="error">{t("错误代码：{0}", step.errorCode)}</p>}
-                <StepContext step={step} />
+                <StepContext context={step.context} />
               </li>
             ))}
           </ol>
@@ -240,7 +241,7 @@ export function RunDetails({ runId }: { runId: string }) {
   );
 }
 
-function StepContext({ step }: { step: AgentStepSnapshot }) {
+export function StepContext({ context: handle }: { context: ContextHandle }) {
   const t = useI18n();
   const api = useSuperstringStore((s) => s.apiClient);
   const [context, setContext] = useState<InspectedContext | null>(null);
@@ -279,7 +280,7 @@ function StepContext({ step }: { step: AgentStepSnapshot }) {
     request.current = controller;
     setLoading(true);
     try {
-      const result = await api.inspectRunContext(step.context, controller.signal);
+      const result = await api.inspectRunContext(handle, controller.signal);
       if (!controller.signal.aborted) setContext(result);
     } catch (reason) {
       if (!controller.signal.aborted) setError(errorText(reason));
@@ -291,11 +292,11 @@ function StepContext({ step }: { step: AgentStepSnapshot }) {
     <div className="run-context">
       <div className="run-inspector-toolbar">
         <button type="button" disabled={loading} onClick={() => void inspect()}>
-          {t(context ? "重新核对实际输入" : "查看实际输入")}
+          {t(context ? "重新核对实际输入与输出" : "查看实际输入与输出")}
         </button>
         {(context || loading) && (
           <button type="button" onClick={clear}>
-            {t("收起实际输入")}
+            {t("收起实际输入与输出")}
           </button>
         )}
       </div>
@@ -321,6 +322,7 @@ export function ContextContent({ context }: { context: InspectedContext }) {
   const readable = context.status === "exact" || context.status === "partial";
   return (
     <div className="run-context-content">
+      <h4>{t("模型输入")}</h4>
       <p className="hint" role="status">
         {t(statusText[context.status])}
       </p>
@@ -382,6 +384,47 @@ export function ContextContent({ context }: { context: InspectedContext }) {
           </ul>
         </details>
       )}
+      <h4>{t("模型输出")}</h4>
+      <ModelResult context={context} />
     </div>
+  );
+}
+
+function ModelResult({ context }: { context: InspectedContext }) {
+  const t = useI18n();
+  const result = context.result;
+  if (context.status === "revoked" || result?.status === "revoked")
+    return <p className="hint">{t("来源已撤权或删除，模型输出不可查看。")}</p>;
+  if (context.status === "expired" || result?.status === "expired")
+    return <p className="hint">{t("来源保留期已结束，模型输出已清除。")}</p>;
+  if (!result || result.status === "unavailable")
+    return (
+      <p className="hint">
+        {t(
+          result?.reason === "pending"
+            ? "模型尚未完成，输出待记录。"
+            : result?.reason === "no_response"
+              ? "模型未返回可记录的输出。"
+              : "此步骤没有保留模型输出。",
+        )}
+      </p>
+    );
+  return (
+    <section className="run-model-result">
+      <p className="hint">
+        {t(
+          result.status === "partial"
+            ? "这是中断前保留的部分模型输出。"
+            : "以下为此步骤实际返回的模型输出。",
+        )}
+        {result.format && (
+          <>
+            {" "}
+            · <code>{result.format}</code>
+          </>
+        )}
+      </p>
+      <pre>{result.text ?? ""}</pre>
+    </section>
   );
 }

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
   RuntimeSpan,
   RuntimeSpansPage,
+  RuntimeTrace,
 } from "../../src/shared/contracts/runtime-observability";
 import { api, type SuperstringApi } from "../../src/web/api";
 import { APP_SECTIONS, currentAppSection, sectionDestinations } from "../../src/web/app/app-routes";
@@ -17,7 +18,7 @@ const conversationId = "11111111-1111-4111-8111-111111111111";
 const traceId = "a".repeat(32);
 const span = (id = 10, patch: Partial<RuntimeSpan> = {}): RuntimeSpan => ({
   id,
-  traceId,
+  traceId: id === 10 ? traceId : id.toString(16).padStart(32, "0"),
   spanId: `span-${id}`,
   parentSpanId: null,
   name: "Model generation",
@@ -45,8 +46,65 @@ const page = (items = [span()], patch: Partial<RuntimeSpansPage> = {}): RuntimeS
   summary: { total: 123, active: 2, failed: 3, unknown: 4, lastActivityAt: now, now },
   ...patch,
 });
+const traceGroup = (root: RuntimeSpan): RuntimeTrace => ({
+  traceId: root.traceId,
+  cursorId: root.id,
+  root,
+  at: root.at,
+  lastActivityAt: root.at,
+  finishedAt: root.finishedAt,
+  durationMs: root.durationMs ?? 0,
+  status: root.status,
+  spanCount: 1,
+  matchedSpanCount: 1,
+  models: root.model ? [root.model] : [],
+  channels: [root.channel],
+  runIds: root.runId ? [root.runId] : [],
+  wakeIds: root.wakeId ? [root.wakeId] : [],
+  causes: typeof root.details.cause === "string" ? [root.details.cause] : [],
+  specIds: typeof root.details.specId === "string" ? [root.details.specId] : [],
+});
+// Existing interaction assertions use span fixtures; translate them into the new server group DTO.
 const setup = (client: Partial<SuperstringApi>) =>
-  store.getState().resetForTests({ ...api, ...client });
+  store.getState().resetForTests({
+    ...api,
+    ...client,
+    listRuntimeTraces:
+      client.listRuntimeTraces ??
+      (async (filters, signal) => {
+        const source = await (client.listRuntimeSpans ?? api.listRuntimeSpans)(filters, signal);
+        return {
+          items: source.items.map(traceGroup),
+          nextBeforeId: source.nextBeforeId,
+          hasMore: source.hasMore,
+          summary: {
+            totalTraces: source.summary.total,
+            activeTraces: source.summary.active,
+            failedTraces: source.summary.failed,
+            matchedSpans: source.summary.total,
+            lastActivityAt: source.summary.lastActivityAt,
+            now: source.summary.now,
+          },
+        };
+      }),
+    getRuntimeWaterfall:
+      client.getRuntimeWaterfall ??
+      (async (id, _filters, signal) => {
+        const source = await (client.getRuntimeTrace ?? api.getRuntimeTrace)(id, undefined, signal);
+        const root = source.items.find((item) => item.parentSpanId === null) ?? source.items[0];
+        if (!root) throw new Error("Trace fixture needs a root");
+        return {
+          trace: {
+            ...traceGroup(root),
+            spanCount: source.items.length,
+            matchedSpanCount: source.items.length,
+          },
+          items: source.items,
+          matchedSpanIds: source.items.map((item) => item.spanId),
+          now: source.summary.now,
+        };
+      }),
+  });
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -61,7 +119,7 @@ it("searches the full server data set with typed filters and preserves applied U
   setup({ listRuntimeSpans: list });
   const view = render(<TraceExplorer />);
   await screen.findByText("Model generation");
-  expect(screen.getByText("共 123 个阶段 · 进行中 2 · 失败 3 · 待确认 4")).toBeTruthy();
+  expect(screen.getByText("共 123 条链路 · 活跃 2 · 含失败 3 · 123 个阶段命中")).toBeTruthy();
   fireEvent.change(screen.getByLabelText("搜索运行记录"), { target: { value: "retry wake-id" } });
   fireEvent.change(screen.getByLabelText("来源通道"), { target: { value: "memory" } });
   fireEvent.change(screen.getByLabelText("处理阶段"), { target: { value: "model" } });
@@ -165,14 +223,15 @@ it("opens a complete trace with parent relationships, unknown outcomes and keybo
   setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: trace });
   render(<TraceExplorer />);
   const user = userEvent.setup();
-  const trigger = await screen.findByRole("button", { name: "追踪链路" });
+  const trigger = await screen.findByRole("button", { name: "展开时序链路" });
   await user.click(trigger);
   const dialog = await screen.findByRole("dialog");
   await within(dialog).findByText("Sticker delivery");
   expect(trace.mock.calls[0][0]).toBe(traceId);
-  expect(within(dialog).getByRole("link", { name: "Parent generation" }).getAttribute("href")).toBe(
-    "#trace-span-span-10",
-  );
+  const child = within(dialog).getByText("Sticker delivery").closest("li");
+  expect(child?.parentElement?.closest("li")?.id).toBe("trace-span-span-10");
+  if (!child) throw new Error("Expected child step");
+  fireEvent.click(within(child).getByRole("button", { name: "查看步骤详情" }));
   expect(
     within(dialog).getByText("结果尚未确认，不等同于失败；请沿追踪链路核对后续结果。"),
   ).toBeTruthy();
@@ -270,16 +329,16 @@ it("keeps a selected trace open when completion removes its filtered result row"
     .mockResolvedValue(page([span(10, { name: "Completed trace step" })]));
   setup({ listRuntimeSpans: list, getRuntimeTrace: trace });
   render(<TraceExplorer />);
-  const trigger = await screen.findByRole("button", { name: "追踪链路" });
+  const trigger = await screen.findByRole("button", { name: "展开时序链路" });
   fireEvent.click(trigger);
   const dialog = await screen.findByRole("dialog");
-  await within(dialog).findByText("Model generation");
+  await within(dialog).findAllByText("Model generation");
   await act(async () => {
     vi.advanceTimersByTime(5000);
   });
   expect(trigger.isConnected).toBe(false);
   expect(screen.getByRole("dialog")).toBe(dialog);
-  await within(dialog).findByText("Completed trace step");
+  await within(dialog).findAllByText("Completed trace step");
   fireEvent.click(within(dialog).getByRole("button", { name: "关闭追踪链路" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "刷新运行记录" }));
@@ -292,9 +351,9 @@ it("retains trace selection across blur while clearing and revalidating its sour
     .mockRejectedValue(new Error("Trace access expired"));
   setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: trace });
   render(<TraceExplorer />);
-  fireEvent.click(await screen.findByRole("button", { name: "追踪链路" }));
+  fireEvent.click(await screen.findByRole("button", { name: "展开时序链路" }));
   const dialog = await screen.findByRole("dialog");
-  await within(dialog).findByText("Private trace metadata");
+  await within(dialog).findAllByText("Private trace metadata");
   fireEvent.blur(window);
   expect(screen.getByRole("dialog")).toBe(dialog);
   expect(within(dialog).queryByText("Private trace metadata")).toBeNull();
@@ -308,7 +367,7 @@ it("closes trace selection when the applied filter scope changes", async () => {
   render(<TraceExplorer />);
   const status = screen.getByLabelText("处理状态");
   const apply = screen.getByRole("button", { name: "应用筛选" });
-  fireEvent.click(await screen.findByRole("button", { name: "追踪链路" }));
+  fireEvent.click(await screen.findByRole("button", { name: "展开时序链路" }));
   await screen.findByRole("dialog");
   fireEvent.change(status, { target: { value: "failed" } });
   fireEvent.click(apply);
