@@ -10,7 +10,7 @@
 
 The application includes its JavaScript runtime. Node.js, Bun and Electron are not prerequisites for an end user. Model servers and model weights remain separate, as on Windows. The Linux AppImage payload is compared with the installed DEB in CI; that comparison does not certify FUSE integration on every distribution. A desktop session with Chromium sandbox support is required. Do not launch with `--no-sandbox` or as root.
 
-macOS production artifacts must be Developer ID signed and notarized. Unsigned/ad-hoc PR artifacts are for validation and are not production releases. No release is published by opening a PR.
+macOS release packages are Developer ID signed and notarized when the release credentials are configured. Without them the release still publishes **ad-hoc signed, not notarized** packages, and the draft release notes say so: open those with the Finder **Open** action (or allow the app under System Settings → Privacy & Security). Validation artifacts from branches and pull requests are never published as releases, and no release is published by opening a PR.
 
 ## Installation and updates
 
@@ -93,9 +93,9 @@ npm run build:desktop:cross-platform -- --platform=darwin --arch=arm64
 
 Build tools create artifacts only under `artifacts/desktop` and `dist/desktop-*`; they do not inspect an installed user profile. `--dir` produces an unpacked validation app. Package builds download Electron and packaging tools; use CI when local space is limited.
 
-The `Desktop packages` workflow accepts an **existing** version tag and an explicit release flag. The tag must match `package.json`. Release builds require macOS certificate/notarization secrets (`MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`). Missing credentials fail; they never downgrade a release to unsigned output. Configure the `desktop-release` environment protection for the final draft-release job. All native package jobs, smoke reports and complete asset/hash checks must pass first.
+The `Desktop packages` workflow accepts an **existing** version tag and an explicit release flag. The tag must match `package.json`. Release builds sign and notarize macOS packages when the macOS secrets (`MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) are configured; missing credentials produce ad-hoc signed, not notarized packages and the draft release notes state that, rather than failing or silently claiming a signed release. Configure the `desktop-release` environment protection for the final draft-release job. All native package jobs, smoke reports and complete asset/hash checks must pass first.
 
-The smoke runs a real packaged renderer and sidecar with a disposable profile, checks real business APIs and the lifetime connection, rejects unauthenticated access, and waits for graceful exit. It does not log into QQ, send messages, run a model, or validate signing credentials that have not been supplied. Release validation additionally verifies macOS signatures, Gatekeeper assessment and the notarization staple.
+The smoke runs a real packaged renderer and sidecar with a disposable profile, checks real business APIs and the lifetime connection, rejects unauthenticated access, and waits for graceful exit. It does not log into QQ, send messages, run a model, or validate signing credentials that have not been supplied. When a release was signed, release validation additionally verifies macOS signatures, Gatekeeper assessment and the notarization staple; unsigned releases skip those three checks and are announced as unsigned.
 
 ## 简要使用说明
 

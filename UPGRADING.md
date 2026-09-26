@@ -39,7 +39,7 @@ Data remains under `userdata` in that installation. The backup of **all of userd
 
 #### macOS and Linux
 
-Use the release asset matching your operating system and CPU architecture. Quit the application before replacing the macOS app or updating its Linux package. Native profiles use the operating system's application-data directory; they do not automatically discover or migrate data from a source checkout.
+Use the release asset matching your operating system and CPU architecture. Quit the application before replacing the macOS app or updating its Linux package. Native profiles use the operating system's application-data directory; they do not automatically discover or migrate data from a source checkout. The prerelease macOS packages are ad-hoc signed and not notarized: open them with the Finder **Open** action (or allow the app under System Settings → Privacy & Security).
 
 See [Desktop distributions](docs/reference/desktop.md) for DMG/ZIP, DEB/AppImage, sandbox requirements and native profile recovery. The Windows installer is not a cross-platform data-transfer tool.
 
@@ -102,7 +102,7 @@ Image descriptions require a configured vision model. Voice transcription and fu
 
 #### macOS 与 Linux
 
-使用版本页面中匹配系统与处理器架构的文件，替换 macOS 应用或更新 Linux 包前先退出。原生资料目录使用系统应用数据位置，不会自动发现或搬迁源码目录中的旧数据。
+使用版本页面中匹配系统与处理器架构的文件，替换 macOS 应用或更新 Linux 包前先退出。原生资料目录使用系统应用数据位置，不会自动发现或搬迁源码目录中的旧数据。本预发布版的 macOS 包为临时签名、未公证：首次打开请用访达的「打开」放行（或在「系统设置 → 隐私与安全性」中允许）。
 
 DMG/ZIP、DEB/AppImage、沙箱要求与资料恢复见[桌面发行说明](docs/reference/desktop.md)。Windows 安装器不是跨平台数据搬迁工具。
 

@@ -21,23 +21,38 @@ export function normalizeMacSigningEnvironment(env) {
   if (env.CSC_LINK !== undefined && !env.CSC_LINK.trim()) delete env.CSC_LINK;
 }
 
-export function checkMacReleaseCredentials(env) {
-  if (!env.CSC_LINK?.trim() && !env.CSC_NAME?.trim())
-    throw new Error("MACOS_SIGNING_IDENTITY_REQUIRED");
+// 签名是"有凭据就签、没有就出未签名包"：缺凭据不再中止发布，但结果必须如实记录，
+// 由构建结果与冒烟报告把 signed/unsigned 一路带到发布说明与用户文档。
+export function macSigningPlan(env) {
+  const hasIdentity = Boolean(env.CSC_LINK?.trim() || env.CSC_NAME?.trim());
   const groups = [
     ["APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER"],
     ["APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"],
     ["APPLE_KEYCHAIN_PROFILE"],
   ];
-  if (!groups.some((keys) => keys.every((key) => env[key]?.trim()))) {
-    throw new Error("MACOS_NOTARIZATION_CREDENTIALS_REQUIRED");
-  }
+  const hasNotarization = groups.some((keys) => keys.every((key) => env[key]?.trim()));
+  return {
+    signed: hasIdentity && hasNotarization,
+    missing: [
+      ...(hasIdentity ? [] : ["MACOS_SIGNING_IDENTITY"]),
+      ...(hasNotarization ? [] : ["MACOS_NOTARIZATION_CREDENTIALS"]),
+    ],
+  };
 }
 
-export function createConfiguration({ root, stage, output, platform, arch, release = false }) {
+export function createConfiguration({
+  root,
+  stage,
+  output,
+  platform,
+  arch,
+  release = false,
+  macSigning = "unsigned",
+}) {
   getTarget(platform, arch);
   const tools = path.join(root, "tools/desktop/build/cross-platform");
   const brand = path.join(stage, "brand");
+  const signedRelease = release && macSigning === "signed";
   return {
     appId: APP_ID,
     productName: "Superstring",
@@ -69,10 +84,10 @@ export function createConfiguration({ root, stage, output, platform, arch, relea
       minimumSystemVersion: "13.0",
       icon: path.join(brand, "icon.icns"),
       target: ["dmg", "zip"].map((target) => ({ target, arch: [arch] })),
-      hardenedRuntime: release,
-      forceCodeSigning: release,
-      ...(release ? {} : { identity: "-" }),
-      notarize: release,
+      hardenedRuntime: signedRelease,
+      forceCodeSigning: signedRelease,
+      ...(signedRelease ? {} : { identity: "-" }),
+      notarize: signedRelease,
       entitlements: path.join(tools, "entitlements.electron.plist"),
       entitlementsInherit: path.join(tools, "entitlements.electron.plist"),
       binaries: ["Contents/Resources/service/superstring-server"],

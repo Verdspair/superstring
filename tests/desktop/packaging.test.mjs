@@ -8,10 +8,10 @@ import { renderBrandAssets } from "../../tools/desktop/build/brand-assets.mjs";
 import { buildBrand } from "../../tools/desktop/build/cross-platform/brand.mjs";
 import { writeChecksums } from "../../tools/desktop/build/cross-platform/checksums.mjs";
 import {
-  checkMacReleaseCredentials,
   createConfiguration,
   expectedArtifacts,
   getTarget,
+  macSigningPlan,
   normalizeMacSigningEnvironment,
   TARGETS,
 } from "../../tools/desktop/build/cross-platform/config.mjs";
@@ -84,40 +84,66 @@ test("all native targets keep bundled host dependencies external to builder and 
   assert.throws(() => getTarget("linux", "ia32"), /Unsupported/);
 });
 
-test("mac release mode requires identity and complete notarization credentials", () => {
+test("mac release builds sign when credentials are complete and stay unsigned otherwise", () => {
   const blank = { CSC_LINK: "  ", CSC_KEY_PASSWORD: "" };
   normalizeMacSigningEnvironment(blank);
   assert.equal(Object.hasOwn(blank, "CSC_LINK"), false);
   assert.equal(blank.CSC_KEY_PASSWORD, "");
-  assert.throws(() => checkMacReleaseCredentials(blank), /SIGNING/);
+  assert.deepEqual(macSigningPlan(blank), {
+    signed: false,
+    missing: ["MACOS_SIGNING_IDENTITY", "MACOS_NOTARIZATION_CREDENTIALS"],
+  });
   const configured = { CSC_LINK: "certificate" };
   normalizeMacSigningEnvironment(configured);
   assert.equal(configured.CSC_LINK, "certificate");
-  assert.throws(() => checkMacReleaseCredentials({}), /SIGNING/);
-  assert.throws(() => checkMacReleaseCredentials({ CSC_LINK: "certificate" }), /NOTARIZATION/);
-  assert.throws(
-    () => checkMacReleaseCredentials({ CSC_LINK: "certificate", APPLE_API_KEY: "key" }),
-    /NOTARIZATION/,
-  );
-  checkMacReleaseCredentials({
-    CSC_LINK: "certificate",
-    APPLE_API_KEY: "key",
-    APPLE_API_KEY_ID: "id",
-    APPLE_API_ISSUER: "issuer",
+  assert.deepEqual(macSigningPlan({}), {
+    signed: false,
+    missing: ["MACOS_SIGNING_IDENTITY", "MACOS_NOTARIZATION_CREDENTIALS"],
   });
-  const config = createConfiguration({
+  assert.deepEqual(macSigningPlan({ CSC_LINK: "certificate" }), {
+    signed: false,
+    missing: ["MACOS_NOTARIZATION_CREDENTIALS"],
+  });
+  assert.deepEqual(macSigningPlan({ CSC_LINK: "certificate", APPLE_API_KEY: "key" }), {
+    signed: false,
+    missing: ["MACOS_NOTARIZATION_CREDENTIALS"],
+  });
+  assert.deepEqual(
+    macSigningPlan({
+      CSC_LINK: "certificate",
+      APPLE_API_KEY: "key",
+      APPLE_API_KEY_ID: "id",
+      APPLE_API_ISSUER: "issuer",
+    }),
+    { signed: true, missing: [] },
+  );
+  const signed = createConfiguration({
     root: "/p",
     stage: "/s",
     output: "/o",
     platform: "darwin",
     arch: "arm64",
     release: true,
+    macSigning: "signed",
   });
-  assert.equal(config.mac.forceCodeSigning, true);
-  assert.equal(config.mac.hardenedRuntime, true);
-  assert.equal(config.mac.notarize, true);
-  assert.equal(config.mac.identity, undefined);
-  assert.equal(config.publish, null);
+  assert.equal(signed.mac.forceCodeSigning, true);
+  assert.equal(signed.mac.hardenedRuntime, true);
+  assert.equal(signed.mac.notarize, true);
+  assert.equal(signed.mac.identity, undefined);
+  assert.equal(signed.publish, null);
+  const unsigned = createConfiguration({
+    root: "/p",
+    stage: "/s",
+    output: "/o",
+    platform: "darwin",
+    arch: "arm64",
+    release: true,
+    macSigning: "unsigned",
+  });
+  assert.equal(unsigned.mac.forceCodeSigning, false);
+  assert.equal(unsigned.mac.hardenedRuntime, false);
+  assert.equal(unsigned.mac.notarize, false);
+  assert.equal(unsigned.mac.identity, "-");
 });
 
 test("release checksum assembly rejects partial, extra and wrong-version distributions", () => {

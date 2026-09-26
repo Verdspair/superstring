@@ -8,10 +8,10 @@ import { collectPackageFiles, readPackageVersion } from "../../../installer/pack
 import { buildBrand } from "./brand.mjs";
 import { writeChecksums } from "./checksums.mjs";
 import {
-  checkMacReleaseCredentials,
   createConfiguration,
   getTarget,
   HOMEPAGE,
+  macSigningPlan,
   normalizeMacSigningEnvironment,
 } from "./config.mjs";
 import { writeProductionNotices } from "./licenses.mjs";
@@ -33,7 +33,13 @@ if (platform !== process.platform || arch !== process.arch) {
 }
 if (platform === "darwin") {
   normalizeMacSigningEnvironment(process.env);
-  if (release) checkMacReleaseCredentials(process.env);
+}
+const macSigning =
+  platform === "darwin" && release ? macSigningPlan(process.env) : { signed: false, missing: [] };
+if (platform === "darwin" && release && !macSigning.signed) {
+  console.warn(
+    `[mac] unsigned release build: ${macSigning.missing.join(", ")} not configured; the package is ad-hoc signed and not notarized`,
+  );
 }
 const version = readPackageVersion(root);
 const stage = path.join(root, "artifacts/desktop", `${platform}-${arch}`);
@@ -133,7 +139,15 @@ for (const size of [16, 32]) {
   );
 }
 fs.copyFileSync(path.join(stage, "brand/icon.png"), path.join(service, "brand/icon.png"));
-const config = createConfiguration({ root, stage, output, platform, arch, release });
+const config = createConfiguration({
+  root,
+  stage,
+  output,
+  platform,
+  arch,
+  release,
+  macSigning: macSigning.signed ? "signed" : "unsigned",
+});
 const target = platform === "darwin" ? Platform.MAC : Platform.LINUX;
 const artifacts = await build({
   config,
@@ -147,7 +161,19 @@ const app =
     : path.join(output, arch === "arm64" ? "linux-arm64-unpacked" : "linux-unpacked");
 fs.writeFileSync(
   path.join(output, "build-result.json"),
-  `${JSON.stringify({ version, platform, arch, release, app, artifacts }, null, 2)}\n`,
+  `${JSON.stringify(
+    {
+      version,
+      platform,
+      arch,
+      release,
+      ...(platform === "darwin" ? { macSigning: macSigning.signed ? "signed" : "unsigned" } : {}),
+      app,
+      artifacts,
+    },
+    null,
+    2,
+  )}\n`,
 );
 writeChecksums(output);
 console.log(`DESKTOP_OUTPUT=${output}`);

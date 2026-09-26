@@ -43,7 +43,7 @@ for (const [fuse, enabled] of [
   if (fuses[fuse] !== (enabled ? FuseState.ENABLE : FuseState.DISABLE))
     throw new Error(`INCORRECT_ELECTRON_FUSE:${fuse}`);
 }
-if (identity.release && process.platform === "darwin") {
+if (identity.release && process.platform === "darwin" && identity.macSigning === "signed") {
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", app]);
   run("spctl", ["--assess", "--type", "execute", "--verbose=2", app]);
   run("xcrun", ["stapler", "validate", app]);

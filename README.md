@@ -51,10 +51,10 @@ Choose an asset for your operating system and architecture from [Releases](https
 | Platform | Packages | Notes |
 |---|---|---|
 | Windows x64 | `superstring-setup-0.3.0-beta.exe` | Choose an installation folder; later installers upgrade the same folder |
-| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Copy the application into Applications; replace it only after quitting |
+| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Copy the application into Applications; replace it only after quitting. The prerelease macOS packages are ad-hoc signed and not notarized: open them with the Finder **Open** action |
 | Linux glibc, x64 or arm64 | DEB and AppImage | DEB integrates with Debian/Ubuntu; AppImage needs a compatible desktop sandbox and FUSE setup |
 
-Use the files actually attached to the chosen release and verify them with its checksum list. Signed macOS distributions and platform-specific installation guidance are described in [Desktop distributions](docs/reference/desktop.md).
+Use the files actually attached to the chosen release and verify them with its checksum list. macOS signing status and platform-specific installation guidance are described in [Desktop distributions](docs/reference/desktop.md).
 
 Packaged applications include their runtime. A local model server such as LM Studio, or a configured external OpenAI-compatible provider, is still required for inference. QQ integration additionally requires a separately installed OneBot 11 service.
 
@@ -141,10 +141,10 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 | 平台 | 安装形式 | 说明 |
 |---|---|---|
 | Windows x64 | `superstring-setup-0.3.0-beta.exe` | 可选安装目录，新版安装器覆盖同一目录升级 |
-| macOS 13+，Apple Silicon／Intel | 对应架构的 DMG、ZIP | 将应用复制到 Applications，替换前完整退出 |
+| macOS 13+，Apple Silicon／Intel | 对应架构的 DMG、ZIP | 将应用复制到 Applications，替换前完整退出；本预发布版的 macOS 包为临时签名、未公证，首次打开请用访达的「打开」放行 |
 | Linux glibc，x64／arm64 | DEB、AppImage | Debian/Ubuntu 可使用 DEB；AppImage 需要兼容的桌面沙箱与 FUSE 环境 |
 
-以所选版本实际附带的文件为准，并用同版校验清单核对。macOS 签名发行与各平台安装方式见[桌面发行说明](docs/reference/desktop.md)。
+以所选版本实际附带的文件为准，并用同版校验清单核对。macOS 的签名状态与各平台安装方式见[桌面发行说明](docs/reference/desktop.md)。
 
 安装包自带运行时，但模型推理仍需要 LM Studio 等本地服务或已配置的外部 OpenAI 兼容服务；QQ 接入另需独立安装 OneBot 11 服务。
 

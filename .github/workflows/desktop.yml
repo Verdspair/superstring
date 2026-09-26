@@ -102,8 +102,6 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.release && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,16 +122,20 @@ jobs:
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
         run: |
+          if [ -z "$APPLE_API_KEY_BASE64" ]; then
+            echo "::warning::APPLE_API_KEY_BASE64 is not configured; the macOS packages will be unsigned and not notarized"
+            exit 0
+          fi
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           import path from 'node:path';
-          if(!process.env.APPLE_API_KEY_BASE64) throw new Error('APPLE_API_KEY_BASE64 is required for a signed release');
           const file=path.join(process.env.RUNNER_TEMP,'superstring-notary.p8');
           fs.writeFileSync(file,Buffer.from(process.env.APPLE_API_KEY_BASE64,'base64'),{mode:0o600});
           fs.appendFileSync(process.env.GITHUB_ENV,`APPLE_API_KEY=${file}\n`);
           JS
       - name: Package native desktop
         env:
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (inputs.release && secrets.MACOS_CERTIFICATE != '') && 'true' || 'false' }}
           CSC_LINK: ${{ matrix.platform == 'darwin' && inputs.release && secrets.MACOS_CERTIFICATE || '' }}
           CSC_KEY_PASSWORD: ${{ matrix.platform == 'darwin' && inputs.release && secrets.MACOS_CERTIFICATE_PASSWORD || '' }}
           APPLE_API_KEY_ID: ${{ matrix.platform == 'darwin' && inputs.release && secrets.APPLE_API_KEY_ID || '' }}
@@ -264,4 +266,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Superstring $RELEASE_TAG" --notes "Native desktop distributions. See SHA256SUMS and per-platform smoke reports. macOS packages are signed and notarized; Windows retains its existing installer chain." dist/desktop-release/*
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Superstring $RELEASE_TAG" --notes "Native desktop distributions. See SHA256SUMS and per-platform smoke reports. macOS packages are ${{ secrets.MACOS_CERTIFICATE != '' && 'signed and notarized' || 'ad-hoc signed and not notarized; open them with the Finder Open action' }}." dist/desktop-release/*

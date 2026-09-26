@@ -67,8 +67,12 @@ Ordinary branch/PR builds are validation artifacts. macOS uses an explicit
 ad-hoc signature and no notarization for those builds. They must not be
 described as Gatekeeper-approved public releases.
 
-`--release` requires macOS signing and notarization credentials. The workflow
-uses these repository secrets:
+`--release` signs and notarizes macOS packages when the credentials below are
+configured. Without them the build proceeds with an explicit ad-hoc signature
+and no notarization, records `macSigning: "unsigned"` in `build-result.json`, and
+the smoke step skips the signature/Gatekeeper/staple checks; the release notes
+must present those packages as unsigned. The workflow uses these repository
+secrets:
 
 - `MACOS_CERTIFICATE`: base64 Developer ID Application PKCS#12 certificate.
 - `MACOS_CERTIFICATE_PASSWORD`: certificate password.
@@ -77,14 +81,15 @@ uses these repository secrets:
 
 The build wrapper also accepts electron-builder's Apple ID/application password
 or notarization keychain-profile credentials for an explicitly configured
-release invocation. Incomplete credentials fail before packaging; builder's
-otherwise optional notarization must not be silently skipped.
+release invocation. Partial credentials do not sign: the release is built and
+announced as unsigned rather than silently claiming a signed one.
 
 Official electron-builder owns packaging, fuse changes and notarization.
 Its official macOS signer applies Electron entitlements to the host/helpers and
 Bun's documented JavaScriptCore entitlements only to the service executable.
 The workflow verifies the signature, Gatekeeper assessment and stapled ticket
-on the extracted release app. ZIPs cannot themselves be stapled.
+on the extracted release app when the release was signed. ZIPs cannot themselves
+be stapled.
 
 Only an explicit workflow dispatch with `release=true` and an existing
 `v<package.json version>` tag can create a draft release. The release job uses
