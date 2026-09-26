@@ -88,6 +88,27 @@ it("media revisions update their parent observation rather than creating fake me
   };
   expect(timelineRows([observed, revision])).toEqual([{ ...observed, media: [media] }]);
 });
+
+it("keeps only the latest orphan media revision even when it becomes unavailable", () => {
+  const first: ConversationEventView = {
+    ...observed,
+    seq: 2,
+    kind: "media_revision",
+    source: { kind: "qq_media", id: "note", revision: "1" },
+    media: [
+      { id: "note", kind: "image", description: "previous description", availability: "available" },
+    ],
+  };
+  const latest: ConversationEventView = {
+    ...first,
+    seq: 3,
+    source: { ...first.source, revision: "2" },
+    text: null,
+    contentState: "unavailable",
+    media: [],
+  };
+  expect(timelineRows([first, latest])).toEqual([latest]);
+});
 it("OneBot timeline revalidates expired bodies on refresh and clears projections on blur", async () => {
   const events = vi
     .fn()

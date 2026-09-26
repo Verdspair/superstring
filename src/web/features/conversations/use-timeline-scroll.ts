@@ -5,7 +5,7 @@ import type { BeforeHistoryChange, HistoryChange } from "./use-conversation-even
 export function timelineKey(item: ConversationEventView) {
   return item.outputId
     ? `output:${item.outputId}`
-    : item.kind === "inbound" || item.kind === "outbound"
+    : item.kind === "inbound" || item.kind === "outbound" || item.kind === "media_revision"
       ? `source:${item.source.kind}:${item.source.id}`
       : item.wake
         ? `wake:${item.wake.id}`

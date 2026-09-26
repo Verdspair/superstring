@@ -220,3 +220,59 @@ it("Home and End scroll the reading region without intercepting nested controls"
   fireEvent.keyDown(screen.getByText("会话来源与参与者"), { key: "End" });
   expect(viewport.scrollTop).toBe(0);
 });
+
+it("shows an orphan media revision on the latest page, merges its older parent, and revalidates expiry", async () => {
+  const revision: ConversationEventView = {
+    ...row(205),
+    kind: "media_revision",
+    source: { kind: "qq_media", id: "image-note", revision: "2" },
+    sources: [{ kind: "qq_event", id: "100", revision: "1" }],
+    participant: null,
+    text: "Authorized image description",
+    media: [
+      {
+        id: "image-note",
+        kind: "image",
+        description: "Authorized image description",
+        availability: "available",
+      },
+    ],
+  };
+  const events = vi
+    .fn()
+    .mockResolvedValueOnce({ items: [revision], nextSeq: 205, hasMore: true })
+    .mockResolvedValueOnce({ items: [row(100)], nextSeq: 100, hasMore: false })
+    .mockResolvedValueOnce({
+      items: [
+        { ...row(100), text: null, contentState: "expired" },
+        { ...revision, text: null, media: [], contentState: "expired" },
+      ],
+      nextSeq: 205,
+      hasMore: false,
+    });
+  setup(events);
+  render(<ConversationTimeline conversation={conversation} />);
+  await screen.findByText("媒体理解更新");
+  expect(screen.getAllByText("Authorized image description")).toHaveLength(1);
+  expect(screen.getByText("关联消息尚未加载；此记录为媒体理解更新。")).toBeTruthy();
+  expect(screen.queryByText("此会话暂无消息记录。")).toBeNull();
+  const viewport = screen.getByRole("region", { name: "消息记录" });
+  Object.defineProperties(viewport, {
+    scrollHeight: { get: () => (screen.queryByText("message-100") ? 1700 : 1400) },
+    clientHeight: { value: 400 },
+  });
+  viewport.scrollTop = 200;
+  fireEvent.scroll(viewport);
+  const orphan = screen.getByText("媒体理解更新").closest("li");
+  if (!orphan) throw new Error("Expected standalone media revision");
+  vi.spyOn(orphan, "getBoundingClientRect").mockReturnValue({ top: 20, bottom: 120 } as DOMRect);
+  fireEvent.click(screen.getByRole("button", { name: "加载更早记录" }));
+  await screen.findByText("message-100");
+  expect(orphan.isConnected).toBe(false);
+  expect(viewport.scrollTop).toBe(500);
+  expect(screen.queryByText("媒体理解更新")).toBeNull();
+  expect(screen.getAllByText("Authorized image description")).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "刷新记录" }));
+  await screen.findByText("原文已过保留期");
+  expect(screen.queryByText("Authorized image description")).toBeNull();
+});

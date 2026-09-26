@@ -19,18 +19,36 @@ const contentLabels = {
   revoked: "原文已撤权或删除",
   unavailable: "原文暂不可用",
 };
-/** Media updates decorate their parent observation, retaining the annotation's identity and availability. */
+/** Media updates decorate loaded parents; otherwise their authorized projection remains visible. */
 export function timelineRows(items: ConversationEventView[]): ConversationEventView[] {
-  const revisions = items.filter((item) => item.kind === "media_revision");
+  const revisions = [
+    ...new Map(
+      items
+        .filter((item) => item.kind === "media_revision")
+        .map((item) => [timelineKey(item), item]),
+    ).values(),
+  ];
   const latest = new Map<string, ConversationEventView>();
   for (const item of items) {
     if (item.kind === "media_revision") continue;
     const key = timelineKey(item);
     latest.set(key, item);
   }
+  const parents = new Set(
+    [...latest.values()]
+      .filter((item) => item.kind === "inbound")
+      .flatMap((item) =>
+        item.sources.filter((source) => source.kind === "qq_event").map((source) => source.id),
+      ),
+  );
+  for (const revision of revisions) {
+    if (!revision.sources.some((source) => source.kind === "qq_event" && parents.has(source.id)))
+      latest.set(timelineKey(revision), revision);
+  }
   return [...latest.values()]
     .sort((a, b) => a.seq - b.seq)
     .map((item) => {
+      if (item.kind !== "inbound") return item;
       const parent = item.sources.find((source) => source.kind === "qq_event")?.id;
       if (!parent) return item;
       const media = [
@@ -188,7 +206,14 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
               >
                 <header>
                   <strong>
-                    {item.participant?.label ?? t(item.kind === "wake" ? "唤醒记录" : "运行活动")}
+                    {item.participant?.label ??
+                      t(
+                        item.kind === "wake"
+                          ? "唤醒记录"
+                          : item.kind === "media_revision"
+                            ? "媒体理解更新"
+                            : "运行活动",
+                      )}
                   </strong>
                   <time dateTime={item.occurredAt}>{localTime(item.occurredAt)}</time>
                 </header>
@@ -198,6 +223,12 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                   </small>
                 )}
                 <Addressing item={item} rows={rows} conversation={conversation} />
+                {item.kind === "media_revision" && (
+                  <p className="hint">
+                    {t("关联消息尚未加载；此记录为媒体理解更新。")}{" "}
+                    <code>{item.sources.find((source) => source.kind === "qq_event")?.id}</code>
+                  </p>
+                )}
                 {item.wake && <WakeActivity wake={item.wake} />}
                 {item.messageStatus === "failed" && <p className="error">{t("[生成失败]")}</p>}
                 {item.messageStatus === "cancelled" && <p className="hint">{t("[生成已取消]")}</p>}
@@ -210,6 +241,7 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                   (item.contentState !== "active" ? (
                     <p className="hint">{t(contentLabels[item.contentState])}</p>
                   ) : (
+                    item.kind !== "media_revision" &&
                     item.text && <p className="conversation-text">{item.text}</p>
                   ))}
                 {!!item.media.length && (
