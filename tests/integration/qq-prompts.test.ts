@@ -72,7 +72,7 @@ describe("editable QQ prompt storage and HTTP", () => {
           )
           .get(),
       ).toEqual({ revision: 7, judgement_output_reserved: 512, reply_output_reserved: 2048 });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 42 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 43 });
     } finally {
       db.close();
     }
@@ -120,7 +120,7 @@ describe("editable QQ prompt storage and HTTP", () => {
       expect(row.name).toBe("existing");
       for (const slot of QQ_PROMPT_SLOTS)
         expect(row[`prompt_${slot}`]).toBe(QQ_PROMPT_DEFAULTS[slot]);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 42 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 43 });
     } finally {
       db.close();
     }

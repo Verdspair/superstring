@@ -103,3 +103,43 @@ export type RuntimeSpan = z.infer<typeof RuntimeSpanSchema>;
 export type RuntimeSpansPage = z.infer<typeof RuntimeSpansPageSchema>;
 export type RuntimeSpanFilters = z.infer<typeof RuntimeSpanFiltersSchema>;
 export type ConversationRuntimeStatus = z.infer<typeof ConversationRuntimeStatusSchema>;
+
+/** Cursor is the first visible span id, so adding child spans never moves a trace between pages. */
+export const RuntimeTraceSchema = z.strictObject({
+  traceId: z.string(),
+  cursorId: z.number().int().positive(),
+  root: RuntimeSpanSchema,
+  at: z.string(),
+  lastActivityAt: z.string(),
+  finishedAt: z.string().nullable(),
+  durationMs: z.number().nonnegative(),
+  status: RuntimeSpanStatusSchema,
+  spanCount: z.number().int().nonnegative(),
+  matchedSpanCount: z.number().int().nonnegative(),
+  models: z.array(z.string()),
+  channels: z.array(RuntimeChannelSchema),
+  runIds: z.array(z.string()),
+  wakeIds: z.array(z.string()),
+});
+export const RuntimeTracesPageSchema = z.strictObject({
+  items: z.array(RuntimeTraceSchema),
+  nextBeforeId: z.number().int().nonnegative(),
+  hasMore: z.boolean(),
+  summary: z.strictObject({
+    totalTraces: z.number(),
+    activeTraces: z.number(),
+    failedTraces: z.number(),
+    matchedSpans: z.number(),
+    lastActivityAt: z.string().nullable(),
+    now: z.string(),
+  }),
+});
+export const RuntimeTraceDetailSchema = z.strictObject({
+  now: z.string(),
+  trace: RuntimeTraceSchema,
+  items: z.array(RuntimeSpanSchema),
+  matchedSpanIds: z.array(z.string()),
+});
+export type RuntimeTrace = z.infer<typeof RuntimeTraceSchema>;
+export type RuntimeTracesPage = z.infer<typeof RuntimeTracesPageSchema>;
+export type RuntimeTraceDetail = z.infer<typeof RuntimeTraceDetailSchema>;

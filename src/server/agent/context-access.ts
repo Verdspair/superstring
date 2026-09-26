@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type {
   ContextHandle,
   InspectedContext,
+  InspectedModelResult,
   RunOwner,
   RunSnapshot,
 } from "../../shared/contracts/agent-run";
@@ -299,7 +300,25 @@ export function inspectContext(
     layout: stored.layout,
     sourceVersions: stored.sources.map(({ id, revision }) => ({ id, revision })),
   };
-  if (status !== "exact" || !stored.messages) return { ...metadata, status };
+  const result: InspectedModelResult =
+    status !== "exact"
+      ? { status }
+      : stored.output
+        ? {
+            status: stored.output.complete ? "exact" : "partial",
+            text: stored.output.text,
+            format: stored.output.format,
+          }
+        : {
+            status: "unavailable",
+            reason:
+              run.steps.find((step) => step.stepId === handle.stepId)?.status === "running"
+                ? "pending"
+                : stored.outputRecorded
+                  ? "no_response"
+                  : "not_recorded",
+          };
+  if (status !== "exact" || !stored.messages) return { ...metadata, status, result };
   const unavailableMedia = stored.messages.flatMap((message) =>
     message.content.flatMap((part) =>
       part.kind === "image"
@@ -317,6 +336,7 @@ export function inspectContext(
     ...metadata,
     status: unavailableMedia.length ? "partial" : "exact",
     exactMessages: stored.messages,
+    result,
     ...(unavailableMedia.length ? { unavailableMedia } : {}),
   };
 }

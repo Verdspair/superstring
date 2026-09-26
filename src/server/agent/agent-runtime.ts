@@ -3,6 +3,7 @@ import type {
   AgentStepSnapshot,
   ModelMessage,
   OutputSummary,
+  ProtectedModelOutput,
   RunEvent,
   RunEventPayload,
   RunOwner,
@@ -200,18 +201,27 @@ export class AgentRuntime {
         ...(spec.instructions === undefined ? [] : [textMessage("system", spec.instructions)]),
         ...textMessages(input.messages),
       ];
-      const value = await this.step(active, "leaf", messages, input.sources ?? [], async () => {
-        const raw = await this.options.model.complete({
-          messages,
-          model: spec.model,
-          temperature: spec.temperature,
-          maxTokens: spec.maxTokens,
-          responseSchema: spec.responseSchema,
-          signal: active.signal,
-        });
-        await input.validate?.(raw);
-        return raw;
-      });
+      const value = await this.step(
+        active,
+        "leaf",
+        messages,
+        input.sources ?? [],
+        async (capture, onModelResolved) => {
+          const raw = await this.options.model.complete({
+            messages,
+            model: spec.model,
+            temperature: spec.temperature,
+            maxTokens: spec.maxTokens,
+            responseSchema: spec.responseSchema,
+            signal: active.signal,
+            onModelResolved,
+            onResponseText: capture,
+          });
+          capture(raw, true);
+          await input.validate?.(raw);
+          return raw;
+        },
+      );
       await this.finish(active, "completed", { type: "completed", outputs: [] });
       return value;
     } catch (error) {
@@ -252,20 +262,27 @@ export class AgentRuntime {
           ],
         },
       ];
-      const value = await this.step(active, "vision", messages, input.sources ?? [], async () => {
-        const raw = await this.options.model.completeMultimodal({
-          systemPrompt: spec.instructions,
-          temperature: spec.temperature,
-          maxTokens: spec.maxTokens,
-          model: input.model,
-          prompt: input.prompt,
-          images: input.images,
-          responseSchema: spec.responseSchema,
-          signal: active.signal,
-        });
-        await input.validate?.(raw);
-        return raw;
-      });
+      const value = await this.step(
+        active,
+        "vision",
+        messages,
+        input.sources ?? [],
+        async (capture) => {
+          const raw = await this.options.model.completeMultimodal({
+            systemPrompt: spec.instructions,
+            temperature: spec.temperature,
+            maxTokens: spec.maxTokens,
+            model: input.model,
+            prompt: input.prompt,
+            images: input.images,
+            responseSchema: spec.responseSchema,
+            signal: active.signal,
+          });
+          capture(raw, true);
+          await input.validate?.(raw);
+          return raw;
+        },
+      );
       await this.finish(active, "completed", { type: "completed", outputs: [] });
       return value;
     } catch (error) {
@@ -335,7 +352,7 @@ export class AgentRuntime {
           "next",
           context.messages,
           context.sources,
-          async () => {
+          async (capture, onModelResolved) => {
             const raw = await this.options.model.complete({
               messages: context.messages,
               model: spec.model,
@@ -343,7 +360,10 @@ export class AgentRuntime {
               maxTokens: spec.maxTokens ?? spec.limits.outputTokens,
               responseSchema: AGENT_DECISION_JSON_SCHEMA,
               signal: active.signal,
+              onModelResolved,
+              onResponseText: capture,
             });
+            capture(raw, true);
             try {
               return parseAgentDecision(raw);
             } catch {
@@ -527,20 +547,23 @@ export class AgentRuntime {
               "generate",
               messages,
               generationContext.sources,
-              async () => {
+              async (capture, onModelResolved) => {
                 for await (const delta of this.options.model.streamText({
                   messages,
                   model: generationSpec.model,
                   temperature: generationSpec.temperature,
                   maxTokens: generationSpec.maxTokens,
                   signal: active.signal,
+                  onModelResolved,
                 })) {
                   active.signal.throwIfAborted();
                   if (!delta) continue;
                   text += delta;
+                  capture(text);
                   if (input.outputMode === "stream")
                     await this.emit(active, { type: "output_delta", outputId, text: delta });
                 }
+                capture(text, true);
                 if (!unicodeStrip(text) && !generation.allowEmpty)
                   throw new AgentRuntimeError(
                     "MODEL_EMPTY_RESPONSE",
@@ -685,7 +708,10 @@ export class AgentRuntime {
     phase: AgentStepSnapshot["phase"],
     messages: ModelMessage[],
     sources: readonly SourceRef[],
-    execute: () => Promise<T>,
+    execute: (
+      capture: (text: string, complete?: boolean) => void,
+      onModelResolved: (model: string) => void,
+    ) => Promise<T>,
     stepSpec: LeafAgentSpec = active.spec,
     outputId?: string,
   ): Promise<T> {
@@ -708,6 +734,10 @@ export class AgentRuntime {
       messages,
       sources,
     });
+    let output: ProtectedModelOutput | undefined;
+    const capture = (text: string, complete = false) => {
+      output = { text, complete, format: phase === "next" ? "json" : "text" };
+    };
     return this.trace(
       active,
       "agent.model",
@@ -718,6 +748,8 @@ export class AgentRuntime {
         sources,
         details: {
           stepId,
+          modelResolved: phase === "vision",
+          requestedModel: stepSpec.model ?? this.options.model.defaultModel ?? "",
           stepNo: active.stepNo,
           phase,
           inputUnits: inputUnits(messages),
@@ -740,7 +772,10 @@ export class AgentRuntime {
             stepId,
             context: { runId: active.runId, stepId },
           });
-          const result = await execute();
+          const result = await execute(capture, (model) => {
+            this.repository.resolveStepModel(stepId, model);
+            scope?.update({ model, details: { modelResolved: true } });
+          });
           active.signal.throwIfAborted();
           if (phase === "next") {
             const decision = AgentDecisionSchema.parse(result);
@@ -757,6 +792,7 @@ export class AgentRuntime {
             });
           this.repository.finishStep(stepId, "completed", this.now(), {
             decision: phase === "next" ? decisionMetadata(result) : undefined,
+            output,
           });
           return result;
         } catch (error) {
@@ -764,7 +800,7 @@ export class AgentRuntime {
             stepId,
             active.callerSignal?.aborted ? "cancelled" : "failed",
             this.now(),
-            { errorCode: errorCode(active.signal.aborted ? active.signal.reason : error) },
+            { errorCode: errorCode(active.signal.aborted ? active.signal.reason : error), output },
           );
           scope?.end(
             active.callerSignal?.aborted ? "cancelled" : "failed",
