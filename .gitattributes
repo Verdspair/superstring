@@ -1,0 +1,3 @@
+# These notices are verified against raw SHA-256 values in notice-sources.json.
+# Preserve their committed bytes even on Windows checkouts with core.autocrlf=true.
+tools/installer/licenses/*.txt -text

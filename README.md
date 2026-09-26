@@ -59,6 +59,8 @@ npm ci
 
 Launch `start.cmd` on Windows, or `./start.sh` on macOS/Linux. Both entry points build the web assets and start the server; Ctrl+C in the terminal stops them.
 
+For source-only development, set `ELECTRON_SKIP_BINARY_DOWNLOAD=1` when running `npm ci` to skip the desktop runtime download.
+
 ### Documentation
 
 - [UPGRADING.md](UPGRADING.md) — what changed in this version and how to upgrade from the previous one
@@ -119,6 +121,8 @@ npm ci
 ```
 
 Windows 启动 `start.cmd`，macOS/Linux 启动 `./start.sh`。两者都会构建前端资源并启动服务，在终端按 Ctrl+C 停止。
+
+只运行源码时，可在执行 `npm ci` 前设置 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，跳过桌面运行时下载。
 
 ### 文档
 

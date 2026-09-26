@@ -11,6 +11,7 @@ on:
       - tests/desktop/**
       - package.json
       - package-lock.json
+      - .gitattributes
       - vite.config.ts
       - .github/workflows/desktop.yml
   workflow_dispatch:
@@ -202,6 +203,16 @@ jobs:
       - run: npm ci
       - name: Existing Windows C# package chain
         run: node tools/installer/build-package.mjs
+      - name: Validate installed Windows resource layout
+        run: |
+          $check = Start-Process -FilePath artifacts/build/package/superstring.exe -ArgumentList '--check-package' -Wait -PassThru -NoNewWindow
+          if ($check.ExitCode -ne 0) { throw 'Installed Windows resource check failed' }
+      - name: Native Windows launcher contracts and theme matrix
+        run: |
+          node tools/desktop/build/build.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Development launcher build failed' }
+          $check = Start-Process -FilePath dist/desktop/superstring.exe -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
+          if ($check.ExitCode -ne 0) { throw 'Native launcher contracts failed' }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: win32-x64
