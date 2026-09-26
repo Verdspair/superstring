@@ -177,7 +177,7 @@ describe("offline QQ judgement preparation", () => {
       const result = prepareQqJudgement(h.orm, request());
       expect(result.kind).toBe("prepared");
       if (result.kind !== "prepared") return;
-      // 判断模型是 QQ 全局的一份设置（用户 2026-09-25）：选了就用它，所有会话共用同一个；
+      // 判断模型是 QQ 全局的一份设置：选了就用它，所有会话共用同一个；
       // 判断预备把它带给判断器，容量预检与真跑判断用的都是它。
       expect(result.modelName).toBe("judge-model");
     } finally {
@@ -722,7 +722,7 @@ describe("offline QQ judgement preparation", () => {
     }
   });
   it("does not demand a review for an unrelated new message from someone else", async () => {
-    // 用户 2026-09-25：活跃群里任何一句闲话都触发一次复核模型调用太慢也太费——只有"冲着她来的"
+    // 活跃群里任何一句闲话都触发一次复核模型调用太慢也太费——只有"冲着她来的"
     // 或"她正在回的那个人"的新消息才值得重来一式。
     const h = setup();
     try {
@@ -1488,10 +1488,10 @@ describe("offline QQ judgement preparation", () => {
   });
 });
 
-// 用户 2026-09-25：读过了却没读出（在途或失败）就不要自主接话。"读取失败"的口径是
+// 读过了却没读出（在途或失败）就不要自主接话。"读取失败"的口径是
 // 「花过尝试、仍没有描述」——不是"任何未读"（还没试过的不拦，否则没接视觉通道时她会永久闭嘴），
 // 也不是"两次都失败"（第一张读不出来的图就已经是"没读懂还硬要说话"）。
-// 用户 2026-09-25：回复任务文案由方案的「按发言人分开回答」开关选，两套都是程序文案。
+// 回复任务文案由方案的「按发言人分开回答」开关选，两套都是程序文案。
 describe("the reply task text follows the scheme switch", () => {
   async function replyPrompt(splitBySpeaker: boolean): Promise<string> {
     const h = setup();
@@ -1544,7 +1544,7 @@ describe("the reply task text follows the scheme switch", () => {
   });
 });
 
-describe("media that was attempted and never read (用户 2026-09-25)", () => {
+describe("media that was attempted and never read ", () => {
   /** One picture on a message, with a spent read attempt: attempted, still no description. */
   function attemptedImage(orm: Orm, eventKey: string) {
     recordMediaSegment(orm, {
@@ -1582,14 +1582,13 @@ describe("media that was attempted and never read (用户 2026-09-25)", () => {
     }
   });
 
-  it("also refuses an idle opener, which speaks about the same conversation", () => {
+  it("lets an idle opener through: it answers no message, so there is no picture to have read", () => {
     const h = setup();
     try {
       attemptedImage(h.orm, "latest");
-      expect(prepareQqJudgement(h.orm, request("idle_topic", now + 16 * 60))).toEqual({
-        kind: "blocked",
-        reason: "media_read_failed",
-      });
+      // 冷场发起不回应任何具体消息，没有"你要回应的那张图"这个对象。模型仍然看得见
+      // 那条"没有描述的图片"，§7.1 照旧禁止假装知道——但一张别人发的图不该让她连话题都不能开。
+      expect(prepareQqJudgement(h.orm, request("idle_topic", now + 16 * 60)).kind).toBe("prepared");
     } finally {
       h.close();
     }
@@ -1608,6 +1607,37 @@ describe("media that was attempted and never read (用户 2026-09-25)", () => {
         kind: "blocked",
         reason: "media_read_failed",
       });
+    } finally {
+      h.close();
+    }
+  });
+
+  /**
+   * 闸门原来按整个判断窗口（60 分钟）算消息，于是那张 14:43 读失败的图把
+   * 15:09–15:32 的每一轮 chiming_in 都按住了。这一轮要回谁，就只看谁的消息。
+   */
+  it("scopes the gate to the people this round answers, not the whole window", () => {
+    const h = setup();
+    try {
+      event(h.orm, "other", now - 200, "别人的消息", "30004");
+      attemptedImage(h.orm, "other");
+      const pending = (speakerId: string, newestSeconds: number) => [
+        { speakerId, newestSeconds, messageCount: 1 },
+      ];
+      // 这一轮要回的是 20002：30004 那张没读出的图仍在窗口里，但与这一轮无关。
+      expect(
+        prepareQqJudgement(h.orm, request(), {
+          eligibilityOnly: true,
+          pendingTargets: pending("20002", now - 40),
+        }),
+      ).toMatchObject({ kind: "prepared" });
+      // 要回的正是他：同一张图仍然按住这一轮。
+      expect(
+        prepareQqJudgement(h.orm, request(), {
+          eligibilityOnly: true,
+          pendingTargets: pending("30004", now - 200),
+        }),
+      ).toEqual({ kind: "blocked", reason: "media_read_failed" });
     } finally {
       h.close();
     }

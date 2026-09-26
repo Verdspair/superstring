@@ -30,7 +30,8 @@ import {
   updateJobRow,
   validateEntrySources,
 } from "../db/memory-repository";
-import { ownedObservations } from "../db/memory-source-repository";
+import { ownedObservations, type QqEventRow } from "../db/memory-source-repository";
+import { readBindingByConversation } from "../db/qq-binding-repository";
 import { observationText } from "../db/qq-observation-repository";
 import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
@@ -381,9 +382,18 @@ export class MemoryService {
           fail("MEMORY_SOURCE_INVALID", "观察正文已过期或缺失，不能整理为长期记忆");
         }
         sourceRefs = observationSourcesForRun(this.orm, eventIds);
-        sources = ownedObservations(this.orm, agentId, eventIds, scopeKey).map((event) => ({
+        const events = ownedObservations(this.orm, agentId, eventIds, scopeKey);
+        // 软优先名单要影响整理——名单内的人明确说过、且没有互相矛盾的事实更容易
+        // 被保留。名单取**当下**的绑定（和会话侧同一份事实），不按消息到达时的状态打标签；只标
+        // 成员来源，匿名/系统发言没有号可对。标记只是事实，判断仍以来源内容为准。
+        const important = attentionSpeakerIds(this.orm, events[0]);
+        sources = events.map((event) => ({
           message_id: event.messageId,
           speaker_kind: event.speakerKind,
+          speaker_id: event.speakerId,
+          ...(event.speakerId !== null && important.has(event.speakerId)
+            ? { important: true }
+            : {}),
           occurred_at_seconds: event.occurredAtSeconds,
           body: bodies.get(event.eventKey) ?? "",
         }));
@@ -763,4 +773,21 @@ export class MemoryService {
       }, ms);
     });
   }
+}
+
+/**
+ * 这条 QQ 会话当下的「重要的人」名单（软优先与硬优先都算）——整理来源打 `important` 标记的依据。
+ *
+ * 取绑定当下的值而不是消息到达时的值：名单是"这个人现在在意谁"，改名单要能看到旧消息也跟着变。
+ * 找不到绑定（会话已解绑）时不标记，整理照旧按来源内容判断，不额外失败。
+ */
+function attentionSpeakerIds(orm: Orm, event: QqEventRow | undefined): ReadonlySet<string> {
+  if (event === undefined) return new Set();
+  const binding = readBindingByConversation(orm, {
+    accountId: event.accountId,
+    kind: event.conversationKind as "group" | "private",
+    peerId: event.peerId,
+  });
+  if (!binding || binding.attention.mode === "off") return new Set();
+  return new Set(binding.attention.members);
 }

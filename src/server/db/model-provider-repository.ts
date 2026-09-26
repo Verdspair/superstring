@@ -1,4 +1,4 @@
-// 外部模型 API 的持久化与解析（0032，用户 2026-09-25）。
+// 外部模型 API 的持久化与解析（0032，）。
 //
 // What this module owes the rest of the side:
 //   * the page's view of a provider, which never contains the key — only `has_api_key` (the QQ

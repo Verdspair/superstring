@@ -227,7 +227,7 @@ describe("the queue advance is an injected capability", () => {
   });
 
   /**
-   * A（用户 2026-09-25）：收到"冲着她来的"消息就立刻跑一轮，不再等下一次轮询（最多 15 秒）。
+   * A：收到"冲着她来的"消息就立刻跑一轮，不再等下一次轮询（最多 15 秒）。
    * 机制在这里钉住；接线（入站 → `wake()`）用源码断言，因为那是一条装配事实。
    */
   it("runs another cycle immediately when woken instead of waiting out the poll interval", async () => {

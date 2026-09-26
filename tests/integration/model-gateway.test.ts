@@ -377,7 +377,7 @@ describe("model gateway API token", () => {
   });
 });
 
-// 结构化输出的自动降级（用户 2026-09-25）：不是每个 OpenAI 兼容服务都接受严格的 json_schema。
+// 结构化输出的自动降级：不是每个 OpenAI 兼容服务都接受严格的 json_schema。
 // 这里用一个"只认 json_object"的服务端钉住这条链：第一次降级要多一次请求，之后同一服务+模型的
 // 调用直接按降级后的档发（进程内记住），而且**只**在 4xx 形状错误时降级。
 describe("structured output falls back when the service rejects json_schema", () => {
@@ -491,7 +491,7 @@ describe("structured output falls back when the service rejects json_schema", ()
   });
 });
 
-// 用户 2026-09-26 的云端报错：provider 按 OpenAI 严格模式校验 response_format，判别联合的
+// 的云端报错：provider 按 OpenAI 严格模式校验 response_format，判别联合的
 // `oneOf` 被整单 400（"Invalid schema for response_format 'superstring_result': In context=(),
 // 'oneOf' is not permitted."）。形状注定被拒的 schema 不再白撞一次：外部路由直接从 json_object
 // 起步；本地路由不受影响，仍收到冻结的 json_schema 原文。
@@ -627,6 +627,229 @@ describe("外部 provider 对判别联合 schema 直接从 json_object 起步", 
     } finally {
       await close(cloudHost.server);
       await close(localHost.server);
+    }
+  });
+});
+
+describe("原生 tool calling（issue #10）：外部路由声明 tools，调用映射为现有 invoke 决策", () => {
+  function listen(handler: http.RequestListener): Promise<{ server: Server; port: number }> {
+    return new Promise((resolve) => {
+      const server = http.createServer(handler);
+      server.listen(0, "127.0.0.1", () =>
+        resolve({ server, port: (server.address() as { port: number }).port }),
+      );
+    });
+  }
+  const close = (server: Server) => new Promise<void>((resolve) => server.close(() => resolve()));
+  const bodyOf = (handler: (body: Record<string, unknown>, res: http.ServerResponse) => void) => {
+    const seen: Array<Record<string, unknown>> = [];
+    return {
+      seen,
+      handler: ((req: http.IncomingMessage, res: http.ServerResponse) => {
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          const body = raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>);
+          if ((req.url ?? "").endsWith("/chat/completions")) seen.push(body);
+          handler(body, res);
+        });
+      }) as http.RequestListener,
+    };
+  };
+  const answer = (res: http.ServerResponse, payload: unknown) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  };
+  const none = (res: http.ServerResponse) =>
+    answer(res, {
+      choices: [{ finish_reason: "stop", message: { content: '{"kind":"none"}' } }],
+    });
+  const decisionTools = [
+    {
+      name: "speech.evaluate",
+      description: "Score one target",
+      parameters: {
+        type: "object",
+        properties: { targetId: { type: "string" } },
+        required: ["targetId"],
+        additionalProperties: false,
+      },
+    },
+  ];
+  /** 云端桩走 externalModel 钩子；其余模型仍走本地地址。 */
+  async function gatewayWith(
+    cloud: ReturnType<typeof bodyOf>,
+    onLocal: ReturnType<typeof bodyOf> = bodyOf((_b, res) => none(res)),
+  ) {
+    const cloudHost = await listen(cloud.handler);
+    const localHost = await listen(onLocal.handler);
+    const gateway = createLmStudioClient(
+      {
+        baseUrl: `http://127.0.0.1:${localHost.port}/v1`,
+        model: "local/model",
+        timeoutSeconds: 5,
+        apiKey: "test-token",
+      },
+      {
+        externalModel: (model) =>
+          model === "cloud/model"
+            ? {
+                baseUrl: `http://127.0.0.1:${cloudHost.port}/v1`,
+                apiKey: null,
+                contextWindow: 8192,
+              }
+            : null,
+      },
+    );
+    return {
+      gateway,
+      cloudHost,
+      localHost,
+      dispose: async () => {
+        await close(cloudHost.server);
+        await close(localHost.server);
+      },
+    };
+  }
+
+  it("决策请求按 function 形状声明 tools，本地路由不带", async () => {
+    const cloud = bodyOf((_b, res) => none(res));
+    const local = bodyOf((_b, res) => none(res));
+    const hosts = await gatewayWith(cloud, local);
+    try {
+      await hosts.gateway.complete({
+        messages: [],
+        model: "cloud/model",
+        responseSchema: AGENT_DECISION_JSON_SCHEMA,
+        tools: decisionTools,
+      });
+      expect(cloud.seen[0]?.tools).toEqual([{ type: "function", function: decisionTools[0] }]);
+      await hosts.gateway.complete({
+        messages: [],
+        model: "local/model",
+        responseSchema: AGENT_DECISION_JSON_SCHEMA,
+        tools: decisionTools,
+      });
+      // 本地模型服务保持那份冻结的 JSON 决策协议：本次改动不带 tools 给它。
+      expect(local.seen[0]?.tools).toBeUndefined();
+    } finally {
+      await hosts.dispose();
+    }
+  });
+
+  it("tool_calls 映射成现有 invoke 决策：正文为空也算读到", async () => {
+    const cloud = bodyOf((_b, res) =>
+      answer(res, {
+        choices: [
+          {
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: "speech.evaluate",
+                    arguments: '{"targetId":"t1","observedSeq":7}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const hosts = await gatewayWith(cloud);
+    try {
+      const raw = await hosts.gateway.complete({
+        messages: [],
+        model: "cloud/model",
+        responseSchema: AGENT_DECISION_JSON_SCHEMA,
+        tools: decisionTools,
+      });
+      expect(JSON.parse(raw)).toEqual({
+        kind: "invoke",
+        name: "speech.evaluate",
+        arguments: { targetId: "t1", observedSeq: 7 },
+      });
+    } finally {
+      await hosts.dispose();
+    }
+  });
+
+  it("参数读不出的调用不算决策：返回空正文并留下摘要", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    const cloud = bodyOf((_b, res) =>
+      answer(res, {
+        choices: [
+          {
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: [{ function: { name: "speech.evaluate", arguments: "{not json" } }],
+            },
+          },
+        ],
+      }),
+    );
+    let hosts: Awaited<ReturnType<typeof gatewayWith>> | undefined;
+    try {
+      hosts = await gatewayWith(cloud);
+      const raw = await hosts.gateway.complete({
+        messages: [],
+        model: "cloud/model",
+        responseSchema: AGENT_DECISION_JSON_SCHEMA,
+        tools: decisionTools,
+      });
+      // 读不出 = 沉默：空正文交给严格解析去失败，绝不猜参数。
+      expect(raw).toBe("");
+      expect(warnings.join("\n")).toContain("读不出参数");
+    } finally {
+      console.warn = original;
+      if (hosts) await hosts.dispose();
+    }
+  });
+
+  it("服务拒绝 tools：去掉 tools 重发一次，并按服务+模型记住", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    const cloud = bodyOf((body, res) => {
+      if (body.tools !== undefined) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "tools are not supported" } }));
+        return;
+      }
+      none(res);
+    });
+    let hosts: Awaited<ReturnType<typeof gatewayWith>> | undefined;
+    try {
+      hosts = await gatewayWith(cloud);
+      const call = () =>
+        hosts!.gateway.complete({
+          messages: [],
+          model: "cloud/model",
+          responseSchema: AGENT_DECISION_JSON_SCHEMA,
+          tools: decisionTools,
+        });
+      // 第一次：带 tools 被 400 拒绝 → 去掉 tools 重发，同一次调用内成功。
+      expect(await call()).toBe('{"kind":"none"}');
+      expect(cloud.seen).toHaveLength(2);
+      expect(cloud.seen[0]?.tools).toBeDefined();
+      expect(cloud.seen[1]?.tools).toBeUndefined();
+      // 第二次：档位已记住，直接不带 tools（只多一次请求）。
+      expect(await call()).toBe('{"kind":"none"}');
+      expect(cloud.seen).toHaveLength(3);
+      expect(cloud.seen[2]?.tools).toBeUndefined();
+      expect(warnings.filter((line) => line.includes("[model-tools]")).length).toBe(1);
+    } finally {
+      console.warn = original;
+      if (hosts) await hosts.dispose();
     }
   });
 });

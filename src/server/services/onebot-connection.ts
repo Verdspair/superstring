@@ -74,7 +74,7 @@ const SendSegment = z.discriminatedUnion("type", [
   z
     .object({ type: z.literal("face"), data: z.object({ id: z.string().regex(/^\d+$/) }).strict() })
     .strict(),
-  // 0035 后续（用户 2026-09-25）：分开回话时 @ 到对方。只认纯数字 QQ 号——@全体成员是场景
+  // 0035 后续：分开回话时 @ 到对方。只认纯数字 QQ 号——@全体成员是场景
   // 提示词明令禁止的，形状上也不给它机会。
   z
     .object({ type: z.literal("at"), data: z.object({ qq: z.string().regex(/^\d+$/) }).strict() })

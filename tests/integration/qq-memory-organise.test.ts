@@ -1,4 +1,4 @@
-// 「立即整理」and the pending count on the bindings surface (用户 2026-09-25).
+// 「立即整理」and the pending count on the bindings surface .
 //
 // Why this file exists: both halves of QQ memory had no entrance at all — the automatic one needed
 // a per-conversation count no page could set, and the manual action had no caller anywhere — so a

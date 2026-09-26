@@ -29,6 +29,7 @@ import {
   unique,
 } from "drizzle-orm/sqlite-core";
 import {
+  QQ_COMPRESSION_DEFAULT,
   QQ_MODEL_OUTPUT_RESERVE_DEFAULT,
   QQ_REPLY_DEFAULT,
   QQ_STICKER_DEDUP_DEFAULT,
@@ -685,7 +686,7 @@ export const qqBindings = sqliteTable(
     triggerFollowUp: integer("trigger_follow_up"),
     triggerChimingIn: integer("trigger_chiming_in"),
     triggerIdleTopic: integer("trigger_idle_topic"),
-    // 0031 (P6 follow-up, 用户 2026-09-25): 「重要的人」. A NULL mode means the list is off for this
+    // 0031 (P6 follow-up, ): 「重要的人」. A NULL mode means the list is off for this
     // conversation; 'soft' marks the listed speakers in the context, 'hard' lets only them trigger.
     // The members travel as a JSON array because the list belongs to exactly one binding.
     attentionMode: text("attention_mode"),
@@ -1224,10 +1225,8 @@ export const qqSchemes = sqliteTable(
     // 0016, appended in the same migration order: the two context tiers §6.1 requires to be
     // configured separately. `*_token_budget` is in the project's estimator unit (UTF-8
     // bytes, see token-estimate.ts), the same yardstick the web context budgets use.
-    judgementMessageLimit: integer("judgement_message_limit").notNull().default(20),
     judgementWindowMinutes: integer("judgement_window_minutes").notNull().default(60),
     judgementTokenBudget: integer("judgement_token_budget").notNull().default(2000),
-    replyMessageLimit: integer("reply_message_limit").notNull().default(60),
     replyWindowMinutes: integer("reply_window_minutes").notNull().default(360),
     replyTokenBudget: integer("reply_token_budget").notNull().default(6000),
     // 0017, appended in the same migration order: the six editable prompts of §6.1 / §11.1.
@@ -1261,22 +1260,51 @@ export const qqSchemes = sqliteTable(
     initiativeMinScore: integer("initiative_min_score")
       .notNull()
       .default(QQ_RHYTHM_DEFAULT.initiative_min_score),
-    // 0036（用户 2026-09-25）：距上一次真跑判断之后又来多少条群友消息才再真跑一次；没到就拿最近
+    // 0036：距上一次真跑判断之后又来多少条群友消息才再真跑一次；没到就拿最近
     // 一次的分数出来比较（`qq_judgement_readings`）。1＝来一条新消息就问一次。
     judgementIntervalTurns: integer("judgement_interval_turns")
       .notNull()
       .default(QQ_RHYTHM_DEFAULT.judgement_interval_turns),
-    // 0035: 回复形状（用户 2026-09-25）。开（默认）＝不同人发的消息各写一条，回复任务用程序提供的
+    // 0035: 回复形状。开（默认）＝不同人发的消息各写一条，回复任务用程序提供的
     // 「按发言人分条」文案；关＝用程序内置的默认回复文案。
     splitReplyBySpeaker: integer("split_reply_by_speaker")
       .notNull()
       .default(QQ_REPLY_DEFAULT.split_by_speaker ? 1 : 0),
+    // 0046：压缩与装配。回复档的**条数**不在这里——它取绑定助手的
+    // 「近期保留轮数」（数值联动），这几项才是方案自己的旋钮：攒够多少条压一次、最多留几个包、
+    // 装配留多少冗余。`headroom_ratio` 是比例（0.05 = 5%），不是百分数。
+    summaryWatermarkTrigger: integer("summary_watermark_trigger")
+      .notNull()
+      .default(QQ_COMPRESSION_DEFAULT.watermark_trigger),
+    summaryPackageLimit: integer("summary_package_limit")
+      .notNull()
+      .default(QQ_COMPRESSION_DEFAULT.package_limit),
+    headroomRatio: real("headroom_ratio").notNull().default(QQ_COMPRESSION_DEFAULT.headroom_ratio),
+    // 0046: 水位压缩的任务提示词（结构性规则由程序附加）。
+    promptCompress: text("prompt_compress").notNull().default(QQ_PROMPT_DEFAULTS.compress),
+    // 0016 建的两档「最近条数」，0047 为抬高 CHECK 上限重建过这两列，因此排在表尾（SQLite 只能追加列，
+    // 声明顺序要跟表的真实顺序一致）。
+    judgementMessageLimit: integer("judgement_message_limit").notNull().default(20),
+    replyMessageLimit: integer("reply_message_limit").notNull().default(60),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
     check("qq_scheme_revision", sql`${t.revision} >= 1`),
     check("qq_scheme_trigger_direct_reply", sql`${t.triggerDirectReply} IN (0, 1)`),
     check("qq_scheme_split_reply_by_speaker", sql`${t.splitReplyBySpeaker} IN (0, 1)`),
+    check(
+      "qq_scheme_summary_watermark_trigger",
+      sql`${t.summaryWatermarkTrigger} >= 1 AND ${t.summaryWatermarkTrigger} <= 10000`,
+    ),
+    check(
+      "qq_scheme_summary_package_limit",
+      sql`${t.summaryPackageLimit} >= 1 AND ${t.summaryPackageLimit} <= 100`,
+    ),
+    check("qq_scheme_headroom_ratio", sql`${t.headroomRatio} >= 0 AND ${t.headroomRatio} <= 0.5`),
+    check(
+      "qq_scheme_prompt_compress",
+      sql`length(trim(${t.promptCompress})) > 0 AND length(${t.promptCompress}) <= 16000`,
+    ),
     check("qq_scheme_trigger_follow_up", sql`${t.triggerFollowUp} IN (0, 1)`),
     check("qq_scheme_trigger_chiming_in", sql`${t.triggerChimingIn} IN (0, 1)`),
     check("qq_scheme_trigger_idle_topic", sql`${t.triggerIdleTopic} IN (0, 1)`),
@@ -1315,7 +1343,7 @@ export const qqSchemes = sqliteTable(
     ),
     check(
       "qq_scheme_judgement_message_limit",
-      sql`${t.judgementMessageLimit} >= 1 AND ${t.judgementMessageLimit} <= 200`,
+      sql`${t.judgementMessageLimit} >= 1 AND ${t.judgementMessageLimit} <= 10000`,
     ),
     check(
       "qq_scheme_judgement_window_minutes",
@@ -1327,7 +1355,7 @@ export const qqSchemes = sqliteTable(
     ),
     check(
       "qq_scheme_reply_message_limit",
-      sql`${t.replyMessageLimit} >= 1 AND ${t.replyMessageLimit} <= 500`,
+      sql`${t.replyMessageLimit} >= 1 AND ${t.replyMessageLimit} <= 10000`,
     ),
     check(
       "qq_scheme_reply_window_minutes",
@@ -1542,7 +1570,7 @@ export const desktopSettings = sqliteTable(
   ],
 );
 
-// 外部模型 API（0032，用户 2026-09-25）：OpenAI 兼容的额外模型来源。
+// 外部模型 API（0032，）：OpenAI 兼容的额外模型来源。
 //
 // One row per provider: a base URL, its key as ciphertext, and the models this provider serves with
 // the context window the user typed for each (external services rarely report one, and the capacity
@@ -1587,7 +1615,7 @@ export const qqIdleJudgements = sqliteTable(
   ],
 );
 
-// 判断读数（0036，用户 2026-09-25）：每会话一行"最近一次判断给出的分数"。判断模型每次问的是同一个
+// 判断读数（0036，）：每会话一行"最近一次判断给出的分数"。判断模型每次问的是同一个
 // 问题（"此刻这间会话值不值得开口"），短时间内的答案几乎不变，而每一次自主接话/冷场发起都要付一次
 // 调用。有了这一行，两条主动路径在间隔没到时就拿它出来比门槛，不再花算力。只存分数与计数——模型给的
 // 说明文字不落库；刻意不加指向 qq_bindings 的外键（与 0030 的裁决表同一处决定：守卫按会话收敛）。
@@ -1875,7 +1903,34 @@ export const conversationAvatars = sqliteTable(
   ],
 );
 
+/**
+ * QQ 会话的压缩包与水位（0045 建表、0046 改语义，）：凡没进最终原文窗口的老消息都进
+ * 水位，攒够方案的「水位触发条数」就压成**一个包**存进 `content`（包数组，包与包不合并，超过
+ * 「水位包上限」丢最早的整包）。两个水位只增不减：`through_seq` 是窗口外那批推进到的位置（保持连续、
+ * 不跳空），`covered_seq` 连窗口内被条数/预算裁掉的那段也算（避免同一批反复触发）。判断档不读这一行。
+ * 开关与预算仍取助手「长对话管理」的设置；压缩模型取共享整理模型。
+ */
+export const qqConversationSummaries = sqliteTable("qq_conversation_summaries", {
+  conversationId: text("conversation_id")
+    .primaryKey()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  throughSeq: integer("through_seq").notNull(),
+  // 0046：已覆盖水位（含"窗口内被条数/预算裁掉"的那段）。历史水位 through_seq 保持连续，
+  // 这个只用来避免同一批反复触发压缩；两个都是只增不减的书签。
+  coveredSeq: integer("covered_seq").notNull().default(-1),
+  content: text("content").notNull(),
+  modelName: text("model_name").notNull(),
+  configSnapshot: text("config_snapshot").notNull(),
+  estimatedTokens: integer("estimated_tokens").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const businessTables = {
+  qqConversationSummaries,
   conversationAvatars,
   runtimeSpans,
   conversations,

@@ -3,9 +3,11 @@
 
 import { asc, eq } from "drizzle-orm";
 import {
+  QQ_COMPRESSION_DEFAULT,
   QQ_MODEL_OUTPUT_RESERVE_DEFAULT,
   QQ_REPLY_DEFAULT,
   QQ_STICKER_DEDUP_DEFAULT,
+  type QqSchemeCompression,
   type QqSchemeContext,
   type QqSchemeOutputReserve,
   type QqSchemePrompts,
@@ -18,7 +20,11 @@ import {
 import { fail } from "../errors";
 import type { QqBinding } from "../services/qq-binding-contract";
 import { parseQqSchemeOutputReserve } from "../services/qq-capacity-preflight";
-import { parseQqSchemeContext, QQ_CONTEXT_DEFAULT } from "../services/qq-context-contract";
+import {
+  parseQqSchemeCompression,
+  parseQqSchemeContext,
+  QQ_CONTEXT_DEFAULT,
+} from "../services/qq-context-contract";
 import { parseQqSchemePrompts, QQ_PROMPT_DEFAULTS } from "../services/qq-prompt-contract";
 import { parseQqSchemeRhythm, QQ_RHYTHM_DEFAULT } from "../services/qq-rhythm-contract";
 import {
@@ -57,6 +63,11 @@ export interface QqSchemeInput {
    * whole or not at all.
    */
   context?: QqSchemeContext;
+  /**
+   * 压缩与装配（0046，）：水位攒够多少条压一次、最多留几个包、装配留多少冗余。
+   * 与其余参数组同规矩：省略＝更新时不动、新建时用默认。
+   */
+  compression?: QqSchemeCompression;
   outputReserve?: QqSchemeOutputReserve;
   /**
    * §9.3's repetition rules (P4d). Whole group again: a scheme that specified only the hard
@@ -248,6 +259,31 @@ function sameContext(left: QqSchemeContext, right: QqSchemeContext): boolean {
   );
 }
 
+/** 0046：压缩与装配组，映射口径与其余参数组一致（不过契约就抛 TypeError）。 */
+export function schemeCompression(row: QqSchemeRow): QqSchemeCompression {
+  return parseQqSchemeCompression({
+    watermark_trigger: row.summaryWatermarkTrigger,
+    package_limit: row.summaryPackageLimit,
+    headroom_ratio: row.headroomRatio,
+  });
+}
+
+function compressionColumns(compression: QqSchemeCompression) {
+  return {
+    summaryWatermarkTrigger: compression.watermark_trigger,
+    summaryPackageLimit: compression.package_limit,
+    headroomRatio: compression.headroom_ratio,
+  };
+}
+
+function sameCompression(left: QqSchemeCompression, right: QqSchemeCompression): boolean {
+  return (
+    left.watermark_trigger === right.watermark_trigger &&
+    left.package_limit === right.package_limit &&
+    left.headroom_ratio === right.headroom_ratio
+  );
+}
+
 /** Two independently editable reserves for complete QQ model calls (P3o). */
 export function schemeOutputReserve(row: QqSchemeRow): QqSchemeOutputReserve {
   return parseQqSchemeOutputReserve({
@@ -297,6 +333,7 @@ export function schemePrompts(row: QqSchemeRow): QqSchemePrompts {
     review: row.promptReview,
     sticker: row.promptSticker,
     media: row.promptMedia,
+    compress: row.promptCompress,
   });
 }
 
@@ -308,6 +345,7 @@ function promptColumns(prompts: QqSchemePrompts) {
     promptReview: prompts.review,
     promptSticker: prompts.sticker,
     promptMedia: prompts.media,
+    promptCompress: prompts.compress,
   };
 }
 
@@ -320,7 +358,8 @@ function samePrompts(left: QqSchemePrompts, right: QqSchemePrompts): boolean {
     left.reply === right.reply &&
     left.review === right.review &&
     left.sticker === right.sticker &&
-    left.media === right.media
+    left.media === right.media &&
+    left.compress === right.compress
   );
 }
 
@@ -425,6 +464,7 @@ export function createQqScheme(orm: Orm, input: QqSchemeInput): QqSchemeRow {
           ...triggerColumns(input.triggers ?? QQ_SPEECH_TRIGGERS_DEFAULT),
           ...rhythmColumns(input.rhythm ?? QQ_RHYTHM_DEFAULT),
           ...contextColumns(input.context ?? QQ_CONTEXT_DEFAULT),
+          ...compressionColumns(input.compression ?? QQ_COMPRESSION_DEFAULT),
           ...outputReserveColumns(input.outputReserve ?? QQ_MODEL_OUTPUT_RESERVE_DEFAULT),
           ...stickerColumns(input.stickers ?? QQ_STICKER_DEDUP_DEFAULT),
           ...promptColumns(parseQqSchemePrompts(input.prompts ?? QQ_PROMPT_DEFAULTS)),
@@ -470,6 +510,11 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
   const currentContext = schemeContext(current);
   const nextContext =
     input.context === undefined ? currentContext : parseQqSchemeContext(input.context);
+  const currentCompression = schemeCompression(current);
+  const nextCompression =
+    input.compression === undefined
+      ? currentCompression
+      : parseQqSchemeCompression(input.compression);
   const currentOutputReserve = schemeOutputReserve(current);
   const nextOutputReserve =
     input.outputReserve === undefined
@@ -497,6 +542,7 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
     sameTriggers(currentTriggers, nextTriggers) &&
     sameRhythm(currentRhythm, nextRhythm) &&
     sameContext(currentContext, nextContext) &&
+    sameCompression(currentCompression, nextCompression) &&
     sameOutputReserve(currentOutputReserve, nextOutputReserve) &&
     sameStickers(currentStickers, nextStickers) &&
     samePrompts(currentPrompts, nextPrompts) &&
@@ -515,6 +561,7 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
           ...triggerColumns(nextTriggers),
           ...rhythmColumns(nextRhythm),
           ...contextColumns(nextContext),
+          ...compressionColumns(nextCompression),
           ...outputReserveColumns(nextOutputReserve),
           ...stickerColumns(nextStickers),
           ...promptColumns(nextPrompts),

@@ -43,6 +43,7 @@ import { selectionSources, turnSources } from "../modules/provenance";
 import { requireChat } from "../services/runtime-config";
 import { estimateTokens } from "../services/token-estimate";
 import { createAgentRuntime, type LeafAgentRuntime } from "./agent-runtime";
+import { readJsonBody } from "./agent-specs";
 import { sourceAccess } from "./context-access";
 import { SUMMARY_RESULT_JSON_SCHEMA, SummaryResultSchema } from "./summary-contract";
 
@@ -469,7 +470,7 @@ export class ContextBuilder {
       responseSchema,
       outputTokens: Math.min(runtime.p5_config.summary_max_tokens, target),
       cfg: runtime.p5_config,
-      parse: (text) => SummaryResultSchema.parse(JSON.parse(text)),
+      parse: (text) => SummaryResultSchema.parse(JSON.parse(readJsonBody(text))),
     });
     if (!equalJson(corrections, readCorrections())) {
       fail("CONTEXT_SOURCE_INVALID", "摘要生成期间人工纠正已变化");
@@ -691,8 +692,21 @@ export class ContextBuilder {
     if (fixedCost > limit) {
       fail("CONTEXT_BUDGET_EXCEEDED", "当前问题、指令与输出预留超过容量；未截断当前问题");
     }
-    const memory = await initial.memory(limit - fixedCost);
-    const memoryMessages = memory.messages;
+    // （与 QQ 侧同一纪律）：记忆是可选材料——它自己的预算检查（选中的正文超过本轮
+    // 可用额度）不该让整轮失败。降级成"这一轮没有记忆"，并把降级原因写进诊断，而不是沉默。
+    let memoryMessages: ContextMessage[] = [];
+    let memoryIds: string[] = [];
+    let memorySources: readonly SourceRef[] = [];
+    let degradedCode: string | undefined;
+    try {
+      const memory = await initial.memory(limit - fixedCost);
+      memoryMessages = memory.messages;
+      memoryIds = memory.ids;
+      memorySources = memory.sources;
+    } catch (error) {
+      if (!(error instanceof AppError) || error.code !== "CONTEXT_MEMORY_BUDGET") throw error;
+      degradedCode = error.code;
+    }
     let segments: SummaryItem[] = [];
     let recent = [...historical];
 
@@ -869,7 +883,7 @@ export class ContextBuilder {
     initial.assertCurrent();
     args.onSources?.([
       ...turnSources(this.orm, [args.currentTurnId, ...historical.map((turn) => turn.id)]),
-      ...memory.sources,
+      ...memorySources,
       ...knowledge.sources,
     ]);
     const marginal = (messages: ContextMessage[]) => estimateMessages(messages) - 3;
@@ -906,8 +920,10 @@ export class ContextBuilder {
       history_turn_count: historical.length,
       raw_turn_ids: recent.map((turn) => turn.id),
       summary_ids: segments.map((segment) => segment.id),
-      memory_ids: memory.ids,
+      memory_ids: memoryIds,
       message_count: result.length,
+      // 「按码降级」：status 仍是 ready（这一轮照常回答），error_code 记下为什么少了某块材料。
+      ...(degradedCode === undefined ? {} : { error_code: degradedCode }),
     });
     return result;
   }

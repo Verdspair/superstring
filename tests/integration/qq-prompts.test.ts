@@ -54,7 +54,7 @@ describe("editable QQ prompt storage and HTTP", () => {
       .map((t) => getTableConfig(t).name)
       .sort();
     expect(actual).toEqual([...BUSINESS_TABLE_NAMES].sort());
-    expect(actual).toHaveLength(63);
+    expect(actual).toHaveLength(64);
   });
   it("upgrades an existing v18 scheme with editable output defaults and preserved revision", () => {
     const db = new Database(":memory:");
@@ -72,7 +72,7 @@ describe("editable QQ prompt storage and HTTP", () => {
           )
           .get(),
       ).toEqual({ revision: 7, judgement_output_reserved: 512, reply_output_reserved: 2048 });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
     } finally {
       db.close();
     }
@@ -120,7 +120,7 @@ describe("editable QQ prompt storage and HTTP", () => {
       expect(row.name).toBe("existing");
       for (const slot of QQ_PROMPT_SLOTS)
         expect(row[`prompt_${slot}`]).toBe(QQ_PROMPT_DEFAULTS[slot]);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
     } finally {
       db.close();
     }
@@ -243,6 +243,7 @@ describe("QQ prompt assembly", () => {
         review: "review-custom",
         sticker: "sticker-custom",
         media: "media-custom",
+        compress: "compress-custom",
       };
       const sections = buildQqPrompt({ ...base, prompts, tier: stage });
       const slot = stage === "judgement" ? "judge" : stage;
@@ -290,6 +291,11 @@ describe("QQ prompt assembly", () => {
     // The marker is the program's, so the program explains it (0031) — never a user prompt edit.
     expect(timeline).toContain("标注「（重要的人）」");
     expect(timeline).toContain("群友(20002)（重要的人）");
+    // （软优先的实际语义）：名单说明的是"执行时优先听谁的"，不是"更显眼"；
+    // 同时说清它不改变任何发言门槛——门槛仍由 attention 模式决定。
+    expect(timeline).toContain("他们的请求与要求优先考虑");
+    expect(timeline).toContain("以他们为准");
+    expect(timeline).toContain("这不改变任何发言门槛");
     // Someone outside the list is rendered exactly as before.
     const other = buildQqPrompt({
       ...base,
@@ -352,7 +358,7 @@ describe("QQ prompt assembly", () => {
     expect(JSON.stringify(input)).toBe(before);
   });
   it("carries the interest-score bands in the judgement tier and nowhere else", () => {
-    // 0036（用户 2026-09-25）：模型给的总分偏低时，改的就是这一段程序口径。它必须真的进判断档，
+    // 0036：模型给的总分偏低时，改的就是这一段程序口径。它必须真的进判断档，
     // 也不能漂到别的档位去——回复、复核、选图、媒体都不该拿到打分口径。
     const judgement = buildQqPrompt(base);
     const scoring = judgement.find((s) => s.origin === "scoring");

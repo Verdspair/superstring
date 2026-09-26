@@ -637,7 +637,7 @@ describe("health route", () => {
     expect(body.status).toBe("degraded");
     expect(body.model_service).toBe("ok");
     expect(body.model_loaded).toBe(false);
-    expect(BUSINESS_SCHEMA_VERSION).toBe(44);
+    expect(BUSINESS_SCHEMA_VERSION).toBe(47);
   });
 
   it("reports degraded when the model service is unreachable", async () => {

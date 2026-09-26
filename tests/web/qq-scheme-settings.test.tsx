@@ -8,7 +8,13 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
+import { AgentResponseSchema } from "../../src/shared/contracts";
+import {
+  QQ_REPLY_DEFAULT_PROMPT,
+  QQ_REPLY_SPLIT_PROMPT,
+  QqBindingResponseSchema,
+  type QqSchemeResponse,
+} from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
@@ -47,6 +53,7 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     reply_window_minutes: 360,
     reply_token_budget: 6000,
   },
+  compression: { watermark_trigger: 200, package_limit: 8, headroom_ratio: 0.05 },
   output_reserve: { judgement_output_reserved: 512, reply_output_reserved: 2048 },
   stickers: { sticker_min_repeat_minutes: 10, sticker_recent_avoid_count: 5 },
   sticker_collections: { collection_ids: [] },
@@ -57,6 +64,7 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     review: "复核提示词",
     sticker: "选图提示词",
     media: "媒体提示词",
+    compress: "压缩提示词",
   },
   revision: 3,
   created_at: NOW,
@@ -182,15 +190,108 @@ describe("Shared scheme studio", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "确认" })));
     expect(fake.deleteQqScheme).toHaveBeenCalledWith(scheme().id);
   });
-  it("keeps effective reply instructions read-only and changes them with reply mode", async () => {
-    await renderPage();
+  /**
+   * 这一栏从只读改成可配置——没改过时仍按「按发言人分开回答」派生（开关照样改
+   * 文案），一改就写进方案的 prompt_reply 并照写的用（开关此后只决定回几条），服务端取的是同一个
+   * 函数的结果。
+   */
+  it("lets the effective reply task be edited, and derives it only while untouched", async () => {
+    const { fake } = await renderPage({
+      listQqSchemes: vi
+        .fn()
+        .mockResolvedValue([
+          scheme({ prompts: { ...scheme().prompts, reply: QQ_REPLY_DEFAULT_PROMPT } }),
+        ]),
+    });
     await task("如何回应");
     const prompt = screen.getByLabelText("当前生效的回复任务") as HTMLTextAreaElement;
-    expect(prompt.readOnly).toBe(true);
-    const before = prompt.value;
+    expect(prompt.readOnly).toBe(false);
+    // 未改过：跟随开关（方案里 split_by_speaker 默认开）。
+    expect(prompt.value).toBe(QQ_REPLY_SPLIT_PROMPT);
     await userEvent.click(screen.getByRole("checkbox", { name: "按发言人分开回答" }));
-    expect(prompt.value).not.toBe(before);
+    expect(prompt.value).toBe(QQ_REPLY_DEFAULT_PROMPT);
     expect(store.getState().qqSchemeEditor?.reply.split_by_speaker).toBe(false);
+
+    // 改过：照写的用，开关不再改文案。
+    fireEvent.change(prompt, { target: { value: "只写一句，带喵。" } });
+    expect(store.getState().qqSchemeEditor?.prompts.reply).toBe("只写一句，带喵。");
+    await userEvent.click(screen.getByRole("checkbox", { name: "按发言人分开回答" }));
+    expect(prompt.value).toBe("只写一句，带喵。");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({ prompts: expect.objectContaining({ reply: "只写一句，带喵。" }) }),
+    );
+  });
+  /**
+   * 第二版：压缩与装配是方案自己的三栏（水位触发条数、水位包上限、装配冗余），
+   * 冗余在界面里按整数百分比录入、存的是比例；水位压缩任务是一个可编辑的提示词槽位。
+   */
+  it("edits the compression and assembly group, entering the headroom as a percent", async () => {
+    const { fake } = await renderPage();
+    await task("读取什么");
+    fireEvent.change(screen.getByLabelText("水位触发条数"), { target: { value: "50" } });
+    fireEvent.change(screen.getByLabelText("水位包上限"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("装配冗余百分比"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("水位压缩任务"), { target: { value: "压事实" } });
+    expect(store.getState().qqSchemeEditor?.compression).toEqual({
+      watermark_trigger: 50,
+      package_limit: 4,
+      headroom_ratio: 0.1,
+    });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        compression: { watermark_trigger: 50, package_limit: 4, headroom_ratio: 0.1 },
+        prompts: expect.objectContaining({ compress: "压事实" }),
+      }),
+    );
+  });
+  /**
+   * 回复档的条数跟随**绑定助手**的「保留最近轮数」，所以那一栏是只读的：
+   * 没有绑定就直说，值一致就显示该值。
+   */
+  it("shows the bound assistant's retained turns read-only instead of a scheme field", async () => {
+    const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await renderPage({
+      listQqBindings: vi.fn().mockResolvedValue([
+        QqBindingResponseSchema.parse({
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          account_id: "10001",
+          kind: "group",
+          peer_id: "30003",
+          agent_id: agentId,
+          scheme_id: scheme().id,
+          paused: false,
+          triggers: { direct_reply: null, follow_up: null, chiming_in: null, idle_topic: null },
+          share_web_memory: false,
+          memory_batch_size: null,
+          pending_observations: 0,
+          revision: 1,
+          authority_revision: 1,
+          attention: { mode: "off", members: [] },
+        }),
+      ]),
+    });
+    store.setState({
+      agents: [
+        AgentResponseSchema.parse({
+          id: agentId,
+          name: "小助手",
+          model_name: "model",
+          config_version: 1,
+          persona_intensity: 60,
+          created_at: NOW,
+          updated_at: NOW,
+          p5_config: { recent_turns: 12 },
+        }),
+      ],
+    });
+    await task("读取什么");
+    // 那一栏仍在原位，但不再是可输入的字段（只读显示绑定助手的值）。
+    expect(screen.queryByRole("spinbutton", { name: "回复：最近条数" })).toBeNull();
+    expect(screen.getByText("12")).toBeTruthy();
   });
   it("converts local active hours into the contract UTC minutes", async () => {
     await renderPage();

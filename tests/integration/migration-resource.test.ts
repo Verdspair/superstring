@@ -185,6 +185,18 @@ const conversationAvatarsSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0044_conversation_avatars.sql"),
   "utf8",
 );
+const qqConversationSummariesSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0045_qq_conversation_summaries.sql"),
+  "utf8",
+);
+const qqContextCompressionSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0046_qq_context_compression.sql"),
+  "utf8",
+);
+const qqContextLimitCapsSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0047_qq_context_limit_caps.sql"),
+  "utf8",
+);
 const qqStickerAuthorizationSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0022_qq_sticker_authorization.sql"),
   "utf8",
@@ -234,6 +246,9 @@ const resources = [
   runtimeObservabilitySql,
   protectedModelResultsSql,
   conversationAvatarsSql,
+  qqConversationSummariesSql,
+  qqContextCompressionSql,
+  qqContextLimitCapsSql,
 ] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
@@ -290,6 +305,9 @@ describe("explicit migration resources", () => {
               runtimeObservabilitySql,
               protectedModelResultsSql,
               conversationAvatarsSql,
+              qqConversationSummariesSql,
+              qqContextCompressionSql,
+              qqContextLimitCapsSql,
             ],
           }),
         ).toThrow();
@@ -352,11 +370,14 @@ describe("explicit migration resources", () => {
             runtimeObservabilitySql,
             protectedModelResultsSql,
             conversationAvatarsSql,
+            qqConversationSummariesSql,
+            qqContextCompressionSql,
+            qqContextLimitCapsSql,
           ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -585,12 +606,24 @@ describe("explicit migration resources", () => {
         path.join(import.meta.dir, "../../migrations/versions/0044_conversation_avatars.sql"),
         path.join(versions, "0044_conversation_avatars.sql"),
       );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0045_qq_conversation_summaries.sql"),
+        path.join(versions, "0045_qq_conversation_summaries.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0046_qq_context_compression.sql"),
+        path.join(versions, "0046_qq_context_compression.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0047_qq_context_limit_caps.sql"),
+        path.join(versions, "0047_qq_context_limit_caps.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(44);
+      expect(layout?.businessMigrationSql.length).toBe(47);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {

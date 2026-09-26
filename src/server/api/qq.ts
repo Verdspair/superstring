@@ -63,6 +63,7 @@ import {
   qqSchemeUsage,
   readQqScheme,
   readQqSchemes,
+  schemeCompression,
   schemeContext,
   schemeOutputReserve,
   schemePrompts,
@@ -126,6 +127,7 @@ function toSchemeResponse(orm: Orm, row: QqSchemeRow): QqSchemeResponse {
     triggers: schemeTriggers(row),
     rhythm: schemeRhythm(row),
     context: schemeContext(row),
+    compression: schemeCompression(row),
     output_reserve: schemeOutputReserve(row),
     stickers: schemeStickers(row),
     sticker_collections: { collection_ids: schemeStickerCollectionIds(orm, row.id) },
@@ -173,7 +175,7 @@ function toSettingsResponse(orm: Orm, keyPath?: string): QqSettingsResponse {
 /**
  * The wire shape of a binding, plus the one derived number the page needs to make the memory
  * entry usable: how many observations of this conversation are readable and not yet offered to
- * consolidation (用户 2026-09-25 — without it neither "还差几条" nor "立即整理有没有东西可整理"
+ * consolidation (— without it neither "还差几条" nor "立即整理有没有东西可整理"
  * can be answered by the page).
  */
 function toBindingResponse(orm: Orm, binding: QqBinding): QqBindingResponse {
@@ -352,6 +354,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
         orm,
         createQqScheme(orm, {
           ...body,
+          compression: body.compression,
           outputReserve: body.output_reserve,
           stickers: body.stickers,
           stickerCollections: body.sticker_collections?.collection_ids,
@@ -389,6 +392,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           triggers: body.triggers,
           rhythm: body.rhythm,
           context: body.context,
+          compression: body.compression,
           outputReserve: body.output_reserve,
           stickers: body.stickers,
           stickerCollections: body.sticker_collections?.collection_ids,
@@ -810,7 +814,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
   });
 
   /**
-   * 「立即整理」(用户 2026-09-25): organise this conversation's readable observations now, ignoring
+   * 「立即整理」: organise this conversation's readable observations now, ignoring
    * the configured count — pressing the button IS the decision to spend a model call, so the pacing
    * setting must not veto it.
    *

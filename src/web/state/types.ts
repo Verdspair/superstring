@@ -106,7 +106,7 @@ export interface SuperstringState
   ) => Promise<boolean>;
   saveAllSettingsPages: () => Promise<boolean>;
   /**
-   * 一键覆盖（用户 2026-09-25）：把当前助手的四个**文本用途**模型（对话、记忆读取、记忆整理、
+   * 一键覆盖：把当前助手的四个**文本用途**模型（对话、记忆读取、记忆整理、
    * 上下文压缩）都设成给定的默认模型，并立即保存该助手的模型页。图片理解与语音转写不是助手的字段，
    * 因此不在覆盖范围内。没有可覆盖的助手（正在新建）时返回 false。
    */
@@ -152,7 +152,7 @@ export interface SuperstringState
   discardQqMemoryBatchDrafts: () => void;
   /** 所有可选项（本地已加载 + 外部声明的），选择器用它渲染选项。 */
   modelNames: string[];
-  /** 本地服务**当前已加载**的模型（用户 2026-09-25：可用性要看得见）。 */
+  /** 本地服务**当前已加载**的模型。 */
   loadedModelNames: string[];
   /** 外部模型 API 里声明过的模型名。 */
   externalModelNames: string[];

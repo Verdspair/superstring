@@ -2,6 +2,17 @@ import type { Database } from "bun:sqlite";
 import type { WakeSignal } from "../../shared/contracts/conversation";
 import { ConversationEventRepository } from "./conversation-event-repository";
 
+/** 确定性失败：重排不会改变结果，直接判失败。 */
+const NON_RETRYABLE_WAKE_FAILURES = new Set([
+  "CONTEXT_BUDGET_EXCEEDED",
+  "CONTEXT_CAPACITY_UNKNOWN",
+  "CONTEXT_CAPACITY_ERROR",
+  "CONTEXT_CAPACITY_INSUFFICIENT",
+  "MODEL_CAPACITY_UNAVAILABLE",
+  "MODEL_CAPACITY_AMBIGUOUS",
+  "STICKER_SEARCH_CONTEXT_LIMIT",
+]);
+
 type Row = {
   id: string;
   conversation_id: string;
@@ -319,7 +330,11 @@ export class WakeRepository {
         "UPDATE wake_signals SET status=?,lease_token=NULL,lease_expires_at=NULL,error_code=?,ready_at=? WHERE id=? AND status='leased' AND lease_token=?",
       )
       .run(
-        r.attempts >= input.maxAttempts ? "failed" : "pending",
+        // 容量/预算这类**确定性**失败不重排——重试三次还是同一个结果，只会让人反复
+        // 看到"等待处理 → 又失败"。瞬时问题（模型忙、网络抖动）照旧按 maxAttempts 重试。
+        r.attempts >= input.maxAttempts || NON_RETRYABLE_WAKE_FAILURES.has(input.errorCode)
+          ? "failed"
+          : "pending",
         input.errorCode,
         new Date(Date.parse(input.at) + input.retryDelayMs).toISOString(),
         id,

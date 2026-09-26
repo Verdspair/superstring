@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { RuntimeConfig } from "../../shared/contracts";
+import { readJsonBody } from "../agent/agent-specs";
 import type { ContextMessage, MemoryItem } from "../db/context-repository";
 import { fail } from "../errors";
 import { contentCandidate } from "../services/content-format";
@@ -72,7 +73,7 @@ export function validateContextIds(ids: string[], allowed: string[], limit?: num
 }
 
 export function parseRecallIds(text: string, allowed: string[], limit: number): string[] {
-  const result = SelectionSchema.parse(JSON.parse(text));
+  const result = SelectionSchema.parse(JSON.parse(readJsonBody(text)));
   return validateContextIds(result.ids, allowed, limit);
 }
 
@@ -103,10 +104,14 @@ export async function selectRecallIds(
   const text = await call({
     instruction:
       `${runtime.memory_retrieval_prompt}\n${instruction}` +
-      `\n仅选择相关候选id，最多${limit}条；没有相关内容时ids为空。不要复述正文。`,
+      `\n仅选择相关候选id，最多${limit}条；没有相关内容时ids为空。不要复述正文。` +
+      // 只输出 JSON——外部模型爱先写一段说明，撞上输出上限就成了 MODEL_OUTPUT_LIMIT
+      // （叶子失败被容忍，代价是这一轮没有记忆）。
+      `\n只输出符合schema的JSON，不要任何解释、前言或后续内容。`,
     data: { question, candidates },
     responseSchema,
-    outputTokens: Math.min(runtime.p5_config.max_output_tokens, Math.max(128, limit * 48 + 32)),
+    // 上限抬了个下限（128 → 384）：给"忍不住写一句"的模型留出余量，别把 JSON 挤掉。
+    outputTokens: Math.min(runtime.p5_config.max_output_tokens, Math.max(384, limit * 48 + 32)),
   });
   return parseRecallIds(text, allowed, limit);
 }

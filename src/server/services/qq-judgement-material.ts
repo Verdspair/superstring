@@ -1,4 +1,4 @@
-// 判断调用能看到的东西（用户 2026-09-25）：长期记忆与知识库，权重排在人物与上下文之后。
+// 判断调用能看到的东西：长期记忆与知识库，权重排在人物与上下文之后。
 //
 // 为什么是一个新模块：网页那两条链各自绑在 web 会话（`catalog`/`memoryBodies` 走 `ownedSession`）
 // 与 web 轮次（`KnowledgeContext.owner` 要 `turns JOIN sessions`）上，QQ 既没有会话也没有轮次，
@@ -26,7 +26,7 @@ import type { QqPromptMaterial } from "./qq-prompt-contract";
 import { estimateTokens } from "./token-estimate";
 
 /**
- * 记忆与资料各留多少（估算 token）。用户 2026-09-25 选定"用固定上限"：像冷却、门槛那样的可编辑
+ * 记忆与资料各留多少（估算 token）。选定"用固定上限"：像冷却、门槛那样的可编辑
  * 参数要多一次迁移与两个方案字段，这一版不做。真正的硬上限仍是模型容量预检（它看的是完整消息）。
  */
 export const QQ_JUDGEMENT_MEMORY_TOKENS = 400;
@@ -161,7 +161,7 @@ function memoryLine(item: MemoryItem): string | null {
 }
 
 /**
- * 知识库：按**助手授权**读，与网页同源（用户 2026-09-25 选定）。切段、草稿映射、来源有效性与
+ * 知识库：按**助手授权**读，与网页同源。切段、草稿映射、来源有效性与
  * 打分规则由 `qqKnowledgeItems` 复用网页那一份；这里只按预算裁剪并交给提示词。
  */
 function knowledgeMaterial(

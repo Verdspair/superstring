@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 import type {
   AgentStepSnapshot,
   ModelMessage,
@@ -353,20 +354,36 @@ export class AgentRuntime {
           context.messages,
           context.sources,
           async (capture, onModelResolved) => {
+            let resolved = spec.model ?? this.options.model.defaultModel ?? "?";
             const raw = await this.options.model.complete({
               messages: context.messages,
               model: spec.model,
               temperature: spec.temperature,
               maxTokens: spec.maxTokens ?? spec.limits.outputTokens,
               responseSchema: AGENT_DECISION_JSON_SCHEMA,
+              // 已广告的动作同时以原生 tools 声明（issue #10）：模型用它表达 invoke，正文只剩
+              // final/none。是否真的发送由网关决定——外部路由发，本地服务保持冻结的 JSON 决策。
+              tools: spec.availableActions.map((action) => ({
+                name: action.name,
+                description: action.description,
+                parameters: action.parameters,
+              })),
               signal: active.signal,
-              onModelResolved,
+              onModelResolved: (model) => {
+                resolved = model;
+                onModelResolved(model);
+              },
               onResponseText: capture,
             });
             capture(raw, true);
             try {
               return parseAgentDecision(raw);
             } catch {
+              // 「读不出决策」必须能一眼看出模型回了什么。原文也会随步骤落库
+              // （受保护输出，运行检查器可看），这里只是让它出现在控制台/日志里。
+              console.warn(
+                `[agent] 决策解析失败 model=${resolved} phase=next：${summariseModelText(raw)}`,
+              );
               throw new AgentRuntimeError(
                 "AGENT_DECISION_INVALID",
                 "Decision must be a complete JSON object matching the Agent schema",
@@ -796,16 +813,21 @@ export class AgentRuntime {
           });
           return result;
         } catch (error) {
+          const failed = active.signal.aborted ? active.signal.reason : error;
+          const code = errorCode(failed);
           this.repository.finishStep(
             stepId,
             active.callerSignal?.aborted ? "cancelled" : "failed",
             this.now(),
-            { errorCode: errorCode(active.signal.aborted ? active.signal.reason : error), output },
+            { errorCode: code, output },
           );
-          scope?.end(
-            active.callerSignal?.aborted ? "cancelled" : "failed",
-            traceErrorCode(active.signal.aborted ? active.signal.reason : error),
-          );
+          // 无码失败是一条死胡同（记录里只有 AGENT_FAILED）。留一行：阶段、模型、错误名与消息，
+          // 以及模型这次实际回了什么（截断，不含正文以外的内容）——要求可定位。
+          if (code === "AGENT_FAILED" && !active.callerSignal?.aborted)
+            console.warn(
+              `[agent] 步骤失败（无错误码）phase=${phase} model=${stepSpec.model ?? "?"}：${describeFailure(failed)}｜模型输出：${summariseModelText(output?.text)}`,
+            );
+          scope?.end(active.callerSignal?.aborted ? "cancelled" : "failed", traceErrorCode(failed));
           throw error;
         }
       },
@@ -951,6 +973,10 @@ export class AgentRuntime {
       at: this.now(),
       errorCode: code,
     };
+    // 运行级失败也留一行：状态、错误名与消息。无码失败（AGENT_FAILED）从此不再是死胡同——
+    // 记录里仍然只有码，但控制台能直接看到原因。
+    if (!cancelled && code === "AGENT_FAILED")
+      console.warn(`[agent] 运行失败（无错误码）：${describeFailure(error)}`);
     const committed = await commit?.(error, active.runId, terminal);
     const event =
       committed ??
@@ -966,15 +992,32 @@ export class AgentRuntime {
   }
 }
 
+/** 一行、截断的诊断摘要：模型输出与错误消息都可能很长，日志里只留一行。 */
+function summariseModelText(text: string | null | undefined): string {
+  if (text === null || text === undefined || text === "") return "(空)";
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 300 ? `${oneLine.slice(0, 300)}…` : oneLine;
+}
+
+function describeFailure(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const message = error instanceof Error ? error.message : String(error);
+  return `${name}: ${summariseModelText(message)}`;
+}
+
 function errorCode(error: unknown): string {
-  return typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    typeof error.code === "string"
-    ? error.code
-    : error instanceof SyntaxError
-      ? "AGENT_DECISION_INVALID"
-      : "AGENT_FAILED";
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && code !== "") return code;
+  }
+  // 不猜消息里的码：记录与 span 里只许出现抛出点自己设的 `.code`，否则失败文本会顺着
+  // "看着像码"的消息漏进诊断面（`runtime-peripheral-observability` 钉着这条边界）。
+  // 严格解析读不出模型输出：这是"输出不符合要求"，不是"决策不合法"——决策那条路会把失败
+  // 包成带码的 AgentRuntimeError，走到这里的其实是叶子任务自己的解析器（判断、整理等）。
+  // JSON 读不出来是 SyntaxError、形状不对是 ZodError，两者是同一件事。
+  return error instanceof SyntaxError || error instanceof z.ZodError
+    ? "AGENT_OUTPUT_INVALID"
+    : "AGENT_FAILED";
 }
 
 function decisionMetadata(value: unknown): unknown {

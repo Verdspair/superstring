@@ -80,7 +80,7 @@ export function modelRoutes(
     });
   });
 
-  // ---- 外部模型 API（0032，用户 2026-09-25）------------------------------------------
+  // ---- 外部模型 API（0032，）------------------------------------------
   //
   // A provider is a base URL plus a key; its models each carry a context window the user typed,
   // because external services have no catalogue to read and an unknown window makes the QQ chain

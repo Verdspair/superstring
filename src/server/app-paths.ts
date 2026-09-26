@@ -237,6 +237,24 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0044_conversation_avatars.sql",
     ),
+    qqConversationSummariesMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0045_qq_conversation_summaries.sql",
+    ),
+    qqContextCompressionMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0046_qq_context_compression.sql",
+    ),
+    qqContextLimitCapsMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0047_qq_context_limit_caps.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

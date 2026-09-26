@@ -123,6 +123,10 @@ describe("build version consistency (#101)", () => {
     const lock = JSON.parse(read("package-lock.json"));
     expect(lock.version).toBe(pkg.version);
     expect(lock.packages[""].version).toBe(pkg.version);
-    expect(read("src/web/App.tsx")).toContain(`const VERSION = "${APP_VERSION}";`);
+    // The workspace shell reads the version straight out of package.json, so the UI cannot
+    // name a different release than /health: pin both the import and the rendered value.
+    const navigation = read("src/web/workspace/ProductNavigation.tsx");
+    expect(navigation).toContain('import { version } from "../../../package.json";');
+    expect(navigation).toContain("{version}");
   });
 });

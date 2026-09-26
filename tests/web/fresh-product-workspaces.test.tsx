@@ -14,11 +14,13 @@ import { MemoryDetail, MemoryLibrary } from "../../src/web/screens/library/Memor
 import { useSuperstringStore as store } from "../../src/web/store";
 import {
   A,
+  agent,
   B,
   D,
   document as doc,
   M,
   memory,
+  policy,
   scopeKey,
   setupLibrary,
 } from "./helpers/library-fixture";
@@ -146,13 +148,53 @@ describe("fresh library tasks", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /QQ · 私聊 20002/ })));
     expect(client.listMemoryEntries).toHaveBeenLastCalledWith(A, 0, 100, { scope_key: scopeKey });
     await act(async () =>
-      fireEvent.click(screen.getByRole("checkbox", { name: "与网页记忆共享" })),
+      fireEvent.click(screen.getByRole("checkbox", { name: "与网页对话记忆共享" })),
     );
     expect(client.updateQqBinding).toHaveBeenCalledWith(B, {
       expected_revision: 2,
       share_web_memory: true,
     });
     expect(screen.getByText("关闭共享不会搬迁或删除任何已有记忆。")).toBeTruthy();
+  });
+  /**
+   * 记忆维护（自动整理/轮数/目标字符/整理提示词）从 Agent 的资料规则页迁到
+   * 资料库→记忆的**网页对话记忆**分区面板，与 QQ 分区那套绑定控制同位。它属于那个分区，不是整页：
+   * 没选中该分区时不出现；保存仍走 long-memory 白名单（后端与字段归属没变）。
+   */
+  it("keeps memory maintenance inside the web conversation partition and saves its own whitelist", async () => {
+    const client = setupLibrary({
+      updatePolicy: vi.fn(async (_id: string, body: object) => ({
+        ...policy,
+        ...(body as object),
+        version: 2,
+      })),
+      updateAgent: vi.fn(async (id: string, body: object) => ({
+        ...agent,
+        id,
+        ...(body as object),
+      })),
+    });
+    await act(async () => render(<MemoryLibrary />));
+    expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /网页对话记忆/ })));
+    fireEvent.change(screen.getByLabelText("每隔多少轮整理"), { target: { value: "30" } });
+    expect(store.getState().pageEditor?.policyDraft?.every_turns).toBe(30);
+    fireEvent.change(screen.getByLabelText("记忆整理提示词"), { target: { value: "保留事实" } });
+    expect(store.getState().pageEditor?.draft.memory_consolidation_prompt).toBe("保留事实");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存记忆规则" })));
+    expect(client.updatePolicy).toHaveBeenCalledWith(
+      A,
+      expect.objectContaining({ every_turns: 30 }),
+    );
+    expect(client.updateAgent).toHaveBeenCalledWith(
+      A,
+      expect.objectContaining({ memory_consolidation_prompt: "保留事实" }),
+    );
+    // 原位置（Agent 的资料规则页）不再承载这块界面，也不该有第二个入口。
+    cleanup();
+    await act(async () => render(<ResourceRules />));
+    expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
+    expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
   });
   it("a batch-size draft protects scope and global navigation", async () => {
     await act(async () => render(<MemoryLibrary />));
