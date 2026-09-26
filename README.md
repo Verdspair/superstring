@@ -56,12 +56,14 @@ Choose an asset for your operating system and architecture from [Releases](https
 
 Use the files actually attached to the chosen release and verify them with its checksum list. macOS signing status and platform-specific installation guidance are described in [Desktop distributions](docs/reference/desktop.md).
 
-Packaged applications include their runtime. A local model server such as LM Studio, or a configured external OpenAI-compatible provider, is still required for inference. QQ integration additionally requires a separately installed OneBot 11 service.
+Packaged applications include their runtime. A local model server such as LM Studio, or a configured external OpenAI-compatible provider, is still required for inference.
 
 1. Install and open Superstring.
 2. Open **Model services** and configure your model service and default model roles. The local default endpoint is `http://127.0.0.1:1234/v1`.
 3. Create or select an Agent. Import and authorize any knowledge it should read.
-4. Start a web conversation, or open **Connections** to configure QQ transport, a chat scheme and a conversation binding.
+4. Start a web conversation.
+5. To use QQ, install a QQ NT client and an OneBot 11 implementation such as [NapCat](https://github.com/NapNeko/NapCatQQ) separately (validated combination: NapCat v4.18.28 with QQ 9.9.26.44343), log into QQ inside that client, and expose a forward WebSocket server from the implementation.
+6. Open **Connections**, enter that WebSocket address, port and access token, then bind the group or private chat to an Agent and a chat scheme.
 
 If LM Studio requires an API token, provide `LM_STUDIO_API_KEY` before starting the application. Provider credentials configured through Model services are encrypted on disk; protect the profile and its encryption keys together.
 
@@ -146,12 +148,14 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 
 以所选版本实际附带的文件为准，并用同版校验清单核对。macOS 的签名状态与各平台安装方式见[桌面发行说明](docs/reference/desktop.md)。
 
-安装包自带运行时，但模型推理仍需要 LM Studio 等本地服务或已配置的外部 OpenAI 兼容服务；QQ 接入另需独立安装 OneBot 11 服务。
+安装包自带运行时，但模型推理仍需要 LM Studio 等本地服务或已配置的外部 OpenAI 兼容服务。
 
 1. 安装并打开 Superstring。
 2. 到**模型服务**配置服务端点与各用途默认模型；本地默认地址为 `http://127.0.0.1:1234/v1`。
 3. 创建或选择 Agent，导入并授权所需知识。
-4. 新建网页对话，或到**接入**配置 QQ 连接、聊天方案和会话绑定。
+4. 新建网页对话即可开始使用。
+5. 要接入 QQ：另行安装 QQ NT 客户端与 OneBot 11 实现（例如 [NapCat](https://github.com/NapNeko/NapCatQQ)；已验证组合为 NapCat v4.18.28 ＋ QQ 9.9.26.44343），在该客户端登录 QQ，并在实现侧开启正向 WebSocket 服务端。
+6. 到**接入**页填入该 WebSocket 的地址、端口与访问令牌，再把群或私聊绑定到 Agent 与聊天方案。
 
 LM Studio 开启鉴权时，启动前设置 `LM_STUDIO_API_KEY`。通过模型服务页保存的外部凭据以加密形式落盘，备份时应将资料目录与密钥一同保管。
 

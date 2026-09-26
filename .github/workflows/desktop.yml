@@ -266,4 +266,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Superstring $RELEASE_TAG" --notes "Native desktop distributions. See SHA256SUMS and per-platform smoke reports. macOS packages are ${{ secrets.MACOS_CERTIFICATE != '' && 'signed and notarized' || 'ad-hoc signed and not notarized; open them with the Finder Open action' }}." dist/desktop-release/*
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes "Native desktop distributions. See SHA256SUMS and per-platform smoke reports. macOS packages are ${{ secrets.MACOS_CERTIFICATE != '' && 'signed and notarized' || 'ad-hoc signed and not notarized; open them with the Finder Open action' }}." dist/desktop-release/*
