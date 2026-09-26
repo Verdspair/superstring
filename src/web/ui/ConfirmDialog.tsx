@@ -1,3 +1,5 @@
+import { AlertDialogFooter } from "../components/ui/alert-dialog";
+import { Button } from "../components/ui/button";
 import { useI18n } from "../i18n";
 import { AlertDialog } from "./AlertDialog";
 
@@ -15,14 +17,14 @@ export function ConfirmDialog({
   const t = useI18n();
   return (
     <AlertDialog title={message} onCancel={onCancel}>
-      <div className="dialog-actions">
-        <button type="button" data-dialog-cancel onClick={onCancel}>
+      <AlertDialogFooter className="dialog-actions">
+        <Button type="button" variant="outline" data-dialog-cancel onClick={onCancel}>
           {t("取消")}
-        </button>
-        <button type="button" className="danger" onClick={onConfirm}>
+        </Button>
+        <Button type="button" variant="destructive" onClick={onConfirm}>
           {confirmLabel ?? t("确认")}
-        </button>
-      </div>
+        </Button>
+      </AlertDialogFooter>
     </AlertDialog>
   );
 }

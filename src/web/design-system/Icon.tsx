@@ -92,11 +92,12 @@ const icons = {
 export type IconName = keyof typeof icons | "brand";
 
 export function Icon({ name, className = "" }: { name: IconName; className?: string }) {
-  if (name === "brand") return <BrandLogo className={`icon brand-mark ${className}`} />;
+  if (name === "brand")
+    return <BrandLogo className={`icon brand-mark size-5 shrink-0 ${className}`} />;
   const Glyph = icons[name];
   return (
     <Glyph
-      className={`icon ${className}`}
+      className={`icon size-4 shrink-0 ${className}`}
       size={18}
       strokeWidth={1.7}
       aria-hidden="true"

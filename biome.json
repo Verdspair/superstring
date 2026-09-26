@@ -36,5 +36,10 @@
       "quoteStyle": "double",
       "semicolons": "always"
     }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
   }
 }

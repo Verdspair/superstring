@@ -1,5 +1,6 @@
-import * as Tooltip from "@radix-ui/react-tooltip";
 import type { ComponentProps } from "react";
+import { Button } from "../components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { Icon, type IconName } from "./Icon";
 
 /** Icon-only controls always expose a name; the tooltip is supplementary. */
@@ -10,18 +11,22 @@ export function IconButton({
   ...props
 }: Omit<ComponentProps<"button">, "children" | "aria-label"> & { label: string; icon: IconName }) {
   return (
-    <Tooltip.Root>
-      <Tooltip.Trigger asChild>
-        <button type="button" {...props} aria-label={label} className={`icon-button ${className}`}>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          type="button"
+          {...props}
+          aria-label={label}
+          className={`icon-button ${className}`}
+        >
           <Icon name={icon} />
-        </button>
-      </Tooltip.Trigger>
-      <Tooltip.Portal>
-        <Tooltip.Content className="ui-tooltip" sideOffset={6}>
-          {label}
-          <Tooltip.Arrow className="ui-tooltip-arrow" />
-        </Tooltip.Content>
-      </Tooltip.Portal>
-    </Tooltip.Root>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent className="ui-tooltip" sideOffset={6}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }

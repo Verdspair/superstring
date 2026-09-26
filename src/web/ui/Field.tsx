@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
+import { Badge } from "../components/ui/badge";
+import { FieldDescription, FieldTitle, Field as FormField } from "../components/ui/field";
 import { useI18n } from "../i18n";
 
+/** Business field labels compose the registry's field and badge primitives. */
 export function Field({
   label,
   info,
@@ -9,19 +12,22 @@ export function Field({
 }: {
   label: string;
   info?: string;
-  /** A short marker next to the label (the scheme page marks edited fields this way). */
   tag?: string;
   children: ReactNode;
 }) {
   const t = useI18n();
   return (
-    <div className="field">
-      <span className="field-label">
+    <FormField className="field min-w-0 [&>[data-slot=checkbox]]:w-4 [&>[data-slot=checkbox]]:self-start">
+      <FieldTitle className="field-label">
         {t(label)}
-        {tag && <span className="field-tag">{t(tag)}</span>}
-      </span>
+        {tag && (
+          <Badge variant="secondary" className="field-tag">
+            {t(tag)}
+          </Badge>
+        )}
+      </FieldTitle>
       {children}
-      {info && <small>{t(info)}</small>}
-    </div>
+      {info && <FieldDescription>{t(info)}</FieldDescription>}
+    </FormField>
   );
 }
