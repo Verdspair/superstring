@@ -2,7 +2,7 @@
 // marker. See qq-retention.ts for why text and dedup identity have separate lives.
 
 import { createHash } from "node:crypto";
-import { and, asc, count, desc, eq, gt, inArray, isNull, lte, max } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, lte, max } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { fail } from "../errors";
 import type { QqMemoryScope } from "../services/qq-binding-contract";
@@ -32,6 +32,128 @@ export interface QqConversationMessageRow {
   readonly mediaNotes: string[];
   /** Media with no description yet: something was there and was not understood. */
   readonly mediaUnread: number;
+}
+
+/** Rows → message shape（时间线与水位缓冲共用）：媒体描述按消息分组，正文缺了就留 null。 */
+function mapMessageRows(
+  orm: Orm,
+  rows: Array<{
+    eventKey: string;
+    occurredAtSeconds: number;
+    speakerKind: string;
+    speakerId: string | null;
+    body: string | null;
+    expiresAt: string | null;
+  }>,
+  includeSources: boolean,
+): QqConversationMessageRow[] {
+  if (rows.length === 0) return [];
+
+  const notes = orm
+    .select({
+      id: schema.qqMediaNotes.id,
+      expiresAt: schema.qqMediaNotes.expiresAt,
+      attempts: schema.qqMediaNotes.attempts,
+      eventKey: schema.qqMediaNotes.eventKey,
+      note: schema.qqMediaNotes.note,
+      noteModel: schema.qqMediaNotes.noteModel,
+    })
+    .from(schema.qqMediaNotes)
+    .where(
+      inArray(
+        schema.qqMediaNotes.eventKey,
+        rows.map((row) => row.eventKey),
+      ),
+    )
+    .all();
+  const byEvent = new Map<string, { notes: string[]; unread: number }>();
+  for (const note of notes) {
+    const entry = byEvent.get(note.eventKey) ?? { notes: [], unread: 0 };
+    if (note.note === null || note.noteModel === null) entry.unread++;
+    else entry.notes.push(`[${note.noteModel}] ${note.note}`);
+    byEvent.set(note.eventKey, entry);
+  }
+
+  return rows.map((row) => {
+    const media = byEvent.get(row.eventKey) ?? { notes: [], unread: 0 };
+    return {
+      eventKey: row.eventKey,
+      ...(includeSources
+        ? {
+            sources: [
+              ...(row.body !== null && row.expiresAt !== null
+                ? [
+                    {
+                      kind: "qq_observation",
+                      id: row.eventKey,
+                      revision: createHash("sha256").update(row.body).digest("hex"),
+                      expiresAt: row.expiresAt,
+                    },
+                  ]
+                : []),
+              ...notes
+                .filter((note) => note.eventKey === row.eventKey && note.note !== null)
+                .map((note) => ({
+                  kind: "qq_media",
+                  id: note.id,
+                  revision: String(note.attempts),
+                  expiresAt: note.expiresAt,
+                })),
+            ],
+          }
+        : {}),
+      occurredAtSeconds: row.occurredAtSeconds,
+      speaker: row.speakerKind === "anonymous" ? ("anonymous" as const) : ("member" as const),
+      speakerId: row.speakerId ?? null,
+      text: row.body ?? null,
+      mediaNotes: media.notes,
+      mediaUnread: media.unread,
+    };
+  });
+}
+
+/**
+ * 水位缓冲用的老消息：窗口之外、且不早于**历史水位**的时刻，**从最早的开始**。
+ *
+ * 与时间线同一套字段与同一份映射，只是排序反过来、并且有上界——时间线要最新的，水位缓冲要最老的。
+ * 只取**还有正文**的消息：正文过期那条没有可压的内容，留着它只会让每一轮都去撞同一段空、
+ * 覆盖水位推不动。下界是闭区间：和"已压到的那条"同一秒的消息不能被永久跳过。
+ */
+export function conversationMessagesForBackfill(
+  orm: Orm,
+  scope: QqConversationScope,
+  input: { afterSeconds: number; beforeSeconds: number; limit: number },
+): QqConversationMessageRow[] {
+  if (!Number.isInteger(input.limit) || input.limit <= 0) return [];
+  const rows = orm
+    .select({
+      eventKey: schema.qqEvents.eventKey,
+      occurredAtSeconds: schema.qqEvents.occurredAtSeconds,
+      speakerKind: schema.qqEvents.speakerKind,
+      speakerId: schema.qqEvents.speakerId,
+      body: schema.qqObservationText.body,
+      expiresAt: schema.qqObservationText.expiresAt,
+    })
+    .from(schema.qqEvents)
+    .innerJoin(
+      schema.qqObservationText,
+      eq(schema.qqObservationText.eventKey, schema.qqEvents.eventKey),
+    )
+    .where(
+      and(
+        eq(schema.qqEvents.accountId, scope.accountId),
+        eq(schema.qqEvents.conversationKind, scope.conversationKind),
+        eq(schema.qqEvents.peerId, scope.peerId),
+        eq(schema.qqEvents.agentId, scope.agentId),
+        inArray(schema.qqEvents.speakerKind, ["member", "anonymous"] as const),
+        gte(schema.qqEvents.occurredAtSeconds, input.afterSeconds),
+        lt(schema.qqEvents.occurredAtSeconds, input.beforeSeconds),
+      ),
+    )
+    .orderBy(asc(schema.qqEvents.occurredAtSeconds), asc(schema.qqEvents.eventKey))
+    .limit(input.limit)
+    .all();
+  return mapMessageRows(orm, rows, true);
 }
 
 /**
@@ -85,69 +207,7 @@ export function conversationMessagesSince(
     .orderBy(desc(schema.qqEvents.occurredAtSeconds), desc(schema.qqEvents.eventKey))
     .limit(input.limit)
     .all();
-  if (rows.length === 0) return [];
-
-  const notes = orm
-    .select({
-      id: schema.qqMediaNotes.id,
-      expiresAt: schema.qqMediaNotes.expiresAt,
-      attempts: schema.qqMediaNotes.attempts,
-      eventKey: schema.qqMediaNotes.eventKey,
-      note: schema.qqMediaNotes.note,
-      noteModel: schema.qqMediaNotes.noteModel,
-    })
-    .from(schema.qqMediaNotes)
-    .where(
-      inArray(
-        schema.qqMediaNotes.eventKey,
-        rows.map((row) => row.eventKey),
-      ),
-    )
-    .all();
-  const byEvent = new Map<string, { notes: string[]; unread: number }>();
-  for (const note of notes) {
-    const entry = byEvent.get(note.eventKey) ?? { notes: [], unread: 0 };
-    if (note.note === null || note.noteModel === null) entry.unread++;
-    else entry.notes.push(`[${note.noteModel}] ${note.note}`);
-    byEvent.set(note.eventKey, entry);
-  }
-
-  return rows.map((row) => {
-    const media = byEvent.get(row.eventKey) ?? { notes: [], unread: 0 };
-    return {
-      eventKey: row.eventKey,
-      ...(input.includeSources
-        ? {
-            sources: [
-              ...(row.body !== null && row.expiresAt !== null
-                ? [
-                    {
-                      kind: "qq_observation",
-                      id: row.eventKey,
-                      revision: createHash("sha256").update(row.body).digest("hex"),
-                      expiresAt: row.expiresAt,
-                    },
-                  ]
-                : []),
-              ...notes
-                .filter((note) => note.eventKey === row.eventKey && note.note !== null)
-                .map((note) => ({
-                  kind: "qq_media",
-                  id: note.id,
-                  revision: String(note.attempts),
-                  expiresAt: note.expiresAt,
-                })),
-            ],
-          }
-        : {}),
-      occurredAtSeconds: row.occurredAtSeconds,
-      speaker: row.speakerKind === "anonymous" ? ("anonymous" as const) : ("member" as const),
-      speakerId: row.speakerId ?? null,
-      text: row.body ?? null,
-      mediaNotes: media.notes,
-      mediaUnread: media.unread,
-    };
-  });
+  return mapMessageRows(orm, rows, input.includeSources === true);
 }
 
 /** Permanent event identities, including media-only messages; scoped exactly like context. */

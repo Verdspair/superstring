@@ -107,7 +107,7 @@ namespace Superstring.Setup
         "app/resources/migrations/versions/0036_qq_judgement_reuse.sql",
         "app/resources/migrations/versions/0037_qq_judgement_per_speaker.sql",
         "app/resources/migrations/versions/0038_qq_judgement_model.sql",
-        "app/resources/migrations/versions/0039_agent_runs.sql", "app/resources/migrations/versions/0040_conversation_wakes.sql", "app/resources/migrations/versions/0041_outbound_intents.sql", "app/resources/migrations/versions/0042_runtime_observability.sql", "app/resources/migrations/versions/0043_protected_model_results.sql", "app/resources/migrations/versions/0044_conversation_avatars.sql",
+        "app/resources/migrations/versions/0039_agent_runs.sql", "app/resources/migrations/versions/0040_conversation_wakes.sql", "app/resources/migrations/versions/0041_outbound_intents.sql", "app/resources/migrations/versions/0042_runtime_observability.sql", "app/resources/migrations/versions/0043_protected_model_results.sql", "app/resources/migrations/versions/0044_conversation_avatars.sql", "app/resources/migrations/versions/0045_qq_conversation_summaries.sql", "app/resources/migrations/versions/0046_qq_context_compression.sql", "app/resources/migrations/versions/0047_qq_context_limit_caps.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

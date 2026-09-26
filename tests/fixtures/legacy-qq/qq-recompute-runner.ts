@@ -48,7 +48,7 @@ import {
   disabledKindsFromTriggers,
 } from "../../../src/server/services/qq-speaking-contract";
 import { compileSystemPrompt, runtimeFromAgent } from "../../../src/server/services/runtime-config";
-import { qqReplyTaskPrompt } from "../../../src/shared/contracts/qq";
+import { qqEffectiveReplyPrompt } from "../../../src/shared/contracts/qq";
 import type { QqPendingReview } from "./qq-reply-runner";
 import type { QqReviewResult } from "./qq-review-runner";
 
@@ -136,7 +136,10 @@ export async function recomputeQqReply(
     persona: compileSystemPrompt(runtime),
     prompts: {
       ...schemePrompts(scheme),
-      reply: qqReplyTaskPrompt(schemeReply(scheme).split_by_speaker),
+      reply: qqEffectiveReplyPrompt(
+        schemePrompts(scheme).reply,
+        schemeReply(scheme).split_by_speaker,
+      ),
     },
     timeline: selection.messages,
     nowSeconds,

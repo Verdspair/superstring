@@ -24,7 +24,18 @@
 
 import { z } from "zod";
 import { SourceRefSchema } from "../../shared/contracts/evidence";
+// 存储与接口共用同一份契约。这里曾经各留一份，结果"上限放宽到 1 万"只改到了存储侧、
+// 接口那边仍卡在 200/500，所以改成直接复用 shared 的定义。
+import {
+  type QqSchemeCompression,
+  QqSchemeCompressionSchema,
+  type QqSchemeContext,
+  QqSchemeContextSchema,
+} from "../../shared/contracts/qq";
 import { estimateTokens } from "./token-estimate";
+
+export type { QqSchemeContext };
+export { QqSchemeContextSchema };
 
 /**
  * What one message costs beyond its text: speaker label, separators, framing. Messages are
@@ -59,22 +70,14 @@ export const ContextMessageSchema = z
   });
 export type QqContextMessage = z.output<typeof ContextMessageSchema>;
 
-export const QqSchemeContextSchema = z.strictObject({
-  /** Newest messages the judgement may see. */
-  judgement_message_limit: z.number().int().min(1).max(200),
-  judgement_window_minutes: z.number().int().min(1).max(20160),
-  judgement_token_budget: z.number().int().min(256).max(16384),
-  /** Newest messages a reply may see: larger, because a reply has to join in. */
-  reply_message_limit: z.number().int().min(1).max(500),
-  reply_window_minutes: z.number().int().min(1).max(20160),
-  reply_token_budget: z.number().int().min(256).max(16384),
-});
-export type QqSchemeContext = z.output<typeof QqSchemeContextSchema>;
+export type QqContextTier = "judgement" | "reply";
 
 /**
  * The values the user fixed on 2026-09-23, matching the DDL defaults. The window ceiling is
  * 14 days on purpose: observation text is deleted after that, so a longer window could only
  * select messages whose bodies are gone.
+ * 2026-09-26 起：回复档的**条数**在运行时不取这里，而取绑定助手的「近期保留轮数」；
+ * 这份默认值仍是列默认与新建方案的初值。
  */
 export const QQ_CONTEXT_DEFAULT: QqSchemeContext = Object.freeze({
   judgement_message_limit: 20,
@@ -84,8 +87,6 @@ export const QQ_CONTEXT_DEFAULT: QqSchemeContext = Object.freeze({
   reply_window_minutes: 360,
   reply_token_budget: 6000,
 });
-
-export type QqContextTier = "judgement" | "reply";
 
 export interface QqContextLimits {
   readonly messageLimit: number;
@@ -102,6 +103,13 @@ function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
 /** Validate a stored or assembled context group; storage maps rows through this. */
 export function parseQqSchemeContext(input: unknown): QqSchemeContext {
   return Object.freeze(parse(QqSchemeContextSchema, input));
+}
+
+/** 0046：压缩与装配组（与 shared 同一份契约，存储层在这里过一遍并抛 TypeError）。 */
+export function parseQqSchemeCompression(input: unknown): QqSchemeCompression {
+  const result = QqSchemeCompressionSchema.safeParse(input);
+  if (!result.success) throw new TypeError("Invalid QQ scheme compression input");
+  return Object.freeze(result.data);
 }
 
 /** The three knobs of one tier, under the names the selection works with. */

@@ -20,14 +20,26 @@
 
 import { z } from "zod";
 import {
+  QQ_PROMPT_COMPRESS_DEFAULT,
   QQ_REPLY_DEFAULT_PROMPT,
   type QqSchemePrompts,
   QqSchemePromptsSchema,
 } from "../../shared/contracts/qq";
 import { ContextMessageSchema, type QqContextMessage } from "./qq-context-contract";
 
-/** The six editable slots, in the order the schema declares them. */
-export const QQ_PROMPT_SLOTS = ["scene", "judge", "reply", "review", "sticker", "media"] as const;
+/**
+ * 可编辑的提示词槽位，按 schema 声明顺序。前六个是 buildQqPrompt 的 stage（判断/回复/复核/选图/
+ * 媒体说明），`compress` 不进 stage：它由水位压缩器直接取用（见 conversation-compression.ts）。
+ */
+export const QQ_PROMPT_SLOTS = [
+  "scene",
+  "judge",
+  "reply",
+  "review",
+  "sticker",
+  "media",
+  "compress",
+] as const;
 export type QqPromptSlot = (typeof QQ_PROMPT_SLOTS)[number];
 
 /**
@@ -74,6 +86,7 @@ export const QQ_PROMPT_DEFAULTS: QqSchemePrompts = Object.freeze({
     "看不清或听不清就直说看不清、听不清，不要猜。",
     "这段说明是模型生成的附属内容，不是群友说过的话。",
   ].join("\n"),
+  compress: QQ_PROMPT_COMPRESS_DEFAULT,
 });
 
 /** Validate a stored or assembled prompt set; storage maps rows through this. */
@@ -131,7 +144,7 @@ export const QQ_MEDIA_RULE =
   "标着「媒体未读」的消息其内容未知，不得据此推断画面或声音，也不得假装已经知道。";
 
 /**
- * 判断打分口径（用户 2026-09-25，当日第二次调整后定稿）。程序拥有，和 `QQ_MEDIA_RULE` 同一个理由：
+ * 判断打分口径。程序拥有，和 `QQ_MEDIA_RULE` 同一个理由：
  * 它规定的是"分数是怎么来的"，不是文风偏好。方案里的判断任务文案可以改，但改成什么都得按同一条
  * 口径打分，否则同一份分数在不同方案之间不可比，方案门槛（`initiative_min_score`）也就失去了意义。
  *
@@ -216,7 +229,7 @@ export interface QqPromptInput {
   /** Omitted or empty means every optional module is off, and no section is emitted for it. */
   readonly material?: readonly QqPromptMaterial[];
   /**
-   * 这一轮回的是谁（0037，用户 2026-09-25）。判断与生成都是**按发言人**各跑一次，所以每次调用都要
+   * 这一轮回的是谁（0037，）。判断与生成都是**按发言人**各跑一次，所以每次调用都要
    * 说清"现在在回哪一位"——否则模型只能靠猜，写出来的话就可能回错人。`null`／省略表示这一轮没有
    * 具体的回话对象（冷场发起是往安静的房间里开话题）。
    */
@@ -285,7 +298,7 @@ export function buildQqPrompt(input: QqPromptInput): readonly QqPromptSection[] 
   );
   const slot = input.tier === "judgement" ? "judge" : input.tier;
   sections.push(section("task", "system", TITLES.task, prompts[slot]));
-  // 6b — the judgement's score rubric, program-owned (用户 2026-09-25): the scheme's judge text
+  // 6b — the judgement's score rubric, program-owned : the scheme's judge text
   // says *what* to judge, this says how the number is arrived at. Only the judgement tier has one.
   if (input.tier === "judgement")
     sections.push(section("scoring", "system", TITLES.scoring, QQ_JUDGEMENT_SCORE_RULE));
@@ -424,7 +437,12 @@ export function renderQqTimeline(
       : new Set(options.attentionMembers);
   const lines = ["以下为最近的群聊记录，按时间从旧到新，方括号内是距现在的时长。"];
   if (important !== null) {
-    lines.push("标注「（重要的人）」的是这个人自己指定要更留意的群友。");
+    // （软优先的实际语义）：名单不只是"更显眼"——它说明这个人执行时该优先听谁的。
+    // 门槛一个不动（这条切换仍由 attention 模式决定），这里改的是提示词说清了什么。
+    lines.push(
+      "标注「（重要的人）」的是这个人指定要更留意的群友：他们的请求与要求优先考虑，" +
+        "同一件事上与其他人的说法冲突时以他们为准；这不改变任何发言门槛。",
+    );
   }
   for (const message of timeline) {
     const parts: string[] = [];

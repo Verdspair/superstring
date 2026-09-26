@@ -277,6 +277,13 @@ export function buildConsolidationPrompt(
     '"summary":"简介","tags":[],"kinds":["semantic"],"body":"Markdown正文"}}。' +
     "\nkinds仅限working、semantic、episodic、procedural，可多选。" +
     "\n无长期价值则memory为null。不要代码围栏，不要返回时间、ID、权限或状态。";
+  // 「重要的人」（软优先/硬优先名单）要影响整理。只在真的有标记来源时补这一句，
+  // 别的任务与网络来源不背上一条用不到的规则；它只说标记是什么意思，判不保留仍由上面的要求决定。
+  if (sources.some((source) => source.important === true)) {
+    system +=
+      '\n来源里带 "important": true 的是本会话「重要的人」名单里的群友：' +
+      "他们明确说过、且与其他来源不冲突的事实优先保留（其余来源按上面的要求照常判断）。";
+  }
   const additional = (config.additional ?? "").trim();
   if (additional) {
     system += `\n补充整理要求：\n${additional}`;

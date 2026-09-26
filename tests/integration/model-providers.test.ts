@@ -1,4 +1,4 @@
-// 外部模型 API（0032，用户 2026-09-25）：provider 的读写、解析与容量来源。
+// 外部模型 API（0032，）：provider 的读写、解析与容量来源。
 //
 // What is pinned here: the key never comes back over HTTP, a model name belongs to exactly one
 // provider, the whole models list travels with compare-and-swap, and — the reason the page asks for
@@ -74,7 +74,7 @@ describe("视觉调用也走外部路由（0032 后续）", () => {
   });
 });
 
-describe("配置的模型不可用时的替补（用户 2026-09-25）", () => {
+describe("配置的模型不可用时的替补", () => {
   it("本地模型没加载时改用可用的，加载回来就用回原来的", () => {
     // 配置的是本地没加载的模型 → 用当前可用的第一个
     expect(

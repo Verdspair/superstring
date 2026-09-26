@@ -98,11 +98,11 @@ function textPart(text: string): QqOutputPart {
   return Object.freeze({ kind: "text", text });
 }
 
-/** 一轮回复最多几条消息（2026-09-25 用户决定：一条主题一条消息）。可配置化记为后续项。 */
+/** 一轮回复最多几条消息（一条主题一条消息）。可配置化记为后续项。 */
 export const QQ_REPLY_MESSAGE_LIMIT = 3;
 
 /**
- * 把一次生成的文本切成"要依次发出的几条消息"（2026-09-25 用户决定）。
+ * 把一次生成的文本切成"要依次发出的几条消息"。
  *
  * The model separates distinct topics with line breaks — one topic per line — and the transport
  * sends one platform request per part, so the split IS the user-visible behaviour. Nothing is

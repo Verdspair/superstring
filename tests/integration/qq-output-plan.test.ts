@@ -527,7 +527,7 @@ describe("handing the plan to the send ledger", () => {
   });
 });
 
-describe("一条主题一条消息（2026-09-25 用户决定）", () => {
+describe("一条主题一条消息", () => {
   const plan = (text: string) => {
     const built = planQqOutput({
       text,

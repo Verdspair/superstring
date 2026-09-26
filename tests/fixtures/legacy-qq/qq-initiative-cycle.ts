@@ -1,7 +1,7 @@
 // Test-only pre-cutover behavior oracle; never import from production.
 // P3l synthetic-only orchestration of classified initiative: no transport and no submit.
 //
-// 0037（用户 2026-09-25）：这一轮要回几个人，就各跑一遍回复管线——**每人一次生成、一人一条消息**。
+// 0037：这一轮要回几个人，就各跑一遍回复管线——**每人一次生成、一人一条消息**。
 // 「不同人的消息分开来跑」在这里落地：一个 opening（一个发言人，或冷场发起那一个"没有对象"的
 // opening）各走一次 生成 → 选图 → 复核/重算 → 预检，彼此独立；一个人写不出来只丢他那一条（各自独立，
 // 用户在弹窗里选的），全部写不出来才整轮不发。

@@ -32,8 +32,19 @@ const handles: ReturnType<typeof openBusinessDb>[] = [];
 const dirs: string[] = [];
 afterEach(() => {
   for (const handle of handles.splice(0)) handle.close();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) removeTempDir(dir);
 });
+/** Windows can hold the SQLite -wal/-shm files for a moment after close(); retry briefly. */
+function removeTempDir(dir: string): void {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      Bun.sleepSync(25);
+    }
+  }
+}
 const generated = { kind: "generated", style: "rings", seed: "one shared identity" } as const;
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jvX8AAAAASUVORK5CYII=",
@@ -281,7 +292,7 @@ describe("server-shared conversation avatars", () => {
     old.close();
     const h = openBusinessDb({ path: filename });
     handles.push(h);
-    expect(h.db.query("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+    expect(h.db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
     expect(h.db.query("SELECT * FROM conversations").all()).toEqual(prior);
     expect(h.db.query("SELECT COUNT(*) AS n FROM conversation_avatars").get()).toEqual({ n: 0 });
   });

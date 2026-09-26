@@ -14,6 +14,7 @@ import {
   ensureDefaults,
 } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { traceErrorCode } from "../../src/server/observability/agent-tracing";
 import { RuntimeTelemetry } from "../../src/server/observability/runtime-telemetry";
 import { RuntimeSpanRepository } from "../../src/server/observability/span-repository";
 import type { RuntimeSpan } from "../../src/shared/contracts/runtime-observability";
@@ -385,4 +386,11 @@ describe("Agent runtime execution traces", () => {
     );
     expect(f.spans.page({}).items).toHaveLength(0);
   });
+});
+
+it("normalises our own lowercase codes instead of burying them as AGENT_FAILED", () => {
+  // 瀑布里的原因不该因为大小写就消失；但任意外来文本（URL、provider 文案）
+  // 仍然不许变成可搜索的诊断码。
+  expect(traceErrorCode({ code: "binding_changed" })).toBe("BINDING_CHANGED");
+  expect(traceErrorCode({ code: "https://PRIVATE_TOKEN" })).toBe("AGENT_FAILED");
 });

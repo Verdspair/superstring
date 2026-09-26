@@ -1,5 +1,5 @@
 import type { ModelMessage } from "../../shared/contracts/agent-run";
-import type { ChatMessage, ModelGateway } from "../llm/model-gateway";
+import type { ChatMessage, ModelGateway, ModelTool } from "../llm/model-gateway";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
 
 export interface ModelRequest {
@@ -8,6 +8,8 @@ export interface ModelRequest {
   temperature?: number;
   maxTokens?: number;
   responseSchema?: Record<string, unknown>;
+  /** 原生工具声明（issue #10）：只有决策步骤带；叶子任务继续只用 responseSchema。 */
+  tools?: readonly ModelTool[];
   signal?: AbortSignal;
   /** Reports the model sent by the adapter after routing or local fallback. */
   onModelResolved?: (model: string) => void;

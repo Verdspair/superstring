@@ -156,7 +156,8 @@ export class SqliteMemoryModule implements MemoryModule {
           );
         if (!bounded) return choose(candidates);
         const actual = await modelCapacity();
-        const output = Math.min(cfg.max_output_tokens, Math.max(128, limit * 48 + 32));
+        // 与 selectRecallIds 同一口径：下限 384，给先写一句话的模型留余量。
+        const output = Math.min(cfg.max_output_tokens, Math.max(384, limit * 48 + 32));
         return boundedRecallIds(
           candidates,
           Math.max(

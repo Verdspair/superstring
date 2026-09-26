@@ -1,7 +1,7 @@
 import { Copy, FileDiff, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { type QqSchemePrompts, qqReplyTaskPrompt } from "../../../shared/contracts/qq";
+import { type QqSchemePrompts, qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
@@ -110,6 +110,125 @@ function SchemeNumber({
           if (raw === undefined) return;
           if (valid(raw)) {
             patch(group, { [name]: Number(raw) });
+            clear();
+          } else
+            setInvalid((old) => ({
+              ...old,
+              [id]: t("connections.enterAValidIntegerWithinTheAllowedRange"),
+            }));
+        }}
+      />
+      {invalid[id] && (
+        <p className="text-xs text-destructive" role="alert">
+          {invalid[id]}
+        </p>
+      )}
+    </Field>
+  );
+}
+
+/**
+ * 回复档的「消息条数」不再由方案决定：它跟随**绑定助手**的「保留最近轮数」，
+ * 所以这里只读显示——值一致就显示该值，多个助手不同就显示区间，没有会话用这个方案就直说。
+ */
+function BoundRecentTurns() {
+  const { t } = useTranslation();
+  const { qqSchemeEditor: editor, qqBindings, agents, loadQqBindings } = useSuperstringStore();
+  useEffect(() => {
+    void loadQqBindings();
+  }, [loadQqBindings]);
+  if (!editor) return null;
+  const agentIds = new Set(
+    qqBindings
+      .filter((binding) => binding.scheme_id === editor.source.id)
+      .map((binding) => binding.agent_id),
+  );
+  const values = [
+    ...new Set(
+      agents.filter((agent) => agentIds.has(agent.id)).map((agent) => agent.p5_config.recent_turns),
+    ),
+  ].sort((left, right) => left - right);
+  const value =
+    agentIds.size === 0
+      ? t("connections.noConversationUsesThisSchemeYet")
+      : values.length === 0
+        ? t("connections.followsTheBoundAssistant")
+        : values.length === 1
+          ? String(values[0])
+          : t("connections.variesByAssistantBetween", {
+              "0": String(values[0]),
+              "1": String(values[values.length - 1]),
+            });
+  return (
+    <Field
+      label="connections.replyRecentMessages"
+      info="connections.followsTheBoundAssistantRecentTurns"
+    >
+      <p className="rounded-md bg-muted/50 px-3 py-2 text-sm text-muted-foreground">{value}</p>
+    </Field>
+  );
+}
+
+/** 装配冗余在界面上是整数百分比，存的是比例（5 ↔ 0.05）。 */
+function SchemePercent({
+  name,
+  label,
+  info,
+}: {
+  name: "headroom_ratio";
+  label: string;
+  info: string;
+}) {
+  const { t } = useTranslation();
+  const {
+    qqSchemeEditor: editor,
+    qqSchemeSaving: saving,
+    patchQqSchemeGroup: patch,
+  } = useSuperstringStore();
+  const [texts, setTexts] = useQqInput("schemeTexts");
+  const [invalid, setInvalid] = useQqInput("schemeInvalid");
+  if (!editor) return null;
+  const id = `compression.${name}`;
+  const percent = Math.round(editor.compression[name] * 100);
+  const valid = (raw: string) =>
+    raw.trim() !== "" && Number.isInteger(Number(raw)) && Number(raw) >= 0 && Number(raw) <= 50;
+  const write = (raw: string) => patch("compression", { [name]: Number(raw) / 100 });
+  const clear = () => {
+    setTexts((old) => {
+      const next = { ...old };
+      delete next[id];
+      return next;
+    });
+    setInvalid((old) => {
+      const next = { ...old };
+      delete next[id];
+      return next;
+    });
+  };
+  return (
+    <Field label={label} info={info}>
+      <Input
+        type="number"
+        disabled={saving}
+        value={texts[id] ?? String(percent)}
+        aria-invalid={!!invalid[id]}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setTexts((old) => ({ ...old, [id]: raw }));
+          if (valid(raw)) {
+            write(raw);
+            setInvalid((old) => {
+              const next = { ...old };
+              delete next[id];
+              return next;
+            });
+          }
+        }}
+        onBlur={() => {
+          const raw = texts[id];
+          if (raw === undefined) return;
+          if (valid(raw)) {
+            write(raw);
             clear();
           } else
             setInvalid((old) => ({
@@ -382,14 +501,22 @@ export function SchemeStudio() {
                   <p className="text-sm text-muted-foreground">
                     {t("connections.whenEnabledGenerateAReplyPerSpeakerAndAdd")}
                   </p>
+                  {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
+                      一改就写进方案的 prompt_reply，服务端取的是同一个函数的结果。 */}
                   <Field
                     label="connections.effectiveReplyTask"
-                    info="connections.readOnlyDeterminedByTheReplyMode"
+                    info="connections.editTheReplyTaskItWinsOverTheSwitch"
                   >
                     <Textarea
-                      readOnly
-                      className="min-h-36 bg-muted font-mono text-xs leading-6"
-                      value={qqReplyTaskPrompt(editor.reply.split_by_speaker)}
+                      className="min-h-36 font-mono text-xs leading-6"
+                      disabled={saving}
+                      value={qqEffectiveReplyPrompt(
+                        editor.prompts.reply,
+                        editor.reply.split_by_speaker,
+                      )}
+                      onChange={(e) =>
+                        state.patchQqSchemeGroup("prompts", { reply: e.target.value })
+                      }
                     />
                   </Field>
                 </section>
@@ -420,15 +547,20 @@ export function SchemeStudio() {
                       </p>
                     </div>
                     <div className="grid gap-5 sm:grid-cols-2">
-                      <SchemeNumber
-                        group="context"
-                        name={`${part}_message_limit`}
-                        label={
-                          part === "judgement"
-                            ? "connections.judgementRecentMessages"
-                            : "connections.replyRecentMessages"
-                        }
-                      />
+                      {/* 回复档的条数跟随绑定助手的「保留最近轮数」，所以它是只读的。 */}
+                      {part === "reply" ? (
+                        <BoundRecentTurns />
+                      ) : (
+                        <SchemeNumber
+                          group="context"
+                          name={`${part}_message_limit`}
+                          label={
+                            part === "judgement"
+                              ? "connections.judgementRecentMessages"
+                              : "connections.replyRecentMessages"
+                          }
+                        />
+                      )}
                       <SchemeNumber
                         group="context"
                         name={`${part}_window_minutes`}
@@ -459,6 +591,37 @@ export function SchemeStudio() {
                     </div>
                   </section>
                 ))}
+                <section className="space-y-5 border-t pt-6">
+                  <div className="border-b pb-3">
+                    <h2 className="text-base font-semibold">
+                      {t("connections.compressionAndAssembly")}
+                    </h2>
+                  </div>
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <SchemeNumber
+                      group="compression"
+                      name="watermark_trigger"
+                      label="connections.watermarkTriggerMessages"
+                      info="connections.oldMessagesOutsideTheReplyWindowAccumulateUntilThisMany"
+                    />
+                    <SchemeNumber
+                      group="compression"
+                      name="package_limit"
+                      label="connections.watermarkPackageLimit"
+                      info="connections.packagesBeyondThisManyAreDroppedOldestFirst"
+                    />
+                    <SchemePercent
+                      name="headroom_ratio"
+                      label="connections.assemblyHeadroomPercent"
+                      info="connections.reserveThisShareOfTheCapacityBeforeAssembling"
+                    />
+                  </div>
+                  <PromptEditor
+                    slot="compress"
+                    titleKey="connections.watermarkCompressionTask"
+                    hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
+                  />
+                </section>
                 <div className="rounded-lg bg-muted p-5 text-sm leading-6">
                   <h3 className="font-medium">
                     {t("connections.bindingsDetermineTheMaterialScope")}

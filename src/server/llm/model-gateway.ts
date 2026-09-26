@@ -39,6 +39,7 @@ import {
   structuredOutputStart,
   toStrictRequiredSchema,
 } from "./strict-json-schema";
+import { announceToolsFallback, rememberToolsUnavailable, toolsUnavailable } from "./tool-calling";
 
 export interface ChatMessage {
   role: string;
@@ -81,6 +82,13 @@ export function resolveLmStudioConfig(
   return { baseUrl: baseUrl.replace(/\/+$/, ""), model, timeoutSeconds, apiKey };
 }
 
+/** 声明给模型的原生工具（OpenAI 形状的 function 部分）。 */
+export interface ModelTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
 export interface ModelGateway {
   listModels(): Promise<string[]>;
   /** `signal` aborts the capacity probe when the caller is cancelled. */
@@ -97,6 +105,11 @@ export interface ModelGateway {
      * machine-checkable consolidation result.
      */
     responseSchema?: Record<string, unknown>;
+    /**
+     * 原生工具声明（issue #10）：决策步骤把已广告的动作按 function 形状发给模型，模型的
+     * `tool_calls` 会被映射回现有 invoke 决策。只对外部路由发送；本地服务保持冻结的 JSON 决策。
+     */
+    tools?: readonly ModelTool[];
     /** Propagated to the underlying fetch so a caller cancellation aborts the call. */
     signal?: AbortSignal;
     onModelResolved?: (model: string) => void;
@@ -121,6 +134,52 @@ function reportResolvedModel(callback: ((model: string) => void) | undefined, mo
   } catch {
     console.warn("model routing diagnostic write failed");
   }
+}
+
+/**
+ * 原生工具调用 → 现有 invoke 决策（issue #10）。
+ *
+ * 一次回复只认一个决策，所以只有第一个调用算数（多调用是并行意图，本协议一步一个动作；后续步骤
+ * 会重新决策）。参数由服务端按函数参数 schema 校验过形状，这一层只守最后一道：读不出就不猜，
+ * 返回 null 交给调用方按"读不出 = 沉默"处理。
+ */
+function decisionTextFromToolCalls(calls: unknown): string | null {
+  const first = Array.isArray(calls)
+    ? (calls[0] as { function?: { name?: unknown; arguments?: unknown } } | undefined)
+    : undefined;
+  const name = first?.function?.name;
+  if (typeof name !== "string" || name.length === 0) return null;
+  const rawArguments = first?.function?.arguments;
+  let parsed: unknown;
+  if (rawArguments === undefined || rawArguments === null || rawArguments === "") parsed = {};
+  else if (typeof rawArguments === "string") {
+    try {
+      parsed = JSON.parse(rawArguments);
+    } catch {
+      return null;
+    }
+  } else parsed = rawArguments;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return JSON.stringify({ kind: "invoke", name, arguments: parsed });
+}
+
+/** 读不出的调用只记一个摘要：这是诊断，不是内容。 */
+function summariseToolCalls(calls: unknown): string {
+  try {
+    return JSON.stringify(calls).slice(0, 300);
+  } catch {
+    return "(unserialisable)";
+  }
+}
+
+/**
+ * 服务拒绝时它自己说的话（`LM Studio 400: {…}` → `{…}`）：只报状态码猜不出为什么被拒，
+ * 要求"报错码要能定位"。整条消息兜底，一行、截断。
+ */
+function providerReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const oneLine = message.replace(/\s+/g, " ").trim();
+  return oneLine.length > 300 ? `${oneLine.slice(0, 300)}…` : oneLine;
 }
 
 /**
@@ -427,7 +486,7 @@ export interface ExternalModelRoute {
 }
 
 /**
- * 配置的模型不可用时的替补规则（用户 2026-09-25）。
+ * 配置的模型不可用时的替补规则。
  *
  * "Unavailable" is decided by this side, not guessed: a model declared on the 外部模型API page is
  * used as configured (its provider is the user's own choice and its window is on record), while a
@@ -600,7 +659,11 @@ export function createLmStudioClient(
           : isExternal
             ? toStrictRequiredSchema(options.responseSchema)
             : options.responseSchema;
-      const send = async (level: StructuredOutputLevel) => {
+      // 原生 tools 只发给外部路由（issue #10）：本地模型服务保持那份冻结的 JSON 决策协议，本次改动
+      // 不动它。某个服务明确拒绝过 tools 之后，本进程不再带（见 tool-calling.ts）。
+      const toolDeclarations = options.tools ?? [];
+      let sendTools = isExternal && toolDeclarations.length > 0 && !toolsUnavailable(key);
+      const send = async (level: StructuredOutputLevel, withTools: boolean) => {
         const body: Record<string, unknown> = {
           model: used,
           messages: options.messages,
@@ -609,6 +672,16 @@ export function createLmStudioClient(
         if (options.maxTokens !== undefined) {
           if (options.maxTokens < 1) throw new Error("max_tokens must be positive");
           body.max_tokens = options.maxTokens;
+        }
+        if (withTools) {
+          body.tools = toolDeclarations.map((tool) => ({
+            type: "function",
+            function: {
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.parameters,
+            },
+          }));
         }
         if (options.responseSchema !== undefined && level !== "none") {
           body.response_format =
@@ -626,17 +699,34 @@ export function createLmStudioClient(
           timeoutMs,
           options.signal,
         )) as {
-          choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>;
+          choices?: Array<{
+            finish_reason?: string | null;
+            message?: { content?: string | null; tool_calls?: unknown };
+          }>;
         };
       };
-      // 结构化输出的自动降级（用户 2026-09-25）：有些服务不接受严格的 json_schema 而直接 4xx，
+      // 带 tools 的请求被 4xx 拒绝（不是鉴权问题）→ 记忆并去掉 tools 重发一次。撞的是"服务不接受
+      // 这个字段"，不是内容问题，所以重发安全；档位按服务+模型记住，后续调用不再白撞。
+      const attempt = async (level: StructuredOutputLevel) => {
+        try {
+          return await send(level, sendTools);
+        } catch (error) {
+          if (!sendTools || !structuredOutputRejected(error)) throw error;
+          const status = (error as { status?: number }).status;
+          rememberToolsUnavailable(key);
+          announceToolsFallback(key, used, status, providerReason(error));
+          sendTools = false;
+          return await send(level, false);
+        }
+      };
+      // 结构化输出的自动降级：有些服务不接受严格的 json_schema 而直接 4xx，
       // 而我们的解析本来就是严格的，所以退回 json_object、再退回不带该字段都是安全的。
       let payload: Awaited<ReturnType<typeof send>>;
       if (options.responseSchema === undefined) {
-        payload = await send("none");
+        payload = await attempt("none");
       } else {
         // 形状注定被严格模式整单拒绝的 schema（判别联合的 oneOf）不去白撞一次 400：直接起步于
-        // json_object（用户 2026-09-26 云端报错）。本地路由不参与这个判断。
+        // json_object。本地路由不参与这个判断。
         const strictAccepted = !isExternal || strictSchemaAccepted(outboundSchema);
         if (!strictAccepted) announceStrictSchemaSkip(key, used);
         let level = structuredOutputStart(key, strictAccepted);
@@ -644,7 +734,7 @@ export function createLmStudioClient(
         const attemptedStrict = level === "json_schema";
         for (;;) {
           try {
-            payload = await send(level);
+            payload = await attempt(level);
             if (level !== "json_schema" && attemptedStrict) {
               rememberStructuredOutput(key, level);
               console.warn(
@@ -658,7 +748,7 @@ export function createLmStudioClient(
             if (next === null) throw error;
             const status = (error as { status?: number }).status;
             console.warn(
-              `[model-structured] ${used} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}`,
+              `[model-structured] ${used} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}：${providerReason(error)}`,
             );
             level = next;
           }
@@ -674,6 +764,19 @@ export function createLmStudioClient(
         } catch {
           console.warn("model response diagnostic write failed");
         }
+      }
+      // 原生调用优先于正文：它是模型对"要做什么"最直接的表达。读不出参数的调用不算决策——
+      // 记下摘要（诊断）后按空正文处理，让严格解析照旧失败（读不出 = 沉默，不猜）。
+      const toolCalls = choice?.message?.tool_calls;
+      if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+        const decision = decisionTextFromToolCalls(toolCalls);
+        if (decision === null) {
+          console.warn(
+            `[model-tools] ${used} 的工具调用读不出参数：${summariseToolCalls(toolCalls)}`,
+          );
+          return "";
+        }
+        return decision;
       }
       if (choice?.finish_reason === "length") {
         throw new ModelUnavailableError(

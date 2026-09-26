@@ -97,7 +97,7 @@ export function enqueueQqMemoryNow(
 }
 
 /**
- * 「记忆整理 · 立即整理」for one bound conversation (用户 2026-09-25).
+ * 「记忆整理 · 立即整理」for one bound conversation .
  *
  * Why this exists at all: the two halves of QQ memory both lacked an entrance — the automatic one
  * needed a per-conversation count no page could set, and `enqueueQqMemoryNow` above was written but

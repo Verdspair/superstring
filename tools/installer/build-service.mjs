@@ -44,7 +44,7 @@ fs.writeFileSync(
       version,
       platform: "win32-x64",
       layoutVersion: 1,
-      businessSchemaVersion: 44,
+      businessSchemaVersion: 47,
       kind: "standalone-verification-only",
       files: manifest,
     },

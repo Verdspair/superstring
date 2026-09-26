@@ -233,7 +233,7 @@ describe("QQ settings routes", () => {
     const h = setup();
     try {
       const initial = await settings(h.app);
-      // 0038 (用户 2026-09-25): one judgement model for the whole QQ side. Unset is the old
+      // 0038 : one judgement model for the whole QQ side. Unset is the old
       // behaviour — follow the bound assistant's conversation model — so it starts null.
       expect(initial.judgement_model_name).toBeNull();
       const chosen = await body<QqSettingsResponse>(

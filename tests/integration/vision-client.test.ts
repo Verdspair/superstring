@@ -67,20 +67,113 @@ describe("the multimodal request shape", () => {
     });
   });
 
-  it("uses the LM Studio default token and reports a rejected call", async () => {
+  it("uses the LM Studio default token and classifies a rejected call like the gateway", async () => {
     const seen: string[] = [];
-    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
-      const headers = init?.headers as Record<string, string>;
-      seen.push(headers.authorization ?? "");
-      return new Response("nope", { status: 401 });
-    }) as unknown as typeof fetch;
-    const client = createLmStudioVisionClient(config, fetchImpl);
-    await expect(client.annotate({ model: "v", prompt: "p", images: [] })).rejects.toThrow("401");
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    let failure: { code?: string; status?: number } | null = null;
+    try {
+      const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+        const headers = init?.headers as Record<string, string>;
+        seen.push(headers.authorization ?? "");
+        return new Response("nope", { status: 401 });
+      }) as unknown as typeof fetch;
+      const client = createLmStudioVisionClient(config, fetchImpl);
+      failure = await client.annotate({ model: "v", prompt: "p", images: [] }).then(
+        () => null,
+        (error: unknown) => error as { code?: string; status?: number },
+      );
+    } finally {
+      console.warn = original;
+    }
     expect(seen[0]).toBe("Bearer lm-studio");
+    // 鉴权失败与网关同码同文，不再是裸的 "401"；状态码仍跟着走，结构化输出的降级认得出这是 4xx。
+    expect(failure?.code).toBe("MODEL_SERVICE_UNAVAILABLE");
+    expect(failure?.status).toBe(401);
+    expect(warnings.join("\n")).toContain("HTTP 401");
   });
 
   /**
-   * 图片这一路也要降级（用户 2026-09-25）：媒体读取走的是这个客户端，而"服务不接受严格
+   * 一张图始终读不出来，库里只有 AGENT_FAILED、日志里什么都没有，于是"为什么
+   * 读不出"无从查起。视觉失败的原因现在落在日志里（状态码 + 截断的响应体），错误码保持网关那张
+   * 表的通用值——原因不是给机器分流的，是给人看的。
+   */
+  it("keeps the provider's own reason in the log while the code stays generic", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    let failure: { code?: string; status?: number } | null = null;
+    try {
+      const fetchImpl = (async () =>
+        new Response(
+          '{"error":{"message":"upstream overloaded, retry later","type":"server_error"}}',
+          { status: 503 },
+        )) as unknown as typeof fetch;
+      const client = createLmStudioVisionClient(config, fetchImpl);
+      failure = await client
+        .annotate({ model: "vision-model", prompt: "写一段说明", images: [] })
+        .then(
+          () => null,
+          (error: unknown) => error as { code?: string; status?: number },
+        );
+    } finally {
+      console.warn = original;
+    }
+    expect(failure?.code).toBe("MODEL_ERROR");
+    expect(failure?.status).toBe(503);
+    const logged = warnings.join("\n");
+    expect(logged).toContain("HTTP 503");
+    expect(logged).toContain("upstream overloaded, retry later");
+  });
+
+  it("does not let a non-JSON 200 look like an invalid decision", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    let failure: { code?: string } | null = null;
+    try {
+      const fetchImpl = (async () =>
+        new Response("<html><body>502 Bad Gateway</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        })) as unknown as typeof fetch;
+      const client = createLmStudioVisionClient(config, fetchImpl);
+      failure = await client.annotate({ model: "vision-model", prompt: "p", images: [] }).then(
+        () => null,
+        (error: unknown) => error as { code?: string },
+      );
+    } finally {
+      console.warn = original;
+    }
+    // 运行时会把它当成 SyntaxError（=决策不合法）；映射之后它是普通的模型调用失败。
+    expect(failure?.code).toBe("MODEL_ERROR");
+    expect(warnings.join("\n")).toContain("502 Bad Gateway");
+  });
+
+  it("reports a timed-out vision call as MODEL_TIMEOUT and logs the failure", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    let failure: { code?: string } | null = null;
+    try {
+      const fetchImpl = (async () => {
+        throw new DOMException("Model response timed out", "TimeoutError");
+      }) as unknown as typeof fetch;
+      const client = createLmStudioVisionClient({ ...config, timeoutSeconds: 1 }, fetchImpl);
+      failure = await client.annotate({ model: "vision-model", prompt: "p", images: [] }).then(
+        () => null,
+        (error: unknown) => error as { code?: string },
+      );
+    } finally {
+      console.warn = original;
+    }
+    expect(failure?.code).toBe("MODEL_TIMEOUT");
+    expect(warnings.join("\n")).toContain("TimeoutError");
+  });
+
+  /**
+   * 图片这一路也要降级：媒体读取走的是这个客户端，而"服务不接受严格
    * json_schema"会让每一次图片理解都失败——失败又会被记成"试过但没读出来"，把两条主动路径按住。
    * 与网关同一条链：json_schema → json_object → 不带 response_format。
    */

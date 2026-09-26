@@ -76,9 +76,12 @@ export function invalidSchemeInputs(state: SuperstringState) {
   const editor = state.qqSchemeEditor;
   return Object.entries(state.qqInputs.schemeTexts).filter(([field, raw]) => {
     const [group, key] = field.split(".");
-    const value = editor?.[group as "rhythm" | "context" | "outputReserve" | "stickers"];
+    const value =
+      editor?.[group as "rhythm" | "context" | "compression" | "outputReserve" | "stickers"];
     if (key === "active_hours_start_minutes" || key === "active_hours_end_minutes") return false;
-    return !raw.trim() || !value || Number(raw) !== (value as Record<string, unknown>)[key];
+    // 装配冗余在界面上是整数百分比，存的是比例：比之前先换算，越界自然会对不上而被判无效。
+    const typed = key === "headroom_ratio" ? Number(raw) / 100 : Number(raw);
+    return !raw.trim() || !value || typed !== (value as Record<string, unknown>)[key];
   });
 }
 

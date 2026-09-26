@@ -1,4 +1,13 @@
 import { z } from "zod";
+
+/**
+ * 带码抛出：运行记录与 span 只发布抛出点自己设的 `.code`（读不出码的失败
+ * 会塌成 AGENT_FAILED，找不到是哪一个）。码写进消息不会生效——那不是码，是文本。
+ */
+function codedError(code: string): Error {
+  return Object.assign(new Error(code), { code });
+}
+
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { BuiltInAction } from "../agent/built-in-actions";
 import { schemeStickerCollectionIds } from "../db/qq-scheme-repository";
@@ -104,7 +113,7 @@ export function createQqStickerSearch(options: {
       } = { status: catalog.state, items: [], nextCursor: null };
       const sources: SourceRef[] = [];
       const fits = await options.fit(arguments_, signal);
-      if (!fits(value, sources)) throw new Error("STICKER_SEARCH_CONTEXT_LIMIT");
+      if (!fits(value, sources)) throw codedError("STICKER_SEARCH_CONTEXT_LIMIT");
       const limit = input.limit ?? 12;
       let skippedForBudget = false;
       for (const [index, asset] of matches.entries()) {
@@ -133,7 +142,7 @@ export function createQqStickerSearch(options: {
         if (value.items.length >= limit) break;
       }
       if (!value.items.length && skippedForBudget) value.status = "budget_exhausted";
-      if (!fits(value, sources)) throw new Error("STICKER_SEARCH_CONTEXT_LIMIT");
+      if (!fits(value, sources)) throw codedError("STICKER_SEARCH_CONTEXT_LIMIT");
       signal.throwIfAborted();
       options.assertCurrent();
       return { value, sources };

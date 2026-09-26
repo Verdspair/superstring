@@ -36,8 +36,14 @@ export function startAgentTrace(
 
 export function traceErrorCode(error: unknown): string {
   const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;
-  // Arbitrary provider messages/URLs must not become a searchable diagnostic code.
-  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(code) ? code : "AGENT_FAILED";
+  if (typeof code === "string") {
+    // Arbitrary provider messages/URLs must not become a searchable diagnostic code.
+    if (/^[A-Z][A-Z0-9_]{0,79}$/.test(code)) return code;
+    // 项目自己的小写码（如唤醒调度里的 binding_changed）归一大写再显示——把它们一律埋成
+    // AGENT_FAILED 会让瀑布里的原因消失。
+    if (/^[a-z][a-z0-9_]{0,79}$/.test(code)) return code.toUpperCase();
+  }
+  return "AGENT_FAILED";
 }
 
 export async function withinAgentTrace<T>(

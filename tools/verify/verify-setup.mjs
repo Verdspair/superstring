@@ -321,6 +321,18 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0044_conversation_avatars.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0045_qq_conversation_summaries.sql",
+        ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0046_qq_context_compression.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0047_qq_context_limit_caps.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

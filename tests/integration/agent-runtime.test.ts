@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import {
   AgentRuntime,
   AgentRuntimeError,
@@ -436,6 +437,209 @@ describe("unified AgentRuntime", () => {
         "failed",
       );
     }
+  });
+
+  /**
+   * issue #10 的两条边界：①已广告的动作以原生 tools 声明给模型（网关据此发送，本地路由不发送）；
+   * ②原生调用映射回来的仍是同一个决策入口，所以"没被广告过的动作"照旧拒绝——引入 tools 不放松授权。
+   */
+  it("decides on a reply that mixes the decision JSON with native call markers", async () => {
+    const actions = createBuiltInActions({
+      memory: {
+        async query() {
+          return [];
+        },
+      },
+    });
+    const seen: ModelRequest[] = [];
+    const { runtime } = setup({
+      async complete(request) {
+        seen.push(request);
+        if (seen.length === 1)
+          return [
+            '{"kind":"invoke","name":"memory.query","arguments":{"query":"rule"}}',
+            '<｜DSML｜｜invoke name="memory.query">',
+            "</｜DSML｜｜invoke>",
+          ].join("\n");
+        return '{"kind":"final","outputs":[{"kind":"inline","targetId":"web","text":"answer","stickerIds":[]}]}';
+      },
+    });
+    const result = await runtime.run(
+      { ...spec, availableActions: actions.map((action) => action.description) },
+      // 与 QQ 主动路径一致的缓冲模式：它允许 inline 草稿，正是这条链上出现静默失败的地方。
+      { ...direct, outputMode: "buffered", actions },
+    );
+    // 混排标记只是传输噪音：决策读到了、动作执行了、流程走完。
+    expect(result.status).toBe("completed");
+    expect(seen).toHaveLength(2);
+  });
+
+  /**
+   * `AGENT_FAILED` 曾经是死胡同。定下两条边界：
+   * ① 记录与 span 只发布抛出点**自己设的** `.code`（如动作层的 STICKER_SEARCH_CONTEXT_LIMIT），
+   *    所以无码失败要去看控制台那一行，而不是靠猜消息；
+   * ② 看着像码的失败文本**不许**被当成码发布（隐私边界：`runtime-peripheral-observability` 钉着）；
+   * ③ 叶子解析器读不出输出记 `AGENT_OUTPUT_INVALID`（"输出不合要求"，不是"决策不合法"）。
+   */
+  it("publishes only deliberate codes, and labels an unreadable leaf output", async () => {
+    const coded = setup({
+      async complete() {
+        return "payload";
+      },
+    });
+    await expect(
+      coded.runtime.completeLeaf(
+        { id: "leaf" },
+        {
+          messages: [{ role: "user", content: "hi" }],
+          owner,
+          validate: () => {
+            throw Object.assign(new Error("贴纸检索超出剩余容量"), {
+              code: "STICKER_SEARCH_CONTEXT_LIMIT",
+            });
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "STICKER_SEARCH_CONTEXT_LIMIT" });
+    expect(
+      coded.repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0].errorCode,
+    ).toBe("STICKER_SEARCH_CONTEXT_LIMIT");
+
+    const lookalike = setup({
+      async complete() {
+        return "payload";
+      },
+    });
+    await expect(
+      lookalike.runtime.completeLeaf(
+        { id: "leaf" },
+        {
+          messages: [{ role: "user", content: "hi" }],
+          owner,
+          validate: () => {
+            throw new Error("NEVER_LOG_SOURCE_OR_MODEL_TEXT");
+          },
+        },
+      ),
+    ).rejects.toThrow("NEVER_LOG_SOURCE_OR_MODEL_TEXT");
+    expect(
+      lookalike.repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0].errorCode,
+    ).toBe("AGENT_FAILED");
+
+    const unreadable = setup({
+      async complete() {
+        return "not json at all";
+      },
+    });
+    await expect(
+      unreadable.runtime.completeLeaf(
+        { id: "leaf" },
+        {
+          messages: [{ role: "user", content: "hi" }],
+          owner,
+          validate: (text) => JSON.parse(text),
+        },
+      ),
+    ).rejects.toBeInstanceOf(SyntaxError);
+    expect(
+      unreadable.repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0].errorCode,
+    ).toBe("AGENT_OUTPUT_INVALID");
+
+    // 形状不对（JSON 读得出、schema 不认）与读不出来是同一件事：实测压缩叶子回 `{"facts":[{},{}]}`
+    // 时整个运行掉进无码的 AGENT_FAILED。ZodError 也记 AGENT_OUTPUT_INVALID。
+    const schemaInvalid = setup({
+      async complete() {
+        return '{"facts":[{}]}';
+      },
+    });
+    await expect(
+      schemaInvalid.runtime.completeLeaf(
+        { id: "leaf" },
+        {
+          messages: [{ role: "user", content: "hi" }],
+          owner,
+          validate: (text) =>
+            z.strictObject({ facts: z.array(z.string()) }).parse(JSON.parse(text)),
+        },
+      ),
+    ).rejects.toBeInstanceOf(z.ZodError);
+    expect(
+      schemaInvalid.repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0].errorCode,
+    ).toBe("AGENT_OUTPUT_INVALID");
+  });
+
+  it("logs what the model actually returned when a decision cannot be read", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    try {
+      const { runtime } = setup({
+        async complete() {
+          // 抓到的形状：整段只有原生调用标记，没有决策 JSON。
+          return '<｜DSML｜｜ calls>\n<｜DSML｜｜ invoke name="speech.evaluate">\n</｜DSML｜｜ invoke>\n</｜DSML｜｜ calls>';
+        },
+      });
+      await expect(runtime.run(spec, direct)).rejects.toMatchObject({
+        code: "AGENT_DECISION_INVALID",
+      });
+    } finally {
+      console.warn = original;
+    }
+    const logged = warnings.join("\n");
+    expect(logged).toContain("决策解析失败");
+    expect(logged).toContain("speech.evaluate");
+  });
+
+  it("declares advertised actions as native tools, and still refuses an action nobody advertised", async () => {
+    const seen: ModelRequest[] = [];
+    const actions = createBuiltInActions({
+      memory: {
+        async query() {
+          return [];
+        },
+      },
+    });
+    const declared = actions.map((action) => action.description);
+    const declaredRun = setup({
+      async complete(request) {
+        seen.push(request);
+        return '{"kind":"none"}';
+      },
+    });
+    await declaredRun.runtime.run({ ...spec, availableActions: declared }, { ...direct, actions });
+    expect(seen[0]?.tools).toEqual([
+      {
+        name: "memory.query",
+        description: declared[0]?.description,
+        parameters: declared[0]?.parameters,
+      },
+    ]);
+    // 叶子任务仍然只用 responseSchema，不声明 tools。
+    const leafSeen: ModelRequest[] = [];
+    const leaf = setup({
+      async complete(request) {
+        leafSeen.push(request);
+        return '{"ok":true}';
+      },
+    });
+    await leaf.runtime.completeLeaf(
+      { id: "leaf", responseSchema: { type: "object" } },
+      { messages: [{ role: "user", content: "hi" }], owner },
+    );
+    expect(leafSeen[0]?.tools).toBeUndefined();
+
+    // ② 网关把原生调用映射成的正是这个形状；名称没被广告过就必须拒绝，且原因落库。
+    const refused = setup({
+      async complete() {
+        return '{"kind":"invoke","name":"shell","arguments":{}}';
+      },
+    });
+    await expect(
+      refused.runtime.run({ ...spec, availableActions: declared }, direct),
+    ).rejects.toMatchObject({ code: "AGENT_ACTION_UNAVAILABLE" });
+    expect(
+      refused.repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0].errorCode,
+    ).toBe("AGENT_ACTION_UNAVAILABLE");
   });
 
   it("keeps other targets when one target generation fails or authorization blocks one", async () => {

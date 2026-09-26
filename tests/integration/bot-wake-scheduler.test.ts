@@ -174,6 +174,8 @@ it("publishes stable error codes without exposing failure text", async () => {
   expect(h.a.get(wake.id)?.errorCode).toBe("CONTEXT_MEMORY_BUDGET");
   scheduler.stop();
   const next = offer(h, 1, "opaque-error");
+  // 记录里只有码（上面两条），原因走 onError 交给组合根打日志。
+  const reported: unknown[] = [];
   const opaque = new WakeScheduler({
     repository: h.a,
     policy: () => ({ leaseMs: 1000, renewMs: 500, retryDelayMs: 100, maxAttempts: 1 }),
@@ -183,8 +185,11 @@ it("publishes stable error codes without exposing failure text", async () => {
         code: "sensitive lowercase payload",
       });
     },
+    onError: (error) => void reported.push(error),
   });
   expect(await opaque.runOnce()).toBe(true);
   expect(h.a.get(next.id)?.errorCode).toBe("BOT_RUN_FAILED");
+  expect((reported[0] as Error).message).toContain("private model response");
+  expect(h.a.get(next.id)?.errorCode).not.toContain("private");
   opaque.stop();
 });

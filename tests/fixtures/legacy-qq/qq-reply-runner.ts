@@ -63,7 +63,7 @@ import {
   disabledKindsFromTriggers,
 } from "../../../src/server/services/qq-speaking-contract";
 import { compileSystemPrompt, runtimeFromAgent } from "../../../src/server/services/runtime-config";
-import { qqReplyTaskPrompt } from "../../../src/shared/contracts/qq";
+import { qqEffectiveReplyPrompt } from "../../../src/shared/contracts/qq";
 import type { QqJudgementRun, QqReplyOpening } from "./qq-judgement-runner";
 
 export interface QqPendingReview {
@@ -237,11 +237,14 @@ export async function generateQqTextReply(
       },
     };
   const runtime = runtimeFromAgent(agent);
-  // 回复任务文案由方案开关选（用户 2026-09-25）：开＝按发言人分条的程序文案，关＝程序默认文案。
-  // 方案里那一列 prompt_reply 因此不再参与这里（迁移 0035 的说明）。
+  // 回复任务文案：方案里那份 prompt_reply 改过就用改过的，
+  // 没改过（仍是默认文本）才按开关派生——与生产、界面共用同一个函数。
   const replyPrompts = {
     ...schemePrompts(scheme),
-    reply: qqReplyTaskPrompt(schemeReply(scheme).split_by_speaker),
+    reply: qqEffectiveReplyPrompt(
+      schemePrompts(scheme).reply,
+      schemeReply(scheme).split_by_speaker,
+    ),
   };
   const labels = qqMemberLabels(
     orm,
@@ -272,7 +275,7 @@ export async function generateQqTextReply(
           },
         }),
   };
-  // 记忆按方案的**读取强度**取（用户 2026-09-25 明确：这一项对回复始终有效，不能被固定上限取代）：
+  // 记忆按方案的**读取强度**取：
   // 先按不含资料的提示词做一次容量预检拿到已用额度，再用剩余额度请记忆读取模型挑相关的几条。
   const base = await checkQqModelCapacity(gateway, {
     model: runtime.model_name,

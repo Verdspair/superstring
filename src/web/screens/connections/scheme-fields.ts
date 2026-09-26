@@ -1,4 +1,5 @@
 import {
+  QqSchemeCompressionSchema,
   QqSchemeContextSchema,
   QqSchemeOutputReserveSchema,
   QqSchemeRhythmSchema,
@@ -8,6 +9,7 @@ import {
 export const numericGroups = {
   rhythm: QqSchemeRhythmSchema,
   context: QqSchemeContextSchema,
+  compression: QqSchemeCompressionSchema,
   outputReserve: QqSchemeOutputReserveSchema,
   stickers: QqSchemeStickersSchema,
 };

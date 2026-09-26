@@ -177,7 +177,8 @@ it("stale group recovery keeps the original recipient despite newer unrelated me
   expect(h.sends[0]).toMatchObject({
     message: [
       { type: "at", data: { qq: "20002" } },
-      { type: "text", data: { text: "reply" } },
+      // `@` 与后面那句话之间补一个空格。
+      { type: "text", data: { text: " reply" } },
     ],
   });
   const wake = h.db

@@ -171,7 +171,7 @@ export const LocalModelCatalogResponseSchema = z.strictObject({
 
 export type LocalModelCatalogResponse = z.infer<typeof LocalModelCatalogResponseSchema>;
 
-// ---- 外部模型 API（0032，用户 2026-09-25）--------------------------------------------------
+// ---- 外部模型 API（0032，）--------------------------------------------------
 
 /** One model a provider serves, with the context window the user typed for it. */
 export const ModelProviderModelSchema = z.strictObject({
