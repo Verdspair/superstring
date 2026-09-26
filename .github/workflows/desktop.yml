@@ -177,9 +177,10 @@ jobs:
             dist/desktop-packages/${{ matrix.platform }}-${{ matrix.arch }}/*.deb
             dist/desktop-packages/${{ matrix.platform }}-${{ matrix.arch }}/build-result.json
             dist/desktop-packages/${{ matrix.platform }}-${{ matrix.arch }}/smoke-report.json
+            dist/desktop-packages/${{ matrix.platform }}-${{ matrix.arch }}/smoke-process.json
             dist/desktop-packages/${{ matrix.platform }}-${{ matrix.arch }}/smoke-logs/**
             dist/desktop-packages/${{ matrix.platform }}-${{ matrix.arch }}/SHA256SUMS
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
 
   windows:

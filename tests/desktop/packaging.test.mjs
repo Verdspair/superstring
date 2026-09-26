@@ -12,6 +12,10 @@ import {
   TARGETS,
 } from "../../tools/desktop/build/cross-platform/config.mjs";
 import { publicLicenseInventory } from "../../tools/desktop/build/cross-platform/licenses.mjs";
+import {
+  preserveSmokeEvidence,
+  resolveProjectBun,
+} from "../../tools/desktop/build/cross-platform/runtime-tools.mjs";
 import { validateSmokeReport } from "../../tools/desktop/build/cross-platform/smoke-contract.mjs";
 
 test("all native targets keep service binaries outside ASAR and select one matching architecture", () => {
@@ -120,4 +124,45 @@ test("production notices retain complete original text and omit machine paths", 
     () => publicLicenseInventory({ "react@19.0.0": { licenses: "MIT" } }, manifest),
     /complete license notice/,
   );
+});
+
+test("Bun resolution follows the installed npm binary map on Unix as well as Windows", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-bun-path-"));
+  try {
+    const directory = path.join(root, "node_modules/bun");
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "package.json"),
+      JSON.stringify({ bin: { bun: "bin/bun.exe" } }),
+    );
+    assert.equal(resolveProjectBun(root), path.join(directory, "bin/bun.exe"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("smoke diagnostics survive profile cleanup without copying profile data", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-smoke-evidence-"));
+  try {
+    const temporary = path.join(root, "synthetic");
+    const destination = path.join(root, "artifacts");
+    fs.mkdirSync(path.join(temporary, "profile/logs"), { recursive: true });
+    fs.mkdirSync(destination);
+    fs.writeFileSync(path.join(temporary, "report.json"), '{"ok":false}');
+    fs.writeFileSync(path.join(temporary, "profile/logs/desktop.log"), "diagnostic");
+    fs.writeFileSync(path.join(temporary, "profile/business.sqlite"), "not an artifact");
+    preserveSmokeEvidence(temporary, destination);
+    fs.rmSync(temporary, { recursive: true });
+    assert.equal(
+      fs.readFileSync(path.join(destination, "smoke-report.json"), "utf8"),
+      '{"ok":false}',
+    );
+    assert.equal(
+      fs.readFileSync(path.join(destination, "smoke-logs/desktop.log"), "utf8"),
+      "diagnostic",
+    );
+    assert.deepEqual(fs.readdirSync(destination).sort(), ["smoke-logs", "smoke-report.json"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

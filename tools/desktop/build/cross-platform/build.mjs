@@ -9,6 +9,7 @@ import { buildBrand } from "./brand.mjs";
 import { writeChecksums } from "./checksums.mjs";
 import { checkMacReleaseCredentials, createConfiguration, getTarget, HOMEPAGE } from "./config.mjs";
 import { writeProductionNotices } from "./licenses.mjs";
+import { resolveProjectBun } from "./runtime-tools.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const { values } = parseArgs({
@@ -39,12 +40,16 @@ function run(executable, args) {
     throw result.error ?? new Error(`Build failed (${result.status}): ${executable}`);
   }
 }
-const bun = path.join(root, "node_modules/bun/bin/bun");
+const bun = resolveProjectBun(root);
 const bunVersion = spawnSync(bun, ["--version"], { encoding: "utf8" });
+if (bunVersion.error) throw bunVersion.error;
+if (bunVersion.status !== 0) {
+  throw new Error(`Bun version check failed (${bunVersion.status}): ${bunVersion.stderr.trim()}`);
+}
 const requiredBun = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).engines
   .bun;
-if (bunVersion.status !== 0 || bunVersion.stdout.trim() !== requiredBun) {
-  throw new Error(`Desktop build requires the project-pinned Bun ${requiredBun}`);
+if (bunVersion.stdout.trim() !== requiredBun) {
+  throw new Error(`Desktop build requires Bun ${requiredBun}; found ${bunVersion.stdout.trim()}`);
 }
 run(process.execPath, [path.join(root, "node_modules/vite/bin/vite.js"), "build"]);
 const host = path.join(root, "dist/desktop-host");
