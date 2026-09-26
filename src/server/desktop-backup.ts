@@ -23,8 +23,19 @@ export interface DesktopMigrationBackup {
   toVersion: number;
 }
 
+/**
+ * Bun's node:sqlite releases the database file handle only on finalization, and Windows
+ * refuses to delete an open file. A migration backup must not leave the profile
+ * undeletable, so nudge the collector on this startup path.
+ */
+function releaseSqliteHandles(): void {
+  if (typeof Bun !== "undefined") Bun.gc(true);
+}
+
 function syncFile(filename: string): void {
-  const fd = openSync(filename, "r");
+  // Windows' FlushFileBuffers needs a write-capable handle, so open read-write there;
+  // the payload files are our own copies and stay writable.
+  const fd = openSync(filename, process.platform === "win32" ? "r+" : "r");
   try {
     fsyncSync(fd);
   } finally {
@@ -47,7 +58,8 @@ function syncTree(directory: string): Array<{ path: string; bytes: number }> {
       }
     }
     // Desktop targets are POSIX. Persist directory entries as well as file data.
-    syncFile(current);
+    // Windows cannot flush a directory handle at all, so that step is skipped there.
+    if (process.platform !== "win32") syncFile(current);
   }
   visit(directory);
   return files;
@@ -138,9 +150,19 @@ export async function backupBeforeDesktopMigration(
     syncFile(paths.backupsDir);
     return { directory, fromVersion: version, toVersion: BUSINESS_SCHEMA_VERSION };
   } catch (error) {
-    if (directory) rmSync(directory, { recursive: true, force: true });
+    // Cleanup must not mask the real failure: the completion marker was never written,
+    // and a leftover directory without it is inert on the next attempt.
+    if (directory) {
+      releaseSqliteHandles();
+      try {
+        rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch {
+        /* Keep the original error. */
+      }
+    }
     throw error;
   } finally {
     db.close();
+    releaseSqliteHandles();
   }
 }

@@ -30,7 +30,7 @@ test("all native targets keep bundled host dependencies external to builder and 
     });
     assert.deepEqual(config.files, ["package.json", "main.cjs", "preload.cjs"]);
     assert.equal(config.extraResources[0].to, "service");
-    assert.equal(config.extraResources[0].from, "/stage/service");
+    assert.equal(config.extraResources[0].from, path.join("/stage", "service"));
     assert.equal(config.electronFuses.runAsNode, false);
     assert.notEqual(config.npmRebuild, false);
     assert.equal(await config.beforeBuild(), false);

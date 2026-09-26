@@ -51,7 +51,20 @@ function fixture() {
     executable,
     paths,
     env,
-    dispose: () => rmSync(root, { recursive: true, force: true }),
+    dispose: () => {
+      // Windows can keep a just-released SQLite file busy for a moment: retry the
+      // teardown instead of failing the test on that race.
+      let last: unknown;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+          return;
+        } catch (error) {
+          last = error;
+        }
+      }
+      throw last;
+    },
   };
 }
 
@@ -106,13 +119,16 @@ describe("managed desktop resource/profile contract", () => {
   it("requires canonical roots and rejects linked writable descendants", () => {
     const f = fixture();
     try {
+      // Windows needs Developer Mode or elevation for real directory symlinks; a
+      // junction is the same reparse-point shape node reports as a link.
+      const linkType = process.platform === "win32" ? "junction" : "dir";
       const alias = path.join(f.root, "alias");
-      symlinkSync(f.profile, alias, "dir");
+      symlinkSync(f.profile, alias, linkType);
       expect(() =>
         prepareDesktopEnvironment({ ...f.env, SUPERSTRING_APP_ROOT: alias }, f.executable),
       ).toThrow("CANONICAL");
       prepareDesktopEnvironment(f.env, f.executable);
-      symlinkSync(f.resources, path.join(f.profile, "state"), "dir");
+      symlinkSync(f.resources, path.join(f.profile, "state"), linkType);
       expect(() => loadStartupLayout(f.env)).toThrow("LINKED_PATH");
     } finally {
       f.dispose();
@@ -213,7 +229,13 @@ describe("desktop migration recovery snapshot", () => {
       if (!complete) throw new Error("expected migration backup");
       const manifest = readFileSync(path.join(complete.directory, "backup.json"), "utf8");
       mkdirSync(f.paths.stateDir);
-      symlinkSync(f.executable, path.join(f.paths.stateDir, "external.key"));
+      // A linked key file: Windows cannot create file symlinks without Developer Mode,
+      // so link a directory there — the copy filter rejects any reparse point either way.
+      symlinkSync(
+        f.resources,
+        path.join(f.paths.stateDir, "external.key"),
+        process.platform === "win32" ? "junction" : "file",
+      );
       await expect(backupBeforeDesktopMigration(f.paths)).rejects.toThrow("REJECTS_LINKED");
       expect(readdirSync(f.paths.backupsDir)).toEqual([path.basename(complete.directory)]);
       expect(readFileSync(path.join(complete.directory, "backup.json"), "utf8")).toBe(manifest);
@@ -277,7 +299,9 @@ describe("OS-backed desktop process ownership", () => {
       await holder.exited;
       f.dispose();
     }
-  });
+    // Spawning a real interpreter pays a cold start on slow machines; the
+    // default five seconds is not a behaviour assertion here.
+  }, 30_000);
 });
 
 describe("desktop parent liveness pipe", () => {
@@ -315,7 +339,7 @@ describe("desktop parent liveness pipe", () => {
       await child.exited;
       f.dispose();
     }
-  });
+  }, 30_000);
   it("invokes graceful shutdown once on EOF and cleans up listeners", async () => {
     const input = new PassThrough();
     let calls = 0;
