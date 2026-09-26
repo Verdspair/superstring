@@ -21,6 +21,9 @@ export class WakeScheduler {
       onError?: (error: unknown, wake: WakeSignal) => void;
     },
   ) {}
+  nextReadyAt(): string | null {
+    return this.options.repository.nextReadyAt();
+  }
   peek(cause?: string): WakeSignal | null {
     return this.options.repository.peek({
       at: this.options.now?.() ?? new Date().toISOString(),

@@ -12,6 +12,7 @@ import { ConversationEventRepository } from "../../src/server/db/conversation-ev
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { createQqScheme, updateQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { recordQqSend } from "../../src/server/db/qq-send-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
   createQqStickerCollection,
@@ -42,7 +43,13 @@ afterEach(() => {
 });
 const bindingId = "11111111-1111-4111-8111-111111111111",
   nowSeconds = 2_000_000_000;
-function setup(model?: Partial<ModelPort>, options: { stickersAvailable?: boolean } = {}) {
+function setup(
+  model?: Partial<ModelPort>,
+  options: {
+    stickersAvailable?: boolean;
+    onDiagnostic?: ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"];
+  } = {},
+) {
   const clock = { seconds: nowSeconds };
   const h = openBusinessDb();
   handles.push(h);
@@ -107,6 +114,7 @@ function setup(model?: Partial<ModelPort>, options: { stickersAvailable?: boolea
     gateway,
     agentRuntime: runtime,
     stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
+    onDiagnostic: options.onDiagnostic,
     policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600, retentionDays: 14 }),
     now: () => new Date(clock.seconds * 1000).toISOString(),
   });
@@ -431,6 +439,36 @@ function addSticker(h: ReturnType<typeof setup>) {
   });
   return id;
 }
+function modelData(request: ModelRequest, kind: string) {
+  return request.messages
+    .flatMap((message) => message.content)
+    .flatMap((part) => {
+      if (part.kind !== "text") return [];
+      try {
+        const data = JSON.parse(part.text);
+        return data.kind === kind ? [data.value] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+function stickerObservation(request: ModelRequest): {
+  items: { id: string; name: string }[];
+  nextCursor: string | null;
+  status: string;
+} {
+  const matches = modelData(request, "action_observation").filter(
+    (value) => value.name === "sticker.search",
+  );
+  expect(matches.length).toBeGreaterThan(0);
+  return matches.at(-1).value;
+}
+function pendingOutput(request: ModelRequest) {
+  // pending_plan is itself a source-owned data envelope nested in a pending user message.
+  const plans = modelData(request, "pending_plan");
+  expect(plans).toHaveLength(1);
+  return plans[0].outputs[0];
+}
 function setMemoryMode(h: ReturnType<typeof setup>, mode: string) {
   const row = h.db.query("SELECT p5_config FROM agents WHERE id=?").get(DEFAULT_AGENT_ID) as {
     p5_config: string;
@@ -523,8 +561,15 @@ describe("private feature preservation", () => {
         .get(),
     ).toEqual({ protected_messages: null });
   });
-  it("blank reply without usable sticker completes no_output without an orphan output id", async () => {
+  it("blank reply without usable sticker is corrected by an explicit none without an orphan output id", async () => {
+    let calls = 0;
     const h = setup({
+      complete: async (request) => {
+        if (++calls === 1) return finalGenerate;
+        expect(JSON.stringify(request.messages)).toContain("output_feedback");
+        expect(JSON.stringify(request.messages)).toContain("EMPTY_OUTPUT");
+        return '{"kind":"none"}';
+      },
       async *streamText() {
         yield "";
       },
@@ -533,31 +578,52 @@ describe("private feature preservation", () => {
     const result = await activate(h);
     expect(result.status).toBe("no_output");
     expect(h.outbox.list({})).toEqual([]);
-    expect(h.requests).toHaveLength(1);
+    expect(calls).toBe(2);
     expect(h.db.query("SELECT status FROM wake_signals").get()).toEqual({ status: "no_output" });
   });
-  it("honors explicit inline sticker id and never substitutes an automatic choice", async () => {
-    let id = "",
-      calls = 0;
+  it("discovers a sticker through the model-visible action before explicitly selecting it", async () => {
+    let calls = 0;
     const h = setup(
       {
-        complete: async () => {
-          calls++;
+        complete: async (request) => {
+          if (++calls === 1) {
+            expect(JSON.stringify(request.messages)).toContain("sticker.search");
+            expect(JSON.stringify(request.messages)).not.toContain(id);
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave", limit: 1 },
+            });
+          }
+          const result = stickerObservation(request);
+          expect(result.items).toHaveLength(1);
           return JSON.stringify({
             kind: "final",
-            outputs: [{ kind: "inline", targetId: "20002", text: "", stickerIds: [id] }],
+            outputs: [
+              {
+                kind: "inline",
+                targetId: "20002",
+                text: "",
+                stickerIds: [result.items[0].id],
+              },
+            ],
           });
         },
       },
       { stickersAvailable: true },
     );
-    id = addSticker(h);
-    h.receive("1");
+    const id = addSticker(h);
+    h.receive("1", "发个招手表情包");
     await activate(h);
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
     expect(h.outbox.parts(h.outbox.list({})[0]!.id).map((p) => JSON.parse(p.payload!))).toEqual([
       { stickerId: id },
     ]);
+    expect(
+      h.db
+        .query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id='onebot.sticker.select'")
+        .get(),
+    ).toEqual({ n: 0 });
   });
   for (const mode of ["off", "conservative", "standard", "broad", "full_catalog", "full_body"]) {
     it(`preserves initial memory ${mode} mode and selector routing`, async () => {
@@ -1081,3 +1147,422 @@ describe("optional Bot retrieval failure", () => {
     },
   );
 });
+
+describe("model-visible sticker contract", () => {
+  for (const kind of ["inline", "generate"] as const) {
+    for (const intent of ["omitted", "auto", "none"] as const) {
+      it(`${kind} preserves ${intent} sticker intent`, async () => {
+        let calls = 0;
+        const h = setup(
+          {
+            complete: async () => {
+              if (++calls > 1) return "1";
+              return JSON.stringify({
+                kind: "final",
+                outputs: [
+                  {
+                    kind,
+                    targetId: "20002",
+                    ...(kind === "inline" ? { text: "你好" } : { instructions: "answer" }),
+                    ...(intent === "omitted" ? {} : { stickerIds: intent === "none" ? [] : null }),
+                  },
+                ],
+              });
+            },
+            async *streamText() {
+              yield "你好";
+            },
+          },
+          { stickersAvailable: true },
+        );
+        const id = addSticker(h);
+        h.receive("1");
+        const result = await activate(h);
+        expect(result.status).toBe("completed");
+        const parts = h.outbox
+          .parts(h.outbox.list({})[0]!.id)
+          .map((part) => JSON.parse(part.payload!));
+        expect(parts).toEqual(
+          intent === "none" ? [{ text: "你好" }] : [{ text: "你好" }, { stickerId: id }],
+        );
+        expect(calls).toBe(intent === "none" ? 1 : 2);
+      });
+    }
+  }
+  it("corrects a nonexistent explicit ID using a discoverable candidate instead of silently doing nothing", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls === 1)
+            return JSON.stringify({
+              kind: "final",
+              outputs: [{ kind: "inline", targetId: "20002", text: "", stickerIds: ["smile"] }],
+            });
+          if (calls === 2) {
+            expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_UNAVAILABLE");
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "" },
+            });
+          }
+          return JSON.stringify({
+            kind: "final",
+            outputs: [
+              {
+                kind: "inline",
+                targetId: "20002",
+                text: "",
+                stickerIds: [stickerObservation(request).items[0].id],
+              },
+            ],
+          });
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const id = addSticker(h);
+    h.receive("1", "为什么没有表情包");
+    const result = await activate(h);
+    expect(result.status).toBe("completed");
+    expect(calls).toBe(3);
+    expect(
+      h.outbox.parts(h.outbox.list({})[0]!.id).map((part) => JSON.parse(part.payload!)),
+    ).toEqual([{ stickerId: id }]);
+  });
+  it("fails an uncorrected empty plan at the configured step budget instead of recording normal silence", async () => {
+    let calls = 0;
+    const h = setup({
+      complete: async (request) => {
+        if (++calls > 1) expect(JSON.stringify(request.messages)).toContain("EMPTY_OUTPUT");
+        return JSON.stringify({
+          kind: "final",
+          outputs: [{ kind: "inline", targetId: "20002", text: "", stickerIds: [] }],
+        });
+      },
+    });
+    h.receive("1");
+    await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_STEP_LIMIT" });
+    expect(calls).toBe(12);
+    expect(
+      h.db.query("SELECT status,error_code FROM agent_runs WHERE spec_id='onebot.main'").get(),
+    ).toEqual({ status: "failed", error_code: "AGENT_STEP_LIMIT" });
+    expect(h.outbox.list({})).toEqual([]);
+  });
+  it("retains a selected sticker and its source in the pending plan after a new message", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls === 1) return finalGenerate;
+          if (calls === 2) {
+            h.receive("2", "接着说");
+            return "1";
+          }
+          const output = pendingOutput(request);
+          expect(output.stickerIds).toHaveLength(1);
+          expect(output.sources).toContainEqual({
+            kind: "qq_sticker",
+            id: output.stickerIds[0],
+            revision: expect.any(String),
+          });
+          return JSON.stringify({
+            kind: "final",
+            outputs: [
+              {
+                kind: "inline",
+                targetId: output.targetId,
+                text: output.text,
+                stickerIds: output.stickerIds,
+              },
+            ],
+          });
+        },
+        async *streamText() {
+          yield "你好";
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const id = addSticker(h);
+    h.receive("1");
+    await activate(h);
+    expect(calls).toBe(3);
+    const intent = h.outbox.list({})[0]!;
+    expect(h.outbox.parts(intent.id).map((part) => JSON.parse(part.payload!))).toEqual([
+      { text: "你好" },
+      { stickerId: id },
+    ]);
+    const target = JSON.parse(h.outbox.row(intent.id)!.target);
+    expect(target.sources).toContainEqual({ kind: "qq_sticker", id, revision: expect.any(String) });
+    const context = h.db
+      .query(
+        "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id WHERE s.run_id=? ORDER BY s.step_no DESC LIMIT 1",
+      )
+      .get(intent.runId) as { source_refs: string };
+    expect(JSON.parse(context.source_refs)).toContainEqual({
+      kind: "qq_sticker",
+      id,
+      revision: expect.any(String),
+    });
+  });
+});
+
+describe("sticker search context and permissions", () => {
+  function extra(h: ReturnType<typeof setup>, name: string, collectionIds: string[]) {
+    const id = crypto.randomUUID();
+    importQqSticker(h.orm, {
+      id,
+      copy: { fileName: `${id}.png`, byteSize: 64, mediaType: "image" },
+      name,
+      width: 64,
+      height: 64,
+      collectionIds,
+    });
+    setQqStickerEnabled(h.orm, id, true);
+    return id;
+  }
+  function collection(h: ReturnType<typeof setup>, id: string) {
+    return (
+      h.db
+        .query("SELECT collection_id AS id FROM qq_sticker_collection_items WHERE asset_id=?")
+        .get(id) as { id: string }
+    ).id;
+  }
+  it("paginates disclosed candidates without exposing disabled or unauthorized assets", async () => {
+    let calls = 0;
+    const found: string[] = [];
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls > 1) {
+            const page = stickerObservation(request);
+            expect(page.items).toHaveLength(1);
+            found.push(page.items[0].id);
+            expect(JSON.stringify(request.messages)).not.toContain(disabled);
+            expect(JSON.stringify(request.messages)).not.toContain(unauthorized);
+            if (!page.nextCursor) return '{"kind":"none"}';
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave", limit: 1, cursor: page.nextCursor },
+            });
+          }
+          return JSON.stringify({
+            kind: "invoke",
+            name: "sticker.search",
+            arguments: { query: "wave", limit: 1 },
+          });
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const first = addSticker(h);
+    const second = extra(h, "wave second", [collection(h, first)]);
+    const disabled = extra(h, "wave disabled", [collection(h, first)]);
+    setQqStickerEnabled(h.orm, disabled, false);
+    const unauthorized = extra(h, "wave unauthorized", []);
+    h.receive("1");
+    await activate(h);
+    expect(found.sort()).toEqual([first, second].sort());
+    expect(calls).toBe(3);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+  it("fits the actual search observation including IDs and sources into the configured model capacity", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(16000 - 2048);
+          if (++calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "", limit: 1000 },
+            });
+          const page = stickerObservation(request);
+          expect(page.items.length).toBeGreaterThan(0);
+          expect(page.items.length).toBeLessThan(21);
+          expect(page.nextCursor).not.toBeNull();
+          return '{"kind":"none"}';
+        },
+      },
+      { stickersAvailable: true },
+    );
+    h.gateway.loadedContextCapacity = async () => 16000;
+    const first = addSticker(h);
+    for (let i = 0; i < 20; i++) {
+      const id = extra(h, `wave ${i}`, [collection(h, first)]);
+      h.db
+        .query("UPDATE qq_sticker_assets SET description=? WHERE id=?")
+        .run("详细描述".repeat(500), id);
+    }
+    h.receive("1");
+    await activate(h);
+    expect(calls).toBe(2);
+  });
+  it("does not use a disclosed candidate after its asset is disabled", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          if (++calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "" },
+            });
+          const id = stickerObservation(request).items[0].id;
+          setQqStickerEnabled(h.orm, id, false);
+          return JSON.stringify({
+            kind: "final",
+            outputs: [{ kind: "inline", targetId: "20002", text: "", stickerIds: [id] }],
+          });
+        },
+      },
+      { stickersAvailable: true },
+    );
+    addSticker(h);
+    h.receive("1");
+    await expect(activate(h)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    expect(h.outbox.list({})).toEqual([]);
+  });
+  it("exposes unavailable capability without fabricating candidate IDs", async () => {
+    let calls = 0;
+    const h = setup({
+      complete: async (request) => {
+        if (++calls === 1) {
+          expect(JSON.stringify(request.messages)).toContain("disabled");
+          return JSON.stringify({
+            kind: "invoke",
+            name: "sticker.search",
+            arguments: { query: "" },
+          });
+        }
+        expect(stickerObservation(request)).toEqual({
+          status: "disabled",
+          items: [],
+          nextCursor: null,
+        });
+        return '{"kind":"none"}';
+      },
+    });
+    h.receive("1");
+    expect((await activate(h)).status).toBe("no_output");
+    expect(calls).toBe(2);
+  });
+});
+
+it("marks the real activation source as data without replacing it with unrelated older history", async () => {
+  const h = setup({
+    complete: async (request) => {
+      const trigger = modelData(request, "activation_trigger")[0];
+      expect(trigger).toMatchObject({
+        cause: "direct_reply",
+        participantId: "20002",
+        text: "为什么没有表情包",
+        contentState: "in_selected_context",
+      });
+      expect(
+        h.db.query("SELECT message_id FROM qq_events WHERE event_key=?").get(trigger.sourceId),
+      ).toEqual({ message_id: "1" });
+      return '{"kind":"none"}';
+    },
+  });
+  h.receive("1", "为什么没有表情包");
+  expect((await activate(h)).status).toBe("no_output");
+});
+
+it("sticker search respects the configured per-conversation repeat interval", async () => {
+  let calls = 0;
+  const h = setup(
+    {
+      complete: async (request) => {
+        if (++calls === 1)
+          return JSON.stringify({
+            kind: "invoke",
+            name: "sticker.search",
+            arguments: { query: "" },
+          });
+        expect(stickerObservation(request)).toEqual({
+          status: "no_candidates",
+          items: [],
+          nextCursor: null,
+        });
+        return '{"kind":"none"}';
+      },
+    },
+    { stickersAvailable: true },
+  );
+  const id = addSticker(h);
+  recordQqSend(h.orm, {
+    scope: {
+      kind: "qq",
+      accountId: "10001",
+      conversationKind: "private",
+      peerId: "20002",
+      agentId: DEFAULT_AGENT_ID,
+    },
+    kind: "direct_reply",
+    sentAtSeconds: nowSeconds - 10,
+    text: null,
+    parts: [{ kind: "sticker", result: "confirmed", messageId: "old-sticker", stickerId: id }],
+  });
+  h.receive("1");
+  await activate(h);
+  expect(calls).toBe(2);
+  expect(h.outbox.list({})).toEqual([]);
+});
+
+for (const mode of ["throw", "reject"] as const) {
+  it(`keeps sticker completion independent from diagnostics that ${mode}`, async () => {
+    let calls = 0;
+    const events: Parameters<
+      NonNullable<ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"]>
+    >[0][] = [];
+    const h = setup(
+      {
+        complete: async () =>
+          ++calls === 1
+            ? JSON.stringify({
+                kind: "final",
+                outputs: [
+                  {
+                    kind: "inline",
+                    targetId: "20002",
+                    text: "private reply content",
+                    stickerIds: null,
+                  },
+                ],
+              })
+            : "1",
+      },
+      {
+        stickersAvailable: true,
+        onDiagnostic: (event) => {
+          events.push(event);
+          if (mode === "throw") throw new Error("observer unavailable");
+          return Promise.reject(new Error("observer unavailable"));
+        },
+      },
+    );
+    const id = addSticker(h);
+    h.receive("1", "private input content");
+    expect((await activate(h)).status).toBe("completed");
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        stage: "sticker",
+        status: "selected",
+        targetId: "20002",
+        details: { stickerId: id },
+      }),
+    );
+    expect(JSON.stringify(events)).not.toContain("private input content");
+    expect(JSON.stringify(events)).not.toContain("private reply content");
+    expect(h.outbox.list({})).toHaveLength(1);
+  });
+}

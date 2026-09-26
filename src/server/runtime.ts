@@ -174,6 +174,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     botWorker =
       options.botWorker ??
       new BotWorker({
+        nextReadyAt: () => bot.scheduler.nextReadyAt(),
         canAdvance: () => qqIntake.state.phase === "ready",
         sweep: (nowSeconds) => {
           bot.adapter.sweep(nowSeconds);

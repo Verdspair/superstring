@@ -1,7 +1,6 @@
 import type { ConversationAddressing } from "../../../shared/contracts/conversation";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { readQqBinding, readQqBindings } from "../../db/qq-binding-repository";
-import { newestMemberEventFor } from "../../db/qq-observation-intake";
 import { effectiveQqTriggers, readQqScheme, schemeRhythm } from "../../db/qq-scheme-repository";
 import { platformMessageWasSentByAssistant, readQqSends } from "../../db/qq-send-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
@@ -129,41 +128,42 @@ export class OneBot11Adapter implements ConversationIngress {
       agentId: binding.agentId,
     };
     const spoken = lastQqSpeech(orm, scope)?.spokeAtSeconds ?? null;
+    const triggers = effectiveQqTriggers(binding, scheme);
     const path: QqSpeechKind =
       binding.kind === "private" || addressed
         ? "direct_reply"
-        : speakerKind === "member" && spoken !== null && occurredAt > spoken
+        : triggers.follow_up && speakerKind === "member" && spoken !== null && occurredAt > spoken
           ? "follow_up"
           : "chiming_in";
     if (speakerKind === "anonymous" && !addressed) return;
-    if (!effectiveQqTriggers(binding, scheme)[path]) return;
+    if (!triggers[path]) return;
     const immediate = path === "direct_reply" || path === "follow_up";
     if (immediate && this.now() - occurredAt > QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS) return;
     const conversation = journal.ensureOneBot(bindingId)!;
-    if (seq <= conversation.consumedSeq) return;
-    const pending = !immediate
-      ? (journal.db
-          .query(
-            "SELECT dedupe_key FROM wake_signals WHERE conversation_id=? AND cause=? AND status='pending' ORDER BY created_at LIMIT 1",
-          )
-          .get(conversation.id, path) as { dedupe_key: string } | null)
-      : null;
+    // A consumed cursor means "observed", not "answered every participant". Existing
+    // per-person opportunities remain authoritative even after another participant's reply.
+    if (wakes.hasOfferedSource(conversation.id, seq)) return;
+    const previous = wakes.latestParticipant(conversation.id, path, speakerId ?? "anonymous");
+    if (previous && seq <= previous.throughSeq) return;
+    if (!previous && seq <= conversation.consumedSeq) return;
     const mergeSeconds = immediate ? 0 : schemeRhythm(scheme).merge_window_seconds;
-    wakes.enqueue({
+    const result = wakes.enqueueChanged({
       conversationId: conversation.id,
       cause: path,
       throughSeq: seq,
-      dedupeKey: pending?.dedupe_key ?? `${path}:${conversation.id}:${key}`,
-      readyAt: new Date(
-        (restore ? Math.max(this.now(), occurredAt + mergeSeconds) : this.now() + mergeSeconds) *
-          1000,
-      ).toISOString(),
+      dedupeKey:
+        !immediate && previous?.status === "pending"
+          ? previous.dedupeKey
+          : `${path}:${conversation.id}:${key}`,
+      readyAt: new Date(((restore ? occurredAt : this.now()) + mergeSeconds) * 1000).toISOString(),
       at: new Date(occurredAt * 1000).toISOString(),
       priority: immediate ? 100 : 50,
       mergeReadyAt: immediate ? "earliest" : "latest",
+      onlyNewerSource: true,
     });
-    this.options.wake?.();
+    if (result.changed) this.options.wake?.();
   }
+
   /** Restore source-backed opportunities; the platform message that addressed us may not be newest. */
   scanImmediate(): void {
     const { orm, journal } = this.options;
@@ -175,17 +175,33 @@ export class OneBot11Adapter implements ConversationIngress {
         peerId: binding.peerId,
         agentId: binding.agentId,
       };
-      const newest = newestMemberEventFor(orm, scope, {
-        attentionMembers: attentionTriggerFilter(binding) ?? undefined,
-      });
-      if (!newest) continue;
-      const addressed =
-        binding.kind === "private"
-          ? newest
-          : newestMemberEventFor(orm, scope, {
-              attentionMembers: attentionTriggerFilter(binding) ?? undefined,
-              addressedOnly: true,
-            });
+      // Restore each person's most recent activity and addressed input independently.
+      // Permanent event identities alone are not readable conversation content after TTL.
+      const candidates = journal.db
+        .query(`WITH ranked AS (
+        SELECT e.*,ROW_NUMBER() OVER(PARTITION BY speaker_id ORDER BY occurred_at_seconds DESC,rowid DESC) AS latest,
+          ROW_NUMBER() OVER(PARTITION BY speaker_id,addressed ORDER BY occurred_at_seconds DESC,rowid DESC) AS latest_addressed
+        FROM qq_events e WHERE account_id=? AND conversation_kind=? AND peer_id=? AND agent_id=?
+          AND speaker_kind IN('member','anonymous')
+      ) SELECT * FROM ranked e WHERE (latest=1 OR (addressed=1 AND latest_addressed=1))
+        AND (EXISTS(SELECT 1 FROM qq_observation_text t WHERE t.event_key=e.event_key AND t.expires_at>?)
+          OR EXISTS(SELECT 1 FROM qq_media_notes m WHERE m.event_key=e.event_key AND m.expires_at>?))
+        ORDER BY occurred_at_seconds,event_key`)
+        .all(
+          scope.accountId,
+          scope.conversationKind,
+          scope.peerId,
+          scope.agentId,
+          new Date(this.now() * 1000).toISOString(),
+          new Date(this.now() * 1000).toISOString(),
+        ) as {
+        event_key: string;
+        occurred_at_seconds: number;
+        speaker_id: string | null;
+        speaker_kind: string;
+        addressed: number | null;
+      }[];
+      if (!candidates.length) continue;
       const c = journal.ensureOneBot(binding.id)!;
       const legacyBoundary =
         c.consumedSeq === 0
@@ -194,25 +210,18 @@ export class OneBot11Adapter implements ConversationIngress {
               readQqSends(orm, scope, 1)[0]?.sentAtSeconds ?? -1,
             )
           : -1;
-      for (const candidate of new Map(
-        [newest, addressed]
-          .filter((e): e is NonNullable<typeof e> => !!e)
-          .map((e) => [e.eventKey, e]),
-      ).values()) {
-        if (candidate.occurredAtSeconds <= legacyBoundary) continue;
-        const event = journal.ingestOneBotEvent(candidate.eventKey, binding.id);
-        const source = journal.db
-          .query("SELECT speaker_kind FROM qq_events WHERE event_key=?")
-          .get(candidate.eventKey) as { speaker_kind: string };
+      for (const candidate of candidates) {
+        if (candidate.occurred_at_seconds <= legacyBoundary) continue;
+        const event = journal.ingestOneBotEvent(candidate.event_key, binding.id);
         if (event)
           this.offer(
             binding.id,
             event.seq,
-            candidate.eventKey,
-            candidate.occurredAtSeconds,
-            candidate.speakerId,
-            source.speaker_kind,
-            candidate.addressed,
+            candidate.event_key,
+            candidate.occurred_at_seconds,
+            candidate.speaker_id,
+            candidate.speaker_kind,
+            candidate.addressed === 1,
             true,
           );
       }

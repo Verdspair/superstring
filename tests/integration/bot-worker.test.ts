@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { BotWorker } from "../../src/server/conversation/bot-worker";
 
 describe("neutral Bot worker lifecycle", () => {
@@ -116,4 +116,71 @@ describe("neutral Bot worker lifecycle", () => {
     await worker.stop();
     expect([calls, errors]).toEqual([2, 1]);
   });
+});
+
+it("keeps the nearest durable deadline when another participant wakes the worker, and polls while offline", async () => {
+  let clock = 0,
+    online = true,
+    calls = 0;
+  const scheduled = new Map<number, { callback: () => void; delay: number }>();
+  let timerId = 0;
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
+    callback: () => void,
+    delay: number,
+  ) => {
+    const id = ++timerId;
+    scheduled.set(id, { callback, delay });
+    return id;
+  }) as unknown as typeof setTimeout);
+  const clear = spyOn(globalThis, "clearTimeout").mockImplementation(((id: number) => {
+    scheduled.delete(id);
+  }) as unknown as typeof clearTimeout);
+  const flush = async () => {
+    for (let i = 0; i < 15; i++) await Promise.resolve();
+  };
+  const fire = () => {
+    const [id, value] = [...scheduled.entries()][0]!;
+    scheduled.delete(id);
+    value.callback();
+  };
+  const worker = new BotWorker({
+    sweep() {},
+    advance: async () => {
+      calls++;
+    },
+    canAdvance: () => online,
+    clockSeconds: () => clock,
+    nextReadyAt: () => new Date(15000).toISOString(),
+    pollIntervalMs: 15000,
+  });
+  try {
+    worker.start();
+    await flush();
+    expect([...scheduled.values()].map((t) => t.delay)).toEqual([15000]);
+    clock = 14;
+    worker.wake();
+    await flush();
+    // The notification cycle yields to I/O before its next check.
+    expect([...scheduled.values()].map((t) => t.delay)).toEqual([0]);
+    fire();
+    await flush();
+    expect([...scheduled.values()].map((t) => t.delay)).toEqual([1000]);
+    clock = 15;
+    fire();
+    await flush();
+    expect(calls).toBeGreaterThanOrEqual(3);
+    // A ready deadline with no claimable work must not produce zero-delay spinning.
+    expect([...scheduled.values()].map((t) => t.delay)).toEqual([15000]);
+    online = false;
+    clock = 14;
+    worker.wake();
+    await flush();
+    fire();
+    await flush();
+    expect([...scheduled.values()].map((t) => t.delay)).toEqual([15000]);
+  } finally {
+    await worker.stop();
+    timer.mockRestore();
+    clear.mockRestore();
+  }
 });

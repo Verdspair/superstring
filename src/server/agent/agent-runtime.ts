@@ -51,7 +51,10 @@ export interface VisionLeafInput extends Omit<LeafInput, "messages"> {
 }
 export interface PreparedOutput extends OutputSummary {
   text?: string;
-  stickerIds?: readonly string[];
+  /** undefined/null asks the channel to select; [] explicitly declines; IDs select attachments. */
+  stickerIds?: readonly string[] | null;
+  /** Channel-resolved attachment provenance, retained with a pending plan and delivery. */
+  sources?: readonly SourceRef[];
 }
 export interface PreparedGeneration extends AgentGenerationConfig {
   /** Explicit host-provided phase projection from the same authorized context source. */
@@ -423,7 +426,13 @@ export class AgentRuntime {
               },
               generationSpec,
             );
-            outputs.push({ outputId, targetId: draft.targetId, status: "prepared", text });
+            outputs.push({
+              outputId,
+              targetId: draft.targetId,
+              status: "prepared",
+              text,
+              stickerIds: draft.stickerIds,
+            });
           } catch (error) {
             if (
               active.signal.aborted ||

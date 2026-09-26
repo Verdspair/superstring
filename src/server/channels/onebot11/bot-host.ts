@@ -3,6 +3,7 @@ import type { ConversationEvent, WakeSignal } from "../../../shared/contracts/co
 import type { SourceRef } from "../../../shared/contracts/evidence";
 import type { AgentRuntime, PreparedOutput } from "../../agent/agent-runtime";
 import type { AgentSpec, OutputDraft } from "../../agent/agent-specs";
+import { uniqueSources } from "../../agent/context-engine";
 import { ConversationHost } from "../../agent/conversation-host";
 import { observationRelevant } from "../../conversation/observation-relevance";
 import { AgentRunRepository } from "../../db/agent-run-repository";
@@ -46,6 +47,10 @@ import {
   type QqSpeechKind,
 } from "../../services/qq-speaking-contract";
 import {
+  createQqStickerSearch,
+  currentQqStickerCatalog,
+} from "../../services/qq-sticker-capability";
+import {
   planQqPreparedReply,
   type QqStickerStage,
   selectQqSticker,
@@ -56,6 +61,16 @@ export interface OneBotPolicy {
   maxSteps: number;
   deliveryTtlSeconds: number;
   retentionDays: number;
+}
+export interface BotHostDiagnostic {
+  runId?: string;
+  conversationId: string;
+  stage: string;
+  status: string;
+  code?: string;
+  sourceSeq: number;
+  targetId?: string;
+  details?: Record<string, string | number | boolean | null>;
 }
 export interface OneBotHostOptions {
   modules?: ModuleQueryFactory;
@@ -70,6 +85,7 @@ export interface OneBotHostOptions {
   stickers: QqStickerStage;
   policy: () => OneBotPolicy;
   now?: () => string;
+  onDiagnostic?: (event: BotHostDiagnostic) => void | Promise<void>;
 }
 /** One host for direct and shared conversations; topology changes targets, not the model loop. */
 export class OneBotHost {
@@ -171,8 +187,30 @@ export class OneBotHost {
         };
       }
     }
-    const preparation = () =>
-      prepareQqJudgement(
+    let opportunities: ReturnType<WakeRepository["readyParticipants"]> = [];
+    const preparation = () => {
+      opportunities =
+        path === "chiming_in"
+          ? o.wakes.readyParticipants({ conversationId: conversation.id, cause: path, at: now() })
+          : [];
+      const pendingTargets = [
+        ...new Map(
+          opportunities.map((opportunity) => [
+            opportunity.participantId,
+            {
+              speakerId:
+                opportunity.participantId === "anonymous" ? null : opportunity.participantId,
+              newestSeconds: Math.floor(Date.parse(opportunity.occurredAt) / 1000),
+              messageCount: 1,
+            },
+          ]),
+        ).values(),
+      ].sort(
+        (left, right) =>
+          left.newestSeconds - right.newestSeconds ||
+          (left.speakerId ?? "").localeCompare(right.speakerId ?? ""),
+      );
+      return prepareQqJudgement(
         o.orm,
         {
           bindingId: binding.id,
@@ -180,8 +218,9 @@ export class OneBotHost {
           nowSeconds: seconds(),
           ...(focusKey ? { focusEventKey: focusKey } : {}),
         },
-        { eligibilityOnly: true },
+        { eligibilityOnly: true, ...(path === "chiming_in" ? { pendingTargets } : {}) },
       );
+    };
     let prepared = preparation();
     if (prepared.kind !== "prepared") {
       settleOpportunity(prepared.readyAtSeconds);
@@ -248,9 +287,24 @@ export class OneBotHost {
       if (gate.kind === "blocked") throw new Error(gate.reason);
       if (o.journal.row(conversation.id)?.closed_at) throw new Error("BINDING_EPOCH_CHANGED");
     };
+    const stickerRequest = () => ({
+      schemeId: scheme.id,
+      scope: {
+        kind: "qq" as const,
+        accountId: binding.accountId,
+        conversationKind: binding.kind,
+        peerId: binding.peerId,
+        agentId: binding.agentId,
+      },
+      counts: o.stickers.counts,
+      nowSeconds: seconds(),
+      isAvailable: o.stickers.isAvailable,
+    });
+    const stickerCatalog = () => currentQqStickerCatalog(o.orm, stickerRequest());
+    const stickerState = stickerCatalog();
     const spec: AgentSpec = {
       id: "onebot.main",
-      version: "3",
+      version: "4",
       context: "conversation",
       model: initiative
         ? (readQqSettings(o.orm).judgementModelName ?? runtime.model_name)
@@ -259,6 +313,7 @@ export class OneBotHost {
         compileSystemPrompt(runtime),
         schemePrompts(scheme).scene,
         QQ_MEDIA_RULE,
+        `表情能力：${stickerState.state}，当前可用 ${stickerState.assets.length} 张。inline/generate 共用 stickerIds：null/省略=自动，[]=明确不用，[id]=指定一张。先用 sticker.search 获取合法 ID（空 query 浏览），或保留 pending_plan 的已选 ID；不要编造。允许空正文仅发图；真正不发则返回 none。output_feedback 表示尚未发送的无效计划，须纠正。`,
         `这是 OneBot ${binding.kind === "private" ? "私聊" : "群聊"}。只向 authorizedTargets 中的目标输出；${split ? "每个目标最多一条回复，由程序添加该目标的 @，不要自行添加。" : "不按发言人拆分，整间会话最多一条逻辑回复；该回复可以由程序按换行发送多段。"}`,
         initiative
           ? `这是 ${path} 唤醒。发言前先 invoke speech.evaluate；只有返回 allowed=true 的 targetId 才可 final。没有合适回应时返回 none。`
@@ -290,6 +345,15 @@ export class OneBotHost {
       runtime,
       spec,
       path,
+      ...(focusKey
+        ? {
+            trigger: {
+              sourceId: focusKey,
+              seq: wake.throughSeq,
+              participantId: focus?.participant?.id ?? null,
+            },
+          }
+        : {}),
       decisionTier: binding.kind === "private" ? "reply" : "judgement",
       targets: () => targets,
       assertCurrent: assertAuthority,
@@ -299,7 +363,29 @@ export class OneBotHost {
         if (runId) o.journal.linkRun(runId, conversation.id, seq, wake.id);
       },
     });
-    const actions = [...source.actions];
+    const diagnose = (event: Omit<BotHostDiagnostic, "runId" | "conversationId" | "sourceSeq">) => {
+      try {
+        const result = o.onDiagnostic?.({
+          ...event,
+          runId,
+          conversationId: conversation.id,
+          sourceSeq: source.observedSeq,
+        });
+        if (result) void Promise.resolve(result).catch(() => {});
+      } catch {
+        /* Observability must not affect output or delivery state. */
+      }
+    };
+    const actions = [
+      ...source.actions,
+      createQqStickerSearch({
+        orm: o.orm,
+        request: stickerRequest,
+        assertCurrent: () => source.assertCurrent(),
+        fit: (arguments_, actionSignal) =>
+          source.actionResultFitter("sticker.search", arguments_, actionSignal),
+      }),
+    ];
     if (initiative)
       actions.push({
         description: {
@@ -312,13 +398,11 @@ export class OneBotHost {
           source.assertCurrent();
           allowed.clear();
           const refs: SourceRef[] = [];
-          const p = prepareQqJudgement(
-            o.orm,
-            { bindingId: binding.id, path, nowSeconds: seconds() },
-            { eligibilityOnly: true },
-          );
+          const p = preparation();
           if (p.kind !== "prepared")
             return { value: { allowed: false, reason: p.reason, targets: [] }, sources: [] };
+          prepared = p;
+          setTargets();
           const results = [];
           for (const target of targets) {
             try {
@@ -393,6 +477,7 @@ export class OneBotHost {
       outputs?: readonly PreparedOutput[],
     ) => {
       if (outputs) pendingOutputs = outputs.map((output) => ({ ...output }));
+      diagnose({ stage: "reconsider", status: "pending", code: reason });
       source.setPendingPlan(
         {
           reason,
@@ -404,7 +489,10 @@ export class OneBotHost {
             remaining: Math.max(0, generationLimit - (generationAttempts.get(target.id) ?? 0)),
           })),
         },
-        source.sources,
+        uniqueSources([
+          ...source.sources,
+          ...pendingOutputs.flatMap((output) => output.sources ?? []),
+        ]),
       );
     };
     const refresh = async (
@@ -458,7 +546,7 @@ export class OneBotHost {
             blocked: true,
             code: split ? "ONE_OUTPUT_PER_SPEAKER" : "ONE_OUTPUT_PER_CONVERSATION",
           };
-        if (draft.kind === "inline" && draft.stickerIds.length > 1)
+        if (draft.stickerIds && draft.stickerIds.length > 1)
           return { blocked: true, code: "STICKER_COUNT_EXCEEDED" };
         if (initiative && !allowed.has(draft.targetId))
           return { blocked: true, code: "INITIATIVE_NOT_ELIGIBLE" };
@@ -482,15 +570,34 @@ export class OneBotHost {
       },
       reconsider: async (outputs) => {
         if (await refresh([], outputs)) return true;
+        let invalidOutput = false;
         for (const output of outputs) {
-          if (output.status !== "prepared") continue;
+          if (output.status !== "prepared") {
+            if (output.code === "STICKER_COUNT_EXCEEDED") invalidOutput = true;
+            continue;
+          }
           const raw = output.text ?? "",
             text = split ? raw.replace(/\s*\r?\n+\s*/g, " ").trim() : raw;
           const selection = source.selection;
           if (!selection) throw new Error("BOT_CONTEXT_MISSING");
+          const explicitId = output.stickerIds?.[0];
+          if (explicitId && !stickerCatalog().assets.some((asset) => asset.id === explicitId)) {
+            output.status = "blocked";
+            output.code = "STICKER_SELECTION_UNAVAILABLE";
+            invalidOutput = true;
+            diagnose({
+              stage: "sticker",
+              status: "feedback",
+              code: output.code,
+              targetId: output.targetId,
+            });
+            continue;
+          }
           const pick =
-            output.stickerIds !== undefined
-              ? { kind: "chosen" as const, stickerId: output.stickerIds[0] ?? null }
+            output.stickerIds != null
+              ? output.stickerIds[0]
+                ? { kind: "chosen" as const, stickerId: output.stickerIds[0] }
+                : { kind: "none" as const, reason: "explicit_none" }
               : await selectQqSticker(
                   o.orm,
                   o.gateway,
@@ -509,6 +616,30 @@ export class OneBotHost {
                   { agentRuntime: o.agentRuntime, signal, sources: source.sources },
                 );
           if (pick.kind === "blocked") throw new Error(pick.reason);
+          diagnose({
+            stage: "sticker",
+            status: pick.kind,
+            targetId: output.targetId,
+            code: pick.kind === "none" ? pick.reason : undefined,
+            details: {
+              mode: output.stickerIds == null ? "auto" : output.stickerIds.length ? "pick" : "none",
+            },
+          });
+          const selectedId = pick.kind === "chosen" ? pick.stickerId : null;
+          const selectedAsset = selectedId
+            ? stickerCatalog().assets.find((asset) => asset.id === selectedId)
+            : undefined;
+          output.stickerIds = selectedAsset ? [selectedAsset.id] : [];
+          output.sources = selectedAsset
+            ? [{ kind: "qq_sticker", id: selectedAsset.id, revision: selectedAsset.updatedAt }]
+            : [];
+          if (selectedAsset)
+            diagnose({
+              stage: "sticker",
+              status: "selected",
+              targetId: output.targetId,
+              details: { stickerId: selectedAsset.id },
+            });
           const target = targets.find((t) => t.id === output.targetId)!;
           const pending: QqPreparedReply = {
             text: text || null,
@@ -519,24 +650,33 @@ export class OneBotHost {
             nowSeconds: seconds(),
 
             selection,
-            stickerId: pick.kind === "chosen" ? pick.stickerId : null,
+            stickerId: selectedAsset?.id ?? null,
             targetSpeakerId: target.speakerId,
           };
           staged.set(output.outputId, pending);
           if (planQqPreparedReply(o.orm, pending, o.stickers).kind !== "planned") {
             output.status = "blocked";
-            output.code = "EMPTY_OUTPUT";
+            output.code =
+              pick.kind === "model_error" ||
+              pick.kind === "capacity_unavailable" ||
+              pick.kind === "capacity_exceeded"
+                ? `STICKER_${pick.kind.toUpperCase()}`
+                : "EMPTY_OUTPUT";
+            invalidOutput = true;
+            diagnose({
+              stage: "output",
+              status: "feedback",
+              code: output.code,
+              targetId: output.targetId,
+            });
           }
         }
         if (await refresh([], outputs)) return true;
-        return outputs.some((output) => output.status === "prepared")
-          ? false
-          : outputs.length > 0 &&
-              outputs.every(
-                (output) => output.status === "blocked" && output.code === "EMPTY_OUTPUT",
-              )
-            ? "no_output"
-            : false;
+        if (invalidOutput) {
+          rememberPlan("output_feedback", [], outputs);
+          return true;
+        }
+        return false;
       },
       commitOutputs: async (outputs: readonly PreparedOutput[], currentRunId, terminal) =>
         db
@@ -580,7 +720,7 @@ export class OneBotHost {
                   schemeId: scheme.id,
                   schemeRevision: scheme.revision,
                   agentConfigVersion: agent.configVersion,
-                  sources: source.sources,
+                  sources: uniqueSources([...source.sources, ...(output.sources ?? [])]),
                   attentionMembers: attentionTriggerFilter(binding) ?? undefined,
                 },
                 speechKind: path,
@@ -626,7 +766,47 @@ export class OneBotHost {
                 nowSeconds: Math.floor(Date.parse(terminal.at) / 1000),
               });
             o.journal.acknowledge(conversation.id, source.observedSeq);
-            o.wakes.complete(wake.id, wake.leaseToken!, terminal.status, source.observedSeq, now());
+            const deliveredTargets = new Set(
+              outputs
+                .filter((output) => output.status === "prepared")
+                .map((output) => output.targetId),
+            );
+            const failedTargets = new Map(
+              outputs
+                .filter(
+                  (output) =>
+                    output.status !== "prepared" && !deliveredTargets.has(output.targetId),
+                )
+                .map((output) => [output.targetId, output.code ?? "AGENT_OUTPUT_FAILED"]),
+            );
+            const covered = opportunities
+              .filter((opportunity) => {
+                const targetId = split
+                  ? (opportunity.participantId ?? "anonymous")
+                  : binding.peerId;
+                return (
+                  !failedTargets.has(targetId) &&
+                  prepared.kind === "prepared" &&
+                  prepared.targets.some((target) => target.speakerId === opportunity.participantId)
+                );
+              })
+              .map((opportunity) => ({
+                id: opportunity.wake.id,
+                throughSeq: opportunity.wake.throughSeq,
+              }));
+            const ownTarget =
+              binding.kind === "private" || !split
+                ? binding.peerId
+                : (focus?.participant?.id ?? "anonymous");
+            o.wakes.complete(
+              wake.id,
+              wake.leaseToken!,
+              terminal.status,
+              source.observedSeq,
+              now(),
+              covered,
+              failedTargets.get(ownTarget),
+            );
             o.journal.linkRun(currentRunId, conversation.id, source.observedSeq, wake.id);
             return new AgentRunRepository(db).finishRun(
               currentRunId,

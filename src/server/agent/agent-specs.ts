@@ -36,13 +36,21 @@ export interface AgentSpec extends LeafAgentSpec {
   limits: { inputUnits?: number; outputTokens?: number; steps: number; deadlineMs?: number };
 }
 
-const outputBase = { targetId: z.string().min(1) };
+const outputBase = {
+  targetId: z.string().min(1),
+  stickerIds: z
+    .array(z.string().min(1))
+    .nullable()
+    .optional()
+    .describe(
+      "Both output kinds: null/omitted=auto; []=no sticker; [id]=select a disclosed sticker.search/pending_plan ID.",
+    ),
+};
 export const OutputDraftSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     ...outputBase,
     kind: z.literal("inline"),
     text: z.string(),
-    stickerIds: z.array(z.string()),
   }),
   z.strictObject({ ...outputBase, kind: z.literal("generate"), instructions: z.string() }),
 ]);
@@ -65,10 +73,14 @@ export function parseAgentDecision(raw: string): AgentDecision {
   return AgentDecisionSchema.parse(JSON.parse(fence?.[1] ?? text));
 }
 
-export const AGENT_DECISION_JSON_SCHEMA = z.toJSONSchema(AgentDecisionSchema) as Record<
-  string,
-  unknown
->;
+// Ask structured-output models to emit null for auto. The parser also accepts omitted
+// fields from providers using JSON-object/plain-text mode or older pending plans.
+export const AGENT_DECISION_JSON_SCHEMA = z.toJSONSchema(AgentDecisionSchema, {
+  override({ zodSchema, jsonSchema }) {
+    if (OutputDraftSchema.options.some((option) => option === zodSchema))
+      jsonSchema.required = [...(jsonSchema.required ?? []), "stickerIds"];
+  },
+}) as Record<string, unknown>;
 
 export function leafSpec(id: string, options: Omit<LeafAgentSpec, "id"> = {}): LeafAgentSpec {
   return { id, ...options };

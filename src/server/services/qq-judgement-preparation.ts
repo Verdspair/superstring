@@ -1,6 +1,7 @@
 // Offline preparation for one explicitly classified QQ speech path (ADR0018 P3d).
 // Reads only an already bound conversation. It never calls a model, opens a socket or sends.
 
+import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { readQqBinding } from "../db/qq-binding-repository";
@@ -136,11 +137,59 @@ export type QqJudgementPreparation =
       }[];
     };
 
+/**
+ * Canonical deliveries know their audience; old speech rows do not. A confirmed reply
+ * to A cannot block B's independently queued opportunity. Any unpaired legacy row or
+ * room-wide initiative still keeps the original conversation-wide no-reply gate.
+ */
+function lastInitiativeForTargets(
+  orm: Orm,
+  scope: QqConversationScope,
+  targets: readonly QqReplyTarget[],
+): number | null {
+  const db = (orm as Orm & { $client: Database }).$client;
+  const speeches = db
+    .query(`SELECT kind,spoke_at_seconds AS at,COUNT(*) AS n
+    FROM qq_speech_log WHERE account_id=? AND conversation_kind=? AND peer_id=? AND agent_id=?
+      AND kind IN('chiming_in','idle_topic') GROUP BY kind,spoke_at_seconds ORDER BY spoke_at_seconds DESC`)
+    .all(scope.accountId, scope.conversationKind, scope.peerId, scope.agentId) as {
+    kind: string;
+    at: number;
+    n: number;
+  }[];
+  const deliveries = db
+    .query(`SELECT s.kind,s.sent_at_seconds AS at,
+      json_extract(i.target,'$.participantId') AS participant_id
+    FROM outbound_intents i JOIN qq_send_log s ON s.id=i.legacy_send_id
+    WHERE s.account_id=? AND s.conversation_kind=? AND s.peer_id=? AND s.agent_id=?
+      AND s.kind IN('chiming_in','idle_topic') AND s.outcome='sent'`)
+    .all(scope.accountId, scope.conversationKind, scope.peerId, scope.agentId) as {
+    kind: string;
+    at: number;
+    participant_id: string | null;
+  }[];
+  const audience = new Set(targets.map((t) => t.speakerId));
+  for (const speech of speeches) {
+    const known = deliveries.filter((d) => d.at === speech.at && d.kind === speech.kind);
+    if (
+      known.length < speech.n ||
+      known.some((d) => d.participant_id === null || audience.has(d.participant_id))
+    )
+      return speech.at;
+  }
+  return null;
+}
+
 /** Call after a path has been classified. A prepared result is NOT permission to send. */
 export function prepareQqJudgement(
   orm: Orm,
   input: unknown,
-  options?: { onSources?: (sources: SourceRef[]) => void; eligibilityOnly?: boolean },
+  options?: {
+    onSources?: (sources: SourceRef[]) => void;
+    eligibilityOnly?: boolean;
+    /** Host-owned mature, unhandled participant opportunities; never supplied by a model. */
+    pendingTargets?: readonly QqReplyTarget[];
+  },
 ): QqJudgementPreparation {
   const parsed = Input.safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ judgement preparation input");
@@ -169,7 +218,12 @@ export function prepareQqJudgement(
     featureEnabled: settings.enabled === 1,
     conversationPaused: binding.paused,
     disabledKinds: disabledKindsFromTriggers(effectiveQqTriggers(binding, scheme)),
-    lastInitiativeSeconds: lastQqInitiativeSeconds(orm, scope),
+    lastInitiativeSeconds:
+      path === "chiming_in" &&
+      schemeReply(scheme).split_by_speaker &&
+      options?.pendingTargets?.length
+        ? lastInitiativeForTargets(orm, scope, options.pendingTargets)
+        : lastQqInitiativeSeconds(orm, scope),
     newestMemberMessageSeconds: newest,
   });
   if (gate.kind === "blocked") return { kind: "blocked", reason: gate.reason };
@@ -208,25 +262,34 @@ export function prepareQqJudgement(
     const rhythm = schemeRhythm(scheme);
     const lastSpeechSeconds = lastQqSpeech(orm, scope)?.spokeAtSeconds ?? null;
     if (path === "chiming_in") {
-      const plan = qqReplyTargets({
-        messages: messages.map((row) => ({
-          speakerId: row.speakerId,
-          occurredAtSeconds: row.occurredAtSeconds,
-        })),
-        mergeWindowSeconds: rhythm.merge_window_seconds,
-        nowSeconds,
-        lastSpeechSeconds,
-      });
-      // 等的是"最早那个人"自己的窗口，而不是"最后一条消息"——别人刚开口不该把张三的窗口往后推。
-      if (plan.kind === "waiting")
-        return {
-          kind: "blocked",
-          reason: "waiting_for_batch",
-          readyAtSeconds: plan.readyAtSeconds,
-        };
-      if (plan.kind === "nothing_to_answer")
-        return { kind: "blocked", reason: "nothing_to_answer" };
-      targets = plan.targets;
+      if (options?.pendingTargets !== undefined) {
+        // The durable queue has already measured each person's window. Keep only
+        // recipients whose input remains in the configured readable context window.
+        targets = options.pendingTargets.filter((target) =>
+          messages.some((message) => message.speakerId === target.speakerId),
+        );
+        if (targets.length === 0) return { kind: "blocked", reason: "nothing_to_answer" };
+      } else {
+        const plan = qqReplyTargets({
+          messages: messages.map((row) => ({
+            speakerId: row.speakerId,
+            occurredAtSeconds: row.occurredAtSeconds,
+          })),
+          mergeWindowSeconds: rhythm.merge_window_seconds,
+          nowSeconds,
+          lastSpeechSeconds,
+        });
+        // 等的是"最早那个人"自己的窗口，而不是"最后一条消息"——别人刚开口不该把张三的窗口往后推。
+        if (plan.kind === "waiting")
+          return {
+            kind: "blocked",
+            reason: "waiting_for_batch",
+            readyAtSeconds: plan.readyAtSeconds,
+          };
+        if (plan.kind === "nothing_to_answer")
+          return { kind: "blocked", reason: "nothing_to_answer" };
+        targets = plan.targets;
+      }
     } else {
       // 冷场发起：安静已经由冷场扫描保证，这里只需要合并窗口（安静期间也不会有新消息）。
       const batch = qqBatchVerdict({
