@@ -71,6 +71,59 @@ function withNullableType(rewritten: unknown, original: unknown): unknown {
 // 只在**客户端错误**（4xx，且不是 401/403 鉴权失败）时降级；5xx、超时、网络中断不是形状的问题，
 // 原样抛出。某一档一旦成功就记住"这个服务+模型要从这一档起"，后续调用不再白撞一次。
 
+// ---- 与严格模式不兼容的 schema 形状（用户 2026-09-26 云端 400）-------------------------------------
+//
+// 用户的云端 provider 按 OpenAI 严格模式校验 response_format：`oneOf` 一律不收，整单 400
+// （"Invalid schema for response_format 'superstring_result': In context=(), 'oneOf' is not
+// permitted." 正是它）。而本项目的 Agent 决策 schema 就是一个判别联合（invoke/final/none），
+// 于是每次都注定被拒：先是 400，再由降级链退回 json_object——控制台上每次重启都多一条错误。
+//
+// 所以形状注定被拒的 schema 不再去白撞：直接从 `json_object` 起步。语义没有变化——本项目的解析
+// 本来就是严格的，provider 端的约束少给一点只会让"读不出"的概率高一点（读不出仍然等于沉默）。
+// 只对外部路由生效：本地模型服务继续收到那份冻结的原文。
+
+/** Schema 节点里可能出现子 schema 的关键字；遍历它们才不会被嵌套的联合漏过去。 */
+const CHILD_SCHEMA_MAPS = ["properties", "patternProperties", "$defs", "definitions"] as const;
+const CHILD_SCHEMA_LISTS = ["anyOf", "oneOf", "allOf", "prefixItems"] as const;
+const CHILD_SCHEMA_NODES = ["items", "additionalProperties", "contains", "not"] as const;
+
+/**
+ * 严格模式能原样收下这个 schema 吗？（目前被证伪的构造是 `oneOf`。）
+ *
+ * `properties` 里恰好有个键叫 "oneOf" 不算——那是属性名，不是关键字，所以按结构走而不是按名字扫。
+ */
+export function strictSchemaAccepted(schema: unknown): boolean {
+  const visit = (node: unknown): boolean => {
+    if (node === null || typeof node !== "object") return true;
+    if (Array.isArray(node)) return node.every(visit);
+    const record = node as Record<string, unknown>;
+    if (Array.isArray(record.oneOf)) return false;
+    for (const key of CHILD_SCHEMA_MAPS) {
+      const map = record[key];
+      if (map === null || typeof map !== "object" || Array.isArray(map)) continue;
+      if (!Object.values(map as Record<string, unknown>).every(visit)) return false;
+    }
+    for (const key of CHILD_SCHEMA_LISTS) {
+      const list = record[key];
+      if (Array.isArray(list) && !list.every(visit)) return false;
+    }
+    for (const key of CHILD_SCHEMA_NODES) if (!visit(record[key])) return false;
+    return true;
+  };
+  return visit(schema);
+}
+
+const announcedSkips = new Set<string>();
+
+/** 每个服务+模型只提示一次：这条 schema 的形状严格模式不收，本进程直接走 json_object。 */
+export function announceStrictSchemaSkip(key: string, model: string): void {
+  if (announcedSkips.has(key)) return;
+  announcedSkips.add(key);
+  console.warn(
+    `[model-structured] ${model} 的响应 schema 含严格模式不收的构造（如 oneOf），直接使用 json_object`,
+  );
+}
+
 export type StructuredOutputLevel = "json_schema" | "json_object" | "none";
 
 /** 从最严到最松。只允许往后走。 */
@@ -87,9 +140,14 @@ export function structuredOutputKey(baseUrl: string, model: string): string {
   return `${baseUrl.replace(/\/+$/, "")}|${model}`;
 }
 
-/** 这个服务+模型从哪一档开始试（第一次是 json_schema）。 */
-export function structuredOutputStart(key: string): StructuredOutputLevel {
-  return degraded.get(key) ?? "json_schema";
+/**
+ * 这个服务+模型从哪一档开始试（第一次是 json_schema；形状注定被拒的 schema 从 json_object 起，
+ * 见 `strictSchemaAccepted`）。已经记住的档优先——那是实测过的结论。
+ */
+export function structuredOutputStart(key: string, strictAccepted = true): StructuredOutputLevel {
+  const remembered = degraded.get(key);
+  if (remembered !== undefined) return remembered;
+  return strictAccepted ? "json_schema" : "json_object";
 }
 
 /** 记住它从哪一档起可用，后续调用直接跳过会失败的那档。 */

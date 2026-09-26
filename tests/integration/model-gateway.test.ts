@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Server } from "node:http";
 import http from "node:http";
+import { AGENT_DECISION_JSON_SCHEMA } from "../../src/server/agent/agent-specs";
 import { createLmStudioClient, resolveLmStudioConfig } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
+import { QQ_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
 
 // Regression test for the loopback-proxy bug: on machines where HTTP_PROXY is
 // set and NO_PROXY is unset, Bun's global `fetch` routes even 127.0.0.1 traffic
@@ -486,5 +488,145 @@ describe("structured output falls back when the service rejects json_schema", ()
     );
     // 凭据问题降级只会掩盖真正的配置错误：只该有那一次请求。
     expect(seen).toHaveLength(1);
+  });
+});
+
+// 用户 2026-09-26 的云端报错：provider 按 OpenAI 严格模式校验 response_format，判别联合的
+// `oneOf` 被整单 400（"Invalid schema for response_format 'superstring_result': In context=(),
+// 'oneOf' is not permitted."）。形状注定被拒的 schema 不再白撞一次：外部路由直接从 json_object
+// 起步；本地路由不受影响，仍收到冻结的 json_schema 原文。
+describe("外部 provider 对判别联合 schema 直接从 json_object 起步", () => {
+  function listen(handler: http.RequestListener): Promise<{ server: Server; port: number }> {
+    return new Promise((resolve) => {
+      const server = http.createServer(handler);
+      server.listen(0, "127.0.0.1", () =>
+        resolve({ server, port: (server.address() as { port: number }).port }),
+      );
+    });
+  }
+  const close = (server: Server) => new Promise<void>((resolve) => server.close(() => resolve()));
+  const bodyOf = (handler: (body: Record<string, unknown>, res: http.ServerResponse) => void) => {
+    const seen: Array<Record<string, unknown>> = [];
+    return {
+      seen,
+      handler: ((req: http.IncomingMessage, res: http.ServerResponse) => {
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          if ((req.url ?? "").endsWith("/chat/completions"))
+            seen.push(raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>));
+          handler(raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>), res);
+        });
+      }) as http.RequestListener,
+    };
+  };
+
+  it("首个请求就不再尝试 json_schema，兼容 schema 与本地路由都不受影响", async () => {
+    // 云端桩：模拟用户的 provider —— 一见 schema 里的 oneOf 就照着那份报错拒绝。
+    const cloud = bodyOf((body, res) => {
+      const format = body.response_format as
+        | { type?: string; json_schema?: { schema?: unknown } }
+        | undefined;
+      if (
+        format?.type === "json_schema" &&
+        JSON.stringify(format.json_schema?.schema).includes('"oneOf"')
+      ) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message:
+                "Invalid schema for response_format 'superstring_result': In context=(), 'oneOf' is not permitted.",
+              type: "invalid_request_error",
+              param: "text.format.schema",
+              code: "invalid_json_schema",
+            },
+          }),
+        );
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: '{"kind":"none"}' } }],
+        }),
+      );
+    });
+    // 本地桩：接受任何形状（本地服务不参与"跳过"判断）。
+    const local = bodyOf((_body, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: '{"kind":"none"}' } }],
+        }),
+      );
+    });
+    const cloudHost = await listen(cloud.handler);
+    const localHost = await listen(local.handler);
+    const gateway = createLmStudioClient(
+      {
+        baseUrl: `http://127.0.0.1:${localHost.port}/v1`,
+        model: "local/model",
+        timeoutSeconds: 5,
+        apiKey: "test-token",
+      },
+      {
+        externalModel: (model) =>
+          model === "cloud/model"
+            ? {
+                baseUrl: `http://127.0.0.1:${cloudHost.port}/v1`,
+                apiKey: null,
+                contextWindow: 8192,
+              }
+            : null,
+      },
+    );
+    try {
+      // ① 判别联合：外部路由第一次就发 json_object，只一次请求，没有 400 白撞。
+      expect(
+        await gateway.complete({
+          messages: [],
+          model: "cloud/model",
+          responseSchema: AGENT_DECISION_JSON_SCHEMA,
+        }),
+      ).toBe('{"kind":"none"}');
+      expect(cloud.seen).toHaveLength(1);
+      expect((cloud.seen[0]?.response_format as { type?: string } | undefined)?.type).toBe(
+        "json_object",
+      );
+
+      // ② 兼容 schema 仍走严格 json_schema：跳过是"按形状"的，不是对这个模型一刀切。
+      expect(
+        await gateway.complete({
+          messages: [],
+          model: "cloud/model",
+          responseSchema: QQ_JUDGEMENT_RESPONSE_SCHEMA,
+        }),
+      ).toBe('{"kind":"none"}');
+      expect((cloud.seen[1]?.response_format as { type?: string } | undefined)?.type).toBe(
+        "json_schema",
+      );
+
+      // ③ 本地路由同一份判别联合仍发冻结的 json_schema（含 oneOf）——本地行为不变。
+      expect(
+        await gateway.complete({
+          messages: [],
+          model: "local/model",
+          responseSchema: AGENT_DECISION_JSON_SCHEMA,
+        }),
+      ).toBe('{"kind":"none"}');
+      expect(local.seen).toHaveLength(1);
+      const localFormat = local.seen[0]?.response_format as
+        | { type?: string; json_schema?: { strict?: boolean; schema?: unknown } }
+        | undefined;
+      expect(localFormat?.type).toBe("json_schema");
+      expect(localFormat?.json_schema?.strict).toBe(true);
+      expect(JSON.stringify(localFormat?.json_schema?.schema)).toContain('"oneOf"');
+    } finally {
+      await close(cloudHost.server);
+      await close(localHost.server);
+    }
   });
 });
