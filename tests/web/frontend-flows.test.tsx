@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Sidebar } from "../../src/web/App";
+import { ConversationIndex as Sidebar } from "../../src/web/screens/conversations/ConversationIndex";
 import type { SuperstringApi } from "../../src/web/api";
 import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 

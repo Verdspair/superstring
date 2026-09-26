@@ -5,7 +5,7 @@ import type {
   ConversationSummary,
 } from "../../src/shared/contracts/conversation";
 import { api, type SuperstringApi } from "../../src/web/api";
-import { ConversationTimeline } from "../../src/web/features/conversations/ConversationTimeline";
+import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const at = "2026-09-26T00:00:00Z";
@@ -217,7 +217,7 @@ it("Home and End scroll the reading region without intercepting nested controls"
   expect(viewport.scrollTop).toBe(1400);
   fireEvent.keyDown(viewport, { key: "Home" });
   expect(viewport.scrollTop).toBe(0);
-  fireEvent.keyDown(screen.getByText("会话来源与参与者"), { key: "End" });
+  fireEvent.keyDown(screen.getByText("来源记录"), { key: "End" });
   expect(viewport.scrollTop).toBe(0);
 });
 

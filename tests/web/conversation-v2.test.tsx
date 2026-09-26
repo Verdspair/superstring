@@ -5,7 +5,7 @@ import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
 import type { ChatV2Event } from "../../src/shared/contracts/chat-v2";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import { ApiError, type SuperstringApi, streamChatV2 } from "../../src/web/api";
-import { ChatPage } from "../../src/web/features/chat/ChatPage";
+import { DirectConversation as ChatPage } from "../../src/web/screens/conversations/DirectConversation";
 import { currentChat } from "../../src/web/features/chat/conversation-state";
 import type { RuntimeEffects } from "../../src/web/state/types";
 import { useSuperstringStore as store } from "../../src/web/store";

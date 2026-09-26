@@ -1,50 +1,65 @@
-import { useEffect } from "react";
-import { Separator } from "@/components/ui/separator";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { CommandNavigation } from "./app/CommandNavigation";
-import { NavigationConfirm } from "./app/NavigationConfirm";
-import { NavigationSurface, NavigationTrigger, ResponsiveSidebar } from "./app/ResponsiveSidebar";
-import { SettingsHub } from "./app/SettingsHub";
-import { SettingsWorkspace } from "./app/SettingsWorkspace";
-import { Sidebar as SidebarView } from "./app/Sidebar";
-import { StatusBar } from "./app/StatusBar";
+import { lazy, Suspense, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import { BrandLogo } from "./design-system/BrandLogo";
 import { DesignSystemProvider } from "./design-system/Providers";
-import { AgentSettings } from "./features/agents/AgentSettings";
-import { AppearanceSettings } from "./features/appearance/AppearanceSettings";
-import { ChatPage } from "./features/chat/ChatPage";
-import { ConversationShell } from "./features/conversations/ConversationShell";
-import { GeneralSettings } from "./features/general/GeneralSettings";
-import { OperatingModeSettings } from "./features/general/OperatingModeSettings";
-import { KnowledgeSettings } from "./features/knowledge/KnowledgeSettings";
-import { ObservabilityPage } from "./features/observability/ObservabilityPage";
 import { settingsHaveDrafts } from "./features/qq/draft-state";
-import { useI18n } from "./i18n";
 import { useSuperstringStore } from "./store";
-import { Icon } from "./ui/icons";
+import { activeSpace } from "./workspace/navigation";
+import { WorkspaceShell } from "./workspace/WorkspaceShell";
 
-const VERSION = "0.2.1";
+const ConversationWorkspace = lazy(() =>
+  import("./screens/conversations/ConversationWorkspace").then((m) => ({
+    default: m.ConversationWorkspace,
+  })),
+);
+const AssistantWorkspace = lazy(() =>
+  import("./screens/assistants/AssistantWorkspace").then((m) => ({
+    default: m.AssistantWorkspace,
+  })),
+);
+const LibraryWorkspace = lazy(() =>
+  import("./screens/library/LibraryWorkspace").then((m) => ({ default: m.LibraryWorkspace })),
+);
+const ConnectionWorkspace = lazy(() =>
+  import("./screens/connections/ConnectionWorkspace").then((m) => ({
+    default: m.ConnectionWorkspace,
+  })),
+);
+const ObservabilityWorkspace = lazy(() =>
+  import("./screens/observability/ObservabilityWorkspace").then((m) => ({
+    default: m.ObservabilityWorkspace,
+  })),
+);
+const ModelServices = lazy(() =>
+  import("./screens/environment/ModelServices").then((m) => ({ default: m.ModelServices })),
+);
+const Preferences = lazy(() =>
+  import("./screens/environment/Preferences").then((m) => ({ default: m.Preferences })),
+);
 
-export { SectionB } from "./features/memory/SectionB";
-export { AppearanceSettings, ChatPage };
-export function Sidebar() {
+function Waiting({ bootstrap = false }: { bootstrap?: boolean }) {
+  const { t } = useTranslation();
   return (
-    <SidebarProvider>
-      <SidebarView version={VERSION} />
-    </SidebarProvider>
+    <div
+      role="status"
+      className="flex h-full min-h-64 flex-col items-center justify-center gap-3 p-8 text-center"
+    >
+      <BrandLogo className="size-12 text-primary" />
+      <strong className="text-xl tracking-tight">Superstring</strong>
+      <p className="text-sm text-muted-foreground">
+        {t(bootstrap ? "workspace.loading_local_workspace" : "workspace.reading")}
+      </p>
+    </div>
   );
 }
-
-function AppContent() {
-  const t = useI18n();
-  const status = useSuperstringStore((state) => state.status);
-  const page = useSuperstringStore((state) => state.page);
-  const settingsView = useSuperstringStore((state) => state.settingsView);
-  const bootstrap = useSuperstringStore((state) => state.bootstrap);
-  const confirm = useSuperstringStore((state) => state.navigationConfirmOpen);
+function Application() {
+  const status = useSuperstringStore((s) => s.status);
+  const bootstrap = useSuperstringStore((s) => s.bootstrap);
+  const unsaved = useSuperstringStore(settingsHaveDrafts);
+  const space = useSuperstringStore(activeSpace);
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
-  const unsaved = useSuperstringStore(settingsHaveDrafts);
   useEffect(() => {
     if (!unsaved) return;
     const warn = (event: BeforeUnloadEvent) => {
@@ -56,64 +71,31 @@ function AppContent() {
   }, [unsaved]);
   if (status === "loading" || status === "idle")
     return (
-      <div className="loading-page flex min-h-svh flex-col items-center justify-center gap-3 p-8 text-center">
-        <div className="loading-brand mb-3 flex items-center gap-3 text-lg [&>svg]:size-10">
-          <Icon name="brand" />
-          <strong>superstring</strong>
-        </div>
-        <h1>{t("正在加载本地工作空间")}</h1>
-        <p className="text-sm text-muted-foreground">
-          {t("正在连接本地服务并读取会话与 Agent 配置…")}
-        </p>
+      <div className="h-svh">
+        <Waiting bootstrap />
       </div>
     );
+  const Screen = {
+    conversations: ConversationWorkspace,
+    assistants: AssistantWorkspace,
+    library: LibraryWorkspace,
+    connections: ConnectionWorkspace,
+    runs: ObservabilityWorkspace,
+    models: ModelServices,
+    preferences: Preferences,
+  }[space];
   return (
-    <CommandNavigation>
-      <SidebarProvider id="superstring-shell" className="h-svh min-h-0 overflow-hidden">
-        <NavigationSurface>
-          <ResponsiveSidebar version={VERSION} />
-          <SidebarInset className="main-area min-h-0 min-w-0 overflow-hidden md:h-[calc(100svh-1rem)]">
-            <div className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
-              <NavigationTrigger />
-              <Separator orientation="vertical" className="h-4" />
-              <span className="text-sm text-muted-foreground">{t("本地工作空间")}</span>
-            </div>
-            <div className="min-h-0 min-w-0 flex-1 overflow-hidden [&>section]:flex [&>section]:h-full [&>section]:min-h-0 [&>section]:flex-col">
-              {page === "chat" ? (
-                <ConversationShell />
-              ) : settingsView === "hub" ? (
-                <SettingsHub />
-              ) : settingsView === "workspace" ? (
-                <SettingsWorkspace />
-              ) : settingsView === "observability" ? (
-                <ObservabilityPage />
-              ) : settingsView === "knowledge" ? (
-                <KnowledgeSettings />
-              ) : settingsView === "general" ? (
-                <GeneralSettings />
-              ) : settingsView === "operating-mode" ? (
-                <OperatingModeSettings />
-              ) : settingsView === "appearance" ? (
-                <AppearanceSettings />
-              ) : (
-                <AgentSettings />
-              )}
-            </div>
-            <StatusBar />
-          </SidebarInset>
-          {confirm &&
-            page === "settings" &&
-            !["agents", "workspace", "knowledge"].includes(settingsView) && <NavigationConfirm />}
-        </NavigationSurface>
-      </SidebarProvider>
-    </CommandNavigation>
+    <WorkspaceShell>
+      <Suspense fallback={<Waiting />}>
+        <Screen />
+      </Suspense>
+    </WorkspaceShell>
   );
 }
-
 export default function App() {
   return (
     <DesignSystemProvider>
-      <AppContent />
+      <Application />
     </DesignSystemProvider>
   );
 }

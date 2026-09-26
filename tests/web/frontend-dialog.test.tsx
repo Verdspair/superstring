@@ -2,9 +2,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NavigationConfirm } from "../../src/web/app/NavigationConfirm";
+import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
 import { useSuperstringStore } from "../../src/web/store";
-import { ConfirmDialog } from "../../src/web/ui/ConfirmDialog";
+import { ConfirmDialog } from "../../src/web/components/confirmation";
 
 afterEach(cleanup);
 function Example() {
@@ -42,7 +42,7 @@ describe("Radix确认弹窗", () => {
   it("点击遮罩不取消确认", async () => {
     render(<Example />);
     await userEvent.click(screen.getByRole("button", { name: "打开确认" }));
-    fireEvent.pointerDown(document.querySelector(".dialog-backdrop") as HTMLElement);
+    fireEvent.pointerDown(document.querySelector('[data-slot="alert-dialog-overlay"]') as HTMLElement);
     expect(screen.getByRole("alertdialog", { name: "确认操作？" })).toBeTruthy();
   });
   it("导航确认保留显式取消策略，请求中禁止重复动作，结束后解除禁用", async () => {
@@ -56,6 +56,7 @@ describe("Radix确认弹窗", () => {
     );
     const cancel = vi.fn();
     useSuperstringStore.setState({
+      navigationConfirmOpen: true,
       confirmSaveAndContinue: save,
       cancelPendingNavigation: cancel,
     });

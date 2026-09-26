@@ -1,9 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { CommandNavigation, CommandSearchButton } from "../../src/web/app/CommandNavigation";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { WorkspaceShell } from "../../src/web/workspace/WorkspaceShell";
 
 beforeEach(() => {
   store.getState().resetForTests();
@@ -25,9 +25,9 @@ afterEach(() => {
 function setup() {
   render(
     <DesignSystemProvider>
-      <CommandNavigation>
-        <CommandSearchButton />
-      </CommandNavigation>
+      <WorkspaceShell>
+        <p>Workspace</p>
+      </WorkspaceShell>
     </DesignSystemProvider>,
   );
 }
@@ -50,7 +50,7 @@ it("command navigation uses draft guards rather than overwriting the current edi
   store.setState({ page: "settings", settingsView: "agents", dirty: true });
   setup();
   await userEvent.click(screen.getByRole("button", { name: "搜索与跳转" }));
-  await userEvent.type(screen.getByRole("combobox"), "运行模式与连接");
+  await userEvent.type(screen.getByRole("combobox"), "接入");
   await userEvent.keyboard("{Enter}");
   expect(store.getState()).toMatchObject({
     settingsView: "agents",

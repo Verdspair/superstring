@@ -10,7 +10,7 @@ import type {
   PersonaResponse,
   PolicyView,
 } from "../../shared/contracts";
-import type { SettingsRoute } from "../app/settings-routes";
+import type { SettingsRoute } from "../workspace/settings-routes";
 import type { BrowserStateStorage } from "../browser-state";
 import { initialConversationState } from "../features/chat/conversation-state";
 import { directoryInitial } from "../features/conversations/directory-state";

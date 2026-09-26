@@ -2,11 +2,11 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
-import { NavigationConfirm } from "../../src/web/app/NavigationConfirm";
 import { qqDraftChanges, settingsHaveDrafts } from "../../src/web/features/qq/draft-state";
-import { QqAppAccess } from "../../src/web/features/qq/QqAppAccess";
 import { qqSchemeDirty, qqSchemeEditorFrom } from "../../src/web/features/qq/types";
+import { ConnectionWorkspace as QqAppAccess } from "../../src/web/screens/connections/ConnectionWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
 import { qqSchemeFixture } from "./helpers/qq-fixture";
 
 const settings: QqSettingsResponse = {
@@ -68,7 +68,8 @@ it("connection draft survives remount and server refresh while retaining its ori
   });
   const view = render(<QqAppAccess />);
   await act(async () => {});
-  expect((screen.getByLabelText("WebSocket 地址") as HTMLInputElement).value).toBe(
+  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
+  expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
   );
   view.unmount();
@@ -84,7 +85,8 @@ it("connection draft survives remount and server refresh while retaining its ori
   });
   render(<QqAppAccess />);
   await act(async () => {});
-  expect((screen.getByLabelText("WebSocket 地址") as HTMLInputElement).value).toBe(
+  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
+  expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
   );
   expect(store.getState().qqInputs.connection?.source.revision).toBe(3);
