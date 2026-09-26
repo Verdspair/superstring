@@ -56,19 +56,9 @@ export function applyTheme(id: ThemeId) {
   root.dataset.theme = theme.id;
   for (const property of properties) root.style.removeProperty(property);
   if (theme.id === "slate") return;
-  root.style.setProperty("--superstring-tone-deep", `light-dark(${theme.color}, ${theme.dark})`);
+  // A theme changes accent roles only. Neutral surfaces and borders belong to the
+  // design system, so every color remains readable in both appearance modes.
   root.style.setProperty("--ac-accent", `light-dark(${theme.color}, ${theme.dark})`);
-  for (const [property, light, dark] of [
-    ["--superstring-tone-light", 9, 15],
-    ["--superstring-tone-line", 21, 26],
-    ["--superstring-tone-soft", 3, 5],
-    ["--ac-accent-soft", 10, 17],
-  ] as const) {
-    root.style.setProperty(
-      property,
-      `light-dark(color-mix(in srgb, ${theme.color} ${light}%, white), color-mix(in srgb, ${theme.dark} ${dark}%, #232b36))`,
-    );
-  }
 }
 
 export function selectTheme(id: ThemeId): boolean {

@@ -182,18 +182,22 @@ it("明暗模式可固定浅色/深色或跟随系统，持久化并即时生效
   expect(screen.getByText("当前：跟随系统")).toBeTruthy();
 });
 
-it("主题色只用于图标，底色保持基线强度不打色块", () => {
-  applyTheme("violet");
+it("主题只投影强调色，中性表面与边框由语义令牌保持一致", () => {
   const root = document.documentElement;
-  expect(root.style.getPropertyValue("--superstring-tone-deep")).toContain("#71509b");
-  // 设计约定 修订）：主题色只给图标；大面积底色回到基线混色，避免出现色块。
-  expect(root.style.getPropertyValue("--superstring-tone-light")).toContain("9%");
-  expect(root.style.getPropertyValue("--superstring-tone-line")).toContain("21%");
-  expect(root.style.getPropertyValue("--superstring-tone-soft")).toContain("3%");
-  applyTheme("forest");
-  expect(document.documentElement.style.getPropertyValue("--superstring-tone-deep")).toContain(
-    "#306b4c",
-  );
+  for (const theme of THEMES.filter((item) => item.id !== "slate")) {
+    applyTheme(theme.id);
+    expect(root.style.getPropertyValue("--ac-accent")).toBe(
+      `light-dark(${theme.color}, ${theme.dark})`,
+    );
+    for (const property of [
+      "--superstring-tone-deep",
+      "--superstring-tone-light",
+      "--superstring-tone-line",
+      "--superstring-tone-soft",
+      "--ac-accent-soft",
+    ])
+      expect(root.style.getPropertyValue(property)).toBe("");
+  }
 });
 
 it("侧栏移除新会话助手设置，改由设置中心承担", () => {
