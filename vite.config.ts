@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { DEV_DEFAULT_PORT, DEV_HOST } from "./src/server/dev-config";
@@ -13,8 +15,9 @@ const proxy = Object.fromEntries(
 );
 
 export default defineConfig({
+  resolve: { alias: { "@": fileURLToPath(new URL("./src/web", import.meta.url)) } },
   root: ".",
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: "dist/web",
   },

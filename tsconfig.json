@@ -16,7 +16,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
-    "types": ["bun", "node"]
+    "types": ["bun", "node"],
+    "paths": {
+      "@/*": ["./src/web/*"]
+    }
   },
   "include": ["src", "tests", "vite.config.ts", "vitest.config.ts"]
 }

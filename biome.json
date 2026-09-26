@@ -36,5 +36,18 @@
       "quoteStyle": "double",
       "semicolons": "always"
     }
-  }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["src/web/i18n/locales/**"],
+      "formatter": {
+        "enabled": false
+      }
+    }
+  ]
 }

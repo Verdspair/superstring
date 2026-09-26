@@ -20,7 +20,7 @@ import { type BusinessDbHandle, openConnection } from "./connection";
 import * as schema from "./schema";
 
 /** Ordered resources are also supplied explicitly by installed entrypoints. */
-export const BUSINESS_SCHEMA_VERSION = 43 as const;
+export const BUSINESS_SCHEMA_VERSION = 44 as const;
 export const BUSINESS_MIGRATION_FILES = [
   "0001_initial.sql",
   "0002_knowledge.sql",
@@ -65,8 +65,10 @@ export const BUSINESS_MIGRATION_FILES = [
   "0041_outbound_intents.sql",
   "0042_runtime_observability.sql",
   "0043_protected_model_results.sql",
+  "0044_conversation_avatars.sql",
 ] as const;
 export type BusinessMigrationSql = readonly [
+  string,
   string,
   string,
   string,
@@ -176,6 +178,7 @@ export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "context_snapshots",
   "run_events",
   "runtime_spans",
+  "conversation_avatars",
 ];
 
 function loadMigrationSql(): BusinessMigrationSql {
@@ -224,6 +227,7 @@ function loadMigrationSql(): BusinessMigrationSql {
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[40]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[41]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[42]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[43]), "utf8"),
   ];
 }
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ConversationAvatarSchema } from "./conversation-avatar";
 import { SourceRefSchema } from "./evidence";
 
 export const ConversationChannelSchema = z.enum(["web", "onebot11"]);
@@ -23,6 +24,7 @@ export const ConversationSummarySchema = z.strictObject({
   agentId: z.string(),
   bindingEpoch: z.number().int().positive(),
   title: z.string(),
+  avatar: ConversationAvatarSchema.optional(),
   participants: z.array(ConversationParticipantSchema),
   updatedAt: z.string(),
   lastSeq: z.number().int().nonnegative(),

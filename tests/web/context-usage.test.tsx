@@ -1,8 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it } from "vitest";
 import { ContextUsageSchema } from "../../src/shared/contracts/context-usage";
-import { ContextUsagePanel } from "../../src/web/features/chat/ContextUsagePanel";
 import { selectLocale } from "../../src/web/i18n";
+import { ContextMeter as ContextUsagePanel } from "../../src/web/screens/conversations/ContextMeter";
 import { fixtureStore as store } from "./helpers/chat-fixture";
 
 afterEach(() => {
@@ -31,7 +32,7 @@ const usage = ContextUsageSchema.parse({
     protocol: 3,
   },
 });
-it("opens only on demand, closes on Escape/outside, and returns keyboard focus", () => {
+it("opens only on demand, closes on Escape/outside, and returns keyboard focus", async () => {
   store.setState({ currentSessionId: "A", contextUsage: usage });
   render(<ContextUsagePanel />);
   const trigger = screen.getByRole("button", { name: "上下文用量" });
@@ -40,9 +41,9 @@ it("opens only on demand, closes on Escape/outside, and returns keyboard focus",
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "关闭上下文用量" }));
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(document.activeElement).toBe(trigger);
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
   fireEvent.click(trigger);
-  fireEvent.pointerDown(document.body);
+  await userEvent.click(document.body);
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 it("closes when switching chats and never revives old open state", () => {
@@ -57,28 +58,28 @@ it("closes when switching chats and never revives old open state", () => {
 it("renders all assembled components and keeps the unsent draft separate", () => {
   selectLocale("zh-CN");
   store.setState({ currentSessionId: "A", contextUsage: usage, composer: "你好", sending: false });
-  const { container } = render(<ContextUsagePanel />);
+  const { baseElement: container } = render(<ContextUsagePanel />);
   fireEvent.click(screen.getByRole("button", { name: /上下文用量|Context usage/ }));
-  expect(container.querySelectorAll(".context-usage-legend li")).toHaveLength(10);
+  expect(screen.getAllByRole("row")).toHaveLength(10);
   expect(screen.getByText("压缩摘要")).toBeTruthy();
   expect(screen.queryByText("回查原文")).toBeNull();
   expect(container.textContent).toContain("待发送草稿约 6");
   expect(container.textContent).toContain("已用约 1,000 / 10,000");
-  expect(container.querySelectorAll(".usage-ring")).toHaveLength(2);
-  expect(container.querySelector(".context-usage-percent")?.textContent).toBe("10.0%");
+  expect(container.querySelector(".CircularProgressbar")).toBeTruthy();
+  expect(screen.getAllByText("10.0%").length).toBeGreaterThan(0);
 });
 it("does not show a different session's usage as current", () => {
   store.setState({ currentSessionId: "B", contextUsage: usage, sending: false });
-  const { container } = render(<ContextUsagePanel />);
+  const { baseElement: container } = render(<ContextUsagePanel />);
   fireEvent.click(screen.getByRole("button", { name: /上下文用量|Context usage/ }));
   expect(container.querySelector(".context-usage-bar")).toBeNull();
-  expect(screen.getByText("尚无请求统计")).toBeTruthy();
+  expect(screen.getByText(/尚无请求统计/)).toBeTruthy();
   expect(container.textContent).not.toContain("chat-model");
 });
 it("translates all component labels without translating model IDs", () => {
   selectLocale("en");
   store.setState({ currentSessionId: "A", contextUsage: usage, sending: false });
-  const { container } = render(<ContextUsagePanel />);
+  const { baseElement: container } = render(<ContextUsagePanel />);
   fireEvent.click(screen.getByRole("button", { name: /上下文用量|Context usage/ }));
   expect(container.textContent).toContain("chat-model");
   expect(container.textContent).toContain("Summaries");

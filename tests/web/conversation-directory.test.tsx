@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SuperstringApi } from "../../src/web/api";
-import { ConversationList } from "../../src/web/features/conversations/ConversationList";
 import { currentSessionId } from "../../src/web/features/conversations/directory-state";
+import { ConversationIndex as ConversationList } from "../../src/web/screens/conversations/ConversationIndex";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { summaryFixture } from "./helpers/chat-fixture";
 

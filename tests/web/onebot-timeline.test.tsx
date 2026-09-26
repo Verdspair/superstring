@@ -6,10 +6,8 @@ import type {
   Delivery,
 } from "../../src/shared/contracts/conversation";
 import type { SuperstringApi } from "../../src/web/api";
-import {
-  ConversationTimeline,
-  timelineRows,
-} from "../../src/web/features/conversations/ConversationTimeline";
+import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
+import { timelineRows } from "../../src/web/screens/conversations/timeline-projection";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const now = "2026-09-26T00:00:00Z";
@@ -226,11 +224,11 @@ it("shared conversations distinguish same-name members and preserve mention and 
   render(
     <ConversationTimeline conversation={{ ...bot, topology: "shared", participants: people }} />,
   );
-  expect(await screen.findByText("历史记录标记为面向助手")).toBeTruthy();
+  expect(await screen.findByText("历史记录标记为面向 Agent")).toBeTruthy();
   expect(screen.getAllByText("member-a").length).toBeGreaterThan(0);
   expect(screen.getAllByText("member-b").length).toBeGreaterThan(0);
   expect(screen.getByText("expired-platform-message")).toBeTruthy();
-  expect(screen.getByText(/OneBot 群聊/)).toBeTruthy();
+  expect(screen.getByText(/OneBot · 群聊/)).toBeTruthy();
 });
 it("a wake no-output revision updates one activity and creates no empty message bubble", async () => {
   const pending: ConversationEventView = {
@@ -254,8 +252,8 @@ it("a wake no-output revision updates one activity and creates no empty message 
     <ConversationTimeline conversation={{ ...bot, topology: "shared" }} />,
   );
   expect(await screen.findByText("本次未发言")).toBeTruthy();
-  expect(container.querySelectorAll(".conversation-activity")).toHaveLength(1);
-  expect(container.querySelectorAll(".conversation-message")).toHaveLength(0);
+  expect(container.querySelectorAll('[data-timeline-key^="wake:"]')).toHaveLength(1);
+  expect(container.querySelectorAll('[data-timeline-key^="source:"]')).toHaveLength(0);
   expect(screen.queryByText("原文暂不可用")).toBeNull();
   expect(screen.getByText(/冷场发起/)).toBeTruthy();
 });

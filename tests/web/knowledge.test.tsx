@@ -1,9 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+// Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
+import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KnowledgeDocumentDetail } from "../../src/shared/contracts/knowledge";
 import { api } from "../../src/web/api";
-import { AgentKnowledge } from "../../src/web/features/knowledge/AgentKnowledge";
-import { KnowledgeSettings } from "../../src/web/features/knowledge/KnowledgeSettings";
+
 import { selectLocale } from "../../src/web/i18n";
 import { useSuperstringStore as store } from "../../src/web/store";
 
@@ -228,40 +228,5 @@ describe("knowledge editing and authorization", () => {
       "上传资料",
     );
     expect(store.getState().apiClient.importKnowledgeText).not.toHaveBeenCalled();
-  });
-  it("preserves the assistant settings guard on the management jump", async () => {
-    store.setState({ settingsView: "agents", dirty: true, activeSection: "knowledge" });
-    render(<AgentKnowledge />);
-    await screen.findByText("用户资料");
-    fireEvent.click(screen.getByRole("button", { name: "打开知识库详细配置" }));
-    expect(store.getState().settingsView).toBe("agents");
-    expect(store.getState().navigationConfirmOpen).toBe(true);
-  });
-  it("cannot display a previous assistant's authorized catalog after switching", async () => {
-    render(<AgentKnowledge />);
-    await screen.findByText("用户资料");
-    const pending = deferred<[]>();
-    vi.mocked(store.getState().apiClient.listAgentKnowledge).mockReturnValue(pending.promise);
-    act(() => {
-      store.setState({ editorAgentId: "33333333-3333-4333-8333-333333333333" });
-    });
-    expect(screen.queryByText("用户资料")).toBeNull();
-    await act(async () => {
-      pending.resolve([]);
-    });
-    expect(screen.getByText("当前助手暂无已授权资料。")).toBeTruthy();
-  });
-  it("renders English controls without translating user content and guards close", async () => {
-    selectLocale("en");
-    render(<KnowledgeSettings />);
-    await screen.findByRole("button", { name: /^用户资料/ });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /^用户资料/ }));
-    });
-    fireEvent.change(screen.getByLabelText("Document name"), { target: { value: "保留中文" } });
-    fireEvent.click(screen.getByRole("button", { name: "Close editor" }));
-    expect(screen.getByRole("alertdialog")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Stay here" }));
-    expect(screen.getByDisplayValue("保留中文")).toBeTruthy();
   });
 });

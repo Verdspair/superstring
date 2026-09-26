@@ -15,7 +15,7 @@ namespace Superstring.Setup
     {
         internal const int SupportedManifestVersion = 1;
         internal const int SupportedLayoutVersion = 1;
-        internal const int SupportedSchemaVersion = 43;
+        internal const int SupportedSchemaVersion = 44;
         internal const string Product = "superstring";
         internal const string Platform = "win32-x64";
 
@@ -162,6 +162,8 @@ namespace Superstring.Setup
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0042_runtime_observability.sql");
             if (manifest.SchemaVersion >= 43 && !seen.Contains("app/resources/migrations/versions/0043_protected_model_results.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0043_protected_model_results.sql");
+            if (manifest.SchemaVersion >= 44 && !seen.Contains("app/resources/migrations/versions/0044_conversation_avatars.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0044_conversation_avatars.sql");
             if (manifest.SchemaVersion >= 41 && !seen.Contains("app/resources/migrations/versions/0041_outbound_intents.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0041_outbound_intents.sql");
             var launcher = root.ContainsKey("launcher") ? root["launcher"] as Dictionary<string, object> : null;
