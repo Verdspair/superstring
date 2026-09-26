@@ -3,6 +3,7 @@ export interface BotWorkerOptions {
   advance: () => Promise<void>;
   canAdvance: () => boolean;
   pollIntervalMs?: number;
+  nextReadyAt?: () => string | null;
   clockSeconds?: () => number;
   onError?: (error: unknown) => void;
 }
@@ -56,15 +57,25 @@ export class BotWorker {
       if (this.stopped) return;
       if (this.pendingWake) {
         this.pendingWake = false;
+        // A notification requests another cycle, not a microtask-only polling loop.
+        // Always let socket callbacks, cancellation and timers make progress first.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
         continue;
       }
+      const pollMs = this.options.pollIntervalMs ?? 15_000;
+      const deadline = this.options.canAdvance() ? this.options.nextReadyAt?.() : null;
+      const nowMs = this.options.clockSeconds ? this.options.clockSeconds() * 1000 : Date.now();
+      const untilReady = deadline ? Date.parse(deadline) - nowMs : 0;
+      // A source arriving at t14 must not postpone another person's t15 deadline.
+      // Already-due work that cannot be claimed (or offline transport) uses normal polling.
+      const delayMs = untilReady > 0 ? Math.min(pollMs, untilReady) : pollMs;
       await new Promise<void>((resolve) => {
         const finish = () => {
           clearTimeout(timer);
           this.sleepResolve = null;
           resolve();
         };
-        const timer = setTimeout(finish, this.options.pollIntervalMs ?? 15_000);
+        const timer = setTimeout(finish, delayMs);
         this.sleepResolve = finish;
       });
     }

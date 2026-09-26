@@ -188,7 +188,8 @@ describe("durable wake and outbound transitions", () => {
     expect(w.throughSeq).toBe(2);
     expect(h.wake.claim({ at, leaseMs: 1000 })).toBeNull();
     h.wake.complete(w.id, w.leaseToken!, "no_output", 2, at);
-    expect(h.wake.claim({ at, leaseMs: 1000 })).toBeNull();
+    // Reading through sequence 2 does not silently resolve the other queued opportunity.
+    expect(h.wake.claim({ at, leaseMs: 1000 })?.throughSeq).toBe(1);
   });
   it("failed wake retains retry and does not acknowledge source cursor", () => {
     const h = setup();

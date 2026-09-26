@@ -25,7 +25,7 @@ const bindingId = "11111111-1111-4111-8111-111111111111",
   time = 2_000_000_000;
 function setup(
   model: Partial<ModelPort> = {},
-  options: { split?: boolean; recomputes?: number } = {},
+  options: { split?: boolean; recomputes?: number; mergeSeconds?: number } = {},
 ) {
   const h = openBusinessDb();
   handles.push(h);
@@ -42,7 +42,7 @@ function setup(
     triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
-      merge_window_seconds: 2,
+      merge_window_seconds: options.mergeSeconds ?? 2,
       max_recompute_count: options.recomputes ?? 1,
       judgement_interval_turns: 1,
     },
@@ -208,7 +208,7 @@ describe("shared Bot model-controlled conversation", () => {
       },
     ]);
   });
-  it("ordinary group activity merges one opportunity and Agent evaluates each recipient then generates each once", async () => {
+  it("ordinary group activity keeps participant opportunities and one Agent run evaluates and replies to the mature batch", async () => {
     let decisions = 0;
     const scoreModels: string[] = [];
     const generated: string[] = [];
@@ -233,7 +233,7 @@ describe("shared Bot model-controlled conversation", () => {
     h.receive("2", "20003");
     expect(
       h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='pending'").get(),
-    ).toEqual({ n: 1 });
+    ).toEqual({ n: 2 });
     expect(h.wakes.peek({ at: h.now() })).toBeNull();
     h.clock.seconds += 2;
     const result = await h.activate("chiming_in");
@@ -790,3 +790,151 @@ it.each(["revoked", "cancelled"])(
     expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
   },
 );
+
+describe("durable participant windows across actual Host and delivery", () => {
+  it("A at 0 is answered at 15; B at 14 remains pending and is answered at 29 after A's confirmed delivery", async () => {
+    let decisions = 0;
+    let h: ReturnType<typeof setup>;
+    h = setup(
+      {
+        complete: async (req) => {
+          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score)
+            return '{"score":9}';
+          return ++decisions % 2 === 1
+            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
+            : generate([h.clock.seconds === time + 15 ? "20002" : "20003"]);
+        },
+      },
+      { mergeSeconds: 15 },
+    );
+    h.receive("1", "20002");
+    h.clock.seconds = time + 14;
+    h.receive("2", "20003");
+    h.clock.seconds = time + 15;
+    expect((await h.activate("chiming_in")).status).toBe("completed");
+    expect(h.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20002"]);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='pending'").get(),
+    ).toEqual({ n: 1 });
+    const delivery = new OutboundDelivery({
+      orm: h.orm,
+      repository: h.outbox,
+      journal: h.journal,
+      authorize: () => true,
+      stickerFile: () => null,
+      now: h.now,
+      port: { send: async () => ({ kind: "confirmed", messageId: "receipt-a" }) },
+    });
+    await delivery.deliver(h.outbox.list({})[0]!.id);
+    expect(h.outbox.list({})[0]!.status).toBe("confirmed");
+    h.adapter.sweep();
+    h.clock.seconds = time + 29;
+    expect((await h.activate("chiming_in")).status).toBe("completed");
+    expect(
+      h.outbox
+        .list({})
+        .map((d) => d.target?.participantId)
+        .sort(),
+    ).toEqual(["20002", "20003"]);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id='onebot.main'").get(),
+    ).toEqual({ n: 2 });
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='pending'").get(),
+    ).toEqual({ n: 0 });
+  });
+  it("an unpaired legacy or room-wide initiative still preserves the unanswered gate", async () => {
+    const h = setup({}, { mergeSeconds: 15 });
+    h.receive("1", "20002");
+    h.clock.seconds = time + 15;
+    recordQqSend(h.orm, {
+      scope: {
+        kind: "qq",
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "30003",
+        agentId: DEFAULT_AGENT_ID,
+      },
+      kind: "chiming_in",
+      parts: [{ kind: "text", result: "confirmed", messageId: "legacy", stickerId: null }],
+      sentAtSeconds: time + 1,
+      text: "room topic",
+    });
+    const result = await h.activate("chiming_in");
+    expect(result.status).toBe("no_output");
+    expect(result).toHaveProperty("reason", "awaiting_reply");
+    expect(h.requests).toHaveLength(0);
+  });
+  it("Agent none resolves only its mature participants, preserving the later participant", async () => {
+    const h = setup({}, { mergeSeconds: 15 });
+    h.receive("1", "20002");
+    h.clock.seconds = time + 14;
+    h.receive("2", "20003");
+    h.clock.seconds = time + 15;
+    expect((await h.activate("chiming_in")).status).toBe("no_output");
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='pending'").get(),
+    ).toEqual({ n: 1 });
+    h.clock.seconds = time + 29;
+    expect((await h.activate("chiming_in")).status).toBe("no_output");
+    expect(h.requests).toHaveLength(2);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='pending'").get(),
+    ).toEqual({ n: 0 });
+  });
+  it("split off keeps one logical room reply while resolving both explicitly mature opportunities", async () => {
+    let decisions = 0;
+    const h = setup(
+      {
+        complete: async (req) => {
+          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score)
+            return '{"score":9}';
+          return ++decisions === 1
+            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
+            : generate(["30003"]);
+        },
+      },
+      { split: false, mergeSeconds: 15 },
+    );
+    h.receive("1", "20002");
+    h.receive("2", "20003");
+    h.clock.seconds += 15;
+    expect((await h.activate("chiming_in")).status).toBe("completed");
+    expect(h.outbox.list({})).toHaveLength(1);
+    expect(h.outbox.list({})[0]!.target).toEqual({ peerId: "30003", participantId: null });
+    expect(h.outbox.parts(h.outbox.list({})[0]!.id)).toHaveLength(2);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='completed'").get(),
+    ).toEqual({ n: 2 });
+  });
+  it("a failed leased recipient is retained as failed while another successful recipient completes", async () => {
+    let decisions = 0;
+    const h = setup({
+      complete: async (req) => {
+        if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score)
+          return '{"score":9}';
+        return ++decisions === 1
+          ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
+          : generate(["20002", "20003"]);
+      },
+      async *streamText(req) {
+        if (JSON.stringify(req.messages[0]).includes("20002")) throw new Error("MODEL_A_FAILED");
+        yield "B reply";
+      },
+    });
+    h.receive("1", "20002");
+    h.receive("2", "20003");
+    h.clock.seconds += 2;
+    const c = h.journal.ensureOneBot(bindingId)!;
+    const a = h.wakes
+      .readyParticipants({ conversationId: c.id, cause: "chiming_in", at: h.now() })
+      .find((p) => p.participantId === "20002")!.wake;
+    const lease = h.wakes.claim({ at: h.now(), leaseMs: 120000, wakeId: a.id })!;
+    expect((await h.host.activate(lease, new AbortController().signal)).status).toBe("completed");
+    expect(h.wakes.get(a.id)?.status).toBe("failed");
+    expect(h.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20003"]);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='completed'").get(),
+    ).toEqual({ n: 1 });
+  });
+});
