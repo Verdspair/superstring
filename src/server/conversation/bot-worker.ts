@@ -49,8 +49,18 @@ export class BotWorker {
   }
   private async loop(): Promise<void> {
     while (!this.stopped) {
+      const pollMs = this.options.pollIntervalMs ?? 15_000;
+      let delayMs = pollMs;
       try {
         await this.runCycle();
+        if (!this.stopped && !this.pendingWake) {
+          const deadline = this.options.canAdvance() ? this.options.nextReadyAt?.() : null;
+          const nowMs = this.options.clockSeconds ? this.options.clockSeconds() * 1000 : Date.now();
+          const untilReady = deadline ? Date.parse(deadline) - nowMs : 0;
+          // A source arriving at t14 must not postpone another person's t15 deadline.
+          // Due but unclaimable work, offline transport and lookup failures use normal polling.
+          delayMs = untilReady > 0 ? Math.min(pollMs, untilReady) : pollMs;
+        }
       } catch (error) {
         this.options.onError?.(error);
       }
@@ -62,13 +72,6 @@ export class BotWorker {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         continue;
       }
-      const pollMs = this.options.pollIntervalMs ?? 15_000;
-      const deadline = this.options.canAdvance() ? this.options.nextReadyAt?.() : null;
-      const nowMs = this.options.clockSeconds ? this.options.clockSeconds() * 1000 : Date.now();
-      const untilReady = deadline ? Date.parse(deadline) - nowMs : 0;
-      // A source arriving at t14 must not postpone another person's t15 deadline.
-      // Already-due work that cannot be claimed (or offline transport) uses normal polling.
-      const delayMs = untilReady > 0 ? Math.min(pollMs, untilReady) : pollMs;
       await new Promise<void>((resolve) => {
         const finish = () => {
           clearTimeout(timer);

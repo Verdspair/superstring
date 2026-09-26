@@ -162,7 +162,26 @@ export class OneBotHost {
       settleOpportunity();
       return { status: "expired" as const };
     }
-    // Different immediate causes can describe the same person's already answered input.
+    const hasConfirmedReply = (sourceSeq: number, participantId: string | null): boolean =>
+      !!db
+        .query(`SELECT 1 FROM outbound_intents i
+          WHERE i.conversation_id=? AND i.source_through_seq>=? AND i.status='confirmed'
+            AND (json_extract(i.target,'$.participantId') IS NULL OR json_extract(i.target,'$.participantId')=?)
+            AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
+              AND p.attempted_at IS NOT NULL AND p.status='confirmed') LIMIT 1`)
+        .get(conversation.id, sourceSeq, participantId);
+    // A newer addressed reply can cover an older ordinary opportunity for the same
+    // recipient. Idle openers are not responses to a particular source.
+    if (
+      path !== "idle_topic" &&
+      focusKey &&
+      focus &&
+      hasConfirmedReply(focus.seq, focus.participant?.id ?? null)
+    ) {
+      settleOpportunity();
+      return { status: "no_output" as const, reason: "already_replied" };
+    }
+    // Different immediate causes can describe the same person's already attempted input.
     // Coverage belongs to the actual output audience and observed source sequence, not the
     // conversation-wide cursor: replying to one member must not consume another member's turn.
     if (!initiative && focusKey && focus) {
@@ -171,10 +190,10 @@ export class OneBotHost {
         SELECT i.status FROM outbound_intents i
         WHERE i.conversation_id=? AND i.source_through_seq>=?
           AND (json_extract(i.target,'$.participantId') IS NULL OR json_extract(i.target,'$.participantId')=?)
-          AND i.status IN('confirmed','failed','unknown','stale')
+          AND i.status IN('failed','unknown','stale')
           AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
             AND p.attempted_at IS NOT NULL AND p.status IN('confirmed','failed','unknown','not_sent'))
-        ORDER BY i.status='confirmed' DESC,i.created_at DESC LIMIT 1
+        ORDER BY i.created_at DESC LIMIT 1
       `)
         .get(conversation.id, focus.seq, focus.participant?.id ?? null) as {
         status: string;
@@ -183,7 +202,7 @@ export class OneBotHost {
         settleOpportunity();
         return {
           status: "no_output" as const,
-          reason: covered.status === "confirmed" ? "already_replied" : "already_attempted",
+          reason: "already_attempted",
         };
       }
     }
@@ -191,7 +210,12 @@ export class OneBotHost {
     const preparation = () => {
       opportunities =
         path === "chiming_in"
-          ? o.wakes.readyParticipants({ conversationId: conversation.id, cause: path, at: now() })
+          ? o.wakes
+              .readyParticipants({ conversationId: conversation.id, cause: path, at: now() })
+              .filter(
+                (opportunity) =>
+                  !hasConfirmedReply(opportunity.wake.throughSeq, opportunity.participantId),
+              )
           : [];
       const pendingTargets = [
         ...new Map(

@@ -162,16 +162,21 @@ export class WakeScheduler {
             : error instanceof Error && internalFailureCodes.has(error.message)
               ? error.message.toUpperCase()
               : "BOT_RUN_FAILED";
-        this.options.repository.fail(wake.id, wake.leaseToken!, {
-          at: now(),
-          maxAttempts: policy.maxAttempts,
-          retryDelayMs: policy.retryDelayMs,
-          errorCode,
-        });
-        span?.update({
-          details: { state: this.options.repository.get(wake.id)?.status ?? "missing" },
-        });
-        span?.end(errorCode === "BOT_STOPPED" ? "cancelled" : "failed", errorCode);
+        try {
+          this.options.repository.fail(wake.id, wake.leaseToken!, {
+            at: now(),
+            maxAttempts: policy.maxAttempts,
+            retryDelayMs: policy.retryDelayMs,
+            errorCode,
+          });
+          span?.update({
+            details: { state: this.options.repository.get(wake.id)?.status ?? "missing" },
+          });
+        } finally {
+          // Failure settlement may itself fail; that error still propagates, but the
+          // activation has ended and must not remain a live diagnostic indefinitely.
+          span?.end(errorCode === "BOT_STOPPED" ? "cancelled" : "failed", errorCode);
+        }
         this.options.onError?.(error, wake);
       }
       return true;
