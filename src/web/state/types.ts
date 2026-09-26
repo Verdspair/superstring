@@ -35,7 +35,8 @@ export type SettingsView =
   | "general"
   | "operating-mode"
   | "knowledge"
-  | "workspace";
+  | "workspace"
+  | "observability";
 export type SectionKey = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "knowledge";
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type PendingNavigation =

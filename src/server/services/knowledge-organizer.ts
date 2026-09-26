@@ -5,6 +5,7 @@ import { AgentRunRepository } from "../db/agent-run-repository";
 import { DEFAULT_USER_ID, newId, nowIso } from "../db/repositories";
 import { AppError } from "../errors";
 import type { ChatMessage, ModelGateway } from "../llm/model-gateway";
+import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
 import { knowledgeSegments, utf8Size } from "./knowledge-segments";
 
 const DraftSchema = z.strictObject({
@@ -33,6 +34,7 @@ export interface KnowledgeOrganizerOptions {
   db: Database;
   gateway: ModelGateway;
   agentRuntime?: LeafAgentRuntime;
+  telemetry?: RuntimeTelemetry;
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   leaseMs?: number;
@@ -46,6 +48,7 @@ export class KnowledgeOrganizer {
   private controller: AbortController | null = null;
   private wake: (() => void) | null = null;
   private stopped = false;
+  private deferredKey: string | null = null;
   private readonly leaseMs: number;
   private readonly agentRuntime: LeafAgentRuntime;
   constructor(private readonly options: KnowledgeOrganizerOptions) {
@@ -117,23 +120,73 @@ export class KnowledgeOrganizer {
     return this.db
       .transaction(() => {
         const now = nowIso();
-        this.db
+        const recovered = this.db
           .query(
-            "UPDATE knowledge_jobs SET status = 'queued', token = NULL, lease_expires_at = NULL, error_code = NULL WHERE status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)",
+            "UPDATE knowledge_jobs SET status = 'queued', token = NULL, lease_expires_at = NULL, error_code = NULL WHERE status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?) RETURNING id,document_id,content_version",
           )
-          .run(now);
-        this.db
+          .all(now) as { id: string; document_id: string; content_version: number }[];
+        for (const row of recovered)
+          this.options.telemetry?.record("knowledge.recover", {
+            channel: "knowledge",
+            stage: "maintenance",
+            status: "deferred",
+            code: "KNOWLEDGE_WORKER_INTERRUPTED",
+            details: { jobId: row.id, documentId: row.document_id },
+            sources: [
+              {
+                kind: "knowledge_document",
+                id: row.document_id,
+                revision: String(row.content_version),
+              },
+            ],
+          });
+        const cancelled = this.db
           .query(`UPDATE knowledge_jobs SET status = 'cancelled', token = NULL, lease_expires_at = NULL, finished_at = ?
         WHERE status IN ('queued', 'running') AND (settings_revision != (SELECT revision FROM knowledge_settings WHERE id = 1)
         OR (SELECT auto_enabled FROM knowledge_settings WHERE id = 1) = 0
-        OR content_version != (SELECT content_version FROM knowledge_documents WHERE id = document_id))`)
-          .run(now);
-        if (
-          this.stopped ||
-          this.chatBusy() ||
-          this.db.query("SELECT id FROM knowledge_jobs WHERE status = 'running' LIMIT 1").get()
-        )
+        OR content_version != (SELECT content_version FROM knowledge_documents WHERE id = document_id)) RETURNING id,document_id,content_version`)
+          .all(now) as { id: string; document_id: string; content_version: number }[];
+        for (const row of cancelled)
+          this.options.telemetry?.record("knowledge.invalidate", {
+            channel: "knowledge",
+            stage: "maintenance",
+            status: "cancelled",
+            code: "KNOWLEDGE_JOB_INVALIDATED",
+            details: { jobId: row.id, documentId: row.document_id },
+            sources: [
+              {
+                kind: "knowledge_document",
+                id: row.document_id,
+                revision: String(row.content_version),
+              },
+            ],
+          });
+        const blocked = this.stopped
+          ? "KNOWLEDGE_WORKER_STOPPED"
+          : this.chatBusy()
+            ? "KNOWLEDGE_CHAT_PRIORITY"
+            : this.db.query("SELECT id FROM knowledge_jobs WHERE status = 'running' LIMIT 1").get()
+              ? "KNOWLEDGE_WORKER_BUSY"
+              : null;
+        if (blocked) {
+          const queued = this.db
+            .query(
+              "SELECT id FROM knowledge_jobs WHERE status='queued' ORDER BY created_at,rowid LIMIT 1",
+            )
+            .get() as { id: string } | null;
+          const key = queued ? `${queued.id}:${blocked}` : null;
+          if (key && key !== this.deferredKey)
+            this.options.telemetry?.record("knowledge.wait", {
+              channel: "knowledge",
+              stage: "maintenance",
+              status: "deferred",
+              code: blocked,
+              details: { jobId: queued!.id },
+            });
+          this.deferredKey = key;
           return null;
+        }
+        this.deferredKey = null;
         const row = this.db
           .query<
             Omit<Job, "token">,
@@ -184,6 +237,25 @@ export class KnowledgeOrganizer {
   private async cycle(): Promise<boolean> {
     const job = this.claim();
     if (!job) return false;
+    const span = this.options.telemetry?.start("knowledge.job", {
+      channel: "knowledge",
+      stage: "maintenance",
+      model: job.model_name,
+      code: "KNOWLEDGE_JOB_CLAIMED",
+      details: {
+        jobId: job.id,
+        documentId: job.document_id,
+        contentVersion: job.content_version,
+        leaseMs: this.leaseMs,
+      },
+      sources: [
+        { kind: "knowledge_document", id: job.document_id, revision: String(job.content_version) },
+      ],
+    });
+    const work = () => this.runJob(job, span);
+    return span ? span.within(work) : work();
+  }
+  private async runJob(job: Job, span?: TraceScope): Promise<boolean> {
     const controller = new AbortController();
     this.controller = controller;
     const signal = controller.signal;
@@ -211,6 +283,14 @@ export class KnowledgeOrganizer {
     );
     try {
       const chunks = knowledgeSegments(job.original_text);
+      span?.update({ details: { segmentCount: chunks.length } });
+      this.options.telemetry?.record("knowledge.load", {
+        channel: "knowledge",
+        stage: "context",
+        status: "completed",
+        code: "KNOWLEDGE_INPUTS_LOADED",
+        details: { jobId: job.id, segmentCount: chunks.length },
+      });
       const drafts: z.infer<typeof DraftSchema>[] = [];
       const sources = chunks.map((chunk) => ({
         type: "document" as const,
@@ -283,58 +363,72 @@ export class KnowledgeOrganizer {
         drafts.push(parsed);
       }
       if (!drafts.length) throw new OrganizerFailure("KNOWLEDGE_INVALID_RESULT");
-      this.db
-        .transaction(() => {
-          this.check(job, signal);
-          this.db.query("DELETE FROM knowledge_chunks WHERE document_id = ?").run(job.document_id);
-          for (const chunk of chunks)
+      const publication = this.options.telemetry?.start("knowledge.publish", {
+        channel: "knowledge",
+        stage: "maintenance",
+        details: { jobId: job.id, segmentCount: chunks.length },
+      });
+      try {
+        this.db
+          .transaction(() => {
+            this.check(job, signal);
+            this.db
+              .query("DELETE FROM knowledge_chunks WHERE document_id = ?")
+              .run(job.document_id);
+            for (const chunk of chunks)
+              this.db
+                .query(
+                  "INSERT INTO knowledge_chunks (id, document_id, content_version, ordinal, start_offset, end_offset, body) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS TEXT))",
+                )
+                .run(
+                  newId(),
+                  job.document_id,
+                  job.content_version,
+                  chunk.ordinal,
+                  chunk.start,
+                  chunk.end,
+                  Buffer.from(chunk.body),
+                );
+            const tags = [...new Set(drafts.flatMap((draft) => draft.tags))].slice(0, 20);
+            let draftOffset = 0;
+            const mappedSources = sources.map((source, index) => {
+              const body = drafts[index]?.body ?? "";
+              const mapped = {
+                ...source,
+                draft_start: draftOffset,
+                draft_end: draftOffset + body.length,
+              };
+              draftOffset += body.length + 2;
+              return mapped;
+            });
             this.db
               .query(
-                "INSERT INTO knowledge_chunks (id, document_id, content_version, ordinal, start_offset, end_offset, body) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS TEXT))",
+                "INSERT INTO knowledge_drafts (id, document_id, content_version, summary, tags, body, sources, model_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
               )
               .run(
                 newId(),
                 job.document_id,
                 job.content_version,
-                chunk.ordinal,
-                chunk.start,
-                chunk.end,
-                Buffer.from(chunk.body),
+                drafts[0]?.summary ?? "",
+                JSON.stringify(tags),
+                drafts.map((draft) => draft.body).join("\n\n"),
+                JSON.stringify(mappedSources),
+                job.model_name,
+                nowIso(),
               );
-          const tags = [...new Set(drafts.flatMap((draft) => draft.tags))].slice(0, 20);
-          let draftOffset = 0;
-          const mappedSources = sources.map((source, index) => {
-            const body = drafts[index]?.body ?? "";
-            const mapped = {
-              ...source,
-              draft_start: draftOffset,
-              draft_end: draftOffset + body.length,
-            };
-            draftOffset += body.length + 2;
-            return mapped;
-          });
-          this.db
-            .query(
-              "INSERT INTO knowledge_drafts (id, document_id, content_version, summary, tags, body, sources, model_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .run(
-              newId(),
-              job.document_id,
-              job.content_version,
-              drafts[0]?.summary ?? "",
-              JSON.stringify(tags),
-              drafts.map((draft) => draft.body).join("\n\n"),
-              JSON.stringify(mappedSources),
-              job.model_name,
-              nowIso(),
-            );
-          this.db
-            .query(
-              "UPDATE knowledge_jobs SET status = 'succeeded', token = NULL, lease_expires_at = NULL, finished_at = ? WHERE id = ? AND token = ?",
-            )
-            .run(nowIso(), job.id, job.token);
-        })
-        .immediate();
+            this.db
+              .query(
+                "UPDATE knowledge_jobs SET status = 'succeeded', token = NULL, lease_expires_at = NULL, finished_at = ? WHERE id = ? AND token = ?",
+              )
+              .run(nowIso(), job.id, job.token);
+          })
+          .immediate();
+        publication?.end("completed", "KNOWLEDGE_DRAFT_PUBLISHED");
+      } catch (error) {
+        publication?.end("failed", "KNOWLEDGE_PUBLISH_REJECTED");
+        throw error;
+      }
+      span?.end("completed", "KNOWLEDGE_DRAFT_PUBLISHED");
     } catch (error) {
       const reason = signal.aborted ? signal.reason : error;
       const code =
@@ -342,6 +436,10 @@ export class KnowledgeOrganizer {
           ? reason.code
           : "KNOWLEDGE_ORGANIZATION_FAILED";
       const requeue = code === "KNOWLEDGE_CHAT_PRIORITY" || code === "KNOWLEDGE_WORKER_STOPPED";
+      span?.end(
+        requeue ? "deferred" : code === "KNOWLEDGE_JOB_INVALIDATED" ? "cancelled" : "failed",
+        code,
+      );
       // Conditional token write cannot override cancellation, a new owner or a deleted job.
       this.db
         .query(

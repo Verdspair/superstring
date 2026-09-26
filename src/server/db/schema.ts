@@ -1801,7 +1801,49 @@ export const outboundParts = sqliteTable("outbound_parts", {
   finishedAt: text("finished_at"),
 });
 
+/** Metadata projection of OpenTelemetry spans; no model or chat content. */
+export const runtimeSpans = sqliteTable(
+  "runtime_spans",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    traceId: text("trace_id").notNull(),
+    spanId: text("span_id").notNull().unique(),
+    parentSpanId: text("parent_span_id"),
+    name: text("name").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: text("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    conversationId: text("conversation_id").references(() => conversations.id, {
+      onDelete: "cascade",
+    }),
+    runId: text("run_id").references(() => agentRuns.runId, { onDelete: "cascade" }),
+    wakeId: text("wake_id"),
+    outputId: text("output_id"),
+    sourceSeq: integer("source_seq"),
+    channel: text("channel").notNull(),
+    stage: text("stage").notNull(),
+    status: text("status").notNull(),
+    code: text("code").notNull(),
+    model: text("model"),
+    startedAt: text("started_at").notNull(),
+    finishedAt: text("finished_at"),
+    durationMs: real("duration_ms"),
+    expiresAt: text("expires_at").notNull(),
+    details: text("details").notNull(),
+  },
+  (t) => [
+    check("runtime_spans_details", sql`json_valid(${t.details})`),
+    index("idx_runtime_spans_trace").on(t.traceId, t.id),
+    index("idx_runtime_spans_scope").on(t.userId, t.conversationId, t.id),
+    index("idx_runtime_spans_filter").on(t.channel, t.stage, t.status, t.id),
+    index("idx_runtime_spans_expiry").on(t.expiresAt),
+    index("idx_runtime_spans_run").on(t.runId),
+  ],
+);
+
 export const businessTables = {
+  runtimeSpans,
   conversations,
   conversationEvents,
   wakeSignals,

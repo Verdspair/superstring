@@ -13,6 +13,7 @@ import { type RecordedObservation, recordObservation } from "../db/qq-observatio
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import type { RuntimeTelemetry } from "../observability/runtime-telemetry";
 import { KnowledgeOrganizer } from "../services/knowledge-organizer";
 import { MemoryService } from "../services/memory-service";
 import type { QqObservation } from "../services/onebot-protocol";
@@ -105,6 +106,7 @@ export function createSqliteModules(options: {
   orm: Orm;
   gateway: ModelGateway;
   agentRuntime: LeafAgentRuntime;
+  telemetry?: RuntimeTelemetry;
   memoryWorker?: MemoryService;
   knowledgeWorker?: KnowledgeOrganizer;
 }): SqliteModules {

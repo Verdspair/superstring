@@ -12,6 +12,7 @@ import { ConversationShell } from "./features/conversations/ConversationShell";
 import { GeneralSettings } from "./features/general/GeneralSettings";
 import { OperatingModeSettings } from "./features/general/OperatingModeSettings";
 import { KnowledgeSettings } from "./features/knowledge/KnowledgeSettings";
+import { ObservabilityPage } from "./features/observability/ObservabilityPage";
 import { settingsHaveDrafts } from "./features/qq/draft-state";
 import { useI18n } from "./i18n";
 import { useSuperstringStore } from "./store";
@@ -66,6 +67,8 @@ function App() {
           <SettingsHub />
         ) : settingsView === "workspace" ? (
           <SettingsWorkspace />
+        ) : settingsView === "observability" ? (
+          <ObservabilityPage />
         ) : settingsView === "knowledge" ? (
           <KnowledgeSettings />
         ) : settingsView === "general" ? (

@@ -74,6 +74,7 @@ export const ConversationListSchema = z.strictObject({
 export const ConversationEventsSchema = z.strictObject({
   items: z.array(ConversationEventViewSchema),
   nextSeq: z.number().int().nonnegative(),
+  firstSeq: z.number().int().nonnegative().optional(),
   hasMore: z.boolean(),
 });
 

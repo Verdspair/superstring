@@ -12,6 +12,7 @@ import { healthRoutes } from "./api/health";
 import { knowledgeRoutes } from "./api/knowledge";
 import { memoryRoutes } from "./api/memories";
 import { modelRoutes } from "./api/models";
+import { observabilityRoutes } from "./api/observability";
 import { qqRoutes } from "./api/qq";
 import { runRoutes } from "./api/runs";
 import { sessionRoutes } from "./api/sessions";
@@ -101,7 +102,14 @@ export function createApp(opts: CreateAppOptions): Hono {
       "/v2/runs",
       runRoutes(business.db, runRepository, { resolveSource: opts.resolveSource }),
     );
-    app.route("/v2/conversations", conversationRoutes(business.db, { includeShared: true }));
+    app.route(
+      "/v2/conversations",
+      conversationRoutes(business.db, {
+        includeShared: true,
+        connectionPhase: () => opts.qqConnectionState?.().phase ?? "unavailable",
+      }),
+    );
+    app.route("/v2/observability", observabilityRoutes(business.db));
     app.route("/v2/deliveries", deliveryRoutes(business.db, { includeShared: true }));
     app.route(
       "/",

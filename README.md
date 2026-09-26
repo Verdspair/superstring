@@ -25,6 +25,7 @@ Built with Bun, Hono, SQLite and React 19.
 | Long-term memory | Memories built from your conversations, editable and correctable in place, with three reading presets |
 | Knowledge library | Import `.txt` / `.md` files or paste text, organize it into categories, and authorize it per assistant |
 | Context-usage panel | Estimated usage, loaded model capacity and the breakdown behind each request, shown next to the chat input |
+| Runtime observability | Search and filter execution traces across conversations, model calls, delivery and background work |
 | Settings | Left-side categories with top tabs, per-page saving, 16 themes, English and Simplified Chinese |
 
 ### Requirements
@@ -62,6 +63,7 @@ Launch `start.cmd` on Windows, or `./start.sh` on macOS/Linux. Both entry points
 
 - [UPGRADING.md](UPGRADING.md) — what changed in this version and how to upgrade from the previous one
 - [RELEASE_NOTES.md](RELEASE_NOTES.md) — release notes
+- [Runtime observability](docs/reference/runtime-observability.md) — filters, trace navigation and diagnostic data lifetime
 - [LICENSE](LICENSE) — MIT for this project's own code
 
 ---
@@ -83,6 +85,7 @@ Superstring 是一个把数据留在本机的桌面聊天客户端。它连接�
 | 长期记忆 | 从对话中生成的记忆，可直接修改和纠正，提供三档读取预设 |
 | 知识库 | 导入 `.txt`、`.md` 文件或粘贴文本，按分类管理，并按助手分别授权 |
 | 上下文用量面板 | 在输入框旁查看估算用量、已加载模型容量和本次请求的组成 |
+| 运行观测 | 检索、筛选对话、模型调用、投递及后台任务的执行链路 |
 | 设置 | 左侧分类加顶部页签，按页保存，16 种主题，支持简体中文与 English |
 
 ### 运行要求
@@ -120,6 +123,7 @@ Windows 启动 `start.cmd`，macOS/Linux 启动 `./start.sh`。两者都会构�
 
 - [UPGRADING.md](UPGRADING.md)——本版相对上一版的变化与升级步骤
 - [RELEASE_NOTES.md](RELEASE_NOTES.md)——版本说明
+- [运行观测](docs/reference/runtime-observability.md)——筛选、链路追溯与观测数据生命周期
 - [LICENSE](LICENSE)——本项目自身代码采用 MIT 协议
 
 ---

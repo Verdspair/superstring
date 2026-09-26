@@ -231,6 +231,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0038_qq_judgement_model.sql",
     ),
+    runtimeObservabilityMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0042_runtime_observability.sql",
+    ),
     agentRunsMigration: path.join(resourceRoot, "migrations", "versions", "0039_agent_runs.sql"),
     conversationWakesMigration: path.join(
       resourceRoot,

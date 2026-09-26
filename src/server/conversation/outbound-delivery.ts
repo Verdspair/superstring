@@ -3,6 +3,7 @@ import type { ConversationEventRepository } from "../db/conversation-event-repos
 import type { OutboundIntentRepository, OutboundTarget } from "../db/outbound-intent-repository";
 import { recordQqSend } from "../db/qq-send-repository";
 import type { Orm } from "../db/repositories";
+import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
 import type { OneBotSendResult } from "../services/onebot-connection";
 import {
   type QqSendPort,
@@ -21,6 +22,7 @@ export class OutboundDelivery {
   constructor(
     private readonly options: {
       orm: Orm;
+      telemetry?: RuntimeTelemetry;
       repository: OutboundIntentRepository;
       journal: ConversationEventRepository;
       port: QqSendPort;
@@ -110,6 +112,47 @@ export class OutboundDelivery {
     })();
   }
   async deliver(id: string): Promise<Delivery | null> {
+    const row = this.options.repository.row(id);
+    if (!row || this.stopped || !["planned", "delivering"].includes(row.status))
+      return this.options.repository.get(id);
+    const target = JSON.parse(row.target) as OutboundTarget;
+    const telemetry = this.options.telemetry;
+    const span = telemetry?.start("bot.delivery", {
+      channel: "onebot11",
+      stage: "delivery",
+      conversationId: row.conversation_id,
+      runId: row.run_id,
+      outputId: id,
+      sourceSeq: row.source_through_seq,
+      agentId: target.agentId,
+      sources: target.sources,
+      parent:
+        telemetry.parentFor("output_id", id) ??
+        telemetry.parentFor("run_id", row.run_id) ??
+        undefined,
+    });
+    const work = () => this.deliverParts(id, span);
+    try {
+      const result = await (span ? span.within(work) : work());
+      span?.end(
+        result?.status === "unknown"
+          ? "unknown"
+          : result?.status === "failed"
+            ? "failed"
+            : result?.status === "stale"
+              ? "skipped"
+              : result?.status === "confirmed"
+                ? "completed"
+                : "deferred",
+        result ? `DELIVERY_${result.status.toUpperCase()}` : "DELIVERY_MISSING",
+      );
+      return result;
+    } catch (error) {
+      span?.end("failed", "DELIVERY_FAILED");
+      throw error;
+    }
+  }
+  private async deliverParts(id: string, span?: TraceScope): Promise<Delivery | null> {
     const { repository, journal } = this.options;
     let row = repository.row(id);
     if (!row) return null;
@@ -125,7 +168,16 @@ export class OutboundDelivery {
             attentionMembers: target.attentionMembers,
           }),
         );
-      if (this.now() >= row.deliver_by || changed || !this.options.authorize(target, delivery)) {
+      const staleCode =
+        this.now() >= row.deliver_by
+          ? "DELIVERY_TTL_EXPIRED"
+          : changed
+            ? "CONVERSATION_CHANGED"
+            : !this.options.authorize(target, delivery)
+              ? "DELIVERY_AUTHORITY_CHANGED"
+              : null;
+      if (staleCode) {
+        span?.update({ code: staleCode, details: { staleReason: staleCode } });
         const stale = repository.db.transaction(() => {
           const result = repository.stale(id, this.now());
           if (result) {
@@ -143,6 +195,12 @@ export class OutboundDelivery {
         return value;
       })();
       if (!claim) break;
+      const partSpan = this.options.telemetry?.start("bot.delivery.part", {
+        channel: "onebot11",
+        stage: "delivery",
+        outputId: id,
+        details: { partId: claim.part.id, ordinal: claim.part.ordinal, kind: claim.part.kind },
+      });
       let result: OneBotSendResult;
       try {
         if ("text" in claim.payload) {
@@ -170,18 +228,39 @@ export class OutboundDelivery {
       } catch {
         result = { kind: "unknown", reason: "transport_error" };
       }
-      repository.db.transaction(() => {
-        repository.settlePart(
-          claim.part.id,
-          {
-            status: result.kind,
-            ...(result.kind === "confirmed" ? { messageId: result.messageId } : {}),
-          },
-          this.now(),
+      try {
+        repository.db.transaction(() => {
+          repository.settlePart(
+            claim.part.id,
+            {
+              status: result.kind,
+              ...(result.kind === "confirmed" ? { messageId: result.messageId } : {}),
+            },
+            this.now(),
+          );
+          this.projectLegacy(id);
+          this.revision(id);
+        })();
+        partSpan?.end(
+          result.kind === "confirmed"
+            ? "completed"
+            : result.kind === "unknown"
+              ? "unknown"
+              : result.kind === "not_sent"
+                ? "skipped"
+                : "failed",
+          `DELIVERY_PART_${result.kind.toUpperCase()}`,
         );
-        this.projectLegacy(id);
-        this.revision(id);
-      })();
+      } catch (error) {
+        // The transport may have succeeded even though receipt persistence rolled back.
+        // Preserve the sending row and original exception for existing recovery semantics.
+        partSpan?.update({ details: { transportResult: result.kind } });
+        partSpan?.end(
+          result.kind === "confirmed" || result.kind === "unknown" ? "unknown" : "failed",
+          "DELIVERY_PART_SETTLEMENT_FAILED",
+        );
+        throw error;
+      }
       row = repository.row(id)!;
     }
     return repository.get(id);

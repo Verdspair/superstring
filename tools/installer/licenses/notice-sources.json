@@ -104,6 +104,14 @@
       "version": "0.2.1",
       "license": "MIT",
       "sha256": "e4d6d80a4af894e56c61523138a2bbb631979dd2e93e82afe13e4d932b7071e9"
+    },
+    {
+      "file": "opentelemetry-NOTICES.txt",
+      "source": "Pinned npm packages listed individually in opentelemetry-NOTICES.txt",
+      "component": "opentelemetry-runtime-tracing",
+      "version": "2.11.0",
+      "license": "Apache-2.0",
+      "sha256": "a650b959a7efc5cbd7757c683d3bde89d97770a71e17a9a39670bb2c3d07dcd6"
     }
   ]
 }

@@ -27,7 +27,19 @@ const summary = (): ConversationSummary => ({
   consumedSeq: 0,
 });
 function setup(client: Partial<SuperstringApi>) {
-  store.getState().resetForTests(client as SuperstringApi);
+  store.getState().resetForTests({
+    getConversationRuntimeStatus: async () => ({
+      pendingWakes: 0,
+      activeRuns: 0,
+      failedWakes: 0,
+      unknownDeliveries: 0,
+      nextReadyAt: null,
+      lastActivityAt: null,
+      connectionPhase: "ready",
+      now,
+    }),
+    ...client,
+  } as SuperstringApi);
 }
 afterEach(() => {
   cleanup();
@@ -92,7 +104,8 @@ it("OneBot timeline revalidates expired bodies on refresh and clears projections
   fireEvent.click(screen.getByRole("button", { name: "刷新记录" }));
   expect(await screen.findByText("原文已过保留期")).toBeTruthy();
   expect(screen.queryByText("source text")).toBeNull();
-  expect(events.mock.calls[1][1]).toBe(0);
+  expect(events.mock.calls[0][1]).toEqual({ direction: "latest" });
+  expect(events.mock.calls[1][1]).toEqual({ direction: "after", afterSeq: 0 });
   fireEvent.blur(window);
   expect(screen.queryByText("原文已过保留期")).toBeNull();
 });

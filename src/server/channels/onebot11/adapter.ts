@@ -7,6 +7,7 @@ import { readQqSettings } from "../../db/qq-settings-repository";
 import { lastQqSpeech } from "../../db/qq-speech-repository";
 import { getAgentRow, type Orm } from "../../db/repositories";
 import type { WakeRepository } from "../../db/wake-repository";
+import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import type { QqObservation } from "../../services/onebot-protocol";
 import {
   attentionTriggerFilter,
@@ -22,6 +23,7 @@ export class OneBot11Adapter implements ConversationIngress {
       orm: Orm;
       journal: ConversationEventRepository;
       wakes: WakeRepository;
+      telemetry?: RuntimeTelemetry;
       nowSeconds?: () => number;
       wake?: () => void;
     },
@@ -57,17 +59,37 @@ export class OneBot11Adapter implements ConversationIngress {
       bindingId,
       addressing,
     );
-    if (event)
-      this.offer(
-        bindingId,
-        event.seq,
-        observation.eventKey,
-        observation.occurredAtSeconds,
-        observation.speaker.id,
-        observation.speaker.kind,
-        addressing.reasons.length > 0,
-      );
+    if (event) {
+      const conversation = this.options.journal.get(event.conversationId);
+      const span = this.options.telemetry?.start("bot.ingress", {
+        channel: "onebot11",
+        stage: "ingress",
+        conversationId: event.conversationId,
+        agentId: conversation?.agentId,
+        sourceSeq: event.seq,
+        sources: event.sources,
+        details: {
+          kind: "message",
+          speakerKind: observation.speaker.kind,
+          addressed: addressing.reasons.length > 0,
+        },
+      });
+      const offer = () =>
+        this.offer(
+          bindingId,
+          event.seq,
+          observation.eventKey,
+          observation.occurredAtSeconds,
+          observation.speaker.id,
+          observation.speaker.kind,
+          addressing.reasons.length > 0,
+        );
+      if (span) span.within(offer);
+      else offer();
+      span?.end("completed", "INGRESS_RECORDED");
+    }
   }
+
   afterMedia(bindingId: string, eventKey: string): void {
     const notes = this.options.journal.db
       .query("SELECT id FROM qq_media_notes WHERE event_key=? AND note IS NOT NULL")
@@ -83,17 +105,36 @@ export class OneBot11Adapter implements ConversationIngress {
       addressed: number;
     } | null;
     for (const note of notes) {
+      const conversation = this.options.journal.ensureOneBot(bindingId);
+      const before = conversation?.lastSeq ?? 0;
       const event = this.options.journal.ingestMedia(note.id, bindingId);
-      if (event && original)
-        this.offer(
-          bindingId,
-          event.seq,
-          event.eventKey,
-          original.occurred_at_seconds,
-          original.speaker_id,
-          original.speaker_kind,
-          original.addressed === 1,
-        );
+      const span =
+        event && event.seq > before
+          ? this.options.telemetry?.start("bot.ingress.media", {
+              channel: "onebot11",
+              stage: "ingress",
+              code: "MEDIA_REVISION_RECORDED",
+              conversationId: event.conversationId,
+              agentId: conversation?.agentId,
+              sourceSeq: event.seq,
+              sources: event.sources,
+            })
+          : undefined;
+      if (event && original) {
+        const offer = () =>
+          this.offer(
+            bindingId,
+            event.seq,
+            event.eventKey,
+            original.occurred_at_seconds,
+            original.speaker_id,
+            original.speaker_kind,
+            original.addressed === 1,
+          );
+        if (span) span.within(offer);
+        else offer();
+      }
+      span?.end("observed", "MEDIA_REVISION_RECORDED");
     }
   }
   private offer(
@@ -108,18 +149,69 @@ export class OneBot11Adapter implements ConversationIngress {
   ): void {
     const { orm, journal, wakes } = this.options;
     const binding = readQqBinding(orm, bindingId);
-    if (!binding || binding.paused || speakerKind === "system") return;
+    const report = (
+      code: string,
+      status: "scheduled" | "skipped",
+      wakeId?: string,
+      details?: Record<string, string | number | boolean | null>,
+    ) => {
+      if (!this.options.telemetry || (restore && status !== "scheduled")) return;
+      const conversation = journal.db
+        .query(
+          "SELECT id,agent_id FROM conversations WHERE channel='onebot11' AND source_id=? AND closed_at IS NULL ORDER BY binding_epoch DESC LIMIT 1",
+        )
+        .get(bindingId) as { id: string; agent_id: string } | null;
+      const event = conversation
+        ? journal.eventsAfter(conversation.id, Math.max(0, seq - 1), 1).items[0]
+        : undefined;
+      this.options.telemetry.record("bot.wake.offer", {
+        channel: "onebot11",
+        stage: "wake",
+        status,
+        code,
+        conversationId: conversation?.id,
+        agentId: binding?.agentId,
+        wakeId,
+        sourceSeq: seq,
+        sources: event?.sources,
+        details: { restored: restore, ...details },
+      });
+    };
+    if (!binding) {
+      report("BINDING_MISSING", "skipped");
+      return;
+    }
+    if (binding.paused) {
+      report("CONVERSATION_PAUSED", "skipped");
+      return;
+    }
+    if (speakerKind === "system") {
+      report("SYSTEM_OBSERVATION", "skipped");
+      return;
+    }
     const settings = readQqSettings(orm),
       scheme = readQqScheme(orm, binding.schemeId);
-    if (
-      settings.enabled !== 1 ||
-      settings.accountId !== binding.accountId ||
-      !scheme ||
-      getAgentRow(orm, binding.agentId)?.isActive !== 1
-    )
+    if (settings.enabled !== 1) {
+      report("FEATURE_OFF", "skipped");
       return;
+    }
+    if (settings.accountId !== binding.accountId) {
+      report("ACCOUNT_MISMATCH", "skipped");
+      return;
+    }
+    if (!scheme) {
+      report("SCHEME_MISSING", "skipped");
+      return;
+    }
+    if (getAgentRow(orm, binding.agentId)?.isActive !== 1) {
+      report("AGENT_UNAVAILABLE", "skipped");
+      return;
+    }
     const attention = attentionTriggerFilter(binding);
-    if (attention && (!speakerId || !attention.includes(speakerId))) return;
+    if (attention && (!speakerId || !attention.includes(speakerId))) {
+      report("ATTENTION_EXCLUDED", "skipped");
+      return;
+    }
     const scope = {
       kind: "qq" as const,
       accountId: binding.accountId,
@@ -135,17 +227,35 @@ export class OneBot11Adapter implements ConversationIngress {
         : triggers.follow_up && speakerKind === "member" && spoken !== null && occurredAt > spoken
           ? "follow_up"
           : "chiming_in";
-    if (speakerKind === "anonymous" && !addressed) return;
-    if (!triggers[path]) return;
+    if (speakerKind === "anonymous" && !addressed) {
+      report("ANONYMOUS_UNADDRESSED", "skipped");
+      return;
+    }
+    if (!triggers[path]) {
+      report("TRIGGER_OFF", "skipped", undefined, { cause: path });
+      return;
+    }
     const immediate = path === "direct_reply" || path === "follow_up";
-    if (immediate && this.now() - occurredAt > QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS) return;
+    if (immediate && this.now() - occurredAt > QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS) {
+      report("OPPORTUNITY_EXPIRED", "skipped", undefined, { cause: path });
+      return;
+    }
     const conversation = journal.ensureOneBot(bindingId)!;
     // A consumed cursor means "observed", not "answered every participant". Existing
     // per-person opportunities remain authoritative even after another participant's reply.
-    if (wakes.hasOfferedSource(conversation.id, seq)) return;
+    if (wakes.hasOfferedSource(conversation.id, seq)) {
+      report("SOURCE_ALREADY_OFFERED", "skipped");
+      return;
+    }
     const previous = wakes.latestParticipant(conversation.id, path, speakerId ?? "anonymous");
-    if (previous && seq <= previous.throughSeq) return;
-    if (!previous && seq <= conversation.consumedSeq) return;
+    if (previous && seq <= previous.throughSeq) {
+      report("SOURCE_ALREADY_COVERED", "skipped");
+      return;
+    }
+    if (!previous && seq <= conversation.consumedSeq) {
+      report("SOURCE_ALREADY_OBSERVED", "skipped");
+      return;
+    }
     const mergeSeconds = immediate ? 0 : schemeRhythm(scheme).merge_window_seconds;
     const result = wakes.enqueueChanged({
       conversationId: conversation.id,
@@ -161,7 +271,14 @@ export class OneBot11Adapter implements ConversationIngress {
       mergeReadyAt: immediate ? "earliest" : "latest",
       onlyNewerSource: true,
     });
-    if (result.changed) this.options.wake?.();
+    if (result.changed) {
+      report("WAKE_SCHEDULED", "scheduled", result.wake.id, {
+        cause: path,
+        readyAt: result.wake.readyAt,
+        merged: previous?.id === result.wake.id,
+      });
+      this.options.wake?.();
+    }
   }
 
   /** Restore source-backed opportunities; the platform message that addressed us may not be newest. */
@@ -289,7 +406,7 @@ export class OneBot11Adapter implements ConversationIngress {
   sweep(nowSeconds = this.now()) {
     this.migrateLegacyCandidates();
     this.scanImmediate();
-    const { orm, journal, wakes } = this.options;
+    const { orm, journal, wakes, telemetry } = this.options;
     return sweepQqIdleTopics(
       orm,
       { nowSeconds },
@@ -304,7 +421,7 @@ export class OneBot11Adapter implements ConversationIngress {
         },
         enqueue(input) {
           const c = journal.ensureOneBot(input.binding.id)!;
-          const wake = wakes.enqueue({
+          const result = wakes.enqueueChanged({
             conversationId: c.id,
             cause: "idle_topic",
             throughSeq: journal.sourceThroughSeq(c.id),
@@ -313,6 +430,19 @@ export class OneBot11Adapter implements ConversationIngress {
             at: new Date(nowSeconds * 1000).toISOString(),
             priority: 0,
           });
+          const wake = result.wake;
+          if (result.changed)
+            telemetry?.record("bot.wake.offer", {
+              channel: "onebot11",
+              stage: "wake",
+              status: "scheduled",
+              code: "WAKE_SCHEDULED",
+              conversationId: c.id,
+              agentId: c.agentId,
+              wakeId: wake.id,
+              sourceSeq: wake.throughSeq,
+              details: { cause: "idle_topic", readyAt: wake.readyAt },
+            });
           return {
             kind: "scheduled",
             conversationKey: input.conversationKey,

@@ -104,6 +104,11 @@ import {
   type UpdateQqStickerRequest,
   type UpdateQqTransportRequest,
 } from "../shared/contracts/qq";
+import {
+  ConversationRuntimeStatusSchema,
+  type RuntimeSpanFilters,
+  RuntimeSpansPageSchema,
+} from "../shared/contracts/runtime-observability";
 import { msg } from "./i18n";
 
 export class ApiError extends Error {
@@ -162,12 +167,51 @@ export const api = {
       cache: "no-store",
     });
   },
-  getConversationEvents: (id: string, afterSeq = 0, signal?: AbortSignal) =>
-    requestJson(
-      `/v2/conversations/${encodeURIComponent(id)}/events?${new URLSearchParams({ afterSeq: String(afterSeq) })}`,
+  getConversationEvents: (
+    id: string,
+    page:
+      | number
+      | {
+          direction: "latest" | "before" | "after";
+          beforeSeq?: number;
+          afterSeq?: number;
+          limit?: number;
+        } = 0,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(typeof page === "number" ? { afterSeq: page } : page))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/events?${query}`,
       ConversationEventsSchema,
       { signal, cache: "no-store" },
+    );
+  },
+  getConversationRuntimeStatus: (id: string, signal?: AbortSignal) =>
+    requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/status`,
+      ConversationRuntimeStatusSchema,
+      { signal, cache: "no-store" },
     ),
+  listRuntimeSpans: (filters: RuntimeSpanFilters = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(`/v2/observability/spans?${query}`, RuntimeSpansPageSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  getRuntimeTrace: (traceId: string, beforeId?: number, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: "100" });
+    if (beforeId !== undefined) query.set("beforeId", String(beforeId));
+    return requestJson(
+      `/v2/observability/traces/${encodeURIComponent(traceId)}?${query}`,
+      RuntimeSpansPageSchema,
+      { signal, cache: "no-store" },
+    );
+  },
   getDelivery: (id: string, signal?: AbortSignal) =>
     requestJson(`/v2/deliveries/${encodeURIComponent(id)}`, DeliverySchema, {
       signal,

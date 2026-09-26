@@ -20,7 +20,7 @@ export function currentAppSection(state: SuperstringState): AppSection | null {
   if (state.settingsView === "general" || state.settingsView === "appearance") return "preferences";
   if (state.settingsView === "operating-mode") return "access";
   if (state.settingsView === "knowledge") return "materials";
-  if (state.settingsView === "agents") return "agent";
+  if (state.settingsView === "agents" || state.settingsView === "observability") return "agent";
   return routeSection(state.settingsRoute);
 }
 export function openAppSection(state: SuperstringState, section: AppSection) {
@@ -53,6 +53,14 @@ export function sectionDestinations(section: AppSection) {
               ["management", "knowledge-model"].includes(state.settingsRoute))),
     open: (state: SuperstringState) => state.openSettingsRoute(route.id),
   }));
+  if (section === "agent")
+    routes.push({
+      id: "observability",
+      title: "运行观测",
+      unavailable: false,
+      active: (state) => state.settingsView === "observability",
+      open: (state) => state.requestPageNavigation("settings", "observability"),
+    });
   if (section === "access")
     routes.unshift({
       id: "operating-mode",
