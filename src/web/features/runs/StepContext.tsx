@@ -1,5 +1,6 @@
-import * as Tabs from "@radix-ui/react-tabs";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ContextHandle, InspectedContext } from "../../../shared/contracts/agent-run";
 import { translateNotice, useI18n } from "../../i18n";
 import { type ReadTask, startRead } from "../../services/read-task";
@@ -49,20 +50,23 @@ export function StepContext({ context: handle }: { context: ContextHandle }) {
     });
   };
   return (
-    <div className="run-context">
-      <div className="run-inspector-toolbar">
-        <button type="button" disabled={loading} onClick={inspect}>
+    <div className="run-context min-w-0 space-y-3">
+      <div className="run-inspector-toolbar flex flex-wrap items-center gap-2 text-sm">
+        <Button variant="outline" size="sm" type="button" disabled={loading} onClick={inspect}>
           {t(context ? "重新核对实际输入与输出" : "查看实际输入与输出")}
-        </button>
+        </Button>
         {(context || loading) && (
-          <button type="button" onClick={clear}>
+          <Button variant="outline" size="sm" type="button" onClick={clear}>
             {t("收起实际输入与输出")}
-          </button>
+          </Button>
         )}
       </div>
       {loading && <p role="status">{t("正在核对来源权限与保留状态…")}</p>}
       {error && (
-        <p className="error" role="alert">
+        <p
+          className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+          role="alert"
+        >
           {translateNotice(error)}
         </p>
       )}
@@ -81,24 +85,27 @@ export function ContextContent({ context }: { context: InspectedContext }) {
   };
   const readable = context.status === "exact" || context.status === "partial";
   return (
-    <Tabs.Root className="run-context-content run-context-tabs" defaultValue="input">
-      <Tabs.List className="inspector-tab-list" aria-label={t("模型输入输出与来源")}>
-        <Tabs.Trigger className="inspector-tab" value="input">
+    <Tabs className="run-context-content run-context-tabs min-w-0" defaultValue="input">
+      <TabsList className="inspector-tab-list w-full" aria-label={t("模型输入输出与来源")}>
+        <TabsTrigger className="inspector-tab flex-1" value="input">
           {t("模型输入")}
-        </Tabs.Trigger>
-        <Tabs.Trigger className="inspector-tab" value="output">
+        </TabsTrigger>
+        <TabsTrigger className="inspector-tab flex-1" value="output">
           {t("模型输出")}
-        </Tabs.Trigger>
-        <Tabs.Trigger className="inspector-tab" value="sources">
+        </TabsTrigger>
+        <TabsTrigger className="inspector-tab flex-1" value="sources">
           {t("来源与版本")}
-        </Tabs.Trigger>
-      </Tabs.List>
-      <Tabs.Content className="inspector-tab-panel" value="input">
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent
+        className="inspector-tab-panel min-w-0 space-y-3 pt-3 [&_h4]:text-sm [&_h4]:font-medium"
+        value="input"
+      >
         <h4>{t("模型输入")}</h4>
-        <p className="hint" role="status">
+        <p className="text-sm leading-relaxed text-muted-foreground" role="status">
           {t(statusText[context.status])}
         </p>
-        <ul className="run-context-layout">
+        <ul className="run-context-layout grid list-none gap-2 rounded-lg bg-muted/50 p-3 font-mono text-xs">
           {context.layout.map((item, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: Model input layout is an immutable ordered snapshot.
             <li key={`${index}:${item.role}`}>
@@ -109,8 +116,11 @@ export function ContextContent({ context }: { context: InspectedContext }) {
         </ul>
         {readable &&
           context.exactMessages?.map((message, index) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: Message order is intrinsic to this immutable model input.
-            <details key={`${index}:${message.role}`} className="run-context-message">
+            <details
+              // biome-ignore lint/suspicious/noArrayIndexKey: Message order is intrinsic to this immutable model input.
+              key={`${index}:${message.role}`}
+              className="run-context-message min-w-0 rounded-lg border p-3 [&>summary]:cursor-pointer [&>summary]:text-sm [&>summary]:font-medium"
+            >
               <summary>{t("消息 {0} · {1}", index + 1, message.role)}</summary>
               {message.content.map((content, part) =>
                 content.kind === "text" ? (
@@ -124,7 +134,7 @@ export function ContextContent({ context }: { context: InspectedContext }) {
                   <dl
                     // biome-ignore lint/suspicious/noArrayIndexKey: Repeated immutable image frames share their source.
                     key={`${content.sourceId}:${content.sha256}:${part}`}
-                    className="run-metadata"
+                    className="run-metadata grid gap-3 text-sm sm:grid-cols-2 [&>div]:min-w-0 [&_dt]:text-xs [&_dt]:text-muted-foreground [&_dd]:break-words [&_code]:break-all [&_code]:text-xs"
                   >
                     <div>
                       <dt>{t("图片来源")}</dt>
@@ -147,19 +157,28 @@ export function ContextContent({ context }: { context: InspectedContext }) {
           ))}
         {readable &&
           context.unavailableMedia?.map((item) => (
-            <p className="hint" key={`${item.sourceId}:${item.sha256}`}>
+            <p
+              className="text-sm leading-relaxed text-muted-foreground"
+              key={`${item.sourceId}:${item.sha256}`}
+            >
               {t("图片不可重取：{0}；SHA-256：{1}", item.sourceId, item.sha256)}
             </p>
           ))}
-      </Tabs.Content>
-      <Tabs.Content className="inspector-tab-panel" value="output">
+      </TabsContent>
+      <TabsContent
+        className="inspector-tab-panel min-w-0 space-y-3 pt-3 [&_h4]:text-sm [&_h4]:font-medium"
+        value="output"
+      >
         <h4>{t("模型输出")}</h4>
         <ModelResult context={context} />
-      </Tabs.Content>
-      <Tabs.Content className="inspector-tab-panel" value="sources">
+      </TabsContent>
+      <TabsContent
+        className="inspector-tab-panel min-w-0 space-y-3 pt-3 [&_h4]:text-sm [&_h4]:font-medium"
+        value="sources"
+      >
         <h4>{t("来源与版本")}</h4>
         {context.sourceVersions.length ? (
-          <ul className="run-context-sources">
+          <ul className="run-context-sources grid list-none gap-2 p-0 text-xs [&_li]:break-all [&_li]:rounded-md [&_li]:bg-muted/50 [&_li]:p-3">
             {context.sourceVersions.map((source) => (
               <li key={`${source.id}:${source.revision}`}>
                 <code>{source.id}</code> · {source.revision}
@@ -167,10 +186,12 @@ export function ContextContent({ context }: { context: InspectedContext }) {
             ))}
           </ul>
         ) : (
-          <p className="hint">{t("此步骤未记录来源版本。")}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {t("此步骤未记录来源版本。")}
+          </p>
         )}
-      </Tabs.Content>
-    </Tabs.Root>
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -178,12 +199,20 @@ function ModelResult({ context }: { context: InspectedContext }) {
   const t = useI18n();
   const result = context.result;
   if (context.status === "revoked" || result?.status === "revoked")
-    return <p className="hint">{t("来源已撤权或删除，模型输出不可查看。")}</p>;
+    return (
+      <p className="text-sm leading-relaxed text-muted-foreground">
+        {t("来源已撤权或删除，模型输出不可查看。")}
+      </p>
+    );
   if (context.status === "expired" || result?.status === "expired")
-    return <p className="hint">{t("来源保留期已结束，模型输出已清除。")}</p>;
+    return (
+      <p className="text-sm leading-relaxed text-muted-foreground">
+        {t("来源保留期已结束，模型输出已清除。")}
+      </p>
+    );
   if (!result || result.status === "unavailable")
     return (
-      <p className="hint">
+      <p className="text-sm leading-relaxed text-muted-foreground">
         {t(
           result?.reason === "pending"
             ? "模型尚未完成，输出待记录。"
@@ -194,8 +223,8 @@ function ModelResult({ context }: { context: InspectedContext }) {
       </p>
     );
   return (
-    <section className="run-model-result">
-      <p className="hint">
+    <section className="run-model-result min-w-0 space-y-3">
+      <p className="text-sm leading-relaxed text-muted-foreground">
         {t(
           result.status === "partial"
             ? "这是中断前保留的部分模型输出。"

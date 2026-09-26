@@ -1,3 +1,4 @@
+import { Badge } from "@/components/ui/badge";
 import type { RuntimeTrace } from "../../../shared/contracts/runtime-observability";
 import { useI18n } from "../../i18n";
 import { localTime } from "../../ui/local-time";
@@ -20,16 +21,20 @@ export function TraceSummary({ item, compact = false }: { item: RuntimeTrace; co
   const spec = typeof item.root.details.specId === "string" ? item.root.details.specId : null;
   return (
     <>
-      <header>
-        <strong>
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <strong className="min-w-0 break-words text-sm font-semibold">
           {t(
             spec ? (taskLabels[spec] ?? spec) : (operationLabels[item.root.name] ?? item.root.name),
           )}
         </strong>
-        <span className="trace-status">{t(groupStatuses[item.status] ?? item.status)}</span>
-        <time dateTime={item.at}>{localTime(item.at)}</time>
+        <Badge variant={item.status === "failed" ? "destructive" : "secondary"}>
+          {t(groupStatuses[item.status] ?? item.status)}
+        </Badge>
+        <time className="basis-full text-xs tabular-nums text-muted-foreground" dateTime={item.at}>
+          {localTime(item.at)}
+        </time>
       </header>
-      <div className="trace-facts">
+      <div className="trace-facts flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>
           {t("触发类型")}:{" "}
           {item.causes.length
@@ -45,20 +50,20 @@ export function TraceSummary({ item, compact = false }: { item: RuntimeTrace; co
         <span>{t("耗时 {0} ms", Math.round(item.durationMs))}</span>
       </div>
       {!!item.specIds.length && (
-        <p className="trace-models">
+        <p className="trace-models break-words text-xs leading-relaxed text-muted-foreground [&_code]:mr-1 [&_code]:inline-block [&_code]:max-w-full [&_code]:break-all [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5">
           {t("链路任务")}: {item.specIds.map((id) => t(taskLabels[id] ?? id)).join(" · ")}
         </p>
       )}
-      <p className="trace-models">
+      <p className="trace-models break-words text-xs leading-relaxed text-muted-foreground [&_code]:mr-1 [&_code]:inline-block [&_code]:max-w-full [&_code]:break-all [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5">
         {t("模型记录")}:{" "}
         {item.models.length
           ? item.models.map((model) => <code key={model}>{model}</code>)
           : t("尚未记录模型")}
       </p>
       {!compact && (
-        <details>
+        <details className="mt-3 border-t pt-3 [&_summary]:cursor-pointer [&_summary]:text-xs [&_summary]:font-medium [&_dl]:mt-3">
           <summary>{t("请求与唤醒标识")}</summary>
-          <dl className="trace-metadata">
+          <dl className="trace-metadata grid gap-3 text-sm [&>div]:grid [&>div]:gap-1 [&_dt]:text-xs [&_dt]:text-muted-foreground [&_dd]:min-w-0 [&_dd]:break-words [&_code]:break-all [&_code]:text-xs">
             <div>
               <dt>Trace ID</dt>
               <dd>

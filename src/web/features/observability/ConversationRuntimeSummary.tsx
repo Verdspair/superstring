@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import type { ConversationRuntimeStatus } from "../../../shared/contracts/runtime-observability";
 import { translateNotice, useI18n } from "../../i18n";
 import { type ReadTask, startRead } from "../../services/read-task";
@@ -49,16 +50,21 @@ export function ConversationRuntimeSummary({ conversationId }: { conversationId:
   }, [api, conversationId]);
   useForegroundRead(load, clear);
   return (
-    <section className="conversation-runtime-summary" aria-label={t("当前处理状态")}>
+    <section
+      className="conversation-runtime-summary rounded-lg border bg-card p-3 text-card-foreground [&_summary]:flex [&_summary]:cursor-pointer [&_summary]:flex-wrap [&_summary]:items-center [&_summary]:gap-3 [&_summary]:text-sm [&_dl]:mt-3"
+      aria-label={t("当前处理状态")}
+    >
       {error ? (
-        <p className="error">
+        <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
           {t("当前状态读取失败")}: {translateNotice(error)}{" "}
-          <button type="button" onClick={load}>
+          <Button variant="outline" size="sm" type="button" onClick={load}>
             {t("刷新处理状态")}
-          </button>
+          </Button>
         </p>
       ) : !status ? (
-        <span className="hint">{t("正在读取处理状态…")}</span>
+        <span className="text-sm leading-relaxed text-muted-foreground">
+          {t("正在读取处理状态…")}
+        </span>
       ) : (
         <details>
           <summary>
@@ -80,7 +86,7 @@ export function ConversationRuntimeSummary({ conversationId }: { conversationId:
               <span>{t("待确认投递 {0}", status.unknownDeliveries)}</span>
             )}
           </summary>
-          <dl className="trace-metadata">
+          <dl className="trace-metadata grid gap-3 text-sm [&>div]:grid [&>div]:gap-1 [&_dt]:text-xs [&_dt]:text-muted-foreground [&_dd]:min-w-0 [&_dd]:break-words [&_code]:break-all [&_code]:text-xs">
             <div>
               <dt>{t("处理失败的唤醒")}</dt>
               <dd>{status.failedWakes}</dd>

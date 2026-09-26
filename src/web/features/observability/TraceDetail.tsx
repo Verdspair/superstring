@@ -1,4 +1,7 @@
+import { ArrowLeft, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import type { RuntimeSpanFilters } from "../../../shared/contracts/runtime-observability";
 import { translateNotice, useI18n } from "../../i18n";
 import { TraceSummary } from "./TraceSummary";
@@ -25,7 +28,7 @@ export function TraceDetail({
   }, []);
   return (
     <section
-      className="trace-detail-pane"
+      className="trace-detail-pane min-w-0 space-y-4 rounded-xl border bg-card p-4 text-card-foreground"
       aria-label={t("追踪链路")}
       onKeyDown={(event) => {
         if (event.key === "Escape" && !event.defaultPrevented) {
@@ -34,35 +37,53 @@ export function TraceDetail({
         }
       }}
     >
-      <header className="trace-detail-heading">
+      <header className="trace-detail-heading flex flex-wrap items-start justify-between gap-3 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:tracking-tight [&_h2:focus-visible]:outline-2 [&_h2:focus-visible]:outline-ring">
         <div>
           <h2 ref={heading} tabIndex={-1}>
             {t("追踪链路")}
           </h2>
-          <p className="hint">{t("每次请求或唤醒独立展示；时间条按实际起点和耗时排列。")}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {t("每次请求或唤醒独立展示；时间条按实际起点和耗时排列。")}
+          </p>
         </div>
-        <button type="button" onClick={onClose} aria-label={t("关闭追踪链路")}>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          onClick={onClose}
+          aria-label={t("关闭追踪链路")}
+        >
+          <ArrowLeft className="size-3.5" aria-hidden="true" />
           {t("返回请求列表")}
-        </button>
+        </Button>
       </header>
-      <div className="trace-actions">
-        <button type="button" disabled={loading} onClick={refresh}>
+      <div className="trace-actions flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Button variant="outline" size="sm" type="button" disabled={loading} onClick={refresh}>
+          <RefreshCw className="size-3.5" aria-hidden="true" />
           {t("刷新当前链路")}
-        </button>
+        </Button>
         {loading && <span role="status">{t("正在读取运行记录…")}</span>}
       </div>
       {error && (
-        <p className="error" role="alert">
+        <p
+          className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+          role="alert"
+        >
           {translateNotice(error)}
         </p>
       )}
       {data && (
         <>
-          <div className="trace-row trace-group" data-status={data.trace.status}>
+          <Card
+            className="trace-row trace-group gap-2 bg-muted/20 p-4"
+            data-status={data.trace.status}
+          >
             <TraceSummary item={data.trace} />
-          </div>
+          </Card>
           {data.matchedSpanIds.length === 0 && (
-            <p className="hint">{t("当前链路已不匹配筛选；仍保留完整链路供核对。")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {t("当前链路已不匹配筛选；仍保留完整链路供核对。")}
+            </p>
           )}
           <TraceWaterfall
             data={data}

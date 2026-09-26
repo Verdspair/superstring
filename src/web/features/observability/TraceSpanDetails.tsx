@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import type { RuntimeSpan } from "../../../shared/contracts/runtime-observability";
 import { useI18n } from "../../i18n";
 import { localTime } from "../../ui/local-time";
@@ -29,18 +30,22 @@ export function TraceSpanDetails({
     <>
       {reasonLabels[item.code] && <p>{t(reasonLabels[item.code])}</p>}
       {item.status === "unknown" && (
-        <p className="hint">{t("结果尚未确认，不等同于失败；请沿追踪链路核对后续结果。")}</p>
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          {t("结果尚未确认，不等同于失败；请沿追踪链路核对后续结果。")}
+        </p>
       )}
-      <div className="trace-actions">
+      <div className="trace-actions flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {item.runId &&
           (onInspectRun ? (
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               type="button"
-              className="link-button"
+              className="h-auto justify-start px-0 font-medium underline-offset-4 hover:underline"
               onClick={() => item.runId && onInspectRun(item.runId)}
             >
               {t("运行详情")}
-            </button>
+            </Button>
           ) : (
             <RunLink runId={item.runId} />
           ))}
@@ -51,9 +56,9 @@ export function TraceSpanDetails({
       {item.runId && stepId && item.stage === "model" && (
         <StepContext key={`${item.runId}:${stepId}`} context={{ runId: item.runId, stepId }} />
       )}
-      <details>
+      <details className="mt-4 border-t pt-3 [&_summary]:cursor-pointer [&_summary]:text-sm [&_summary]:font-medium [&_dl]:mt-3">
         <summary>{t("关联与元数据")}</summary>
-        <dl className="trace-metadata">
+        <dl className="trace-metadata grid gap-3 text-sm [&>div]:grid [&>div]:gap-1 [&_dt]:text-xs [&_dt]:text-muted-foreground [&_dd]:min-w-0 [&_dd]:break-words [&_code]:break-all [&_code]:text-xs">
           <div>
             <dt>{t("操作名称")}</dt>
             <dd>

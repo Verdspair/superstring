@@ -196,7 +196,13 @@ it("inspects the selected model step through the protected endpoint and clears b
   expect(inspect).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
   await screen.findByText("Exact protected input");
-  await userEvent.setup().click(screen.getByRole("tab", { name: "模型输出" }));
+  // jsdom has no geometry: its zero-sized resize handle overlaps the default (0, 0) pointer.
+  // Use an explicit interior point so the real panel hit tester does not start a resize.
+  await userEvent.setup().pointer({
+    target: screen.getByRole("tab", { name: "模型输出" }),
+    keys: "[MouseLeft]",
+    coords: { x: 100, y: 100 },
+  });
   expect(screen.getByText('{"selected":["one"]}')).toBeTruthy();
   expect(inspect.mock.calls[0][0]).toEqual({ runId: "run-child", stepId: "step-child" });
   fireEvent.blur(window);
@@ -330,4 +336,36 @@ it("restores a selected step after revalidation without moving focus until expli
   await userEvent.setup().click(screen.getByRole("button", { name: "查看输入、输出与详情" }));
   const inspector = screen.getByRole("complementary", { name: "步骤检查器" });
   expect(document.activeElement).toBe(within(inspector).getByRole("heading"));
+});
+
+it("preserves one selected protected inspector when resizing the official panel workspace", async () => {
+  const inspect = vi.fn().mockResolvedValue(exact);
+  store.getState().resetForTests({ ...api, inspectRunContext: inspect });
+  const width = window.innerWidth;
+  const resize = (value: number) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value });
+    fireEvent(window, new Event("resize"));
+  };
+  try {
+    resize(1280);
+    render(<TraceWaterfall data={data} />);
+    fireEvent.click(screen.getByRole("button", { name: "查看输入、输出与详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
+    await screen.findByText("Exact protected input");
+    const inspector = screen.getByRole("complementary", { name: "步骤检查器" });
+    const handle = screen.getByRole("separator", { name: "调整时间线与检查器大小" });
+    expect(handle.getAttribute("aria-orientation")).toBe("vertical");
+    expect(screen.getByRole("region", { name: "父子时序图" }).tabIndex).toBe(0);
+    resize(560);
+    expect(handle.getAttribute("aria-orientation")).toBe("horizontal");
+    expect(screen.getAllByRole("complementary", { name: "步骤检查器" })).toEqual([inspector]);
+    expect(screen.getByText("Exact protected input")).toBeTruthy();
+    expect(inspect).toHaveBeenCalledOnce();
+    resize(1280);
+    expect(handle.getAttribute("aria-orientation")).toBe("vertical");
+    expect(screen.getByRole("complementary", { name: "步骤检查器" })).toBe(inspector);
+    expect(inspect).toHaveBeenCalledOnce();
+  } finally {
+    resize(width);
+  }
 });

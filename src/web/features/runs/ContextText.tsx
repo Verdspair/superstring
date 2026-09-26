@@ -1,9 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { ArrowDown, Copy, WrapText } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useI18n } from "../../i18n";
 
 /** A read-only text view. Search highlights one exact match without rendering thousands of marks. */
 export function ContextText({ text, label }: { text: string; label: string }) {
   const t = useI18n();
+  const searchId = useId();
   const [wrap, setWrap] = useState(true);
   const [query, setQuery] = useState("");
   const [offset, setOffset] = useState(-1);
@@ -22,11 +26,12 @@ export function ContextText({ text, label }: { text: string; label: string }) {
     setOffset(following < 0 ? text.indexOf(query) : following);
   };
   return (
-    <section className="context-text" aria-label={label}>
-      <div className="context-text-toolbar">
-        <label>
+    <section className="context-text min-w-0 space-y-2 pt-3" aria-label={label}>
+      <div className="context-text-toolbar flex flex-wrap items-end gap-2 [&_label]:grid [&_label]:min-w-40 [&_label]:flex-1 [&_label]:gap-1.5 [&_label]:text-xs [&_small]:basis-full [&_small]:text-muted-foreground">
+        <label htmlFor={searchId}>
           <span>{t("搜索此正文")}</span>
-          <input
+          <Input
+            id={searchId}
             value={query}
             onChange={(event) => search(event.target.value)}
             onKeyDown={(event) => {
@@ -42,13 +47,29 @@ export function ContextText({ text, label }: { text: string; label: string }) {
             }}
           />
         </label>
-        <button type="button" disabled={!query || offset < 0} onClick={next}>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          disabled={!query || offset < 0}
+          onClick={next}
+        >
+          <ArrowDown className="size-3.5" aria-hidden="true" />
           {t("下一个匹配")}
-        </button>
-        <button type="button" aria-pressed={wrap} onClick={() => setWrap((value) => !value)}>
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          aria-pressed={wrap}
+          onClick={() => setWrap((value) => !value)}
+        >
+          <WrapText className="size-3.5" aria-hidden="true" />
           {t("自动换行")}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           type="button"
           onClick={async () => {
             try {
@@ -59,8 +80,9 @@ export function ContextText({ text, label }: { text: string; label: string }) {
             }
           }}
         >
+          <Copy className="size-3.5" aria-hidden="true" />
           {t("复制正文")}
-        </button>
+        </Button>
         <small role="status">
           {query && offset < 0
             ? t("正文内无匹配")
@@ -73,7 +95,7 @@ export function ContextText({ text, label }: { text: string; label: string }) {
       </div>
       {/* biome-ignore lint/a11y/useSemanticElements: The named scroll region must preserve preformatted source text. */}
       <pre
-        className="context-text-body"
+        className="context-text-body max-h-[60vh] min-w-0 overflow-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-relaxed focus-visible:outline-2 focus-visible:outline-ring data-[wrap=true]:whitespace-pre-wrap data-[wrap=true]:break-words data-[wrap=false]:whitespace-pre"
         data-wrap={wrap}
         // biome-ignore lint/a11y/noNoninteractiveTabindex: Safari needs a focus target for keyboard scrolling of this read-only text.
         tabIndex={0}

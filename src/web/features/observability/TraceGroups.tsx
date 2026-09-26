@@ -1,4 +1,7 @@
+import { ArrowRight, Pause, Play, RefreshCw } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import type { RuntimeSpanFilters } from "../../../shared/contracts/runtime-observability";
 import { translateNotice, useI18n } from "../../i18n";
 import { localTime } from "../../ui/local-time";
@@ -34,14 +37,38 @@ export function TraceGroups({ filters }: { filters: RuntimeSpanFilters }) {
     )?.focus();
   }, [selectedTrace]);
   return (
-    <section ref={region} tabIndex={-1} className="trace-results" aria-label={t("请求与唤醒链路")}>
-      <div className="trace-actions">
-        <button ref={fallback} type="button" disabled={loading} onClick={refresh}>
+    <section
+      ref={region}
+      tabIndex={-1}
+      className="trace-results min-w-0 space-y-4 outline-none"
+      aria-label={t("请求与唤醒链路")}
+    >
+      <div className="trace-actions flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <Button
+          variant="outline"
+          size="sm"
+          ref={fallback}
+          type="button"
+          disabled={loading}
+          onClick={refresh}
+        >
+          <RefreshCw className="size-3.5" aria-hidden="true" />
           {t("刷新运行记录")}
-        </button>
-        <button type="button" aria-pressed={paused} onClick={() => setPaused((value) => !value)}>
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          aria-pressed={paused}
+          onClick={() => setPaused((value) => !value)}
+        >
+          {paused ? (
+            <Play className="size-3.5" aria-hidden="true" />
+          ) : (
+            <Pause className="size-3.5" aria-hidden="true" />
+          )}
           {t(paused ? "恢复自动刷新" : "暂停自动刷新")}
-        </button>
+        </Button>
         <small>{t("仅影响此视图，不暂停 Agent。")}</small>
         {loading && <span role="status">{t("正在读取运行记录…")}</span>}
         {summary && (
@@ -58,42 +85,58 @@ export function TraceGroups({ filters }: { filters: RuntimeSpanFilters }) {
         {summary && <small>{t("刷新于 {0}", localTime(summary.now))}</small>}
       </div>
       {error && (
-        <p role="alert" className="error">
+        <p
+          role="alert"
+          className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+        >
           {translateNotice(error)}
         </p>
       )}
-      <div className="trace-workspace" data-inspecting={selectedTrace !== null}>
-        <div className="trace-directory">
+      <div
+        className="trace-workspace group grid min-w-0 gap-4 xl:grid-cols-[minmax(16rem,21rem)_minmax(0,1fr)]"
+        data-inspecting={selectedTrace !== null}
+      >
+        <div className="trace-directory min-w-0 space-y-3 max-xl:group-data-[inspecting=true]:hidden">
           {!loading && !error && !items.length && (
-            <p className="hint">{t("暂无匹配的运行记录；启用观测前的活动可能没有记录。")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {t("暂无匹配的运行记录；启用观测前的活动可能没有记录。")}
+            </p>
           )}
-          <ol className="trace-list">
+          <ol className="trace-list grid list-none gap-3 p-0">
             {items.map((item) => (
               <li
                 key={item.traceId}
-                className="trace-row trace-group"
+                className="trace-row trace-group min-w-0"
                 data-status={item.status}
                 data-selected={selectedTrace === item.traceId}
               >
-                <TraceSummary item={item} compact />
-                <button
-                  type="button"
-                  className="trace-select"
-                  aria-pressed={selectedTrace === item.traceId}
-                  onClick={(event) => {
-                    trigger.current = event.currentTarget;
-                    setSelectedTrace(item.traceId);
-                  }}
+                <Card
+                  className="gap-3 p-4 data-[selected=true]:border-primary/50 data-[selected=true]:bg-accent/40"
+                  data-selected={selectedTrace === item.traceId}
                 >
-                  {t("展开时序链路")}
-                </button>
+                  <TraceSummary item={item} compact />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    className="trace-select w-full justify-between"
+                    aria-pressed={selectedTrace === item.traceId}
+                    onClick={(event) => {
+                      trigger.current = event.currentTarget;
+                      setSelectedTrace(item.traceId);
+                    }}
+                  >
+                    {t("展开时序链路")}
+                    <ArrowRight className="size-3.5" aria-hidden="true" />
+                  </Button>
+                </Card>
               </li>
             ))}
           </ol>
           {hasMore && (
-            <button type="button" disabled={loading} onClick={loadMore}>
+            <Button variant="outline" size="sm" type="button" disabled={loading} onClick={loadMore}>
               {t("加载更早运行记录")}
-            </button>
+            </Button>
           )}
         </div>
         {selectedTrace ? (
@@ -105,9 +148,11 @@ export function TraceGroups({ filters }: { filters: RuntimeSpanFilters }) {
             onClose={close}
           />
         ) : (
-          <div className="trace-empty-selection">
+          <div className="trace-empty-selection flex min-h-60 flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/20 p-6 text-center text-sm">
             <p>{t("选择一条请求，查看完整运行链路。")}</p>
-            <p className="hint">{t("输入与输出仅在你请求查看时读取。")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {t("输入与输出仅在你请求查看时读取。")}
+            </p>
           </div>
         )}
       </div>

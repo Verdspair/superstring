@@ -1,5 +1,16 @@
-import * as Dialog from "@radix-ui/react-dialog";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import type { AgentStepSnapshot, RunStatus } from "../../../shared/contracts/agent-run";
 import { translateNotice, useI18n } from "../../i18n";
 import { startRead } from "../../services/read-task";
@@ -47,34 +58,40 @@ function InspectorDialog(props: { ownerKind: string; ownerId: string } | { runId
   const [open, setOpen] = useState(false);
   const close = useRef<HTMLButtonElement>(null);
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild>
-        <button type="button" className="link-button">
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="link" size="sm" type="button" className="h-auto justify-start px-0">
           {t("运行详情")}
-        </button>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Overlay className="run-inspector-overlay" />
-        <Dialog.Content
-          className="run-inspector"
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            close.current?.focus();
-          }}
-        >
-          <header className="run-inspector-heading">
-            <div>
-              <Dialog.Title>{t("运行详情")}</Dialog.Title>
-              <Dialog.Description>{t("查看本任务的模型运行、步骤与实际输入。")}</Dialog.Description>
-            </div>
-            <Dialog.Close asChild>
-              <button ref={close} type="button" aria-label={t("关闭运行详情")}>
-                {t("关闭")}
-              </button>
-            </Dialog.Close>
-          </header>
-          <div className="run-inspector-body">
-            {"runId" in props ? (
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        className="run-inspector gap-4 sm:max-w-5xl"
+        showCloseButton={false}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          close.current?.focus();
+        }}
+      >
+        <header className="run-inspector-heading flex items-start justify-between gap-4 [&>div]:space-y-2">
+          <div>
+            <DialogTitle>{t("运行详情")}</DialogTitle>
+            <DialogDescription>{t("查看本任务的模型运行、步骤与实际输入。")}</DialogDescription>
+          </div>
+          <DialogClose asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              ref={close}
+              type="button"
+              aria-label={t("关闭运行详情")}
+            >
+              {t("关闭")}
+            </Button>
+          </DialogClose>
+        </header>
+        <ScrollArea className="run-inspector-body h-[min(70dvh,48rem)] pr-4">
+          {open &&
+            ("runId" in props ? (
               <RunDetails key={props.runId} runId={props.runId} />
             ) : (
               <OwnerRuns
@@ -82,15 +99,15 @@ function InspectorDialog(props: { ownerKind: string; ownerId: string } | { runId
                 ownerKind={props.ownerKind}
                 ownerId={props.ownerId}
               />
-            )}
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+            ))}
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function OwnerRuns({ ownerKind, ownerId }: { ownerKind: string; ownerId: string }) {
+  const attemptId = useId();
   const t = useI18n();
   const load = useSuperstringStore((s) => s.loadOwnerRuns);
   const ids = useSuperstringStore((s) => s.runIdsByOwner[runOwnerKey(ownerKind, ownerId)]);
@@ -115,26 +132,42 @@ function OwnerRuns({ ownerKind, ownerId }: { ownerKind: string; ownerId: string 
   }, [load, ownerKind, ownerId, revision]);
   return (
     <>
-      <div className="run-inspector-toolbar">
-        <button type="button" disabled={loading} onClick={() => setRevision((value) => value + 1)}>
+      <div className="run-inspector-toolbar flex flex-wrap items-center gap-2 text-sm">
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          disabled={loading}
+          onClick={() => setRevision((value) => value + 1)}
+        >
           {t("刷新运行记录")}
-        </button>
+        </Button>
         {loading && <span role="status">{t("正在读取运行记录…")}</span>}
       </div>
       {error && (
-        <p className="error" role="alert">
+        <p
+          className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+          role="alert"
+        >
           {translateNotice(error)}
         </p>
       )}
       {!loading && !error && !ids?.length && (
-        <p className="hint">{t("此任务暂无运行记录；排队任务与迁移前任务可能尚未留下记录。")}</p>
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          {t("此任务暂无运行记录；排队任务与迁移前任务可能尚未留下记录。")}
+        </p>
       )}
       {!!ids?.length && (
-        <label className="run-attempt-select">
+        <label htmlFor={attemptId} className="run-attempt-select my-4 grid gap-2 text-sm">
           <span>{t("运行尝试")}</span>
-          <select value={selected} onChange={(event) => setSelected(event.target.value)}>
+          <NativeSelect
+            id={attemptId}
+            className="w-full"
+            value={selected}
+            onChange={(event) => setSelected(event.target.value)}
+          >
             {ids.map((id) => (
-              <option key={id} value={id}>
+              <NativeSelectOption key={id} value={id}>
                 {localTime(runs[id]?.snapshot?.startedAt ?? "")} ·{" "}
                 {t(
                   runStatusLabel(
@@ -143,9 +176,9 @@ function OwnerRuns({ ownerKind, ownerId }: { ownerKind: string; ownerId: string 
                   ),
                 )}{" "}
                 · {id}
-              </option>
+              </NativeSelectOption>
             ))}
-          </select>
+          </NativeSelect>
         </label>
       )}
       {selected && <RunDetails key={`${selected}:${revision}`} runId={selected} />}
@@ -171,18 +204,26 @@ export function RunDetails({ runId }: { runId: string }) {
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const selectedStep = run?.steps.find((step) => step.stepId === selectedStepId) ?? run?.steps[0];
   return (
-    <section className="run-details" aria-label={t("选中运行的详情")}>
+    <section
+      className="run-details @container/inspector min-w-0 space-y-4"
+      aria-label={t("选中运行的详情")}
+    >
       {error && (
-        <p className="error" role="alert">
+        <p
+          className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+          role="alert"
+        >
           {translateNotice(error)}
         </p>
       )}
       {run ? (
         <>
           <p className="run-status" data-status={view.status} role="status">
-            {t(runStatusLabel(view.status, run.steps.at(-1)?.phase))}
+            <Badge variant={view.status === "failed" ? "destructive" : "secondary"}>
+              {t(runStatusLabel(view.status, run.steps.at(-1)?.phase))}
+            </Badge>
           </p>
-          <dl className="run-metadata">
+          <dl className="run-metadata grid gap-3 text-sm sm:grid-cols-2 [&>div]:min-w-0 [&_dt]:text-xs [&_dt]:text-muted-foreground [&_dd]:break-words [&_code]:break-all [&_code]:text-xs">
             <div>
               <dt>{t("运行 ID")}</dt>
               <dd>
@@ -206,36 +247,55 @@ export function RunDetails({ runId }: { runId: string }) {
               </div>
             )}
           </dl>
-          {view.errorCode && <p className="error">{t("错误代码：{0}", view.errorCode)}</p>}
+          {view.errorCode && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              {t("错误代码：{0}", view.errorCode)}
+            </p>
+          )}
           {view.status === "completed" && (
-            <p className="hint">{t("运行完成表示模型任务已完成；外部消息的送达结果单独记录。")}</p>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {t("运行完成表示模型任务已完成；外部消息的送达结果单独记录。")}
+            </p>
           )}
           <h3>{t("模型步骤")}</h3>
-          {!run.steps.length && <p className="hint">{t("尚未开始模型步骤。")}</p>}
-          <div className="run-steps-workspace">
-            <ol className="run-step-list">
+          {!run.steps.length && (
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {t("尚未开始模型步骤。")}
+            </p>
+          )}
+          <div className="run-steps-workspace grid min-w-0 gap-4 @4xl/inspector:grid-cols-[minmax(12rem,1fr)_minmax(0,3fr)]">
+            <ol className="run-step-list flex min-w-0 list-none flex-col gap-2 p-0">
               {run.steps.map((step) => (
                 <li
                   key={step.stepId}
-                  className="run-step"
+                  className="run-step min-w-0 rounded-lg border data-[selected=true]:border-primary/50 data-[selected=true]:bg-accent"
                   data-selected={selectedStep?.stepId === step.stepId}
                 >
-                  <button
+                  <Button
+                    variant="outline"
+                    size="sm"
                     type="button"
-                    className="run-step-select"
+                    className="run-step-select flex h-auto w-full min-w-0 flex-col items-start gap-1 whitespace-normal border-0 bg-transparent p-3 text-left [&_small]:max-w-full [&_small]:break-all [&_small]:text-muted-foreground"
                     aria-pressed={selectedStep?.stepId === step.stepId}
                     onClick={() => setSelectedStepId(step.stepId)}
                   >
                     <strong>{t("步骤 {0} · {1}", step.stepNo, t(phaseLabels[step.phase]))}</strong>
                     <span>{t(step.status === "running" ? "执行中" : runLabels[step.status])}</span>
                     <small>{t("模型：{0}", step.model)}</small>
-                  </button>
-                  {step.errorCode && <p className="error">{t("错误代码：{0}", step.errorCode)}</p>}
+                  </Button>
+                  {step.errorCode && (
+                    <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                      {t("错误代码：{0}", step.errorCode)}
+                    </p>
+                  )}
                 </li>
               ))}
             </ol>
             {selectedStep && (
-              <section className="run-selected-step" aria-label={t("选中模型步骤")}>
+              <section
+                className="run-selected-step min-w-0 rounded-lg border p-3"
+                aria-label={t("选中模型步骤")}
+              >
                 <StepContext key={selectedStep.stepId} context={selectedStep.context} />
               </section>
             )}
