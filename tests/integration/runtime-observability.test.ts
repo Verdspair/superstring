@@ -89,6 +89,50 @@ describe("execution observability", () => {
     expect(repository.waterfall(first.traceId, { q: "not-matched" })?.items).toHaveLength(208);
     expect(repository.waterfall(first.traceId, { q: "not-matched" })?.matchedSpanIds).toEqual([]);
   });
+  it("derives trigger and task labels from authorized child spans when the ingress root has neither", () => {
+    const { telemetry, repository } = setup();
+    const root = telemetry.start("bot.ingress", {
+      channel: "onebot11",
+      stage: "ingress",
+      details: { kind: "message" },
+    });
+    root.within(() => {
+      telemetry.record("wake.offer", {
+        channel: "onebot11",
+        stage: "wake",
+        details: { cause: "chiming_in" },
+      });
+      telemetry.record("agent.run", {
+        channel: "onebot11",
+        stage: "run",
+        details: { specId: "onebot.main" },
+      });
+      telemetry.record("agent.model", {
+        channel: "onebot11",
+        stage: "model",
+        details: { specId: "onebot.main" },
+      });
+      telemetry.record("agent.run", {
+        channel: "memory",
+        stage: "run",
+        details: { specId: "memory.select" },
+      });
+    });
+    root.end("completed");
+    telemetry.record("other-request", {
+      channel: "web",
+      stage: "run",
+      details: { specId: "unrelated" },
+    });
+    const group = repository.traces({ q: "chiming_in" }).items[0];
+    expect(group.root.details).not.toHaveProperty("cause");
+    expect(group).toMatchObject({
+      causes: ["chiming_in"],
+      specIds: ["onebot.main", "memory.select"],
+      matchedSpanCount: 1,
+    });
+    expect(repository.waterfall(root.traceId, {})?.trace.specIds).toEqual(group.specIds);
+  });
   it("keeps the owning run's no_output outcome when its nested model task completed", () => {
     const { telemetry, repository } = setup();
     const root = telemetry.start("wake.activate", { channel: "onebot11", stage: "wake" });

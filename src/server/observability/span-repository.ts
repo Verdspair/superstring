@@ -183,6 +183,12 @@ function summarizeTrace(items: RuntimeSpan[], matchedSpanCount: number, now: str
   return {
     traceId: root.traceId,
     cursorId: items[0].id,
+    causes: unique(
+      items.map((item) => (typeof item.details.cause === "string" ? item.details.cause : null)),
+    ),
+    specIds: unique(
+      items.map((item) => (typeof item.details.specId === "string" ? item.details.specId : null)),
+    ),
     root,
     at,
     lastActivityAt,

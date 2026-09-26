@@ -108,6 +108,8 @@ export type ConversationRuntimeStatus = z.infer<typeof ConversationRuntimeStatus
 export const RuntimeTraceSchema = z.strictObject({
   traceId: z.string(),
   cursorId: z.number().int().positive(),
+  causes: z.array(z.string()),
+  specIds: z.array(z.string()),
   root: RuntimeSpanSchema,
   at: z.string(),
   lastActivityAt: z.string(),
