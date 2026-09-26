@@ -2,14 +2,16 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 export interface AppPathOptions {
-  mode: "development" | "installed";
-  /** Explicit absolute project/install root; never inferred from cwd or user profile. */
+  mode: "development" | "installed" | "desktop";
+  /** Explicit project, Windows install, or desktop profile root; never inferred from cwd. */
   root: string;
+  /** Desktop only: immutable resources beside the compiled sidecar. */
+  resourceRoot?: string;
 }
 
 /** Pure path calculation. Does not create directories or inspect user data. */
 export function resolveAppPaths(options: AppPathOptions) {
-  if (options.mode !== "development" && options.mode !== "installed") {
+  if (!["development", "installed", "desktop"].includes(options.mode)) {
     throw new Error("INVALID_APP_MODE");
   }
   if (!options.root || !path.isAbsolute(options.root)) {
@@ -18,11 +20,37 @@ export function resolveAppPaths(options: AppPathOptions) {
   const root = path.normalize(options.root);
   if (root === path.parse(root).root) throw new Error("APP_ROOT_CANNOT_BE_DRIVE_ROOT");
   const development = options.mode === "development";
-  const privateRoot = path.join(root, development ? "local" : "userdata");
-  const resourceRoot = development ? root : path.join(root, "app", "resources");
+  const desktop = options.mode === "desktop";
+  if (!desktop && options.resourceRoot !== undefined) {
+    throw new Error("RESOURCE_ROOT_REQUIRES_DESKTOP_MODE");
+  }
+  const privateRoot = desktop ? root : path.join(root, development ? "local" : "userdata");
+  let resourceRoot = development ? root : path.join(root, "app", "resources");
+  if (desktop) {
+    if (!options.resourceRoot || !path.isAbsolute(options.resourceRoot)) {
+      throw new Error("RESOURCE_ROOT_MUST_BE_ABSOLUTE");
+    }
+    resourceRoot = path.normalize(options.resourceRoot);
+    if (resourceRoot === path.parse(resourceRoot).root) {
+      throw new Error("RESOURCE_ROOT_CANNOT_BE_DRIVE_ROOT");
+    }
+    for (const [parent, child] of [
+      [root, resourceRoot],
+      [resourceRoot, root],
+    ] as const) {
+      const relative = path.relative(parent, child);
+      if (
+        relative === "" ||
+        (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
+      ) {
+        throw new Error("DESKTOP_RESOURCE_AND_PROFILE_ROOTS_MUST_BE_SEPARATE");
+      }
+    }
+  }
   return {
     mode: options.mode,
     root,
+    resourceRoot,
     privateRoot,
     dataDir: path.join(privateRoot, "data"),
     configDir: path.join(privateRoot, "config"),
@@ -37,6 +65,7 @@ export function resolveAppPaths(options: AppPathOptions) {
     qqStickersDir: path.join(privateRoot, "qq", "stickers"),
     logsDir: path.join(development ? privateRoot : root, "logs"),
     backupsDir: path.join(development ? privateRoot : root, "backups"),
+    maintenanceDir: path.join(root, "maintenance"),
     webDir: development ? path.join(root, "dist", "web") : path.join(resourceRoot, "web"),
     businessMigration: path.join(resourceRoot, "migrations", "versions", "0001_initial.sql"),
     knowledgeMigration: path.join(resourceRoot, "migrations", "versions", "0002_knowledge.sql"),

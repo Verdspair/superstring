@@ -5,18 +5,27 @@ import { assertNoLegacyDevelopmentState, resolveAppPaths } from "./app-paths";
 /** Opt-in during development transition. Installed entrypoints must opt in explicitly. */
 export function loadStartupLayout(env: Record<string, string | undefined>) {
   const mode = env.SUPERSTRING_APP_MODE;
-  if (!mode && !env.SUPERSTRING_APP_ROOT) return null;
-  if (mode !== "development" && mode !== "installed") throw new Error("INVALID_APP_MODE");
-  const paths = resolveAppPaths({ mode, root: env.SUPERSTRING_APP_ROOT ?? "" });
+  if (!mode && !env.SUPERSTRING_APP_ROOT && !env.SUPERSTRING_RESOURCE_ROOT) return null;
+  if (mode !== "development" && mode !== "installed" && mode !== "desktop") {
+    throw new Error("INVALID_APP_MODE");
+  }
+  const paths = resolveAppPaths({
+    mode,
+    root: env.SUPERSTRING_APP_ROOT ?? "",
+    resourceRoot: env.SUPERSTRING_RESOURCE_ROOT,
+  });
   if (env.SUPERSTRING_DB_PATH?.trim()) throw new Error("LAYOUT_REJECTS_DATABASE_OVERRIDE");
   // Reject junction/symlink escape through existing path components, including root ancestors.
   for (const target of [
     paths.root,
+    paths.resourceRoot,
     paths.database,
     paths.browserStateKey,
+    paths.qqTransportKey,
     paths.appearance,
     paths.logsDir,
     paths.backupsDir,
+    paths.maintenanceDir,
     paths.qqStickersDir,
     paths.webDir,
     paths.businessMigration,
