@@ -71,12 +71,12 @@ export function ContextText({ text, label }: { text: string; label: string }) {
                 : ""}
         </small>
       </div>
+      {/* biome-ignore lint/a11y/useSemanticElements: The named scroll region must preserve preformatted source text. */}
       <pre
         className="context-text-body"
         data-wrap={wrap}
         // biome-ignore lint/a11y/noNoninteractiveTabindex: Safari needs a focus target for keyboard scrolling of this read-only text.
         tabIndex={0}
-        // biome-ignore lint/a11y/useSemanticElements: Preserve preformatted source semantics in this independently named scroll region.
         role="region"
         aria-label={`${label} · ${t("正文阅读区")}`}
       >
