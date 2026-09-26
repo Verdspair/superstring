@@ -31,7 +31,7 @@ import { DatabaseUnavailableError, isAppError } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { DirectService } from "../services/direct-service";
 import { isDatabaseError } from "./error-handler";
-import { encodeSse, SSE_HEADERS } from "./sse";
+import { createSseResponse } from "./sse";
 import { parseBody, parseUuidParam, readJsonBody } from "./validation";
 
 function toSessionResponse(row: {
@@ -156,7 +156,7 @@ export function sessionRoutes(
   });
 
   /**
-   * `POST /chat`. The only streaming endpoint.
+   * `POST /chat`. The legacy streaming contract, also used for retries.
    * Error handling has three distinct exits, and they are NOT interchangeable:
    * - an `AppError` raised while streaming → SSE `error` carrying its code;
    * - a storage failure → SSE `error` carrying DATABASE_UNAVAILABLE;
@@ -193,96 +193,67 @@ export function sessionRoutes(
       signal: clientAbort.signal,
     });
 
-    let cancelled = false;
-    let streamCancelled = false;
-    let pump: Promise<void> | undefined;
-    const disconnect = () => {
-      cancelled = true;
-      clientAbort.abort();
-    };
-    c.req.raw.signal.addEventListener("abort", disconnect, { once: true });
-    if (c.req.raw.signal.aborted) disconnect();
-
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        // Start must return immediately: ReadableStream.cancel waits for start.
-        // Awaiting the entire producer here would deadlock cancellation.
-        pump = (async () => {
-          const encoder = new TextEncoder();
-          const send = (event: string, data: Record<string, unknown>): void => {
-            if (!cancelled) controller.enqueue(encoder.encode(encodeSse(event, data)));
-          };
-          sendContext = (usage) => {
-            if (c.req.header("X-Superstring-Context-Usage") === "1")
-              send("context", { request_id: requestId, usage });
-          };
-          send("start", { request_id: requestId, session_id: body.session_id });
-          let terminal = false;
-          try {
-            for await (const event of reply) {
-              if (event.kind === "delta") {
-                send("delta", { request_id: requestId, text: event.text });
-              } else {
-                terminal = true;
-                send("done", {
-                  request_id: requestId,
-                  message_id: event.messageId,
-                  created_at: event.createdAt,
-                  completed_at: event.completedAt,
-                });
-                break;
-              }
-            }
-          } catch (error) {
-            terminal = true;
-            if (cancelled) {
-              // DirectService already persisted CLIENT_DISCONNECTED. No terminal
-              // event can be delivered to a disconnected consumer.
-            } else if (isAppError(error)) {
-              send("error", {
-                request_id: requestId,
-                code: error.code,
-                message: error.message,
-              });
-            } else if (isDatabaseError(error)) {
-              const dbError = new DatabaseUnavailableError();
-              send("error", {
-                request_id: requestId,
-                code: dbError.code,
-                message: dbError.message,
-              });
+    return createSseResponse(
+      { requestSignal: c.req.raw.signal, onDisconnect: () => clientAbort.abort() },
+      async (stream) => {
+        const send = stream.send;
+        sendContext = (usage) => {
+          if (c.req.header("X-Superstring-Context-Usage") === "1")
+            send("context", { request_id: requestId, usage });
+        };
+        send("start", { request_id: requestId, session_id: body.session_id });
+        let terminal = false;
+        try {
+          for await (const event of reply) {
+            if (event.kind === "delta") {
+              send("delta", { request_id: requestId, text: event.text });
             } else {
-              send("error", {
+              terminal = true;
+              send("done", {
                 request_id: requestId,
-                code: "MESSAGE_PERSISTENCE_ERROR",
-                message: "助手消息未能确认保存，请重试",
+                message_id: event.messageId,
+                created_at: event.createdAt,
+                completed_at: event.completedAt,
               });
+              break;
             }
           }
-          if (!terminal) {
-            // Unreachable for the current service, but the fallback must exist:
-            // a stream that simply stops must never look like success.
+        } catch (error) {
+          terminal = true;
+          if (stream.cancelled) {
+            // DirectService already persisted CLIENT_DISCONNECTED. No terminal
+            // event can be delivered to a disconnected consumer.
+          } else if (isAppError(error)) {
+            send("error", {
+              request_id: requestId,
+              code: error.code,
+              message: error.message,
+            });
+          } else if (isDatabaseError(error)) {
+            const dbError = new DatabaseUnavailableError();
+            send("error", {
+              request_id: requestId,
+              code: dbError.code,
+              message: dbError.message,
+            });
+          } else {
             send("error", {
               request_id: requestId,
               code: "MESSAGE_PERSISTENCE_ERROR",
               message: "助手消息未能确认保存，请重试",
             });
           }
-          if (!streamCancelled) controller.close();
-        })().finally(() => {
-          c.req.raw.signal.removeEventListener("abort", disconnect);
-        });
-        // An aborted request has no reader waiting for its terminal frame.
-        void pump.catch(() => {});
+        }
+        if (!terminal) {
+          // A stream that simply stops must never look like saved success.
+          send("error", {
+            request_id: requestId,
+            code: "MESSAGE_PERSISTENCE_ERROR",
+            message: "助手消息未能确认保存，请重试",
+          });
+        }
       },
-      async cancel() {
-        streamCancelled = true;
-        disconnect();
-        await pump;
-      },
-    });
-
-    return new Response(stream, { status: 200, headers: SSE_HEADERS });
+    );
   });
 
   return router;
