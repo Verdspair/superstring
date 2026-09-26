@@ -53,8 +53,12 @@ flowchart TD
 - **Motion:** Motion owns entrance/layout transitions and follows reduced-motion
   preferences. Protected bodies are cleared immediately on scope/visibility loss;
   exit animations never retain sensitive evidence.
-- **Brand:** the existing Logo geometry is retained. User themes map to standard
-  semantic color tokens; the context indicator uses react-circular-progressbar.
+- **Brand:** one SVG master in `src/shared/brand` retains the quotation marks,
+  conversation bubble, string and two nodes in a clearer 32-unit composition.
+  Web SVG references and the favicon use that asset directly; the desktop build
+  renders it with resvg into its embedded icon sizes. No separate handwritten
+  desktop vector parser or duplicate path geometry remains. User themes map to
+  standard semantic color tokens; the context indicator uses react-circular-progressbar.
 
 ## Functional boundaries
 

@@ -9,7 +9,9 @@ compose them in task screens instead of building a parallel component or CSS sys
   https://github.com/shadcn-ui/ui; the notice is retained in `components/ui/LICENSE.md`. Reference layouts: https://ui.shadcn.com/blocks/sidebar.
 - `styles.css`: official neutral light/dark tokens, Tailwind imports, and reduced-motion defaults.
 - `appearance.ts`: the existing 16 user themes project into standard primary, ring and sidebar tokens.
-- `design-system/BrandLogo.tsx`: original project logo geometry, independent from functional icons.
+- `design-system/BrandLogo.tsx`: theme-colored SVG reference to the canonical
+  `src/shared/brand/superstring.svg`, independent from functional icons. The favicon and desktop
+  renderer share this master; do not add local copies of its paths or generated image files.
 - `design-system/Icon.tsx`: semantic Lucide names for business components.
 - `components/`: small business compositions over registry components (field association, confirmations, context ring).
 - `screens/`: fresh task workspaces; `features/` retains state and API actions only.
@@ -20,7 +22,7 @@ compose them in task screens instead of building a parallel component or CSS sys
 - Conversation avatars: official Avatar/Dialog/RadioGroup compositions with local DiceBear
   generators. The six CC0 style sources are listed in `screens/conversations/avatar-licenses.md`.
   Uploads and chosen designs persist through the server conversation API; components own only
-  the unsaved draft. The product Logo remains unchanged.
+  the unsaved draft. Conversation avatars remain separate from the product Logo.
 
 Motion handles visual transitions; it never owns mutations, drafts or protected input/output data.
 Use standard Tailwind layout utilities and semantic colors. Preserve existing field permissions,
