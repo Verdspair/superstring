@@ -1,3 +1,7 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { parseAttentionMembers, type QqInputs } from "./draft-state";
 import { useQqInput } from "./use-qq-input";
 // 快捷管理 → 第三方App接入 (§11.1, P5q).
@@ -168,11 +172,15 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
     };
     const members = parseAttentionMembers(draft.members);
     return (
-      <div className="qq-access-triggers" id={`qq-access-attention-${binding.id}`}>
-        <span className="hint">{t("重要的人")}</span>
-        <label>
+      <div
+        className="qq-access-triggers grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>label]:grid [&>label]:min-w-0 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground"
+        id={`qq-access-attention-${binding.id}`}
+      >
+        <span className="hint text-sm leading-relaxed text-muted-foreground">{t("重要的人")}</span>
+        <Label>
           <span>{t("模式")}</span>
-          <select
+          <NativeSelect
+            className="w-full"
             aria-label={t("重要的人模式")}
             disabled={saving}
             value={draft.mode}
@@ -194,11 +202,11 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
             <option value="off">{t("不启用")}</option>
             <option value="soft">{t("软优先")}</option>
             <option value="hard">{t("只回应名单内的人")}</option>
-          </select>
-        </label>
-        <label>
+          </NativeSelect>
+        </Label>
+        <Label>
           <span>{t("名单")}</span>
-          <input
+          <Input
             aria-label={t("重要的人名单")}
             disabled={saving || draft.mode === "off"}
             value={draft.members}
@@ -210,8 +218,9 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
               }))
             }
           />
-        </label>
-        <button
+        </Label>
+        <Button
+          variant="outline"
           type="button"
           disabled={saving || (draft.mode !== "off" && members.length === 0)}
           onClick={() =>
@@ -231,8 +240,8 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
           }
         >
           {t("保存名单")}
-        </button>
-        <span className="hint">
+        </Button>
+        <span className="hint text-sm leading-relaxed text-muted-foreground">
           {t(
             "软优先只让他们的发言在上下文里更显眼，不改任何门槛；只回应模式下名单外的人照常记录，但不会让它开口。",
           )}
@@ -242,8 +251,11 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
   };
 
   const memoryEditor = (binding: QqBindingResponse) => (
-    <div className="qq-access-triggers" id={`qq-access-memory-${binding.id}`}>
-      <span className="hint">{t("记忆整理")}</span>
+    <div
+      className="qq-access-triggers grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>label]:grid [&>label]:min-w-0 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground"
+      id={`qq-access-memory-${binding.id}`}
+    >
+      <span className="hint text-sm leading-relaxed text-muted-foreground">{t("记忆整理")}</span>
       <QqMemoryControls
         key={binding.id}
         binding={{ ...binding, enabled: settings?.enabled === true }}
@@ -251,9 +263,14 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
         disabled={saving}
         onChanged={() => void load()}
       />
-      <button type="button" className="link-button" onClick={() => openRoute("long-memory")}>
+      <Button
+        variant="link"
+        type="button"
+        className="link-button h-auto p-0 text-sm"
+        onClick={() => openRoute("long-memory")}
+      >
         {t("前往长期记忆")}
-      </button>
+      </Button>
     </div>
   );
 
@@ -264,9 +281,15 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
   // 把整棵子树卸载重建——这一段的每行都有自己的输入草稿与判决文案，重建就会把它们全部清掉。
   const panel = (id: string, title: string, note: string | undefined, children: ReactNode) =>
     embedded ? (
-      <section id={id} className="qq-access-subsection" aria-label={t(title)}>
+      <section
+        id={id}
+        className="qq-access-subsection space-y-4 [&>h4]:text-sm [&>h4]:font-semibold"
+        aria-label={t(title)}
+      >
         <h4>{t(title)}</h4>
-        {note !== undefined && <p className="hint">{t(note)}</p>}
+        {note !== undefined && (
+          <p className="hint text-sm leading-relaxed text-muted-foreground">{t(note)}</p>
+        )}
         {children}
       </section>
     ) : (
@@ -278,18 +301,21 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
   return (
     <>
       {!embedded && (
-        <p className="settings-note">
+        <p className="settings-note text-sm leading-relaxed text-muted-foreground">
           {t("这里配置 QQ 机器人侧的连接参数，并给已经说过话的群和私聊绑定助手与方案。")}
         </p>
       )}
       {loading && <p role="status">{t("正在读取接入状态…")}</p>}
       {error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error text-sm text-destructive">
           {translateNotice(error)}
         </p>
       )}
       {feedback && (
-        <p className="hint workspace-feedback" role="status">
+        <p
+          className="hint workspace-feedback text-sm leading-relaxed text-muted-foreground"
+          role="status"
+        >
           {translateNotice(feedback)}
         </p>
       )}
@@ -308,16 +334,17 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                 {connection ? t(PHASE_LABELS[connection.phase] ?? connection.phase) : t("未知")}
                 {connection?.reason ? `（${connection.reason}）` : ""}
               </span>
-              <button
+              <Button
+                variant="link"
                 type="button"
-                className="link-button"
+                className="link-button h-auto p-0 text-sm"
                 onClick={() => void refreshConnection()}
               >
                 {t("刷新状态")}
-              </button>
+              </Button>
             </Field>
             <Field label="助手账号" info="机器人自己的QQ号；与绑定会话的账号一致才会处理消息。">
-              <input
+              <Input
                 aria-label={t("助手账号")}
                 value={accountId}
                 disabled={saving}
@@ -329,7 +356,7 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
               label="WebSocket 地址"
               info="NapCat 的正向 WebSocket 地址，本机优先，例如 ws://127.0.0.1:3000/。"
             >
-              <input
+              <Input
                 aria-label={t("WebSocket 地址")}
                 value={endpoint}
                 disabled={saving}
@@ -341,7 +368,7 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
               label="访问令牌"
               info="写入后不再回显；留空表示不改动已保存的令牌，清空按钮单独提供。"
             >
-              <input
+              <Input
                 aria-label={t("访问令牌")}
                 type="password"
                 value={token}
@@ -351,12 +378,13 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                 }
                 onChange={(event) => setToken(event.target.value)}
               />
-              <small className="hint">
+              <small className="hint text-sm leading-relaxed text-muted-foreground">
                 {settings.transport.has_token ? t("已保存令牌") : t("尚未保存令牌")}
               </small>
             </Field>
-            <div className="qq-sticker-actions">
-              <button
+            <div className="qq-sticker-actions flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving}
                 onClick={() => {
@@ -373,11 +401,16 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                 }}
               >
                 {t("保存接入设置")}
-              </button>
+              </Button>
               {settings.transport.has_token && (
-                <button type="button" disabled={saving} onClick={() => void save({ token: null })}>
+                <Button
+                  variant="outline"
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void save({ token: null })}
+                >
                   {t("清除已保存令牌")}
-                </button>
+                </Button>
               )}
             </div>
           </>,
@@ -388,10 +421,14 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
         "群与私聊",
         "绑定后才会按方案参与判断与发言；没有绑定的群或私聊，消息不会被记录。",
         <>
-          <div className="qq-access-controls" id="qq-access-manual">
-            <label>
+          <div
+            className="qq-access-controls flex flex-wrap items-end gap-3 [&>label]:grid [&>label]:min-w-0 [&>label]:flex-1 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground"
+            id="qq-access-manual"
+          >
+            <Label>
               <span>{t("手动绑定")}</span>
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("手动绑定的类型")}
                 disabled={saving}
                 value={manualKind}
@@ -401,11 +438,11 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
               >
                 <option value="group">{t("群")}</option>
                 <option value="private">{t("私聊")}</option>
-              </select>
-            </label>
-            <label>
+              </NativeSelect>
+            </Label>
+            <Label>
               <span>{t("号码")}</span>
-              <input
+              <Input
                 aria-label={t("号码")}
                 value={manualPeer}
                 inputMode="numeric"
@@ -413,10 +450,11 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                 placeholder={t("群号或QQ号")}
                 onChange={(event) => setManualPeer(event.target.value)}
               />
-            </label>
-            <label>
+            </Label>
+            <Label>
               <span>{t("助手")}</span>
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("手动绑定的助手")}
                 disabled={saving}
                 value={manualAgent}
@@ -427,11 +465,12 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                     {agent.name}
                   </option>
                 ))}
-              </select>
-            </label>
-            <label>
+              </NativeSelect>
+            </Label>
+            <Label>
               <span>{t("方案")}</span>
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("手动绑定的方案")}
                 disabled={saving}
                 value={manualScheme}
@@ -442,9 +481,10 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                     {scheme.name}
                   </option>
                 ))}
-              </select>
-            </label>
-            <button
+              </NativeSelect>
+            </Label>
+            <Button
+              variant="outline"
               type="button"
               disabled={
                 saving || manualPeer.trim() === "" || manualAgent === "" || manualScheme === ""
@@ -461,26 +501,30 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
               }
             >
               {t("绑定这个号码")}
-            </button>
+            </Button>
           </div>
           {rows.length === 0 ? (
-            <p className="hint">{t("还没有会话：用上面的号码直接绑定一个群或私聊。")}</p>
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("还没有会话：用上面的号码直接绑定一个群或私聊。")}
+            </p>
           ) : (
-            <ul className="qq-access-list">
+            <ul className="qq-access-list grid gap-4 [&>li]:space-y-4 [&>li]:rounded-xl [&>li]:border [&>li]:bg-card [&>li]:p-5">
               {rows.map((conversation) => {
                 const binding = bindingOf(conversation);
                 const key = binding?.id ?? `${conversation.kind}:${conversation.peer_id}`;
                 const choice = choiceFor(conversation, binding?.id ?? null);
                 return (
                   <li key={key}>
-                    <div className="qq-access-row">
+                    <div className="qq-access-row flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
                       <strong>
                         {conversation.kind === "group" ? t("群") : t("私聊")} {conversation.peer_id}
                       </strong>
                       {conversation.messages === 0 ? (
-                        <span className="hint">{t("还没有观察到消息")}</span>
+                        <span className="hint text-sm leading-relaxed text-muted-foreground">
+                          {t("还没有观察到消息")}
+                        </span>
                       ) : (
-                        <small className="hint">
+                        <small className="hint text-sm leading-relaxed text-muted-foreground">
                           {t(
                             "{0} 条消息 · 最近 {1}",
                             conversation.messages,
@@ -489,18 +533,25 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                         </small>
                       )}
                       {binding === null ? (
-                        <span className="hint">{t("未绑定")}</span>
+                        <span className="hint text-sm leading-relaxed text-muted-foreground">
+                          {t("未绑定")}
+                        </span>
                       ) : (
-                        <span className="hint">{binding.paused ? t("已暂停") : t("参与中")}</span>
+                        <span className="hint text-sm leading-relaxed text-muted-foreground">
+                          {binding.paused ? t("已暂停") : t("参与中")}
+                        </span>
                       )}
                     </div>
                     {binding !== null && (
-                      <div className="qq-access-triggers">
-                        <span className="hint">{t("模块开关")}</span>
+                      <div className="qq-access-triggers grid gap-3 sm:grid-cols-2 xl:grid-cols-4 [&>label]:grid [&>label]:min-w-0 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground">
+                        <span className="hint text-sm leading-relaxed text-muted-foreground">
+                          {t("模块开关")}
+                        </span>
                         {TRIGGER_ROWS.map((row) => (
-                          <label key={row.key}>
+                          <Label key={row.key}>
                             <span>{t(row.label)}</span>
-                            <select
+                            <NativeSelect
+                              className="w-full"
                               aria-label={t("{0} 的开关", row.label)}
                               disabled={saving}
                               value={
@@ -525,17 +576,18 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                               <option value="inherit">{t("跟随方案")}</option>
                               <option value="on">{t("开")}</option>
                               <option value="off">{t("关")}</option>
-                            </select>
-                          </label>
+                            </NativeSelect>
+                          </Label>
                         ))}
                       </div>
                     )}
                     {binding !== null && attentionEditor(binding)}
                     {binding !== null && memoryEditor(binding)}
-                    <div className="qq-access-controls">
-                      <label>
+                    <div className="qq-access-controls flex flex-wrap items-end gap-3 [&>label]:grid [&>label]:min-w-0 [&>label]:flex-1 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground">
+                      <Label>
                         <span>{t("助手")}</span>
-                        <select
+                        <NativeSelect
+                          className="w-full"
                           aria-label={t("助手")}
                           disabled={saving}
                           value={choice.agentId}
@@ -548,11 +600,12 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                               {agent.name}
                             </option>
                           ))}
-                        </select>
-                      </label>
-                      <label>
+                        </NativeSelect>
+                      </Label>
+                      <Label>
                         <span>{t("方案")}</span>
-                        <select
+                        <NativeSelect
+                          className="w-full"
                           aria-label={t("方案")}
                           disabled={saving}
                           value={choice.schemeId}
@@ -565,10 +618,11 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                               {scheme.name}
                             </option>
                           ))}
-                        </select>
-                      </label>
+                        </NativeSelect>
+                      </Label>
                       {binding === null ? (
-                        <button
+                        <Button
+                          variant="outline"
                           type="button"
                           disabled={saving || choice.agentId === "" || choice.schemeId === ""}
                           onClick={() =>
@@ -580,10 +634,11 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                           }
                         >
                           {t("绑定")}
-                        </button>
+                        </Button>
                       ) : (
                         <>
-                          <button
+                          <Button
+                            variant="outline"
                             type="button"
                             disabled={saving}
                             onClick={() =>
@@ -600,14 +655,15 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
                             }
                           >
                             {t("保存改绑")}
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            variant="outline"
                             type="button"
                             disabled={saving}
                             onClick={() => void updateRow(binding, { paused: !binding.paused })}
                           >
                             {binding.paused ? t("恢复参与") : t("暂停发言")}
-                          </button>
+                          </Button>
                         </>
                       )}
                     </div>
@@ -617,15 +673,16 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
             </ul>
           )}
           {schemes.length === 0 && (
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t("还没有方案：先到聊天方案页建一个，才能绑定会话。")}
-              <button
+              <Button
+                variant="link"
                 type="button"
-                className="link-button"
+                className="link-button h-auto p-0 text-sm"
                 onClick={() => openRoute("qq-scheme-config")}
               >
                 {t("前往聊天方案")}
-              </button>
+              </Button>
             </p>
           )}
         </>,
@@ -636,26 +693,37 @@ export function QqAppAccess({ embedded = false }: { embedded?: boolean } = {}) {
         "相关配置",
         "这些是 QQ 全局资源，不随助手切换。",
         <>
-          <p className="hint">
-            <button
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            <Button
+              variant="link"
               type="button"
-              className="link-button"
+              className="link-button h-auto p-0 text-sm"
               onClick={() => openRoute("qq-scheme-config")}
             >
               {t("聊天方案")}
-            </button>
+            </Button>
             {t("：发言触发、节奏、上下文、媒体与六段提示词。")}
           </p>
-          <p className="hint">
-            <button type="button" className="link-button" onClick={() => openRoute("qq-stickers")}>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            <Button
+              variant="link"
+              type="button"
+              className="link-button h-auto p-0 text-sm"
+              onClick={() => openRoute("qq-stickers")}
+            >
               {t("表情素材")}
-            </button>
+            </Button>
             {t("：导入、归类与启用；方案授权集合后才可能被选中。")}
           </p>
-          <p className="hint">
-            <button type="button" className="link-button" onClick={() => openRoute("qq-storage")}>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            <Button
+              variant="link"
+              type="button"
+              className="link-button h-auto p-0 text-sm"
+              onClick={() => openRoute("qq-storage")}
+            >
               {t("存储与诊断")}
-            </button>
+            </Button>
             {t("：保存了什么、在等什么、清理与保留窗口。")}
           </p>
         </>,

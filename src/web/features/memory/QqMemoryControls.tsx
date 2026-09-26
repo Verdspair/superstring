@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import type { MemoryScopeView, QqMemoryOrganiseResponse } from "../../../shared/contracts";
 import { translateNotice, useI18n } from "../../i18n";
 import { errorText } from "../../state/helpers";
@@ -81,10 +83,10 @@ export function QqMemoryControls({
     }
   };
   return (
-    <div className="memory-qq-controls">
-      <div className="memory-toolbar">
+    <div className="memory-qq-controls min-w-0 space-y-4">
+      <div className="memory-toolbar flex flex-wrap items-center gap-3">
         <Field label="自动整理条数" info="留空＝不自动整理">
-          <input
+          <Input
             aria-label={t("自动整理条数")}
             type="number"
             min={1}
@@ -96,15 +98,17 @@ export function QqMemoryControls({
             }
           />
         </Field>
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={disabled || busy || !valid || draft === null}
           onClick={() => void run(true)}
         >
           {t("保存条数")}
-        </button>
+        </Button>
         {draft && (
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={busy}
             onClick={() => {
@@ -113,34 +117,43 @@ export function QqMemoryControls({
             }}
           >
             {t("放弃条数修改")}
-          </button>
+          </Button>
         )}
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={disabled || busy || binding.paused || !binding.enabled || pending === 0}
           onClick={() => void run(false)}
         >
           {t("立即整理")}
-        </button>
-        <span className="hint">{t("待整理 {0} 条", pending)}</span>
+        </Button>
+        <span className="hint text-sm leading-relaxed text-muted-foreground">
+          {t("待整理 {0} 条", pending)}
+        </span>
       </div>
-      <p className="hint">
+      <p className="hint text-sm leading-relaxed text-muted-foreground">
         {t("按本会话的文字消息条数自动整理；立即整理忽略条数门槛，使用当前助手的整理模型与规则。")}
       </p>
       {!valid && (
-        <p className="error" role="alert">
+        <p className="error text-sm text-destructive" role="alert">
           {t("条数需为正整数，留空表示关闭。")}
         </p>
       )}
-      {binding.paused && <p className="hint">{t(VERDICTS.paused)}</p>}
-      {!binding.enabled && <p className="hint">{t(VERDICTS.switch_off)}</p>}
+      {binding.paused && (
+        <p className="hint text-sm leading-relaxed text-muted-foreground">{t(VERDICTS.paused)}</p>
+      )}
+      {!binding.enabled && (
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
+          {t(VERDICTS.switch_off)}
+        </p>
+      )}
       {notice && (
-        <p className="hint" role="status">
+        <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
           {notice}
         </p>
       )}
       {error && (
-        <p className="error" role="alert">
+        <p className="error text-sm text-destructive" role="alert">
           {translateNotice(error)}
         </p>
       )}

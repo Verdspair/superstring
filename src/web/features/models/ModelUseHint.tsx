@@ -36,7 +36,7 @@ export function ModelUseHint({
   const describe = (value: typeof actual) =>
     value.model ? t("{0}（{1}）", value.model, t(sources[value.source])) : t(sources[value.source]);
   return (
-    <div className="model-use-hint">
+    <div className="model-use-hint space-y-1 text-xs leading-relaxed text-muted-foreground">
       <p>{t("作用域：{0} · 当前生效：{1}", scope, describe(actual))}</p>
       {(configured !== saved || chatModel !== savedChatModel) && (
         <p>{t("未保存预览：{0}", describe(preview))}</p>

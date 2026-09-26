@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 // §11.1's 存储与诊断 (ADR0018 P5h, plus P5u's 原因可追踪).
 //
 // The page reports what the QQ side actually keeps and offers one action: remove what has already
@@ -58,7 +59,9 @@ export function QqStorageSettings() {
     <div key={key}>
       <dt>{t(label)}</dt>
       <dd>{value}</dd>
-      {note !== undefined && <small className="hint">{note}</small>}
+      {note !== undefined && (
+        <small className="hint text-sm leading-relaxed text-muted-foreground">{note}</small>
+      )}
     </div>
   );
 
@@ -81,24 +84,27 @@ export function QqStorageSettings() {
 
   return (
     <>
-      <p className="settings-note">
+      <p className="settings-note text-sm leading-relaxed text-muted-foreground">
         {t("这里只显示 QQ 侧真实保存的数据；清理只删除已经过期的内容。")}
       </p>
       {loading && <p role="status">{t("正在读取存储用量…")}</p>}
       {error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error text-sm text-destructive">
           {translateNotice(error)}
         </p>
       )}
       {feedback && (
-        <p className="hint workspace-feedback" role="status">
+        <p
+          className="hint workspace-feedback text-sm leading-relaxed text-muted-foreground"
+          role="status"
+        >
           {translateNotice(feedback)}
         </p>
       )}
 
       {usage && (
         <SettingsGroup id="qq-storage-usage" title="保存了什么" note="按表计数；素材副本单独治理。">
-          <dl className="qq-storage-list">
+          <dl className="qq-storage-list divide-y [&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:gap-x-5 [&>div]:gap-y-1 [&>div]:py-4 [&_dt]:text-sm [&_dt]:font-medium [&_dd]:text-sm [&_dd]:tabular-nums [&_dd]:text-muted-foreground [&_small]:col-span-full [&_small]:text-xs [&_small]:text-muted-foreground">
             {row(
               "群与私聊消息",
               `${usage.observations.messages}`,
@@ -135,7 +141,7 @@ export function QqStorageSettings() {
           title="当前 Agent 运行时"
           note="当前 Bot 会话的唤醒、运行和投递状态；生成结束不代表已送达。"
         >
-          <dl className="qq-storage-list">
+          <dl className="qq-storage-list divide-y [&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:gap-x-5 [&>div]:gap-y-1 [&>div]:py-4 [&_dt]:text-sm [&_dt]:font-medium [&_dd]:text-sm [&_dd]:tabular-nums [&_dd]:text-muted-foreground [&_small]:col-span-full [&_small]:text-xs [&_small]:text-muted-foreground">
             {row("等待处理的唤醒", String(usage.agent_runtime.pending_wakes))}
             {row("正在处理的唤醒", String(usage.agent_runtime.leased_wakes))}
             {row("处理失败的唤醒", String(usage.agent_runtime.failed_wakes))}
@@ -152,7 +158,7 @@ export function QqStorageSettings() {
           title="历史调度与媒体记录"
           note="原调度记录继续保留供诊断；这些候选与单链状态不代表当前 Agent 运行数。"
         >
-          <dl className="qq-storage-list">
+          <dl className="qq-storage-list divide-y [&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:gap-x-5 [&>div]:gap-y-1 [&>div]:py-4 [&_dt]:text-sm [&_dt]:font-medium [&_dd]:text-sm [&_dd]:tabular-nums [&_dd]:text-muted-foreground [&_small]:col-span-full [&_small]:text-xs [&_small]:text-muted-foreground">
             {row(
               "排队中的会话",
               `${usage.dispatch.candidates}`,
@@ -182,7 +188,7 @@ export function QqStorageSettings() {
           note="每个绑定会话一行，写的是最近一次扫描的结论：它决定开口，或者被哪一道门槛挡住。"
         >
           {usage.sweep.entries.length === 0 ? (
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t("还没有任何裁决记录：要么还没有绑定会话，要么运行时还没有扫描过一次。")}
             </p>
           ) : (
@@ -190,11 +196,11 @@ export function QqStorageSettings() {
               {/* A recorded conversation always dates the pass it was recorded in, so the "never
                   swept" wording belongs to the empty state above and nowhere else. */}
               {usage.sweep.last_swept_at_seconds !== null && (
-                <p className="hint">
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
                   {t("最近一次扫描：{0}。", ago(usage.sweep.last_swept_at_seconds))}
                 </p>
               )}
-              <dl className="qq-storage-list">
+              <dl className="qq-storage-list divide-y [&>div]:grid [&>div]:grid-cols-[minmax(0,1fr)_auto] [&>div]:gap-x-5 [&>div]:gap-y-1 [&>div]:py-4 [&_dt]:text-sm [&_dt]:font-medium [&_dd]:text-sm [&_dd]:tabular-nums [&_dd]:text-muted-foreground [&_small]:col-span-full [&_small]:text-xs [&_small]:text-muted-foreground">
                 {usage.sweep.entries.map((entry) => {
                   const label = `${entry.kind === "group" ? t("群") : t("私聊")} ${entry.peer_id}`;
                   const parts = [
@@ -217,7 +223,7 @@ export function QqStorageSettings() {
                 })}
               </dl>
               {usage.sweep.tracked > usage.sweep.entries.length && (
-                <p className="hint">
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
                   {t(
                     "共 {0} 个会话，这里显示最近裁决的 {1} 个。",
                     usage.sweep.tracked,
@@ -238,13 +244,13 @@ export function QqStorageSettings() {
           usage?.retention.days ?? 14,
         )}
       >
-        <div className="qq-sticker-actions">
-          <button type="button" disabled={saving} onClick={() => void cleanup()}>
+        <div className="qq-sticker-actions flex flex-wrap items-center gap-2">
+          <Button variant="outline" type="button" disabled={saving} onClick={() => void cleanup()}>
             {t("立即清理过期内容")}
-          </button>
+          </Button>
         </div>
         {removed && (
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t(
               "上次清理：正文 {0} · 媒体说明 {1} · 发言 {2} · 台账 {3} · 昵称 {4}",
               removed.observation_text,
@@ -255,25 +261,27 @@ export function QqStorageSettings() {
             )}
           </p>
         )}
-        <p className="hint">{t("素材与集合不参与这里的清理：素材治理是独立的一块。")}</p>
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
+          {t("素材与集合不参与这里的清理：素材治理是独立的一块。")}
+        </p>
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t("裁决记录也不参与清理：它每个扫描周期被重写，只保存结论、时间和原因，没有正文。")}
         </p>
       </SettingsGroup>
 
       <SettingsGroup id="qq-storage-open" title="还没有的东西" note="如实说明，不用 0 冒充。">
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t("收到的媒体缓存：本版只保存上游引用与模型描述，不落地字节，因此没有缓存体积。")}
         </p>
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t(
             "媒体读取失败只留下“尝试过、还没有描述”这一条事实与次数；失败原因不单独记录，处理方式与导出字段仍待定。",
           )}
         </p>
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t("计划里的失败记录（保留天数、脱敏与导出字段）仍未确定，因此这里也只报事实。")}
         </p>
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t(
             "直接回应与连续交谈的裁决没有单独记录：它们每一轮都从存储事实重新判断，不额外落库；这里只有冷场扫描的结论。",
           )}

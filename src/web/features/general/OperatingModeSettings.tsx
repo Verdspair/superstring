@@ -1,4 +1,7 @@
 import { useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { SettingsHeader } from "../../app/SettingsHeader";
 import { SettingsBody } from "../../app/SettingsSidebar";
 import { translateNotice, useI18n } from "../../i18n";
@@ -37,68 +40,74 @@ export function OperatingModeSettings() {
     void load();
   }, [load]);
   return (
-    <section className="page settings-page">
+    <section className="page settings-page flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <SettingsHeader onBack={() => navigate("settings", "hub")} />
       <SettingsBody>
-        <div className="settings-content operating-mode-settings">
-          <h2>{t("运行模式")}</h2>
-          <p className="settings-note">
+        <div className="settings-content operating-mode-settings min-w-0 space-y-6">
+          <p className="settings-note text-sm leading-relaxed text-muted-foreground">
             {t("当前使用对话聊天模式；第三方聊天（QQ）可在这里开关与配置，任务模式暂未开放。")}
           </p>
           {error && (
-            <p role="alert" className="error">
+            <p role="alert" className="error text-sm text-destructive">
               {translateNotice(error)}
             </p>
           )}
-          <nav className="workspace-anchors" aria-label={t("本页快捷跳转")}>
+          <nav
+            className="workspace-anchors flex flex-wrap gap-2 border-b pb-4 [&>a]:rounded-md [&>a]:px-3 [&>a]:py-2 [&>a]:text-xs [&>a]:text-muted-foreground [&>a:hover]:bg-accent [&>a:hover]:text-accent-foreground"
+            aria-label={t("本页快捷跳转")}
+          >
             <a href="#settings-operating-modes">{t("模式")}</a>
             <a href="#settings-qq">{t("QQ")}</a>
           </nav>
-          <fieldset className="operating-modes" id="settings-operating-modes">
-            <legend className="visually-hidden">{t("运行模式")}</legend>
+          <fieldset className="operating-modes grid gap-3" id="settings-operating-modes">
+            <legend className="visually-hidden sr-only">{t("运行模式")}</legend>
             {MODES.map((mode) => (
-              <button
+              <Button
+                variant="outline"
                 key={mode.title}
                 type="button"
-                className="operating-mode-row"
+                className="operating-mode-row flex h-auto w-full items-center gap-4 whitespace-normal rounded-lg border bg-card p-4 text-left"
                 aria-label={t(mode.title)}
                 aria-pressed={mode.available}
                 disabled={!mode.available}
               >
                 <Icon name={mode.icon} />
-                <span className="operating-mode-name">{t(mode.title)}</span>
-                <span className="operating-mode-status">
+                <span className="operating-mode-name min-w-0 flex-1 text-sm font-medium">
+                  {t(mode.title)}
+                </span>
+                <span className="operating-mode-status flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   {mode.available ? (
                     <>
                       <small>{t("使用中")}</small>
-                      <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="m6 12 4 4 8-8" />
-                      </svg>
+                      <Icon name="check" />
                     </>
                   ) : (
                     <small>{t("未开放")}</small>
                   )}
                 </span>
-              </button>
+              </Button>
             ))}
             {/* 第三方聊天（QQ）：这一行取代原来「主动聊天模式（未开放）」的占位，配置就在下面的
                 「QQ」分组里，所以这一行不跳转，只承载总开关与连接状态（§11.1 的基础启停快捷字段）。 */}
-            <div className="operating-mode-row is-current">
+            <div className="operating-mode-row is-current flex h-auto w-full items-center gap-4 whitespace-normal rounded-lg border bg-card p-4 text-left">
               <Icon name="plug" />
-              <span className="operating-mode-name">{t("第三方聊天（QQ）")}</span>
-              <span className="operating-mode-status">
+              <span className="operating-mode-name min-w-0 flex-1 text-sm font-medium">
+                {t("第三方聊天（QQ）")}
+              </span>
+              <span className="operating-mode-status flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 {settings ? (
                   <>
-                    <label className="hint">
-                      <input
-                        type="checkbox"
+                    <Label className="hint text-sm leading-relaxed text-muted-foreground">
+                      <Checkbox
                         disabled={saving}
                         checked={settings.enabled}
                         aria-label={t("第三方聊天总开关")}
-                        onChange={(event) => void save({ enabled: event.target.checked })}
+                        onCheckedChange={(checkedValue) =>
+                          void save({ enabled: checkedValue === true })
+                        }
                       />
                       {settings.enabled ? t("使用中") : t("未开启")}
-                    </label>
+                    </Label>
                     <small>
                       {connection
                         ? t(connection.phase === "ready" ? "已连接" : "未连接")

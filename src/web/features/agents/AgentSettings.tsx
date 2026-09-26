@@ -1,4 +1,8 @@
 import { useEffect, useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { NativeSelect } from "@/components/ui/native-select";
 import { NavigationConfirm } from "../../app/NavigationConfirm";
 import { SettingsHeader } from "../../app/SettingsHeader";
 import { SettingsBody } from "../../app/SettingsSidebar";
@@ -64,12 +68,15 @@ export function AgentSettings() {
   }, []);
   const chooseAgent = (id: string) => requestAgentNavigation(id);
   const newSessionControl = (
-    <div className="agent-session-choice">
+    <div className="agent-session-choice min-w-0">
       {activeAgents.length === 0 ? (
-        <p className="hint">{t("当前没有启用的助手，新对话无法创建；请先启用或新建助手。")}</p>
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
+          {t("当前没有启用的助手，新对话无法创建；请先启用或新建助手。")}
+        </p>
       ) : (
         <Field label={t("新会话使用的助手")} info={t("仅用于新会话；已有会话绑定不变。")}>
-          <select
+          <NativeSelect
+            className="w-full"
             aria-label={t("新会话使用的助手")}
             value={selectedNewSessionAgentId ?? ""}
             disabled={busy}
@@ -80,23 +87,24 @@ export function AgentSettings() {
                 {agent.name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
       )}
     </div>
   );
   return (
-    <section className="page settings-page">
+    <section className="page settings-page flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <SettingsHeader onBack={closeAgentSettings} />
       <SettingsBody>
-        <div className="agent-settings">
-          <div className="shared-agent-selector agent-selector">
+        <div className="agent-settings min-w-0 space-y-6">
+          <div className="shared-agent-selector agent-selector flex flex-wrap items-start gap-4 rounded-xl border bg-card p-5 [&>svg]:mt-1 [&>svg]:size-5 [&>svg]:text-muted-foreground [&>.field]:min-w-0 [&>.field]:flex-1">
             <Icon name="agent" />
             <Field
               label={t("正在配置的助手")}
               info={t("仅切换设置对象，不改变当前对话或新会话助手。")}
             >
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("正在配置的助手")}
                 aria-controls="superstring-agent-workspace"
                 value={editorDraft ? editorAgentId : ""}
@@ -113,45 +121,53 @@ export function AgentSettings() {
                     {agent.is_active ? "" : t("（停用）")}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
             {error && !editorDraft && agents.length > 0 && (
-              <button type="button" disabled={busy} onClick={() => chooseAgent(agents[0].id)}>
+              <Button
+                variant="outline"
+                type="button"
+                disabled={busy}
+                onClick={() => chooseAgent(agents[0].id)}
+              >
                 {t("重试读取助手")}
-              </button>
+              </Button>
             )}
           </div>
-          <div className="agent-settings-heading">
-            <h2>{t("助手管理")}</h2>
-            <button
+          <div className="agent-settings-heading flex flex-wrap items-start justify-between gap-4">
+            <Button
+              variant="outline"
               type="button"
-              className="new-agent-button"
+              className="new-agent-button gap-2"
               disabled={creating || busy}
               onClick={() => chooseAgent("__new__")}
             >
               <Icon name="plus" />
               {t("新建助手")}
-            </button>
+            </Button>
           </div>
-          <p className="settings-note">{t("用下拉框或列表切换编辑对象。")}</p>
+          <p className="settings-note text-sm leading-relaxed text-muted-foreground">
+            {t("用下拉框或列表切换编辑对象。")}
+          </p>
           <SettingsGroup id="current-assistant" title="当前助手" note="名称、描述与启用状态。">
             {loading && (
-              <p className="hint" role="status">
+              <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
                 {t("正在读取助手配置…")}
               </p>
             )}
-            <fieldset className="agent-operation-fields" disabled={busy}>
+            <fieldset className="agent-operation-fields min-w-0 space-y-6" disabled={busy}>
               <div id="superstring-agent-workspace" aria-busy={busy}>
                 {creating && editorDraft ? (
                   <>
-                    <p className="hint creation-note">
+                    <p className="hint creation-note text-sm leading-relaxed text-muted-foreground">
                       {t("填写名称、选择模型后创建；记忆、上下文与人设可在创建后设置。")}
                     </p>
                     <SectionA draft={editorDraft} patch={patchDraft} />
                     {newSessionControl}
-                    <button
+                    <Button
+                      variant="default"
                       type="button"
-                      className="primary save-section"
+                      className="primary save-section mt-6"
                       disabled={busy}
                       onClick={async () => {
                         if (busy) return;
@@ -164,11 +180,13 @@ export function AgentSettings() {
                       }}
                     >
                       {t(saving ? "创建中…" : "创建助手")}
-                    </button>
+                    </Button>
                   </>
                 ) : !editorDraft || !pageEditor ? (
                   <>
-                    <p className="empty-panel">{t("请选择已有助手，或点击“新建助手”。")}</p>
+                    <p className="empty-panel rounded-xl border border-dashed bg-muted/20 p-8 text-center text-sm text-muted-foreground">
+                      {t("请选择已有助手，或点击“新建助手”。")}
+                    </p>
                     {newSessionControl}
                   </>
                 ) : (
@@ -176,23 +194,30 @@ export function AgentSettings() {
                     page="basic"
                     embedded
                     actions={
-                      <button
+                      <Button
+                        variant="destructive"
                         type="button"
-                        className="danger delete-agent"
+                        className="danger delete-agent mt-4"
                         disabled={!editorAgent || busy}
                         onClick={() => setConfirmSingleDelete(true)}
                       >
                         {t("删除当前 Agent")}
-                      </button>
+                      </Button>
                     }
                   >
-                    <div className="agent-usage-grid">
-                      <div className="agent-model-summary">
-                        <button type="button" onClick={() => openSettingsRoute("models")}>
+                    <div className="agent-usage-grid grid gap-6 lg:grid-cols-2">
+                      <div className="agent-model-summary flex min-w-0 flex-col items-start gap-2">
+                        <Button
+                          variant="outline"
+                          type="button"
+                          onClick={() => openSettingsRoute("models")}
+                        >
                           <Icon name="chip" />
                           {t("设置使用模型")}
-                        </button>
-                        <small className="hint">{t("前往默认模型页设置；本页草稿保留。")}</small>
+                        </Button>
+                        <small className="hint text-sm leading-relaxed text-muted-foreground">
+                          {t("前往默认模型页设置；本页草稿保留。")}
+                        </small>
                       </div>
                       {newSessionControl}
                     </div>
@@ -206,19 +231,21 @@ export function AgentSettings() {
             title="所有助手"
             note="点击助手查看并编辑；勾选框仅用于批量删除。"
           >
-            <ul className="agent-management-list" aria-label={t("助手列表")}>
+            <ul
+              className="agent-management-list divide-y rounded-xl border bg-card"
+              aria-label={t("助手列表")}
+            >
               {agents.map((agent) => (
                 <li
                   key={agent.id}
-                  className={editorAgentId === agent.id ? "is-current" : undefined}
+                  className={`flex items-center gap-3 p-3 ${editorAgentId === agent.id ? "is-current bg-accent/50" : ""}`}
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     aria-label={t("选择助手：{0}", agent.name)}
                     checked={selectedIds.includes(agent.id)}
                     disabled={busy}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
+                    onCheckedChange={(checkedValue) => {
+                      const checked = checkedValue === true;
                       setSelectedBatchAgents((ids) =>
                         checked
                           ? [...ids.filter((id) => id !== agent.id), agent.id]
@@ -226,41 +253,53 @@ export function AgentSettings() {
                       );
                     }}
                   />
-                  <button
+                  <Button
+                    variant="ghost"
                     type="button"
-                    className="agent-management-choice"
+                    className="agent-management-choice h-auto min-w-0 flex-1 flex-col items-start justify-start whitespace-normal px-2 py-3 text-left"
                     aria-label={t("编辑助手：{0}", agent.name)}
                     aria-pressed={editorAgentId === agent.id}
                     aria-controls="superstring-agent-workspace"
                     disabled={busy}
                     onClick={() => chooseAgent(agent.id)}
                   >
-                    <span className="agent-row-heading">
+                    <span className="agent-row-heading flex flex-wrap items-baseline gap-x-3 gap-y-1 [&>strong]:font-semibold">
                       <strong>{agent.name}</strong>
-                      <span className="agent-state">{t(agent.is_active ? "启用" : "停用")}</span>
+                      <span className="agent-state text-xs font-normal text-muted-foreground">
+                        {t(agent.is_active ? "启用" : "停用")}
+                      </span>
                       {editorAgentId === agent.id && (
-                        <span className="agent-state">{t("当前选中")}</span>
+                        <span className="agent-state text-xs font-normal text-muted-foreground">
+                          {t("当前选中")}
+                        </span>
                       )}
                       {selectedNewSessionAgentId === agent.id && (
-                        <span className="agent-state">{t("新会话助手")}</span>
+                        <span className="agent-state text-xs font-normal text-muted-foreground">
+                          {t("新会话助手")}
+                        </span>
                       )}
                     </span>
-                    <span className="agent-row-description">
+                    <span className="agent-row-description mt-1 block whitespace-pre-wrap text-sm font-normal text-muted-foreground">
                       {agent.description || t("暂无描述")}
                     </span>
                     <small>
                       {t("对话模型")}：{agent.model_name}
                     </small>
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
-            {agents.length === 0 && <p className="hint">{t("暂无助手，请先新建助手。")}</p>}
-            <div className="agent-batch-toolbar">
-              <span className="hint" role="status">
+            {agents.length === 0 && (
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
+                {t("暂无助手，请先新建助手。")}
+              </p>
+            )}
+            <div className="agent-batch-toolbar flex flex-wrap items-center gap-2 [&>.hint]:mr-auto">
+              <span className="hint text-sm leading-relaxed text-muted-foreground" role="status">
                 {t("已选 {0} / {1} 个助手", selectedIds.length, agents.length)}
               </span>
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={busy || agents.length === 0}
                 onClick={() =>
@@ -268,17 +307,20 @@ export function AgentSettings() {
                 }
               >
                 {t(allSelected ? "取消全选" : "全选")}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="destructive"
                 type="button"
                 className="danger"
                 disabled={busy || selectedIds.length === 0}
                 onClick={() => setConfirmBatchDelete(true)}
               >
                 {t("删除所选")}
-              </button>
+              </Button>
             </div>
-            <p className="hint">{t("无法删除的助手会保留，并显示原因。")}</p>
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("无法删除的助手会保留，并显示原因。")}
+            </p>
           </SettingsGroup>
           {confirmSingleDelete && editorAgent && (
             <ConfirmDialog
@@ -320,9 +362,9 @@ export function AgentSettings() {
           )}
           {navigationConfirmOpen && <NavigationConfirm />}
           {(feedback || error) && (
-            <div className={error ? "status error" : "status"}>
-              {translateNotice(error ?? feedback)}
-            </div>
+            <Alert variant={error ? "destructive" : "default"} role={error ? "alert" : "status"}>
+              <AlertDescription>{translateNotice(error ?? feedback)}</AlertDescription>
+            </Alert>
           )}
         </div>
       </SettingsBody>

@@ -1,4 +1,10 @@
 import { useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 import type { RetrievalMode } from "../../../shared/contracts";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
@@ -59,7 +65,7 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
     disabled = false,
   ) => (
     <Field label={t(label)}>
-      <input
+      <Input
         aria-label={t(label)}
         type="number"
         value={value}
@@ -75,9 +81,9 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
     number(label, p5[key] as number, (value) => update({ [key]: value }), min, max, step);
   return (
     <>
-      <button type="button" onClick={() => navigate("models")}>
+      <Button variant="outline" type="button" onClick={() => navigate("models")}>
         {t("前往默认模型")}
-      </button>
+      </Button>
       {page === "long-memory" ? (
         <>
           <SettingsGroup
@@ -86,7 +92,7 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
             note="当前助手的网页与 QQ 回复共用；只从各自获准的分区选取，QQ 开口判断仍采用轻量读取。"
           >
             <Field label={t("相关性判断规则")} info={t("模型筛选相关记忆的判断依据。")}>
-              <textarea
+              <Textarea
                 aria-label={t("相关性判断规则")}
                 rows={5}
                 value={draft.memory_retrieval_prompt}
@@ -94,7 +100,8 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
               />
             </Field>
             <Field label={t("默认读取强度")}>
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("默认读取强度")}
                 value={p5.retrieval_mode}
                 onChange={(e) => update({ retrieval_mode: e.target.value as RetrievalMode })}
@@ -113,9 +120,9 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                     {t(label)}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t(
                 "候选目录数：参与筛选的条数；最终记忆数：用于回答的条数；正文预算：所用记忆的总 token 上限。相关性要求按档设置。",
               )}
@@ -139,9 +146,13 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                   key
                 ];
                 return (
-                  <section key={key} aria-label={t(label)}>
+                  <section
+                    key={key}
+                    aria-label={t(label)}
+                    className="space-y-4 rounded-lg border bg-muted/20 p-4 [&>h4]:text-sm [&>h4]:font-semibold"
+                  >
                     <h4>{t(label)}</h4>
-                    <div className="field-grid">
+                    <div className="field-grid grid gap-5 md:grid-cols-2 xl:grid-cols-3">
                       {number(
                         "候选目录数",
                         preset.candidate_limit,
@@ -165,7 +176,7 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                       )}
                     </div>
                     <Field label={t("相关性要求")}>
-                      <input
+                      <Input
                         aria-label={t("相关性要求")}
                         value={preset.relevance_instruction}
                         onChange={(e) => set({ relevance_instruction: e.target.value })}
@@ -184,7 +195,7 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
               label={t("整理规则")}
               info={t("需长期保留的信息，以及名称、简介、标签和正文的生成要求。")}
             >
-              <textarea
+              <Textarea
                 aria-label={t("整理规则")}
                 rows={5}
                 value={draft.memory_consolidation_prompt}
@@ -192,7 +203,7 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
               />
             </Field>
             <Field label={t("补充整理要求（可留空）")}>
-              <textarea
+              <Textarea
                 aria-label={t("补充整理要求（可留空）")}
                 rows={4}
                 value={draft.memory_consolidation_additional_instructions}
@@ -217,9 +228,11 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
             title="自动整理"
             note="这里设置网页会话的触发频率；QQ 每个群或私聊的条数在上方记忆分区内设置。"
           >
-            <p className="hint">{t("自动整理选项需保存当前页才生效。")}</p>
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("自动整理选项需保存当前页才生效。")}
+            </p>
             {qqBound && (
-              <p className="hint">
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
                 {t(
                   "这个设置仅对网页端会话生效；QQ 里的记忆整理按会话单独设置（攒够多少条自动整理、立即整理）。",
                 )}
@@ -228,15 +241,17 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
             )}
             {editor.policyDraft ? (
               <>
-                <label className="check">
-                  <input
-                    type="checkbox"
+                <Label className="check flex items-start gap-3 text-sm [&>span]:grid [&>span]:gap-1 [&_small]:text-muted-foreground [&_small]:font-normal">
+                  <Checkbox
+                    aria-label={t("启用自动整理")}
                     checked={editor.policyDraft.auto_enabled}
-                    onChange={(e) => patchPolicy({ auto_enabled: e.target.checked })}
+                    onCheckedChange={(checkedValue) =>
+                      patchPolicy({ auto_enabled: checkedValue === true })
+                    }
                   />
                   <span>{t("启用自动整理")}</span>
-                </label>
-                <div className="field-grid two">
+                </Label>
+                <div className="field-grid two grid gap-5 md:grid-cols-2">
                   {number(
                     "触发间隔（完整轮数）",
                     editor.policyDraft.every_turns,
@@ -247,27 +262,29 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                 </div>
               </>
             ) : (
-              <button type="button" onClick={() => void reload()}>
+              <Button variant="outline" type="button" onClick={() => void reload()}>
                 {t("重试读取整理策略")}
-              </button>
+              </Button>
             )}
           </SettingsGroup>
           {(p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body") && (
             <section id="settings-catalog-limits" aria-label={t("全量读取细节")}>
               <h4>{t("全量读取细节")}</h4>
-              <p className="hint">
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
                 {t("通常无需调整；仅用于全目录或全部正文模式，不影响普通读取与上下文压缩。")}
               </p>
-              <div className="field-grid two">
+              <div className="field-grid two grid gap-5 md:grid-cols-2">
                 <div>
                   {numericP5("max_catalog_batches", "最多检查多少批记忆", 1, 10000)}
-                  <p className="hint">
+                  <p className="hint text-sm leading-relaxed text-muted-foreground">
                     {t("默认 100 批；达到上限仍未读完会报错，不跳过剩余记忆。")}
                   </p>
                 </div>
                 <div>
                   {numericP5("catalog_batch_size", "每批检查多少条", 1, 10000)}
-                  <p className="hint">{t("默认每批 30 条；限制每次检查量，不是最终使用条数。")}</p>
+                  <p className="hint text-sm leading-relaxed text-muted-foreground">
+                    {t("默认每批 30 条；限制每次检查量，不是最终使用条数。")}
+                  </p>
                 </div>
               </div>
             </section>
@@ -275,12 +292,13 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
         </>
       ) : (
         <>
-          <p className="hint">
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
             {t("默认跟随模型加载容量。保存后从下一轮生效，重试沿用原轮预算。")}
           </p>
           <SettingsGroup id="settings-budget" title="容量与预算">
             <Field label={t("聊天上下文预算")}>
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("聊天上下文预算")}
                 value={p5.context_window === null ? "follow" : "custom"}
                 onChange={(e) =>
@@ -291,7 +309,7 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
               >
                 <option value="follow">{t("跟随模型实际容量（推荐）")}</option>
                 <option value="custom">{t("自定义预算")}</option>
-              </select>
+              </NativeSelect>
             </Field>
             {number(
               t("自定义上下文预算（实际上限：{0}）", capacity ?? t("未知")),
@@ -302,19 +320,20 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
               1,
               p5.context_window === null,
             )}
-            <div className="field-grid two">
+            <div className="field-grid two grid gap-5 md:grid-cols-2">
               {numericP5("max_output_tokens", "回复预留（token）", 1, 1048576)}
               {numericP5("safety_margin_ratio", "安全余量比例", 0, 0.99, 0.01)}
             </div>
             <Field label={t("容量预览（只读）")}>
-              <textarea
+              <Textarea
                 aria-label={t("容量预览（只读）")}
                 readOnly
                 rows={3}
                 value={preview.split("\n").map(translateNotice).join("\n")}
               />
             </Field>
-            <button
+            <Button
+              variant="outline"
               type="button"
               onClick={() =>
                 void refresh([
@@ -325,27 +344,31 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
               }
             >
               {t("刷新容量预览")}
-            </button>
+            </Button>
           </SettingsGroup>
           <SettingsGroup id="settings-compression" title="压缩与读取摘要策略">
-            <label className="check">
-              <input
-                type="checkbox"
+            <Label className="check flex items-start gap-3 text-sm [&>span]:grid [&>span]:gap-1 [&_small]:text-muted-foreground [&_small]:font-normal">
+              <Checkbox
+                aria-label={t("启用上下文压缩")}
                 checked={p5.compression_enabled}
-                onChange={(e) => update({ compression_enabled: e.target.checked })}
+                onCheckedChange={(checkedValue) =>
+                  update({ compression_enabled: checkedValue === true })
+                }
               />
               <span>{t("启用上下文压缩")}</span>
-            </label>
-            <p className="hint">{t("原消息仍保留，并记录摘要来源。")}</p>
-            <div className="field-grid two">
+            </Label>
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("原消息仍保留，并记录摘要来源。")}
+            </p>
+            <div className="field-grid two grid gap-5 md:grid-cols-2">
               {numericP5("compression_trigger_ratio", "压缩触发比例", 0.01, 1, 0.01)}
               {numericP5("recent_turns", "压缩时保留原文轮数", 1, 10000)}
             </div>
-            <div className="field-grid">
+            <div className="field-grid grid gap-5 md:grid-cols-2 xl:grid-cols-3">
               {numericP5("summary_target_tokens", "压缩摘要目标(token)", 1, 1048576)}
               {numericP5("summary_max_tokens", "压缩摘要硬上限(token)", 1, 1048576)}
               <Field label={t("单次读取摘要上限(token)")}>
-                <input
+                <Input
                   aria-label={t("单次读取摘要上限(token)")}
                   type="number"
                   min={1}
@@ -361,17 +384,19 @@ export function MemoryPageFields({ page }: { page: "long-memory" | "context" }) 
                 />
               </Field>
             </div>
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t(
                 "目标与硬上限控制摘要生成；读取上限控制本轮用量，留空继承硬上限。超额时临时再压缩，不截断或覆盖已存摘要。",
               )}
             </p>
             {numericP5("auxiliary_timeout_seconds", "压缩任务超时（秒）", 0.1, 3600, 0.1)}
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t("默认 300 秒，已有自定义值保留；同时用于压缩、记忆筛选与模型容量核查。")}
             </p>
           </SettingsGroup>
-          <p className="hint">{t("预算为保守估算；摘要可能损失细节，原文与来源保留。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("预算为保守估算；摘要可能损失细节，原文与来源保留。")}
+          </p>
         </>
       )}
     </>

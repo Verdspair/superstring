@@ -1,3 +1,5 @@
+import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
 // QQ 判断模型（0038，用户 2026-09-25）：判断开口兴趣打分用哪一个模型。
 //
 // 它出现在「快捷管理 → 默认模型」页（用户要求"判断开口兴趣打分的模型也加到这个界面里"），但存在
@@ -37,15 +39,20 @@ export function QqJudgementModelPage() {
     return (
       <SettingsGroup id="qq-judgement-model" title="QQ 判断模型" note={note}>
         {loading ? (
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t("正在读取 QQ 设置…")}
           </p>
         ) : (
-          <p className="hint">
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
             {t("读取 QQ 设置失败：{0}", translateNotice(error ?? t("未连接")))}
-            <button type="button" className="link-button" onClick={() => void load()}>
+            <Button
+              variant="link"
+              type="button"
+              className="link-button h-auto p-0 text-sm"
+              onClick={() => void load()}
+            >
               {t("重试读取 QQ 设置")}
-            </button>
+            </Button>
           </p>
         )}
       </SettingsGroup>
@@ -59,7 +66,8 @@ export function QqJudgementModelPage() {
         label="判断开口兴趣打分模型"
         info="未选择＝跟随每间会话绑定助手的对话模型；改选立即保存，所有群与私聊下一轮判断起生效。"
       >
-        <select
+        <NativeSelect
+          className="w-full"
           aria-label={t("判断开口兴趣打分模型")}
           value={value}
           disabled={saving || !settings.enabled}
@@ -71,7 +79,7 @@ export function QqJudgementModelPage() {
               {modelOptionLabel(name, availability, t)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
       <ModelUseHint
         purpose="qq_judgement"
@@ -79,19 +87,20 @@ export function QqJudgementModelPage() {
         saved={settings.judgement_model_name}
       />
       {settings.enabled ? (
-        <p className="hint" role="status">
+        <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
           {t("当前判断模型：{0}", value === "" ? t("跟随对话模型") : value)}
         </p>
       ) : (
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t("第三方聊天总开关关着，判断不会运行；这个选择先留着，打开开关后生效。")}
-          <button
+          <Button
+            variant="link"
             type="button"
-            className="link-button"
+            className="link-button h-auto p-0 text-sm"
             onClick={() => requestPageNavigation("settings", "operating-mode")}
           >
             {t("前往运行模式")}
-          </button>
+          </Button>
         </p>
       )}
     </SettingsGroup>

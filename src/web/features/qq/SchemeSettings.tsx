@@ -1,3 +1,10 @@
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 import { useQqInput } from "./use-qq-input";
 // QQ 聊天方案页 (§5.2's field groups, §11.2's shared draft; ADR0018 P5f).
 //
@@ -440,7 +447,7 @@ export function SchemeSettings() {
         info={row.hint}
         tag={changedKeys.has(field) ? t("已修改") : undefined}
       >
-        <input
+        <Input
           type="number"
           min={row.min}
           max={row.max}
@@ -468,7 +475,7 @@ export function SchemeSettings() {
           }}
         />
         {error && (
-          <small className="error" role="alert">
+          <small className="error text-sm text-destructive" role="alert">
             {error}
           </small>
         )}
@@ -478,24 +485,30 @@ export function SchemeSettings() {
 
   return (
     <>
-      <p className="settings-note">
+      <p className="settings-note text-sm leading-relaxed text-muted-foreground">
         {t("QQ 全局方案，不随当前助手切换；群与私聊绑定方案后在「接入 → 运行模式与连接」改绑。")}
       </p>
       {loading && <p role="status">{t("正在读取聊天方案…")}</p>}
       {error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error text-sm text-destructive">
           {translateNotice(error)}
         </p>
       )}
       {feedback && (
-        <p className="hint workspace-feedback" role="status">
+        <p
+          className="hint workspace-feedback text-sm leading-relaxed text-muted-foreground"
+          role="status"
+        >
           {translateNotice(feedback)}
         </p>
       )}
 
       {editor && (
         <>
-          <nav className="workspace-anchors" aria-label={t("方案分区")}>
+          <nav
+            className="workspace-anchors flex flex-wrap gap-2 border-b pb-4 [&>a]:rounded-md [&>a]:px-3 [&>a]:py-2 [&>a]:text-xs [&>a]:text-muted-foreground [&>a:hover]:bg-accent [&>a:hover]:text-accent-foreground"
+            aria-label={t("方案分区")}
+          >
             {[
               ["pick", "方案"],
               ["speech", "何时观察与发言"],
@@ -512,7 +525,10 @@ export function SchemeSettings() {
               </a>
             ))}
           </nav>
-          <nav className="workspace-anchors" aria-label={t("提示词索引")}>
+          <nav
+            className="workspace-anchors flex flex-wrap gap-2 border-b pb-4 [&>a]:rounded-md [&>a]:px-3 [&>a]:py-2 [&>a]:text-xs [&>a]:text-muted-foreground [&>a:hover]:bg-accent [&>a:hover]:text-accent-foreground"
+            aria-label={t("提示词索引")}
+          >
             <span>{t("提示词索引")}：</span>
             {PROMPTS.map((row) => (
               <a key={row.key} href={`#qq-prompt-${row.key}`}>
@@ -529,7 +545,8 @@ export function SchemeSettings() {
         note="方案是 QQ 全局的命名资源，可以跨助手复用；这里改的是它本身，改绑会话在「接入 → 运行模式与连接」。"
       >
         <Field label="当前方案" info="切换方案会放弃未保存的改动；有改动时会先问一次。">
-          <select
+          <NativeSelect
+            className="w-full"
             aria-label={t("当前方案")}
             disabled={saving}
             value={editor?.source.id ?? ""}
@@ -547,12 +564,12 @@ export function SchemeSettings() {
                 {row.name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
         {editor ? (
           <>
             <Field label="方案名称" info="方案的名字，也是你在绑定会话时看到的那一个。">
-              <input
+              <Input
                 value={editor.name}
                 disabled={saving}
                 aria-label={t("方案名称")}
@@ -560,14 +577,14 @@ export function SchemeSettings() {
               />
             </Field>
             <Field label="说明" info="只给你自己看。">
-              <input
+              <Input
                 value={editor.description}
                 disabled={saving}
                 aria-label={t("说明")}
                 onChange={(event) => patch({ description: event.target.value })}
               />
             </Field>
-            <p className="hint" role="status">
+            <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
               {usage?.schemeId === editor.source.id
                 ? `${t("当前被")}${usage.bindings}${t("个会话使用")}${t("；改绑在「接入 → 运行模式与连接」。")}`
                 : t("正在读取使用情况…")}
@@ -578,14 +595,15 @@ export function SchemeSettings() {
               label="另存为新方案"
               info="把当前草稿存成新方案，不动原来那个；有未保存的改动时会一起存进去。"
             >
-              <input
+              <Input
                 value={copyName}
                 disabled={saving || !editor}
                 aria-label={t("另存为新方案")}
                 placeholder={t("新方案名称")}
                 onChange={(event) => setCopyName(event.target.value)}
               />
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving || !editor || copyName.trim() === ""}
                 onClick={() => {
@@ -603,17 +621,18 @@ export function SchemeSettings() {
                 }}
               >
                 {t("另存")}
-              </button>
+              </Button>
             </Field>
             <Field label="新建方案" info="新方案默认所有发言触发都是关闭的。">
-              <input
+              <Input
                 value={newName}
                 disabled={saving}
                 aria-label={t("新建方案")}
                 placeholder={t("方案名称")}
                 onChange={(event) => setNewName(event.target.value)}
               />
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving || newName.trim() === ""}
                 onClick={() => {
@@ -631,10 +650,11 @@ export function SchemeSettings() {
                 }}
               >
                 {t("新建")}
-              </button>
+              </Button>
             </Field>
-            <div className="qq-scheme-danger">
-              <button
+            <div className="qq-scheme-danger border-t pt-5">
+              <Button
+                variant="destructive"
                 type="button"
                 className="danger"
                 disabled={saving}
@@ -652,11 +672,13 @@ export function SchemeSettings() {
                 }}
               >
                 {t("删除方案")}
-              </button>
+              </Button>
             </div>
           </>
         ) : (
-          <p className="hint">{t("还没有任何方案；新建一个才能配置。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("还没有任何方案；新建一个才能配置。")}
+          </p>
         )}
       </SettingsGroup>
 
@@ -667,45 +689,45 @@ export function SchemeSettings() {
             title="何时观察与发言"
             note="触发开关决定哪几种发言会出现；节奏参数只约束主动发言，被叫到时的直接回应不受限。"
           >
-            <div className="qq-scheme-checks">
+            <div className="qq-scheme-checks space-y-4 [&>label]:grid [&>label]:grid-cols-[auto_minmax(0,1fr)] [&>label]:items-center [&>label]:gap-x-3 [&>label]:gap-y-1 [&>label]:text-sm [&>label>small]:col-start-2 [&>label>small]:text-xs [&>label>small]:text-muted-foreground">
               {TRIGGERS.map((row) => (
-                <label key={row.key}>
-                  <input
-                    type="checkbox"
+                <Label key={row.key}>
+                  <Checkbox
                     disabled={saving}
                     checked={editor.triggers[row.key]}
                     aria-label={t(row.label)}
-                    onChange={(event) =>
-                      void patchGroup("triggers", { [row.key]: event.target.checked })
+                    onCheckedChange={(checkedValue) =>
+                      void patchGroup("triggers", { [row.key]: checkedValue === true })
                     }
                   />
                   <span>{t(row.label)}</span>
-                  <small className="hint">{t(row.hint)}</small>
-                </label>
+                  <small className="hint text-sm leading-relaxed text-muted-foreground">
+                    {t(row.hint)}
+                  </small>
+                </Label>
               ))}
             </div>
           </SettingsGroup>
           <SettingsGroup id="qq-scheme-rhythm" title="发言节奏">
-            <div className="qq-scheme-grid">
+            <div className="qq-scheme-grid grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {Object.entries(RHYTHM_KEYS).map(([key, row]) =>
                 numberField("rhythm", { ...row, key }),
               )}
             </div>
           </SettingsGroup>
           <SettingsGroup id="qq-scheme-hours" title="主动发言时段">
-            <div className="qq-scheme-grid">
+            <div className="qq-scheme-grid grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               <Field
                 label="允许时段"
                 info="默认关闭＝不限；开启后只在这段时间内主动发言。"
                 tag={changedKeys.has("rhythm.active_hours_enabled") ? t("已修改") : undefined}
               >
-                <input
-                  type="checkbox"
+                <Checkbox
                   disabled={saving}
                   checked={editor.rhythm.active_hours_enabled}
                   aria-label={t("允许时段")}
-                  onChange={(event) =>
-                    void patchGroup("rhythm", { active_hours_enabled: event.target.checked })
+                  onCheckedChange={(checkedValue) =>
+                    void patchGroup("rhythm", { active_hours_enabled: checkedValue === true })
                   }
                 />
               </Field>
@@ -725,7 +747,7 @@ export function SchemeSettings() {
                     }
                     tag={changedKeys.has(field) ? t("已修改") : undefined}
                   >
-                    <input
+                    <Input
                       type="time"
                       disabled={saving || !editor.rhythm.active_hours_enabled}
                       value={text}
@@ -761,7 +783,7 @@ export function SchemeSettings() {
                 info={row.hint}
                 tag={changedKeys.has(`prompts.${row.key}`) ? t("已修改") : undefined}
               >
-                <textarea
+                <Textarea
                   id={`qq-prompt-${row.key}`}
                   rows={row.key === "scene" ? 6 : 4}
                   disabled={saving}
@@ -774,24 +796,23 @@ export function SchemeSettings() {
           </SettingsGroup>
           <SettingsGroup id="qq-scheme-output" title="输出与受众">
             {/* 用户 2026-09-25：回复任务文案由这个开关选，开关下面就是当前生效的那一份（只读）。 */}
-            <div className="qq-scheme-checks">
-              <label>
-                <input
-                  type="checkbox"
+            <div className="qq-scheme-checks space-y-4 [&>label]:grid [&>label]:grid-cols-[auto_minmax(0,1fr)] [&>label]:items-center [&>label]:gap-x-3 [&>label]:gap-y-1 [&>label]:text-sm [&>label>small]:col-start-2 [&>label>small]:text-xs [&>label>small]:text-muted-foreground">
+              <Label>
+                <Checkbox
                   disabled={saving}
                   checked={editor.reply.split_by_speaker}
                   aria-label={t("按发言人分开回答")}
-                  onChange={(event) =>
-                    void patchGroup("reply", { split_by_speaker: event.target.checked })
+                  onCheckedChange={(checkedValue) =>
+                    void patchGroup("reply", { split_by_speaker: checkedValue === true })
                   }
                 />
                 <span>{t("按发言人分开回答")}</span>
-                <small className="hint">
+                <small className="hint text-sm leading-relaxed text-muted-foreground">
                   {t(
                     "不同人发的话分开成各自的任务来跑：每人各自判断一次、各写一条回复，并 @ 到对方；同一个人不分条。关掉就用下面那份默认文案。",
                   )}
                 </small>
-              </label>
+              </Label>
             </div>
             <Field
               label="回复任务"
@@ -800,9 +821,9 @@ export function SchemeSettings() {
               )}
               tag={changedKeys.has("reply.split_by_speaker") ? t("已修改") : undefined}
             >
-              <textarea
+              <Textarea
                 id="qq-prompt-reply"
-                className="readonly-field"
+                className="readonly-field bg-muted/40 text-muted-foreground"
                 rows={4}
                 readOnly
                 disabled={saving}
@@ -818,9 +839,12 @@ export function SchemeSettings() {
             note="这里只配置近期原文和输出预留；长期记忆的读取与整理规则统一在「资料 → 长期记忆」管理。"
           >
             {(["判断", "回复"] as const).map((part) => (
-              <div className="qq-scheme-part" key={part}>
+              <div
+                className="qq-scheme-part space-y-4 [&>h4]:text-sm [&>h4]:font-semibold"
+                key={part}
+              >
                 <h4>{t(part)}</h4>
-                <div className="qq-scheme-grid">
+                <div className="qq-scheme-grid grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {CONTEXT.filter((row) => row.part === part).map((row) =>
                     numberField("context", row),
                   )}
@@ -830,15 +854,16 @@ export function SchemeSettings() {
                 </div>
               </div>
             ))}
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t("QQ 记忆按助手与会话隔离，本方案不改变记忆范围；")}
-              <button
+              <Button
+                variant="link"
                 type="button"
-                className="link-button"
+                className="link-button h-auto p-0 text-sm"
                 onClick={() => openRoute("long-memory")}
               >
                 {t("前往长期记忆")}
-              </button>
+              </Button>
             </p>
           </SettingsGroup>
 
@@ -847,15 +872,16 @@ export function SchemeSettings() {
             title="知识库使用"
             note="QQ 里读取知识库仍受当前助手的授权约束：方案只能沿用，不能扩大权限。"
           >
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t("资料与授权在「资料 → 知识库配置」里管理；这里没有独立的开关。")}
-              <button
+              <Button
+                variant="link"
                 type="button"
-                className="link-button"
+                className="link-button h-auto p-0 text-sm"
                 onClick={() => openRoute("knowledge-config")}
               >
                 {t("前往知识库配置")}
-              </button>
+              </Button>
             </p>
           </SettingsGroup>
 
@@ -864,7 +890,7 @@ export function SchemeSettings() {
             title="媒体与表达"
             note="表情的选择、防重复与授权集合；媒体理解用哪两个模型在默认模型页选择。"
           >
-            <div className="qq-scheme-grid">
+            <div className="qq-scheme-grid grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {EXPRESSION.map((row) =>
                 // The value comes from the row's OWN key. It used to be hard-coded to
                 // `max_sticker_count` while that was the only rhythm-group row here, which meant a
@@ -877,25 +903,28 @@ export function SchemeSettings() {
               info="方案授权的是集合；新增并启用的素材进入已授权集合后即可被选用，不必改方案。"
             >
               {collections.length === 0 ? (
-                <p className="hint">{t("还没有素材集合；先到表情素材页建一个。")}</p>
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
+                  {t("还没有素材集合；先到表情素材页建一个。")}
+                </p>
               ) : (
-                <div className="qq-sticker-memberships">
+                <div className="qq-sticker-memberships flex flex-wrap gap-3 [&>label]:flex [&>label]:items-center [&>label]:gap-2 [&>label]:text-sm">
                   {collections.map((collection) => (
-                    <label key={collection.id}>
-                      <input
-                        type="checkbox"
+                    <Label key={collection.id}>
+                      <Checkbox
                         disabled={saving}
+                        aria-label={collection.name}
                         checked={editor.stickerCollectionIds.includes(collection.id)}
-                        onChange={(event) =>
+                        onCheckedChange={(checkedValue) =>
                           patch({
-                            stickerCollectionIds: event.target.checked
-                              ? [...editor.stickerCollectionIds, collection.id]
-                              : editor.stickerCollectionIds.filter((id) => id !== collection.id),
+                            stickerCollectionIds:
+                              checkedValue === true
+                                ? [...editor.stickerCollectionIds, collection.id]
+                                : editor.stickerCollectionIds.filter((id) => id !== collection.id),
                           })
                         }
                       />
                       {collection.name}
-                    </label>
+                    </Label>
                   ))}
                 </div>
               )}
@@ -907,7 +936,7 @@ export function SchemeSettings() {
                 info={row.hint}
                 tag={changedKeys.has(`prompts.${row.key}`) ? t("已修改") : undefined}
               >
-                <textarea
+                <Textarea
                   id={`qq-prompt-${row.key}`}
                   rows={4}
                   disabled={saving}
@@ -919,16 +948,24 @@ export function SchemeSettings() {
                 />
               </Field>
             ))}
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t("媒体理解用哪个视觉或转写模型在默认模型页选择。")}
-              <button type="button" className="link-button" onClick={() => openRoute("management")}>
+              <Button
+                variant="link"
+                type="button"
+                className="link-button h-auto p-0 text-sm"
+                onClick={() => openRoute("management")}
+              >
                 {t("前往默认模型")}
-              </button>
+              </Button>
             </p>
           </SettingsGroup>
 
           {showPreview && changes.length > 0 && (
-            <div className="qq-scheme-preview" id="qq-scheme-changes">
+            <Card
+              className="qq-scheme-preview gap-3 bg-muted/30 p-4 [&_h4]:text-sm [&_h4]:font-semibold [&_h5]:mt-4 [&_h5]:text-sm [&_h5]:font-medium [&_ul]:list-disc [&_ul]:space-y-1 [&_ul]:pl-5 [&_ul]:text-xs [&_ul]:text-muted-foreground"
+              id="qq-scheme-changes"
+            >
               <h4>{t("将要保存的变更")}</h4>
               {PREVIEW_SECTIONS.map((section) => {
                 const rows = changes.filter((change) => sectionOf(change.field) === section);
@@ -957,20 +994,22 @@ export function SchemeSettings() {
                     </li>
                   ))}
               </ul>
-            </div>
+            </Card>
           )}
 
           {/* 底部保存条（用户第 3 项）：日常动作只有一个地方，滑到哪都在。 */}
-          <div className="qq-scheme-savebar">
-            <button
+          <div className="qq-scheme-savebar sticky bottom-0 z-10 flex flex-wrap items-center gap-3 rounded-xl border bg-background p-4 shadow-sm [&>.hint]:flex-1">
+            <Button
+              variant="default"
               type="button"
               className="primary"
               disabled={saving || !dirty || invalidCount > 0}
               onClick={() => void save()}
             >
               {t(saving ? "正在保存方案…" : "保存方案")}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               disabled={saving || (!dirty && invalidCount === 0)}
               onClick={() => {
@@ -979,23 +1018,24 @@ export function SchemeSettings() {
               }}
             >
               {t("放弃改动")}
-            </button>
-            <span className="hint" role="status">
+            </Button>
+            <span className="hint text-sm leading-relaxed text-muted-foreground" role="status">
               {invalidCount > 0
                 ? t("有 {0} 处输入还需要改对，改好才能保存。", invalidCount)
                 : dirty
                   ? t("共 {0} 项改动尚未保存。", changes.length)
                   : t("当前方案已保存。")}
             </span>
-            <button
+            <Button
+              variant="link"
               type="button"
-              className="link-button"
+              className="link-button h-auto p-0 text-sm"
               aria-expanded={showPreview}
               aria-controls="qq-scheme-changes"
               onClick={() => setShowPreview((value) => !value)}
             >
               {t(showPreview ? "隐藏变更预览" : "显示变更预览")}
-            </button>
+            </Button>
           </div>
         </>
       )}

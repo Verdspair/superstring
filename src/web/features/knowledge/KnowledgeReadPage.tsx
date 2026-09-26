@@ -1,4 +1,9 @@
 import { useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { KNOWLEDGE_PLANNED_FIELDS } from "../../app/settings-routes";
 import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
@@ -25,42 +30,45 @@ export function KnowledgeReadPage() {
   const invalid =
     current?.draft.document_ids.filter((id) => !current.documents.some((d) => d.id === id)) ?? [];
   return (
-    <div className="page-editor knowledge-read-page">
+    <div className="page-editor knowledge-read-page min-w-0 space-y-6">
       {agentId === "__new__" ? (
-        <p className="hint">{t("选择已有助手，或前往助手管理新建。")}</p>
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
+          {t("选择已有助手，或前往助手管理新建。")}
+        </p>
       ) : !current || !draft ? (
-        <button type="button" disabled={busy} onClick={() => void load()}>
+        <Button variant="outline" type="button" disabled={busy} onClick={() => void load()}>
           {t("重试读取知识库配置")}
-        </button>
+        </Button>
       ) : (
         <>
-          <fieldset disabled={busy}>
+          <fieldset className="min-w-0 space-y-5" disabled={busy}>
             <section
               id="knowledge-read"
-              className="knowledge-read-toggle"
+              className="knowledge-read-toggle mb-4"
               aria-label={t("知识库读取开关")}
             >
-              <label className="check">
-                <input
-                  type="checkbox"
+              <Label className="check flex items-start gap-3 text-sm [&>span]:grid [&>span]:gap-1 [&_small]:text-muted-foreground [&_small]:font-normal">
+                <Checkbox
+                  aria-label={t("允许当前助手读取知识库")}
                   checked={draft.enabled}
-                  onChange={(e) => patch({ enabled: e.target.checked })}
+                  onCheckedChange={(checkedValue) => patch({ enabled: checkedValue === true })}
                 />
                 <span>{t("允许当前助手读取知识库")}</span>
-              </label>
-              <p className="hint">
+              </Label>
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
                 {t("关闭仅停止当前助手读取；授权、全局整理、预算与范围不变。")}
               </p>
             </section>
-            <div className="knowledge-rule-grid">
+            <div className="knowledge-rule-grid grid gap-6 lg:grid-cols-2">
               <section
                 id="knowledge-budget"
-                className="knowledge-subsection"
+                className="knowledge-subsection min-w-0 space-y-4 [&>h4]:text-sm [&>h4]:font-semibold"
                 aria-label={t("读取预算")}
               >
                 <h4>{t("读取预算")}</h4>
                 <Field label={t("预算来源")}>
-                  <select
+                  <NativeSelect
+                    className="w-full"
                     aria-label={t("预算来源")}
                     value={draft.context_budget === null ? "global" : "assistant"}
                     onChange={(e) =>
@@ -71,11 +79,11 @@ export function KnowledgeReadPage() {
                   >
                     <option value="global">{t("继承全局预算")}</option>
                     <option value="assistant">{t("为当前助手单独设置")}</option>
-                  </select>
+                  </NativeSelect>
                 </Field>
                 {draft.context_budget !== null && (
                   <Field label={t("助手读取预算")}>
-                    <input
+                    <Input
                       aria-label={t("助手读取预算")}
                       type="number"
                       min={1}
@@ -85,19 +93,22 @@ export function KnowledgeReadPage() {
                     />
                   </Field>
                 )}
-                <p className="hint">
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
                   {t("全局预算：{0}（按 UTF-8 字节近似 token）。", current.globalBudget)}
                 </p>
-                <p className="hint">{t("可高于全局默认值，但不超过对话剩余上下文。")}</p>
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
+                  {t("可高于全局默认值，但不超过对话剩余上下文。")}
+                </p>
               </section>
               <section
                 id="knowledge-scope"
-                className="knowledge-subsection"
+                className="knowledge-subsection min-w-0 space-y-4 [&>h4]:text-sm [&>h4]:font-semibold"
                 aria-label={t("读取范围")}
               >
                 <h4>{t("读取范围")}</h4>
                 <Field label={t("资料范围")}>
-                  <select
+                  <NativeSelect
+                    className="w-full"
                     aria-label={t("资料范围")}
                     value={draft.scope}
                     onChange={(e) =>
@@ -108,9 +119,9 @@ export function KnowledgeReadPage() {
                   >
                     <option value="all">{t("全部已授权资料")}</option>
                     <option value="selected">{t("仅指定资料")}</option>
-                  </select>
+                  </NativeSelect>
                 </Field>
-                <p className="hint">
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
                   {t(
                     draft.scope === "all"
                       ? "全部模式包含以后新增的授权资料；此页不会授予新权限。"
@@ -120,42 +131,51 @@ export function KnowledgeReadPage() {
                 {draft.scope === "selected" && (
                   <>
                     {!current.documents.length && (
-                      <p className="hint">{t("当前助手暂无已授权资料。")}</p>
+                      <p className="hint text-sm leading-relaxed text-muted-foreground">
+                        {t("当前助手暂无已授权资料。")}
+                      </p>
                     )}
-                    <div className="knowledge-read-options">
+                    <div className="knowledge-read-options space-y-3">
                       {current.documents.map((document) => (
-                        <label className="check" key={document.id}>
-                          <input
-                            type="checkbox"
+                        <Label
+                          className="check flex items-start gap-3 text-sm [&>span]:grid [&>span]:gap-1 [&_small]:text-muted-foreground [&_small]:font-normal"
+                          key={document.id}
+                        >
+                          <Checkbox
+                            aria-label={document.name}
                             checked={draft.document_ids.includes(document.id)}
-                            onChange={(e) =>
+                            onCheckedChange={(checkedValue) =>
                               patch({
-                                document_ids: e.target.checked
-                                  ? [...draft.document_ids, document.id]
-                                  : draft.document_ids.filter((id) => id !== document.id),
+                                document_ids:
+                                  checkedValue === true
+                                    ? [...draft.document_ids, document.id]
+                                    : draft.document_ids.filter((id) => id !== document.id),
                               })
                             }
                           />
                           <span>{document.name}</span>
-                        </label>
+                        </Label>
                       ))}
                     </div>
                     {invalid.length > 0 && (
                       <div role="alert">
                         <p>{t("部分指定资料已失效，请移除后保存；不会自动扩大读取范围。")}</p>
                         {invalid.map((id) => (
-                          <label className="check" key={id}>
-                            <input
-                              type="checkbox"
+                          <Label
+                            className="check flex items-start gap-3 text-sm [&>span]:grid [&>span]:gap-1 [&_small]:text-muted-foreground [&_small]:font-normal"
+                            key={id}
+                          >
+                            <Checkbox
+                              aria-label={t("已失效资料：{0}", id)}
                               checked
-                              onChange={() =>
+                              onCheckedChange={() =>
                                 patch({
                                   document_ids: draft.document_ids.filter((item) => item !== id),
                                 })
                               }
                             />
                             <span>{t("已失效资料：{0}", id)}</span>
-                          </label>
+                          </Label>
                         ))}
                       </div>
                     )}
@@ -163,22 +183,25 @@ export function KnowledgeReadPage() {
                 )}
               </section>
             </div>
-            <div className="workspace-links scope-save-row">
-              <button
+            <div className="workspace-links scope-save-row flex flex-wrap items-center gap-3 border-t pt-4">
+              <Button
+                variant="default"
                 className="primary"
                 type="button"
                 disabled={!knowledgeReadDirty(current)}
                 onClick={() => void save()}
               >
                 {t(busy ? "正在保存页面…" : "保存助手读取配置")}
-              </button>
-              <button type="button" onClick={() => void refresh()}>
+              </Button>
+              <Button variant="outline" type="button" onClick={() => void refresh()}>
                 {t("刷新基线与授权（保留草稿）")}
-              </button>
+              </Button>
             </div>
-            <p className="hint">{t("刷新不提交草稿；冲突后请核对最新值再保存。")}</p>
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("刷新不提交草稿；冲突后请核对最新值再保存。")}
+            </p>
             {knowledgeReadDirty(current) && (
-              <p className="hint">
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
                 {t(
                   "保存基线：修订 {0}；读取 {1}；预算 {2}；范围 {3}。",
                   current.source.revision,
@@ -193,12 +216,12 @@ export function KnowledgeReadPage() {
               </p>
             )}
           </fieldset>
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t(knowledgeReadDirty(current) ? "当前页有未保存修改" : "当前页已保存")}
           </p>
         </>
       )}
-      <p className="hint knowledge-planned">
+      <p className="hint knowledge-planned text-sm leading-relaxed text-muted-foreground">
         {t("尚未开放的读取策略")}：{KNOWLEDGE_PLANNED_FIELDS.map((label) => t(label)).join(" / ")}
       </p>
     </div>

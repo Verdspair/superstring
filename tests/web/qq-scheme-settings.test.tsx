@@ -206,7 +206,7 @@ describe("聊天方案页", () => {
 
   it("触发开关与提示词都走同一份草稿", async () => {
     const { fake } = await renderPage();
-    fireEvent.click(screen.getByLabelText("冷场发起", { selector: "input" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "冷场发起" }));
     fireEvent.change(screen.getByLabelText("判断任务"), { target: { value: "新的判断提示词" } });
     fireEvent.click(screen.getByRole("button", { name: "保存方案" }));
     await act(async () => {});
@@ -221,7 +221,7 @@ describe("聊天方案页", () => {
 
   it("授权集合按整集提交", async () => {
     const { fake } = await renderPage();
-    fireEvent.click(screen.getByLabelText("日常", { selector: "input" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "日常" }));
     fireEvent.click(screen.getByRole("button", { name: "保存方案" }));
     await act(async () => {});
     expect(fake.updateQqScheme).toHaveBeenCalledWith(

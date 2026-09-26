@@ -1,3 +1,6 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 // 快捷管理 → 外部模型API（0032，用户 2026-09-25）。
 //
 // What this page is for: registering an OpenAI-compatible external service (base URL + key) and the
@@ -148,38 +151,40 @@ export function ExternalApiSettings() {
         );
     return (
       <li key={provider.id}>
-        <div className="qq-access-row">
+        <div className="qq-access-row flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-2">
           <strong>{provider.name}</strong>
-          <small className="hint">{provider.base_url}</small>
-          <span className="hint">
+          <small className="hint text-sm leading-relaxed text-muted-foreground">
+            {provider.base_url}
+          </small>
+          <span className="hint text-sm leading-relaxed text-muted-foreground">
             {provider.has_api_key ? t("已保存密钥") : t("尚未保存密钥")} ·{" "}
             {t("{0} 个模型", provider.models.length)}
             {testResults[provider.id] ? ` · ${testResults[provider.id]}` : ""}
           </span>
         </div>
-        <div className="qq-access-controls">
-          <label>
+        <div className="qq-access-controls flex flex-wrap items-end gap-3 [&>label]:grid [&>label]:min-w-0 [&>label]:flex-1 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground">
+          <Label>
             <span>{t("名称")}</span>
-            <input
+            <Input
               aria-label={t("供应商名称")}
               disabled={saving}
               value={draft.name}
               onChange={(event) => patchDraft(provider.id, { name: event.target.value })}
             />
-          </label>
-          <label>
+          </Label>
+          <Label>
             <span>{t("地址")}</span>
-            <input
+            <Input
               aria-label={t("供应商地址")}
               disabled={saving}
               value={draft.baseUrl}
               placeholder="https://api.example.com/v1"
               onChange={(event) => patchDraft(provider.id, { baseUrl: event.target.value })}
             />
-          </label>
-          <label>
+          </Label>
+          <Label>
             <span>{t("密钥")}</span>
-            <input
+            <Input
               aria-label={t("供应商密钥")}
               type="password"
               disabled={saving}
@@ -187,13 +192,18 @@ export function ExternalApiSettings() {
               placeholder={provider.has_api_key ? t("已保存（留空则不修改）") : t("尚未保存")}
               onChange={(event) => patchDraft(provider.id, { apiKey: event.target.value })}
             />
-          </label>
+          </Label>
         </div>
-        <div className="qq-access-controls">
-          <span className="hint">{t("模型与上下文窗口")}</span>
+        <div className="qq-access-controls flex flex-wrap items-end gap-3 [&>label]:grid [&>label]:min-w-0 [&>label]:flex-1 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground">
+          <span className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("模型与上下文窗口")}
+          </span>
           {draft.models.map((entry, index) => (
-            <span key={entry.id} className="model-provider-model-row">
-              <input
+            <span
+              key={entry.id}
+              className="model-provider-model-row flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-sm"
+            >
+              <Input
                 aria-label={t("模型名")}
                 disabled={saving}
                 value={entry.name}
@@ -206,7 +216,7 @@ export function ExternalApiSettings() {
                   })
                 }
               />
-              <input
+              <Input
                 aria-label={t("上下文窗口")}
                 disabled={saving}
                 inputMode="numeric"
@@ -222,7 +232,8 @@ export function ExternalApiSettings() {
               />
             </span>
           ))}
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={saving || draft.models.length >= MODEL_PROVIDER_MODEL_LIMIT}
             onClick={() =>
@@ -235,10 +246,11 @@ export function ExternalApiSettings() {
             }
           >
             {t("添加模型")}
-          </button>
+          </Button>
         </div>
-        <div className="qq-access-controls">
-          <button
+        <div className="qq-access-controls flex flex-wrap items-end gap-3 [&>label]:grid [&>label]:min-w-0 [&>label]:flex-1 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground">
+          <Button
+            variant="outline"
             type="button"
             disabled={saving || !changed || !parsed.ok || draft.name.trim() === ""}
             onClick={() =>
@@ -258,9 +270,10 @@ export function ExternalApiSettings() {
             }
           >
             {t("保存")}
-          </button>
+          </Button>
           {provider.has_api_key && (
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={saving}
               onClick={() =>
@@ -277,12 +290,18 @@ export function ExternalApiSettings() {
               }
             >
               {t("清除密钥")}
-            </button>
+            </Button>
           )}
-          <button type="button" disabled={saving} onClick={() => void testOne(provider.id)}>
+          <Button
+            variant="outline"
+            type="button"
+            disabled={saving}
+            onClick={() => void testOne(provider.id)}
+          >
             {t("重新检测")}
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="outline"
             type="button"
             disabled={saving}
             onClick={() =>
@@ -290,8 +309,12 @@ export function ExternalApiSettings() {
             }
           >
             {t("删除")}
-          </button>
-          {notes[provider.id] && <span className="hint">{notes[provider.id]}</span>}
+          </Button>
+          {notes[provider.id] && (
+            <span className="hint text-sm leading-relaxed text-muted-foreground">
+              {notes[provider.id]}
+            </span>
+          )}
         </div>
       </li>
     );
@@ -299,13 +322,13 @@ export function ExternalApiSettings() {
 
   return (
     <>
-      <p className="settings-note">
+      <p className="settings-note text-sm leading-relaxed text-muted-foreground">
         {t(
           "在这里登记 OpenAI 兼容的外部模型服务；登记的模型会出现在所有「选择模型」的下拉里。每个模型必须手填上下文窗口——外部服务不报这个数，没填就不会被 QQ 链路调用。",
         )}
       </p>
       {error && (
-        <p className="error" role="alert">
+        <p className="error text-sm text-destructive" role="alert">
           {error}
         </p>
       )}
@@ -316,13 +339,17 @@ export function ExternalApiSettings() {
         note="密钥只写不读：这里只会显示是否已保存；保存与删除都按修订号比较交换。"
       >
         {providers === null ? (
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t("正在读取…")}
           </p>
         ) : providers.length === 0 ? (
-          <p className="hint">{t("还没有登记任何外部服务。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("还没有登记任何外部服务。")}
+          </p>
         ) : (
-          <ul className="qq-access-list">{providers.map((provider) => card(provider))}</ul>
+          <ul className="qq-access-list grid gap-4 [&>li]:space-y-4 [&>li]:rounded-xl [&>li]:border [&>li]:bg-card [&>li]:p-5">
+            {providers.map((provider) => card(provider))}
+          </ul>
         )}
       </SettingsGroup>
 
@@ -331,10 +358,10 @@ export function ExternalApiSettings() {
         title="新建"
         note="填名称、地址，按需要填密钥；保存后模型清单会出现在上面的卡片里。"
       >
-        <div className="qq-access-controls">
-          <label>
+        <div className="qq-access-controls flex flex-wrap items-end gap-3 [&>label]:grid [&>label]:min-w-0 [&>label]:flex-1 [&>label]:gap-2 [&>label]:text-xs [&>label]:text-muted-foreground">
+          <Label>
             <span>{t("名称")}</span>
-            <input
+            <Input
               aria-label={t("新供应商名称")}
               disabled={saving || loading}
               value={creating?.name ?? ""}
@@ -347,10 +374,10 @@ export function ExternalApiSettings() {
                 })
               }
             />
-          </label>
-          <label>
+          </Label>
+          <Label>
             <span>{t("地址")}</span>
-            <input
+            <Input
               aria-label={t("新供应商地址")}
               disabled={saving || loading}
               placeholder="https://api.example.com/v1"
@@ -364,10 +391,10 @@ export function ExternalApiSettings() {
                 })
               }
             />
-          </label>
-          <label>
+          </Label>
+          <Label>
             <span>{t("密钥")}</span>
-            <input
+            <Input
               aria-label={t("新供应商密钥")}
               type="password"
               disabled={saving || loading}
@@ -381,8 +408,9 @@ export function ExternalApiSettings() {
                 })
               }
             />
-          </label>
-          <button
+          </Label>
+          <Button
+            variant="outline"
             type="button"
             disabled={
               saving ||
@@ -408,10 +436,12 @@ export function ExternalApiSettings() {
             }
           >
             {t("登记这个服务")}
-          </button>
-          {notes.new && <span className="hint">{notes.new}</span>}
+          </Button>
+          {notes.new && (
+            <span className="hint text-sm leading-relaxed text-muted-foreground">{notes.new}</span>
+          )}
         </div>
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t(
             "登记的模型默认不参与任何用途；到「默认模型」或助手里把某个用途的模型选成它的名字即可。",
           )}

@@ -1,3 +1,5 @@
+import { NativeSelect } from "@/components/ui/native-select";
+import { Slider } from "@/components/ui/slider";
 import { useI18n } from "../../i18n";
 import type { AgentDraft } from "../../state/types";
 import { useSuperstringStore } from "../../store";
@@ -10,10 +12,12 @@ export function ChatModelFields({
   draft,
   models,
   patch,
+  disabled = false,
 }: {
   draft: AgentDraft;
   models: string[];
   patch: (value: Partial<AgentDraft>) => void;
+  disabled?: boolean;
 }) {
   const availability = {
     loaded: useSuperstringStore((s) => s.loadedModelNames),
@@ -25,8 +29,10 @@ export function ChatModelFields({
   return (
     <SettingsGroup id="settings-chat-model" title="对话模型">
       <Field label={t("对话模型")} info={t("仅用于当前助手的对话；不会自动加载或重载模型。")}>
-        <select
+        <NativeSelect
+          className="w-full"
           aria-label={t("对话模型")}
+          disabled={disabled}
           value={draft.model_name}
           onChange={(event) => patch({ model_name: event.target.value })}
         >
@@ -40,22 +46,22 @@ export function ChatModelFields({
               {modelOptionLabel(name, availability, t)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
       <ModelUseHint purpose="chat" configured={draft.model_name} saved={saved} />
       <Field
         label={t("回复随机度")}
         info={t("越低越稳定，越高越多样。对应 temperature，默认 0.7。")}
       >
-        <div className="range-row">
-          <input
+        <div className="range-row grid grid-cols-[minmax(0,1fr)_3rem] items-center gap-4 [&>output]:text-center [&>output]:text-sm [&>output]:tabular-nums [&>output]:text-muted-foreground">
+          <Slider
             aria-label={t("回复随机度")}
-            type="range"
+            disabled={disabled}
             min={0}
             max={2}
             step={0.05}
-            value={draft.temperature}
-            onChange={(event) => patch({ temperature: Number(event.target.value) })}
+            value={[draft.temperature]}
+            onValueChange={(values) => patch({ temperature: Number(values[0]) })}
           />
           <output>{draft.temperature.toFixed(2)}</output>
         </div>

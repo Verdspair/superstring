@@ -1,4 +1,9 @@
 import { useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
@@ -39,14 +44,15 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
       }
     >
       {!editor ? (
-        <button type="button" disabled={busy} onClick={() => void load()}>
+        <Button variant="outline" type="button" disabled={busy} onClick={() => void load()}>
           {t("重试读取全局配置")}
-        </button>
+        </Button>
       ) : (
-        <fieldset disabled={busy}>
+        <fieldset className="min-w-0 space-y-5" disabled={busy}>
           {model ? (
             <Field label={t("知识库整理模型")} info={t("未指定则继承共同默认；指定模型优先。")}>
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("知识库整理模型")}
                 value={editor.modelName ?? ""}
                 onChange={(e) => patchModel(e.target.value || null)}
@@ -59,7 +65,7 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
                     </option>
                   ),
                 )}
-              </select>
+              </NativeSelect>
               <ModelUseHint
                 purpose="knowledge_organization"
                 configured={editor.modelName}
@@ -67,13 +73,15 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
               />
             </Field>
           ) : (
-            <div className="knowledge-rule-grid">
+            <div className="knowledge-rule-grid grid gap-6 lg:grid-cols-2">
               <div>
-                <label className="check">
-                  <input
-                    type="checkbox"
+                <Label className="check flex items-start gap-3 text-sm [&>span]:grid [&>span]:gap-1 [&_small]:text-muted-foreground [&_small]:font-normal">
+                  <Checkbox
+                    aria-label={t("模型自动整理")}
                     checked={editor.autoEnabled ?? editor.source.auto_enabled}
-                    onChange={(e) => patch({ autoEnabled: e.target.checked })}
+                    onCheckedChange={(checkedValue) =>
+                      patch({ autoEnabled: checkedValue === true })
+                    }
                   />
                   <span>
                     <strong>{t("模型自动整理")}</strong>
@@ -81,20 +89,21 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
                       {t("关闭后保留已有整理稿并使用原文；重新开启不改变手动原文偏好。")}
                     </small>
                   </span>
-                </label>
-                <button
-                  className="model-settings-link"
+                </Label>
+                <Button
+                  variant="outline"
+                  className="model-settings-link mt-3"
                   type="button"
                   onClick={() => openRoute("models")}
                 >
                   {t("前往默认模型")}
-                </button>
+                </Button>
               </div>
               <Field
                 label={t("知识库上下文预算")}
                 info={t("按 UTF-8 字节估算，包含资料格式与来源，仍受总上下文预算限制。")}
               >
-                <input
+                <Input
                   aria-label={t("知识库上下文预算")}
                   type="number"
                   min={1}
@@ -109,24 +118,25 @@ export function KnowledgeModelPage({ scope = "rules" }: { scope?: "model" | "rul
               </Field>
             </div>
           )}
-          <div className="workspace-links scope-save-row">
-            <button
+          <div className="workspace-links scope-save-row flex flex-wrap items-center gap-3 border-t pt-4">
+            <Button
+              variant="default"
               className="primary"
               type="button"
               disabled={!knowledgeModelDirty(editor, scope)}
               onClick={() => void save(scope)}
             >
               {t(model ? "保存知识库模型" : "保存全局整理规则")}
-            </button>
-            <button type="button" onClick={() => void load(true)}>
+            </Button>
+            <Button variant="outline" type="button" onClick={() => void load(true)}>
               {t("刷新全局基线（保留草稿）")}
-            </button>
-            <span className="hint">
+            </Button>
+            <span className="hint text-sm leading-relaxed text-muted-foreground">
               {t(knowledgeModelDirty(editor, scope) ? "本组有未保存修改" : "本组已保存")}
             </span>
           </div>
           {knowledgeModelDirty(editor, scope) && (
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t(
                 "已保存全局设置：整理 {0}；预算 {1}；模型 {2}；修订 {3}。",
                 t(editor.source.auto_enabled ? "开启" : "整理已关闭"),

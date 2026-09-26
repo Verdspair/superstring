@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import type { AgentKnowledge as AuthorizedDocument } from "../../../shared/contracts/knowledge";
 import { translateNotice, useI18n } from "../../i18n";
 import { errorText } from "../../state/helpers";
@@ -32,16 +33,20 @@ export function AgentKnowledge() {
   }, [agentId, api]);
   const current = result?.agentId === agentId ? result : null;
   return (
-    <div>
-      <p className="settings-note">{t("当前助手的已授权资料；在知识库管理中修改。")}</p>
+    <div className="space-y-4">
+      <p className="settings-note text-sm leading-relaxed text-muted-foreground">
+        {t("当前助手的已授权资料；在知识库管理中修改。")}
+      </p>
       {!current ? (
-        <p className="hint">{t("正在读取资料…")}</p>
+        <p className="hint text-sm leading-relaxed text-muted-foreground">{t("正在读取资料…")}</p>
       ) : current.error ? (
         <p role="alert">{translateNotice(current.error)}</p>
       ) : !current.items.length ? (
-        <p className="hint">{t("当前助手暂无已授权资料。")}</p>
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
+          {t("当前助手暂无已授权资料。")}
+        </p>
       ) : (
-        <ul className="knowledge-authorized">
+        <ul className="knowledge-authorized divide-y [&>li]:py-3 [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-muted-foreground">
           {current.items.map((item) => (
             <li key={item.id}>
               <strong>{item.name}</strong>
@@ -54,9 +59,9 @@ export function AgentKnowledge() {
           ))}
         </ul>
       )}
-      <button type="button" onClick={() => navigate("settings", "knowledge")}>
+      <Button variant="outline" type="button" onClick={() => navigate("settings", "knowledge")}>
         {t("打开知识库详细配置")}
-      </button>
+      </Button>
     </div>
   );
 }

@@ -1,4 +1,9 @@
 import { type ReactNode, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { NavigationConfirm } from "../../app/NavigationConfirm";
 import { SettingsHeader } from "../../app/SettingsHeader";
 import { SettingsBody } from "../../app/SettingsSidebar";
@@ -20,12 +25,12 @@ export const knowledgeStatus = {
 function KnowledgeFrame({ embedded, children }: { embedded: boolean; children: ReactNode }) {
   const back = useSuperstringStore((s) => s.openSettings);
   return embedded ? (
-    <div className="knowledge-settings knowledge-embedded">{children}</div>
+    <div className="knowledge-settings knowledge-embedded min-w-0 space-y-5">{children}</div>
   ) : (
-    <section className="page settings-page">
+    <section className="page settings-page flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <SettingsHeader onBack={back} />
       <SettingsBody>
-        <div className="settings-content knowledge-settings">{children}</div>
+        <div className="settings-content knowledge-settings min-w-0 space-y-6">{children}</div>
       </SettingsBody>
     </section>
   );
@@ -71,66 +76,78 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
   const unavailable = busy || loading;
   return (
     <KnowledgeFrame embedded={embedded}>
-      {!embedded && <h2>{t("知识库")}</h2>}
       {!embedded && (
         <>
-          <p className="settings-note">{t("集中管理资料、分类与助手授权；资料仅作为参考内容。")}</p>
-          <p className="hint">{t("按授权与预算读取资料；整理未完成时使用原文片段。")}</p>
+          <p className="settings-note text-sm leading-relaxed text-muted-foreground">
+            {t("集中管理资料、分类与助手授权；资料仅作为参考内容。")}
+          </p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("按授权与预算读取资料；整理未完成时使用原文片段。")}
+          </p>
         </>
       )}
-      <div className="knowledge-toolbar">
-        <button
+      <div className="knowledge-toolbar flex flex-wrap items-center gap-3">
+        <Button
+          variant="outline"
           type="button"
           disabled={unavailable}
           onClick={() => requestEditor({ kind: "import" })}
         >
           <Icon name="plus" />
           {t("导入资料")}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           disabled={unavailable}
           onClick={() => requestEditor({ kind: "category-new" })}
         >
           {t("新增分类")}
-        </button>
+        </Button>
         {!embedded && (
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={unavailable || !settings}
             onClick={() => requestEditor({ kind: "settings" })}
           >
             {t("知识库配置")}
-          </button>
+          </Button>
         )}
-        <button type="button" disabled={unavailable || dirty} onClick={() => void load()}>
+        <Button
+          variant="outline"
+          type="button"
+          disabled={unavailable || dirty}
+          onClick={() => void load()}
+        >
           {t("刷新")}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="outline"
           type="button"
           disabled={unavailable || !documents.some((d) => selected.includes(d.id))}
           onClick={() => requestEditor({ kind: "batch", ids: selected })}
         >
           {t("批量授权")}
-        </button>
-        <span className="hint">
+        </Button>
+        <span className="hint text-sm leading-relaxed text-muted-foreground">
           {t("已选 {0} 条资料", documents.filter((d) => selected.includes(d.id)).length)}
         </span>
       </div>
       {!embedded && settings && (
-        <p className="hint">
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
           {t("模型自动整理")}：{t(settings.auto_enabled ? "开启" : "整理已关闭")} ·{" "}
           {t("知识库上下文预算")}：{settings.context_budget}
         </p>
       )}
       {loading && <p role="status">{t("正在读取资料…")}</p>}
       {!embedded && error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error text-sm text-destructive">
           {translateNotice(error)}
         </p>
       )}
       {!embedded && feedback && (
-        <p role="status" className="hint">
+        <p role="status" className="hint text-sm leading-relaxed text-muted-foreground">
           {translateNotice(feedback)}
         </p>
       )}
@@ -139,17 +156,21 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
         const items = documents.filter((d) => d.category_id === category.id);
         const all = items.length > 0 && items.every((d) => selected.includes(d.id));
         return (
-          <section key={category.id} className="knowledge-category" aria-label={category.name}>
-            <div className="knowledge-category-heading">
-              <label className="knowledge-check">
-                <input
-                  type="checkbox"
+          <Card
+            role="region"
+            key={category.id}
+            className="knowledge-category gap-0 overflow-hidden py-0"
+            aria-label={category.name}
+          >
+            <div className="knowledge-category-heading flex flex-wrap items-center justify-between gap-3 border-b bg-muted/30 p-4">
+              <Label className="knowledge-check flex min-h-8 items-center gap-3 text-sm">
+                <Checkbox
                   aria-label={t("选择分类内资料：{0}", category.name)}
                   disabled={unavailable || !items.length}
                   checked={all}
-                  onChange={(e) =>
+                  onCheckedChange={(checkedValue) =>
                     setSelected(
-                      e.target.checked
+                      checkedValue === true
                         ? [...new Set([...selected, ...items.map((d) => d.id)])]
                         : selected.filter((id) => !items.some((d) => d.id === id)),
                     )
@@ -157,17 +178,19 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
                 />
                 <strong>{category.name}</strong>
                 <small>{items.length}</small>
-              </label>
-              <div className="knowledge-toolbar">
-                <button
+              </Label>
+              <div className="knowledge-toolbar flex flex-wrap items-center gap-3">
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={unavailable}
                   aria-label={t("重命名分类：{0}", category.name)}
                   onClick={() => requestEditor({ kind: "category", id: category.id })}
                 >
                   {t("重命名")}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={unavailable || dirty || !!editor || categories.length < 2}
                   aria-label={t("删除分类：{0}", category.name)}
@@ -181,30 +204,37 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
                   }}
                 >
                   {t("删除")}
-                </button>
+                </Button>
               </div>
             </div>
-            {!items.length && <p className="hint">{t("此分类暂无资料。")}</p>}
+            {!items.length && (
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
+                {t("此分类暂无资料。")}
+              </p>
+            )}
             {items.map((document) => (
-              <div key={document.id} className="knowledge-row">
-                <label className="knowledge-check">
-                  <input
-                    type="checkbox"
+              <div
+                key={document.id}
+                className="knowledge-row flex min-w-0 flex-wrap items-center gap-3 border-b p-4 last:border-b-0 has-[[data-state=checked]]:bg-accent/50"
+              >
+                <Label className="knowledge-check flex min-h-8 items-center gap-3 text-sm">
+                  <Checkbox
                     aria-label={t("选择资料：{0}", document.name)}
                     disabled={unavailable}
                     checked={selected.includes(document.id)}
-                    onChange={(e) =>
+                    onCheckedChange={(checkedValue) =>
                       setSelected(
-                        e.target.checked
+                        checkedValue === true
                           ? [...new Set([...selected, document.id])]
                           : selected.filter((id) => id !== document.id),
                       )
                     }
                   />
-                </label>
-                <button
+                </Label>
+                <Button
+                  variant="ghost"
                   type="button"
-                  className="knowledge-open"
+                  className="knowledge-open h-auto min-w-0 flex-1 flex-col items-start justify-start whitespace-normal p-0 text-left [&>strong]:block [&>strong]:font-medium [&>small]:mt-1 [&>small]:block [&>small]:text-xs [&>small]:font-normal [&>small]:text-muted-foreground"
                   disabled={unavailable}
                   onClick={() => requestEditor({ kind: "document", id: document.id })}
                   onContextMenu={(e) => {
@@ -224,25 +254,27 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
                     {t(document.content_mode === "original" ? "使用原文" : "使用整理稿")} ·{" "}
                     {t("已授权 {0} 个助手", document.agent_ids.length)}
                   </small>
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={unavailable}
                   aria-label={t("资料操作：{0}", document.name)}
                   onClick={() => setMenu(menu === document.id ? null : document.id)}
                 >
                   <Icon name="more" />
-                </button>
+                </Button>
                 {menu === document.id && (
                   <div
-                    className="knowledge-row-actions"
+                    className="knowledge-row-actions flex w-full flex-wrap items-center gap-2"
                     role="toolbar"
                     aria-label={t("资料操作：{0}", document.name)}
                     onKeyDown={(e) => {
                       if (e.key === "Escape") setMenu(null);
                     }}
                   >
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       disabled={unavailable}
                       onClick={() => {
@@ -251,8 +283,9 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
                       }}
                     >
                       {t("资料授权")}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="outline"
                       type="button"
                       disabled={unavailable || dirty || !!editor}
                       onClick={() => {
@@ -264,8 +297,9 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
                       }}
                     >
                       {t(document.content_mode === "draft" ? "使用原文" : "使用整理稿")}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="destructive"
                       type="button"
                       className="danger"
                       disabled={unavailable || dirty || !!editor}
@@ -279,19 +313,21 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
                       }}
                     >
                       {t("删除")}
-                    </button>
-                    <button type="button" onClick={() => setMenu(null)}>
+                    </Button>
+                    <Button variant="outline" type="button" onClick={() => setMenu(null)}>
                       {t("关闭")}
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
             ))}
-          </section>
+          </Card>
         );
       })}
       {!documents.length && !loading && (
-        <p className="empty-panel">{t("还没有资料，先导入文本或 txt/md 文件。")}</p>
+        <p className="empty-panel rounded-xl border border-dashed bg-muted/20 p-8 text-center text-sm text-muted-foreground">
+          {t("还没有资料，先导入文本或 txt/md 文件。")}
+        </p>
       )}
       {!embedded && confirmOpen && <NavigationConfirm />}
       {deletion && (
@@ -310,7 +346,8 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
             )}
           </p>
           {deletion.kind === "category" && deletion.count > 0 && (
-            <select
+            <NativeSelect
+              className="w-full"
               aria-label={t("迁入分类")}
               value={moveTo}
               disabled={busy}
@@ -324,19 +361,21 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
                     {c.name}
                   </option>
                 ))}
-            </select>
+            </NativeSelect>
           )}
           {error && <p role="alert">{translateNotice(error)}</p>}
-          <div className="dialog-actions">
-            <button
+          <div className="dialog-actions flex flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="outline"
               type="button"
               disabled={busy}
               data-dialog-cancel
               onClick={() => setDeletion(null)}
             >
               {t("取消")}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="destructive"
               type="button"
               className="danger"
               disabled={busy || (deletion.kind === "category" && deletion.count > 0 && !moveTo)}
@@ -348,7 +387,7 @@ export function KnowledgeSettings({ embedded = false }: { embedded?: boolean }) 
               }}
             >
               {t("确认删除")}
-            </button>
+            </Button>
           </div>
         </AlertDialog>
       )}

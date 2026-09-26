@@ -1,4 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
@@ -128,13 +134,15 @@ export function SectionB() {
   return (
     <section
       id="settings-memory-management"
-      className="memory-management"
+      className="memory-management min-w-0 space-y-5"
       aria-label={t("记忆管理")}
       aria-busy={busy}
     >
-      <div className="memory-management-heading">
+      <div className="memory-management-heading space-y-2 [&>h3]:text-base [&>h3]:font-semibold">
         <h3>{t("记忆管理")}</h3>
-        <p className="hint">{t("仅管理当前助手记忆；操作不提交配置草稿。")}</p>
+        <p className="hint text-sm leading-relaxed text-muted-foreground">
+          {t("仅管理当前助手记忆；操作不提交配置草稿。")}
+        </p>
       </div>
       <MemoryScopePanel
         value={scopeKey}
@@ -159,9 +167,10 @@ export function SectionB() {
           title="手动整理"
           note="选择网页会话的完整轮次，整理结果存入网页分区；QQ 会话请在上方选择对应分区。"
         >
-          <div className="memory-source-toolbar">
+          <div className="memory-source-toolbar grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
             <Field label={t("来源会话")}>
-              <select
+              <NativeSelect
+                className="w-full"
                 aria-label={t("来源会话")}
                 value={sourceSessionId}
                 disabled={busy}
@@ -178,10 +187,10 @@ export function SectionB() {
                     {session.title}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </Field>
             <Field label={t("最近轮数")}>
-              <input
+              <Input
                 type="number"
                 aria-label={t("最近轮数")}
                 min={1}
@@ -191,7 +200,8 @@ export function SectionB() {
                 onChange={(e) => setRecentTurnCount(Number(e.target.value))}
               />
             </Field>
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={
                 busy ||
@@ -209,21 +219,26 @@ export function SectionB() {
               }
             >
               {t("加载可选择的轮次")}
-            </button>
+            </Button>
           </div>
-          <p className="hint">{t("可重复整理完整轮次，不改变自动整理进度。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("可重复整理完整轮次，不改变自动整理进度。")}
+          </p>
           {memoryTurns.length > 0 ? (
-            <fieldset className="choice-group memory-selection-list">
+            <fieldset className="choice-group memory-selection-list grid max-h-96 gap-3 overflow-y-auto rounded-lg border p-4 [&>legend]:px-2 [&>legend]:text-sm [&>legend]:font-medium">
               <legend>{t("选择完整轮次")}</legend>
               {memoryTurns.map((turn) => (
-                <label key={turn.id} className="memory-row">
-                  <input
-                    type="checkbox"
+                <Label
+                  key={turn.id}
+                  className="memory-row flex min-w-0 flex-1 items-start gap-3 text-sm [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&>span]:gap-1 [&_strong]:font-medium [&_small]:text-muted-foreground [&_em]:text-xs [&_em]:not-italic [&_em]:text-muted-foreground"
+                >
+                  <Checkbox
                     disabled={busy}
+                    aria-label={`${t("来源轮次")} ${turn.sequence_no}`}
                     checked={validTurns.includes(turn.id)}
-                    onChange={(e) =>
+                    onCheckedChange={(checkedValue) =>
                       setSelectedTurns((items) =>
-                        e.target.checked
+                        checkedValue === true
                           ? [...items, turn.id]
                           : items.filter((id) => id !== turn.id),
                       )
@@ -237,33 +252,36 @@ export function SectionB() {
                     <small>{t("用户：{0}", turn.user.slice(0, 100))}</small>
                     <small>{t("回复：{0}", turn.assistant.slice(0, 100))}</small>
                   </span>
-                </label>
+                </Label>
               ))}
             </fieldset>
           ) : (
-            <p className="memory-empty">
+            <p className="memory-empty rounded-lg border border-dashed bg-muted/30 p-5 text-sm text-muted-foreground">
               {turnsLoaded
                 ? t("当前范围没有可整理的完整轮次。")
                 : t("选择来源会话、加载轮次，再勾选要整理的内容。")}
             </p>
           )}
-          <div className="memory-toolbar">
-            <span className="hint">{t("已选 {0} 轮", validTurns.length)}</span>
-            <button
+          <div className="memory-toolbar flex flex-wrap items-center gap-3">
+            <span className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("已选 {0} 轮", validTurns.length)}
+            </span>
+            <Button
+              variant="default"
               type="button"
               className="primary"
               disabled={busy || !sourceSessionId || validTurns.length === 0}
               onClick={() => void run(() => manualConsolidate(sourceSessionId, validTurns))}
             >
               {t("开始整理所选轮次")}
-            </button>
+            </Button>
           </div>
         </SettingsGroup>
       )}
       <SettingsGroup title="记忆列表与治理" note="查看、整合、屏蔽、启用或永久删除已生成的记忆。">
-        <div className="memory-list-toolbar">
+        <div className="memory-list-toolbar flex flex-wrap items-end gap-3 [&>.field]:min-w-0 [&>.field]:flex-1">
           <Field label="搜索记忆">
-            <input
+            <Input
               aria-label={t("搜索记忆")}
               value={search}
               maxLength={200}
@@ -275,7 +293,8 @@ export function SectionB() {
             />
           </Field>
           <Field label="记忆状态">
-            <select
+            <NativeSelect
+              className="w-full"
               aria-label={t("记忆状态")}
               value={status}
               disabled={locked}
@@ -290,10 +309,10 @@ export function SectionB() {
                   {label}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <Field label={t("列表页码")}>
-            <input
+            <Input
               type="number"
               aria-label={t("列表页码")}
               min={1}
@@ -302,7 +321,8 @@ export function SectionB() {
               onChange={(e) => setPage(Number(e.target.value))}
             />
           </Field>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={locked || !Number.isInteger(page) || page < 1}
             onClick={() =>
@@ -314,27 +334,29 @@ export function SectionB() {
             }
           >
             {t("加载记忆列表")}
-          </button>
-          <span className="hint">
+          </Button>
+          <span className="hint text-sm leading-relaxed text-muted-foreground">
             {listLoaded ? t("共 {0} 条记忆，每页最多 100 条。", total) : t("每页最多 100 条。")}
           </span>
         </div>
         {memoryEntries.length > 0 ? (
-          <section className="memory-entry-list" aria-label={t("记忆列表")}>
+          <section
+            className="memory-entry-list max-h-[28rem] divide-y overflow-y-auto rounded-lg border"
+            aria-label={t("记忆列表")}
+          >
             {memoryEntries.map((entry) => (
               <div
                 key={entry.id}
-                className={`memory-entry-row${detail?.id === entry.id ? " is-current" : ""}`}
+                className={`memory-entry-row flex flex-wrap items-center gap-3 p-4 ${detail?.id === entry.id ? "is-current bg-accent/50" : "bg-card"}`}
               >
-                <label className="memory-row">
-                  <input
-                    type="checkbox"
+                <Label className="memory-row flex min-w-0 flex-1 items-start gap-3 text-sm [&>span]:grid [&>span]:min-w-0 [&>span]:flex-1 [&>span]:gap-1 [&_strong]:font-medium [&_small]:text-muted-foreground [&_em]:text-xs [&_em]:not-italic [&_em]:text-muted-foreground">
+                  <Checkbox
                     aria-label={t("选择记忆：{0}", entry.name)}
                     disabled={locked}
                     checked={validMemories.includes(entry.id)}
-                    onChange={(e) => {
+                    onCheckedChange={(checkedValue) => {
                       setSelectedMemories((items) =>
-                        e.target.checked
+                        checkedValue === true
                           ? [...items, entry.id]
                           : items.filter((id) => id !== entry.id),
                       );
@@ -350,69 +372,89 @@ export function SectionB() {
                     </small>
                     <small>{entry.summary}</small>
                   </span>
-                </label>
-                <button
+                </Label>
+                <Button
+                  variant="outline"
                   type="button"
                   aria-label={t("查看记忆：{0}", entry.name)}
                   disabled={locked}
                   onClick={() => void run(() => loadMemoryEntryDetail(entry.id))}
                 >
                   {t("查看详情")}
-                </button>
+                </Button>
               </div>
             ))}
           </section>
         ) : (
-          <p className="memory-empty">
+          <p className="memory-empty rounded-lg border border-dashed bg-muted/30 p-5 text-sm text-muted-foreground">
             {listLoaded ? t("本页暂无记忆。") : t("加载后查看详情，或勾选多条批量管理。")}
           </p>
         )}
-        <div className="memory-batch-actions">
-          <span className="hint">{t("已选 {0} 条", validMemories.length)}</span>
-          <div className="memory-toolbar">
-            <button type="button" disabled={locked || !mergeable} onClick={() => void merge()}>
+        <div className="memory-batch-actions flex flex-wrap items-center gap-3">
+          <span className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("已选 {0} 条", validMemories.length)}
+          </span>
+          <div className="memory-toolbar flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              type="button"
+              disabled={locked || !mergeable}
+              onClick={() => void merge()}
+            >
               {t("整合为新记忆")}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               disabled={locked || validMemories.length === 0}
               onClick={() => void govern("suppress")}
             >
               {t("屏蔽（停止使用）")}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               disabled={locked || validMemories.length === 0}
               onClick={() => void govern("enable")}
             >
               {t("重新启用")}
-            </button>
+            </Button>
           </div>
         </div>
         {validMemories.length > 0 && !mergeable && (
-          <p className="hint">
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
             {t("整合需要至少两条同一分区的生效记忆；屏蔽和删除可以跨分区选择。")}
           </p>
         )}
         {detail && (
-          <section className="memory-detail-panel" aria-label={t("记忆详情（只读）")}>
+          <Card
+            role="region"
+            className="memory-detail-panel gap-4 p-5 [&>h4]:font-semibold"
+            aria-label={t("记忆详情（只读）")}
+          >
             <h4>{detail.name}</h4>
-            <p className="hint">{t("存储时间：{0}", localTime(detail.created_at))}</p>
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("存储时间：{0}", localTime(detail.created_at))}
+            </p>
             <p>{detail.summary}</p>
-            <div className="memory-detail-body">{detail.body}</div>
+            <div className="memory-detail-body max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
+              {detail.body}
+            </div>
             <MemoryCorrection />
-          </section>
+          </Card>
         )}
         {correctionDirty && (
-          <p className="hint">{t("请先保存或放弃纠正，再切换记忆或执行治理。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("请先保存或放弃纠正，再切换记忆或执行治理。")}
+          </p>
         )}
-        <div className="memory-danger-zone">
+        <div className="memory-danger-zone space-y-4 border-t pt-5 [&>h4]:text-sm [&>h4]:font-semibold [&>h4]:text-destructive">
           <h4>{t("永久删除")}</h4>
-          <p className="hint">
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
             {t("永久删除只删除所选记忆条目且不可恢复；派生记忆、摘要和原聊天保留。")}
           </p>
           {validMemories.length > 0 && (
-            <p className="hint">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t(
                 "删除对象：{0}",
                 memoryEntries
@@ -422,27 +464,31 @@ export function SectionB() {
               )}
             </p>
           )}
-          <label className="check">
-            <input
-              type="checkbox"
+          <Label className="check flex items-start gap-3 text-sm [&>span]:grid [&>span]:gap-1 [&_small]:text-muted-foreground [&_small]:font-normal">
+            <Checkbox
               disabled={locked || validMemories.length === 0}
+              aria-label={t("我确认永久删除当前勾选的记忆条目")}
               checked={purgeConfirmed}
-              onChange={(e) => setPurgeConfirmed(e.target.checked)}
+              onCheckedChange={(checkedValue) => setPurgeConfirmed(checkedValue === true)}
             />
             <span>{t("我确认永久删除当前勾选的记忆条目")}</span>
-          </label>
-          <button
+          </Label>
+          <Button
+            variant="destructive"
             type="button"
             className="danger"
             disabled={locked || validMemories.length === 0 || !purgeConfirmed}
             onClick={() => void govern("purge")}
           >
             {t("永久删除所选条目")}
-          </button>
+          </Button>
         </div>
       </SettingsGroup>
       {feedback && (
-        <p className="memory-feedback" role="status">
+        <p
+          className="memory-feedback rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground"
+          role="status"
+        >
           {translateNotice(feedback)}
         </p>
       )}

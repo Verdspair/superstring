@@ -6,6 +6,7 @@ import {
   applyMode,
   applyTheme,
   MODE_STORAGE_KEY,
+  observeSystemAppearance,
   readMode,
   readTheme,
   resolveTheme,
@@ -112,6 +113,7 @@ it("设置中心可进入外观再返回，自定义不提供可操作入口", (
   fireEvent.click(screen.getByText("外观"));
   expect(screen.getByText("推荐外观")).toBeTruthy();
   expect(screen.getByText("自定义外观")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /自定义外观/ }));
   expect(screen.getByText("自定义颜色与更多外观选项暂未开放。")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "返回设置中心" }));
   expect(
@@ -129,9 +131,11 @@ it("设置入口整行可点，返回导航位于主栏页头且仅显示图标"
   });
   expect(row.classList.contains("settings-entry")).toBe(true);
   expect(row.querySelector("button")).toBeNull();
-  expect(container.querySelectorAll(".settings-list > button")).toHaveLength(4);
+  expect(
+    within(screen.getByRole("navigation", { name: "功能设置" })).getAllByRole("button"),
+  ).toHaveLength(4);
   expect(screen.queryByText("打开配置")).toBeNull();
-  await act(async () => fireEvent.click(screen.getByText("助手、模型用途、身份表达与上下文。")));
+  await act(async () => fireEvent.click(row));
   const back = screen.getByRole("button", { name: "返回设置中心" });
   expect(back.textContent).toBe("");
   expect(back.getAttribute("title")).toBe("返回设置中心");
@@ -148,18 +152,21 @@ it("设置入口整行可点，返回导航位于主栏页头且仅显示图标"
   expect(screen.getByRole("button", { name: "返回设置中心" }).textContent).toBe("");
 });
 
-it("外观页与助手设置同用折叠分区，未开放项不提供操作入口", () => {
+it("外观页使用可键盘操作的折叠分区，未开放项只展示说明", () => {
   render(<AppearanceSettings />);
-  const groups = [...document.querySelectorAll(".appearance-settings > .group")];
-  expect(groups).toHaveLength(3);
-  expect(groups[0].querySelector("strong")?.textContent).toBe("推荐外观");
-  expect(groups[1].querySelector("strong")?.textContent).toBe("明暗模式");
-  expect(groups[2].querySelector("strong")?.textContent).toBe("自定义外观");
-  expect(groups[2].querySelector("small")?.textContent).toBe("未开放");
-  expect(groups[2].querySelectorAll("button")).toHaveLength(0);
-  for (const summary of groups.map((group) => group.querySelector("summary"))) {
-    expect(summary?.querySelectorAll(":scope > svg")).toHaveLength(2);
-  }
+  const trigger = screen.getByRole("button", { name: /自定义外观/ });
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+  expect(panel?.textContent).toContain("自定义颜色与更多外观选项暂未开放。");
+  expect(panel?.querySelectorAll("button")).toHaveLength(0);
+  expect(screen.getByRole("button", { name: /推荐外观/ }).getAttribute("aria-expanded")).toBe(
+    "true",
+  );
+  expect(
+    screen.getByRole("button", { name: /明暗模式.*跟随系统/ }).getAttribute("aria-expanded"),
+  ).toBe("true");
 });
 
 it("明暗模式可固定浅色/深色或跟随系统，持久化并即时生效", () => {
@@ -184,10 +191,12 @@ it("明暗模式可固定浅色/深色或跟随系统，持久化并即时生效
 
 it("主题只投影强调色，中性表面与边框由语义令牌保持一致", () => {
   const root = document.documentElement;
-  for (const theme of THEMES.filter((item) => item.id !== "slate")) {
+  for (const theme of THEMES) {
     applyTheme(theme.id);
-    expect(root.style.getPropertyValue("--ac-accent")).toBe(
-      `light-dark(${theme.color}, ${theme.dark})`,
+    for (const role of ["--primary", "--ring", "--sidebar-primary", "--sidebar-ring"])
+      expect(root.style.getPropertyValue(role)).toBe(`light-dark(${theme.color}, ${theme.dark})`);
+    expect(root.style.getPropertyValue("--primary-foreground")).toBe(
+      "light-dark(#ffffff, #171717)",
     );
     for (const property of [
       "--superstring-tone-deep",
@@ -195,6 +204,10 @@ it("主题只投影强调色，中性表面与边框由语义令牌保持一致"
       "--superstring-tone-line",
       "--superstring-tone-soft",
       "--ac-accent-soft",
+      "--background",
+      "--card",
+      "--accent",
+      "--border",
     ])
       expect(root.style.getPropertyValue(property)).toBe("");
   }
@@ -225,12 +238,12 @@ it("新会话默认助手并入助手设置的下拉，停用助手不出现", a
     selectedNewSessionAgentId: first,
     editAgent: vi.fn().mockResolvedValue(true),
   });
-  const { container } = render(<App />);
+  render(<App />);
   // 新会话不再是设置中心的一级入口，它是助手设置里助手下拉的一部分。
   expect(
-    [...container.querySelectorAll(".settings-list > button")].map(
-      (button) => button.querySelector("strong")?.textContent,
-    ),
+    within(screen.getByRole("navigation", { name: "功能设置" }))
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label") ?? button.textContent),
   ).toEqual(["Agent", "资料", "接入", "偏好"]);
   expect(screen.queryByRole("button", { name: "新会话" })).toBeNull();
   await act(async () =>
@@ -287,4 +300,40 @@ it("用户画像在独立记忆页面保留未开放，不恢复旧字母分区"
   expect(screen.getByRole("heading", { name: "用户画像" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "保存当前分区配置" })).toBeNull();
   expect(screen.getByText("状态：暂未开放")).toBeTruthy();
+});
+
+it("跟随系统只改变实际配色，不覆盖保存的模式或手动选择", () => {
+  let dark = true;
+  let notify: (() => void) | undefined;
+  const remove = vi.fn();
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      get matches() {
+        return dark;
+      },
+      addEventListener: (_: string, listener: () => void) => {
+        notify = listener;
+      },
+      removeEventListener: remove,
+    })),
+  );
+  try {
+    selectMode("system");
+    const stop = observeSystemAppearance();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+    dark = false;
+    notify?.();
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(readMode()).toBe("system");
+    selectMode("dark");
+    notify?.();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(readMode()).toBe("dark");
+    stop();
+    expect(remove).toHaveBeenCalledWith("change", notify);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

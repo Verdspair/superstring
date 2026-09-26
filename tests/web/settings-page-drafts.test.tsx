@@ -184,9 +184,9 @@ describe("容量预览与集中对话模型回归", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "对话模型" }), {
       target: { value: "other-model" },
     });
-    fireEvent.change(screen.getByRole("slider", { name: "回复随机度" }), {
-      target: { value: "0.4" },
-    });
+    const temperature = screen.getByRole("slider", { name: "回复随机度" });
+    fireEvent.keyDown(temperature, { key: "Home" });
+    for (let step = 0; step < 8; step++) fireEvent.keyDown(temperature, { key: "ArrowRight" });
     expect(document.querySelector("#settings-chat-model.workspace-group")).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "返回助手管理继续创建" }));
     expect(store.getState()).toMatchObject({
@@ -799,13 +799,9 @@ describe("页面草稿与白名单保存", () => {
     expect(screen.getByRole("button", { name: "编辑助手：B" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
-    expect(
-      (
-        screen.getByRole("checkbox", {
-          name: "选择助手：A",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "选择助手：A" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
     expect(screen.getByText("已选 1 / 2 个助手")).toBeTruthy();
   });
   it("顶部下拉切换详情与列表选中态，保留批量勾选和新会话候选", async () => {
@@ -820,13 +816,9 @@ describe("页面草稿与白名单保存", () => {
     expect(screen.getByRole("button", { name: "编辑助手：B" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
-    expect(
-      (
-        screen.getByRole("checkbox", {
-          name: "选择助手：A",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "选择助手：A" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "编辑助手：A" })));
     expect((selector as HTMLSelectElement).value).toBe("A");
   });
@@ -1000,4 +992,15 @@ describe("页面草稿与白名单保存", () => {
       expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
     }
   });
+});
+
+it.each([
+  ["models", "回复随机度"],
+  ["expression", "性格强度"],
+] as const)("保存中 %s 页的滑块不可操作", async (settingsRoute, label) => {
+  store.setState({ settingsRoute, settingsSaving: true });
+  await act(async () => render(<SettingsWorkspace />));
+  const slider = screen.getByRole("slider", { name: label });
+  expect(slider.hasAttribute("data-disabled")).toBe(true);
+  expect(slider.hasAttribute("tabindex")).toBe(false);
 });

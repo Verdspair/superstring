@@ -1,3 +1,10 @@
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 import { useQqInput } from "./use-qq-input";
 // The sticker library surface (§9.2, ADR0018 P5d).
 //
@@ -71,19 +78,22 @@ export function StickerLibrary() {
 
   return (
     <>
-      <p className="settings-note">
+      <p className="settings-note text-sm leading-relaxed text-muted-foreground">
         {t(
           "QQ 全局共享素材，不随当前助手切换。导入只保存应用内副本并默认停用，启用后还要有方案授权它所在的集合，回复才可能选中它。",
         )}
       </p>
       {loading && <p role="status">{t("正在读取素材库…")}</p>}
       {error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error text-sm text-destructive">
           {translateNotice(error)}
         </p>
       )}
       {feedback && (
-        <p className="hint workspace-feedback" role="status">
+        <p
+          className="hint workspace-feedback text-sm leading-relaxed text-muted-foreground"
+          role="status"
+        >
           {translateNotice(feedback)}
         </p>
       )}
@@ -97,7 +107,7 @@ export function StickerLibrary() {
           label="选择图片文件"
           info="格式与尺寸按文件内容读取，不看扩展名；同时导入多个文件请逐个进行。"
         >
-          <input
+          <Input
             type="file"
             accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
             disabled={saving}
@@ -110,12 +120,12 @@ export function StickerLibrary() {
           />
         </Field>
         {notice?.kind === "rejected" && (
-          <p role="alert" className="error">
+          <p role="alert" className="error text-sm text-destructive">
             {rejectedText(notice.reason)}
           </p>
         )}
         {notice?.kind === "imported" && (
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t("已导入并选中：")}
             {notice.name}
           </p>
@@ -128,14 +138,16 @@ export function StickerLibrary() {
         note="方案授权的是集合；一个素材可以同时属于多个集合，不会因此更容易被选中。"
       >
         {collections.length === 0 ? (
-          <p className="hint">{t("还没有集合。先建一个集合，素材才能被方案授权。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("还没有集合。先建一个集合，素材才能被方案授权。")}
+          </p>
         ) : (
-          <ul className="qq-sticker-collections">
+          <ul className="qq-sticker-collections divide-y [&>li]:flex [&>li]:flex-wrap [&>li]:items-center [&>li]:gap-3 [&>li]:py-3 [&>li>span]:min-w-0 [&>li>span]:flex-1 [&>li>span]:text-sm [&>li>small]:text-xs [&>li>small]:text-muted-foreground">
             {collections.map((collection) => (
               <li key={collection.id}>
                 {renaming?.id === collection.id ? (
                   <>
-                    <input
+                    <Input
                       value={renaming.name}
                       aria-label={t("集合名称")}
                       onChange={(event) =>
@@ -146,7 +158,8 @@ export function StickerLibrary() {
                         })
                       }
                     />
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       disabled={saving || renaming.name.trim() === ""}
                       onClick={() => {
@@ -160,10 +173,15 @@ export function StickerLibrary() {
                       }}
                     >
                       {t("保存名称")}
-                    </button>
-                    <button type="button" disabled={saving} onClick={() => setRenaming(null)}>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      type="button"
+                      disabled={saving}
+                      onClick={() => setRenaming(null)}
+                    >
                       {t("取消")}
-                    </button>
+                    </Button>
                   </>
                 ) : (
                   <>
@@ -172,7 +190,8 @@ export function StickerLibrary() {
                       {t("素材")}
                       {collection.asset_count}
                     </small>
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       disabled={saving}
                       aria-label={`${t("重命名集合")}：${collection.name}`}
@@ -186,7 +205,7 @@ export function StickerLibrary() {
                     >
                       <Icon name="edit" />
                       <span>{t("重命名")}</span>
-                    </button>
+                    </Button>
                   </>
                 )}
               </li>
@@ -194,13 +213,14 @@ export function StickerLibrary() {
           </ul>
         )}
         <Field label="新建集合" info="集合是方案授权的单位，名字只是给你自己看的。">
-          <input
+          <Input
             value={newCollection}
             aria-label={t("新建集合")}
             placeholder={t("例如：日常、节日")}
             onChange={(event) => setNewCollection(event.target.value)}
           />
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={saving || newCollection.trim() === ""}
             onClick={() => {
@@ -210,7 +230,7 @@ export function StickerLibrary() {
             }}
           >
             {t("新建")}
-          </button>
+          </Button>
         </Field>
       </SettingsGroup>
 
@@ -220,24 +240,31 @@ export function StickerLibrary() {
         note="启用只是允许选用；是否真的发出去还要看方案授权、节奏与防重复规则。"
       >
         {selected.length > 0 && (
-          <div className="qq-sticker-batch">
-            <p className="hint">
+          <Card className="qq-sticker-batch gap-4 bg-muted/30 p-4">
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
               {t("已选择")}
               {selected.length}
               {t("个素材")}
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving}
                 onClick={() => setSelection(assets.map((row) => row.id))}
               >
                 {t("全选")}
-              </button>
-              <button type="button" disabled={saving} onClick={() => setSelection([])}>
+              </Button>
+              <Button
+                variant="outline"
+                type="button"
+                disabled={saving}
+                onClick={() => setSelection([])}
+              >
                 {t("取消全选")}
-              </button>
+              </Button>
             </p>
-            <div className="qq-sticker-actions">
-              <select
+            <div className="qq-sticker-actions flex flex-wrap items-center gap-2">
+              <NativeSelect
+                className="w-full"
                 aria-label={t("归类集合")}
                 value={batchCollection}
                 disabled={saving}
@@ -249,47 +276,52 @@ export function StickerLibrary() {
                     {collection.name}
                   </option>
                 ))}
-              </select>
-              <button
+              </NativeSelect>
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving || batchCollection === ""}
                 onClick={() => void bulkUpdate({ addCollectionIds: [batchCollection] })}
               >
                 {t("加入集合")}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving || batchCollection === ""}
                 onClick={() => void bulkUpdate({ removeCollectionIds: [batchCollection] })}
               >
                 {t("移出集合")}
-              </button>
+              </Button>
             </div>
-            <div className="qq-sticker-actions">
-              <input
+            <div className="qq-sticker-actions flex flex-wrap items-center gap-2">
+              <Input
                 value={batchTag}
                 disabled={saving}
                 aria-label={t("批量标签")}
                 placeholder={t("标签")}
                 onChange={(event) => setBatchTag(event.target.value)}
               />
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving || batchTag.trim() === ""}
                 onClick={() => void bulkUpdate({ tags: { add: [batchTag.trim()] } })}
               >
                 {t("添加标签")}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving || batchTag.trim() === ""}
                 onClick={() => void bulkUpdate({ tags: { remove: [batchTag.trim()] } })}
               >
                 {t("移除标签")}
-              </button>
+              </Button>
             </div>
-            <div className="qq-sticker-actions">
-              <button
+            <div className="qq-sticker-actions flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving}
                 onClick={() => {
@@ -297,13 +329,14 @@ export function StickerLibrary() {
                 }}
               >
                 {t("启用所选")}
-              </button>
+              </Button>
               {confirmingDisable ? (
                 <>
-                  <span className="hint">
+                  <span className="hint text-sm leading-relaxed text-muted-foreground">
                     {t("停用所选会阻止它们尚未提交的发送；已发出的内容不受影响。")}
                   </span>
-                  <button
+                  <Button
+                    variant="outline"
                     type="button"
                     disabled={saving}
                     onClick={() => {
@@ -312,72 +345,78 @@ export function StickerLibrary() {
                     }}
                   >
                     {t("确认停用")}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="outline"
                     type="button"
                     disabled={saving}
                     onClick={() => setConfirmingDisable(false)}
                   >
                     {t("取消")}
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <button type="button" disabled={saving} onClick={() => setConfirmingDisable(true)}>
+                <Button
+                  variant="outline"
+                  type="button"
+                  disabled={saving}
+                  onClick={() => setConfirmingDisable(true)}
+                >
                   {t("停用所选")}
-                </button>
+                </Button>
               )}
             </div>
             {batchImpact !== null && (
-              <p className="hint">
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
                 {batchImpact.length === 0
                   ? t("启用所选后，回复才可能选中它们；目前没有方案授权它们的集合。")
                   : `${t("启用所选后，回复才可能选中它们；会到达的方案：")}${batchImpact.join("、")}`}
               </p>
             )}
-          </div>
+          </Card>
         )}
         {assets.length === 0 ? (
-          <p className="hint">{t("还没有素材。先导入一张图片。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("还没有素材。先导入一张图片。")}
+          </p>
         ) : (
-          <ul className="qq-sticker-list">
+          <ul className="qq-sticker-list grid gap-3 2xl:grid-cols-2 [&>li]:flex [&>li]:items-center [&>li]:gap-3 [&>li]:rounded-xl [&>li]:border [&>li]:bg-card [&>li]:p-2">
             {assets.map((asset) => (
               <li key={asset.id}>
-                <label className="qq-sticker-select">
-                  <input
-                    type="checkbox"
+                <Label className="qq-sticker-select shrink-0 pl-2">
+                  <Checkbox
                     disabled={saving}
                     checked={selected.includes(asset.id)}
                     aria-label={`${t("选择")}${asset.name}`}
-                    onChange={(event) =>
+                    onCheckedChange={(checkedValue) =>
                       setSelection(
-                        event.target.checked
+                        checkedValue === true
                           ? [...selected, asset.id]
                           : selected.filter((id) => id !== asset.id),
                       )
                     }
                   />
-                </label>
-                <button
+                </Label>
+                <Button
+                  variant="ghost"
                   type="button"
-                  className={
-                    editor?.source.id === asset.id ? "qq-sticker-row active" : "qq-sticker-row"
-                  }
+                  className={`qq-sticker-row h-auto min-w-0 flex-1 justify-start gap-4 whitespace-normal p-2 text-left ${editor?.source.id === asset.id ? "active bg-accent" : ""}`}
                   disabled={saving}
                   aria-current={editor?.source.id === asset.id ? "true" : undefined}
                   onClick={() => openEditor(asset.id)}
                 >
                   {/* The list shows the first frame; the detail below is the one that plays. */}
                   <img
-                    className="qq-sticker-thumb"
+                    className="qq-sticker-thumb size-16 shrink-0 rounded-md border bg-muted/30 object-contain"
                     src={`/qq/stickers/${asset.id}/preview?still=1`}
                     alt=""
                     loading="lazy"
                   />
-                  <span className="qq-sticker-row-text">
-                    <span className="qq-sticker-row-head">
+                  <span className="qq-sticker-row-text min-w-0 flex-1 [&>small]:mt-1 [&>small]:block [&>small]:text-xs [&>small]:font-normal [&>small]:text-muted-foreground">
+                    <span className="qq-sticker-row-head flex flex-wrap items-baseline gap-x-3 gap-y-1 [&>strong]:font-medium [&>small]:text-xs [&>small]:text-muted-foreground">
                       <strong>{asset.name}</strong>
                       <small
-                        className={asset.enabled ? "qq-sticker-state enabled" : "qq-sticker-state"}
+                        className={`qq-sticker-state text-xs ${asset.enabled ? "enabled text-primary" : "text-muted-foreground"}`}
                       >
                         {asset.enabled ? t("已启用") : t("已停用")}
                       </small>
@@ -395,7 +434,7 @@ export function StickerLibrary() {
                         : `${t("集合")}：${asset.collection_ids.map(collectionName).join("、")}`}
                     </small>
                   </span>
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -409,7 +448,7 @@ export function StickerLibrary() {
           note="保存整理只写内容；开放使用是另一个动作，保存并启用会一并完成。"
         >
           <Field label="名称">
-            <input
+            <Input
               value={editor.name}
               disabled={saving}
               aria-label={t("名称")}
@@ -418,13 +457,13 @@ export function StickerLibrary() {
           </Field>
           <Field label="预览" info="动图在这里播放；列表里显示的是首帧。">
             <img
-              className="qq-sticker-preview"
+              className="qq-sticker-preview max-h-64 max-w-full rounded-lg border bg-muted/30 object-contain"
               src={`/qq/stickers/${editor.source.id}/preview`}
               alt={editor.name}
             />
           </Field>
           <Field label="内容说明" info="选图时按说明判断是否贴合语境；说不清就留空，别让模型猜。">
-            <textarea
+            <Textarea
               value={editor.description}
               disabled={saving}
               aria-label={t("内容说明")}
@@ -433,7 +472,7 @@ export function StickerLibrary() {
             />
           </Field>
           <Field label="标签" info="用逗号分隔，仅用于你自己的整理。">
-            <input
+            <Input
               value={editor.tags}
               disabled={saving}
               aria-label={t("标签")}
@@ -442,7 +481,7 @@ export function StickerLibrary() {
             />
           </Field>
           <Field label="使用说明" info="可选的备注，例如适合在什么场合发。">
-            <input
+            <Input
               value={editor.usageNote}
               disabled={saving}
               aria-label={t("使用说明")}
@@ -451,32 +490,36 @@ export function StickerLibrary() {
           </Field>
           <Field label="所属集合" info="取消勾选只是移出这个集合，素材与文件都保留。">
             {collections.length === 0 ? (
-              <p className="hint">{t("还没有集合可归类。")}</p>
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
+                {t("还没有集合可归类。")}
+              </p>
             ) : (
-              <div className="qq-sticker-memberships">
+              <div className="qq-sticker-memberships flex flex-wrap gap-3 [&>label]:flex [&>label]:items-center [&>label]:gap-2 [&>label]:text-sm">
                 {collections.map((collection) => (
-                  <label key={collection.id}>
-                    <input
-                      type="checkbox"
+                  <Label key={collection.id}>
+                    <Checkbox
                       disabled={saving}
+                      aria-label={collection.name}
                       checked={editor.collectionIds.includes(collection.id)}
-                      onChange={(event) =>
+                      onCheckedChange={(checkedValue) =>
                         patchEditor({
-                          collectionIds: event.target.checked
-                            ? [...editor.collectionIds, collection.id]
-                            : editor.collectionIds.filter((id) => id !== collection.id),
+                          collectionIds:
+                            checkedValue === true
+                              ? [...editor.collectionIds, collection.id]
+                              : editor.collectionIds.filter((id) => id !== collection.id),
                         })
                       }
                     />
                     {collection.name}
-                  </label>
+                  </Label>
                 ))}
               </div>
             )}
           </Field>
           {/* §9.2's manual generation: the model writes drafts, the user decides. */}
-          <div className="qq-sticker-actions">
-            <button
+          <div className="qq-sticker-actions flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
               type="button"
               disabled={saving}
               onClick={() => {
@@ -487,13 +530,13 @@ export function StickerLibrary() {
               }}
             >
               {t("生成说明和标签")}
-            </button>
-            <button type="button" onClick={() => openRoute("management")}>
+            </Button>
+            <Button variant="outline" type="button" onClick={() => openRoute("management")}>
               {t("前往默认模型")}
-            </button>
+            </Button>
           </div>
           {annotationNotice !== null && (
-            <p className="hint" role="status">
+            <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
               {annotationNotice === "model_not_configured"
                 ? t("还没有配置图片理解模型：先到默认模型页选一个；未配置＝不能理解图片。")
                 : annotationNotice === "capacity_unavailable" ||
@@ -505,15 +548,18 @@ export function StickerLibrary() {
             </p>
           )}
           {(editor.source.description_draft !== null || editor.source.tags_draft.length > 0) && (
-            <div className="qq-sticker-impact">
+            <Card className="qq-sticker-impact gap-3 bg-muted/30 p-4 [&_h4]:text-sm [&_h4]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:text-xs [&_ul]:text-muted-foreground">
               <h4>{t("模型草稿（未审核）")}</h4>
-              <p className="hint">{editor.source.description_draft ?? t("（没有说明草稿）")}</p>
+              <p className="hint text-sm leading-relaxed text-muted-foreground">
+                {editor.source.description_draft ?? t("（没有说明草稿）")}
+              </p>
               {editor.source.tags_draft.length > 0 && (
-                <p className="hint">
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
                   {t("建议标签")}：{editor.source.tags_draft.join("、")}
                 </p>
               )}
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving}
                 onClick={() =>
@@ -527,56 +573,69 @@ export function StickerLibrary() {
                 }
               >
                 {t("把草稿填入编辑器（还需保存）")}
-              </button>
-            </div>
+              </Button>
+            </Card>
           )}
-          <div className="qq-sticker-actions">
-            <button type="button" disabled={saving || !dirty} onClick={() => void saveEditor()}>
+          <div className="qq-sticker-actions flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              type="button"
+              disabled={saving || !dirty}
+              onClick={() => void saveEditor()}
+            >
               {t("保存整理")}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               type="button"
               disabled={saving || !dirty}
               onClick={() => void saveEditor({ enableAfterSave: true })}
             >
               {t("保存并启用")}
-            </button>
+            </Button>
             {editor.source.enabled ? (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving}
                 onClick={() => void setEnabled(editor.source.id, false)}
               >
                 {t("停用素材")}
-              </button>
+              </Button>
             ) : (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={saving || dirty}
                 onClick={() => void setEnabled(editor.source.id, true)}
               >
                 {t("启用素材")}
-              </button>
+              </Button>
             )}
-            <button
+            <Button
+              variant="outline"
               type="button"
               disabled={saving || !dirty}
               onClick={() => openEditor(editor.source.id)}
             >
               {t("放弃改动")}
-            </button>
+            </Button>
           </div>
-          {dirty && <p className="hint">{t("有未保存的改动；保存前不会影响任何回复。")}</p>}
+          {dirty && (
+            <p className="hint text-sm leading-relaxed text-muted-foreground">
+              {t("有未保存的改动；保存前不会影响任何回复。")}
+            </p>
+          )}
           {impact && (
-            <div className="qq-sticker-impact">
+            <Card className="qq-sticker-impact gap-3 bg-muted/30 p-4 [&_h4]:text-sm [&_h4]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:text-xs [&_ul]:text-muted-foreground">
               <h4>{t("启用后的影响范围")}</h4>
               {impact.schemes.length === 0 ? (
-                <p className="hint">
+                <p className="hint text-sm leading-relaxed text-muted-foreground">
                   {t("目前没有方案授权它所在的集合，因此不会被任何回复选中。")}
                 </p>
               ) : (
                 <>
-                  <p className="hint">
+                  <p className="hint text-sm leading-relaxed text-muted-foreground">
                     {t("授权它的方案")}：{impact.schemes.map((scheme) => scheme.name).join("、")}
                   </p>
                   {impact.bindings.length > 0 && (
@@ -592,7 +651,7 @@ export function StickerLibrary() {
                   )}
                 </>
               )}
-            </div>
+            </Card>
           )}
         </SettingsGroup>
       )}

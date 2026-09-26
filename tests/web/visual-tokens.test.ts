@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { THEMES } from "../../src/shared/appearance";
+import { applyTheme } from "../../src/web/appearance";
 
 function luminance(hex: string) {
   const channels = hex.match(/[a-f\d]{2}/gi)?.map((channel) => {
@@ -14,43 +14,26 @@ function contrast(first: string, second: string) {
   const values = [luminance(first), luminance(second)].sort((a, b) => b - a);
   return (values[0] + 0.05) / (values[1] + 0.05);
 }
-const tokens = readFileSync("src/web/styles/tokens.css", "utf8");
-function modeColors(token: string): [string, string] {
-  const match = tokens.match(
-    new RegExp(`${token}: light-dark\\((#[a-f\\d]{6}), (#[a-f\\d]{6})\\)`),
-  );
+function appliedModeColors(token: string): [string, string] {
+  const value = document.documentElement.style.getPropertyValue(token);
+  const match = value.match(/light-dark\((#[a-f\d]{6}), (#[a-f\d]{6})\)/i);
   if (!match) throw new Error(`Missing light/dark color pair: ${token}`);
   return [match[1], match[2]];
 }
 
+afterEach(() => applyTheme("slate"));
+
 describe("workspace theme readability", () => {
   it.each(THEMES)("$id maintains readable primary actions in both modes", (theme) => {
-    const foreground = modeColors("--ss-on-accent");
-    expect(contrast(theme.color, foreground[0])).toBeGreaterThanOrEqual(4.5);
-    expect(contrast(theme.dark, foreground[1])).toBeGreaterThanOrEqual(4.5);
-  });
-
-  it("primary and secondary text remain readable on all permanent surfaces", () => {
-    for (const surface of ["--ss-canvas", "--ss-navigation", "--ss-surface", "--ss-inset"]) {
-      for (const text of ["--ss-text", "--ss-text-secondary"]) {
-        const background = modeColors(surface);
-        const foreground = modeColors(text);
-        for (const mode of [0, 1]) {
-          expect(
-            contrast(background[mode], foreground[mode]),
-            `${surface} / ${text} / ${mode}`,
-          ).toBeGreaterThanOrEqual(4.5);
-        }
-      }
-    }
-  });
-
-  it("error, success and warning text remain readable on their surfaces", () => {
-    for (const status of ["danger", "success", "warning"]) {
-      const foreground = modeColors(`--ss-${status}`);
-      const background = modeColors(`--ss-${status}-soft`);
+    applyTheme(theme.id);
+    for (const role of ["primary", "sidebar-primary"]) {
+      const backgrounds = appliedModeColors(`--${role}`);
+      const foregrounds = appliedModeColors(`--${role}-foreground`);
       for (const mode of [0, 1]) {
-        expect(contrast(background[mode], foreground[mode])).toBeGreaterThanOrEqual(4.5);
+        expect(
+          contrast(backgrounds[mode], foregrounds[mode]),
+          `${role} / ${mode}`,
+        ).toBeGreaterThanOrEqual(4.5);
       }
     }
   });

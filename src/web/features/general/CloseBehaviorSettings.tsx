@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 // §12's close behaviour (ADR0018/U07), shown only in desktop mode.
 //
 // The user decided (2026-09-24) that the answer is remembered and changeable, and that a
@@ -46,18 +47,18 @@ export function CloseBehaviorSettings() {
     >
       {loading && <p role="status">{t("正在读取关闭行为…")}</p>}
       {error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error text-sm text-destructive">
           {translateNotice(error)}
         </p>
       )}
       {feedback && (
-        <p className="hint" role="status">
+        <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
           {translateNotice(feedback)}
         </p>
       )}
       {action !== null && (
-        <fieldset className="mode-options close-behavior-options">
-          <legend className="visually-hidden">{t("关闭窗口时")}</legend>
+        <fieldset className="mode-options close-behavior-options flex flex-wrap gap-2 [&>button]:flex-col [&>button]:items-start [&>button]:gap-1">
+          <legend className="visually-hidden sr-only">{t("关闭窗口时")}</legend>
           {(
             [
               [
@@ -68,47 +69,59 @@ export function CloseBehaviorSettings() {
               ["exit", "完全退出", "关闭界面后应用随之退出；正在运行的模型任务不会等待。"],
             ] as const
           ).map(([value, label, note]) => (
-            <button
+            <Button
+              variant="outline"
               key={value}
               type="button"
-              className="mode-option"
+              className="mode-option h-auto min-h-10 whitespace-normal px-4 py-3 text-left aria-pressed:border-primary aria-pressed:bg-accent aria-pressed:text-accent-foreground"
               aria-pressed={action === value}
               disabled={saving}
               onClick={() => void update(value)}
             >
               <span>{t(label)}</span>
-              <small className="hint">{t(note)}</small>
-            </button>
+              <small className="hint text-sm leading-relaxed text-muted-foreground">
+                {t(note)}
+              </small>
+            </Button>
           ))}
           {/* Not a choice yet: the dialog belongs to the desktop host, which is not built here. */}
-          <button type="button" className="mode-option" disabled aria-pressed={false}>
+          <Button
+            variant="outline"
+            type="button"
+            className="mode-option h-auto min-h-10 whitespace-normal px-4 py-3 text-left aria-pressed:border-primary aria-pressed:bg-accent aria-pressed:text-accent-foreground"
+            disabled
+            aria-pressed={false}
+          >
             <span>{t("每次询问")}</span>
-            <small className="hint">
+            <small className="hint text-sm leading-relaxed text-muted-foreground">
               {t("关闭时先弹窗询问；该弹窗随桌面宿主提供，尚未开放。")}
             </small>
-          </button>
+          </Button>
         </fieldset>
       )}
-      <div className="settings-inline-action">
-        <button
+      <div className="settings-inline-action mt-4 flex flex-col items-start gap-2">
+        <Button
+          variant="link"
           type="button"
-          className="link-button"
+          className="link-button h-auto p-0 text-sm"
           onClick={() => setExitState(requestDesktopExit() ? "sent" : "unsent")}
         >
           {t("立即完全退出应用")}
-        </button>
+        </Button>
         {exitState === "sent" && (
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t("已请求退出；页面会在服务停止后断开。")}
           </p>
         )}
         {exitState === "unsent" && (
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t("没能发出退出请求：当前没有可用的连接，请稍后重试。")}
           </p>
         )}
         {exitState === "idle" && action === "background" && (
-          <p className="hint">{t("后台在线时用它退出；桌面宿主托盘就位后会多一个入口。")}</p>
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
+            {t("后台在线时用它退出；桌面宿主托盘就位后会多一个入口。")}
+          </p>
         )}
       </div>
     </Accordion>

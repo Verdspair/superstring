@@ -55,10 +55,13 @@ export function applyTheme(id: ThemeId) {
   const root = document.documentElement;
   root.dataset.theme = theme.id;
   for (const property of properties) root.style.removeProperty(property);
-  if (theme.id === "slate") return;
-  // A theme changes accent roles only. Neutral surfaces and borders belong to the
-  // design system, so every color remains readable in both appearance modes.
-  root.style.setProperty("--ac-accent", `light-dark(${theme.color}, ${theme.dark})`);
+  // Brand colors occupy shadcn's primary roles. Its accent token remains a
+  // neutral hover surface, so all sixteen palettes share the same readability.
+  const primary = `light-dark(${theme.color}, ${theme.dark})`;
+  for (const property of ["--primary", "--ring", "--sidebar-primary", "--sidebar-ring"])
+    root.style.setProperty(property, primary);
+  for (const property of ["--primary-foreground", "--sidebar-primary-foreground"])
+    root.style.setProperty(property, "light-dark(#ffffff, #171717)");
 }
 
 export function selectTheme(id: ThemeId): boolean {
@@ -83,13 +86,27 @@ export function readMode(): AppearanceMode {
   }
 }
 
-// 固定明暗只切 html 上的 .light / .dark：基础令牌、主题色的 light-dark() 与
-// 表单控件的 color-scheme 都随之解析，不需要复制一套颜色。
+// Keep the stored preference separate from the resolved color scheme. Tailwind
+// dark variants and native form controls must also follow OS changes in system mode.
 export function applyMode(mode: AppearanceMode) {
   const root = document.documentElement;
-  root.classList.toggle("dark", mode === "dark");
+  const dark =
+    mode === "dark" ||
+    (mode === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches === true);
+  root.classList.toggle("dark", dark);
   root.classList.toggle("light", mode === "light");
+  root.style.colorScheme = dark ? "dark" : "light";
   root.dataset.mode = mode;
+}
+
+export function observeSystemAppearance(): () => void {
+  const query = window.matchMedia?.("(prefers-color-scheme: dark)");
+  if (!query) return () => {};
+  const update = () => {
+    if (document.documentElement.dataset.mode === "system") applyMode("system");
+  };
+  query.addEventListener("change", update);
+  return () => query.removeEventListener("change", update);
 }
 
 export function selectMode(mode: AppearanceMode): boolean {

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { SettingsGroup } from "../../ui/Accordion";
@@ -41,31 +43,34 @@ export function OrganizationModelPage() {
       title="共同整理默认值"
       note="全局默认：记忆整理与知识库整理共用，不随助手切换。"
     >
-      <p className="hint">{t("已有明确覆盖优先；对话、记忆检索与上下文压缩仍独立配置。")}</p>
+      <p className="hint text-sm leading-relaxed text-muted-foreground">
+        {t("已有明确覆盖优先；对话、记忆检索与上下文压缩仍独立配置。")}
+      </p>
       {error && (
-        <p className="error" role="alert">
+        <p className="error text-sm text-destructive" role="alert">
           {t("共同默认模型读取失败：{0}", translateNotice(error))}
         </p>
       )}
       {!editor ? (
         loading ? (
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t("正在读取共同默认模型…")}
           </p>
         ) : (
-          <button type="button" disabled={busy} onClick={() => void load()}>
+          <Button variant="outline" type="button" disabled={busy} onClick={() => void load()}>
             {t("重试读取共同默认模型")}
-          </button>
+          </Button>
         )
       ) : (
-        <fieldset disabled={busy}>
+        <fieldset className="min-w-0 space-y-5" disabled={busy}>
           <Field
             label={t("共同默认模型")}
             info={t(
               "未指定时，记忆整理跟随助手对话模型，知识库整理跟随网关默认模型。不会自动加载模型。",
             )}
           >
-            <select
+            <NativeSelect
+              className="w-full"
               aria-label={t("共同默认模型")}
               value={editor.modelName ?? ""}
               onChange={(e) => patch(e.target.value || null)}
@@ -78,19 +83,20 @@ export function OrganizationModelPage() {
                   </option>
                 ),
               )}
-            </select>
+            </NativeSelect>
           </Field>
           {/* 用户 2026-09-25：这个按钮就在「共同默认模型」旁边，作用是把当前助手的四个文本用途
               一次改成上面这个模型并立即保存；图片理解与语音转写不是助手的字段，不动。 */}
-          <div className="model-page-toolbar">
-            <button
+          <div className="model-page-toolbar flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
               type="button"
               disabled={busy || !editor.modelName || !target}
               onClick={() => setConfirming(true)}
             >
               {t("一键覆盖当前助手的模型")}
-            </button>
-            <span className="hint">
+            </Button>
+            <span className="hint text-sm leading-relaxed text-muted-foreground">
               {!target
                 ? t("先选中一个已有助手（上方助手选择器），才能覆盖它的模型。")
                 : t(
@@ -120,7 +126,8 @@ export function OrganizationModelPage() {
             label={t("图片理解模型")}
             info={t("用于理解收到的图片与表情，以及为素材生成说明；未配置＝不能理解。")}
           >
-            <select
+            <NativeSelect
+              className="w-full"
               aria-label={t("图片理解模型")}
               value={editor.visionModelName ?? ""}
               onChange={(e) => patchPurposes({ visionModelName: e.target.value || null })}
@@ -136,7 +143,7 @@ export function OrganizationModelPage() {
                   {modelOptionLabel(name, availability, t)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <ModelUseHint
             purpose="vision"
@@ -144,7 +151,8 @@ export function OrganizationModelPage() {
             saved={editor.source.vision_model_name}
           />
           <Field label={t("语音转写模型")} info={t("用于把语音转成文字；未配置＝不能转写。")}>
-            <select
+            <NativeSelect
+              className="w-full"
               aria-label={t("语音转写模型")}
               value={editor.transcriptionModelName ?? ""}
               onChange={(e) => patchPurposes({ transcriptionModelName: e.target.value || null })}
@@ -160,27 +168,28 @@ export function OrganizationModelPage() {
                   {modelOptionLabel(name, availability, t)}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <ModelUseHint
             purpose="transcription"
             configured={editor.transcriptionModelName}
             saved={editor.source.transcription_model_name}
           />
-          <div className="workspace-links">
-            <button
+          <div className="workspace-links flex flex-wrap items-center gap-2">
+            <Button
+              variant="default"
               className="primary"
               type="button"
               disabled={!organizationDirty(editor)}
               onClick={() => void save()}
             >
               {t("保存默认模型")}
-            </button>
-            <button type="button" onClick={() => void load(true)}>
+            </Button>
+            <Button variant="outline" type="button" onClick={() => void load(true)}>
               {t("刷新全局基线（保留草稿）")}
-            </button>
+            </Button>
           </div>
-          <p className="hint">
+          <p className="hint text-sm leading-relaxed text-muted-foreground">
             {t(
               "已保存默认：{0}；图片理解：{1}；语音转写：{2}；修订 {3}。",
               editor.source.model_name ?? t("未指定"),
@@ -189,7 +198,7 @@ export function OrganizationModelPage() {
               editor.source.revision,
             )}
           </p>
-          <p className="hint" role="status">
+          <p className="hint text-sm leading-relaxed text-muted-foreground" role="status">
             {t(organizationDirty(editor) ? "当前页有未保存修改" : "当前页已保存")}
           </p>
         </fieldset>
