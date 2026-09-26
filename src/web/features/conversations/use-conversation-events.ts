@@ -3,56 +3,87 @@ import type { ConversationEventView } from "../../../shared/contracts/conversati
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
 
-/** Bodies are source-backed projections. Sequence cursors alone cannot prove continued access. */
-export function useConversationEvents(id: string, refreshMs = 5000) {
+export type HistoryChange = "initial" | "older" | "refresh" | "clear";
+export type BeforeHistoryChange = (kind: HistoryChange, next: ConversationEventView[]) => void;
+
+/** Refresh every loaded source projection: expiry/revocation does not append a sequence. */
+export function useConversationEvents(
+  id: string,
+  beforeChange?: BeforeHistoryChange,
+  refreshMs = 5000,
+) {
   const api = useSuperstringStore((s) => s.apiClient);
   const [items, setItems] = useState<ConversationEventView[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const through = useRef(0);
+  const first = useRef(0);
+  const current = useRef(items);
+  const notify = useRef(beforeChange);
+  notify.current = beforeChange;
   const pending = useRef<AbortController | null>(null);
   const load = useCallback(
-    async (more = false) => {
+    async (older = false) => {
       if (pending.current) return;
       const controller = new AbortController();
       pending.current = controller;
       setLoading(true);
       setError("");
-      const target = through.current;
-      let cursor = more ? target : 0;
-      let next: ConversationEventView[] = [];
+      const initial = !first.current;
       try {
-        for (;;) {
-          const page = await api.getConversationEvents(id, cursor, controller.signal);
-          if (controller.signal.aborted) return;
-          next = [...next, ...page.items];
-          cursor = page.nextSeq;
-          setHasMore(page.hasMore);
-          if (more || !page.hasMore || cursor >= target) break;
-        }
-        through.current = cursor;
-        setItems((old) =>
-          [
-            ...new Map([...(more ? old : []), ...next].map((item) => [item.seq, item])).values(),
-          ].sort((a, b) => a.seq - b.seq),
+        const page = await api.getConversationEvents(
+          id,
+          initial
+            ? { direction: "latest" }
+            : older
+              ? { direction: "before", beforeSeq: first.current }
+              : { direction: "after", afterSeq: first.current - 1 },
+          controller.signal,
         );
+        if (controller.signal.aborted) return;
+        let next = page.items;
+        if (initial || older) setHasMore(page.hasMore);
+        else {
+          let cursor = page.nextSeq;
+          let more = page.hasMore;
+          while (more) {
+            const following = await api.getConversationEvents(
+              id,
+              { direction: "after", afterSeq: cursor },
+              controller.signal,
+            );
+            if (controller.signal.aborted) return;
+            next = [...next, ...following.items];
+            // A non-advancing response cannot represent another page.
+            more = following.hasMore && following.nextSeq > cursor;
+            cursor = following.nextSeq;
+          }
+        }
+        next = [
+          ...new Map(
+            [...(older ? current.current : []), ...next].map((item) => [item.seq, item]),
+          ).values(),
+        ].sort((a, b) => a.seq - b.seq);
+        first.current = next[0]?.seq ?? 0;
+        notify.current?.(initial ? "initial" : older ? "older" : "refresh", next);
+        current.current = next;
+        setItems(next);
       } catch (reason) {
         if (!controller.signal.aborted) {
           setError(errorText(reason));
-          // Keep the timeline positions but do not retain a body whose access could not be revalidated.
-          setItems((old) =>
-            old.map((item) => ({
-              ...item,
-              text: null,
-              contentState: "unavailable",
-              media: item.media.map((media) => ({
-                ...media,
-                description: null,
-                availability: "unavailable",
-              })),
+          const redacted: ConversationEventView[] = current.current.map((item) => ({
+            ...item,
+            text: null,
+            contentState: "unavailable",
+            media: item.media.map((media) => ({
+              ...media,
+              description: null,
+              availability: "unavailable",
             })),
-          );
+          }));
+          notify.current?.("refresh", redacted);
+          current.current = redacted;
+          setItems(redacted);
         }
       } finally {
         if (pending.current === controller) {
@@ -69,6 +100,8 @@ export function useConversationEvents(id: string, refreshMs = 5000) {
       foreground = false;
       pending.current?.abort();
       pending.current = null;
+      notify.current?.("clear", []);
+      current.current = [];
       setItems([]);
       setLoading(false);
     };

@@ -2,15 +2,16 @@ import { useState } from "react";
 import type {
   ConversationEventView,
   ConversationSummary,
-  Delivery,
 } from "../../../shared/contracts/conversation";
 import { translateNotice, useI18n } from "../../i18n";
-import { errorText } from "../../state/helpers";
-import { useSuperstringStore } from "../../store";
 import { localTime } from "../../ui/local-time";
+import { ConversationRuntimeSummary } from "../observability/ConversationRuntimeSummary";
+import { TraceExplorer } from "../observability/TraceExplorer";
 import { RunLink } from "../runs/RunInspector";
 import { ConversationHeader } from "./ConversationHeader";
+import { DeliveryDetails, deliveryLabels } from "./DeliveryDetails";
 import { useConversationEvents } from "./use-conversation-events";
+import { timelineKey, useTimelineScroll } from "./use-timeline-scroll";
 
 const contentLabels = {
   active: "",
@@ -18,30 +19,13 @@ const contentLabels = {
   revoked: "原文已撤权或删除",
   unavailable: "原文暂不可用",
 };
-const deliveryLabels = {
-  planned: "等待发送",
-  delivering: "正在送达",
-  sending: "正在送达",
-  confirmed: "已送达",
-  failed: "发送失败",
-  unknown: "发送结果待确认",
-  stale: "回复已过期",
-  not_sent: "尚未发送",
-};
-
 /** Media updates decorate their parent observation, retaining the annotation's identity and availability. */
 export function timelineRows(items: ConversationEventView[]): ConversationEventView[] {
   const revisions = items.filter((item) => item.kind === "media_revision");
   const latest = new Map<string, ConversationEventView>();
   for (const item of items) {
     if (item.kind === "media_revision") continue;
-    const key = item.outputId
-      ? `output:${item.outputId}`
-      : item.kind === "inbound" || item.kind === "outbound"
-        ? `source:${item.source.kind}:${item.source.id}`
-        : item.wake
-          ? `wake:${item.wake.id}`
-          : `event:${item.seq}`;
+    const key = timelineKey(item);
     latest.set(key, item);
   }
   return [...latest.values()]
@@ -63,8 +47,12 @@ export function timelineRows(items: ConversationEventView[]): ConversationEventV
 
 export function ConversationTimeline({ conversation }: { conversation: ConversationSummary }) {
   const t = useI18n();
+  const [hasViewedDiagnostics, setHasViewedDiagnostics] = useState(false);
+  const [view, setView] = useState<"messages" | "diagnostics">("messages");
+  const scroll = useTimelineScroll();
   const { items, hasMore, loading, error, refresh, loadMore } = useConversationEvents(
     conversation.id,
+    scroll.beforeChange,
   );
   const rows = timelineRows(items);
   return (
@@ -83,227 +71,209 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
           </button>
         }
       />
-      <details className="conversation-source">
-        <summary>{t("会话来源与参与者")}</summary>
-        <dl className="run-metadata">
-          <div>
-            <dt>{t("会话 ID")}</dt>
-            <dd>
-              <code>{conversation.id}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>{t("来源绑定")}</dt>
-            <dd>
-              <code>{conversation.sourceId}</code>
-            </dd>
-          </div>
-          <div>
-            <dt>Agent</dt>
-            <dd>
-              <code>{conversation.agentId}</code>
-            </dd>
-          </div>
-        </dl>
-        <ul>
-          {conversation.participants.map((person) => (
-            <li key={person.id}>
-              {person.label} · <code>{person.id}</code>
-            </li>
-          ))}
-        </ul>
-      </details>
-      {error && (
-        <p role="alert" className="error">
-          {translateNotice(error)}
-        </p>
-      )}
-      {loading && <p role="status">{t("正在读取会话…")}</p>}
-      {!loading && !error && !rows.length && <p className="hint">{t("此会话暂无消息记录。")}</p>}
-      <ol className="conversation-timeline">
-        {rows.map((item) => {
-          const message =
-            item.kind === "inbound" ||
-            (item.kind === "outbound" && item.deliveryStatus === "confirmed");
-          return (
-            <li
-              key={item.seq}
-              id={`source-${item.source.kind}-${item.source.id}`}
-              className={message ? "conversation-message" : "conversation-activity"}
-            >
-              <header>
-                <strong>
-                  {item.participant?.label ?? t(item.kind === "wake" ? "唤醒记录" : "运行活动")}
-                </strong>
-                <time dateTime={item.occurredAt}>{localTime(item.occurredAt)}</time>
-              </header>
-              {item.participant && conversation.topology === "shared" && (
-                <small className="conversation-member-id">
-                  <code>{item.participant.id}</code>
-                </small>
-              )}
-              <Addressing item={item} rows={rows} conversation={conversation} />
-              {item.wake && <WakeActivity wake={item.wake} />}
-              {item.messageStatus === "failed" && <p className="error">{t("[生成失败]")}</p>}
-              {item.messageStatus === "cancelled" && <p className="hint">{t("[生成已取消]")}</p>}
-              {item.deliveryStatus && (
-                <p className="delivery-status" data-status={item.deliveryStatus}>
-                  {t(deliveryLabels[item.deliveryStatus])}
-                </p>
-              )}
-              {item.kind !== "wake" &&
-                (item.contentState !== "active" ? (
-                  <p className="hint">{t(contentLabels[item.contentState])}</p>
-                ) : (
-                  item.text && <p className="conversation-text">{item.text}</p>
-                ))}
-              {!!item.media.length && (
-                <ul className="conversation-media">
-                  {item.media.map((media) => (
-                    <li key={media.id}>
-                      <strong>
-                        {t(
-                          media.kind === "sticker"
-                            ? "表情"
-                            : media.kind === "image"
-                              ? "图片"
-                              : "媒体",
-                        )}
-                      </strong>{" "}
-                      · <code>{media.id}</code>
-                      <p>
-                        {media.description ??
-                          t(
-                            media.availability === "expired"
-                              ? "媒体已过保留期"
-                              : "暂无可用媒体描述",
-                          )}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="conversation-row-actions">
-                {item.runId && <RunLink runId={item.runId} />}
-                {item.outputId && (
-                  <DeliveryDetails
-                    key={`${item.outputId}:${item.deliveryStatus}`}
-                    outputId={item.outputId}
-                    conversation={conversation}
-                  />
-                )}
-              </div>
-              <details className="conversation-source">
-                <summary>{t("来源记录")}</summary>
-                <code>
-                  {item.source.kind}:{item.source.id}
-                </code>
-                <p>
-                  {t("事件序号：{0}", item.seq)} · {t("来源版本")}: {item.source.revision}
-                </p>
-              </details>
-            </li>
-          );
-        })}
-      </ol>
-      {hasMore && (
-        <button type="button" disabled={loading} onClick={() => void loadMore()}>
-          {t("加载更多记录")}
+      <ConversationRuntimeSummary conversationId={conversation.id} />
+      <fieldset className="conversation-view-switch" aria-label={t("会话视图")}>
+        <button
+          type="button"
+          aria-pressed={view === "messages"}
+          onClick={() => setView("messages")}
+        >
+          {t("消息记录")}
         </button>
+        <button
+          type="button"
+          aria-pressed={view === "diagnostics"}
+          onClick={() => {
+            setHasViewedDiagnostics(true);
+            setView("diagnostics");
+          }}
+        >
+          {t("运行观测")}
+        </button>
+      </fieldset>
+      {hasViewedDiagnostics && (
+        <div className="conversation-reading" hidden={view !== "diagnostics"}>
+          <TraceExplorer conversationId={conversation.id} />
+        </div>
       )}
-      <p className="hint">{t("消息由已连接的机器人接入；在原聊天应用中继续对话。")}</p>
-    </section>
-  );
-}
-
-function DeliveryDetails({
-  outputId,
-  conversation,
-}: {
-  outputId: string;
-  conversation: ConversationSummary;
-}) {
-  const t = useI18n();
-  const api = useSuperstringStore((s) => s.apiClient);
-  const [delivery, setDelivery] = useState<Delivery | null>(null),
-    [loading, setLoading] = useState(false),
-    [error, setError] = useState("");
-  const load = async () => {
-    if (loading) return;
-    setLoading(true);
-    setError("");
-    try {
-      setDelivery(await api.getDelivery(outputId));
-    } catch (reason) {
-      setError(errorText(reason));
-    } finally {
-      setLoading(false);
-    }
-  };
-  return (
-    <details
-      className="delivery-details"
-      onToggle={(event) => {
-        if (event.currentTarget.open && !delivery && !loading) void load();
-      }}
-    >
-      <summary>{t("送达详情")}</summary>
-      {error && <p role="alert">{translateNotice(error)}</p>}
-      {loading && <p role="status">{t("正在读取送达结果…")}</p>}
-      {delivery && (
-        <>
-          <p>{t(deliveryLabels[delivery.status])}</p>
-          <p>
-            {t("输出 {0}", delivery.ordinal + 1)} ·{" "}
-            {delivery.target ? (
-              <>
-                {t("送达会话")}: <code>{delivery.target.peerId}</code>
-                {delivery.target.participantId && (
-                  <>
-                    {" "}
-                    · {t("回应成员")}:{" "}
-                    {conversation.participants.find(
-                      (person) => person.id === delivery.target?.participantId,
-                    )?.label ?? ""}{" "}
-                    <code>{delivery.target.participantId}</code>
-                  </>
-                )}
-              </>
-            ) : (
-              t("目标信息未记录")
-            )}
-          </p>
-          {delivery.parts.some((part) => part.status === "confirmed") &&
-            delivery.parts.some((part) => part.status !== "confirmed") && (
-              <p className="hint">{t("部分内容已送达，请查看各部分结果。")}</p>
-            )}
-          <ol>
-            {delivery.parts.map((part) => (
-              <li key={part.id}>
-                <strong>{t(part.kind === "text" ? "文本" : "表情")}</strong> ·{" "}
-                {t(deliveryLabels[part.status])}
-                {part.stickerId && (
-                  <p>
-                    {t("表情 ID")}: <code>{part.stickerId}</code>
-                  </p>
-                )}
-                {part.platformMessageId && (
-                  <p>
-                    {t("平台消息 ID")}: <code>{part.platformMessageId}</code>
-                  </p>
-                )}
+      <section
+        hidden={view !== "messages"}
+        className="conversation-reading"
+        ref={scroll.viewport}
+        onScroll={scroll.onScroll}
+        onKeyDown={(event) => {
+          if (
+            event.target !== event.currentTarget ||
+            event.altKey ||
+            event.ctrlKey ||
+            event.metaKey
+          )
+            return;
+          if (event.key === "End") {
+            event.preventDefault();
+            scroll.toLatest();
+          }
+          if (event.key === "Home") {
+            event.preventDefault();
+            event.currentTarget.scrollTop = 0;
+            scroll.onScroll();
+          }
+        }}
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: Native scroll region must support keyboard scrolling.
+        tabIndex={0}
+        aria-label={t("消息记录")}
+      >
+        <details className="conversation-source">
+          <summary>{t("会话来源与参与者")}</summary>
+          <dl className="run-metadata">
+            <div>
+              <dt>{t("会话 ID")}</dt>
+              <dd>
+                <code>{conversation.id}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>{t("来源绑定")}</dt>
+              <dd>
+                <code>{conversation.sourceId}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Agent</dt>
+              <dd>
+                <code>{conversation.agentId}</code>
+              </dd>
+            </div>
+          </dl>
+          <ul>
+            {conversation.participants.map((person) => (
+              <li key={person.id}>
+                {person.label} · <code>{person.id}</code>
               </li>
             ))}
-          </ol>
-          {delivery.status === "unknown" && (
-            <p className="hint">{t("尚未确认外部平台是否已收到；此处仅核对结果。")}</p>
-          )}
-        </>
+          </ul>
+        </details>
+        {error && (
+          <p role="alert" className="error">
+            {translateNotice(error)}
+          </p>
+        )}
+        {loading && (
+          <p role="status" className={rows.length ? "visually-hidden" : undefined}>
+            {t("正在读取会话…")}
+          </p>
+        )}
+        {!loading && !error && !rows.length && <p className="hint">{t("此会话暂无消息记录。")}</p>}
+        {hasMore && (
+          <button
+            type="button"
+            className="history-earlier"
+            disabled={loading}
+            onClick={() => void loadMore()}
+          >
+            {t("加载更早记录")}
+          </button>
+        )}
+        <ol className="conversation-timeline">
+          {rows.map((item) => {
+            const message =
+              item.kind === "inbound" ||
+              (item.kind === "outbound" && item.deliveryStatus === "confirmed");
+            return (
+              <li
+                key={timelineKey(item)}
+                data-timeline-key={timelineKey(item)}
+                id={`source-${item.source.kind}-${item.source.id}`}
+                className={message ? "conversation-message" : "conversation-activity"}
+              >
+                <header>
+                  <strong>
+                    {item.participant?.label ?? t(item.kind === "wake" ? "唤醒记录" : "运行活动")}
+                  </strong>
+                  <time dateTime={item.occurredAt}>{localTime(item.occurredAt)}</time>
+                </header>
+                {item.participant && conversation.topology === "shared" && (
+                  <small className="conversation-member-id">
+                    <code>{item.participant.id}</code>
+                  </small>
+                )}
+                <Addressing item={item} rows={rows} conversation={conversation} />
+                {item.wake && <WakeActivity wake={item.wake} />}
+                {item.messageStatus === "failed" && <p className="error">{t("[生成失败]")}</p>}
+                {item.messageStatus === "cancelled" && <p className="hint">{t("[生成已取消]")}</p>}
+                {item.deliveryStatus && (
+                  <p className="delivery-status" data-status={item.deliveryStatus}>
+                    {t(deliveryLabels[item.deliveryStatus])}
+                  </p>
+                )}
+                {item.kind !== "wake" &&
+                  (item.contentState !== "active" ? (
+                    <p className="hint">{t(contentLabels[item.contentState])}</p>
+                  ) : (
+                    item.text && <p className="conversation-text">{item.text}</p>
+                  ))}
+                {!!item.media.length && (
+                  <ul className="conversation-media">
+                    {item.media.map((media) => (
+                      <li key={media.id}>
+                        <strong>
+                          {t(
+                            media.kind === "sticker"
+                              ? "表情"
+                              : media.kind === "image"
+                                ? "图片"
+                                : "媒体",
+                          )}
+                        </strong>{" "}
+                        · <code>{media.id}</code>
+                        <p>
+                          {media.description ??
+                            t(
+                              media.availability === "expired"
+                                ? "媒体已过保留期"
+                                : "暂无可用媒体描述",
+                            )}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="conversation-row-actions">
+                  {item.runId && <RunLink runId={item.runId} />}
+                  {item.outputId && (
+                    <DeliveryDetails
+                      key={`${item.outputId}:${item.deliveryStatus}`}
+                      outputId={item.outputId}
+                      conversation={conversation}
+                    />
+                  )}
+                </div>
+                <details className="conversation-source">
+                  <summary>{t("来源记录")}</summary>
+                  <code>
+                    {item.source.kind}:{item.source.id}
+                  </code>
+                  <p>
+                    {t("事件序号：{0}", item.seq)} · {t("来源版本")}: {item.source.revision}
+                  </p>
+                </details>
+              </li>
+            );
+          })}
+        </ol>
+      </section>
+      {view === "messages" && scroll.away && (
+        <button className="conversation-latest" type="button" onClick={scroll.toLatest}>
+          {scroll.unread ? t("{0} 条新消息 · 回到最新", scroll.unread) : t("回到最新")}
+        </button>
       )}
-      <button type="button" disabled={loading} onClick={() => void load()}>
-        {t("刷新送达结果")}
-      </button>
-    </details>
+      <span className="visually-hidden" role="status">
+        {scroll.unread ? t("{0} 条新消息", scroll.unread) : ""}
+      </span>
+      <p className="hint conversation-footer">
+        {t("消息由已连接的机器人接入；在原聊天应用中继续对话。")}
+      </p>
+    </section>
   );
 }
 

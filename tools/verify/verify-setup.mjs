@@ -309,6 +309,9 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0041_outbound_intents.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0042_runtime_observability.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

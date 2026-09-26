@@ -16,6 +16,7 @@ import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import { WakeRepository } from "../../db/wake-repository";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
+import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import { QQ_OBSERVATION_RETENTION_DAYS } from "../../services/qq-retention";
 import { type QqSendPort, qqStickerFileReference } from "../../services/qq-send-transport";
 import { qqStickerSelectionForScheme } from "../../services/qq-sticker-candidates";
@@ -45,6 +46,7 @@ export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
 /** Production composition of protocol ingress, Agent activation and durable delivery. */
 export function createOneBotConversationRuntime(options: {
   orm: Orm;
+  telemetry?: RuntimeTelemetry;
   db: Database;
   gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity">;
   agentRuntime: AgentRuntime;
@@ -61,7 +63,13 @@ export function createOneBotConversationRuntime(options: {
   const policy = { ...DEFAULT_BOT_CONVERSATION_POLICY, ...options.policy };
   const wakes = new WakeRepository(db);
   const outbox = new OutboundIntentRepository(db);
-  const adapter = new OneBot11Adapter({ orm, journal, wakes, wake: options.wake });
+  const adapter = new OneBot11Adapter({
+    orm,
+    journal,
+    wakes,
+    wake: options.wake,
+    telemetry: options.telemetry,
+  });
   const host = new OneBotHost({
     ...options,
     wakes,
@@ -71,10 +79,45 @@ export function createOneBotConversationRuntime(options: {
       isAvailable: (asset) => options.store.copyExists(asset.fileName),
     },
     policy: () => policy,
+    onDiagnostic(event) {
+      options.telemetry?.record("bot.host.feedback", {
+        channel: "onebot11",
+        stage:
+          event.stage === "sticker"
+            ? "sticker"
+            : event.stage === "reconsider"
+              ? "context"
+              : event.stage === "output"
+                ? "delivery"
+                : "action",
+        status:
+          event.status === "chosen" || event.status === "selected"
+            ? "completed"
+            : event.status === "skipped" || event.status === "none"
+              ? "skipped"
+              : event.status === "model_error"
+                ? "failed"
+                : ["feedback", "pending", "capacity_unavailable", "capacity_exceeded"].includes(
+                      event.status,
+                    )
+                  ? "deferred"
+                  : "observed",
+        code: event.code ?? "BOT_FEEDBACK",
+        conversationId: event.conversationId,
+        runId: event.runId,
+        sourceSeq: event.sourceSeq,
+        details: {
+          ...event.details,
+          feedbackStatus: event.status,
+          targetId: event.targetId ?? null,
+        },
+      });
+    },
   });
   const delivery = new OutboundDelivery({
     orm,
     repository: outbox,
+    telemetry: options.telemetry,
     journal,
     port: options.port,
     stickerFile: qqStickerFileReference(orm, options.store),
@@ -166,7 +209,7 @@ export function createOneBotConversationRuntime(options: {
         )
         .at(-1);
       if (!source) return;
-      wakes.enqueue({
+      const recovered = wakes.enqueueChanged({
         conversationId: conversation.id,
         cause: row.speech_kind,
         throughSeq: source.seq,
@@ -180,11 +223,30 @@ export function createOneBotConversationRuntime(options: {
               ? 50
               : 0,
       });
-      options.wake();
+      if (recovered.changed) {
+        options.telemetry?.record("bot.wake.recovery", {
+          channel: "onebot11",
+          stage: "wake",
+          status: "scheduled",
+          code: "DELIVERY_STALE_REOBSERVE",
+          conversationId: conversation.id,
+          agentId: conversation.agentId,
+          wakeId: recovered.wake.id,
+          sourceSeq: source.seq,
+          sources: source.sources,
+          parent:
+            options.telemetry.parentFor("output_id", intent.id) ??
+            options.telemetry.parentFor("run_id", row.run_id) ??
+            undefined,
+          details: { outputId: intent.id, cause: row.speech_kind },
+        });
+        options.wake();
+      }
     },
   });
   const scheduler = new WakeScheduler({
     repository: wakes,
+    telemetry: options.telemetry,
     policy: () => {
       const leaseMs = readQqDispatchSettings(orm).leaseSeconds * 1000;
       return {
@@ -196,8 +258,9 @@ export function createOneBotConversationRuntime(options: {
       };
     },
     async activate(wake, signal) {
-      await host.activate(wake, signal);
+      const result = await host.activate(wake, signal);
       await delivery.runOnce();
+      return result;
     },
   });
   delivery.recover();

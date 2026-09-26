@@ -28,6 +28,7 @@ import {
   type ModuleComposition,
   type ModuleSourceResolver,
 } from "./modules/composition";
+import { RuntimeTelemetry } from "./observability/runtime-telemetry";
 import { DEFAULT_MODEL_PROVIDER_KEY_PATH } from "./secret-box";
 import { MemoryService } from "./services/memory-service";
 import { QqIntakeRuntime } from "./services/qq-intake";
@@ -101,6 +102,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       path: options.businessDbPath ?? ":memory:",
       migrationSql: options.businessMigrationSql,
     });
+  const telemetry = new RuntimeTelemetry(business.db);
   let gateway: ModelGateway;
   let memoryService: MemoryService;
   let agentRuntime: AgentRuntime;
@@ -133,13 +135,20 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     const runRepository = new AgentRunRepository(business.db);
     runRepository.expireContexts();
     runRepository.recoverInterrupted();
-    agentRuntime = createAgentRuntime({ gateway, vision: visionClient, repository: runRepository });
+    telemetry.expire();
+    telemetry.recover();
+    agentRuntime = createAgentRuntime({
+      gateway,
+      vision: visionClient,
+      repository: runRepository,
+      telemetry,
+    });
     const journal = new ConversationEventRepository(business.db);
     journal.backfill();
     const host = new ConversationHost({ runtime: agentRuntime });
     memoryService =
       options.memoryService ??
-      new MemoryService({ orm: business.orm, db: business.db, gateway, agentRuntime });
+      new MemoryService({ orm: business.orm, db: business.db, gateway, agentRuntime, telemetry });
     modules =
       options.modules ??
       createSqliteModules({
@@ -148,6 +157,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         gateway,
         agentRuntime,
         memoryWorker: memoryService,
+        telemetry,
       });
     const stickerStore = new QqStickerStore({
       directory: options.qqStickerDirectory ?? DEFAULT_QQ_STICKER_DIRECTORY,
@@ -167,6 +177,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       store: stickerStore,
       port,
       wake: () => botWorker.wake(),
+      telemetry,
       policy: options.botConversationPolicy,
       modules: modules.bind,
       resolveSource: options.resolveSource,
@@ -221,6 +232,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         options.browserStateSecret ?? browserStateSecret(options.browserStateSecretPath),
     });
   } catch (error) {
+    void telemetry.close();
     business.close();
     throw error;
   }
@@ -243,6 +255,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       contextSweep = setInterval(() => {
         new AgentRunRepository(business.db).expireContexts();
         bot.delivery.housekeep();
+        telemetry.expire();
       }, 60_000);
       contextSweep.unref();
       modules.start();
@@ -261,6 +274,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       bot.scheduler.stop();
       await botWorker.stop();
       if (started) await modules.stop();
+      await telemetry.close();
       business.close();
     },
   };

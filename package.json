@@ -20,6 +20,9 @@
     "build:desktop": "node tools/desktop/build/build.mjs"
   },
   "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/context-async-hooks": "2.11.0",
+    "@opentelemetry/sdk-trace-base": "2.11.0",
     "@radix-ui/react-alert-dialog": "1.1.23",
     "@radix-ui/react-dialog": "1.1.23",
     "drizzle-orm": "0.45.2",

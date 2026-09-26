@@ -46,6 +46,34 @@ function setup(includeShared = false) {
 }
 
 describe("canonical conversation read APIs", () => {
+  it("opens the newest page, pages backward without gaps and keeps after polling compatible", async () => {
+    const { app, session, journal } = setup(true);
+    const conversation = journal.ensureWeb(session.id)!;
+    for (let i = 1; i <= 125; i++)
+      journal.append({
+        conversationId: conversation.id,
+        eventKey: `fixture:${i}`,
+        kind: "inbound",
+        source: { kind: "fixture", id: String(i), revision: "1" },
+        occurredAt: nowIso(),
+      });
+    const read = async (query: string) =>
+      ConversationEventsSchema.parse(
+        await (await app.request(`/v2/conversations/${conversation.id}/events?${query}`)).json(),
+      );
+    const latest = await read("direction=latest&limit=20");
+    expect(latest.items.map((e) => e.seq)).toEqual(Array.from({ length: 20 }, (_, i) => 106 + i));
+    expect(latest).toMatchObject({ firstSeq: 106, nextSeq: 125, hasMore: true });
+    const older = await read("direction=before&beforeSeq=106&limit=20");
+    expect(older).toMatchObject({ firstSeq: 86, nextSeq: 105, hasMore: true });
+    const oldest = await read("direction=before&beforeSeq=86&limit=100");
+    expect(oldest).toMatchObject({ firstSeq: 1, nextSeq: 85, hasMore: false });
+    expect((await read("afterSeq=124")).items.map((e) => e.seq)).toEqual([125]);
+    expect(
+      (await app.request(`/v2/conversations/${conversation.id}/events?direction=sideways`)).status,
+    ).toBe(422);
+  });
+
   it("discovers empty Web and shared sources, paginates their canonical IDs and reflects source edits", async () => {
     const { app, business, session } = setup(true);
     const another = createSession(business.orm, "never opened", { modelName: "fixture" });

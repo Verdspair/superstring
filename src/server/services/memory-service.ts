@@ -37,6 +37,7 @@ import * as schema from "../db/schema";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { memoryEntrySources, observationSourcesForRun, turnSources } from "../modules/provenance";
+import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
 import {
   buildConsolidationPrompt,
   type ConsolidationConfig,
@@ -65,6 +66,7 @@ export interface MemoryServiceOptions {
   db: Database;
   gateway: ModelGateway;
   agentRuntime?: LeafAgentRuntime;
+  telemetry?: RuntimeTelemetry;
   /** How long an idle cycle waits before the next poll. */
   pollIntervalMs?: number;
   /** How often the heartbeat renews the lease. */
@@ -93,6 +95,7 @@ export class MemoryService {
   private readonly orm: Orm;
   private readonly db: Database;
   private readonly agentRuntime: LeafAgentRuntime;
+  private readonly telemetry?: RuntimeTelemetry;
   private readonly pollIntervalMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly jobTimeoutMs: number;
@@ -103,6 +106,7 @@ export class MemoryService {
   private cancelCurrentJob: (() => void) | null = null;
 
   constructor(options: MemoryServiceOptions) {
+    this.telemetry = options.telemetry;
     this.orm = options.orm;
     this.db = options.db;
     this.agentRuntime =
@@ -209,6 +213,14 @@ export class MemoryService {
             token: null,
             leaseExpiresAt: null,
             finishedAt: nowIso(),
+          });
+          this.telemetry?.record("memory.recover", {
+            channel: "memory",
+            stage: "maintenance",
+            status: "failed",
+            code: "MEMORY_WORKER_INTERRUPTED",
+            agentId: row.agentId,
+            details: { jobId: row.id },
           });
         }
       });
@@ -510,12 +522,46 @@ export class MemoryService {
    * publishing stale work is exactly what the lease exists to prevent.
    */
   async runJob(jobId: string): Promise<void> {
+    const before = this.telemetry
+      ? (this.db.query("SELECT status FROM memory_jobs WHERE id=?").get(jobId) as {
+          status: string;
+        } | null)
+      : null;
     const claimed = immediate(this.db, () => claim(this.orm, jobId));
-    if (claimed === null) return;
-    const agentId = claimed.agentId;
+    if (claimed === null) {
+      if (before?.status === "queued") {
+        const after = this.db
+          .query("SELECT status,error_code,agent_id FROM memory_jobs WHERE id=?")
+          .get(jobId) as { status: string; error_code: string | null; agent_id: string } | null;
+        if (after?.status === "failed")
+          this.telemetry?.record("memory.claim", {
+            channel: "memory",
+            stage: "maintenance",
+            status: "failed",
+            code: after.error_code ?? "MEMORY_CLAIM_FAILED",
+            agentId: after.agent_id,
+            details: { jobId },
+          });
+      }
+      return;
+    }
     if (claimed.token === null) return;
-    const token = claimed.token;
-
+    const span = this.telemetry?.start("memory.job", {
+      channel: "memory",
+      stage: "maintenance",
+      agentId: claimed.agentId,
+      details: { jobId, kind: claimed.kind },
+      code: "MEMORY_JOB_CLAIMED",
+    });
+    const work = () => this.runClaimedJob(claimed.agentId, jobId, claimed.token!, span);
+    await (span ? span.within(work) : work());
+  }
+  private async runClaimedJob(
+    agentId: string,
+    jobId: string,
+    token: string,
+    span?: TraceScope,
+  ): Promise<void> {
     let stopped = false;
     let onCancel: () => void = () => {};
     const cancelled = new Promise<void>((resolve) => {
@@ -556,6 +602,20 @@ export class MemoryService {
 
     try {
       const inputs = this.loadInputs(agentId, jobId, token);
+      const refs = [...inputs.sourceRefs, ...inputs.blockedRefs.flat()];
+      span?.update({
+        model: inputs.config.model,
+        sources: refs,
+        details: { sourceCount: inputs.sources.length, blockedCount: inputs.blocked.length },
+      });
+      this.telemetry?.record("memory.load", {
+        channel: "memory",
+        stage: "context",
+        sources: refs,
+        status: "completed",
+        code: "MEMORY_INPUTS_LOADED",
+        details: { jobId, sourceCount: inputs.sources.length },
+      });
       work = this.generate(
         inputs.kind,
         inputs.config,
@@ -583,13 +643,30 @@ export class MemoryService {
       if (heartbeatDone && heartbeatError !== undefined) throw heartbeatError;
       if (!workDone) fail("MEMORY_TIMEOUT", "记忆整理超时");
       if (workError !== undefined) throw workError;
-      immediate(this.db, () => publish(this.orm, agentId, jobId, token, draft));
+      const publication = this.telemetry?.start("memory.publish", {
+        channel: "memory",
+        stage: "maintenance",
+        details: { jobId },
+      });
+      try {
+        immediate(this.db, () => publish(this.orm, agentId, jobId, token, draft));
+        publication?.end(
+          draft ? "completed" : "no_output",
+          draft ? "MEMORY_PUBLISHED" : "MEMORY_NO_DRAFT",
+        );
+      } catch (error) {
+        publication?.end("failed", "MEMORY_PUBLISH_REJECTED");
+        throw error;
+      }
+      span?.end(draft ? "completed" : "no_output", draft ? "MEMORY_PUBLISHED" : "MEMORY_NO_DRAFT");
     } catch (error) {
       if (error === WORKER_STOPPED) {
+        span?.end("cancelled", "MEMORY_WORKER_STOPPED");
         await this.failJob(agentId, jobId, token, "MEMORY_WORKER_STOPPED");
         return;
       }
       const code = error instanceof AppError ? error.code : "MEMORY_INVALID_RESULT";
+      span?.end("failed", code);
       await this.failJob(agentId, jobId, token, code);
     } finally {
       this.cancelCurrentJob = null;

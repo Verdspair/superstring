@@ -213,7 +213,8 @@ ${QQ_JUDGEMENT_PER_SPEAKER_SQL}
 ${QQ_JUDGEMENT_MODEL_SQL}
 ${AGENT_RUNS_SQL}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0040_conversation_wakes.sql"), "utf8")}
-${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0041_outbound_intents.sql"), "utf8")}`;
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0041_outbound_intents.sql"), "utf8")}
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0042_runtime_observability.sql"), "utf8")}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };

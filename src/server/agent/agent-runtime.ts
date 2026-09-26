@@ -13,6 +13,17 @@ import { AgentRunRepository } from "../db/agent-run-repository";
 import { openBusinessDb } from "../db/schema-gate";
 import type { ChatMessage } from "../llm/model-gateway";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
+import {
+  resolveAgentTraceScope,
+  startAgentTrace,
+  traceErrorCode,
+  withinAgentTrace,
+} from "../observability/agent-tracing";
+import type {
+  RuntimeTelemetry,
+  TraceMetadata,
+  TraceScope,
+} from "../observability/runtime-telemetry";
 import { unicodeStrip } from "../services/text";
 import {
   AGENT_DECISION_JSON_SCHEMA,
@@ -125,6 +136,8 @@ interface Running {
   signal: AbortSignal;
   callerSignal?: AbortSignal;
   stepNo: number;
+  trace?: TraceScope;
+  channel: TraceMetadata["channel"];
   conversationId?: string;
   onEvent?: (event: RunEvent) => void | Promise<void>;
   dispose(): void;
@@ -151,6 +164,7 @@ export class AgentRuntime {
       actions?: readonly BuiltInAction[];
       contextEngine?: ContextEngine;
       now?: () => string;
+      telemetry?: RuntimeTelemetry;
     },
   ) {
     this.contextEngine = options.contextEngine ?? new ContextEngine();
@@ -162,12 +176,23 @@ export class AgentRuntime {
   get repository(): AgentRunRepository {
     return this.options.repository;
   }
+  get telemetry(): RuntimeTelemetry | undefined {
+    return this.options.telemetry;
+  }
   private now(): string {
     return this.options.now?.() ?? new Date().toISOString();
   }
 
   async completeLeaf(spec: LeafAgentSpec, input: LeafInput): Promise<string> {
     const active = this.start(spec, input);
+    return this.withRun(active, () => this.completeLeafRun(active, spec, input));
+  }
+
+  private async completeLeafRun(
+    active: Running,
+    spec: LeafAgentSpec,
+    input: LeafInput,
+  ): Promise<string> {
     try {
       await this.emit(active, { type: "started" });
       this.repository.setStatus(active.runId, "generating", this.now());
@@ -199,6 +224,14 @@ export class AgentRuntime {
 
   async completeVisionLeaf(spec: LeafAgentSpec, input: VisionLeafInput): Promise<string> {
     const active = this.start({ ...spec, model: input.model }, input);
+    return this.withRun(active, () => this.completeVisionRun(active, spec, input));
+  }
+
+  private async completeVisionRun(
+    active: Running,
+    spec: LeafAgentSpec,
+    input: VisionLeafInput,
+  ): Promise<string> {
     try {
       await this.emit(active, { type: "started" });
       this.repository.setStatus(active.runId, "generating", this.now());
@@ -245,6 +278,14 @@ export class AgentRuntime {
 
   async run(spec: AgentSpec, input: ConversationInput): Promise<ConversationRunResult> {
     const active = this.start(spec, input);
+    return this.withRun(active, () => this.runConversation(active, spec, input));
+  }
+
+  private async runConversation(
+    active: Running,
+    spec: AgentSpec,
+    input: ConversationInput,
+  ): Promise<ConversationRunResult> {
     const observations: ActionObservation[] = [];
     const actions = input.actions
       ? new Map(input.actions.map((action) => [action.description.name, action]))
@@ -257,16 +298,38 @@ export class AgentRuntime {
       for (;;) {
         this.checkStepBudget(active, spec);
         this.repository.setStatus(active.runId, "deciding", this.now());
-        const material = await input.context.read({ signal: active.signal, observations });
-        active.signal.throwIfAborted();
-        const context = this.contextEngine.render(
-          spec,
-          material,
-          observations,
-          input.authorizedTargets,
-          input.outputMode,
+        const context = await this.trace(
+          active,
+          "agent.context",
+          {
+            stage: "context",
+            details: { phase: "next", observationCount: observations.length },
+          },
+          async (scope) => {
+            const material = await input.context.read({ signal: active.signal, observations });
+            active.signal.throwIfAborted();
+            const rendered = this.contextEngine.render(
+              spec,
+              material,
+              observations,
+              input.authorizedTargets,
+              input.outputMode,
+            );
+            scope?.update({
+              sources: rendered.sources,
+              details: {
+                inputUnits: rendered.units,
+                messageCount: rendered.messages.length,
+                sourceCount: rendered.sources.length,
+                evidenceCount: material.evidence?.length ?? 0,
+                summaryCount: material.summaries?.length ?? 0,
+                historyCount: material.history?.length ?? 0,
+              },
+            });
+            await input.onContext?.(rendered, { runId: active.runId, phase: "next" });
+            return rendered;
+          },
         );
-        await input.onContext?.(context, { runId: active.runId, phase: "next" });
         const decision = await this.step(
           active,
           "next",
@@ -292,7 +355,19 @@ export class AgentRuntime {
           },
         );
         if (decision.kind === "none") {
-          if (await input.beforeFinal?.([], active.signal)) continue;
+          if (
+            await this.trace(
+              active,
+              "agent.checkpoint",
+              { stage: "context", details: { phase: "before_final", decision: "none" } },
+              async (scope) => {
+                const result = await input.beforeFinal?.([], active.signal);
+                scope?.update({ details: { reobserved: result ?? false } });
+                return result;
+              },
+            )
+          )
+            continue;
           active.signal.throwIfAborted();
           await this.commitAndFinish(active, input, [], "no_output", { type: "no_output" });
           return { runId: active.runId, status: "no_output", outputs: [] };
@@ -307,10 +382,26 @@ export class AgentRuntime {
             );
           }
           this.repository.setStatus(active.runId, "observing", this.now());
-          const result = await action.execute(decision.arguments, {
-            owner: input.owner,
-            signal: active.signal,
-          });
+          const result = await this.trace(
+            active,
+            "agent.action",
+            {
+              stage: "action",
+              sources: context.sources,
+              details: { action: decision.name },
+            },
+            async (scope) => {
+              const result = await action.execute(decision.arguments, {
+                owner: input.owner,
+                signal: active.signal,
+              });
+              scope?.update({
+                sources: uniqueSources([...context.sources, ...result.sources]),
+                details: { sourceCount: result.sources.length },
+              });
+              return result;
+            },
+          );
           active.signal.throwIfAborted();
           const observation = {
             ...result,
@@ -336,7 +427,19 @@ export class AgentRuntime {
             "A streamed conversation requires one generated output",
           );
         }
-        if (await input.beforeFinal?.(decision.outputs, active.signal)) continue;
+        if (
+          await this.trace(
+            active,
+            "agent.checkpoint",
+            { stage: "context", details: { phase: "before_final", decision: "final" } },
+            async (scope) => {
+              const result = await input.beforeFinal?.(decision.outputs, active.signal);
+              scope?.update({ details: { reobserved: result ?? false } });
+              return result;
+            },
+          )
+        )
+          continue;
         active.signal.throwIfAborted();
         this.repository.setStatus(active.runId, "generating", this.now());
         const outputs: PreparedOutput[] = [];
@@ -375,29 +478,49 @@ export class AgentRuntime {
               continue;
             }
             this.checkStepBudget(active, spec);
-            const prepared = await input.prepareGeneration?.(draft, {
-              context,
-              outputId,
-              signal: active.signal,
-            });
-            const generation = { ...spec.generation, ...prepared };
-            const generationContext = prepared?.context ?? context;
-            const messages = this.contextEngine.renderOutput(
-              { ...spec, generation },
-              generationContext,
-              draft,
+            const { generation, generationContext, messages, generationSpec } = await this.trace(
+              active,
+              "agent.context",
+              {
+                stage: "context",
+                outputId,
+                details: { phase: "generate" },
+              },
+              async (scope) => {
+                const prepared = await input.prepareGeneration?.(draft, {
+                  context,
+                  outputId,
+                  signal: active.signal,
+                });
+                const generation = { ...spec.generation, ...prepared };
+                const generationContext = prepared?.context ?? context;
+                const messages = this.contextEngine.renderOutput(
+                  { ...spec, generation },
+                  generationContext,
+                  draft,
+                );
+                await input.onContext?.(
+                  { ...generationContext, messages, units: inputUnits(messages) },
+                  { runId: active.runId, phase: "generate" },
+                );
+                scope?.update({
+                  sources: generationContext.sources,
+                  details: {
+                    inputUnits: inputUnits(messages),
+                    messageCount: messages.length,
+                    sourceCount: generationContext.sources.length,
+                  },
+                });
+                const generationSpec: LeafAgentSpec = {
+                  ...spec,
+                  model: generation.model ?? spec.model,
+                  temperature: generation.temperature ?? spec.temperature,
+                  maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
+                  limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
+                };
+                return { generation, generationContext, messages, generationSpec };
+              },
             );
-            await input.onContext?.(
-              { ...generationContext, messages, units: inputUnits(messages) },
-              { runId: active.runId, phase: "generate" },
-            );
-            const generationSpec: LeafAgentSpec = {
-              ...spec,
-              model: generation.model ?? spec.model,
-              temperature: generation.temperature ?? spec.temperature,
-              maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
-              limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
-            };
             let text = "";
             await this.step(
               active,
@@ -423,8 +546,10 @@ export class AgentRuntime {
                     "MODEL_EMPTY_RESPONSE",
                     "Model returned an empty response",
                   );
+                return text;
               },
               generationSpec,
+              outputId,
             );
             outputs.push({
               outputId,
@@ -449,7 +574,16 @@ export class AgentRuntime {
           }
         }
         active.signal.throwIfAborted();
-        const reconsidered = await input.reconsider?.(outputs, active.signal);
+        const reconsidered = await this.trace(
+          active,
+          "agent.checkpoint",
+          { stage: "context", details: { phase: "reconsider", outputCount: outputs.length } },
+          async (scope) => {
+            const result = await input.reconsider?.(outputs, active.signal);
+            scope?.update({ details: { reconsidered: result ?? false } });
+            return result;
+          },
+        );
         if (reconsidered) {
           if (input.outputMode === "stream")
             throw new AgentRuntimeError(
@@ -492,6 +626,7 @@ export class AgentRuntime {
       signal?: AbortSignal;
       onEvent?: Running["onEvent"];
       conversationId?: string;
+      sources?: readonly SourceRef[];
     },
   ): Running {
     const deadline = new AbortController();
@@ -516,10 +651,27 @@ export class AgentRuntime {
       owner: input.owner,
       at: this.now(),
     });
+    let channel: TraceMetadata["channel"] = "system";
+    const trace = startAgentTrace(this.telemetry, "agent.run", (telemetry) => {
+      const scope = resolveAgentTraceScope(telemetry, input.owner, input.conversationId);
+      channel = scope.channel;
+      return {
+        ...scope,
+        runId,
+        sources: input.sources,
+        details: {
+          specId: spec.id,
+          ownerKind: input.owner.kind,
+          ownerId: input.owner.id,
+        },
+      };
+    });
     return {
       runId,
       spec,
       signal,
+      trace,
+      channel,
       callerSignal: input.signal,
       stepNo: 0,
       conversationId: input.conversationId,
@@ -535,6 +687,7 @@ export class AgentRuntime {
     sources: readonly SourceRef[],
     execute: () => Promise<T>,
     stepSpec: LeafAgentSpec = active.spec,
+    outputId?: string,
   ): Promise<T> {
     active.signal.throwIfAborted();
     const limit = stepSpec.limits?.inputUnits;
@@ -555,23 +708,124 @@ export class AgentRuntime {
       messages,
       sources,
     });
-    try {
-      await this.emit(active, { type: "step", stepId, context: { runId: active.runId, stepId } });
-      const result = await execute();
-      active.signal.throwIfAborted();
-      this.repository.finishStep(stepId, "completed", this.now(), {
-        decision: phase === "next" ? decisionMetadata(result) : undefined,
-      });
-      return result;
-    } catch (error) {
-      this.repository.finishStep(
-        stepId,
-        active.callerSignal?.aborted ? "cancelled" : "failed",
-        this.now(),
-        { errorCode: errorCode(active.signal.aborted ? active.signal.reason : error) },
-      );
-      throw error;
-    }
+    return this.trace(
+      active,
+      "agent.model",
+      {
+        stage: "model",
+        outputId,
+        model: stepSpec.model ?? this.options.model.defaultModel,
+        sources,
+        details: {
+          stepId,
+          stepNo: active.stepNo,
+          phase,
+          inputUnits: inputUnits(messages),
+          messageCount: messages.length,
+          sourceCount: sources.length,
+          imageCount: messages.reduce(
+            (n, m) => n + m.content.filter((part) => part.kind === "image").length,
+            0,
+          ),
+          maxTokens:
+            stepSpec.maxTokens ??
+            (phase === "next" ? (stepSpec as AgentSpec).limits?.outputTokens : undefined) ??
+            null,
+        },
+      },
+      async (scope) => {
+        try {
+          await this.emit(active, {
+            type: "step",
+            stepId,
+            context: { runId: active.runId, stepId },
+          });
+          const result = await execute();
+          active.signal.throwIfAborted();
+          if (phase === "next") {
+            const decision = AgentDecisionSchema.parse(result);
+            scope?.update({
+              details: {
+                decision: decision.kind,
+                ...(decision.kind === "invoke" ? { action: decision.name } : {}),
+                ...(decision.kind === "final" ? { outputCount: decision.outputs.length } : {}),
+              },
+            });
+          } else
+            scope?.update({
+              details: { outputCharacters: typeof result === "string" ? result.length : null },
+            });
+          this.repository.finishStep(stepId, "completed", this.now(), {
+            decision: phase === "next" ? decisionMetadata(result) : undefined,
+          });
+          return result;
+        } catch (error) {
+          this.repository.finishStep(
+            stepId,
+            active.callerSignal?.aborted ? "cancelled" : "failed",
+            this.now(),
+            { errorCode: errorCode(active.signal.aborted ? active.signal.reason : error) },
+          );
+          scope?.end(
+            active.callerSignal?.aborted ? "cancelled" : "failed",
+            traceErrorCode(active.signal.aborted ? active.signal.reason : error),
+          );
+          throw error;
+        }
+      },
+    );
+  }
+
+  private async withRun<T>(active: Running, work: () => Promise<T>): Promise<T> {
+    const execute = async () => {
+      try {
+        return await work();
+      } finally {
+        // Durable terminal is authoritative even when a downstream stream consumer disconnects.
+        if (active.trace) {
+          try {
+            const snapshot = this.repository.getRun(active.runId);
+            const status = snapshot?.endedAt ? snapshot.status : "failed";
+            active.trace.update({ details: { stepCount: active.stepNo } });
+            active.trace.end(
+              status === "completed" || status === "no_output" || status === "cancelled"
+                ? status
+                : "failed",
+              snapshot?.errorCode
+                ? traceErrorCode({ code: snapshot.errorCode })
+                : status === "failed"
+                  ? "AGENT_FAILED"
+                  : undefined,
+            );
+          } catch {
+            active.trace.end("unknown", "RUN_STATE_UNAVAILABLE");
+          }
+        }
+      }
+    };
+    return active.trace ? active.trace.within(execute) : execute();
+  }
+
+  private trace<T>(
+    active: Running,
+    name: string,
+    metadata: Omit<TraceMetadata, "channel">,
+    work: (scope: TraceScope | undefined) => Promise<T>,
+  ): Promise<T> {
+    return withinAgentTrace(
+      startAgentTrace(this.telemetry, name, () => ({ channel: active.channel, ...metadata })),
+      async (scope) => {
+        try {
+          return await work(scope);
+        } catch (error) {
+          scope?.end(
+            active.callerSignal?.aborted ? "cancelled" : "failed",
+            traceErrorCode(active.signal.aborted ? active.signal.reason : error),
+          );
+          throw error;
+        }
+      },
+    );
   }
 
   private checkStepBudget(active: Running, spec: AgentSpec): void {
@@ -605,11 +859,42 @@ export class AgentRuntime {
     status: "completed" | "no_output",
     payload: RunEventPayload,
   ): Promise<void> {
-    const committed = await input.commitOutputs?.(outputs, active.runId, {
-      status,
-      event: payload,
-      at: this.now(),
-    });
+    const committed = await this.trace(
+      active,
+      "agent.commit",
+      { stage: "run", details: { outputCount: outputs.length, terminal: status } },
+      async (scope) => {
+        const event = await input.commitOutputs?.(outputs, active.runId, {
+          status,
+          event: payload,
+          at: this.now(),
+        });
+        scope?.update({ status });
+        return event;
+      },
+    );
+    for (const output of outputs) {
+      const scope = startAgentTrace(this.telemetry, "agent.output", () => ({
+        channel: active.channel,
+        stage: "delivery",
+        outputId: output.outputId,
+        sources: output.sources,
+        details: {
+          targetId: output.targetId,
+          outputStatus: output.status,
+          textCharacters: output.text?.length ?? 0,
+          attachmentCount: output.stickerIds?.length ?? 0,
+        },
+      }));
+      scope?.end(
+        output.status === "failed"
+          ? "failed"
+          : output.status === "blocked"
+            ? "skipped"
+            : "completed",
+        output.code ? traceErrorCode({ code: output.code }) : undefined,
+      );
+    }
     // A durable host can atomically finishRun with intentions/wake acknowledgement and return
     // its committed terminal event. Publication is after the host transaction in either case.
     if (committed) await active.onEvent?.(committed);
@@ -674,6 +959,7 @@ export function createAgentRuntime(options: {
   repository: AgentRunRepository;
   actions?: readonly BuiltInAction[];
   contextEngine?: ContextEngine;
+  telemetry?: RuntimeTelemetry;
 }): AgentRuntime {
   return new AgentRuntime({ ...options, model: createModelPort(options) });
 }

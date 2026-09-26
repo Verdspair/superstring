@@ -230,11 +230,17 @@ export class ConversationEventRepository {
    * Keep the physical event identity until projection (wake/run joins require that ID).
    * Do not call this from an Agent host, scheduler or delivery authorization path.
    */
-  historyAfter(
+  private historyPage(
     id: string,
-    after = 0,
+    cursor: number,
+    direction: "after" | "before",
     limit = 100,
-  ): { items: { event: ConversationEvent; seq: number }[]; nextSeq: number; hasMore: boolean } {
+  ): {
+    items: { event: ConversationEvent; seq: number }[];
+    nextSeq: number;
+    firstSeq: number;
+    hasMore: boolean;
+  } {
     const rows = this.db
       .query(`WITH epochs AS (
         SELECT c.id, COALESCE(SUM(c.next_seq-1) OVER (
@@ -244,13 +250,26 @@ export class ConversationEventRepository {
           AND c.agent_id=anchor.agent_id AND c.user_id=anchor.user_id
       ) SELECT e.*,e.seq+epochs.offset AS history_seq FROM epochs
         JOIN conversation_events e ON e.conversation_id=epochs.id
-        WHERE e.seq+epochs.offset>? ORDER BY history_seq LIMIT ?`)
-      .all(id, after, limit + 1) as (EventRow & { history_seq: number })[];
+        WHERE e.seq+epochs.offset${direction === "after" ? ">" : "<"}? ORDER BY history_seq ${direction === "after" ? "ASC" : "DESC"} LIMIT ?`)
+      .all(id, cursor, limit + 1) as (EventRow & { history_seq: number })[];
     const items = rows.slice(0, limit).map((row) => ({
       event: eventFromRow(row),
       seq: row.history_seq,
     }));
-    return { items, nextSeq: items.at(-1)?.seq ?? after, hasMore: rows.length > limit };
+    if (direction === "before") items.reverse();
+    return {
+      items,
+      firstSeq: items[0]?.seq ?? 0,
+      nextSeq: items.at(-1)?.seq ?? 0,
+      hasMore: rows.length > limit,
+    };
+  }
+
+  historyAfter(id: string, after = 0, limit = 100) {
+    return this.historyPage(id, after, "after", limit);
+  }
+  historyBefore(id: string, before = Number.MAX_SAFE_INTEGER, limit = 100) {
+    return this.historyPage(id, before, "before", limit);
   }
 
   private summary(r: ConversationRow): ConversationSummary {
