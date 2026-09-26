@@ -1,5 +1,13 @@
-import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { translateNotice, useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { Field } from "../ui/Field";
@@ -47,81 +55,84 @@ export function NewSessionDialog() {
   return (
     <>
       {noActiveAgent && (
-        <p className="sidebar-empty">
+        <p className="sidebar-empty text-xs text-muted-foreground">
           {t("当前没有启用的助手，无法新建对话；请到设置中启用或新建助手。")}
         </p>
       )}
-      <Dialog.Root open={dialog} onOpenChange={(open) => (open ? openDialog() : closeDialog())}>
-        <Dialog.Trigger asChild>
-          <button className="primary new-session" type="button" disabled={creating}>
+      <Dialog open={dialog} onOpenChange={(open) => (open ? openDialog() : closeDialog())}>
+        <DialogTrigger asChild>
+          <Button className="new-session w-full" type="button" disabled={creating}>
             <NewSessionButtonIcon />
             <span>{t("新建任务")}</span>
-          </button>
-        </Dialog.Trigger>
-        <Dialog.Portal>
-          <Dialog.Overlay className="run-inspector-overlay" />
-          <Dialog.Content className="new-dialog new-session-modal">
-            <Dialog.Title className="new-dialog-title">
-              <NewSessionDialogIcon />
-              <span>{t("新建任务")}</span>
-            </Dialog.Title>
-            <Dialog.Description>{t("请选择任务名称方式")}</Dialog.Description>
-            {!custom ? (
-              <>
-                <button
-                  type="button"
-                  className="primary"
+          </Button>
+        </DialogTrigger>
+
+        <DialogContent showCloseButton={!creating} className="new-dialog new-session-modal">
+          <DialogTitle className="new-dialog-title flex items-center gap-2 [&>svg]:size-5">
+            <NewSessionDialogIcon />
+            <span>{t("新建任务")}</span>
+          </DialogTitle>
+          <DialogDescription>{t("请选择任务名称方式")}</DialogDescription>
+          {!custom ? (
+            <>
+              <Button
+                type="button"
+                disabled={creating}
+                onClick={() => void create(t("新会话 {0}", localTime()))}
+              >
+                {t("暂时使用默认名称")}
+              </Button>
+              <Button
+                variant="outline"
+                type="button"
+                disabled={creating}
+                onClick={() => setCustom(true)}
+              >
+                {t("使用自定义名称")}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Field label={t("任务名称")}>
+                <Input
+                  ref={titleInput}
+                  aria-label={t("任务名称")}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.nativeEvent.isComposing &&
+                      title.trim() &&
+                      !creating
+                    ) {
+                      event.preventDefault();
+                      void create(title);
+                    }
+                  }}
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder={t("请输入任务名称")}
                   disabled={creating}
-                  onClick={() => void create(t("新会话 {0}", localTime()))}
-                >
-                  {t("暂时使用默认名称")}
-                </button>
-                <button type="button" disabled={creating} onClick={() => setCustom(true)}>
-                  {t("使用自定义名称")}
-                </button>
-              </>
-            ) : (
-              <>
-                <Field label={t("任务名称")}>
-                  <input
-                    ref={titleInput}
-                    aria-label={t("任务名称")}
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "Enter" &&
-                        !event.nativeEvent.isComposing &&
-                        title.trim() &&
-                        !creating
-                      ) {
-                        event.preventDefault();
-                        void create(title);
-                      }
-                    }}
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                    placeholder={t("请输入任务名称")}
-                    disabled={creating}
-                  />
-                </Field>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={creating || !title.trim()}
-                  onClick={() => void create(title)}
-                >
-                  {creating ? t("正在创建…") : t("确认创建")}
-                </button>
-              </>
-            )}
-            <button type="button" disabled={creating} onClick={closeDialog}>
-              {t("取消")}
-            </button>
-            {(feedback || error) && (
-              <div className="dialog-status">{translateNotice(error ?? feedback)}</div>
-            )}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+                />
+              </Field>
+              <Button
+                type="button"
+                disabled={creating || !title.trim()}
+                onClick={() => void create(title)}
+              >
+                {creating ? t("正在创建…") : t("确认创建")}
+              </Button>
+            </>
+          )}
+          <Button variant="outline" type="button" disabled={creating} onClick={closeDialog}>
+            {t("取消")}
+          </Button>
+          {(feedback || error) && (
+            <div className="dialog-status text-sm text-muted-foreground">
+              {translateNotice(error ?? feedback)}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -1,4 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
 import { ActionMenu } from "../../app/ActionMenu";
 import { translateNotice, useI18n } from "../../i18n";
@@ -76,21 +80,27 @@ export function ConversationList() {
   };
   return (
     <>
-      <div className="session-heading">{t("历史会话")}</div>
-      <nav ref={listRef} className="session-list" aria-label={t("历史会话")}>
-        {!sessions.length && <p className="sidebar-empty">{t("还没有会话，新建一个开始聊天")}</p>}
+      <div className="session-heading mb-2 px-2 text-xs font-medium text-muted-foreground">
+        {t("历史会话")}
+      </div>
+      <nav ref={listRef} className="session-list flex flex-col gap-1" aria-label={t("历史会话")}>
+        {!sessions.length && (
+          <p className="sidebar-empty p-2 text-xs leading-relaxed text-muted-foreground">
+            {t("还没有会话，新建一个开始聊天")}
+          </p>
+        )}
         {sessions.map((session) =>
           editing?.id === session.sourceId ? (
             <form
               key={session.id}
-              className="session-rename"
+              className="session-rename space-y-2 rounded-lg border p-2"
               aria-label={t("重命名会话")}
               onSubmit={(event) => {
                 event.preventDefault();
                 save();
               }}
             >
-              <input
+              <Input
                 ref={inputRef}
                 aria-label={t("会话名称")}
                 value={title}
@@ -105,16 +115,24 @@ export function ConversationList() {
                     event.preventDefault();
                 }}
               />
-              <div className="session-rename-actions">
-                <button type="button" disabled={busy} onClick={finishEdit}>
+              <div className="session-rename-actions flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  disabled={busy}
+                  onClick={finishEdit}
+                >
                   {t("取消")}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   type="submit"
                   disabled={busy || !title.trim() || [...title.trim()].length > 200}
                 >
                   {busy ? t("正在保存…") : t("保存")}
-                </button>
+                </Button>
               </div>
               {[...title.trim()].length > 200 && <p role="alert">{t("名称须为 1–200 个字符。")}</p>}
             </form>
@@ -151,22 +169,34 @@ export function ConversationList() {
       </nav>
       {loading && <p role="status">{t("正在读取会话…")}</p>}
       {error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error p-2 text-xs text-destructive">
           {translateNotice(error)}
         </p>
       )}
-      <div className="conversation-directory-actions">
-        <button type="button" disabled={loading} onClick={() => void load()}>
+      <div className="conversation-directory-actions mt-4 flex flex-wrap gap-1 border-t pt-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          type="button"
+          disabled={loading}
+          onClick={() => void load()}
+        >
           {t("刷新会话目录")}
-        </button>
+        </Button>
         {cursor && (
-          <button type="button" disabled={loading} onClick={() => void load("more")}>
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            disabled={loading}
+            onClick={() => void load("more")}
+          >
             {t("加载更多会话")}
-          </button>
+          </Button>
         )}
       </div>
       {notice && !deleting && (
-        <p className="session-notice" role="alert">
+        <p className="session-notice p-2 text-xs text-muted-foreground" role="alert">
           {translateNotice(notice)}
         </p>
       )}
@@ -182,8 +212,10 @@ export function ConversationList() {
         >
           <p>{t("删除「{0}」及其全部消息？此操作无法撤销。", deleting.title)}</p>
           {notice && <p role="alert">{translateNotice(notice)}</p>}
-          <div className="dialog-actions">
-            <button
+          <div className="dialog-actions flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
               type="button"
               data-dialog-cancel
               disabled={busy}
@@ -194,10 +226,12 @@ export function ConversationList() {
               }}
             >
               {t("取消")}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               type="button"
-              className="danger"
+              className="text-destructive hover:text-destructive"
               disabled={busy || sending}
               onClick={() =>
                 void run(
@@ -210,7 +244,7 @@ export function ConversationList() {
               }
             >
               {busy ? t("正在删除…") : t("删除")}
-            </button>
+            </Button>
           </div>
         </AlertDialog>
       )}
@@ -264,11 +298,16 @@ function ConversationRow({
       ]}
     >
       {(trigger) => (
-        <div className="session-row">
-          <button
+        <div className="session-row group flex min-w-0 items-center gap-1 rounded-lg hover:bg-sidebar-accent/50">
+          <Button
+            variant="ghost"
+            size="sm"
             type="button"
             data-source-id={session.sourceId}
-            className={selected ? "active" : ""}
+            className={cn(
+              "h-auto min-h-14 min-w-0 flex-1 flex-col items-start gap-0.5 px-2 py-2 text-left",
+              selected && "active bg-sidebar-accent text-sidebar-accent-foreground",
+            )}
             aria-current={selected ? "page" : undefined}
             title={session.title}
             aria-label={session.title}
@@ -276,8 +315,13 @@ function ConversationRow({
             disabled={disabled}
             onClick={() => select(session.id)}
           >
-            <span className="session-title">{session.title}</span>
-            <small id={`channel-${session.id}`} className="conversation-channel">
+            <span className="session-title block w-full truncate text-sm font-medium">
+              {session.title}
+            </span>
+            <small
+              id={`channel-${session.id}`}
+              className="conversation-channel block w-full text-[11px] font-normal text-muted-foreground"
+            >
               {t(
                 session.channel === "web"
                   ? "Web · 私聊"
@@ -287,7 +331,11 @@ function ConversationRow({
               )}
             </small>
             {phase && phase !== "idle" && (
-              <span className="session-activity" role="status">
+              <Badge
+                variant="secondary"
+                className="session-activity mt-1 w-fit text-[10px]"
+                role="status"
+              >
                 {t(
                   phase === "failed"
                     ? "运行失败"
@@ -295,9 +343,9 @@ function ConversationRow({
                       ? "结果待确认"
                       : "正在处理",
                 )}
-              </span>
+              </Badge>
             )}
-          </button>
+          </Button>
           {trigger}
         </div>
       )}

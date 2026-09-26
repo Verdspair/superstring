@@ -1,6 +1,17 @@
-import * as ContextMenu from "@radix-ui/react-context-menu";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { type ReactElement, type ReactNode, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Icon } from "../ui/icons";
 
 type MenuAction = {
@@ -31,7 +42,6 @@ export function ActionMenu({
   const selected = useRef(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const container = anchor.current?.closest<HTMLElement>('[role="dialog"]') ?? undefined;
   const choose = (item: MenuAction) => {
     selected.current = true;
     origin.current?.focus({ preventScroll: true });
@@ -43,11 +53,11 @@ export function ActionMenu({
     if (!selected.current) origin.current?.focus({ preventScroll: true });
   };
   const content = (kind: "context" | "dropdown") => {
-    const Item = kind === "context" ? ContextMenu.Item : DropdownMenu.Item;
+    const Item = kind === "context" ? ContextMenuItem : DropdownMenuItem;
     return items.map((item) => (
       <Item
         key={item.id}
-        className={`action-menu-item${item.danger ? " danger" : ""}`}
+        variant={item.danger ? "destructive" : "default"}
         disabled={item.disabled}
         onSelect={() => choose(item)}
       >
@@ -57,7 +67,7 @@ export function ActionMenu({
     ));
   };
   const trigger = disabled ? null : (
-    <DropdownMenu.Root
+    <DropdownMenu
       open={dropdownOpen}
       onOpenChange={(open) => {
         if (open) {
@@ -69,36 +79,41 @@ export function ActionMenu({
         setDropdownOpen(open);
       }}
     >
-      <DropdownMenu.Trigger asChild>
-        <button type="button" className="action-menu-trigger" aria-label={triggerLabel}>
-          <Icon name="more" />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal container={container}>
-        <DropdownMenu.Content
-          className="action-menu-content"
-          aria-label={label}
-          align="end"
-          sideOffset={6}
-          collisionPadding={8}
-          onCloseAutoFocus={(event) => {
-            if (selected.current) event.preventDefault();
-          }}
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="action-menu-trigger shrink-0 text-muted-foreground"
+          aria-label={triggerLabel}
         >
-          {content("dropdown")}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+          <Icon name="more" />
+        </Button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent
+        className="action-menu-content"
+        aria-label={label}
+        align="end"
+        sideOffset={6}
+        collisionPadding={8}
+        onCloseAutoFocus={(event) => {
+          if (selected.current) event.preventDefault();
+        }}
+      >
+        {content("dropdown")}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
   return (
-    <ContextMenu.Root
+    <ContextMenu
       open={contextOpen && !disabled}
       onOpenChange={(open) => {
         if (open) selected.current = false;
         setContextOpen(open);
       }}
     >
-      <ContextMenu.Trigger
+      <ContextMenuTrigger
         asChild
         disabled={disabled}
         ref={(node) => {
@@ -123,17 +138,16 @@ export function ActionMenu({
         }}
       >
         {children(trigger)}
-      </ContextMenu.Trigger>
-      <ContextMenu.Portal container={container}>
-        <ContextMenu.Content
-          className="action-menu-content"
-          aria-label={label}
-          collisionPadding={8}
-          onCloseAutoFocus={restore}
-        >
-          {content("context")}
-        </ContextMenu.Content>
-      </ContextMenu.Portal>
-    </ContextMenu.Root>
+      </ContextMenuTrigger>
+
+      <ContextMenuContent
+        className="action-menu-content"
+        aria-label={label}
+        collisionPadding={8}
+        onCloseAutoFocus={restore}
+      >
+        {content("context")}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

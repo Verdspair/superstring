@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { qqDraftChanges } from "../features/qq/draft-state";
 import { translateNotice, useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
@@ -36,12 +37,12 @@ export function NavigationConfirm() {
       <p>{translateNotice(navigationConfirmMessage)}</p>
       <p>{t("保存成功后继续；放弃将恢复已保存内容；取消保留当前草稿。")}</p>
       {state.error && (
-        <p role="alert" className="error">
+        <p role="alert" className="error text-destructive">
           {translateNotice(state.error)}
         </p>
       )}
       {!!resources.length && (
-        <div className="navigation-draft-preview">
+        <div className="navigation-draft-preview max-h-60 space-y-2 overflow-auto rounded-lg border p-3 text-sm [&_summary]:cursor-pointer [&_ul]:list-disc [&_ul]:pl-5">
           {resources.map((resource) => (
             <details key={resource.id}>
               <summary>
@@ -56,21 +57,21 @@ export function NavigationConfirm() {
           ))}
         </div>
       )}
-      <div className="dialog-actions three">
-        <button type="button" disabled={busy} onClick={() => void run(confirmSaveAndContinue)}>
+      <div className="dialog-actions three flex flex-wrap justify-end gap-2">
+        <Button type="button" disabled={busy} onClick={() => void run(confirmSaveAndContinue)}>
           {t("保存并继续")}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="danger"
+          variant="destructive"
           disabled={busy}
           onClick={() => void run(confirmDiscardAndContinue)}
         >
           {t("放弃修改并继续")}
-        </button>
-        <button type="button" data-dialog-cancel disabled={busy} onClick={cancelPendingNavigation}>
+        </Button>
+        <Button type="button" data-dialog-cancel disabled={busy} onClick={cancelPendingNavigation}>
           {t("取消离开")}
-        </button>
+        </Button>
       </div>
     </AlertDialog>
   );

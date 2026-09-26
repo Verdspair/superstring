@@ -1,5 +1,7 @@
-import * as Tabs from "@radix-ui/react-tabs";
 import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type {
   ConversationEventView,
   ConversationSummary,
@@ -75,7 +77,7 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
   );
   const rows = timelineRows(items);
   return (
-    <Tabs.Root
+    <Tabs
       value={view}
       onValueChange={(value) => {
         if (value === "diagnostics") setHasViewedDiagnostics(true);
@@ -83,7 +85,7 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
       }}
       asChild
     >
-      <section className="page conversation-page">
+      <section className="page conversation-page relative flex h-full min-h-0 flex-col gap-0">
         <ConversationHeader
           title={conversation.title}
           detail={
@@ -93,30 +95,39 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
             </>
           }
           actions={
-            <button type="button" disabled={loading} onClick={() => void refresh()}>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              disabled={loading}
+              onClick={() => void refresh()}
+            >
               {t("刷新记录")}
-            </button>
+            </Button>
           }
         />
         <ConversationRuntimeSummary conversationId={conversation.id} />
-        <Tabs.List className="conversation-view-switch" aria-label={t("会话视图")}>
-          <Tabs.Trigger value="messages">{t("消息记录")}</Tabs.Trigger>
-          <Tabs.Trigger value="diagnostics">{t("运行观测")}</Tabs.Trigger>
-        </Tabs.List>
+        <TabsList
+          className="conversation-view-switch mx-4 my-3 shrink-0 self-start md:mx-6"
+          aria-label={t("会话视图")}
+        >
+          <TabsTrigger value="messages">{t("消息记录")}</TabsTrigger>
+          <TabsTrigger value="diagnostics">{t("运行观测")}</TabsTrigger>
+        </TabsList>
         {hasViewedDiagnostics && (
-          <Tabs.Content
+          <TabsContent
             value="diagnostics"
             forceMount
-            className="conversation-reading"
+            className="conversation-reading min-h-0 flex-1 overflow-auto overscroll-contain px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:px-6 [&[hidden]]:hidden"
             hidden={view !== "diagnostics"}
           >
             <TraceExplorer conversationId={conversation.id} />
-          </Tabs.Content>
+          </TabsContent>
         )}
-        <Tabs.Content value="messages" forceMount hidden={view !== "messages"} asChild>
+        <TabsContent value="messages" forceMount hidden={view !== "messages"} asChild>
           <section
             hidden={view !== "messages"}
-            className="conversation-reading"
+            className="conversation-reading min-h-0 flex-1 overflow-auto overscroll-contain px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:px-6 [&[hidden]]:hidden"
             ref={scroll.viewport}
             onScroll={scroll.onScroll}
             onKeyDown={(event) => {
@@ -141,9 +152,9 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
             tabIndex={0}
             aria-label={t("消息记录")}
           >
-            <details className="conversation-source">
+            <details className="conversation-source my-3 rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground [&_summary]:cursor-pointer [&_summary]:font-medium [&_code]:break-all [&_dl]:mt-3 [&_ul]:mt-2">
               <summary>{t("会话来源与参与者")}</summary>
-              <dl className="run-metadata">
+              <dl className="run-metadata grid gap-3 sm:grid-cols-3 [&_dt]:text-muted-foreground [&_dd]:mt-1 [&_dd]:text-foreground">
                 <div>
                   <dt>{t("会话 ID")}</dt>
                   <dd>
@@ -172,29 +183,36 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
               </ul>
             </details>
             {error && (
-              <p role="alert" className="error">
+              <p role="alert" className="error text-sm text-destructive">
                 {translateNotice(error)}
               </p>
             )}
             {loading && (
-              <p role="status" className={rows.length ? "visually-hidden" : undefined}>
+              <p
+                role="status"
+                className={rows.length ? "sr-only" : "text-sm text-muted-foreground"}
+              >
                 {t("正在读取会话…")}
               </p>
             )}
             {!loading && !error && !rows.length && (
-              <p className="hint">{t("此会话暂无消息记录。")}</p>
+              <p className="hint text-xs leading-relaxed text-muted-foreground">
+                {t("此会话暂无消息记录。")}
+              </p>
             )}
             {hasMore && (
-              <button
+              <Button
+                variant="outline"
+                size="sm"
                 type="button"
-                className="history-earlier"
+                className="history-earlier mb-4 w-full"
                 disabled={loading}
                 onClick={() => void loadMore()}
               >
                 {t("加载更早记录")}
-              </button>
+              </Button>
             )}
-            <ol className="conversation-timeline">
+            <ol className="conversation-timeline mx-auto flex max-w-4xl flex-col gap-4 pb-4">
               {rows.map((item) => {
                 const message =
                   item.kind === "inbound" ||
@@ -204,9 +222,13 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                     key={timelineKey(item)}
                     data-timeline-key={timelineKey(item)}
                     id={`source-${item.source.kind}-${item.source.id}`}
-                    className={message ? "conversation-message" : "conversation-activity"}
+                    className={
+                      message
+                        ? "conversation-message rounded-xl border bg-card p-4 text-card-foreground"
+                        : "conversation-activity rounded-lg border border-dashed bg-muted/20 p-3"
+                    }
                   >
-                    <header>
+                    <header className="flex flex-wrap items-center justify-between gap-2 text-xs [&>time]:text-muted-foreground">
                       <strong>
                         {item.participant?.label ??
                           t(
@@ -220,36 +242,49 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                       <time dateTime={item.occurredAt}>{localTime(item.occurredAt)}</time>
                     </header>
                     {item.participant && conversation.topology === "shared" && (
-                      <small className="conversation-member-id">
+                      <small className="conversation-member-id font-mono text-[10px] text-muted-foreground">
                         <code>{item.participant.id}</code>
                       </small>
                     )}
                     <Addressing item={item} rows={rows} conversation={conversation} />
                     {item.kind === "media_revision" && (
-                      <p className="hint">
+                      <p className="hint text-xs leading-relaxed text-muted-foreground">
                         {t("关联消息尚未加载；此记录为媒体理解更新。")}{" "}
                         <code>{item.sources.find((source) => source.kind === "qq_event")?.id}</code>
                       </p>
                     )}
                     {item.wake && <WakeActivity wake={item.wake} />}
-                    {item.messageStatus === "failed" && <p className="error">{t("[生成失败]")}</p>}
+                    {item.messageStatus === "failed" && (
+                      <p className="error text-sm text-destructive">{t("[生成失败]")}</p>
+                    )}
                     {item.messageStatus === "cancelled" && (
-                      <p className="hint">{t("[生成已取消]")}</p>
+                      <p className="hint text-xs leading-relaxed text-muted-foreground">
+                        {t("[生成已取消]")}
+                      </p>
                     )}
                     {item.deliveryStatus && (
-                      <p className="delivery-status" data-status={item.deliveryStatus}>
+                      <p
+                        className="delivery-status mt-2 text-xs text-muted-foreground data-[status=failed]:text-destructive"
+                        data-status={item.deliveryStatus}
+                      >
                         {t(deliveryLabels[item.deliveryStatus])}
                       </p>
                     )}
                     {item.kind !== "wake" &&
                       (item.contentState !== "active" ? (
-                        <p className="hint">{t(contentLabels[item.contentState])}</p>
+                        <p className="hint text-xs leading-relaxed text-muted-foreground">
+                          {t(contentLabels[item.contentState])}
+                        </p>
                       ) : (
                         item.kind !== "media_revision" &&
-                        item.text && <p className="conversation-text">{item.text}</p>
+                        item.text && (
+                          <p className="conversation-text whitespace-pre-wrap break-words text-sm leading-7">
+                            {item.text}
+                          </p>
+                        )
                       ))}
                     {!!item.media.length && (
-                      <ul className="conversation-media">
+                      <ul className="conversation-media mt-3 space-y-3 rounded-lg border bg-muted/30 p-3 text-xs leading-relaxed [&_code]:break-all [&_p]:mt-1">
                         {item.media.map((media) => (
                           <li key={media.id}>
                             <strong>
@@ -274,7 +309,7 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                         ))}
                       </ul>
                     )}
-                    <div className="conversation-row-actions">
+                    <div className="conversation-row-actions mt-3 flex flex-wrap items-center gap-2">
                       {item.runId && <RunLink runId={item.runId} />}
                       {item.outputId && (
                         <DeliveryDetails
@@ -284,7 +319,7 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
                         />
                       )}
                     </div>
-                    <details className="conversation-source">
+                    <details className="conversation-source my-3 rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground [&_summary]:cursor-pointer [&_summary]:font-medium [&_code]:break-all [&_dl]:mt-3 [&_ul]:mt-2">
                       <summary>{t("来源记录")}</summary>
                       <code>
                         {item.source.kind}:{item.source.id}
@@ -298,20 +333,26 @@ export function ConversationTimeline({ conversation }: { conversation: Conversat
               })}
             </ol>
           </section>
-        </Tabs.Content>
+        </TabsContent>
         {view === "messages" && scroll.away && (
-          <button className="conversation-latest" type="button" onClick={scroll.toLatest}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="conversation-latest absolute bottom-14 left-1/2 z-10 -translate-x-1/2 shadow-md"
+            type="button"
+            onClick={scroll.toLatest}
+          >
             {scroll.unread ? t("{0} 条新消息 · 回到最新", scroll.unread) : t("回到最新")}
-          </button>
+          </Button>
         )}
-        <span className="visually-hidden" role="status">
+        <span className="sr-only" role="status">
           {scroll.unread ? t("{0} 条新消息", scroll.unread) : ""}
         </span>
-        <p className="hint conversation-footer">
+        <p className="hint conversation-footer shrink-0 border-t px-4 py-3 text-center text-xs text-muted-foreground">
           {t("消息由已连接的机器人接入；在原聊天应用中继续对话。")}
         </p>
       </section>
-    </Tabs.Root>
+    </Tabs>
   );
 }
 
@@ -342,9 +383,11 @@ function Addressing({
     );
   if (!reasons.length && !mentionIds.length && !replyTo) return null;
   return (
-    <div className="conversation-addressing">
+    <div className="conversation-addressing my-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground [&_code]:break-all [&_a]:text-primary [&_a]:underline">
       {reasons.map((reason) => (
-        <span key={reason}>{t(labels[reason])}</span>
+        <Badge key={reason} variant="secondary">
+          {t(labels[reason])}
+        </Badge>
       ))}
       {!!mentionIds.length && (
         <span>
@@ -391,7 +434,10 @@ function WakeActivity({ wake }: { wake: NonNullable<ConversationEventView["wake"
     reply_to_agent: "回复助手",
   };
   return (
-    <div className="wake-activity" data-status={wake.status}>
+    <div
+      className="wake-activity mt-2 space-y-1 text-xs text-muted-foreground [&>p:first-child]:font-medium"
+      data-status={wake.status}
+    >
       <p role="status">{t(labels[wake.status])}</p>
       <small>
         {t("唤醒原因")}: {t(causes[wake.cause] ?? wake.cause)}
@@ -401,7 +447,7 @@ function WakeActivity({ wake }: { wake: NonNullable<ConversationEventView["wake"
           {t("计划处理时间")}: <time dateTime={wake.readyAt}>{localTime(wake.readyAt)}</time>
         </p>
       )}
-      {wake.errorCode && <p className="error">{wake.errorCode}</p>}
+      {wake.errorCode && <p className="error text-sm text-destructive">{wake.errorCode}</p>}
     </div>
   );
 }

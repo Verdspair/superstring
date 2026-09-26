@@ -24,8 +24,12 @@ export function StatusBar() {
           ? t("对话聊天模式")
           : t("未知模式（{0}）", runtime.mode);
   return (
-    <footer role="contentinfo" className="app-statusbar" aria-label={t("应用状态")}>
-      <span role="status">
+    <footer
+      role="contentinfo"
+      className="app-statusbar flex h-7 shrink-0 items-center justify-between gap-2 border-t px-4 text-[11px] text-muted-foreground"
+      aria-label={t("应用状态")}
+    >
+      <span role="status" className="flex items-center gap-1.5 [&>svg]:size-3">
         <Icon name="chat" />
         {mode}
       </span>

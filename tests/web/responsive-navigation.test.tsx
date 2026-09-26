@@ -1,11 +1,17 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ResponsiveSidebar } from "../../src/web/app/ResponsiveSidebar";
+import {
+  NavigationSurface,
+  NavigationTrigger,
+  ResponsiveSidebar,
+} from "../../src/web/app/ResponsiveSidebar";
+import { SidebarProvider } from "../../src/web/components/ui/sidebar";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 beforeEach(() => {
   store.getState().resetForTests();
+  vi.stubGlobal("innerWidth", 390);
   vi.stubGlobal(
     "matchMedia",
     vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
@@ -17,7 +23,14 @@ afterEach(() => {
 });
 
 it("compact navigation mounts one directory in a labelled dialog and Escape restores focus", async () => {
-  render(<ResponsiveSidebar version="test" />);
+  render(
+    <SidebarProvider>
+      <NavigationSurface>
+        <ResponsiveSidebar version="test" />
+        <NavigationTrigger />
+      </NavigationSurface>
+    </SidebarProvider>,
+  );
   const trigger = screen.getByRole("button", { name: "会话与导航" });
   await userEvent.click(trigger);
   expect(screen.getByRole("dialog", { name: "会话与导航" })).toBeTruthy();
@@ -30,7 +43,14 @@ it("compact navigation mounts one directory in a labelled dialog and Escape rest
 
 it("compact navigation stays open when a dirty destination is cancelled, closes after commit", async () => {
   store.setState({ page: "settings", settingsView: "agents", dirty: true });
-  render(<ResponsiveSidebar version="test" />);
+  render(
+    <SidebarProvider>
+      <NavigationSurface>
+        <ResponsiveSidebar version="test" />
+        <NavigationTrigger />
+      </NavigationSurface>
+    </SidebarProvider>,
+  );
   fireEvent.click(screen.getByRole("button", { name: "会话与导航" }));
   fireEvent.click(screen.getByRole("button", { name: "接入" }));
   expect(store.getState().navigationConfirmOpen).toBe(true);
@@ -58,7 +78,14 @@ it("compact conversation context menu stays keyboard reachable inside the naviga
     lastSeq: 0,
     consumedSeq: 0,
   });
-  render(<ResponsiveSidebar version="test" />);
+  render(
+    <SidebarProvider>
+      <NavigationSurface>
+        <ResponsiveSidebar version="test" />
+        <NavigationTrigger />
+      </NavigationSurface>
+    </SidebarProvider>,
+  );
   await userEvent.click(screen.getByRole("button", { name: "会话与导航" }));
   const conversation = screen.getByRole("button", { name: "菜单会话" });
   conversation.focus();

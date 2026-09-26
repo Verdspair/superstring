@@ -57,6 +57,7 @@ it("通用包含语言和外观，不再包含运行模式，返回设置中心�
   render(<GeneralSettings />);
   expect(screen.getByText("外观")).toBeTruthy();
   expect(document.querySelector(".general-settings")?.textContent).not.toContain("运行模式");
+  fireEvent.click(screen.getByRole("button", { name: /^外观/ }));
   expect(document.querySelectorAll(".theme-option")).toHaveLength(16);
   fireEvent.click(screen.getByRole("button", { name: "返回设置中心" }));
   expect(store.getState().settingsView).toBe("hub");

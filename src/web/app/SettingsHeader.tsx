@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { Icon } from "../ui/icons";
@@ -28,10 +29,12 @@ export function SettingsHeader({ onBack }: { onBack?: () => void }) {
                   ? "运行观测"
                   : (route?.title ?? "默认模型");
   return (
-    <header className="page-header settings-header">
-      <div className="page-heading-copy">
+    <header className="page-header settings-header flex shrink-0 items-center justify-between gap-4 border-b px-4 py-4 md:px-6">
+      <div className="page-heading-copy flex min-w-0 items-center gap-3">
         {onBack && (
-          <button
+          <Button
+            variant="ghost"
+            size="icon-sm"
             className="settings-back"
             type="button"
             aria-label={t("返回设置中心")}
@@ -39,19 +42,19 @@ export function SettingsHeader({ onBack }: { onBack?: () => void }) {
             onClick={onBack}
           >
             <Icon name="back" />
-          </button>
+          </Button>
         )}
         <div>
-          <span className="page-eyebrow">
+          <span className="page-eyebrow text-xs text-muted-foreground">
             {t(APP_SECTIONS.find((item) => item.id === section)?.title ?? "本地工作空间")}
           </span>
-          <h1>{t(title)}</h1>
+          <h1 className="text-lg font-semibold tracking-tight">{t(title)}</h1>
         </div>
       </div>
-      <button type="button" className="quiet" onClick={openChat}>
+      <Button type="button" variant="outline" size="sm" onClick={openChat}>
         <Icon name="chat" />
         {t("返回对话")}
-      </button>
+      </Button>
     </header>
   );
 }

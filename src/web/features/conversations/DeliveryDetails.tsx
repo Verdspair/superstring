@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import type { ConversationSummary, Delivery } from "../../../shared/contracts/conversation";
 import { translateNotice, useI18n } from "../../i18n";
 import { errorText } from "../../state/helpers";
@@ -41,7 +42,7 @@ export function DeliveryDetails({
   };
   return (
     <details
-      className="delivery-details"
+      className="delivery-details min-w-0 flex-1 rounded-lg border p-3 text-xs leading-relaxed [&_summary]:cursor-pointer [&_summary]:font-medium [&_code]:break-all [&_p]:mt-2 [&_ol]:my-3 [&_ol]:space-y-3"
       onToggle={(event) => {
         if (event.currentTarget.open && !delivery && !loading) void load();
       }}
@@ -74,7 +75,9 @@ export function DeliveryDetails({
           </p>
           {delivery.parts.some((part) => part.status === "confirmed") &&
             delivery.parts.some((part) => part.status !== "confirmed") && (
-              <p className="hint">{t("部分内容已送达，请查看各部分结果。")}</p>
+              <p className="hint text-muted-foreground">
+                {t("部分内容已送达，请查看各部分结果。")}
+              </p>
             )}
           <ol>
             {delivery.parts.map((part) => (
@@ -95,13 +98,22 @@ export function DeliveryDetails({
             ))}
           </ol>
           {delivery.status === "unknown" && (
-            <p className="hint">{t("尚未确认外部平台是否已收到；此处仅核对结果。")}</p>
+            <p className="hint text-muted-foreground">
+              {t("尚未确认外部平台是否已收到；此处仅核对结果。")}
+            </p>
           )}
         </>
       )}
-      <button type="button" disabled={loading} onClick={() => void load()}>
+      <Button
+        variant="outline"
+        size="sm"
+        className="mt-3"
+        type="button"
+        disabled={loading}
+        onClick={() => void load()}
+      >
         {t("刷新送达结果")}
-      </button>
+      </Button>
     </details>
   );
 }

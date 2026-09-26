@@ -65,7 +65,7 @@ it("renders all assembled components and keeps the unsent draft separate", () =>
   expect(screen.queryByText("回查原文")).toBeNull();
   expect(container.textContent).toContain("待发送草稿约 6");
   expect(container.textContent).toContain("已用约 1,000 / 10,000");
-  expect(container.querySelectorAll(".usage-ring")).toHaveLength(2);
+  expect(screen.getByRole("progressbar", { name: /上下文用量|Context usage/ })).toBeTruthy();
   expect(container.querySelector(".context-usage-percent")?.textContent).toBe("10.0%");
 });
 it("does not show a different session's usage as current", () => {

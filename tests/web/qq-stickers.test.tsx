@@ -1,3 +1,4 @@
+import { SidebarProvider } from "../../src/web/components/ui/sidebar";
 // The sticker library surface (§9.2, P5d).
 //
 // The page is where §9.1's sequence becomes visible, so the cases below follow it: an import lands
@@ -308,7 +309,11 @@ describe("接入下的 QQ 资源", () => {
       settingsView: "workspace",
       settingsRoute: "qq-stickers",
     });
-    render(<Sidebar version="test" />);
+    render(
+      <SidebarProvider>
+        <Sidebar version="test" />
+      </SidebarProvider>,
+    );
     expect(screen.getByRole("navigation", { name: "配置页面" })).toBeTruthy();
     // It is a section caption, not an entry: the three links below are what gets clicked, so the
     // caption must not be a button (2026-09-25, after it read as a button that did nothing).
