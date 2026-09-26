@@ -140,7 +140,7 @@ it("refresh does not steal reading position and the latest button resumes follow
   setup(events);
   render(<ConversationTimeline conversation={conversation} />);
   await screen.findByText("message-201");
-  const viewport = screen.getByRole("region", { name: "消息记录" });
+  const viewport = screen.getByRole("tabpanel", { name: "消息记录" });
   Object.defineProperties(viewport, {
     scrollHeight: { value: 1400, configurable: true },
     clientHeight: { value: 400, configurable: true },
@@ -163,7 +163,7 @@ it("prepending earlier pages preserves the first visible source offset", async (
   setup(events);
   render(<ConversationTimeline conversation={conversation} />);
   await screen.findByText("message-201");
-  const viewport = screen.getByRole("region", { name: "消息记录" });
+  const viewport = screen.getByRole("tabpanel", { name: "消息记录" });
   Object.defineProperties(viewport, {
     scrollHeight: { value: 1400, configurable: true },
     clientHeight: { value: 400, configurable: true },
@@ -186,7 +186,7 @@ it("restores the source anchor after clearing bodies in a blurred window", async
   setup(events);
   render(<ConversationTimeline conversation={conversation} />);
   await screen.findByText("message-201");
-  const viewport = screen.getByRole("region", { name: "消息记录" });
+  const viewport = screen.getByRole("tabpanel", { name: "消息记录" });
   Object.defineProperties(viewport, {
     scrollHeight: { value: 1400, configurable: true },
     clientHeight: { value: 400, configurable: true },
@@ -207,7 +207,7 @@ it("Home and End scroll the reading region without intercepting nested controls"
   setup(vi.fn().mockResolvedValue({ items: [row(201)], nextSeq: 201, hasMore: false }));
   render(<ConversationTimeline conversation={conversation} />);
   await screen.findByText("message-201");
-  const viewport = screen.getByRole("region", { name: "消息记录" });
+  const viewport = screen.getByRole("tabpanel", { name: "消息记录" });
   Object.defineProperties(viewport, {
     scrollHeight: { value: 1400 },
     clientHeight: { value: 400 },
@@ -256,7 +256,7 @@ it("shows an orphan media revision on the latest page, merges its older parent, 
   expect(screen.getAllByText("Authorized image description")).toHaveLength(1);
   expect(screen.getByText("关联消息尚未加载；此记录为媒体理解更新。")).toBeTruthy();
   expect(screen.queryByText("此会话暂无消息记录。")).toBeNull();
-  const viewport = screen.getByRole("region", { name: "消息记录" });
+  const viewport = screen.getByRole("tabpanel", { name: "消息记录" });
   Object.defineProperties(viewport, {
     scrollHeight: { get: () => (screen.queryByText("message-100") ? 1700 : 1400) },
     clientHeight: { value: 400 },

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
-import { APP_SECTIONS, currentAppSection, sectionDestinations } from "./app-routes";
+import { currentAppSection, sectionDestinations } from "./app-routes";
 
 export function SettingsNavigation() {
   const t = useI18n();
@@ -29,21 +29,9 @@ export function SettingsNavigation() {
 }
 
 export function SettingsBody({ children }: { children: ReactNode }) {
-  const t = useI18n();
-  const page = useSuperstringStore((state) => state.page);
-  const section = useSuperstringStore(currentAppSection);
-  if (page !== "settings") return <>{children}</>;
   return (
     <div className="settings-body unified-settings-body">
-      <div className="settings-body-content">
-        {section && (
-          <div className="settings-area-label">
-            {t(APP_SECTIONS.find((item) => item.id === section)?.title ?? "设置中心")}
-          </div>
-        )}
-        <SettingsNavigation />
-        {children}
-      </div>
+      <div className="settings-body-content">{children}</div>
     </div>
   );
 }

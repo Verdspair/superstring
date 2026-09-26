@@ -120,7 +120,6 @@ export function SettingsWorkspace() {
           <div className="detail-config workspace-detail">
             <div className="detail-body">
               <div className="config-section workspace-config">
-                <h2>{t(management ? "默认模型" : (meta?.title ?? "设置中心"))}</h2>
                 {management ? (
                   <>
                     <p className="settings-note">

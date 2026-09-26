@@ -71,7 +71,7 @@ describe("聊天空白状态文案", () => {
 });
 
 describe("R5 聊天区 P0 交互", () => {
-  it("按原版显示模型角色与聊天模式标题", () => {
+  it("会话名称与绑定助手和模式分别呈现，消息保留角色", () => {
     useSuperstringStore.setState({
       runtimeConfig: {
         agent_id: "11111111-1111-4111-8111-111111111111",
@@ -106,7 +106,8 @@ describe("R5 聊天区 P0 交互", () => {
     });
     render(<ChatPage />);
 
-    expect(screen.getByRole("heading", { name: "测试会话 · 测试助手 · 聊天" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "测试会话" })).toBeTruthy();
+    expect(screen.getByText("Web · 私聊 · 测试助手 · 聊天")).toBeTruthy();
     expect(screen.getByText(/模型 ·/)).toBeTruthy();
     expect(document.querySelector(".message-meta")?.textContent).not.toContain("助手 ·");
   });
@@ -213,7 +214,7 @@ describe("R5 聊天区 P0 交互", () => {
     expect(deleteSession).not.toHaveBeenCalled();
   });
 
-  it("Escape 和外部 pointerdown 会关闭右键菜单", () => {
+  it("Escape 和外部 pointerdown 会关闭右键菜单", async () => {
     render(<ChatPage />);
     const bubble = screen.getByText("需要删除的消息");
     fireEvent.contextMenu(bubble);
@@ -222,7 +223,8 @@ describe("R5 聊天区 P0 交互", () => {
     expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull();
 
     fireEvent.contextMenu(bubble);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     fireEvent.pointerDown(document.body);
-    expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull());
   });
 });

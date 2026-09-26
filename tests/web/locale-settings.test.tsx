@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgentResponseSchema,
@@ -14,7 +14,6 @@ import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { SECTION_META } from "../../src/web/features/agents/sections";
 import { AppearanceSettings } from "../../src/web/features/appearance/AppearanceSettings";
 import { ChatPage } from "../../src/web/features/chat/ChatPage";
-import { menuPosition } from "../../src/web/features/chat/menu-position";
 import { GeneralSettings } from "../../src/web/features/general/GeneralSettings";
 import { OperatingModeSettings } from "../../src/web/features/general/OperatingModeSettings";
 import {
@@ -161,9 +160,7 @@ describe("general settings and status bar", () => {
     expect(screen.getByText("使用中")).toBeTruthy();
     expect(screen.getAllByText("未开放")).toHaveLength(1);
     expect(screen.getAllByRole("heading", { name: "运行模式" })).toHaveLength(1);
-    expect(container.querySelector(".settings-back svg path")?.getAttribute("d")).toBe(
-      "m14 6-6 6 6 6",
-    );
+    expect(container.querySelector(".settings-back svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(screen.getByRole("button", { name: "对话聊天模式" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
@@ -306,19 +303,7 @@ describe("section identities", () => {
 });
 
 describe("message menu", () => {
-  it.each([
-    [0, 0],
-    [389, 0],
-    [0, 799],
-    [389, 799],
-  ])("clamps at viewport corner %s,%s", (x, y) => {
-    const point = menuPosition({ x, y }, { width: 160, height: 44 }, { width: 390, height: 800 });
-    expect(point.left).toBeGreaterThanOrEqual(8);
-    expect(point.top).toBeGreaterThanOrEqual(8);
-    expect(point.left + 160).toBeLessThanOrEqual(382);
-    expect(point.top + 44).toBeLessThanOrEqual(792);
-  });
-  it("opens with keyboard, focuses delete and restores focus on Escape", () => {
+  it("opens with keyboard, focuses delete and restores focus on Escape", async () => {
     useSuperstringStore.setState({
       currentSessionId: "s",
       messages: [
@@ -340,7 +325,7 @@ describe("message menu", () => {
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "删除消息" }));
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
-    expect(document.activeElement).toBe(article);
+    await waitFor(() => expect(document.activeElement).toBe(article));
     act(() => {
       selectLocale("en");
     });

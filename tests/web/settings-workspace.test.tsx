@@ -45,7 +45,7 @@ afterEach(() => {
 });
 
 describe("设置工作区第一阶段", () => {
-  it("统一一级导航保留对话目录，每个原有设置页面均由所属二级导航可达", () => {
+  it("工作区导航分离目录和配置，每个原有设置页面仍可到达", () => {
     const { container } = render(
       <>
         <Sidebar />
@@ -58,8 +58,8 @@ describe("设置工作区第一阶段", () => {
       </>,
     );
     const aside = screen.getByRole("complementary");
-    expect(within(aside).getByRole("button", { name: "新建任务" })).toBeTruthy();
-    expect(within(aside).getByRole("navigation", { name: "历史会话" })).toBeTruthy();
+    expect(within(aside).queryByRole("button", { name: "新建任务" })).toBeNull();
+    expect(within(aside).queryByRole("navigation", { name: "历史会话" })).toBeNull();
     const primary = within(within(aside).getByRole("navigation", { name: "主导航" }));
     expect(primary.getAllByRole("button").map((el) => el.textContent)).toEqual(
       APP_SECTIONS.map((section) => section.title),
@@ -75,10 +75,8 @@ describe("设置工作区第一阶段", () => {
       else expect(store.getState().settingsRoute).toBe(route.id);
     }
     expect(store.getState().editorAgentId).toBe("A");
-    expect(aside.querySelector(".settings-secondary-nav")).toBeNull();
-    expect(
-      container.querySelector(".settings-body > .settings-body-content > .settings-secondary-nav"),
-    ).toBeTruthy();
+    expect(aside.querySelector(".settings-secondary-nav")).toBeTruthy();
+    expect(container.querySelector(".settings-body .settings-secondary-nav")).toBeNull();
     expect(container.querySelector(".settings-header nav")).toBeNull();
     expect(container.querySelector(".settings-navigation")).toBeNull();
     fireEvent.click(primary.getByRole("button", { name: "接入" }));
@@ -146,7 +144,12 @@ describe("设置工作区第一阶段", () => {
   });
   it("二级导航进入助手总览，不再展开详细配置", () => {
     store.setState({ settingsRoute: "management" });
-    render(<SettingsWorkspace />);
+    render(
+      <>
+        <Sidebar />
+        <SettingsWorkspace />
+      </>,
+    );
     fireEvent.click(screen.getByRole("button", { name: "助手管理" }));
     expect(store.getState()).toMatchObject({
       settingsView: "agents",
@@ -259,7 +262,12 @@ describe("设置工作区第一阶段", () => {
   });
   it("模型页不再套助手管理区块，管理仅由二级导航进入", () => {
     store.setState({ settingsRoute: "management" });
-    render(<SettingsWorkspace />);
+    render(
+      <>
+        <Sidebar />
+        <SettingsWorkspace />
+      </>,
+    );
     expect(document.querySelector('[aria-label="助手管理"]')).toBeNull();
     expect(screen.getByRole("button", { name: "助手管理" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "原资料管理" })).toBeNull();

@@ -1,22 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useLayoutEffect, useRef, useState } from "react";
+import type { ConversationSummary } from "../../../shared/contracts/conversation";
+import { ActionMenu } from "../../app/ActionMenu";
 import { translateNotice, useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { AlertDialog } from "../../ui/AlertDialog";
-import { Icon } from "../../ui/icons";
 import { sessionBusy } from "../chat/conversation-state";
-import { menuPosition } from "../chat/menu-position";
 
 type Target = { id: string; title: string };
-type Menu = Target & { x: number; y: number };
 
 export function ConversationList() {
   const t = useI18n();
   const ids = useSuperstringStore((state) => state.directoryIds);
   const summaries = useSuperstringStore((state) => state.summaryById);
-  const sessions = ids.map((id) => summaries[id]).filter(Boolean);
   const currentId = useSuperstringStore((state) => state.currentConversationId);
-  const select = useSuperstringStore((state) => state.requestConversationNavigation);
   const load = useSuperstringStore((state) => state.loadConversations);
   const loading = useSuperstringStore((state) => state.directoryLoading);
   const error = useSuperstringStore((state) => state.directoryError);
@@ -24,74 +20,31 @@ export function ConversationList() {
   const rename = useSuperstringStore((state) => state.renameSession);
   const remove = useSuperstringStore((state) => state.deleteSessionById);
   const refresh = useSuperstringStore((state) => state.refreshSessionById);
-  const [menu, setMenu] = useState<Menu | null>(null);
   const [editing, setEditing] = useState<Target | null>(null);
   const [deleting, setDeleting] = useState<Target | null>(null);
-  const sending = useSuperstringStore((state) =>
-    sessionBusy(state, menu?.id ?? deleting?.id ?? ""),
-  );
+  const sending = useSuperstringStore((state) => sessionBusy(state, deleting?.id ?? ""));
   const [title, setTitle] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
-  const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLElement>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [location, setLocation] = useState({ left: 8, top: 8 });
-  const menuLabel = t("会话操作");
+  const focusId = useRef<string | null>(null);
+  const sessions = ids.map((id) => summaries[id]).filter(Boolean);
   const restoreFocus = () => {
-    if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
-    else listRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const buttons = [
+      ...(listRef.current?.querySelectorAll<HTMLButtonElement>("button[data-source-id]") ?? []),
+    ];
+    (buttons.find((button) => button.dataset.sourceId === focusId.current) ?? buttons[0])?.focus({
+      preventScroll: true,
+    });
   };
-  // biome-ignore lint/correctness/useExhaustiveDependencies: locale changes the measured menu width.
-  useLayoutEffect(() => {
-    if (!menu || !menuRef.current) return;
-    setLocation(
-      menuPosition(menu, menuRef.current.getBoundingClientRect(), {
-        width: innerWidth,
-        height: innerHeight,
-      }),
-    );
-    menuRef.current.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, [menu, menuLabel]);
   useLayoutEffect(() => {
     if (editing) {
       inputRef.current?.focus();
       inputRef.current?.select();
     }
   }, [editing]);
-  useEffect(() => {
-    if (!menu) return;
-    const outside = (event: PointerEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenu(null);
-    };
-    const close = () => setMenu(null);
-    document.addEventListener("pointerdown", outside, true);
-    window.addEventListener("resize", close);
-    window.addEventListener("scroll", close, true);
-    return () => {
-      document.removeEventListener("pointerdown", outside, true);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", close, true);
-    };
-  }, [menu]);
-  const openMenu = (
-    event: React.MouseEvent<HTMLButtonElement> | React.KeyboardEvent<HTMLButtonElement>,
-    session: Target,
-  ) => {
-    event.preventDefault();
-    if (busyRef.current || editing || deleting) return;
-    triggerRef.current = event.currentTarget;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const pointer = "clientX" in event && (event.clientX !== 0 || event.clientY !== 0);
-    setMenu({
-      ...session,
-      x: pointer ? event.clientX : rect.right - 8,
-      y: pointer ? event.clientY : rect.bottom - 8,
-    });
-    setNotice("");
-  };
   const finishEdit = () => {
     if (busyRef.current) return;
     setEditing(null);
@@ -125,90 +78,76 @@ export function ConversationList() {
     <>
       <div className="session-heading">{t("历史会话")}</div>
       <nav ref={listRef} className="session-list" aria-label={t("历史会话")}>
-        {sessions.length === 0 && (
-          <p className="sidebar-empty">{t("还没有会话，新建一个开始聊天")}</p>
-        )}
-        {sessions.map((session) => (
-          <div className="session-row" key={session.id}>
-            <button
-              type="button"
-              className={session.id === currentId ? "active" : ""}
-              aria-current={session.id === currentId ? "page" : undefined}
-              aria-haspopup={session.channel === "web" ? "menu" : undefined}
-              title={session.title}
-              aria-label={session.title}
-              aria-describedby={`channel-${session.id}`}
-              hidden={editing?.id === session.sourceId}
-              disabled={busy || editing !== null}
-              onClick={() => {
-                select(session.id);
-              }}
-              onContextMenu={(event) => {
-                if (session.channel === "web")
-                  openMenu(event, { id: session.sourceId, title: session.title });
-              }}
-              onKeyDown={(event) => {
-                if (
-                  session.channel === "web" &&
-                  (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
-                )
-                  openMenu(event, { id: session.sourceId, title: session.title });
+        {!sessions.length && <p className="sidebar-empty">{t("还没有会话，新建一个开始聊天")}</p>}
+        {sessions.map((session) =>
+          editing?.id === session.sourceId ? (
+            <form
+              key={session.id}
+              className="session-rename"
+              aria-label={t("重命名会话")}
+              onSubmit={(event) => {
+                event.preventDefault();
+                save();
               }}
             >
-              {session.title}
-              <small id={`channel-${session.id}`} className="conversation-channel">
-                {t(
-                  session.channel === "web"
-                    ? "Web · 私聊"
-                    : session.topology === "shared"
-                      ? "OneBot · 群聊"
-                      : "OneBot · 私聊",
-                )}
-              </small>
-            </button>
-            {session.channel === "web" && <SessionActivity sessionId={session.sourceId} />}
-            {editing?.id === session.sourceId && (
-              <form
-                className="session-rename"
-                aria-label={t("重命名会话")}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  save();
+              <input
+                ref={inputRef}
+                aria-label={t("会话名称")}
+                value={title}
+                disabled={busy}
+                onChange={(event) => setTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    finishEdit();
+                  }
+                  if (event.key === "Enter" && event.nativeEvent.isComposing)
+                    event.preventDefault();
                 }}
-              >
-                <input
-                  ref={inputRef}
-                  aria-label={t("会话名称")}
-                  value={title}
-                  disabled={busy}
-                  onChange={(event) => setTitle(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      finishEdit();
-                    }
-                    if (event.key === "Enter" && event.nativeEvent.isComposing)
-                      event.preventDefault();
-                  }}
-                />
-                <div className="session-rename-actions">
-                  <button type="button" disabled={busy} onClick={finishEdit}>
-                    {t("取消")}
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={busy || !title.trim() || [...title.trim()].length > 200}
-                  >
-                    {busy ? t("正在保存…") : t("保存")}
-                  </button>
-                </div>
-                {[...title.trim()].length > 200 && (
-                  <p role="alert">{t("名称须为 1–200 个字符。")}</p>
-                )}
-              </form>
-            )}
-          </div>
-        ))}
+              />
+              <div className="session-rename-actions">
+                <button type="button" disabled={busy} onClick={finishEdit}>
+                  {t("取消")}
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy || !title.trim() || [...title.trim()].length > 200}
+                >
+                  {busy ? t("正在保存…") : t("保存")}
+                </button>
+              </div>
+              {[...title.trim()].length > 200 && <p role="alert">{t("名称须为 1–200 个字符。")}</p>}
+            </form>
+          ) : (
+            <ConversationRow
+              key={session.id}
+              session={session}
+              selected={session.id === currentId}
+              disabled={busy || !!editing || !!deleting}
+              onRename={() => {
+                focusId.current = session.sourceId;
+                setNotice("");
+                setTitle(session.title);
+                setEditing({ id: session.sourceId, title: session.title });
+              }}
+              onRefresh={() => {
+                focusId.current = session.sourceId;
+                void run(
+                  () => refresh(session.sourceId),
+                  () => {
+                    setNotice(t("会话已刷新"));
+                    requestAnimationFrame(restoreFocus);
+                  },
+                );
+              }}
+              onDelete={() => {
+                focusId.current = session.sourceId;
+                setNotice("");
+                setDeleting({ id: session.sourceId, title: session.title });
+              }}
+            />
+          ),
+        )}
       </nav>
       {loading && <p role="status">{t("正在读取会话…")}</p>}
       {error && (
@@ -231,86 +170,6 @@ export function ConversationList() {
           {translateNotice(notice)}
         </p>
       )}
-      {menu &&
-        createPortal(
-          <div
-            ref={menuRef}
-            className="session-menu"
-            role="menu"
-            aria-label={menuLabel}
-            style={location}
-            onKeyDown={(event) => {
-              const buttons = [
-                ...(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ??
-                  []),
-              ];
-              const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-              if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-                event.preventDefault();
-                const next =
-                  event.key === "Home"
-                    ? 0
-                    : event.key === "End"
-                      ? buttons.length - 1
-                      : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) %
-                        buttons.length;
-                buttons[next]?.focus();
-              } else if (event.key === "Escape" || event.key === "Tab") {
-                if (event.key === "Escape") event.preventDefault();
-                setMenu(null);
-                restoreFocus();
-              }
-            }}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setEditing(menu);
-                setTitle(menu.title);
-                setMenu(null);
-              }}
-            >
-              <Icon name="edit" />
-              {t("重命名")}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={sending}
-              onClick={() => {
-                const id = menu.id;
-                setMenu(null);
-                restoreFocus();
-                void run(
-                  () => refresh(id),
-                  () => setNotice(t("会话已刷新")),
-                );
-              }}
-            >
-              <Icon name="refresh" />
-              {t("刷新会话")}
-            </button>
-            <hr className="menu-separator" />
-            <button
-              type="button"
-              role="menuitem"
-              className="danger"
-              disabled={sending}
-              onClick={() => {
-                restoreFocus();
-                setDeleting(menu);
-                setMenu(null);
-              }}
-            >
-              <Icon name="trash" />
-              {t("删除会话")}
-            </button>
-          </div>,
-          // A compact directory lives in a Radix modal. Its existing menu must stay within
-          // that focus/pointer boundary; desktop keeps the original body portal.
-          triggerRef.current?.closest<HTMLElement>('[role="dialog"]') ?? document.body,
-        )}
       {deleting && (
         <AlertDialog
           title={t("删除会话")}
@@ -318,6 +177,7 @@ export function ConversationList() {
           onCancel={() => {
             setDeleting(null);
             setNotice("");
+            requestAnimationFrame(restoreFocus);
           }}
         >
           <p>{t("删除「{0}」及其全部消息？此操作无法撤销。", deleting.title)}</p>
@@ -330,6 +190,7 @@ export function ConversationList() {
               onClick={() => {
                 setDeleting(null);
                 setNotice("");
+                requestAnimationFrame(restoreFocus);
               }}
             >
               {t("取消")}
@@ -357,15 +218,89 @@ export function ConversationList() {
   );
 }
 
-function SessionActivity({ sessionId }: { sessionId: string }) {
+function ConversationRow({
+  session,
+  selected,
+  disabled,
+  onRename,
+  onRefresh,
+  onDelete,
+}: {
+  session: ConversationSummary;
+  selected: boolean;
+  disabled: boolean;
+  onRename: () => void;
+  onRefresh: () => void;
+  onDelete: () => void;
+}) {
   const t = useI18n();
+  const select = useSuperstringStore((state) => state.requestConversationNavigation);
+  const sending = useSuperstringStore((state) => sessionBusy(state, session.sourceId));
   const phase = useSuperstringStore(
-    (s) => s.conversationById[s.sessionConversationIds[sessionId]]?.phase,
+    (state) => state.conversationById[state.sessionConversationIds[session.sourceId]]?.phase,
   );
-  if (!phase || phase === "idle") return null;
   return (
-    <span className="session-activity" role="status">
-      {t(phase === "failed" ? "运行失败" : phase === "reconciling" ? "结果待确认" : "正在处理")}
-    </span>
+    <ActionMenu
+      label={t("会话操作")}
+      triggerLabel={t("会话操作：{0}", session.title)}
+      disabled={disabled || session.channel !== "web"}
+      items={[
+        { id: "rename", label: t("重命名"), icon: "edit", onSelect: onRename },
+        {
+          id: "refresh",
+          label: t("刷新会话"),
+          icon: "refresh",
+          disabled: sending,
+          onSelect: onRefresh,
+        },
+        {
+          id: "delete",
+          label: t("删除会话"),
+          icon: "trash",
+          danger: true,
+          disabled: sending,
+          onSelect: onDelete,
+        },
+      ]}
+    >
+      {(trigger) => (
+        <div className="session-row">
+          <button
+            type="button"
+            data-source-id={session.sourceId}
+            className={selected ? "active" : ""}
+            aria-current={selected ? "page" : undefined}
+            title={session.title}
+            aria-label={session.title}
+            aria-describedby={`channel-${session.id}`}
+            disabled={disabled}
+            onClick={() => select(session.id)}
+          >
+            <span className="session-title">{session.title}</span>
+            <small id={`channel-${session.id}`} className="conversation-channel">
+              {t(
+                session.channel === "web"
+                  ? "Web · 私聊"
+                  : session.topology === "shared"
+                    ? "OneBot · 群聊"
+                    : "OneBot · 私聊",
+              )}
+            </small>
+            {phase && phase !== "idle" && (
+              <span className="session-activity" role="status">
+                {t(
+                  phase === "failed"
+                    ? "运行失败"
+                    : phase === "reconciling"
+                      ? "结果待确认"
+                      : "正在处理",
+                )}
+              </span>
+            )}
+          </button>
+          {trigger}
+        </div>
+      )}
+    </ActionMenu>
   );
 }

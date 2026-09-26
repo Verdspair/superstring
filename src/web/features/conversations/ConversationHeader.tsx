@@ -14,12 +14,14 @@ export function ConversationHeader({
 }) {
   return (
     <header className={`page-header conversation-header ${className}`}>
-      <div>
-        <h1>
-          <HeadingIcon name="chat" />
-          <span>{title}</span>
-        </h1>
-        {detail && <p>{detail}</p>}
+      <div className="page-heading-copy">
+        <div>
+          <h1>
+            <HeadingIcon name="chat" />
+            <span>{title}</span>
+          </h1>
+          {detail && <p className="page-heading-description">{detail}</p>}
+        </div>
       </div>
       <div className="conversation-header-actions">{actions}</div>
     </header>

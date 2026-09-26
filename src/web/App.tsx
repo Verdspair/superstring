@@ -1,10 +1,12 @@
 import { useEffect } from "react";
+import { CommandNavigation } from "./app/CommandNavigation";
 import { NavigationConfirm } from "./app/NavigationConfirm";
 import { ResponsiveSidebar } from "./app/ResponsiveSidebar";
 import { SettingsHub } from "./app/SettingsHub";
 import { SettingsWorkspace } from "./app/SettingsWorkspace";
 import { Sidebar as SidebarView } from "./app/Sidebar";
 import { StatusBar } from "./app/StatusBar";
+import { DesignSystemProvider } from "./design-system/Providers";
 import { AgentSettings } from "./features/agents/AgentSettings";
 import { AppearanceSettings } from "./features/appearance/AppearanceSettings";
 import { ChatPage } from "./features/chat/ChatPage";
@@ -26,7 +28,7 @@ export function Sidebar() {
   return <SidebarView version={VERSION} />;
 }
 
-function App() {
+function AppContent() {
   const t = useI18n();
   const status = useSuperstringStore((state) => state.status);
   const page = useSuperstringStore((state) => state.page);
@@ -58,35 +60,43 @@ function App() {
       </div>
     );
   return (
-    <div id="superstring-shell">
-      <ResponsiveSidebar version={VERSION} />
-      <main className="main-area">
-        {page === "chat" ? (
-          <ConversationShell />
-        ) : settingsView === "hub" ? (
-          <SettingsHub />
-        ) : settingsView === "workspace" ? (
-          <SettingsWorkspace />
-        ) : settingsView === "observability" ? (
-          <ObservabilityPage />
-        ) : settingsView === "knowledge" ? (
-          <KnowledgeSettings />
-        ) : settingsView === "general" ? (
-          <GeneralSettings />
-        ) : settingsView === "operating-mode" ? (
-          <OperatingModeSettings />
-        ) : settingsView === "appearance" ? (
-          <AppearanceSettings />
-        ) : (
-          <AgentSettings />
-        )}
-      </main>
-      <StatusBar />
-      {confirm &&
-        page === "settings" &&
-        !["agents", "workspace", "knowledge"].includes(settingsView) && <NavigationConfirm />}
-    </div>
+    <CommandNavigation>
+      <div id="superstring-shell">
+        <ResponsiveSidebar version={VERSION} />
+        <main className="main-area">
+          {page === "chat" ? (
+            <ConversationShell />
+          ) : settingsView === "hub" ? (
+            <SettingsHub />
+          ) : settingsView === "workspace" ? (
+            <SettingsWorkspace />
+          ) : settingsView === "observability" ? (
+            <ObservabilityPage />
+          ) : settingsView === "knowledge" ? (
+            <KnowledgeSettings />
+          ) : settingsView === "general" ? (
+            <GeneralSettings />
+          ) : settingsView === "operating-mode" ? (
+            <OperatingModeSettings />
+          ) : settingsView === "appearance" ? (
+            <AppearanceSettings />
+          ) : (
+            <AgentSettings />
+          )}
+        </main>
+        <StatusBar />
+        {confirm &&
+          page === "settings" &&
+          !["agents", "workspace", "knowledge"].includes(settingsView) && <NavigationConfirm />}
+      </div>
+    </CommandNavigation>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <DesignSystemProvider>
+      <AppContent />
+    </DesignSystemProvider>
+  );
+}

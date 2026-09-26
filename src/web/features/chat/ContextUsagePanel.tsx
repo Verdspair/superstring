@@ -1,6 +1,8 @@
-import { useEffect, useId, useRef, useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import { useSuperstringStore } from "../../store";
+import { Icon } from "../../ui/icons";
 import { currentSessionId as selectedSessionId } from "../conversations/directory-state";
 
 import { chatBusy, currentChat } from "./conversation-state";
@@ -53,10 +55,7 @@ export function ContextUsagePanel() {
   const composer = useSuperstringStore((s) => currentChat(s).composer);
   const [openedSession, setOpenedSession] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const id = useId();
   const visible = open && openedSession === sessionId;
   const current = usage?.session_id === sessionId ? usage : null;
   const percent = current ? (current.input_units / current.capacity) * 100 : null;
@@ -79,133 +78,113 @@ export function ContextUsagePanel() {
     : sending
       ? t("正在准备上下文")
       : t("尚无请求统计");
-  const close = () => {
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-  useEffect(() => {
-    if (!visible) return;
-    closeRef.current?.focus();
-    const outside = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setOpen(false);
-      triggerRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", onEscape);
-    return () => {
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("keydown", onEscape);
-    };
-  }, [visible]);
   // Closing on a chat change prevents an old open state from reappearing on return.
   useEffect(() => {
     if (openedSession !== sessionId) setOpen(false);
   }, [openedSession, sessionId]);
 
   return (
-    <div className="context-usage" ref={rootRef}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="context-usage-trigger"
-        aria-label={t("上下文用量")}
-        aria-haspopup="dialog"
-        aria-expanded={visible}
-        aria-controls={visible ? id : undefined}
-        title={`${t("上下文用量")} · ${percentText} · ${status}`}
-        onClick={() => {
-          setOpenedSession(sessionId);
-          setOpen(!visible);
-        }}
-      >
-        <UsageRing percent={percent} />
-        <span className="context-trigger-percent">{percentText}</span>
-      </button>
-      {visible && (
-        <section
-          id={id}
-          role="dialog"
-          aria-label={t("上下文用量")}
-          className="context-usage-popover"
-        >
-          <div className="context-usage-heading">
-            <h2>{t("上下文用量")}</h2>
-            <button
-              ref={closeRef}
-              type="button"
-              className="icon-button"
-              aria-label={t("关闭上下文用量")}
-              onClick={close}
-            >
-              <svg
-                className="icon"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.7"
-                aria-hidden="true"
-              >
-                <path d="m6 6 12 12M18 6 6 18" />
-              </svg>
-            </button>
-          </div>
-          <div className="context-usage-summary">
-            <UsageRing percent={percent} large />
-            <div>
-              <strong className="context-usage-percent">{percentText}</strong>
-              <p>{status}</p>
-              <small>{t("最近请求的输入占用")}</small>
+    <Popover.Root
+      open={visible}
+      onOpenChange={(next) => {
+        setOpenedSession(sessionId);
+        setOpen(next);
+      }}
+    >
+      <div className="context-usage">
+        <Popover.Trigger asChild>
+          <button
+            type="button"
+            className="context-usage-trigger"
+            aria-label={t("上下文用量")}
+            title={`${t("上下文用量")} · ${percentText} · ${status}`}
+          >
+            <UsageRing percent={percent} />
+            <span className="context-trigger-percent">{percentText}</span>
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content
+            aria-label={t("上下文用量")}
+            className="context-usage-popover"
+            align="end"
+            side="top"
+            sideOffset={12}
+            collisionPadding={12}
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              closeRef.current?.focus();
+            }}
+          >
+            <div className="context-usage-heading">
+              <h2>{t("上下文用量")}</h2>
+              <Popover.Close asChild>
+                <button
+                  ref={closeRef}
+                  type="button"
+                  className="icon-button"
+                  aria-label={t("关闭上下文用量")}
+                >
+                  <Icon name="close" />
+                </button>
+              </Popover.Close>
             </div>
-          </div>
-          {current ? (
-            <>
-              <div
-                className="context-usage-bar"
-                role="img"
-                aria-label={parts.map((p) => `${t(p.label)}: ${p.value}`).join("; ")}
-              >
-                {parts.map((part, index) => (
-                  <span
-                    key={part.key}
-                    className={`context-part context-part-${index}`}
-                    style={{
-                      width: `${(part.value / current.capacity) * 100}%`,
-                    }}
-                    title={`${t(part.label)}: ${part.value}`}
-                  />
-                ))}
+            <div className="context-usage-summary">
+              <UsageRing percent={percent} large />
+              <div>
+                <strong className="context-usage-percent">{percentText}</strong>
+                <p>{status}</p>
+                <small>{t("最近请求的输入占用")}</small>
               </div>
-              <ul className="context-usage-legend">
-                {parts.map((part, index) => (
-                  <li key={part.key} className={index === 7 ? "context-reserved-start" : undefined}>
-                    <i className={`context-part context-part-${index}`} aria-hidden="true" />
-                    <span>{t(part.label)}</span>
-                    <b>{part.value.toLocaleString()}</b>
-                    <small>{((part.value / current.capacity) * 100).toFixed(1)}%</small>
-                  </li>
-                ))}
-              </ul>
-              <p className="hint">{t("预留不计入已用输入；百分比以模型总容量为基准。")}</p>
-              <p className="hint">
-                {t("最近请求模型：{0}；不含本轮回复与待发送草稿。", current.model)}
+            </div>
+            {current ? (
+              <>
+                <div
+                  className="context-usage-bar"
+                  role="img"
+                  aria-label={parts.map((p) => `${t(p.label)}: ${p.value}`).join("; ")}
+                >
+                  {parts.map((part, index) => (
+                    <span
+                      key={part.key}
+                      className={`context-part context-part-${index}`}
+                      style={{
+                        width: `${(part.value / current.capacity) * 100}%`,
+                      }}
+                      title={`${t(part.label)}: ${part.value}`}
+                    />
+                  ))}
+                </div>
+                <ul className="context-usage-legend">
+                  {parts.map((part, index) => (
+                    <li
+                      key={part.key}
+                      className={index === 7 ? "context-reserved-start" : undefined}
+                    >
+                      <i className={`context-part context-part-${index}`} aria-hidden="true" />
+                      <span>{t(part.label)}</span>
+                      <b>{part.value.toLocaleString()}</b>
+                      <small>{((part.value / current.capacity) * 100).toFixed(1)}%</small>
+                    </li>
+                  ))}
+                </ul>
+                <p className="hint">{t("预留不计入已用输入；百分比以模型总容量为基准。")}</p>
+                <p className="hint">
+                  {t("最近请求模型：{0}；不含本轮回复与待发送草稿。", current.model)}
+                </p>
+              </>
+            ) : (
+              <p className="hint">{t("发送后显示请求用量；未统计项为未知，不记为零。")}</p>
+            )}
+            <p className="hint">{t("按 UTF-8 字节和消息开销估算，非模型精确 token 数。")}</p>
+            {draftUnits > 0 && (
+              <p className="hint context-draft">
+                {t("待发送草稿约 {0}，不计入上方请求。", draftUnits)}
               </p>
-            </>
-          ) : (
-            <p className="hint">{t("发送后显示请求用量；未统计项为未知，不记为零。")}</p>
-          )}
-          <p className="hint">{t("按 UTF-8 字节和消息开销估算，非模型精确 token 数。")}</p>
-          {draftUnits > 0 && (
-            <p className="hint context-draft">
-              {t("待发送草稿约 {0}，不计入上方请求。", draftUnits)}
-            </p>
-          )}
-        </section>
-      )}
-    </div>
+            )}
+          </Popover.Content>
+        </Popover.Portal>
+      </div>
+    </Popover.Root>
   );
 }

@@ -1,3 +1,4 @@
+import { motion } from "motion/react";
 import { useI18n } from "../i18n";
 import { useSuperstringStore } from "../store";
 import { Icon } from "../ui/icons";
@@ -15,6 +16,13 @@ export function PrimaryNavigation() {
           aria-current={current === section.id ? "page" : undefined}
           onClick={() => openAppSection(useSuperstringStore.getState(), section.id)}
         >
+          {current === section.id && (
+            <motion.span
+              className="nav-selection"
+              layoutId="workspace-navigation-selection"
+              aria-hidden="true"
+            />
+          )}
           <Icon name={section.icon} />
           <span>{t(section.title)}</span>
         </button>

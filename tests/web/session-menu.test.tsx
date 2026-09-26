@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SessionResponse } from "../../src/shared/contracts";
 import { api, type SuperstringApi } from "../../src/web/api";
@@ -64,7 +65,8 @@ it("聊天页不再显示会话操作按钮和配置版本注释", () => {
   render(<ChatPage />);
   expect(screen.queryByRole("button", { name: "删除会话" })).toBeNull();
   expect(screen.queryByRole("button", { name: "刷新会话" })).toBeNull();
-  expect(document.querySelector(".chat-header p")).toBeNull();
+  expect(document.querySelector(".chat-header p")?.textContent).toContain("Web · 私聊");
+  expect(document.querySelector(".chat-header")?.textContent).not.toContain("配置版本");
 });
 it("右击非当前会话不切换，重命名成功仅更新目标和记忆列表标题", async () => {
   const rename = vi.fn().mockResolvedValue({ ...b, title: "新名称" });
@@ -142,16 +144,16 @@ it("删除非当前会话只删除目标，失败保持确认，成功关闭", a
   expect(store.getState().currentSessionId).toBe("a");
   expect(store.getState().messages).toEqual([message]);
 });
-it("菜单支持键盘导航与Escape恢复焦点", () => {
+it("菜单支持键盘导航与Escape恢复焦点", async () => {
   render(<SessionList />);
   const button = screen.getByRole("button", { name: b.title });
   button.focus();
   fireEvent.keyDown(button, { key: "F10", shiftKey: true });
   expect(document.activeElement?.textContent).toBe("重命名");
-  fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" });
-  expect(document.activeElement?.textContent).toBe("刷新会话");
-  fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
-  expect(document.activeElement).toBe(button);
+  await userEvent.keyboard("{ArrowDown}");
+  await waitFor(() => expect(document.activeElement?.textContent).toBe("刷新会话"));
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(document.activeElement).toBe(button));
   expect(screen.queryByRole("menu")).toBeNull();
 });
 it("忙碌保存防止重复提交", async () => {
@@ -219,4 +221,18 @@ it("迟到的会话读取不覆盖新选择", async () => {
   finish([]);
   await pending;
   expect(store.getState().messages).toEqual([message]);
+});
+
+it("visible overflow opens the same actions without selecting another conversation", async () => {
+  render(<SessionList />);
+  await userEvent.click(screen.getByRole("button", { name: "会话操作：另一会话" }));
+  expect(store.getState().currentSessionId).toBe(a.id);
+  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "重命名",
+    "刷新会话",
+    "删除会话",
+  ]);
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "会话操作：另一会话" }));
 });
