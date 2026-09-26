@@ -61,12 +61,12 @@ jobs:
           const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
           fs.appendFileSync(process.env.GITHUB_OUTPUT,`version=${version}\ncommit=${commit}\n`);
           JS
-      - name: Packaging contract tests (no runtime downloads)
-        run: node --test tests/desktop/packaging.test.mjs
       - name: Install source validation dependencies without Electron runtime
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
         run: npm ci
+      - name: Packaging contract tests
+        run: node --test tests/desktop/packaging.test.mjs
       - name: Type and migration inventory gates
         run: |
           npm run typecheck
