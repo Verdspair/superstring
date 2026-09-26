@@ -16,6 +16,90 @@ export const SSE_HEADERS: Record<string, string> = {
   "x-accel-buffering": "no",
 };
 
+/** Transport traffic, independent of run events and model/request deadlines. */
+export const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
+
+export interface SseWriter {
+  readonly cancelled: boolean;
+  send(event: string, data: Record<string, unknown>): void;
+}
+
+/**
+ * Own the HTTP stream lifecycle once for both event contracts. Comment frames keep
+ * a quiet model request alive without inventing a business event or sequence.
+ * Preparation errors still belong before this function opens the response.
+ */
+export function createSseResponse(
+  options: {
+    requestSignal: AbortSignal;
+    onDisconnect: () => void;
+    keepaliveIntervalMs?: number;
+  },
+  produce: (writer: SseWriter) => Promise<void>,
+): Response {
+  const encoder = new TextEncoder();
+  const keepalive = encoder.encode(": keepalive\n\n");
+  let cancelled = false;
+  let readerCancelled = false;
+  let finished = false;
+  let errored = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let pump: Promise<void> | undefined;
+  const cleanup = () => {
+    if (timer !== undefined) clearInterval(timer);
+    timer = undefined;
+    options.requestSignal.removeEventListener("abort", disconnect);
+  };
+  const disconnect = () => {
+    if (cancelled) return;
+    cancelled = true;
+    cleanup();
+    options.onDisconnect();
+  };
+  options.requestSignal.addEventListener("abort", disconnect, { once: true });
+  if (options.requestSignal.aborted) disconnect();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const write = (bytes: Uint8Array) => {
+        if (!cancelled && !finished) controller.enqueue(bytes);
+      };
+      if (!cancelled)
+        timer = setInterval(
+          () => write(keepalive),
+          options.keepaliveIntervalMs ?? SSE_KEEPALIVE_INTERVAL_MS,
+        );
+      // Returning immediately lets reader.cancel interrupt an awaiting producer.
+      pump = (async () => {
+        try {
+          await produce({
+            get cancelled() {
+              return cancelled;
+            },
+            send: (event, data) => write(encoder.encode(encodeSse(event, data))),
+          });
+        } catch (error) {
+          // The route owns business error events. An unhandled producer failure
+          // remains an incomplete stream for the client's existing reconciliation.
+          if (!cancelled) {
+            errored = true;
+            controller.error(error);
+          }
+        } finally {
+          finished = true;
+          cleanup();
+          if (!readerCancelled && !errored) controller.close();
+        }
+      })();
+    },
+    async cancel() {
+      readerCancelled = true;
+      disconnect();
+      await pump;
+    },
+  });
+  return new Response(body, { headers: SSE_HEADERS });
+}
+
 export interface SseFrame {
   event: string;
   data: unknown;
