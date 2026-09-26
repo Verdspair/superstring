@@ -90,7 +90,7 @@ function RunEntry(
             </Button>
           </DialogClose>
         </header>
-        <ScrollArea className="h-[75dvh] pr-3">
+        <ScrollArea className="h-[75dvh] pr-3 [&_[data-radix-scroll-area-viewport]>div]:block!">
           {open &&
             ("runId" in props ? <RunWorkspace runId={props.runId} /> : <RunAttempts {...props} />)}
         </ScrollArea>

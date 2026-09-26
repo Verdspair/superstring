@@ -103,7 +103,7 @@ export function ContentReader({ text, label }: { text: string; label: string }) 
         aria-label={`${label} · ${t("observability.contentReader")}`}
         // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard access to the scrollable source is required in Safari.
         tabIndex={0}
-        className={`max-h-[65dvh] min-w-0 overflow-auto rounded-lg border bg-muted/30 p-4 font-mono text-xs leading-6 focus-visible:outline-2 focus-visible:outline-ring ${wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"}`}
+        className={`max-h-[65dvh] min-w-0 overflow-auto rounded-lg border bg-muted/30 p-4 font-mono text-xs leading-6 focus-visible:outline-2 focus-visible:outline-ring ${wrap ? "whitespace-pre-wrap wrap-anywhere" : "whitespace-pre"}`}
       >
         {start < 0 ? (
           text

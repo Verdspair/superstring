@@ -271,7 +271,7 @@ export function InvestigationCanvas({
                       {t(expanded ? "observability.restoreLayout" : "observability.expandReader")}
                     </Button>
                   </div>
-                  <ScrollArea className="min-h-0 flex-1">
+                  <ScrollArea className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:block!">
                     <div className="min-w-0 p-4 md:p-6">
                       {selected ? (
                         <EvidenceWorkbench key={selected.spanId} item={selected} />

@@ -64,7 +64,7 @@ export function ModelEvidence({ handle }: { handle: ContextHandle }) {
         <p className="text-xs text-muted-foreground">
           {t("observability.inputsAndOutputsAreLoadedOnlyWhenYouInspectThem")}
         </p>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={inspect} disabled={loading}>
             <Eye />
             {t(
@@ -118,7 +118,7 @@ export function InspectedEvidence({ value }: { value: InspectedContext }) {
   return (
     <Tabs defaultValue="input" className="min-w-0 gap-4">
       <TabsList
-        className="w-full sm:w-fit"
+        className="h-auto w-full flex-wrap sm:w-fit"
         aria-label={t("observability.modelInputOutputAndSources")}
       >
         <TabsTrigger value="input">{t("observability.modelInput")}</TabsTrigger>
