@@ -1,4 +1,6 @@
 import { expect, it, spyOn } from "bun:test";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   createSseResponse,
   parseSseFrames,
@@ -13,7 +15,7 @@ import {
 } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { ModelUnavailableError } from "../../src/server/errors";
-import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { localhostFetch, type ModelGateway } from "../../src/server/llm/model-gateway";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -275,36 +277,61 @@ for (const path of ["/chat", "/v2/chat"] as const) {
 }
 
 it("keeps a real Bun response open beyond an accelerated idle timeout", async () => {
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    idleTimeout: 1,
-    fetch(req) {
-      const abort = new AbortController();
-      return createSseResponse(
-        { requestSignal: req.signal, onDisconnect: () => abort.abort(), keepaliveIntervalMs: 100 },
-        async (writer) => {
-          writer.send("started", { seq: 1 });
-          await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => {
-              abort.signal.removeEventListener("abort", cancelled);
-              resolve();
-            }, 2500);
-            const cancelled = () => {
-              clearTimeout(timer);
-              reject(abort.signal.reason);
-            };
-            abort.signal.addEventListener("abort", cancelled, { once: true });
-          });
-          writer.send("completed", { seq: 2 });
-        },
-      );
-    },
+  // The server runs in its own process: other files of this suite replace the global
+  // timers and proxy environment while they run, which starves a real server here
+  // (keepalive intervals never fire and the idle timeout closes the stream).
+  const probe = `
+import { createSseResponse } from ${JSON.stringify(
+    pathToFileURL(join(import.meta.dir, "../../src/server/api/sse.ts")).href,
+  )};
+const server = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  idleTimeout: 1,
+  fetch(req) {
+    const abort = new AbortController();
+    return createSseResponse(
+      { requestSignal: req.signal, onDisconnect: () => abort.abort(), keepaliveIntervalMs: 100 },
+      async (writer) => {
+        writer.send("started", { seq: 1 });
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            abort.signal.removeEventListener("abort", cancelled);
+            resolve();
+          }, 2500);
+          const cancelled = () => {
+            clearTimeout(timer);
+            reject(abort.signal.reason);
+          };
+          abort.signal.addEventListener("abort", cancelled, { once: true });
+        });
+        writer.send("completed", { seq: 2 });
+      },
+    );
+  },
+});
+console.log(String(server.port));
+`;
+  const child = Bun.spawn({
+    cmd: [process.execPath, "-e", probe],
+    stdout: "pipe",
+    stderr: "pipe",
   });
   try {
+    const decoder = new TextDecoder();
+    let printed = "";
+    const reader = child.stdout.getReader();
+    while (!printed.includes("\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("SSE probe exited before reporting its port");
+      printed += decoder.decode(chunk.value);
+    }
+    // Probe like the server talks to the local model: the loopback call bypasses any
+    // ambient proxy, and only performance.now/AbortSignal.timeout are needed here.
+    const port = Number(printed.trim().split("\n")[0]);
     const started = performance.now();
-    const response = await fetch(`http://127.0.0.1:${server.port}`, {
-      signal: AbortSignal.timeout(5000),
+    const response = await localhostFetch(`http://127.0.0.1:${port}`, {
+      signal: AbortSignal.timeout(8000),
     });
     const body = await response.text();
     expect(performance.now() - started).toBeGreaterThan(2000);
@@ -314,6 +341,7 @@ it("keeps a real Bun response open beyond an accelerated idle timeout", async ()
       { event: "completed", data: { seq: 2 } },
     ]);
   } finally {
-    await server.stop(true);
+    child.kill();
+    await child.exited;
   }
-}, 7000);
+}, 15000);
