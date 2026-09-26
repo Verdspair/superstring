@@ -28,8 +28,8 @@ import { useQqInput } from "@/features/qq/use-qq-input";
 import { useSuperstringStore } from "@/store";
 
 export function StickerLibrary() {
-  const s = useSuperstringStore(),
-    t = useTranslation().t;
+  const s = useSuperstringStore();
+  const { t, i18n } = useTranslation();
   const [search, setSearch] = useState(""),
     [collection, setCollection] = useState("all"),
     [enabled, setEnabled] = useState("all"),
@@ -255,7 +255,12 @@ export function StickerLibrary() {
                     </Badge>
                     <p>
                       {editor.source.width} × {editor.source.height} ·{" "}
-                      {(editor.source.byte_size / 1024).toFixed(1)} KB
+                      {new Intl.NumberFormat(i18n.resolvedLanguage, {
+                        style: "unit",
+                        unit: "kilobyte",
+                        minimumFractionDigits: 1,
+                        maximumFractionDigits: 1,
+                      }).format(editor.source.byte_size / 1024)}
                     </p>
                     <Button
                       size="sm"

@@ -27,8 +27,8 @@ import { BindingMemoryControls } from "./BindingMemoryControls";
 import { memoryScopeLabel } from "./scope-label";
 
 export function MemoryLibrary() {
-  const s = useSuperstringStore(),
-    t = useTranslation().t;
+  const s = useSuperstringStore();
+  const { t, i18n } = useTranslation();
   const [scope, setScope] = useState(""),
     [search, setSearch] = useState(""),
     [query, setQuery] = useState(""),
@@ -380,7 +380,7 @@ export function MemoryLibrary() {
                       </div>
                       <p className="mt-2 text-xs text-muted-foreground">
                         {memoryScopeLabel(entry.scope_key, agentId, t)} ·{" "}
-                        {new Date(entry.created_at).toLocaleString()}
+                        {new Date(entry.created_at).toLocaleString(i18n.resolvedLanguage)}
                       </p>
                     </div>
                   </div>
@@ -438,7 +438,7 @@ export function MemoryLibrary() {
                     <Badge variant="outline">{job.kind}</Badge>
                     <span>{t(`library.status.${job.status}`)}</span>
                     <span className="text-xs text-muted-foreground">
-                      {new Date(job.created_at).toLocaleString()}
+                      {new Date(job.created_at).toLocaleString(i18n.resolvedLanguage)}
                     </span>
                     {job.error_code && <span className="text-destructive">{job.error_code}</span>}
                     <div className="ml-auto">

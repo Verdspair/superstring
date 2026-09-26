@@ -27,6 +27,11 @@ export function ContextMeter() {
   const close = useRef<HTMLButtonElement>(null);
   const usage = chat.contextUsage?.session_id === session ? chat.contextUsage : null;
   const percent = usage ? (usage.input_units / usage.capacity) * 100 : null;
+  const percentage = new Intl.NumberFormat(i18n.resolvedLanguage, {
+    style: "percent",
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
   const draft = new TextEncoder().encode(chat.composer.trim()).length;
   useEffect(() => {
     if (owner !== session) setOpen(false);
@@ -57,7 +62,7 @@ export function ContextMeter() {
         >
           <ContextRing percent={percent} />
           <span className="font-mono text-[11px]">
-            {percent === null ? "—" : `${percent.toFixed(1)}%`}
+            {percent === null ? "—" : percentage.format(percent / 100)}
           </span>
         </Button>
       </PopoverTrigger>
@@ -86,7 +91,7 @@ export function ContextMeter() {
         </div>
         <div className="flex items-end justify-between gap-3 py-3">
           <strong className="text-3xl font-semibold tabular-nums tracking-tight">
-            {percent === null ? "—" : `${percent.toFixed(1)}%`}
+            {percent === null ? "—" : percentage.format(percent / 100)}
           </strong>
           <span className="pb-1 text-xs text-muted-foreground">
             {t("workspace.input_usage_of_the_latest_request")}
@@ -109,7 +114,7 @@ export function ContextMeter() {
                       {part.value.toLocaleString(i18n.resolvedLanguage)}
                     </TableCell>
                     <TableCell className="py-1.5 text-right font-mono text-xs text-muted-foreground">
-                      {((part.value / usage.capacity) * 100).toFixed(1)}%
+                      {percentage.format(part.value / usage.capacity)}
                     </TableCell>
                   </TableRow>
                 ))}
