@@ -28,8 +28,7 @@ export function ReadError({ error }: { error: string }) {
 export function traceTask(trace: RuntimeTrace, t: (key: string) => string) {
   return (
     trace.specIds.map((id) => t(taskLabels[id] ?? id)).join(" · ") ||
-    operationLabels[trace.root.name] ||
-    trace.root.name
+    t(operationLabels[trace.root.name] ?? trace.root.name)
   );
 }
 export function traceCause(trace: RuntimeTrace, t: (key: string) => string) {

@@ -18,6 +18,7 @@ import {
   ModelEvidence,
 } from "../../src/web/screens/observability/ModelEvidence";
 import { ExecutionWorkspace } from "../../src/web/screens/observability/ObservabilityWorkspace";
+import { traceTask } from "../../src/web/screens/observability/presentation";
 import { TraceTimeline } from "../../src/web/screens/observability/TraceTimeline";
 import { useSuperstringStore as store } from "../../src/web/store";
 
@@ -98,6 +99,15 @@ function group(item = root): RuntimeTrace {
     specIds: ["onebot.main", "memory.select"],
   };
 }
+
+it("translates operation-only traces without inventing a model task", () => {
+  const trace = { ...group(span(9, 0, 20, { name: "bot.ingress" })), specIds: [] };
+  expect(traceTask(trace, (key) => i18n.t(key))).toBe(i18n.t("observability.messageIntake"));
+  expect(traceTask(trace, (key) => i18n.t(key))).not.toMatch(/^observability\./);
+  expect(
+    traceTask({ ...trace, root: { ...trace.root, name: "extension.event" } }, (key) => i18n.t(key)),
+  ).toBe("extension.event");
+});
 const data: RuntimeTraceDetail = {
   now: at(1000),
   trace: group(),
