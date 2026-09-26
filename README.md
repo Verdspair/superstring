@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="src/shared/brand/superstring.svg" width="88" alt="Superstring logo">
+  <br>
+  <img src="src/shared/brand/superstring-wordmark.svg" width="420" alt="Superstring">
+</p>
+
 # Superstring
 
 A local Agent workspace for web conversations, QQ groups and private chats, memory, and knowledge.

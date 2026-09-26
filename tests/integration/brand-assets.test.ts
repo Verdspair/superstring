@@ -33,6 +33,22 @@ describe("shared SVG desktop build assets", () => {
     );
   });
 
+  it("keeps the wordmark outlines and its light/dark colour rule in the shared asset", () => {
+    const svg = readFileSync(
+      path.resolve(import.meta.dir, "../../src/shared/brand/superstring-wordmark.svg"),
+      "utf8",
+    );
+    expect(svg).toContain('viewBox="0 0 884 71"');
+    expect(svg).toContain("@media (prefers-color-scheme: dark)");
+    const outlines = svg
+      .slice(svg.indexOf('<g fill="currentColor"'), svg.lastIndexOf("</svg>"))
+      .replace(/\s+/g, " ")
+      .trim();
+    expect(createHash("sha256").update(outlines).digest("hex")).toBe(
+      "ac15406408b7b0708eb849358dcdbcfc64ddbe0896369c33aab8f8898f08e240",
+    );
+  });
+
   it("renders all native icon resolutions directly from the shared brand source", () => {
     const frames = renderBrandAssets(path.resolve(import.meta.dir, "../.."), temporary());
     expect(frames.map((frame: { size: number }) => frame.size)).toEqual([

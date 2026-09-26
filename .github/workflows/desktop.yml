@@ -266,6 +266,7 @@ jobs:
           MACOS_SIGNED: ${{ secrets.MACOS_CERTIFICATE != '' }}
         run: |
           {
+            printf '<p align="center"><img src="https://raw.githubusercontent.com/Verdspair/superstring/main/src/shared/brand/superstring.svg" width="88" alt="Superstring logo"><br><img src="https://raw.githubusercontent.com/Verdspair/superstring/main/src/shared/brand/superstring-wordmark.svg" width="420" alt="Superstring"></p>\n\n'
             cat RELEASE_NOTES.md
             printf '\n---\n\n'
             if [ "$MACOS_SIGNED" = "true" ]; then

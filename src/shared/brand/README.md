@@ -5,6 +5,12 @@ widely spaced quotation marks above a smaller conversation bubble, a vibrating
 string and two connected nodes. The bubble, quotes and string use 1.7-, 1.3- and
 1.4-unit strokes respectively; both nodes have a 1.6-unit radius.
 
+`superstring-wordmark.svg` is the project wordmark: the app's own `brand.wordmark`
+presentation (`SUPERSTRING`, wide tracking, semibold) with the Geist glyphs stored
+as outlines, so it renders identically without loading a font. It carries the same
+light/dark colour rule as the master. Keep the two files as a pair; do not re-letter
+the wordmark or draw a third logo variant.
+
 - Web: `BrandLogo` references `#mark` with SVG `use`. Vite emits a shared asset;
   `?no-inline` keeps fragment references out of data URLs. The host supplies
   `currentColor` so all user themes work without separate logo variants.
@@ -22,6 +28,8 @@ This is project-owned brand artwork; generic UI controls still use the component
 ## 简体中文
 
 `superstring.svg` 是唯一可编辑母版。原版采用 24 单位画布：分开的引号位于较小的对话框上方，框内是振动弦与两个节点；对话框、引号、弦的线宽分别为 1.7、1.3、1.4，节点半径为 1.6。
+
+`superstring-wordmark.svg` 是项目字标：把应用里 `brand.wordmark` 的既成写法（`SUPERSTRING`、宽字距、半粗）用 Geist 字形转成轮廓存储，不依赖本地字体即可到处渲染一致；配色规则与母版相同（浅色/深色自动切换）。两个文件成对使用，不要重排字标或另画第三种标志。
 
 - 网页 `BrandLogo` 用 SVG `use` 引用 `#mark`，沿用 `currentColor` 跟随主题；`?no-inline` 保证片段引用指向资源文件而非 data URL。
 - favicon 使用同一 SVG 的独立明暗配色规则。
