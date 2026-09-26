@@ -69,7 +69,7 @@ jobs:
       - name: Type and migration inventory gates
         run: |
           npm run typecheck
-          node tools/verify/verify-migration-inventory.mjs
+          node_modules/.bin/bun tools/verify/verify-migration-inventory.mjs
       - name: Desktop contracts and existing startup invariants
         run: >-
           node_modules/.bin/bun test
