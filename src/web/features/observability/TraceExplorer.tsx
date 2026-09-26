@@ -151,7 +151,7 @@ export function TraceExplorer({ conversationId }: { conversationId?: string }) {
           </p>
         )}
       </form>
-      <TraceGroups key={JSON.stringify(applied)} filters={applied} />
+      <TraceGroups filters={applied} />
     </div>
   );
 }

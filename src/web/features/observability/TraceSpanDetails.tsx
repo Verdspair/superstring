@@ -5,7 +5,13 @@ import { DeliveryDetails } from "../conversations/DeliveryDetails";
 import { RunLink, StepContext } from "../runs/RunInspector";
 import { detailLabels, reasonLabels } from "./labels";
 
-export function TraceSpanDetails({ item }: { item: RuntimeSpan }) {
+export function TraceSpanDetails({
+  item,
+  onInspectRun,
+}: {
+  item: RuntimeSpan;
+  onInspectRun?: (runId: string) => void;
+}) {
   const t = useI18n();
   const ids = {
     "Trace ID": item.traceId,
@@ -26,7 +32,18 @@ export function TraceSpanDetails({ item }: { item: RuntimeSpan }) {
         <p className="hint">{t("结果尚未确认，不等同于失败；请沿追踪链路核对后续结果。")}</p>
       )}
       <div className="trace-actions">
-        {item.runId && <RunLink runId={item.runId} />}
+        {item.runId &&
+          (onInspectRun ? (
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => item.runId && onInspectRun(item.runId)}
+            >
+              {t("运行详情")}
+            </button>
+          ) : (
+            <RunLink runId={item.runId} />
+          ))}
         {item.channel === "onebot11" && item.outputId && (
           <DeliveryDetails key={`${item.outputId}:${item.status}`} outputId={item.outputId} />
         )}

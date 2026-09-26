@@ -225,7 +225,7 @@ it("opens a complete trace with parent relationships, unknown outcomes and keybo
   const user = userEvent.setup();
   const trigger = await screen.findByRole("button", { name: "展开时序链路" });
   await user.click(trigger);
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("region", { name: "追踪链路" });
   await within(dialog).findByText("Sticker delivery");
   expect(trace.mock.calls[0][0]).toBe(traceId);
   const child = within(dialog).getByText("Sticker delivery").closest("li");
@@ -236,7 +236,7 @@ it("opens a complete trace with parent relationships, unknown outcomes and keybo
     within(dialog).getByText("结果尚未确认，不等同于失败；请沿追踪链路核对后续结果。"),
   ).toBeTruthy();
   await user.keyboard("{Escape}");
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("region", { name: "追踪链路" })).toBeNull();
   expect(document.activeElement).toBe(trigger);
 });
 it("shows actual connection/window/queue state separately from trace counts", async () => {
@@ -331,16 +331,16 @@ it("keeps a selected trace open when completion removes its filtered result row"
   render(<TraceExplorer />);
   const trigger = await screen.findByRole("button", { name: "展开时序链路" });
   fireEvent.click(trigger);
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("region", { name: "追踪链路" });
   await within(dialog).findAllByText("Model generation");
-  await act(async () => {
-    vi.advanceTimersByTime(5000);
-  });
+  fireEvent.click(screen.getByRole("button", { name: "刷新运行记录" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "刷新当前链路" }));
+  await within(dialog).findAllByText("Completed trace step");
   expect(trigger.isConnected).toBe(false);
-  expect(screen.getByRole("dialog")).toBe(dialog);
+  expect(screen.getByRole("region", { name: "追踪链路" })).toBe(dialog);
   await within(dialog).findAllByText("Completed trace step");
   fireEvent.click(within(dialog).getByRole("button", { name: "关闭追踪链路" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("region", { name: "追踪链路" })).toBeNull());
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "刷新运行记录" }));
 });
 
@@ -352,24 +352,42 @@ it("retains trace selection across blur while clearing and revalidating its sour
   setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: trace });
   render(<TraceExplorer />);
   fireEvent.click(await screen.findByRole("button", { name: "展开时序链路" }));
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("region", { name: "追踪链路" });
   await within(dialog).findAllByText("Private trace metadata");
   fireEvent.blur(window);
-  expect(screen.getByRole("dialog")).toBe(dialog);
+  expect(screen.getByRole("region", { name: "追踪链路" })).toBe(dialog);
   expect(within(dialog).queryByText("Private trace metadata")).toBeNull();
   fireEvent.focus(window);
   await within(dialog).findByText("Trace access expired");
   expect(within(dialog).queryByText("Private trace metadata")).toBeNull();
 });
 
-it("closes trace selection when the applied filter scope changes", async () => {
+it("preserves trace selection and revalidates it when applied filters change", async () => {
   setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: async () => page() });
   render(<TraceExplorer />);
   const status = screen.getByLabelText("处理状态");
   const apply = screen.getByRole("button", { name: "应用筛选" });
   fireEvent.click(await screen.findByRole("button", { name: "展开时序链路" }));
-  await screen.findByRole("dialog");
+  const pane = await screen.findByRole("region", { name: "追踪链路" });
   fireEvent.change(status, { target: { value: "failed" } });
   fireEvent.click(apply);
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await within(pane).findAllByText("Model generation");
+  expect(screen.getByRole("region", { name: "追踪链路" })).toBe(pane);
+});
+
+it("restores focus only after the narrow-layout directory is visible again", async () => {
+  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: async () => page() });
+  render(<TraceExplorer />);
+  const trigger = await screen.findByRole("button", { name: "展开时序链路" });
+  fireEvent.click(trigger);
+  const pane = await screen.findByRole("region", { name: "追踪链路" });
+  const atFocus: string[] = [];
+  const originalFocus = trigger.focus.bind(trigger);
+  vi.spyOn(trigger, "focus").mockImplementation(() => {
+    atFocus.push(trigger.closest(".trace-workspace")?.getAttribute("data-inspecting") ?? "missing");
+    originalFocus();
+  });
+  fireEvent.click(within(pane).getByRole("button", { name: "关闭追踪链路" }));
+  expect(atFocus).toEqual(["false"]);
+  expect(document.activeElement).toBe(trigger);
 });

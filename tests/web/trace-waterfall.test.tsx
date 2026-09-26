@@ -144,7 +144,7 @@ it("keeps two interleaved requests in independent server groups and expands the 
   expect(within(card).getByText("触发类型: 直接回应")).toBeTruthy();
   expect(within(card).getByText("链路任务: OneBot 主 Agent · 记忆筛选")).toBeTruthy();
   fireEvent.click(triggers[1]);
-  const dialog = await screen.findByRole("dialog");
+  const dialog = await screen.findByRole("region", { name: "追踪链路" });
   expect(await within(dialog).findAllByText("记忆筛选", { exact: false })).not.toHaveLength(0);
   expect(detail.mock.calls[0][0]).toBe(traceId);
   expect(within(dialog).queryByText("Other request")).toBeNull();
@@ -196,6 +196,7 @@ it("inspects the selected model step through the protected endpoint and clears b
   expect(inspect).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
   await screen.findByText("Exact protected input");
+  await userEvent.setup().click(screen.getByRole("tab", { name: "模型输出" }));
   expect(screen.getByText('{"selected":["one"]}')).toBeTruthy();
   expect(inspect.mock.calls[0][0]).toEqual({ runId: "run-child", stepId: "step-child" });
   fireEvent.blur(window);
@@ -203,7 +204,7 @@ it("inspects the selected model step through the protected endpoint and clears b
   expect(screen.queryByText('{"selected":["one"]}')).toBeNull();
 });
 
-it("distinguishes partial, unrecorded, expired and revoked output without showing stale text", () => {
+it("distinguishes partial, unrecorded, expired and revoked output without showing stale text", async () => {
   const view = render(
     <ContextContent
       context={{
@@ -212,6 +213,7 @@ it("distinguishes partial, unrecorded, expired and revoked output without showin
       }}
     />,
   );
+  await userEvent.setup().click(screen.getByRole("tab", { name: "模型输出" }));
   expect(screen.getByText("这是中断前保留的部分模型输出。", { exact: false })).toBeTruthy();
   expect(screen.getByText("partial response")).toBeTruthy();
   view.rerender(
@@ -237,4 +239,95 @@ it("does not label requested or historical model names as resolved actual models
   expect(screen.getByText("请求模型", { exact: false })).toBeTruthy();
   expect(screen.queryByText("实际请求模型", { exact: false })).toBeNull();
   expect(screen.queryByText("已使用替补模型", { exact: false })).toBeNull();
+});
+
+it("keeps run navigation inside the step inspector and discards protected bodies when leaving the step", async () => {
+  const inspect = vi.fn().mockResolvedValue(exact);
+  store.getState().resetForTests({
+    ...api,
+    inspectRunContext: inspect,
+    getRun: async (runId) => ({
+      runId,
+      specId: "memory.select",
+      specVersion: "1",
+      owner: { kind: "test", id: "owner" },
+      status: "completed",
+      startedAt: at(0),
+      endedAt: at(1000),
+      lastSeq: 1,
+      steps: [],
+      outputs: [],
+      errorCode: null,
+    }),
+  });
+  render(<TraceWaterfall data={data} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "查看输入、输出与详情" }));
+  await user.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
+  await screen.findByText("Exact protected input");
+  await user.click(screen.getByRole("button", { name: "运行详情" }));
+  await screen.findByText("尚未开始模型步骤。");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByText("Exact protected input")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "返回步骤详情" }));
+  expect(screen.getByRole("button", { name: "查看实际输入与输出" })).toBeTruthy();
+  expect(inspect).toHaveBeenCalledOnce();
+});
+
+it("reveals a collapsed matching branch without changing the complete causal data", async () => {
+  render(<TraceWaterfall data={data} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "折叠全部步骤" }));
+  expect(screen.queryByRole("button", { name: "查看输入、输出与详情" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "下一个命中" }));
+  expect(
+    screen.getByRole("button", { name: "查看输入、输出与详情" }).getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(screen.getByRole("button", { name: "查看实际输入与输出" })).toBeTruthy();
+  expect(screen.getByText("Agent 行动", { selector: "strong" })).toBeTruthy();
+});
+
+it("uses keyboard tabs and read-only text tools without fetching another copy of protected output", async () => {
+  const user = userEvent.setup();
+  render(
+    <ContextContent
+      context={{ ...exact, result: { status: "exact", format: "text", text: "alpha beta alpha" } }}
+    />,
+  );
+  const input = screen.getByRole("tab", { name: "模型输入" });
+  input.focus();
+  await user.keyboard("{ArrowRight}");
+  expect(screen.getByRole("tab", { name: "模型输出" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.queryByText("Exact protected input")).toBeNull();
+  const reader = screen.getByRole("region", { name: "模型输出正文" });
+  await user.type(within(reader).getByLabelText("搜索此正文"), "alpha");
+  expect(reader.querySelector("mark")?.textContent).toBe("alpha");
+  expect(reader.querySelector("pre")?.textContent).toBe("alpha beta alpha");
+  await user.click(within(reader).getByRole("button", { name: "下一个匹配" }));
+  expect(reader.querySelector("mark")?.previousSibling?.textContent).toBe("alpha beta ");
+  await user.click(within(reader).getByRole("button", { name: "自动换行" }));
+  expect(reader.querySelector("pre")?.getAttribute("data-wrap")).toBe("false");
+  await user.click(within(reader).getByRole("button", { name: "复制正文" }));
+  expect(await navigator.clipboard.readText()).toBe("alpha beta alpha");
+});
+
+it("restores a selected step after revalidation without moving focus until explicit navigation", async () => {
+  const view = render(
+    <>
+      <button type="button">Filter control</button>
+      <TraceWaterfall key="initial" data={data} selectedSpanId={child.spanId} />
+    </>,
+  );
+  const control = screen.getByRole("button", { name: "Filter control" });
+  control.focus();
+  view.rerender(
+    <>
+      <button type="button">Filter control</button>
+      <TraceWaterfall key="revalidated" data={data} selectedSpanId={child.spanId} />
+    </>,
+  );
+  expect(document.activeElement).toBe(control);
+  await userEvent.setup().click(screen.getByRole("button", { name: "查看输入、输出与详情" }));
+  const inspector = screen.getByRole("complementary", { name: "步骤检查器" });
+  expect(document.activeElement).toBe(within(inspector).getByRole("heading"));
 });

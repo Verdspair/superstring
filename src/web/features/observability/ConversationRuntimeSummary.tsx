@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { ConversationRuntimeStatus } from "../../../shared/contracts/runtime-observability";
 import { translateNotice, useI18n } from "../../i18n";
+import { type ReadTask, startRead } from "../../services/read-task";
+import { useForegroundRead } from "../../services/use-foreground-read";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
 import { localTime } from "../../ui/local-time";
@@ -19,60 +21,39 @@ export function ConversationRuntimeSummary({ conversationId }: { conversationId:
   const api = useSuperstringStore((state) => state.apiClient);
   const [status, setStatus] = useState<ConversationRuntimeStatus | null>(null);
   const [error, setError] = useState("");
-  const [revision, setRevision] = useState(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: revision is an explicit retry.
-  useEffect(() => {
-    let pending: AbortController | null = null;
-    let foreground = true;
-    const load = async () => {
-      if (pending || !foreground || document.visibilityState === "hidden") return;
-      const controller = new AbortController();
-      pending = controller;
-      try {
-        const next = await api.getConversationRuntimeStatus(conversationId, controller.signal);
-        if (!controller.signal.aborted) {
+  const pending = useRef<ReadTask | null>(null);
+  const clear = useCallback(() => {
+    pending.current?.cancel();
+    pending.current = null;
+    setStatus(null);
+    setError("");
+  }, []);
+  const load = useCallback(() => {
+    if (pending.current) return;
+    pending.current = startRead(
+      (signal) => api.getConversationRuntimeStatus(conversationId, signal),
+      {
+        success: (next) => {
           setStatus(next);
           setError("");
-        }
-      } catch (reason) {
-        if (!controller.signal.aborted) {
+        },
+        failure: (reason) => {
           setStatus(null);
           setError(errorText(reason));
-        }
-      } finally {
-        if (pending === controller) pending = null;
-      }
-    };
-    const clear = () => {
-      foreground = false;
-      pending?.abort();
-      pending = null;
-      setStatus(null);
-    };
-    const focus = () => {
-      foreground = true;
-      void load();
-    };
-    const visibility = () => (document.visibilityState === "hidden" ? clear() : focus());
-    void load();
-    const timer = setInterval(() => void load(), 5000);
-    window.addEventListener("focus", focus);
-    window.addEventListener("blur", clear);
-    document.addEventListener("visibilitychange", visibility);
-    return () => {
-      clearInterval(timer);
-      pending?.abort();
-      window.removeEventListener("focus", focus);
-      window.removeEventListener("blur", clear);
-      document.removeEventListener("visibilitychange", visibility);
-    };
-  }, [api, conversationId, revision]);
+        },
+        settled: () => {
+          pending.current = null;
+        },
+      },
+    );
+  }, [api, conversationId]);
+  useForegroundRead(load, clear);
   return (
     <section className="conversation-runtime-summary" aria-label={t("当前处理状态")}>
       {error ? (
         <p className="error">
           {t("当前状态读取失败")}: {translateNotice(error)}{" "}
-          <button type="button" onClick={() => setRevision((old) => old + 1)}>
+          <button type="button" onClick={load}>
             {t("刷新处理状态")}
           </button>
         </p>
