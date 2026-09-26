@@ -54,6 +54,10 @@ import {
   ConversationListSchema,
   DeliverySchema,
 } from "../shared/contracts/conversation";
+import {
+  ConversationAvatarSchema,
+  type GeneratedAvatar,
+} from "../shared/contracts/conversation-avatar";
 import { DesktopSettingsSchema, type DesktopSettingsUpdate } from "../shared/contracts/desktop";
 import {
   AgentKnowledgeReadSettingsSchema,
@@ -152,6 +156,19 @@ function json(method: string, body: unknown): RequestInit {
 }
 
 export const api = {
+  saveConversationAvatar: (id: string, value: GeneratedAvatar | File | null) => {
+    let init: RequestInit;
+    if (value instanceof File) {
+      const body = new FormData();
+      body.set("file", value);
+      init = { method: "PUT", body };
+    } else init = json("PUT", value);
+    return requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/avatar`,
+      ConversationAvatarSchema,
+      init,
+    );
+  },
   listConversations: (
     filters: {
       channel?: "web" | "onebot11";

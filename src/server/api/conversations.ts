@@ -3,8 +3,10 @@ import { Hono } from "hono";
 import { ConversationChannelSchema } from "../../shared/contracts/conversation";
 import { visibleConversation } from "../agent/conversation-access";
 import { projectConversationEvent } from "../conversation/conversation-view";
+import { ConversationAvatarRepository } from "../db/conversation-avatar-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
+import { conversationAvatarRoutes } from "./conversation-avatars";
 import { parseUuidParam, validationFailed } from "./validation";
 
 const principal = { userId: DEFAULT_USER_ID };
@@ -44,10 +46,12 @@ export function conversationRoutes(
 ): Hono {
   const router = new Hono();
   const repository = new ConversationEventRepository(db);
+  const avatars = new ConversationAvatarRepository(db);
   router.use("*", async (c, next) => {
     c.header("cache-control", "no-store");
     await next();
   });
+  router.route("/", conversationAvatarRoutes(db, options.includeShared));
   router.get("/", (c) => {
     const rawChannel = c.req.query("channel");
     const parsed =
@@ -79,7 +83,7 @@ export function conversationRoutes(
           principal,
           options.includeShared,
         );
-        return visible ? [visible] : [];
+        return visible ? [{ ...visible, avatar: avatars.metadata(visible.id) }] : [];
       }),
     });
   });
@@ -91,7 +95,9 @@ export function conversationRoutes(
       principal,
       options.includeShared,
     );
-    return conversation ? c.json(conversation) : c.json(conversationNotFound, 404);
+    return conversation
+      ? c.json({ ...conversation, avatar: avatars.metadata(conversation.id) })
+      : c.json(conversationNotFound, 404);
   });
   router.get("/:id/status", (c) => {
     const id = parseUuidParam(c.req.param("id"));

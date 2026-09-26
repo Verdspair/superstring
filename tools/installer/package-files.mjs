@@ -76,6 +76,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0041_outbound_intents.sql",
     "versions/0042_runtime_observability.sql",
     "versions/0043_protected_model_results.sql",
+    "versions/0044_conversation_avatars.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }
