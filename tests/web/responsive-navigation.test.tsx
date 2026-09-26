@@ -72,6 +72,8 @@ it("conversation directory is a separate modal with keyboard-reachable record ac
   const conversation = screen.getByRole("button", { name: "菜单会话" });
   conversation.focus();
   fireEvent.keyDown(conversation, { key: "F10", shiftKey: true });
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "更换会话头像" }));
+  await userEvent.keyboard("{ArrowDown}");
   expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "重命名" }));
   await userEvent.keyboard("{Enter}");
   expect(screen.getByRole("textbox", { name: "会话名称" })).toBeTruthy();
