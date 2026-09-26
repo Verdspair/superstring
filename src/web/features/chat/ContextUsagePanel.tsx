@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ContextRing } from "@/components/context-ring";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
@@ -73,7 +74,7 @@ export function ContextUsagePanel() {
             aria-label={t("上下文用量")}
             title={`${t("上下文用量")} · ${percentText} · ${status}`}
           >
-            <Icon name="activity" />
+            <ContextRing percent={percent} />
             <span className="context-trigger-percent font-mono text-xs">{percentText}</span>
           </Button>
         </PopoverTrigger>
