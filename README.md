@@ -32,7 +32,7 @@ Connect a separately running OneBot 11 WebSocket service, such as NapCat, then b
 
 QQ access has its own prerequisites:
 
-1. Install a QQ NT client and log in once. NapCat v4.18.28 was validated with QQ 9.9.26.44343 (installer `QQ9.9.26.44343_x64.exe`); NapCat requires QQ NT build 40768 or newer.
+1. Install a QQ NT client and log in once. Take the supported QQ version from your OneBot implementation's own release notes ([NapCat releases](https://github.com/NapNeko/NapCatQQ/releases)); the combination validated here is NapCat v4.18.28 with QQ 9.9.26.44343.
 2. Install an OneBot 11 implementation such as [NapCat](https://github.com/NapNeko/NapCatQQ). On Windows its Shell package bundles its own Node.js runtime: unzip it and start `launcher.bat` (`launcher-win10.bat` on Windows 10). The console prints a WebUI address and a one-time password — use them to open the panel.
 3. In that panel, enable a forward WebSocket server and note its address, port and access token. Keep the endpoint and the token private; a connected transport is not a guarantee of delivery.
 4. In Superstring, open **Connections**, enter that address, port and token, then create a chat scheme and bind the group or private chat to an Agent and the scheme. Enable only the triggers you want; a direct response bypasses interest scoring but the Agent may still choose silence. See that implementation's own installation guide for the current packages and steps.
@@ -129,7 +129,7 @@ Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号�
 
 QQ 接入有自己的前置条件：
 
-1. 安装 QQ NT 客户端并登录一次。已验证组合为 NapCat v4.18.28 ＋ QQ 9.9.26.44343（安装包 `QQ9.9.26.44343_x64.exe`）；NapCat 要求 QQ NT 构建 40768 及以上。
+1. 安装 QQ NT 客户端并登录一次。支持的 QQ 版本以上游实现自己的版本说明为准（见 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases)）；本版验证过的组合是 NapCat v4.18.28 ＋ QQ 9.9.26.44343。
 2. 安装 OneBot 11 实现（例如 [NapCat](https://github.com/NapNeko/NapCatQQ)）。Windows 上其 Shell 包自带 Node.js 运行时：解压后运行 `launcher.bat`（Windows 10 用 `launcher-win10.bat`），控制台会打印面板（WebUI）地址与一次性密码，用它打开面板。
 3. 在面板里开启**正向 WebSocket 服务端**，记下地址、端口与访问令牌；端点和令牌都要妥善保管，连接就绪不等于消息一定送达。
 4. 回到 Superstring 的**接入**页填入该地址、端口与访问令牌，再新建聊天方案，把群或私聊绑定到 Agent 与方案；只开启需要的触发，直接回应无需兴趣评分，但 Agent 仍可选择沉默。当前版本与安装步骤以该实现自己的安装文档为准。
