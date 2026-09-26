@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { renderBrandAssets } from "./brand-assets.mjs";
 import { generatePalette } from "./palette.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -37,6 +38,9 @@ function run(exe, args) {
 }
 // Desktop startup never builds; prepare the web assets once at build time.
 run(process.execPath, [path.join(root, "node_modules/vite/bin/vite.js"), "build"]);
+const brandResources = renderBrandAssets(root, intermediate).map(
+  ({ file, resourceName }) => `/resource:${file},${resourceName}`,
+);
 const iconBuilder = path.join(intermediate, "IconBuilder.exe");
 run(csc, [
   "/nologo",
@@ -45,6 +49,7 @@ run(csc, [
   "/reference:System.Drawing.dll",
   path.join(src, "IconBuilder.cs"),
   path.join(src, "GlyphRenderer.cs"),
+  ...brandResources,
 ]);
 run(iconBuilder, [path.join(intermediate, "superstring.ico")]);
 const sources = fs
@@ -82,6 +87,7 @@ try {
     ...["System.Windows.Forms", "System.Drawing", "System.Core", "System.Web.Extensions"].map(
       (x) => `/reference:${x}.dll`,
     ),
+    ...brandResources,
     ...sources,
   ]);
   slot.commit();
