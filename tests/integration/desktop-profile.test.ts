@@ -121,7 +121,7 @@ describe("managed desktop resource/profile contract", () => {
 });
 
 describe("desktop migration recovery snapshot", () => {
-  it("restores committed WAL data, state keys and material without modifying the source schema", () => {
+  it("restores committed WAL data, state keys and material without modifying the source schema", async () => {
     const f = fixture();
     mkdirSync(f.paths.dataDir);
     const db = new Database(f.paths.database);
@@ -130,8 +130,8 @@ describe("desktop migration recovery snapshot", () => {
       db.exec(
         `PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE evidence(value TEXT); PRAGMA user_version=${BUSINESS_SCHEMA_VERSION - 1};`,
       );
-      // Source rowids participate in conversation-history provenance. Assert
-      // this against each packaged Bun/SQLite platform, not only row contents.
+      // Source rowids participate in conversation-history provenance, so a
+      // logical export/rebuild would not be sufficient for disaster recovery.
       db.query("INSERT INTO evidence(rowid, value) VALUES (97, ?)").run("committed in WAL");
       expect(statSync(`${f.paths.database}-wal`).size).toBeGreaterThan(0);
       mkdirSync(f.paths.stateDir);
@@ -139,7 +139,7 @@ describe("desktop migration recovery snapshot", () => {
       writeFileSync(f.paths.qqTransportKey, "transport-key");
       mkdirSync(f.paths.qqStickersDir, { recursive: true });
       writeFileSync(path.join(f.paths.qqStickersDir, "sticker.bin"), new Uint8Array([1, 3, 5]));
-      const backup = backupBeforeDesktopMigration(f.paths);
+      const backup = await backupBeforeDesktopMigration(f.paths);
       if (!backup) throw new Error("expected migration backup");
       const recovered = new Database(path.join(backup.directory, "data/superstring.sqlite"), {
         readonly: true,
@@ -173,7 +173,7 @@ describe("desktop migration recovery snapshot", () => {
         user_version: BUSINESS_SCHEMA_VERSION - 1,
       });
       db.exec(`PRAGMA user_version=${BUSINESS_SCHEMA_VERSION}`);
-      expect(backupBeforeDesktopMigration(f.paths)).toBeNull();
+      expect(await backupBeforeDesktopMigration(f.paths)).toBeNull();
       expect(readdirSync(f.paths.backupsDir)).toEqual([path.basename(backup.directory)]);
     } finally {
       db.close();
@@ -181,16 +181,18 @@ describe("desktop migration recovery snapshot", () => {
       f.dispose();
     }
   });
-  it("does not copy a missing or fresh database and rejects newer schemas", () => {
+  it("does not copy a missing or fresh database and rejects newer schemas", async () => {
     const f = fixture();
     try {
-      expect(backupBeforeDesktopMigration(f.paths)).toBeNull();
+      expect(await backupBeforeDesktopMigration(f.paths)).toBeNull();
       mkdirSync(f.paths.dataDir);
       const db = new Database(f.paths.database);
       try {
-        expect(backupBeforeDesktopMigration(f.paths)).toBeNull();
+        expect(await backupBeforeDesktopMigration(f.paths)).toBeNull();
         db.exec(`PRAGMA user_version=${BUSINESS_SCHEMA_VERSION + 1}`);
-        expect(() => backupBeforeDesktopMigration(f.paths)).toThrow("REJECT_UNKNOWN_VERSION");
+        await expect(backupBeforeDesktopMigration(f.paths)).rejects.toThrow(
+          "REJECT_UNKNOWN_VERSION",
+        );
       } finally {
         db.close();
       }
@@ -199,7 +201,7 @@ describe("desktop migration recovery snapshot", () => {
       f.dispose();
     }
   });
-  it("aborts an incomplete copy, leaves the old DB usable and never overwrites a complete snapshot", () => {
+  it("aborts an incomplete copy, leaves the old DB usable and never overwrites a complete snapshot", async () => {
     const f = fixture();
     mkdirSync(f.paths.dataDir);
     const db = new Database(f.paths.database);
@@ -207,12 +209,12 @@ describe("desktop migration recovery snapshot", () => {
       db.exec(
         "CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES ('old'); PRAGMA user_version=1",
       );
-      const complete = backupBeforeDesktopMigration(f.paths);
+      const complete = await backupBeforeDesktopMigration(f.paths);
       if (!complete) throw new Error("expected migration backup");
       const manifest = readFileSync(path.join(complete.directory, "backup.json"), "utf8");
       mkdirSync(f.paths.stateDir);
       symlinkSync(f.executable, path.join(f.paths.stateDir, "external.key"));
-      expect(() => backupBeforeDesktopMigration(f.paths)).toThrow("REJECTS_LINKED");
+      await expect(backupBeforeDesktopMigration(f.paths)).rejects.toThrow("REJECTS_LINKED");
       expect(readdirSync(f.paths.backupsDir)).toEqual([path.basename(complete.directory)]);
       expect(readFileSync(path.join(complete.directory, "backup.json"), "utf8")).toBe(manifest);
       expect(db.query("SELECT value FROM evidence").get()).toEqual({ value: "old" });

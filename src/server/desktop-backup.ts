@@ -1,4 +1,3 @@
-import { Database } from "bun:sqlite";
 import {
   closeSync,
   cpSync,
@@ -13,6 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
 import type { resolveAppPaths } from "./app-paths";
 import { BUSINESS_SCHEMA_VERSION } from "./db/schema-gate";
 
@@ -55,21 +55,24 @@ function syncTree(directory: string): Array<{ path: string; bytes: number }> {
 
 /**
  * Call with the desktop instance lease held, before createRuntime can migrate.
- * VACUUM INTO reads a SQLite snapshot including committed WAL pages. A raw copy
- * of superstring.sqlite would lose those pages after a crash. Keys, appearance,
- * configuration and imported QQ material travel with the database snapshot.
+ * SQLite's native Online Backup API preserves database pages (including rowids)
+ * and committed WAL content without allocating a whole-database JS buffer. A
+ * raw copy of superstring.sqlite would lose WAL pages after a crash. Keys,
+ * appearance, configuration and imported QQ material accompany the snapshot.
  *
  * Each backup gets an exclusive directory. backup.json is the completion marker
  * and is written only after every payload file is durable. A failed attempt is
  * removed; a process killed mid-copy may leave an incomplete directory without
  * that marker. Existing complete snapshots are never replaced or pruned here.
  */
-export function backupBeforeDesktopMigration(paths: AppPaths): DesktopMigrationBackup | null {
+export async function backupBeforeDesktopMigration(
+  paths: AppPaths,
+): Promise<DesktopMigrationBackup | null> {
   if (paths.mode !== "desktop" || !existsSync(paths.database)) return null;
-  const db = new Database(paths.database, { readonly: true, strict: true });
+  const db = new DatabaseSync(paths.database, { readOnly: true });
   let directory: string | undefined;
   try {
-    const { user_version: version } = db.query("PRAGMA user_version").get() as {
+    const { user_version: version } = db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
     if (version < 0 || version > BUSINESS_SCHEMA_VERSION) {
@@ -85,10 +88,13 @@ export function backupBeforeDesktopMigration(paths: AppPaths): DesktopMigrationB
     const dataDir = path.join(directory, "data");
     mkdirSync(dataDir, { mode: 0o700 });
     const snapshot = path.join(dataDir, "superstring.sqlite");
-    db.query("VACUUM INTO ?").run(snapshot);
-    const copy = new Database(snapshot, { readonly: true });
+    await backup(db, snapshot, { rate: 100 });
+    const copy = new DatabaseSync(snapshot);
     try {
-      const result = copy.query<{ quick_check: string }, []>("PRAGMA quick_check").all();
+      // The online backup copies the source's WAL-mode header as well. Make the
+      // destination standalone before publishing it; only the copy is changed.
+      copy.exec("PRAGMA journal_mode=DELETE");
+      const result = copy.prepare("PRAGMA quick_check").all();
       if (result.length !== 1 || result[0]?.quick_check !== "ok") {
         throw new Error("DESKTOP_BACKUP_DATABASE_CHECK_FAILED");
       }
