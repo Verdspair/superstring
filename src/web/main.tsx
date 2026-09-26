@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { applyMode, applyTheme, readMode, readTheme } from "./appearance";
+import { DesignSystemProvider } from "./design-system/Providers";
 import { initDesktopLifecycle } from "./desktop-lifecycle";
 import "./styles.css";
 
@@ -35,7 +36,9 @@ const root = document.getElementById("root");
 if (root) {
   createRoot(root).render(
     <StrictMode>
-      <App />
+      <DesignSystemProvider>
+        <App />
+      </DesignSystemProvider>
     </StrictMode>,
   );
 }
