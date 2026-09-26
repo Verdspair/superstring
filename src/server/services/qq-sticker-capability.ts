@@ -106,6 +106,7 @@ export function createQqStickerSearch(options: {
       const fits = await options.fit(arguments_, signal);
       if (!fits(value, sources)) throw new Error("STICKER_SEARCH_CONTEXT_LIMIT");
       const limit = input.limit ?? 12;
+      let skippedForBudget = false;
       for (const [index, asset] of matches.entries()) {
         const item = {
           id: asset.id,
@@ -119,14 +120,19 @@ export function createQqStickerSearch(options: {
         const ref = { kind: "qq_sticker", id: asset.id, revision: asset.updatedAt };
         const nextCursor = index < matches.length - 1 ? asset.id : null;
         if (!fits({ ...value, items: [...value.items, item], nextCursor }, [...sources, ref])) {
-          if (!value.items.length) value.status = "budget_exhausted";
-          break;
+          // A large first result must not hide smaller authorized assets after it.
+          // Keep every disclosed item intact; a nonempty page still ends at its last ID,
+          // so the next page can reconsider the remaining candidates with an empty result.
+          if (value.items.length) break;
+          skippedForBudget = true;
+          continue;
         }
         value.items.push(item);
         sources.push(ref);
         value.nextCursor = nextCursor;
         if (value.items.length >= limit) break;
       }
+      if (!value.items.length && skippedForBudget) value.status = "budget_exhausted";
       if (!fits(value, sources)) throw new Error("STICKER_SEARCH_CONTEXT_LIMIT");
       signal.throwIfAborted();
       options.assertCurrent();

@@ -1,5 +1,8 @@
 // Chinese source keys are the default-locale catalog; English must cover every key.
 export const english = {
+  媒体理解更新: "Media understanding update",
+  "关联消息尚未加载；此记录为媒体理解更新。":
+    "The related message is not loaded; this record is a media understanding update.",
   等待处理窗口: "Waiting for processing window",
   等待调度: "Waiting for scheduling",
   全部: "All",

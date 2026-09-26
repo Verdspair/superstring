@@ -62,9 +62,9 @@ export class WakeScheduler {
     if (this.stopped || this.running) return false;
     this.running = true;
     const now = () => this.options.now?.() ?? new Date().toISOString();
-    const policy = this.options.policy();
     let renewal: ReturnType<typeof setInterval> | undefined;
     try {
+      const policy = this.options.policy();
       const interrupted = this.options.telemetry
         ? (this.options.repository.db
             .query(
@@ -114,16 +114,25 @@ export class WakeScheduler {
       const controller = new AbortController();
       this.active = controller;
       renewal = setInterval(() => {
-        if (
-          !this.options.repository.renew(
-            wake.id,
-            wake.leaseToken!,
-            now(),
-            this.options.policy().leaseMs,
+        if (controller.signal.aborted) return;
+        try {
+          if (
+            !this.options.repository.renew(
+              wake.id,
+              wake.leaseToken!,
+              now(),
+              this.options.policy().leaseMs,
+            )
           )
-        )
-          controller.abort(new Error("WAKE_LEASE_LOST"));
-        else span?.update({ details: { leaseRenewals: ++renewals } });
+            controller.abort(new Error("WAKE_LEASE_LOST"));
+          else span?.update({ details: { leaseRenewals: ++renewals } });
+        } catch (cause) {
+          controller.abort(
+            Object.assign(new Error("WAKE_RENEWAL_FAILED", { cause }), {
+              code: "WAKE_RENEWAL_FAILED",
+            }),
+          );
+        }
       }, policy.renewMs);
       try {
         const run = () => this.options.activate(wake, controller.signal);
@@ -155,24 +164,32 @@ export class WakeScheduler {
           expired ? "OPPORTUNITY_EXPIRED" : (reason ?? settled?.errorCode ?? "WAKE_SETTLED"),
         );
       } catch (error) {
-        const code = error instanceof Error && "code" in error ? error.code : undefined;
+        // A downstream transport may reject with a generic AbortError. The
+        // scheduler's cancellation reason retains the actual lease failure.
+        const failure = controller.signal.aborted ? controller.signal.reason : error;
+        const code = failure instanceof Error && "code" in failure ? failure.code : undefined;
         const errorCode =
           typeof code === "string" && /^[A-Z][A-Z0-9_]+$/.test(code)
             ? code
-            : error instanceof Error && internalFailureCodes.has(error.message)
-              ? error.message.toUpperCase()
+            : failure instanceof Error && internalFailureCodes.has(failure.message)
+              ? failure.message.toUpperCase()
               : "BOT_RUN_FAILED";
-        this.options.repository.fail(wake.id, wake.leaseToken!, {
-          at: now(),
-          maxAttempts: policy.maxAttempts,
-          retryDelayMs: policy.retryDelayMs,
-          errorCode,
-        });
-        span?.update({
-          details: { state: this.options.repository.get(wake.id)?.status ?? "missing" },
-        });
-        span?.end(errorCode === "BOT_STOPPED" ? "cancelled" : "failed", errorCode);
-        this.options.onError?.(error, wake);
+        try {
+          this.options.repository.fail(wake.id, wake.leaseToken!, {
+            at: now(),
+            maxAttempts: policy.maxAttempts,
+            retryDelayMs: policy.retryDelayMs,
+            errorCode,
+          });
+          span?.update({
+            details: { state: this.options.repository.get(wake.id)?.status ?? "missing" },
+          });
+        } finally {
+          // Failure settlement may itself fail; that error still propagates, but the
+          // activation has ended and must not remain a live diagnostic indefinitely.
+          span?.end(errorCode === "BOT_STOPPED" ? "cancelled" : "failed", errorCode);
+        }
+        this.options.onError?.(failure, wake);
       }
       return true;
     } finally {

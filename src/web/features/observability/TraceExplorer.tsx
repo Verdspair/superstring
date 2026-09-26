@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   RuntimeChannelSchema,
   type RuntimeSpan,
@@ -175,6 +175,9 @@ function TraceResults({
   trace?: boolean;
 }) {
   const t = useI18n();
+  const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
+  const traceTrigger = useRef<HTMLButtonElement | null>(null);
+  const refreshButton = useRef<HTMLButtonElement>(null);
   const { items, summary, loading, error, hasMore, refresh, loadMore } = useRuntimeSpans(
     filters,
     trace,
@@ -182,7 +185,7 @@ function TraceResults({
   return (
     <section className="trace-results" aria-label={t(trace ? "追踪链路" : "运行记录")}>
       <div className="trace-actions">
-        <button type="button" onClick={() => void refresh()} disabled={loading}>
+        <button ref={refreshButton} type="button" onClick={() => void refresh()} disabled={loading}>
           {t("刷新运行记录")}
         </button>
         {loading && <span role="status">{t("正在读取运行记录…")}</span>}
@@ -214,6 +217,10 @@ function TraceResults({
             trace={trace}
             sampledAt={summary?.now}
             parent={items.find((row) => row.spanId === item.parentSpanId)}
+            onOpenTrace={(traceId, trigger) => {
+              traceTrigger.current = trigger;
+              setSelectedTrace(traceId);
+            }}
           />
         ))}
       </ol>
@@ -221,6 +228,16 @@ function TraceResults({
         <button type="button" disabled={loading} onClick={() => void loadMore()}>
           {t("加载更早运行记录")}
         </button>
+      )}
+      {!trace && (
+        <TraceDialog
+          traceId={selectedTrace}
+          onClose={() => setSelectedTrace(null)}
+          returnFocus={() => {
+            const trigger = traceTrigger.current;
+            (trigger?.isConnected ? trigger : refreshButton.current)?.focus();
+          }}
+        />
       )}
     </section>
   );
@@ -230,11 +247,13 @@ function TraceRow({
   trace,
   parent,
   sampledAt,
+  onOpenTrace,
 }: {
   item: RuntimeSpan;
   trace: boolean;
   parent?: RuntimeSpan;
   sampledAt?: string;
+  onOpenTrace: (traceId: string, trigger: HTMLButtonElement) => void;
 }) {
   const t = useI18n();
   const ids = {
@@ -296,7 +315,15 @@ function TraceRow({
         <p className="hint">{t("结果尚未确认，不等同于失败；请沿追踪链路核对后续结果。")}</p>
       )}
       <div className="trace-actions">
-        {!trace && <TraceDialog traceId={item.traceId} />}
+        {!trace && (
+          <button
+            type="button"
+            className="link-button"
+            onClick={(event) => onOpenTrace(item.traceId, event.currentTarget)}
+          >
+            {t("追踪链路")}
+          </button>
+        )}
         {item.runId && <RunLink runId={item.runId} />}
         {item.channel === "onebot11" && item.outputId && (
           <DeliveryDetails key={`${item.outputId}:${item.status}`} outputId={item.outputId} />
@@ -349,20 +376,28 @@ function TraceRow({
     </li>
   );
 }
-export function TraceDialog({ traceId }: { traceId: string }) {
+function TraceDialog({
+  traceId,
+  onClose,
+  returnFocus,
+}: {
+  traceId: string | null;
+  onClose: () => void;
+  returnFocus: () => void;
+}) {
   const t = useI18n();
-  const [open, setOpen] = useState(false);
-  const filters = useMemo(() => ({ traceId }), [traceId]);
+  const filters = useMemo(() => (traceId ? { traceId } : {}), [traceId]);
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild>
-        <button type="button" className="link-button">
-          {t("追踪链路")}
-        </button>
-      </Dialog.Trigger>
+    <Dialog.Root open={traceId !== null} onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="run-inspector-overlay" />
-        <Dialog.Content className="run-inspector trace-dialog">
+        <Dialog.Content
+          className="run-inspector trace-dialog"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            returnFocus();
+          }}
+        >
           <header className="run-inspector-heading">
             <div>
               <Dialog.Title>{t("追踪链路")}</Dialog.Title>
@@ -378,7 +413,7 @@ export function TraceDialog({ traceId }: { traceId: string }) {
           </header>
           <div className="run-inspector-body">
             <code>{traceId}</code>
-            <TraceResults filters={filters} trace />
+            {traceId && <TraceResults key={traceId} filters={filters} trace />}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

@@ -16,6 +16,7 @@ import { recordQqSend } from "../../src/server/db/qq-send-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
   createQqStickerCollection,
+  editQqSticker,
   importQqSticker,
   setQqStickerEnabled,
 } from "../../src/server/db/qq-sticker-repository";
@@ -1312,8 +1313,12 @@ describe("model-visible sticker contract", () => {
 });
 
 describe("sticker search context and permissions", () => {
-  function extra(h: ReturnType<typeof setup>, name: string, collectionIds: string[]) {
-    const id = crypto.randomUUID();
+  function extra(
+    h: ReturnType<typeof setup>,
+    name: string,
+    collectionIds: string[],
+    id: string = crypto.randomUUID(),
+  ) {
     importQqSticker(h.orm, {
       id,
       copy: { fileName: `${id}.png`, byteSize: 64, mediaType: "image" },
@@ -1404,6 +1409,93 @@ describe("sticker search context and permissions", () => {
     h.receive("1");
     await activate(h);
     expect(calls).toBe(2);
+  });
+  it("skips oversized leading candidates on each page while preserving complete smaller assets and cursors", async () => {
+    const firstSmall = "11111111-1111-4111-8111-111111111111";
+    const secondSmall = "33333333-3333-4333-8333-333333333333";
+    const descriptions = "详".repeat(2000);
+    const pages: ReturnType<typeof stickerObservation>[] = [];
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(12000 - 2048);
+          calls++;
+          if (calls > 1) {
+            const page = stickerObservation(request);
+            pages.push(page);
+            expect(page.status).toBe("available");
+            expect(page.items).toHaveLength(1);
+            expect(JSON.stringify(request.messages)).not.toContain(descriptions);
+            if (page.nextCursor === null) return '{"kind":"none"}';
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "", limit: 1, cursor: page.nextCursor },
+            });
+          }
+          return JSON.stringify({
+            kind: "invoke",
+            name: "sticker.search",
+            arguments: { query: "", limit: 1 },
+          });
+        },
+      },
+      { stickersAvailable: true },
+    );
+    h.gateway.loadedContextCapacity = async () => 12000;
+    const anchor = addSticker(h);
+    const collections = [collection(h, anchor)];
+    setQqStickerEnabled(h.orm, anchor, false);
+    const largeIds = [
+      "00000000-0000-4000-8000-000000000000",
+      "22222222-2222-4222-8222-222222222222",
+    ];
+    for (const id of largeIds) {
+      extra(h, "large", collections, id);
+      editQqSticker(h.orm, id, { description: descriptions });
+    }
+    extra(h, "first compact", collections, firstSmall);
+    extra(h, "second compact", collections, secondSmall);
+    h.receive("1");
+    expect((await activate(h)).status).toBe("no_output");
+    expect(calls).toBe(3);
+    expect(pages.map((page) => page.items[0].id)).toEqual([firstSmall, secondSmall]);
+    expect(pages.map((page) => page.nextCursor)).toEqual([firstSmall, null]);
+    for (const id of largeIds)
+      expect(h.db.query("SELECT description FROM qq_sticker_assets WHERE id=?").get(id)).toEqual({
+        description: descriptions,
+      });
+  });
+  it("reports a terminal budget-exhausted page only after no authorized whole item fits", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(12000 - 2048);
+          if (++calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "" },
+            });
+          expect(stickerObservation(request)).toEqual({
+            status: "budget_exhausted",
+            items: [],
+            nextCursor: null,
+          });
+          return '{"kind":"none"}';
+        },
+      },
+      { stickersAvailable: true },
+    );
+    h.gateway.loadedContextCapacity = async () => 12000;
+    const large = addSticker(h);
+    editQqSticker(h.orm, large, { description: "详".repeat(2000) });
+    h.receive("1");
+    expect((await activate(h)).status).toBe("no_output");
+    expect(calls).toBe(2);
+    expect(h.outbox.list({})).toEqual([]);
   });
   it("does not use a disclosed candidate after its asset is disabled", async () => {
     let calls = 0;

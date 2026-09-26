@@ -25,7 +25,7 @@ const bindingId = "11111111-1111-4111-8111-111111111111",
   time = 2_000_000_000;
 function setup(
   model: Partial<ModelPort> = {},
-  options: { split?: boolean; recomputes?: number; mergeSeconds?: number } = {},
+  options: { split?: boolean; recomputes?: number; mergeSeconds?: number; follow?: boolean } = {},
 ) {
   const h = openBusinessDb();
   handles.push(h);
@@ -39,7 +39,12 @@ function setup(
   const scheme = createQqScheme(h.orm, {
     name: "group",
     reply: { split_by_speaker: options.split ?? true },
-    triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
+    triggers: {
+      direct_reply: true,
+      follow_up: options.follow ?? true,
+      chiming_in: true,
+      idle_topic: true,
+    },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
       merge_window_seconds: options.mergeSeconds ?? 2,
@@ -936,5 +941,137 @@ describe("durable participant windows across actual Host and delivery", () => {
     expect(
       h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='completed'").get(),
     ).toEqual({ n: 1 });
+  });
+});
+
+describe("confirmed reply coverage across opportunity paths", () => {
+  function coverageFixture() {
+    let initiativeTarget = "20002",
+      initiative = false,
+      decisions = 0,
+      evaluations = 0;
+    const h = setup(
+      {
+        complete: async (req) => {
+          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score) {
+            evaluations++;
+            return '{"score":9}';
+          }
+          if (!initiative) return generate(["20002"]);
+          return ++decisions % 2 === 1
+            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
+            : generate([initiativeTarget]);
+        },
+      },
+      { mergeSeconds: 15, follow: false },
+    );
+    return {
+      ...h,
+      startInitiative(target = "20002") {
+        initiative = true;
+        initiativeTarget = target;
+      },
+      get evaluations() {
+        return evaluations;
+      },
+      async deliverDirect(outcome: "confirmed" | "failed" | "unknown") {
+        const delivery = new OutboundDelivery({
+          orm: h.orm,
+          repository: h.outbox,
+          journal: h.journal,
+          authorize: () => true,
+          stickerFile: () => null,
+          now: h.now,
+          port: {
+            send: async () =>
+              outcome === "confirmed"
+                ? { kind: "confirmed", messageId: "direct-receipt" }
+                : outcome === "unknown"
+                  ? { kind: "unknown", reason: "timeout" }
+                  : { kind: "failed", retcode: 500 },
+          },
+        });
+        await delivery.deliver(h.outbox.list({})[0]!.id);
+        expect(h.outbox.list({})[0]!.status).toBe(outcome);
+      },
+    };
+  }
+
+  it("skips an older ordinary opportunity already covered by the same recipient's confirmed direct reply", async () => {
+    const h = coverageFixture();
+    h.receive("1", "20002");
+    h.clock.seconds++;
+    h.receive("2", "20002", true);
+    expect((await h.activate("direct_reply")).status).toBe("completed");
+    await h.deliverDirect("confirmed");
+    h.startInitiative();
+    h.clock.seconds = time + 15;
+    expect(await h.activate("chiming_in")).toEqual({
+      status: "no_output",
+      reason: "already_replied",
+    });
+    expect(h.evaluations).toBe(0);
+    expect(h.outbox.list({})).toHaveLength(1);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id='onebot.main'").get(),
+    ).toEqual({ n: 1 });
+  });
+
+  it("filters covered A from a mature batch while preserving and evaluating unconfirmed B", async () => {
+    const h = coverageFixture();
+    h.receive("1", "20002");
+    h.clock.seconds++;
+    h.receive("2", "20003");
+    h.clock.seconds++;
+    h.receive("3", "20002", true);
+    expect((await h.activate("direct_reply")).status).toBe("completed");
+    await h.deliverDirect("confirmed");
+    h.startInitiative("20003");
+    h.clock.seconds = time + 17;
+    // B is the more recent ordinary opportunity and owns this activation. A must
+    // also be removed from the other mature targets, not merely checked on claim.
+    expect((await h.activate("chiming_in")).status).toBe("completed");
+    expect(h.evaluations).toBe(1);
+    expect(h.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20002", "20003"]);
+    expect(await h.activate("chiming_in")).toEqual({
+      status: "no_output",
+      reason: "already_replied",
+    });
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id='onebot.main'").get(),
+    ).toEqual({ n: 2 });
+  });
+
+  it.each(["failed", "unknown"] as const)(
+    "does not treat %s direct delivery as confirmed coverage",
+    async (outcome) => {
+      const h = coverageFixture();
+      h.receive("1", "20002");
+      h.clock.seconds++;
+      h.receive("2", "20002", true);
+      await h.activate("direct_reply");
+      await h.deliverDirect(outcome);
+      h.startInitiative();
+      h.clock.seconds = time + 15;
+      expect((await h.activate("chiming_in")).status).toBe("completed");
+      expect(h.evaluations).toBe(1);
+      expect(h.outbox.list({}).map((d) => d.status)).toEqual([outcome, "planned"]);
+    },
+  );
+
+  it("does not cover a participant's newer source with an earlier confirmed reply", async () => {
+    const h = coverageFixture();
+    h.receive("1", "20002");
+    h.clock.seconds++;
+    h.receive("2", "20002", true);
+    await h.activate("direct_reply");
+    await h.deliverDirect("confirmed");
+    h.clock.seconds = time + 5;
+    h.receive("3", "20002");
+    h.startInitiative();
+    h.clock.seconds = time + 20;
+    expect((await h.activate("chiming_in")).status).toBe("completed");
+    expect(h.evaluations).toBe(1);
+    expect(h.outbox.list({})).toHaveLength(2);
   });
 });

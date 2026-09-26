@@ -257,3 +257,60 @@ it("applies a native local-time range as ISO and offers recent-time presets", as
   expect(Date.parse(filters.to) - Date.parse(filters.from)).toBe(15 * 60_000);
   expect(new URLSearchParams(window.location.search).get("trace-from")).toBe(filters.from);
 });
+
+it("keeps a selected trace open when completion removes its filtered result row", async () => {
+  window.history.replaceState(null, "", "/?trace-status=started");
+  const list = vi
+    .fn()
+    .mockResolvedValueOnce(page([span(10, { status: "started" })]))
+    .mockResolvedValue(page([]));
+  const trace = vi
+    .fn()
+    .mockResolvedValueOnce(page([span(10, { status: "started" })]))
+    .mockResolvedValue(page([span(10, { name: "Completed trace step" })]));
+  setup({ listRuntimeSpans: list, getRuntimeTrace: trace });
+  render(<TraceExplorer />);
+  const trigger = await screen.findByRole("button", { name: "追踪链路" });
+  fireEvent.click(trigger);
+  const dialog = await screen.findByRole("dialog");
+  await within(dialog).findByText("Model generation");
+  await act(async () => {
+    vi.advanceTimersByTime(5000);
+  });
+  expect(trigger.isConnected).toBe(false);
+  expect(screen.getByRole("dialog")).toBe(dialog);
+  await within(dialog).findByText("Completed trace step");
+  fireEvent.click(within(dialog).getByRole("button", { name: "关闭追踪链路" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "刷新运行记录" }));
+});
+
+it("retains trace selection across blur while clearing and revalidating its source data", async () => {
+  const trace = vi
+    .fn()
+    .mockResolvedValueOnce(page([span(10, { name: "Private trace metadata" })]))
+    .mockRejectedValue(new Error("Trace access expired"));
+  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: trace });
+  render(<TraceExplorer />);
+  fireEvent.click(await screen.findByRole("button", { name: "追踪链路" }));
+  const dialog = await screen.findByRole("dialog");
+  await within(dialog).findByText("Private trace metadata");
+  fireEvent.blur(window);
+  expect(screen.getByRole("dialog")).toBe(dialog);
+  expect(within(dialog).queryByText("Private trace metadata")).toBeNull();
+  fireEvent.focus(window);
+  await within(dialog).findByText("Trace access expired");
+  expect(within(dialog).queryByText("Private trace metadata")).toBeNull();
+});
+
+it("closes trace selection when the applied filter scope changes", async () => {
+  setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: async () => page() });
+  render(<TraceExplorer />);
+  const status = screen.getByLabelText("处理状态");
+  const apply = screen.getByRole("button", { name: "应用筛选" });
+  fireEvent.click(await screen.findByRole("button", { name: "追踪链路" }));
+  await screen.findByRole("dialog");
+  fireEvent.change(status, { target: { value: "failed" } });
+  fireEvent.click(apply);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
