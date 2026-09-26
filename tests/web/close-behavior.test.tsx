@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Preferences } from "../../src/web/screens/environment/Preferences";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
+
 let remove: () => void = () => {};
 beforeEach(() => {
   setupLibrary();

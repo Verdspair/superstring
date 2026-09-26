@@ -152,7 +152,7 @@ export function TraceTimeline({
           {t("observability.collapseAllSteps")}
         </Button>
         <span className="ml-auto text-xs text-muted-foreground">
-          0 → {milliseconds(layout.duration)}
+          {t("observability.timeRange", { "0": milliseconds(layout.duration) })}
         </span>
       </div>
       <ScrollArea className="min-h-0 flex-1">

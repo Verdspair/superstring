@@ -180,7 +180,7 @@ export function InspectedEvidence({ value }: { value: InspectedContext }) {
                       <dd>{part.sourceId}</dd>
                       <dt>{t("observability.sourceRevision")}</dt>
                       <dd>{part.revision}</dd>
-                      <dt>SHA-256 · {part.mimeType}</dt>
+                      <dt>{t("observability.imageHashType", { "0": part.mimeType })}</dt>
                       <dd>{part.sha256}</dd>
                     </dl>
                   </div>

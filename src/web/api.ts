@@ -401,8 +401,8 @@ export const api = {
   listModels() {
     return requestJson("/models/local", LocalModelCatalogResponseSchema);
   },
-  listModelProviders() {
-    return requestJson("/models/providers", ModelProviderResponseSchema.array());
+  listModelProviders(signal?: AbortSignal) {
+    return requestJson("/models/providers", ModelProviderResponseSchema.array(), { signal });
   },
   createModelProvider(body: CreateModelProviderRequest) {
     return requestJson("/models/providers", ModelProviderResponseSchema, json("POST", body));
@@ -414,12 +414,11 @@ export const api = {
     const response = await fetch(`/models/providers/${id}`, { method: "DELETE" });
     if (!response.ok) throw await responseError(response);
   },
-  testModelProvider(id: string) {
-    return requestJson(
-      `/models/providers/${id}/test`,
-      ModelProviderTestResponseSchema,
-      json("POST", {}),
-    );
+  testModelProvider(id: string, signal?: AbortSignal) {
+    return requestJson(`/models/providers/${id}/test`, ModelProviderTestResponseSchema, {
+      ...json("POST", {}),
+      signal,
+    });
   },
   getModelCapacity(model: string): Promise<ModelCapacityResponse> {
     return requestJson(
@@ -566,6 +565,8 @@ export const api = {
   organiseQqMemory: (id: string): Promise<QqMemoryOrganiseResponse> =>
     requestJson(`/qq/bindings/${id}/memory`, QqMemoryOrganiseResponseSchema, { method: "POST" }),
   getQqOwner: () => requestJson("/qq/owner", QqOwnerResponseSchema),
+  updateQqOwner: (body: { peer_id: string; expected_revision?: number }) =>
+    requestJson("/qq/owner", QqOwnerResponseSchema, json("PUT", body)),
   getQqStorage: () => requestJson("/qq/storage", QqStorageUsageResponseSchema),
   runQqStorageCleanup: () =>
     requestJson("/qq/storage/cleanup", QqStorageCleanupResponseSchema, { method: "POST" }),

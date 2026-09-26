@@ -78,7 +78,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
         <div className="flex items-center justify-between gap-2">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
-              SUPERSTRING
+              {t("brand.wordmark")}
             </p>
             <h2
               ref={header}
@@ -119,10 +119,10 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
               {t("workspace.all")}
             </TabsTrigger>
             <TabsTrigger value="web" className="flex-1">
-              Web
+              {t("channel.web")}
             </TabsTrigger>
             <TabsTrigger value="onebot11" className="flex-1">
-              OneBot
+              {t("channel.onebot")}
             </TabsTrigger>
           </TabsList>
         </Tabs>

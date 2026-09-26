@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BindingMemoryControls } from "../../src/web/screens/library/BindingMemoryControls";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { B, binding, setupLibrary } from "./helpers/library-fixture";
+
 beforeEach(() => {
   setupLibrary();
 });

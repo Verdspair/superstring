@@ -1,9 +1,9 @@
 import { vi } from "vitest";
 import {
   AgentResponseSchema,
-  PersonaResponseSchema,
   type MemoryContentResponse,
   type MemoryEntryResponse,
+  PersonaResponseSchema,
 } from "../../../src/shared/contracts";
 import type { KnowledgeDocumentDetail } from "../../../src/shared/contracts/knowledge";
 import type { QqBindingResponse, QqStickerAssetResponse } from "../../../src/shared/contracts/qq";

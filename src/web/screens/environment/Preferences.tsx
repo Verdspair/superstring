@@ -61,7 +61,7 @@ export function Preferences() {
     <div className="mx-auto h-full min-h-0 w-full overflow-y-auto max-w-5xl space-y-7 p-5 md:p-8">
       <header className="space-y-1">
         <p className="text-xs font-medium tracking-widest text-muted-foreground">
-          SUPERSTRING / {t("library.preferences")}
+          {t("brand.workspace", { "0": t("library.preferences") })}
         </p>
         <h1 className="text-3xl font-semibold tracking-tight">
           {t("library.make.this.workspace.yours")}

@@ -244,12 +244,7 @@ export function ExecutionWorkspace({ conversationId }: { conversationId?: string
             </div>
           )}
           <footer className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
-            <span>
-              {t("observability.valueTracesLoaded", {
-                "0": items.length,
-              })}{" "}
-              · {t("observability.onlyAffectsThisViewTheAgentContinuesRunning")}
-            </span>
+            <span>{t("observability.loadedScope", { "0": items.length })}</span>
             {hasMore && (
               <Button variant="outline" disabled={loading} onClick={loadMore}>
                 {t("observability.loadEarlierRuntimeRecords")}

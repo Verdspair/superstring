@@ -2,8 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it } from "vitest";
 import { ContextUsageSchema } from "../../src/shared/contracts/context-usage";
-import { ContextMeter as ContextUsagePanel } from "../../src/web/screens/conversations/ContextMeter";
 import { selectLocale } from "../../src/web/i18n";
+import { ContextMeter as ContextUsagePanel } from "../../src/web/screens/conversations/ContextMeter";
 import { fixtureStore as store } from "./helpers/chat-fixture";
 
 afterEach(() => {

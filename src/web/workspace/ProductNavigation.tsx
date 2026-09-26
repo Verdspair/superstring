@@ -19,7 +19,7 @@ export function ProductNavigation({ onSearch }: { onSearch: () => void }) {
       <button
         type="button"
         onClick={() => openSpace("conversations")}
-        aria-label="Superstring"
+        aria-label={t("brand.name")}
         className="mb-5 rounded-xl p-2 text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <BrandLogo className="size-9" />
@@ -57,7 +57,7 @@ export function ProductNavigation({ onSearch }: { onSearch: () => void }) {
               <Search />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="right">{t("workspace.search_and_jump")} · ⌘K</TooltipContent>
+          <TooltipContent side="right">{t("workspace.search_with_shortcut")}</TooltipContent>
         </Tooltip>
         {ENVIRONMENT.map((space) => (
           <Tooltip key={space.id}>

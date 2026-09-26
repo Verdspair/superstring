@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { BrandLogo } from "./design-system/BrandLogo";
 import { DesignSystemProvider } from "./design-system/Providers";
 import { settingsHaveDrafts } from "./features/qq/draft-state";
+import { useLocale } from "./i18n";
 import { useSuperstringStore } from "./store";
 import { activeSpace } from "./workspace/navigation";
 import { WorkspaceShell } from "./workspace/WorkspaceShell";
@@ -45,7 +46,7 @@ function Waiting({ bootstrap = false }: { bootstrap?: boolean }) {
       className="flex h-full min-h-64 flex-col items-center justify-center gap-3 p-8 text-center"
     >
       <BrandLogo className="size-12 text-primary" />
-      <strong className="text-xl tracking-tight">Superstring</strong>
+      <strong className="text-xl tracking-tight">{t("brand.name")}</strong>
       <p className="text-sm text-muted-foreground">
         {t(bootstrap ? "workspace.loading_local_workspace" : "workspace.reading")}
       </p>
@@ -53,6 +54,8 @@ function Waiting({ bootstrap = false }: { bootstrap?: boolean }) {
   );
 }
 function Application() {
+  // Keep persisted language changes in sync across windows in every workspace.
+  useLocale();
   const status = useSuperstringStore((s) => s.status);
   const bootstrap = useSuperstringStore((s) => s.bootstrap);
   const unsaved = useSuperstringStore(settingsHaveDrafts);

@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { selectLocale } from "../../src/web/i18n";
 import { StickerLibrary } from "../../src/web/screens/library/StickerLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
-import { selectLocale } from "../../src/web/i18n";
 import { D, S, setupLibrary, sticker } from "./helpers/library-fixture";
+
 beforeEach(() => {
   setupLibrary();
 });
@@ -144,7 +145,7 @@ describe("fresh asset library", () => {
     fireEvent.change(screen.getByLabelText("集合名称"), { target: { value: "New collection" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "新建" })));
     expect(create).toHaveBeenCalledWith({ name: "New collection" });
-    fireEvent.click(screen.getAllByRole("button", { name: "重命名" })[0]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "重命名" })[0]);
     fireEvent.change(screen.getByLabelText("重命名集合"), { target: { value: "Renamed" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
     expect(rename).toHaveBeenCalledWith(D, { name: "Renamed", expected_revision: 1 });

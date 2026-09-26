@@ -42,7 +42,7 @@ export function AssistantWorkspace() {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="space-y-1">
           <p className="text-xs font-medium tracking-widest text-muted-foreground">
-            SUPERSTRING / {t("library.assistant")}
+            {t("brand.workspace", { "0": t("library.assistant") })}
           </p>
           <h1 className="text-3xl font-semibold tracking-tight">
             {studio

@@ -19,7 +19,7 @@ export function LibraryWorkspace() {
     <div className="mx-auto h-full min-h-0 w-full overflow-y-auto max-w-7xl space-y-6 p-5 md:p-8">
       <header className="space-y-1">
         <p className="text-xs font-medium tracking-widest text-muted-foreground">
-          SUPERSTRING / {t("library.materials")}
+          {t("brand.workspace", { "0": t("library.materials") })}
         </p>
         <h1 className="text-3xl font-semibold tracking-tight">{t("library.library")}</h1>
         <p className="text-sm text-muted-foreground">

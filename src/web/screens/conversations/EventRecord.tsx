@@ -136,7 +136,9 @@ export function EventRecord({
           <div className="my-3 space-y-1 text-xs">
             <strong>{t(wakeLabels[event.wake.status])}</strong>
             <p>
-              {t("workspace.wake_reason")}: {t(causes[event.wake.cause] ?? event.wake.cause)}
+              {t("workspace.wake_reason_value", {
+                "0": t(causes[event.wake.cause] ?? event.wake.cause),
+              })}
             </p>
             {event.wake.status === "pending" && (
               <p>
@@ -228,10 +230,7 @@ export function EventRecord({
           <p className="mt-2 break-all font-mono">
             {event.source.kind}:{event.source.id}
           </p>
-          <p>
-            {t("workspace.event_sequence", { "0": event.seq })} · {t("workspace.source_revision")}:{" "}
-            {event.source.revision}
-          </p>
+          <p>{t("workspace.event_revision", { "0": event.seq, "1": event.source.revision })}</p>
         </details>
       </article>
     </li>

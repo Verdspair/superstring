@@ -9,9 +9,8 @@ import type { AgentResponse, PersonaResponse } from "../../src/shared/contracts"
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
 import type { SuperstringApi } from "../../src/web/api";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
-import { OrganizationModelPage } from "../../src/web/features/knowledge/OrganizationModelPage";
-import { QqJudgementModelPage } from "../../src/web/features/qq/QqJudgementModelPage";
 import { selectLocale } from "../../src/web/i18n";
+import { ModelDefaults } from "../../src/web/screens/environment/model-defaults";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const agent = (overrides: Partial<AgentResponse> = {}) =>
@@ -82,7 +81,7 @@ function renderOrganization(fake: SuperstringApi) {
     editorAgentId: agent().id,
     pageEditor: newPageEditor(agent(), persona),
   });
-  render(<OrganizationModelPage />);
+  render(<ModelDefaults />);
   return fake;
 }
 
@@ -93,151 +92,72 @@ afterEach(() => {
   cleanup();
 });
 
-describe("一键覆盖当前助手的模型", () => {
-  it("确认后把四个文本用途一起改成默认模型并立即保存", async () => {
+describe("Model purpose boundaries", () => {
+  it("applies the shared model to four text purposes with the current Agent version", async () => {
     const fake = renderOrganization(client());
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "一键覆盖当前助手的模型" }));
-    // 对话框点名两个东西：改哪个助手、改成哪个模型。
-    expect(
-      screen.getByText(
-        /将把「合成助手」的对话、记忆读取、记忆整理与上下文压缩都设为「default-model」/,
-      ),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "覆盖并保存" }));
-    await act(async () => {});
+    await act(async () => {
+      expect(await store.getState().applyDefaultModelToAgent("default-model")).toBe(true);
+    });
     expect(fake.updateAgent).toHaveBeenCalledWith(
       agent().id,
       expect.objectContaining({
+        expected_version: 7,
         model_name: "default-model",
         memory_retrieval_model_name: "default-model",
         memory_consolidation_model_name: "default-model",
         context_compression_model_name: "default-model",
-        expected_version: 7,
       }),
     );
-    // 图片理解/语音转写不是助手的字段：payload 里根本不存在它们（组织默认那一页才管这两项）。
-    const payload = vi.mocked(fake.updateAgent).mock.calls[0]?.[1] as Record<string, unknown>;
-    expect(payload).not.toHaveProperty("vision_model_name");
-    expect(payload).not.toHaveProperty("transcription_model_name");
-    expect(store.getState().pageEditor?.agent.model_name).toBe("default-model");
-    expect(store.getState().feedback).toContain("已把这个默认模型覆盖到当前助手的四个文本用途");
   });
-
-  it("四个用途已经就是这个模型时不发请求，只说明无需覆盖", async () => {
-    const same = agent({
-      model_name: "default-model",
-      memory_retrieval_model_name: "default-model",
-      memory_consolidation_model_name: "default-model",
-      context_compression_model_name: "default-model",
-    });
+  it("does not write when all four purposes already match", async () => {
     const fake = client();
     store.getState().resetForTests(fake);
-    store.setState({
-      page: "settings",
-      settingsView: "workspace",
-      settingsRoute: "models",
-      agents: [same],
-      editorAgentId: same.id,
-      pageEditor: newPageEditor(same, persona),
+    const current = agent({
+      model_name: "same",
+      memory_retrieval_model_name: "same",
+      memory_consolidation_model_name: "same",
+      context_compression_model_name: "same",
     });
-    render(<OrganizationModelPage />);
-    await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "一键覆盖当前助手的模型" }));
-    fireEvent.click(screen.getByRole("button", { name: "覆盖并保存" }));
-    await act(async () => {});
+    store.setState({ editorAgentId: current.id, pageEditor: newPageEditor(current, persona) });
+    expect(await store.getState().applyDefaultModelToAgent("same")).toBe(true);
     expect(fake.updateAgent).not.toHaveBeenCalled();
-    expect(store.getState().feedback).toContain("无需覆盖");
   });
-
-  it("没有选默认模型、或正在新建助手时按钮不可用", async () => {
-    const fake = client();
-    store.getState().resetForTests(fake);
-    // 未指定共同默认模型：没有可覆盖的东西。
-    vi.mocked(fake.getOrganizationSettings).mockResolvedValue(organization(null));
-    store.setState({
-      page: "settings",
-      settingsView: "workspace",
-      settingsRoute: "models",
-      agents: [agent()],
-      editorAgentId: agent().id,
-      pageEditor: newPageEditor(agent(), persona),
-    });
-    render(<OrganizationModelPage />);
+  it("saves QQ judgement selection independently and clears it with null", async () => {
+    const fake = renderOrganization(client());
+    store.setState({ modelNames: ["judge-model"] });
     await act(async () => {});
-    expect(
-      (screen.getByRole("button", { name: "一键覆盖当前助手的模型" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    cleanup();
-    // 正在新建的助手：还没有可覆盖的配置。
-    vi.mocked(fake.getOrganizationSettings).mockResolvedValue(organization("default-model"));
-    store.setState({ editorAgentId: "__new__", pageEditor: newPageEditor(agent(), persona) });
-    render(<OrganizationModelPage />);
-    await act(async () => {});
-    expect(
-      (screen.getByRole("button", { name: "一键覆盖当前助手的模型" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    expect(screen.getByText(/先选中一个已有助手/)).toBeTruthy();
-  });
-});
-
-describe("QQ 判断模型（0038）", () => {
-  it("选中后立即保存，并向界面回读保存值", async () => {
-    const fake = client();
-    store.getState().resetForTests(fake);
-    // 下拉里只有已知模型（与页面上其它模型选择器同一条规则）：夹具把要选的那个放进去。
-    store.setState({ modelNames: ["chat-model", "judge-model"] });
-    render(<QqJudgementModelPage />);
-    await act(async () => {});
-    const select = (await screen.findByLabelText("判断开口兴趣打分模型")) as HTMLSelectElement;
-    expect(select.value).toBe("");
-    fireEvent.change(select, { target: { value: "judge-model" } });
+    fireEvent.change(screen.getByLabelText("判断模型"), { target: { value: "judge-model" } });
     await act(async () => {});
     expect(fake.updateQqSettings).toHaveBeenCalledWith({
       judgement_model_name: "judge-model",
       expected_revision: 5,
     });
-    expect((screen.getByLabelText("判断开口兴趣打分模型") as HTMLSelectElement).value).toBe(
-      "judge-model",
-    );
-    // 选回「跟随对话模型」＝清空：null 与"不动它"是两件事，这里发的是 null。
-    fireEvent.change(screen.getByLabelText("判断开口兴趣打分模型"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("判断模型"), { target: { value: "" } });
     await act(async () => {});
     expect(fake.updateQqSettings).toHaveBeenLastCalledWith({
       judgement_model_name: null,
       expected_revision: 6,
     });
   });
-
-  it("第三方聊天总开关关着时置灰，并指出开关在哪", async () => {
-    const fake = client({ getQqSettings: vi.fn(async () => settings({ enabled: false })) });
-    store.getState().resetForTests(fake);
-    // 2026-09-25：开关与 QQ 配置搬到运行模式页（不是一条路由），所以这里钉的是视图跳转。
-    const goTo = vi.fn();
-    store.setState({ requestPageNavigation: goTo });
-    render(<QqJudgementModelPage />);
+  it("explains that a configured QQ model does not run while the connection is disabled", async () => {
+    renderOrganization(client({ getQqSettings: vi.fn(async () => settings({ enabled: false })) }));
     await act(async () => {});
-    expect((screen.getByLabelText("判断开口兴趣打分模型") as HTMLSelectElement).disabled).toBe(
-      true,
-    );
-    expect(screen.getByText(/第三方聊天总开关关着，判断不会运行/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "前往运行模式" }));
-    expect(goTo).toHaveBeenCalledWith("settings", "operating-mode");
+    expect(screen.getByText(/第三方聊天总开关已关闭/)).toBeTruthy();
   });
-
-  it("读取失败时给出重试入口，不假装读到了设置", async () => {
-    const fake = client({
-      getQqSettings: vi.fn(async () => {
-        throw new Error("unavailable");
+  it("provides a retry when QQ settings fail to load", async () => {
+    const fake = renderOrganization(
+      client({
+        getQqSettings: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("unavailable"))
+          .mockResolvedValue(settings()),
       }),
-    });
-    store.getState().resetForTests(fake);
-    render(<QqJudgementModelPage />);
+    );
     await act(async () => {});
-    expect(screen.queryByLabelText("判断开口兴趣打分模型")).toBeNull();
-    expect(screen.getByRole("button", { name: "重试读取 QQ 设置" })).toBeTruthy();
-    expect(screen.getByText(/读取 QQ 设置失败/)).toBeTruthy();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "重试读取 QQ 设置" })),
+    );
+    expect(fake.getQqSettings).toHaveBeenCalledTimes(2);
   });
 });

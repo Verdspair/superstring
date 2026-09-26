@@ -1,25 +1,26 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
-import { IdentityEditor, CapabilityEditor } from "../../src/web/screens/assistants/StudioEditors";
-import { ResourceRules } from "../../src/web/screens/assistants/ResourceRules";
-import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
-import { MemoryLibrary, MemoryDetail } from "../../src/web/screens/library/MemoryLibrary";
-import { Preferences } from "../../src/web/screens/environment/Preferences";
-import { resources } from "../../src/web/screens/library/messages";
-import { THEMES, readTheme, readMode } from "../../src/web/appearance";
+import { readMode, readTheme, THEMES } from "../../src/web/appearance";
 import { selectLocale } from "../../src/web/i18n";
+import en from "../../src/web/i18n/locales/en/translation.json";
+import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
+import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
+import { ResourceRules } from "../../src/web/screens/assistants/ResourceRules";
+import { CapabilityEditor, IdentityEditor } from "../../src/web/screens/assistants/StudioEditors";
+import { Preferences } from "../../src/web/screens/environment/Preferences";
+import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
+import { MemoryDetail, MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import {
   A,
   B,
   D,
-  M,
   document as doc,
+  M,
   memory,
-  setupLibrary,
   scopeKey,
+  setupLibrary,
 } from "./helpers/library-fixture";
 
 beforeEach(() => {
@@ -217,7 +218,9 @@ describe("preferences and localized resources", () => {
     expect(screen.getByRole("button", { name: "Forest" })).toBeTruthy();
   });
   it("every owned stable key has both languages and matching interpolation", () => {
-    for (const [key, value] of Object.entries(resources)) {
+    for (const [key, english] of Object.entries(en)) {
+      if (!key.startsWith("library.")) continue;
+      const value = { en: english, zh: zh[key as keyof typeof zh] };
       expect(key).not.toMatch(/[\u3400-\u9fff]/);
       expect(value.en, key).toBeTruthy();
       expect(value.en, key).not.toMatch(/[\u3400-\u9fff]/);
@@ -231,7 +234,9 @@ describe("preferences and localized resources", () => {
     await act(async () => render(<ResourceRules />));
     expect(screen.getByText("Knowledge access")).toBeTruthy();
     const copy = document.body.cloneNode(true) as HTMLElement;
-    copy.querySelectorAll("input,textarea").forEach((node) => node.remove());
+    copy.querySelectorAll("input,textarea").forEach((node) => {
+      node.remove();
+    });
     expect(copy.textContent).not.toMatch(/[\u3400-\u9fff]/);
   });
 });
@@ -273,20 +278,18 @@ it("refreshes jobs and source conversations before reloading the filtered memory
     listMemorySessions: vi
       .fn()
       .mockResolvedValue([{ id: D, title: "Newly completed conversation" }]),
-    listMemoryJobs: vi
-      .fn()
-      .mockResolvedValue([
-        {
-          id: M,
-          kind: "manual",
-          session_id: D,
-          status: "succeeded",
-          result_id: M,
-          error_code: null,
-          created_at: "2026-09-25T00:00:00Z",
-          finished_at: "2026-09-25T00:01:00Z",
-        },
-      ]),
+    listMemoryJobs: vi.fn().mockResolvedValue([
+      {
+        id: M,
+        kind: "manual",
+        session_id: D,
+        status: "succeeded",
+        result_id: M,
+        error_code: null,
+        created_at: "2026-09-25T00:00:00Z",
+        finished_at: "2026-09-25T00:01:00Z",
+      },
+    ]),
   });
   await act(async () => render(<MemoryLibrary />));
   await act(async () => fireEvent.click(screen.getByRole("button", { name: /QQ · 私聊 20002/ })));

@@ -60,7 +60,7 @@ export function DirectConversation({ directory }: { directory?: ReactNode }) {
           <div className="w-full max-w-lg">
             <BrandLogo className="mb-7 size-16 text-primary" />
             <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-              SUPERSTRING
+              {t("brand.wordmark")}
             </p>
             <h2 className="text-3xl font-medium leading-tight tracking-tight md:text-4xl">
               {conversation
