@@ -30,6 +30,35 @@ describe("explicit application paths (no disk writes)", () => {
       "DRIVE_ROOT",
     );
   });
+  it("separates the desktop profile from immutable packaged resources", () => {
+    const resources = path.resolve("synthetic-bundle/resources");
+    const paths = resolveAppPaths({ mode: "desktop", root, resourceRoot: resources });
+    expect(paths.database).toBe(path.join(root, "data/superstring.sqlite"));
+    expect(paths.browserStateKey).toBe(path.join(root, "state/browser-state.key"));
+    expect(paths.qqTransportKey).toBe(path.join(root, "state/qq-transport.key"));
+    expect(paths.qqStickersDir).toBe(path.join(root, "qq/stickers"));
+    expect(paths.logsDir).toBe(path.join(root, "logs"));
+    expect(paths.backupsDir).toBe(path.join(root, "backups"));
+    expect(paths.maintenanceDir).toBe(path.join(root, "maintenance"));
+    expect(paths.webDir).toBe(path.join(resources, "web"));
+    expect(paths.businessMigration).toBe(
+      path.join(resources, "migrations/versions/0001_initial.sql"),
+    );
+    assertNoLegacyDevelopmentState(paths, () => {
+      throw new Error("must not read dev data");
+    });
+  });
+  it("rejects resource/profile overlap and overrides of legacy layouts", () => {
+    expect(() => resolveAppPaths({ mode: "desktop", root })).toThrow("RESOURCE_ROOT");
+    for (const resources of [root, path.dirname(root), path.join(root, "resources")]) {
+      expect(() => resolveAppPaths({ mode: "desktop", root, resourceRoot: resources })).toThrow(
+        "MUST_BE_SEPARATE",
+      );
+    }
+    expect(() =>
+      resolveAppPaths({ mode: "installed", root, resourceRoot: path.resolve("bundle") }),
+    ).toThrow("REQUIRES_DESKTOP");
+  });
   it("refuses silently replacing legacy development data with an empty profile", () => {
     const paths = resolveAppPaths({ mode: "development", root });
     for (const old of [path.join(root, "data"), path.join(root, "artifacts/state")]) {

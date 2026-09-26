@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
+import { persistDesktopPreference } from "../desktop-preferences";
 import { english } from "./en";
 import { translateError } from "./errors";
 import { i18n, messages } from "./runtime";
@@ -33,6 +34,7 @@ export function selectLocale(locale: Locale): boolean {
   applyLocale(locale);
   try {
     localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    void persistDesktopPreference(LOCALE_STORAGE_KEY, locale);
     return true;
   } catch {
     return false;

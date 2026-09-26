@@ -230,8 +230,12 @@ namespace Superstring.Desktop
                     var p = DesktopAppearance.Resolve(theme, mode, () => true);
                     bool expectedDark = selectedMode != "light";
                     var expected = System.Drawing.ColorTranslator.FromHtml(DesktopPaletteData.Themes[i, expectedDark ? 2 : 1]);
+                    var surface = DesktopPaletteData.Base(expectedDark);
                     Check("appearance " + id + "/" + selectedMode,
-                        theme == id && mode == selectedMode && p.IsDark == expectedDark && p.Deep.ToArgb() == expected.ToArgb());
+                        theme == id && mode == selectedMode && p.IsDark == expectedDark
+                        && p.Deep.ToArgb() == expected.ToArgb() && p.Accent.ToArgb() == expected.ToArgb()
+                        && p.Surface.ToArgb() == surface.Surface.ToArgb()
+                        && p.Line.ToArgb() == surface.Line.ToArgb() && p.Soft.ToArgb() == surface.Soft.ToArgb());
                 }
             }
             string[] invalid = {
@@ -253,8 +257,6 @@ namespace Superstring.Desktop
             Check("invalid UTF8 rejected", theme == "slate" && mode == "system");
             Check("system follows injected light", !DesktopAppearance.Resolve("slate", "system", () => false).IsDark);
             Check("fixed dark ignores system light", DesktopAppearance.Resolve("slate", "dark", () => false).IsDark);
-            Check("slate keeps CSS distinct focus accent", DesktopAppearance.Resolve("slate", "light").Accent.ToArgb() == System.Drawing.ColorTranslator.FromHtml("#4266b0").ToArgb());
-            Check("dark surface equals web CSS", DesktopAppearance.Resolve("blue", "dark").Surface.ToArgb() == System.Drawing.ColorTranslator.FromHtml("#232b36").ToArgb());
         }
 
         private static void RunGuiCheck()

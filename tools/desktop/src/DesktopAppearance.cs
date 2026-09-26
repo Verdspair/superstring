@@ -66,21 +66,11 @@ namespace Superstring.Desktop
             int index = 0;
             for (int i = 0; i < DesktopPaletteData.Themes.GetLength(0); i++)
                 if (DesktopPaletteData.Themes[i, 0] == themeId) { index = i; break; }
-            if (index != 0)
-            {
-                Color tone = ColorTranslator.FromHtml(DesktopPaletteData.Themes[index, dark ? 2 : 1]);
-                p.Deep = tone; p.Accent = tone;
-                p.Line = Mix(tone, p.Surface, dark ? 26 : 21);
-                p.Soft = Mix(tone, p.Surface, dark ? 5 : 3);
-            }
+            // The web applies shared theme colors to primary/ring for every
+            // theme, including slate. Borders and muted surfaces stay neutral.
+            Color tone = ColorTranslator.FromHtml(DesktopPaletteData.Themes[index, dark ? 2 : 1]);
+            p.Deep = tone; p.Accent = tone;
             return p;
-        }
-        private static Color Mix(Color tone, Color surface, int percent)
-        {
-            return Color.FromArgb(
-                (tone.R * percent + surface.R * (100 - percent) + 50) / 100,
-                (tone.G * percent + surface.G * (100 - percent) + 50) / 100,
-                (tone.B * percent + surface.B * (100 - percent) + 50) / 100);
         }
         public static bool IsWindowsDark()
         {

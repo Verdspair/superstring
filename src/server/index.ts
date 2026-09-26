@@ -5,7 +5,9 @@ import { serve } from "bun";
 import type { Hono } from "hono";
 import { isApiPath } from "../shared/api-routes";
 import { readDesktopSettings } from "./db/desktop-repository";
+import { createDesktopAccess } from "./desktop-access";
 import { createAppearanceRepository } from "./desktop-appearance";
+import { backupBeforeDesktopMigration } from "./desktop-backup";
 import {
   createDesktopLifecycle,
   DESKTOP_CONTROL_PATHS,
@@ -13,6 +15,8 @@ import {
   injectDesktopMeta,
   isDesktopToken,
 } from "./desktop-lifecycle";
+import { watchDesktopParent } from "./desktop-parent";
+import { acquireDesktopServiceLease } from "./desktop-service-lease";
 import {
   bindWithDesktopFallback,
   DESKTOP_PORT_MESSAGE,
@@ -34,6 +38,14 @@ const SERVE_WEB = process.env.SUPERSTRING_SERVE_WEB === "1";
 const layout = loadStartupLayout(process.env);
 const WEB_ROOT = layout?.paths.webDir ?? path.resolve("dist/web");
 const BUSINESS_DB_PATH = layout?.paths.database ?? resolveBusinessDbPath();
+const desktopAccess = createDesktopAccess({
+  env: {
+    SUPERSTRING_APP_MODE: process.env.SUPERSTRING_APP_MODE,
+    SUPERSTRING_DESKTOP_MANAGED: process.env.SUPERSTRING_DESKTOP_MANAGED,
+    SUPERSTRING_DESKTOP_TOKEN: process.env.SUPERSTRING_DESKTOP_TOKEN,
+  },
+  origin: () => `http://${DEV_HOST}:${actualPort}`,
+});
 
 // Installed deployments hold a shared maintenance lease for the whole process
 // lifetime, acquired BEFORE the database is opened. The installer takes the same
@@ -41,22 +53,34 @@ const BUSINESS_DB_PATH = layout?.paths.database ?? resolveBusinessDbPath();
 // even if the native launcher crashed while this service kept running.
 // Development launches (start.cmd) have no lease and behave exactly as before.
 const serviceLease =
-  layout && layout.paths.mode === "installed" ? acquireServiceLease(layout.paths.root) : null;
+  layout?.paths.mode === "desktop"
+    ? acquireDesktopServiceLease(layout.paths.root)
+    : layout?.paths.mode === "installed"
+      ? acquireServiceLease(layout.paths.root)
+      : null;
 
 if (BUSINESS_DB_PATH !== ":memory:") {
   mkdirSync(path.dirname(BUSINESS_DB_PATH), { recursive: true });
 }
 
 const runtimeFactory = createRuntime;
-const runtime = runtimeFactory({
-  businessDbPath: BUSINESS_DB_PATH,
-  browserStateSecretPath: layout?.paths.browserStateKey,
-  qqStickerDirectory: layout?.paths.qqStickersDir,
-  // The transport token is sealed with this key. Passing the resolved layout path is what keeps
-  // it under the installation's own state directory instead of the development default.
-  qqTransportKeyPath: layout?.paths.qqTransportKey,
-  businessMigrationSql: layout?.businessMigrationSql,
-});
+const runtime = await (async () => {
+  try {
+    if (layout?.paths.mode === "desktop") await backupBeforeDesktopMigration(layout.paths);
+    return runtimeFactory({
+      businessDbPath: BUSINESS_DB_PATH,
+      browserStateSecretPath: layout?.paths.browserStateKey,
+      qqStickerDirectory: layout?.paths.qqStickersDir,
+      // The transport token is sealed with this key. Passing the resolved layout path is what keeps
+      // it under the installation's own state directory instead of the development default.
+      qqTransportKeyPath: layout?.paths.qqTransportKey,
+      businessMigrationSql: layout?.businessMigrationSql,
+    });
+  } catch (error) {
+    serviceLease?.release();
+    throw error;
+  }
+})();
 
 // Desktop mode is opt-in: only when SUPERSTRING_DESKTOP_TOKEN is a valid 64-hex
 // value. In every other launch (the normal start.cmd path) `desktop` is null and
@@ -96,6 +120,7 @@ let inFlight = 0;
 const drainTimeoutMs = 5_000;
 const activeReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
 const idleWaiters: Array<() => void> = [];
+const shutdownAbort = new AbortController();
 
 function releaseInFlight(): void {
   inFlight--;
@@ -151,7 +176,11 @@ function wrapForDrain(res: Response): Response {
 async function dispatch(req: Request): Promise<Response> {
   inFlight++;
   try {
-    const res = await runtime.app.fetch(req);
+    const res = await runtime.app.fetch(
+      new Request(req, {
+        signal: AbortSignal.any([req.signal, shutdownAbort.signal]),
+      }),
+    );
     return wrapForDrain(res);
   } catch (error) {
     releaseInFlight();
@@ -171,11 +200,14 @@ function waitForIdle(timeoutMs: number): Promise<void> {
 }
 
 let shuttingDown = false;
+let disposeParent: (() => void) | null = null;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  disposeParent?.();
   // Give in-flight requests up to drainTimeoutMs to finish/persist, then close.
   await waitForIdle(drainTimeoutMs);
+  shutdownAbort.abort(new Error("SERVER_SHUTTING_DOWN"));
   // Explicitly await stream cancellation/persistence before closing SQLite.
   // Refuse new requests below; pending pre-response requests must also settle.
   await Promise.allSettled([...activeReaders].map((reader) => reader.cancel()));
@@ -203,11 +235,13 @@ const noopWebsocket: WebSocketHandler<{ alive: boolean }> = {
   drain() {},
 };
 
-const server = (() => {
+const server = await (async () => {
   try {
     const created = bindWithDesktopFallback(PORT, autoPort, (port) =>
       serve({
         fetch: (req, srv) => {
+          const denied = desktopAccess(req);
+          if (denied) return denied;
           if (shuttingDown) return new Response("Shutting down", { status: 503 });
           const url = new URL(req.url);
           if (DESKTOP_CONTROL_PATHS.has(url.pathname)) {
@@ -236,11 +270,13 @@ const server = (() => {
     desktop?.start();
     return created;
   } catch (error) {
-    void runtime.stop();
+    await runtime.stop();
     serviceLease?.release();
     throw error;
   }
 })();
+
+if (layout?.paths.mode === "desktop") disposeParent = watchDesktopParent(() => void shutdown());
 
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
@@ -270,7 +306,25 @@ function appStaticFallback(app: Hono, root: string): void {
     if (desktop && contentType.startsWith("text/html")) {
       const html = await file.text();
       return new Response(injectDesktopMeta(html), {
-        headers: { "content-type": contentType },
+        headers: {
+          "content-type": contentType,
+          ...(layout?.paths.mode === "desktop"
+            ? {
+                "content-security-policy": [
+                  "default-src 'self'",
+                  "script-src 'self'",
+                  "style-src 'self' 'unsafe-inline'",
+                  "img-src 'self' data: blob: https: http:",
+                  "media-src 'self' data: blob: https: http:",
+                  `connect-src 'self' ws://${DEV_HOST}:${actualPort}`,
+                  "object-src 'none'",
+                  "base-uri 'none'",
+                  "frame-ancestors 'none'",
+                  "frame-src 'none'",
+                ].join("; "),
+              }
+            : {}),
+        },
       });
     }
     return new Response(file, {

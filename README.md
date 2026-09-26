@@ -1,6 +1,6 @@
 # Superstring
 
-A local, single-user desktop chat app for Windows. Conversations, long-term memory, assistants and settings stay on your machine, and model inference runs on your own local server.
+A local, single-user desktop Agent workspace for Windows, macOS and Linux. Conversations, long-term memory, Agents and settings stay on your machine, and model inference runs on your configured model server.
 
 **Version:** `0.2.1`.
 
@@ -12,7 +12,7 @@ A local, single-user desktop chat app for Windows. Conversations, long-term memo
 
 ### What it is
 
-Superstring is a desktop chat client that keeps its data local. It talks to an OpenAI-compatible model server on your machine — LM Studio by default, at `http://127.0.0.1:1234/v1` — and stores everything in a SQLite database inside the installation folder. There is no account to create and no cloud sync.
+Superstring is a desktop chat client that keeps its data local. It talks to an OpenAI-compatible model server — LM Studio by default, at `http://127.0.0.1:1234/v1` — and stores application data locally. macOS/Linux desktop profiles use the system user-data directory; Windows retains its installation layout. There is no account to create and no cloud sync.
 
 Built with Bun, Hono, SQLite and React 19.
 
@@ -30,7 +30,7 @@ Built with Bun, Hono, SQLite and React 19.
 
 ### Requirements
 
-- Windows x64 for the installer. macOS and Linux can run from source.
+- Native package targets: Windows x64; macOS 13+ arm64/x64; Linux glibc arm64/x64. See [desktop distributions](docs/reference/desktop.md) for package formats and validation boundaries.
 - A local OpenAI-compatible model server; LM Studio is the tested one.
 - Model weights and LM Studio itself are not bundled — install and download them separately.
 
@@ -59,11 +59,14 @@ npm ci
 
 Launch `start.cmd` on Windows, or `./start.sh` on macOS/Linux. Both entry points build the web assets and start the server; Ctrl+C in the terminal stops them.
 
+For source-only development, set `ELECTRON_SKIP_BINARY_DOWNLOAD=1` when running `npm ci` to skip the desktop runtime download.
+
 ### Documentation
 
 - [UPGRADING.md](UPGRADING.md) — what changed in this version and how to upgrade from the previous one
 - [RELEASE_NOTES.md](RELEASE_NOTES.md) — release notes
 - [Runtime observability](docs/reference/runtime-observability.md) — filters, trace navigation and diagnostic data lifetime
+- [Desktop distributions](docs/reference/desktop.md) — macOS/Linux installation, data, recovery and CI release
 - [LICENSE](LICENSE) — MIT for this project's own code
 
 ---
@@ -72,7 +75,7 @@ Launch `start.cmd` on Windows, or `./start.sh` on macOS/Linux. Both entry points
 
 ### 这是什么
 
-Superstring 是一个把数据留在本机的桌面聊天客户端。它连接你本机上的 OpenAI 兼容模型服务——默认是 LM Studio，地址 `http://127.0.0.1:1234/v1`——所有内容都存在安装目录内的 SQLite 数据库里，不需要注册账号，也不做云端同步。
+Superstring 是一个把数据留在本机的桌面 Agent 工作区。它连接 OpenAI 兼容模型服务——默认是 LM Studio，地址 `http://127.0.0.1:1234/v1`。macOS/Linux 桌面端将数据保存到系统用户目录，Windows 保留原安装目录布局。不需要注册账号，也不做云端同步。
 
 技术栈为 Bun、Hono、SQLite 与 React 19。
 
@@ -90,7 +93,7 @@ Superstring 是一个把数据留在本机的桌面聊天客户端。它连接�
 
 ### 运行要求
 
-- 安装包面向 Windows x64；macOS 与 Linux 可用源码方式运行。
+- 原生打包目标：Windows x64、macOS 13+ arm64/x64、Linux glibc arm64/x64。安装方式及验证边界见[桌面发行文档](docs/reference/desktop.md)。
 - 需要一个本机 OpenAI 兼容模型服务，当前测试使用的是 LM Studio。
 - LM Studio 与模型文件不随应用提供，需另行安装和下载。
 
@@ -119,11 +122,14 @@ npm ci
 
 Windows 启动 `start.cmd`，macOS/Linux 启动 `./start.sh`。两者都会构建前端资源并启动服务，在终端按 Ctrl+C 停止。
 
+只运行源码时，可在执行 `npm ci` 前设置 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，跳过桌面运行时下载。
+
 ### 文档
 
 - [UPGRADING.md](UPGRADING.md)——本版相对上一版的变化与升级步骤
 - [RELEASE_NOTES.md](RELEASE_NOTES.md)——版本说明
 - [运行观测](docs/reference/runtime-observability.md)——筛选、链路追溯与观测数据生命周期
+- [桌面发行](docs/reference/desktop.md)——macOS/Linux 安装、数据、恢复及 CI 发布
 - [LICENSE](LICENSE)——本项目自身代码采用 MIT 协议
 
 ---
