@@ -235,7 +235,7 @@ export class AgentRuntime {
       codeMode?: {
         runner: CodeRunner;
         enabled(): boolean;
-        supportsModel(model: string | undefined): boolean;
+        allowsModel(model: string | undefined): boolean;
         /** 沙箱限额；函数形式＝每次编排重新读取。 */
         limits?: () => Partial<CodeRunnerLimits>;
       };
@@ -406,7 +406,7 @@ export class AgentRuntime {
         mode === "direct" &&
         code?.enabled() &&
         code.runner.available &&
-        code.supportsModel(spec.model)
+        code.allowsModel(spec.model)
       ) {
         const program = createCodeMode({
           actions: baseActions.filter((action) =>
@@ -418,7 +418,7 @@ export class AgentRuntime {
           limits: code.limits?.(),
           assertSources: (sources) => input.context.assertSources?.(sources),
           assertCurrent: () => {
-            if (!code.runner.available || !code.supportsModel(spec.model))
+            if (!code.runner.available || !code.allowsModel(spec.model))
               throw new AgentRuntimeError(
                 "CODE_EXECUTION_UNAVAILABLE",
                 "Code execution was disabled",
@@ -431,7 +431,7 @@ export class AgentRuntime {
             ...program,
             assertAvailable: () => {
               program.assertAvailable?.();
-              if (!code.runner.available || !code.supportsModel(spec.model))
+              if (!code.runner.available || !code.allowsModel(spec.model))
                 throw new AgentRuntimeError(
                   "CODE_EXECUTION_UNAVAILABLE",
                   "Code execution was disabled",
@@ -1340,7 +1340,7 @@ export function createAgentRuntime(options: {
   codeMode?: {
     runner: CodeRunner;
     enabled(): boolean;
-    supportsModel(model: string | undefined): boolean;
+    allowsModel(model: string | undefined): boolean;
     limits?: () => Partial<CodeRunnerLimits>;
   };
   /** 进程级模型调用并发（见 `createModelPort`）；省略＝不限，与旧行为一致。 */

@@ -62,7 +62,7 @@ return {conclusion:"total="+sum};`;
         codeMode: {
           runner: createQuickJsCodeRunner(),
           enabled: () => mode === "code",
-          supportsModel: () => true,
+          allowsModel: () => true,
         },
       });
       const started = performance.now();

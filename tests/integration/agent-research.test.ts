@@ -135,11 +135,11 @@ describe("bounded read-only research", () => {
     [true, false, true],
     [true, true, false],
   ])(
-    "requires the code switch, runner and model capability together (%s/%s/%s)",
+    "requires the code switch, runner and local model opt-in together (%s/%s/%s)",
     async (enabled, available, supported) => {
       const f = setup(['{"kind":"none"}'], false, {
         enabled: () => enabled,
-        supportsModel: () => supported,
+        allowsModel: () => supported,
         runner: {
           available,
           async run() {
@@ -155,7 +155,7 @@ describe("bounded read-only research", () => {
     let enabled = true;
     const f = setup([invoke("code.run", { script: "return conclusion" }), inline("reply")], false, {
       enabled: () => enabled,
-      supportsModel: () => true,
+      allowsModel: () => true,
       runner: {
         available: true,
         async run({ bindings }) {
@@ -172,6 +172,23 @@ describe("bounded read-only research", () => {
     expect(f.requests.at(-1)?.tools?.map((tool) => tool.name)).not.toContain("code.run");
   });
 
+  it("rejects a local sandbox call when the model opt-in is revoked during the run", async () => {
+    let allowed = true;
+    const f = setup([invoke("code.run", { script: "return conclusion" }), inline("reply")], false, {
+      enabled: () => true,
+      allowsModel: () => allowed,
+      runner: {
+        available: true,
+        async run() {
+          allowed = false;
+          return { conclusion: "must not escape" };
+        },
+      },
+    });
+    await expect(f.run()).rejects.toMatchObject({ code: "CODE_EXECUTION_UNAVAILABLE" });
+    expect(f.publications()).toBe(0);
+  });
+
   it("cannot use a registered but unadvertised tool through research or code", async () => {
     const research = setup([invoke("research.run", { question: "hidden data" }), invoke("read")]);
     research.spec.availableActions = research.spec.availableActions.filter(
@@ -180,7 +197,7 @@ describe("bounded read-only research", () => {
     await expect(research.run()).rejects.toMatchObject({ code: "AGENT_ACTION_UNAVAILABLE" });
     const code = setup([invoke("code.run", { script: "inspect" }), inline("reply")], false, {
       enabled: () => true,
-      supportsModel: () => true,
+      allowsModel: () => true,
       runner: {
         available: true,
         async run({ bindings }) {

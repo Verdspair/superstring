@@ -185,6 +185,7 @@ export const ModelProviderModelSchema = z.strictObject({
     .strictObject({
       toolCalling: z.boolean().default(false),
       parallelToolCalls: z.boolean().default(false),
+      // Local sandbox opt-in for this model, not a hosted execution capability.
       codeExecution: z.boolean().default(false),
     })
     .optional(),

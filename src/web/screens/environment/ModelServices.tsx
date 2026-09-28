@@ -377,7 +377,11 @@ export function ModelServices() {
                             ["codeExecution", "models.codeExecution"],
                           ] as const
                         ).map(([key, label]) => (
-                          <Field key={key} label={label}>
+                          <Field
+                            key={key}
+                            label={label}
+                            info={key === "codeExecution" ? "models.codeExecutionHint" : undefined}
+                          >
                             <Checkbox
                               checked={model.capabilities?.[key] ?? false}
                               disabled={saving}

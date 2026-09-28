@@ -43,7 +43,7 @@ External writes are queued through `AgentTaskService`; a queued response is not 
 
 Task results belong to the originating conversation and are read on demand. They cannot publish messages. Source checks reuse domain memory scopes and knowledge grants; revocation or expiry clears stored arguments and results. Task retention is at most one day and shortens with source expiry. Pause prevents execution without deleting otherwise authorized checkpoints.
 
-Optional research uses the same Runtime with a read-only subset of the parent's advertised tools, one nesting level and at most two child calls. Children have no channel commit callback, inherit cancellation and the shared budget, and return bounded conclusions with source references. Research and code execution switches default to off in the common permission policy. Code mode additionally requires a model declaring `codeExecution` and an available runner. The application supplies QuickJS WebAssembly in a separate Worker; disabled mode creates no Worker and loads no interpreter. Native skill processes are not code sandboxes.
+Optional research uses the same Runtime with a read-only subset of the parent's advertised tools, one nesting level and at most two child calls. Children have no channel commit callback, inherit cancellation and the shared budget, and return bounded conclusions with source references. Research and code execution switches default to off in the common permission policy. Code mode additionally requires a model explicitly opted into local execution (`codeExecution`) and an available runner; this setting does not claim provider-hosted PTC support. The application supplies QuickJS WebAssembly in a separate Worker; disabled mode creates no Worker and loads no interpreter. Native skill processes are not code sandboxes.
 
 ## 持久工具计划与可选执行
 
@@ -51,7 +51,7 @@ Optional research uses the same Runtime with a read-only subset of the parent's 
 
 任务结果归原会话，按需读取而不直接发言；来源复验沿用领域记忆范围和知识授权，撤权或过期清空已存参数与结果。最长保留一天，并随最早来源到期缩短。暂停阻止执行，但不删除仍有权读取的检查点。
 
-可选研究沿用同一 Runtime，只能使用父级已广告工具中的只读子集，最多一层、两个子调用；没有通道提交回调，共享取消和预算，返回有界结论与来源。研究和代码执行开关统一保存在权限策略中，默认关闭；代码模式还要求模型声明 `codeExecution` 且 runner 可用；应用提供独立 Worker 内的 QuickJS WebAssembly 实现，关闭时不创建 Worker、不加载解释器。原生技能进程不等同代码沙箱。
+可选研究沿用同一 Runtime，只能使用父级已广告工具中的只读子集，最多一层、两个子调用；没有通道提交回调，共享取消和预算，返回有界结论与来源。研究和代码执行开关统一保存在权限策略中，默认关闭；代码模式还要求为模型开启本地执行许可（`codeExecution`）且 runner 可用，该设置不表示供应商提供托管 PTC；应用提供独立 Worker 内的 QuickJS WebAssembly 实现，关闭时不创建 Worker、不加载解释器。原生技能进程不等同代码沙箱。
 
 ## JavaScript sandbox
 

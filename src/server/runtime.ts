@@ -240,7 +240,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         runner: options.codeRunner ?? createQuickJsCodeRunner(),
         enabled: () => execution().code === true,
         limits: () => execution().codeLimits,
-        supportsModel: (model) =>
+        allowsModel: (model) =>
           readModelProviders(business.orm).some((provider) =>
             provider.models.some(
               (entry) => entry.name === model && entry.capabilities?.codeExecution === true,

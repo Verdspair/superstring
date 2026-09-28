@@ -98,6 +98,25 @@ describe("Model services workspace", () => {
       expected_revision: 3,
     });
   });
+  it.each(["zh-CN", "en"] as const)(
+    "explains local sandbox consent separately from hosted capabilities in %s",
+    async (locale) => {
+      selectLocale(locale);
+      await renderPage();
+      fireEvent.click(
+        screen.getByRole("button", { name: locale === "zh-CN" ? "配置" : "Configure" }),
+      );
+      const label = locale === "zh-CN" ? "允许使用本机代码沙箱" : "Allow the local code sandbox";
+      expect(screen.getByRole("checkbox", { name: label }).getAttribute("data-state")).toBe(
+        "unchecked",
+      );
+      expect(
+        screen.getByText(
+          locale === "zh-CN" ? /不是托管 PTC 能力认证/ : /not certification of hosted PTC support/,
+        ),
+      ).toBeTruthy();
+    },
+  );
   it("edits capabilities without losing the other flags and keeps the draft on conflict", async () => {
     const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: false };
     const update = vi.fn().mockRejectedValue(new Error("配置已变化，请刷新"));
@@ -105,14 +124,14 @@ describe("Model services workspace", () => {
       updateModelProvider: update,
     });
     fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "代码执行（PTC）" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "允许使用本机代码沙箱" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
     expect(update.mock.calls[0][1].models[0].capabilities).toEqual({
       ...capabilities,
       codeExecution: true,
     });
     expect(
-      screen.getByRole("checkbox", { name: "代码执行（PTC）" }).getAttribute("data-state"),
+      screen.getByRole("checkbox", { name: "允许使用本机代码沙箱" }).getAttribute("data-state"),
     ).toBe("checked");
     expect(
       screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("配置已变化")),
@@ -120,7 +139,7 @@ describe("Model services workspace", () => {
   });
   it("keeps absent capabilities absent until edited and can restore the undeclared state", async () => {
     const fake = await edit();
-    fireEvent.click(screen.getByRole("checkbox", { name: "代码执行（PTC）" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "允许使用本机代码沙箱" }));
     fireEvent.click(screen.getByRole("button", { name: "清除能力声明" }));
     fireEvent.change(screen.getByLabelText("上下文窗口"), { target: { value: "131072" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
