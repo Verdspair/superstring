@@ -13,7 +13,9 @@ export interface SandboxInput {
   limits: CodeRunnerLimits;
   deadline: number;
 }
-export type SandboxResponse = { id: number; json: string };
+export type SandboxResponse =
+  | { id: number; json: string }
+  | { id: number; error: { code: string; message: string } };
 export type SandboxMessage =
   | { type: "call"; id: number; name: string; json: string }
   | { type: "result"; json: string }
@@ -118,9 +120,21 @@ async function execute(): Promise<string> {
       for (const response of responses.splice(0)) {
         const deferred = pending.get(response.id);
         if (!deferred) throw fail("CODE_PROTOCOL_ERROR");
-        const value = vm.newString(response.json);
-        deferred.resolve(value);
-        value.dispose();
+        if ("error" in response) {
+          const value = vm.newError(response.error.message);
+          const code = vm.newString(response.error.code);
+          try {
+            vm.setProp(value, "code", code);
+            deferred.reject(value);
+          } finally {
+            code.dispose();
+            value.dispose();
+          }
+        } else {
+          const value = vm.newString(response.json);
+          deferred.resolve(value);
+          value.dispose();
+        }
         deferred.dispose();
         pending.delete(response.id);
       }

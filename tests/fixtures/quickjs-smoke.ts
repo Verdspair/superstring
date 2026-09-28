@@ -1,4 +1,4 @@
-import { CODE_RUN_DEFAULT_LIMITS } from "../../src/server/agent/code-runner";
+import { CODE_RUN_DEFAULT_LIMITS, CodeToolError } from "../../src/server/agent/code-runner";
 import { createQuickJsCodeRunner } from "../../src/server/agent/quickjs-runner";
 
 const runner = createQuickJsCodeRunner();
@@ -11,6 +11,18 @@ const result = await runner.run({
   signal: new AbortController().signal,
 });
 if (result.conclusion !== "total=42") throw new Error("CODE_SMOKE_FAILED");
+const recovered = await runner.run({
+  script:
+    'try{await tools.fail({});}catch(error){return {conclusion:error.code};} return {conclusion:"unexpected"};',
+  bindings: {
+    fail: async () => {
+      throw new CodeToolError(new Error("synthetic"));
+    },
+  },
+  limits: CODE_RUN_DEFAULT_LIMITS,
+  signal: new AbortController().signal,
+});
+if (recovered.conclusion !== "CODE_TOOL_FAILED") throw new Error("CODE_RECOVERY_SMOKE_FAILED");
 const timeout = await runner
   .run({
     script: "while (true) {}",

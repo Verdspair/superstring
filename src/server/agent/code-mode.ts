@@ -9,7 +9,12 @@ import type { RuntimeTelemetry } from "../observability/runtime-telemetry";
 import { PermissionError } from "../permissions/service";
 import { ActionExecutor } from "./action-executor";
 import type { BuiltInAction } from "./built-in-actions";
-import { CODE_RUN_DEFAULT_LIMITS, type CodeRunner, type CodeRunnerLimits } from "./code-runner";
+import {
+  CODE_RUN_DEFAULT_LIMITS,
+  type CodeRunner,
+  type CodeRunnerLimits,
+  CodeToolError,
+} from "./code-runner";
 import { uniqueSources } from "./context-engine";
 import { createToolCatalog, type ToolCatalog } from "./tool-catalog";
 
@@ -27,6 +32,21 @@ export interface CodeMode {
   readonly catalog: ToolCatalog;
 }
 const RunSchema = z.strictObject({ script: z.string().min(1).max(20_000) });
+
+function recoverToolError(error: unknown): CodeToolError {
+  const code =
+    typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+  if (
+    error instanceof PermissionError ||
+    /^(?:PERMISSION|CONTEXT|CODE|AGENT|TASK|MCP)_/.test(code) ||
+    /_(?:DENIED|REVOKED|CHANGED|EXPIRED|LIMIT|TOO_LARGE|PROTOCOL_ERROR|BUDGET_EXCEEDED)$/.test(
+      code,
+    ) ||
+    (error instanceof Error && error.name === "AbortError")
+  )
+    throw error;
+  return new CodeToolError(error);
+}
 
 export function createCodeMode(options: CodeModeOptions): CodeMode {
   const catalog = createToolCatalog(options.actions);
@@ -49,7 +69,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
         .map((tool) => tool.name)
         .join(
           ", ",
-        )}. Independent calls may use Promise.all, bounded to ${limits.concurrency} concurrent calls. Return {conclusion: "short factual conclusion", refs?: []}; do not return raw tool data. No filesystem, network, imports, process or timers are available.`,
+        )}. Independent calls may use Promise.all, bounded to ${limits.concurrency} concurrent calls. Ordinary tool exceptions reject with an error.code and may be caught or retried within the same limits; permission, source, cancellation and resource failures terminate execution. Unavailable result envelopes remain data to inspect. Return {conclusion: "short factual conclusion", refs?: []}; do not return raw tool data. No filesystem, network, imports, process or timers are available.`,
 
       parameters: z.toJSONSchema(RunSchema),
     },
@@ -61,18 +81,22 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
       const signal = AbortSignal.any([context.signal, timeout, lifetime.signal]);
       const sources: SourceRef[] = [];
       const calls: string[] = [];
+      const used = new Set<BuiltInAction>();
       let attempts = 0;
+      let failedCalls = 0;
       let ended = false;
-      let authorityFailure: unknown;
+      let authorityFailure: { error: unknown } | undefined;
       const started = Date.now();
+      const failAuthority = (error: unknown): never => {
+        authorityFailure ??= { error };
+        lifetime.abort(error);
+        throw error;
+      };
       const check = () => {
         signal.throwIfAborted();
         options.assertCurrent?.();
         options.assertSources?.(sources);
-        for (const name of new Set(calls)) {
-          const target = byName.get(name);
-          if (target) executor.assert(target, { ...context, signal }, "sandbox");
-        }
+        for (const target of used) executor.assert(target, { ...context, signal }, "sandbox");
       };
       const bindings = Object.create(null) as Record<
         string,
@@ -90,15 +114,28 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
               target,
               args,
               { ...context, signal },
-              { mode: "sandbox", assertCurrent: check },
+              { mode: "sandbox", assertCurrent: check, mapToolError: recoverToolError },
             );
+            check();
             calls.push(descriptor.name);
+            used.add(target);
             consumed.add(target);
             sources.push(...result.sources);
             options.assertSources?.(sources);
             return result.value;
           } catch (error) {
-            authorityFailure = error;
+            if (!(error instanceof CodeToolError)) return failAuthority(error);
+            try {
+              check();
+              executor.assert(target, { ...context, signal }, "sandbox");
+              if (target.permission) sources.push(executor.permissions.source(target.permission));
+              used.add(target);
+              consumed.add(target);
+              options.assertSources?.(sources);
+              failedCalls++;
+            } catch (failure) {
+              return failAuthority(failure);
+            }
             throw error;
           }
         };
@@ -127,6 +164,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
             status: "unavailable",
             code,
             calls: calls.length,
+            ...(failedCalls ? { failedCalls } : {}),
             tools: calls,
             bindings: Object.keys(bindings),
             durationMs: Date.now() - started,
@@ -145,7 +183,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
           options.runner.run({ script: input.script, bindings, limits, signal }),
           aborted,
         ]);
-        if (authorityFailure) throw authorityFailure;
+        if (authorityFailure) throw authorityFailure.error;
         if (attempts > limits.maxCalls) return unavailable("CODE_CALL_LIMIT");
         check();
         if (typeof result.conclusion !== "string" || !result.conclusion.trim())
@@ -170,6 +208,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
             status: "ok",
             conclusion: result.conclusion,
             calls: calls.length,
+            ...(failedCalls ? { failedCalls } : {}),
             tools: calls,
             bindings: Object.keys(bindings),
             refs: refs.length,
@@ -186,7 +225,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
           authorityFailure ||
           (error instanceof PermissionError && error.code.startsWith("PERMISSION_"))
         )
-          throw authorityFailure ?? error;
+          throw authorityFailure ? authorityFailure.error : error;
         check();
         return unavailable(
           error instanceof Error && "code" in error && typeof error.code === "string"
@@ -200,6 +239,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
           details: {
             toolCalls: attempts,
             completedToolCalls: calls.length,
+            failedToolCalls: failedCalls,
             tools: calls.join(","),
           },
         });

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import { ActionExecutor } from "../../src/server/agent/action-executor";
 import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { createCodeMode } from "../../src/server/agent/code-mode";
 import { CODE_RUN_DEFAULT_LIMITS, type CodeRunnerLimits } from "../../src/server/agent/code-runner";
 import { createQuickJsCodeRunner } from "../../src/server/agent/quickjs-runner";
+import { PermissionService } from "../../src/server/permissions/service";
+import type { PermissionPolicy } from "../../src/shared/contracts/permissions";
 import { compareCodeModes } from "../harness/code-mode";
 
 const runner = createQuickJsCodeRunner();
@@ -326,6 +329,321 @@ describe("QuickJS WASM isolated runner", () => {
       failFirst.resolve();
       releaseSlow.resolve();
     }
+  });
+
+  it("recovers ordinary tool exceptions inside the guest without exposing host error details", async () => {
+    let attempts = 0;
+    const mode = createCodeMode({
+      runner,
+      actions: [
+        {
+          description: {
+            name: "read",
+            description: "read",
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute() {
+            if (++attempts === 1)
+              throw Object.assign(new Error("private-host-detail"), {
+                code: "UPSTREAM_BUSY",
+                token: "synthetic-secret",
+              });
+            return {
+              value: "recovered",
+              sources: [{ kind: "fixture", id: "read", revision: "1" }],
+            };
+          },
+        },
+      ],
+    });
+    if (!mode.action) throw new Error("missing code action");
+    const result = await mode.action.execute(
+      {
+        script: `let code; try { await tools.read({}); } catch(error) {
+      if(error.message.includes("private-host-detail") || error.stack.includes("quickjs-runner") || error.token !== undefined) throw Error("leak");
+      code=error.code;
+    } const value=await tools.read({}); return {conclusion:code+":"+value};`,
+      },
+      { owner: { kind: "test", id: "recovery" }, signal: new AbortController().signal },
+    );
+    expect(result.value).toMatchObject({
+      status: "ok",
+      conclusion: "UPSTREAM_BUSY:recovered",
+      calls: 1,
+      failedCalls: 1,
+    });
+    expect(result.sources).toEqual([{ kind: "fixture", id: "read", revision: "1" }]);
+    expect(attempts).toBe(2);
+  });
+
+  it("settles mixed parallel successes and recoverable failures without blocking the queue", async () => {
+    const mode = createCodeMode({
+      runner,
+      limits: { concurrency: 2 },
+      actions: [
+        {
+          description: {
+            name: "read",
+            description: "read",
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute({ id }) {
+            if (id === 1) throw new Error("synthetic failure");
+            await Bun.sleep(5);
+            return { value: id, sources: [] };
+          },
+        },
+      ],
+    });
+    if (!mode.action) throw new Error("missing code action");
+    const result = await mode.action.execute(
+      {
+        script: `const values=await Promise.allSettled([0,1,2,3].map(id=>tools.read({id})));
+      return {conclusion:values.map(item=>item.status === "fulfilled" ? item.value : item.reason.code).join(",")};`,
+      },
+      { owner: { kind: "test", id: "mixed" }, signal: new AbortController().signal },
+    );
+    expect(result.value).toMatchObject({
+      status: "ok",
+      conclusion: "0,CODE_TOOL_FAILED,2,3",
+      calls: 3,
+      failedCalls: 1,
+    });
+  });
+
+  it("counts caught retries against the same call budget", async () => {
+    let attempts = 0;
+    const mode = createCodeMode({
+      runner,
+      limits: { maxCalls: 2 },
+      actions: [
+        {
+          description: {
+            name: "read",
+            description: "read",
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute() {
+            attempts++;
+            throw new Error("busy");
+          },
+        },
+      ],
+    });
+    if (!mode.action) throw new Error("missing code action");
+    const result = await mode.action.execute(
+      {
+        script:
+          'for(let i=0;i<5;i++){try{await tools.read({});}catch{}} return {conclusion:"caught"};',
+      },
+      { owner: { kind: "test", id: "retry-limit" }, signal: new AbortController().signal },
+    );
+    expect(result.value).toMatchObject({
+      status: "unavailable",
+      code: "CODE_CALL_LIMIT",
+      failedCalls: 2,
+    });
+    expect(attempts).toBe(2);
+  });
+
+  it.each([
+    "PERMISSION_DENIED",
+    "CONTEXT_SOURCE_INVALID",
+    "CODE_TRANSFER_LIMIT",
+    "AGENT_BUDGET_EXCEEDED",
+    "MCP_PROTOCOL_ERROR",
+  ])("never exposes %s as a recoverable guest error", async (code) => {
+    let downstream = 0;
+    const mode = createCodeMode({
+      runner,
+      actions: [
+        {
+          description: {
+            name: "read",
+            description: "read",
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute() {
+            throw Object.assign(new Error(code), { code });
+          },
+        },
+        {
+          description: {
+            name: "next",
+            description: "next",
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute() {
+            downstream++;
+            return { value: "forbidden", sources: [] };
+          },
+        },
+      ],
+    });
+    if (!mode.action) throw new Error("missing code action");
+    await expect(
+      mode.action.execute(
+        {
+          script:
+            'try{await tools.read({});}catch{} await tools.next({}); return {conclusion:"forbidden"};',
+        },
+        { owner: { kind: "test", id: "hard-failure" }, signal: new AbortController().signal },
+      ),
+    ).rejects.toMatchObject({ code });
+    expect(downstream).toBe(0);
+  });
+
+  it("cancels sibling calls and queued work when a concurrent source becomes invalid", async () => {
+    const slowStarted = Promise.withResolvers<void>();
+    let valid = true;
+    let slowCancelled = false;
+    let downstream = 0;
+    const mode = createCodeMode({
+      runner,
+      limits: { concurrency: 2 },
+      assertSources(sources) {
+        if (sources.length && !valid)
+          throw Object.assign(new Error("revoked"), { code: "CONTEXT_SOURCE_INVALID" });
+      },
+      actions: ["seed", "slow", "revoke", "next"].map(
+        (name): BuiltInAction => ({
+          description: {
+            name,
+            description: name,
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute(_args, { signal }) {
+            if (name === "slow") {
+              slowStarted.resolve();
+              await new Promise<void>((resolve) =>
+                signal.addEventListener(
+                  "abort",
+                  () => {
+                    slowCancelled = true;
+                    resolve();
+                  },
+                  { once: true },
+                ),
+              );
+              signal.throwIfAborted();
+            }
+            if (name === "revoke") {
+              await slowStarted.promise;
+              valid = false;
+            }
+            if (name === "next") downstream++;
+            return {
+              value: "synthetic",
+              sources: name === "seed" ? [{ kind: "fixture", id: "evidence", revision: "1" }] : [],
+            };
+          },
+        }),
+      ),
+    });
+    if (!mode.action) throw new Error("missing code action");
+    await expect(
+      mode.action.execute(
+        {
+          script:
+            'await tools.seed({}); await Promise.allSettled([tools.slow({}),tools.revoke({}),tools.next({})]); return {conclusion:"forbidden"};',
+        },
+        { owner: { kind: "test", id: "parallel-revoke" }, signal: new AbortController().signal },
+      ),
+    ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    expect(slowCancelled).toBe(true);
+    expect(downstream).toBe(0);
+  });
+
+  it("keeps caught failure observations bound to the tool grant", async () => {
+    let policy: PermissionPolicy = {
+      version: 1,
+      grants: [{ resource: "fixture.read", approved: false, revision: "1", directories: [] }],
+    };
+    const permissions = new PermissionService({
+      read: () => ({ revision: "test", policy }),
+      replace: (_revision, next) => {
+        policy = next;
+        return { revision: "test", policy };
+      },
+    });
+    const mode = createCodeMode({
+      runner,
+      executor: new ActionExecutor(permissions),
+      actions: [
+        {
+          permission: { resource: "fixture.read", revision: "1", approvalRequired: false },
+          description: {
+            name: "read",
+            description: "read",
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute() {
+            throw new Error("temporary");
+          },
+        },
+      ],
+    });
+    if (!mode.action) throw new Error("missing code action");
+    const owner = { kind: "test", id: "failure-source" };
+    const result = await mode.action.execute(
+      {
+        script:
+          'try{await tools.read({});}catch(error){return {conclusion:error.code};} return {conclusion:"unexpected"};',
+      },
+      { owner, signal: new AbortController().signal },
+    );
+    expect(result.value).toMatchObject({
+      status: "ok",
+      conclusion: "CODE_TOOL_FAILED",
+      calls: 0,
+      failedCalls: 1,
+    });
+    expect(result.sources).toHaveLength(1);
+    expect(result.sources[0]).toMatchObject({ kind: "tool_permission", id: "fixture.read" });
+    expect(permissions.sourceAccess(result.sources[0], owner)).toBe("available");
+    permissions.replace("test", { version: 1, grants: [] });
+    expect(permissions.sourceAccess(result.sources[0], owner)).toBe("revoked");
+  });
+
+  it("charges recoverable error envelopes to the cumulative transfer limit", async () => {
+    const mode = createCodeMode({
+      runner,
+      limits: { maxTransferBytes: 10 },
+      actions: [
+        {
+          description: {
+            name: "read",
+            description: "read",
+            capability: "fixture",
+            effect: "read",
+            parameters: {},
+          },
+          async execute() {
+            throw new Error("temporary");
+          },
+        },
+      ],
+    });
+    if (!mode.action) throw new Error("missing code action");
+    const result = await mode.action.execute(
+      { script: 'try{await tools.read({});}catch{} return {conclusion:"ok"};' },
+      { owner: { kind: "test", id: "error-budget" }, signal: new AbortController().signal },
+    );
+    expect(result.value).toMatchObject({ status: "unavailable", code: "CODE_TRANSFER_LIMIT" });
   });
 
   it("has no host globals, filesystem, network or process bridge", async () => {

@@ -59,6 +59,8 @@ Optional research uses the same Runtime with a read-only subset of the parent's 
 
 Default limits are 20 seconds, 32 MiB of guest allocations, a 256 KiB guest stack, 1 MiB of cumulative JSON transfers, 32 tool calls and 4,000 conclusion characters. Each script has a configurable tool concurrency limit (default 3, range 1–8); excess calls queue, sequential awaits remain sequential, and parallel results retain their originating call IDs. Cancellation stops the queue and discards late results. The allocation bound is not a process-wide RSS limit. Cancellation terminates the Worker even while guest code loops or awaits an unresolved promise. Results with outstanding tool calls are rejected; late callbacks cannot reopen closed bindings. Every result retains source checks and permission checks. The protected context stores scripts and conclusions; the `agent.code` span records mode, bindings, call counts, duration and failure code without duplicating raw tool data.
 
+Ordinary tool exceptions reach the guest as rejected promises carrying a bounded code and generic message, after the shared executor revalidates authority. Scripts may catch them and retry within the original call, time and transfer budgets; there is no automatic retry. Permission, source, cancellation, budget and protocol failures stop execution and cancel sibling work. Caught failure observations retain grant provenance, and traces count failed calls without copying host exception details.
+
 Compiled services explicitly embed the worker entrypoint with a fixed project root and compile-time path selection. The WebAssembly variant embeds its bytes, so no runtime download or interpreter file lookup is required.
 
 ## JavaScript 沙箱
@@ -66,6 +68,8 @@ Compiled services explicitly embed the worker entrypoint with a fixed project ro
 `quickjs-runner.ts` 管理 Worker、JSON 桥、截止时间与终止；`quickjs-worker.ts` 管理 QuickJS guest。guest 没有主机文件系统、网络、环境、进程或模块加载接口，只有获准的只读工具通过 JSON 交互。脚本是异步 JavaScript 函数体，使用 `await tools["name"]({...})`，返回 `{conclusion, refs?}`。宿主工具保留自身授权范围内的资源访问，guest 没有网络接口不代表远程工具不联网。
 
 默认限制为20秒、32 MiB guest分配、256 KiB guest栈、1 MiB累计JSON传输、32次工具调用和4000字符结论。每段脚本的工具并发上限可配（默认3、范围1–8），超出排队，逐次await保持串行，并发结果按原调用ID匹配；取消停止排队并丢弃迟到结果。分配限制不是整个应用的RSS上限。取消会终止Worker，可打断忙循环和未决Promise；有未完成工具调用时拒绝结论，迟到回调不能重新开放绑定。权限与来源仍逐次复验。脚本和结论保存在受保护上下文中，`agent.code`跨度仅保存模式、绑定表、次数、耗时和失败码，不复制原始工具数据。
+
+普通工具异常经统一执行器复验授权后，以带有限长度错误码和通用消息的Promise拒绝返回guest。脚本可捕获并在原调用次数、时间与传输预算内重试，系统不自动重试；权限、来源、取消、预算及协议错误终止执行并取消并发工作。捕获失败得到的观测仍携带授权来源，追踪记录失败次数，不复制宿主异常详情。
 
 编译服务显式嵌入Worker入口并固定项目根与编译期路径；WASM字节包含在变体内，不在运行时下载或寻找外部解释器文件。
 

@@ -78,12 +78,25 @@ export class ActionExecutor {
     action: BuiltInAction,
     arguments_: Record<string, unknown>,
     context: ActionContext,
-    options: { mode?: ExecutionMode; assertCurrent?: () => void; approvalKey?: string } = {},
+    options: {
+      mode?: ExecutionMode;
+      assertCurrent?: () => void;
+      approvalKey?: string;
+      mapToolError?: (error: unknown) => unknown;
+    } = {},
   ) {
+    // An action cannot swallow a failed checkpoint and turn it into a recoverable tool error.
+    let authorityFailure: { error: unknown } | undefined;
     const check = () => {
-      context.signal.throwIfAborted();
-      options.assertCurrent?.();
-      this.assert(action, context, options.mode, options.approvalKey);
+      if (authorityFailure) throw authorityFailure.error;
+      try {
+        context.signal.throwIfAborted();
+        options.assertCurrent?.();
+        this.assert(action, context, options.mode, options.approvalKey);
+      } catch (error) {
+        authorityFailure = { error };
+        throw error;
+      }
     };
     check();
     let result: Awaited<ReturnType<BuiltInAction["execute"]>>;
@@ -91,7 +104,7 @@ export class ActionExecutor {
       result = await action.execute(arguments_, { ...context, assertAuthority: check });
     } catch (error) {
       check();
-      throw error;
+      throw options.mapToolError ? options.mapToolError(error) : error;
     }
     check();
     return {

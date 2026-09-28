@@ -150,6 +150,36 @@ describe("shared permission policy", () => {
     });
   });
 
+  it("never maps a caught authority failure into a recoverable tool error", async () => {
+    const h = setup();
+    h.replace(allow());
+    let valid = true;
+    let mapped = 0;
+    const target: BuiltInAction = {
+      ...action(),
+      async execute(_args, context) {
+        valid = false;
+        try {
+          context.assertAuthority?.();
+        } catch {}
+        valid = true;
+        throw new Error("ordinary-looking failure");
+      },
+    };
+    await expect(
+      h.executor.execute(target, {}, context, {
+        assertCurrent() {
+          if (!valid) throw new Error("authority lost");
+        },
+        mapToolError(error) {
+          mapped++;
+          return error;
+        },
+      }),
+    ).rejects.toThrow("authority lost");
+    expect(mapped).toBe(0);
+  });
+
   it("filters runtime tool advertisements and cannot let model output widen its grant", async () => {
     const h = setup();
     const db = openBusinessDb();

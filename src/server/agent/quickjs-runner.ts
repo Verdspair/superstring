@@ -1,7 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { z } from "zod";
 import { SourceRefSchema } from "../../shared/contracts/evidence";
-import type { CodeRunner, CodeRunResult } from "./code-runner";
+import { type CodeRunner, type CodeRunResult, CodeToolError } from "./code-runner";
 import type { SandboxInput, SandboxMessage, SandboxResponse } from "./quickjs-worker";
 
 const ResultSchema = z.strictObject({
@@ -61,7 +61,19 @@ export function createQuickJsCodeRunner(): CodeRunner {
           void (async () => {
             input.signal.throwIfAborted();
             if (Date.now() >= deadline) throw fail("CODE_TIMEOUT");
-            const result = await input.bindings[call.name](call.args);
+            let result: unknown;
+            try {
+              result = await input.bindings[call.name](call.args);
+            } catch (error) {
+              if (!(error instanceof CodeToolError)) throw error;
+              if (closed) return;
+              input.signal.throwIfAborted();
+              if (Date.now() >= deadline) throw fail("CODE_TIMEOUT");
+              const detail = { code: error.code, message: error.message };
+              count(JSON.stringify(detail));
+              worker.postMessage({ id: call.id, error: detail } satisfies SandboxResponse);
+              return;
+            }
             if (closed) return;
             input.signal.throwIfAborted();
             const json = JSON.stringify(result);

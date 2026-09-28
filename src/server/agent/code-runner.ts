@@ -27,6 +27,19 @@ export const CODE_RUN_DEFAULT_LIMITS: CodeRunnerLimits = Object.freeze({
  */
 export type CodeRunnerBinding = (arguments_: Record<string, unknown>) => Promise<unknown>;
 
+export class CodeToolError extends Error {
+  readonly code: string;
+  constructor(error: unknown) {
+    const value = error instanceof Error && "code" in error ? error.code : undefined;
+    const code =
+      typeof value === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(value)
+        ? value
+        : "CODE_TOOL_FAILED";
+    super(`Tool call failed (${code})`);
+    this.code = code;
+  }
+}
+
 export interface CodeRunResult {
   readonly conclusion: string;
   /** 结论引用的来源：作为观测的来源随结果一起记（引用不是授权，读取侧仍会复验）。 */
