@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
@@ -57,6 +57,7 @@ describe("execution configuration", () => {
       code: false,
       tasks: { concurrency: 2, retentionHours: 24, leaseSeconds: 30, pollMs: 500 },
       researchLimits: { maxPerRun: 2, maxSteps: 6, deadlineMs: 60_000, maxConclusionChars: 4_000 },
+      codeLimits: { concurrency: 3 },
       loop: { maxSteps: 16, readBatch: 3, noProgress: 3, concurrency: 4, modelConcurrency: 1 },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
     });
@@ -67,9 +68,16 @@ describe("execution configuration", () => {
       { tasks: { retentionHours: 0.001 } },
       { researchLimits: { maxSteps: 7 } },
       { codeLimits: { memoryBytes: 1_024 } },
+      { codeLimits: { concurrency: 0 } },
+      { codeLimits: { concurrency: 9 } },
+      { codeLimits: { concurrency: 1.5 } },
       { qq: { maxAttempts: 0 } },
     ])
       expect(ExecutionPolicySchema.safeParse(invalid).success).toBe(false);
+    for (const concurrency of [1, 8])
+      expect(
+        ExecutionPolicySchema.parse({ codeLimits: { concurrency } }).codeLimits.concurrency,
+      ).toBe(concurrency);
     const partial = PermissionPolicySchema.parse({
       version: 1,
       grants: [],
@@ -128,6 +136,59 @@ describe("execution configuration", () => {
       ).status,
     ).toBe(409);
   });
+
+  it.each([false, true])(
+    "defaults legacy code concurrency and preserves other settings through GET/PUT with code=%s",
+    async (code) => {
+      const dir = mkdtempSync(path.join(tmpdir(), "exec-config-"));
+      dirs.push(dir);
+      const file = path.join(dir, "permissions.json");
+      const codeLimits = {
+        timeoutMs: 7_000,
+        maxCalls: 7,
+        memoryBytes: 33_554_433,
+        maxTransferBytes: 1_048_577,
+        maxConclusionChars: 2_000,
+      };
+      writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          grants: [],
+          execution: { code, codeLimits, tasks: { concurrency: 4 }, loop: { readBatch: 1 } },
+        }),
+      );
+      const service = new PermissionService(new FilePermissionStore(file));
+      const app = new Hono();
+      app.onError(handleError);
+      app.route(
+        "/v2/permissions",
+        permissionRoutes(service, () => []),
+      );
+      const initial = await (await app.request("/v2/permissions")).json();
+      expect(initial.policy.execution.code).toBe(code);
+      expect(initial.policy.execution.codeLimits).toEqual({ ...codeLimits, concurrency: 3 });
+      const policy = {
+        ...initial.policy,
+        execution: {
+          ...initial.policy.execution,
+          codeLimits: { ...initial.policy.execution.codeLimits, concurrency: 5 },
+        },
+      };
+      const response = await app.request("/v2/permissions", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedRevision: initial.revision, policy }),
+      });
+      expect(response.status).toBe(200);
+      const saved = await response.json();
+      expect(saved.policy).toEqual(policy);
+      expect(saved.revision).not.toBe(initial.revision);
+      const reread = await (await app.request("/v2/permissions")).json();
+      expect(reread.policy).toEqual(policy);
+      expect(reread.revision).toBe(saved.revision);
+    },
+  );
 
   it("reads task retention, concurrency and lease from the live configuration", async () => {
     const handle = openBusinessDb();
@@ -249,14 +310,18 @@ describe("execution configuration", () => {
   });
 
   it("passes the configured sandbox limits to the runner and keeps the conclusion bound", async () => {
-    const seen: { timeoutMs: number; maxCalls: number }[] = [];
+    const seen: { timeoutMs: number; maxCalls: number; concurrency: number }[] = [];
     const mode = createCodeMode({
       actions: [readAction("fixture.tool")],
-      limits: { timeoutMs: 5_000, maxCalls: 7, maxConclusionChars: 5 },
+      limits: { timeoutMs: 5_000, maxCalls: 7, concurrency: 5, maxConclusionChars: 5 },
       runner: {
         available: true,
         async run({ limits }) {
-          seen.push({ timeoutMs: limits.timeoutMs, maxCalls: limits.maxCalls });
+          seen.push({
+            timeoutMs: limits.timeoutMs,
+            maxCalls: limits.maxCalls,
+            concurrency: limits.concurrency,
+          });
           return { conclusion: "123456" };
         },
       },
@@ -267,7 +332,7 @@ describe("execution configuration", () => {
       signal: new AbortController().signal,
     };
     const result = await mode.action.execute({ script: "return 1" }, context);
-    expect(seen[0]).toEqual({ timeoutMs: 5_000, maxCalls: 7 });
+    expect(seen[0]).toEqual({ timeoutMs: 5_000, maxCalls: 7, concurrency: 5 });
     expect(result.value).toMatchObject({
       status: "unavailable",
       code: "CODE_CONCLUSION_TOO_LARGE",

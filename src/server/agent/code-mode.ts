@@ -49,7 +49,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
         .map((tool) => tool.name)
         .join(
           ", ",
-        )}. Return {conclusion: "short factual conclusion", refs?: []}; do not return raw tool data. No filesystem, network, imports, process or timers are available.`,
+        )}. Independent calls may use Promise.all, bounded to ${limits.concurrency} concurrent calls. Return {conclusion: "short factual conclusion", refs?: []}; do not return raw tool data. No filesystem, network, imports, process or timers are available.`,
 
       parameters: z.toJSONSchema(RunSchema),
     },
@@ -112,6 +112,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
           orchestration: "code",
           bindings: Object.keys(bindings).join(","),
           timeoutMs: limits.timeoutMs,
+          concurrency: limits.concurrency,
           memoryBytes: limits.memoryBytes,
           maxTransferBytes: limits.maxTransferBytes,
         },

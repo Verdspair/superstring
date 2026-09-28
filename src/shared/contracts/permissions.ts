@@ -32,6 +32,7 @@ export const ExecutionResearchLimitsSchema = z.strictObject({
 export const ExecutionCodeLimitsSchema = z.strictObject({
   timeoutMs: z.number().int().min(1_000).max(120_000).default(20_000),
   maxCalls: z.number().int().min(1).max(128).default(32),
+  concurrency: z.number().int().min(1).max(8).default(3),
   /** QuickJS guest 分配上限；不是整个进程 RSS。 */
   memoryBytes: z.number().int().min(8_388_608).max(134_217_728).default(33_554_432),
   maxTransferBytes: z.number().int().min(65_536).max(8_388_608).default(1_048_576),

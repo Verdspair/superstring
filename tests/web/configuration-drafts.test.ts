@@ -95,9 +95,22 @@ describe("configuration fidelity", () => {
     const policy = ExecutionPolicySchema.parse({
       modules: { skills: false, tasks: false, qqMedia: false },
       pausedTools: ["mcp.demo.first"],
-      codeLimits: { memoryBytes: 33_554_433, maxTransferBytes: 1_048_577 },
+      codeLimits: { concurrency: 5, memoryBytes: 33_554_433, maxTransferBytes: 1_048_577 },
       tasks: { retentionHours: 1 / 60 },
     });
-    expect(executionPayload(executionDraftOf(policy))).toEqual({ ok: true, execution: policy });
+    const draft = executionDraftOf(policy);
+    expect(draft.codeConcurrency).toBe("5");
+    expect(executionPayload(draft)).toEqual({ ok: true, execution: policy });
   });
+
+  it.each(["0", "9", "1.5", "", "invalid", "Infinity"])(
+    "locates invalid code concurrency %j on its draft field",
+    (codeConcurrency) => {
+      const draft = executionDraftOf(ExecutionPolicySchema.parse({}));
+      expect(executionPayload({ ...draft, codeConcurrency })).toEqual({
+        ok: false,
+        problem: "codeConcurrency",
+      });
+    },
+  );
 });

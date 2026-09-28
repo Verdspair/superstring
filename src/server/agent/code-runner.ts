@@ -7,6 +7,7 @@ export interface CodeRunnerLimits {
   readonly maxConclusionChars: number;
   /** 脚本最多能调用几次工具。 */
   readonly maxCalls: number;
+  readonly concurrency: number;
   readonly memoryBytes: number;
   readonly maxTransferBytes: number;
 }
@@ -15,6 +16,7 @@ export const CODE_RUN_DEFAULT_LIMITS: CodeRunnerLimits = Object.freeze({
   timeoutMs: 20_000,
   maxConclusionChars: 4_000,
   maxCalls: 32,
+  concurrency: 3,
   memoryBytes: 32 * 1024 * 1024,
   maxTransferBytes: 1024 * 1024,
 });

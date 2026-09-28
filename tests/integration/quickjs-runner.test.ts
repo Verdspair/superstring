@@ -147,6 +147,187 @@ describe("QuickJS WASM isolated runner", () => {
     expect(result).toEqual({ conclusion: "total=6" });
     expect(names).toEqual(["1", "2", "3"]);
   });
+  it.each([1, 2, 3, 8])(
+    "bounds Promise.all tool calls to %s concurrent bindings",
+    async (concurrency) => {
+      const started: number[] = [];
+      const released = Array.from({ length: 10 }, () => Promise.withResolvers<void>());
+      const firstBatch = Promise.withResolvers<void>();
+      let active = 0;
+      let peak = 0;
+      const result = run(
+        "const values=await Promise.all(Array.from({length:10},(_,id)=>tools.read({id}))); return {conclusion:JSON.stringify(values)};",
+        {
+          limits: { concurrency, timeoutMs: 2000 },
+          bindings: {
+            read: async ({ id }) => {
+              const index = Number(id);
+              started.push(index);
+              peak = Math.max(peak, ++active);
+              if (started.length === concurrency) firstBatch.resolve();
+              await released[index].promise;
+              active--;
+              return index;
+            },
+          },
+        },
+      );
+      try {
+        await Promise.race([
+          firstBatch.promise,
+          result.then(() => {
+            throw new Error("missing first batch");
+          }),
+        ]);
+        expect(started).toEqual(Array.from({ length: concurrency }, (_, i) => i));
+        for (const gate of released.toReversed()) gate.resolve();
+        expect(await result).toEqual({
+          conclusion: JSON.stringify(Array.from({ length: 10 }, (_, i) => i)),
+        });
+        expect(peak).toBe(concurrency);
+        expect(active).toBe(0);
+      } finally {
+        for (const gate of released) gate.resolve();
+      }
+    },
+  );
+
+  it("keeps awaited calls sequential and does not share mutable results", async () => {
+    let active = 0;
+    let peak = 0;
+    const data = { count: 2 };
+    expect(
+      await run(
+        "let sum=0; for(let i=0;i<3;i++){const value=await tools.read({}); sum+=value.count; value.count=99;} return {conclusion:String(sum)};",
+        {
+          limits: { concurrency: 3 },
+          bindings: {
+            read: async () => {
+              peak = Math.max(peak, ++active);
+              await Bun.sleep(5);
+              active--;
+              return data;
+            },
+          },
+        },
+      ),
+    ).toEqual({ conclusion: "6" });
+    expect(peak).toBe(1);
+    expect(data.count).toBe(2);
+  });
+
+  it("cancels active parallel calls without starting queued or late work", async () => {
+    const controller = new AbortController();
+    const ready = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let started = 0;
+    const result = run(
+      'await Promise.all(Array.from({length:6},()=>tools.read({}))); return {conclusion:"late"};',
+      {
+        signal: controller.signal,
+        limits: { concurrency: 2 },
+        bindings: {
+          read: async () => {
+            if (++started === 2) ready.resolve();
+            await release.promise;
+            return "late";
+          },
+        },
+      },
+    ).catch((error: unknown) => error);
+    try {
+      await Promise.race([
+        ready.promise,
+        result.then(() => {
+          throw new Error("missing parallel calls");
+        }),
+      ]);
+      controller.abort(new Error("parallel cancelled"));
+      expect(await result).toMatchObject({ message: "parallel cancelled" });
+      release.resolve();
+      await Bun.sleep(10);
+      expect(started).toBe(2);
+      expect(await run('return {conclusion:"clean"};')).toEqual({ conclusion: "clean" });
+    } finally {
+      release.resolve();
+    }
+  });
+
+  it("matches out-of-order parallel responses to their originating calls", async () => {
+    const ready = Promise.withResolvers<void>();
+    const slow = Promise.withResolvers<void>();
+    const done: number[] = [];
+    const result = run(
+      "const values=await Promise.all([tools.read({id:0}),tools.read({id:1})]); return {conclusion:JSON.stringify(values)};",
+      {
+        limits: { concurrency: 2 },
+        bindings: {
+          read: async ({ id }) => {
+            if (id === 0) await slow.promise;
+            else ready.resolve();
+            done.push(Number(id));
+            return id;
+          },
+        },
+      },
+    );
+    try {
+      await Promise.race([
+        ready.promise,
+        result.then(() => {
+          throw new Error("second call never started");
+        }),
+      ]);
+      expect(done).toEqual([1]);
+      slow.resolve();
+      expect(await result).toEqual({ conclusion: "[0,1]" });
+      expect(done).toEqual([1, 0]);
+    } finally {
+      slow.resolve();
+    }
+  });
+
+  it("stops queued calls after an active binding fails", async () => {
+    const entered = Promise.withResolvers<void>();
+    const failFirst = Promise.withResolvers<void>();
+    const releaseSlow = Promise.withResolvers<void>();
+    const started: number[] = [];
+    const result = run(
+      'await Promise.all(Array.from({length:5},(_,id)=>tools.read({id}))); return {conclusion:"unexpected"};',
+      {
+        limits: { concurrency: 2 },
+        bindings: {
+          read: async ({ id }) => {
+            started.push(Number(id));
+            if (started.length === 2) entered.resolve();
+            if (id === 0) {
+              await failFirst.promise;
+              throw new Error("synthetic failure");
+            }
+            await releaseSlow.promise;
+            return id;
+          },
+        },
+      },
+    ).catch((error: unknown) => error);
+    try {
+      await Promise.race([
+        entered.promise,
+        result.then(() => {
+          throw new Error("missing active calls");
+        }),
+      ]);
+      failFirst.resolve();
+      expect(await result).toMatchObject({ message: "synthetic failure" });
+      releaseSlow.resolve();
+      await Bun.sleep(10);
+      expect(started).toEqual([0, 1]);
+    } finally {
+      failFirst.resolve();
+      releaseSlow.resolve();
+    }
+  });
+
   it("has no host globals, filesystem, network or process bridge", async () => {
     expect(
       await run(`return {conclusion: JSON.stringify([

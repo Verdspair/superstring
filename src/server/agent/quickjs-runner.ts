@@ -51,7 +51,31 @@ export function createQuickJsCodeRunner(): CodeRunner {
       const timer = setTimeout(() => finish(fail("CODE_TIMEOUT")), input.limits.timeoutMs);
       input.signal.addEventListener("abort", abort, { once: true });
       if (input.signal.aborted) abort();
-      let pending = Promise.resolve();
+      const queue: { id: number; name: string; args: Record<string, unknown> }[] = [];
+      let active = 0;
+      const drain = () => {
+        while (!closed && active < input.limits.concurrency && queue.length) {
+          const call = queue.shift();
+          if (!call) break;
+          active++;
+          void (async () => {
+            input.signal.throwIfAborted();
+            if (Date.now() >= deadline) throw fail("CODE_TIMEOUT");
+            const result = await input.bindings[call.name](call.args);
+            if (closed) return;
+            input.signal.throwIfAborted();
+            const json = JSON.stringify(result);
+            if (json === undefined) throw fail("CODE_INVALID_RESULT");
+            count(json);
+            worker.postMessage({ id: call.id, json } satisfies SandboxResponse);
+          })()
+            .catch((error: unknown) => finish(error))
+            .finally(() => {
+              active--;
+              drain();
+            });
+        }
+      };
       worker.on("message", (message: SandboxMessage) => {
         if (closed) return;
         if (message.type === "error") {
@@ -59,47 +83,35 @@ export function createQuickJsCodeRunner(): CodeRunner {
           return;
         }
         try {
+          input.signal.throwIfAborted();
+          if (Date.now() >= deadline) throw fail("CODE_TIMEOUT");
           count(message.json);
+          if (message.type === "result") {
+            if (active || queue.length) throw fail("CODE_PENDING_CALLS");
+            const parsed = ResultSchema.safeParse(JSON.parse(message.json));
+            if (!parsed.success || !parsed.data.conclusion.trim())
+              throw fail("CODE_INVALID_RESULT");
+            if ([...parsed.data.conclusion].length > input.limits.maxConclusionChars)
+              throw fail("CODE_CONCLUSION_TOO_LARGE");
+            finish(undefined, parsed.data);
+            return;
+          }
+          if (++calls > input.limits.maxCalls) throw fail("CODE_CALL_LIMIT");
+          if (!Object.hasOwn(input.bindings, message.name)) throw fail("CODE_TOOL_DENIED");
+          const args: unknown = JSON.parse(message.json);
+          if (args === null || typeof args !== "object" || Array.isArray(args))
+            throw fail("CODE_INVALID_ARGUMENTS");
+          queue.push({ id: message.id, name: message.name, args: args as Record<string, unknown> });
+          drain();
         } catch (error) {
           finish(error);
-          return;
         }
-        pending = pending
-          .then(async () => {
-            if (closed) return;
-            input.signal.throwIfAborted();
-            if (Date.now() >= deadline) throw fail("CODE_TIMEOUT");
-            if (message.type === "result") {
-              const parsed = ResultSchema.safeParse(JSON.parse(message.json));
-              if (!parsed.success || !parsed.data.conclusion.trim())
-                throw fail("CODE_INVALID_RESULT");
-              if ([...parsed.data.conclusion].length > input.limits.maxConclusionChars)
-                throw fail("CODE_CONCLUSION_TOO_LARGE");
-              finish(undefined, parsed.data);
-              return;
-            }
-            if (++calls > input.limits.maxCalls) throw fail("CODE_CALL_LIMIT");
-            if (!Object.hasOwn(input.bindings, message.name)) throw fail("CODE_TOOL_DENIED");
-            const args: unknown = JSON.parse(message.json);
-            if (args === null || typeof args !== "object" || Array.isArray(args))
-              throw fail("CODE_INVALID_ARGUMENTS");
-            const result = await input.bindings[message.name](args as Record<string, unknown>);
-            if (closed) return;
-            input.signal.throwIfAborted();
-            const json = JSON.stringify(result);
-            if (json === undefined) throw fail("CODE_INVALID_RESULT");
-            count(json);
-            worker.postMessage({ id: message.id, json } satisfies SandboxResponse);
-          })
-          .catch((error: unknown) => finish(error));
       });
       worker.on("error", (error) =>
         finish(Object.assign(fail("CODE_WORKER_FAILED"), { cause: error })),
       );
       worker.on("exit", () => {
-        void pending.then(() => {
-          if (!closed) finish(fail("CODE_WORKER_EXITED"));
-        });
+        if (!closed) finish(fail("CODE_WORKER_EXITED"));
       });
       try {
         return await outcome.promise;
@@ -107,6 +119,7 @@ export function createQuickJsCodeRunner(): CodeRunner {
         clearTimeout(timer);
         input.signal.removeEventListener("abort", abort);
         closed = true;
+        queue.length = 0;
         await worker.terminate();
       }
     },

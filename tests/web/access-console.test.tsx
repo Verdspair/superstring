@@ -81,6 +81,7 @@ const permissions: PermissionsResponse = {
       codeLimits: {
         timeoutMs: 20_000,
         maxCalls: 32,
+        concurrency: 3,
         memoryBytes: 33_554_432,
         maxTransferBytes: 1_048_576,
         maxConclusionChars: 4_000,
@@ -392,16 +393,52 @@ describe("execution settings", () => {
     expect(screen.getByRole("status").textContent).toContain("执行设置已保存");
   });
 
-  it("marks an out-of-range field instead of sending it", async () => {
-    const save = vi.fn();
+  it("saves code concurrency without enabling code or changing other settings", async () => {
+    const save = vi.fn(async ({ policy }: Parameters<typeof api.savePermissions>[0]) => ({
+      revision: "pr-2",
+      policy,
+    }));
     await renderWith(
       { getPermissions: vi.fn().mockResolvedValue(permissions), savePermissions: save },
       <ExecutionSettings />,
     );
-    fireEvent.change(screen.getByLabelText("只读并行上限"), { target: { value: "9" } });
+    const concurrency = screen.getByLabelText("每段脚本的工具并发上限") as HTMLInputElement;
+    expect(concurrency.value).toBe("3");
+    fireEvent.change(concurrency, { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
     await act(async () => {});
-    expect(save).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: "pr-1",
+      policy: {
+        ...permissions.policy,
+        execution: {
+          ...permissions.policy.execution,
+          code: false,
+          codeLimits: { ...permissions.policy.execution?.codeLimits, concurrency: 5 },
+        },
+      },
+    });
+    expect(concurrency.value).toBe("5");
+    expect(screen.getByRole("status").textContent).toContain("执行设置已保存");
   });
+
+  it.each(["只读并行上限", "每段脚本的工具并发上限"])(
+    "marks out-of-range %s instead of sending it",
+    async (label) => {
+      const save = vi.fn();
+      await renderWith(
+        { getPermissions: vi.fn().mockResolvedValue(permissions), savePermissions: save },
+        <ExecutionSettings />,
+      );
+      const input = screen.getByLabelText(label) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: "9" } });
+      fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+      await act(async () => {});
+      expect(save).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      expect(input.value).toBe("9");
+    },
+  );
 });

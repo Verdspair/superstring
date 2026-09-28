@@ -26,6 +26,7 @@ export interface ExecutionDraft {
   researchMaxConclusionChars: string;
   codeTimeoutMs: string;
   codeMaxCalls: string;
+  codeConcurrency: string;
   codeMemoryMiB: string;
   codeTransferKiB: string;
   codeMaxConclusionChars: string;
@@ -61,6 +62,7 @@ export function executionDraftOf(execution: ExecutionPolicy): ExecutionDraft {
     researchMaxConclusionChars: String(execution.researchLimits.maxConclusionChars),
     codeTimeoutMs: String(execution.codeLimits.timeoutMs),
     codeMaxCalls: String(execution.codeLimits.maxCalls),
+    codeConcurrency: String(execution.codeLimits.concurrency),
     codeMemoryMiB: String(execution.codeLimits.memoryBytes / MEBIBYTE),
     codeTransferKiB: String(execution.codeLimits.maxTransferBytes / KIBIBYTE),
     codeMaxConclusionChars: String(execution.codeLimits.maxConclusionChars),
@@ -110,6 +112,7 @@ export function executionPayload(
     codeLimits: {
       timeoutMs: number("codeTimeoutMs"),
       maxCalls: number("codeMaxCalls"),
+      concurrency: number("codeConcurrency"),
       memoryBytes: number("codeMemoryMiB") * MEBIBYTE,
       maxTransferBytes: number("codeTransferKiB") * KIBIBYTE,
       maxConclusionChars: number("codeMaxConclusionChars"),
@@ -158,6 +161,7 @@ export const NUMERIC_KEYS: readonly ExecutionDraftKey[] = [
   "researchMaxConclusionChars",
   "codeTimeoutMs",
   "codeMaxCalls",
+  "codeConcurrency",
   "codeMemoryMiB",
   "codeTransferKiB",
   "codeMaxConclusionChars",
@@ -187,6 +191,7 @@ export function draftKeyPath(key: ExecutionDraftKey): string {
     researchMaxConclusionChars: "researchLimits.maxConclusionChars",
     codeTimeoutMs: "codeLimits.timeoutMs",
     codeMaxCalls: "codeLimits.maxCalls",
+    codeConcurrency: "codeLimits.concurrency",
     codeMemoryMiB: "codeLimits.memoryBytes",
     codeTransferKiB: "codeLimits.maxTransferBytes",
     codeMaxConclusionChars: "codeLimits.maxConclusionChars",

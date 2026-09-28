@@ -105,6 +105,8 @@
   "connections.enterAValidIntegerWithinTheAllowedRange": "Enter a valid integer within the allowed range",
   "connections.execution.code": "Local programmatic tool calling (PTC)",
   "connections.execution.codeGroup": "Code sandbox (QuickJS)",
+  "connections.execution.codeConcurrency": "Concurrent tool calls per script",
+  "connections.execution.codeConcurrencyHint": "1–8, default 3; additional calls queue. New tasks read this limit; current tasks retain it. Sequential awaits remain sequential; only authorized read-only tools can run concurrently.",
   "connections.execution.codeHint": "The model writes JavaScript for local QuickJS execution, not a provider-hosted container. Also requires this model's local sandbox opt-in. Switching off lets the current task finish and prevents later tasks from creating a sandbox. Tool grants always apply.",
   "connections.execution.codeMaxCalls": "Tool calls",
   "connections.execution.codeMaxCallsHint": "1–128",

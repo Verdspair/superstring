@@ -105,6 +105,8 @@
   "connections.enterAValidIntegerWithinTheAllowedRange": "请输入范围内的有效整数",
   "connections.execution.code": "本地程序化工具调用（PTC）",
   "connections.execution.codeGroup": "代码沙箱（QuickJS）",
+  "connections.execution.codeConcurrency": "每段脚本的工具并发上限",
+  "connections.execution.codeConcurrencyHint": "1–8，默认 3；多出的调用排队。新任务读取，当前任务保持原值；逐次 await 仍串行，只有获准的只读工具可并发。",
   "connections.execution.codeHint": "模型生成 JavaScript，由本机 QuickJS 执行，不使用供应商托管容器。还需为该模型开启本机沙箱许可；关闭后当前任务完成，后续任务不再创建沙箱。工具授权始终生效。",
   "connections.execution.codeMaxCalls": "工具调用次数",
   "connections.execution.codeMaxCallsHint": "1–128",

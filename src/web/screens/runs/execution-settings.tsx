@@ -63,6 +63,11 @@ const researchFields: NumericField[] = [
 ];
 const codeFields: NumericField[] = [
   {
+    key: "codeConcurrency",
+    label: "connections.execution.codeConcurrency",
+    info: "connections.execution.codeConcurrencyHint",
+  },
+  {
     key: "codeTimeoutMs",
     label: "connections.execution.codeTimeoutMs",
     info: "connections.execution.codeTimeoutMsHint",
