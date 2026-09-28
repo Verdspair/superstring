@@ -13,6 +13,7 @@ export interface ActionContext {
   runId?: string;
   requestId?: string;
   sources?: readonly SourceRef[];
+  assertAuthority?: () => void;
 }
 export interface BuiltInAction {
   description: ActionDescription;

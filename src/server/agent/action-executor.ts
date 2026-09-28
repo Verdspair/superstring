@@ -88,7 +88,7 @@ export class ActionExecutor {
     check();
     let result: Awaited<ReturnType<BuiltInAction["execute"]>>;
     try {
-      result = await action.execute(arguments_, context);
+      result = await action.execute(arguments_, { ...context, assertAuthority: check });
     } catch (error) {
       check();
       throw error;

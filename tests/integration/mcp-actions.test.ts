@@ -15,6 +15,7 @@ const config: McpServerConfig = {
   name: "Notes",
   transport: "stdio",
   enabled: true,
+  trustToolAnnotations: true,
   command: "unused",
   args: [],
   env: {},
@@ -106,6 +107,23 @@ describe("MCP uses shared permissions", () => {
       code: "PERMISSION_DENIED",
     });
     expect(h.calls()).toBe(1);
+  });
+
+  it("does not turn untrusted read-only hints into approval or sandbox permission", () => {
+    const h = setup();
+    const action = createMcpActions({
+      sources: [
+        { config: { ...config, trustToolAnnotations: false }, session: h.session, tools: [read] },
+      ],
+    })[0];
+    expect(action.permission?.approvalRequired).toBe(true);
+    expect(action.description.effect).toBe("write");
+    h.permissions.replace("1", {
+      version: 1,
+      grants: [{ resource: action.permission?.resource ?? "", approved: false, directories: [] }],
+    });
+    expect(h.executor.allowed(action, context)).toBe(false);
+    expect(h.executor.allowed(action, context, "sandbox")).toBe(false);
   });
 
   it("detects naming conflicts independently of grants", () => {

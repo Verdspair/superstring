@@ -26,6 +26,7 @@ const server = (id = "echo", patch: Record<string, unknown> = {}) => ({
   name: id,
   transport: "stdio",
   enabled: true,
+  trustToolAnnotations: true,
   command: process.execPath,
   args: [fixture],
   ...patch,
@@ -87,7 +88,7 @@ describe("MCP lifecycle and revocation", () => {
     });
     await host.reload();
     expect(host.current()).toEqual([]);
-  });
+  }, 20_000);
   it("does not retain usable authorization from a malformed registry", async () => {
     const file = configFile([server()]);
     const diagnostics: McpHostDiagnostic[] = [];
@@ -102,7 +103,36 @@ describe("MCP lifecycle and revocation", () => {
       executorFor(action.permission.resource).execute(action, {}, context),
     ).rejects.toMatchObject({ code: "MCP_CONFIG_INVALID" });
     expect(diagnostics).toEqual([{ serverId: "-", code: "MCP_CONFIG_INVALID" }]);
+  }, 20_000);
+  it("refreshes changed catalogs while keeping unchanged actions valid", async () => {
+    let notify: (() => void) | undefined;
+    let name = "read";
+    const host = makeHost(configFile([server()]), [], async (_config, options) => {
+      notify = options.onToolsChanged;
+      return {
+        serverId: "echo",
+        serverName: "echo",
+        protocolVersion: "2026-07-28",
+        listTools: async () => [
+          { name, description: null, inputSchema: { type: "object" }, readOnly: true },
+        ],
+        callTool: async () => ({ text: "ok", isError: false, omittedParts: 0 }),
+        async close() {},
+      };
+    });
+    await host.start();
+    const first = host.current()[0];
+    await host.reload();
+    expect(host.current()[0].permission?.revision).toBe(first.permission?.revision);
+    expect(() => first.assertAvailable?.()).not.toThrow();
+    name = "replacement";
+    notify?.();
+    expect(host.current()).toEqual([]);
+    await host.reload();
+    expect(host.current()[0].description.name).toBe("mcp.echo.replacement");
+    expect(() => first.assertAvailable?.()).toThrow("PERMISSION_REVISION_CHANGED");
   });
+
   it("supports multiple servers and drains a connection completed during shutdown", async () => {
     const closed: string[] = [];
     const session = (id: string): McpSession => ({

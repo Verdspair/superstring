@@ -48,6 +48,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.id === undefined) return; // 通知
   const reply = (result) => send({ jsonrpc: "2.0", id: message.id, result });
+  if (message.method === "server/discover" && process.argv.includes("--exit-before-initialize"))
+    process.exit(0);
   if (message.method === "initialize")
     return reply({
       protocolVersion: "2025-06-18",

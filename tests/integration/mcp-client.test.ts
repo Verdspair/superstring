@@ -27,7 +27,8 @@ const stdioServer: Extract<McpServerConfig, { transport: "stdio" }> = {
   id: "echo",
   name: "回声服务器",
   enabled: true,
-  timeoutMs: 5_000,
+  trustToolAnnotations: true,
+  timeoutMs: 10_000,
   maxResultChars: 8_000,
   transport: "stdio",
   command: process.execPath,
@@ -109,17 +110,40 @@ describe("MCP stdio 传输（0.4.0 P6）", () => {
     } finally {
       await session.close();
     }
-  });
+  }, 20_000);
+
+  it("旧进程拒绝预探测并退出时只重建一次后正常握手", async () => {
+    const session = await connectMcpServer({
+      ...stdioServer,
+      args: [fixture, "--exit-before-initialize"],
+    });
+    try {
+      expect(session.protocolVersion).toBe("2025-06-18");
+      expect(await session.listTools(new AbortController().signal)).toHaveLength(4);
+    } finally {
+      await session.close();
+    }
+  }, 20_000);
 
   it("不响应就按时超时，而不是一直等", async () => {
     // 握手要正常返回、只有 tools/list 拖住：这才是"请求级超时"，而不是"连不上"。
     const base = serve(async (request) => {
+      if (request.method === "GET") return new Response(null, { status: 405 });
       const message = (await request.json()) as { id: number; method: string };
+      if (message.method === "server/discover")
+        return Response.json(
+          { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" } },
+          { status: 400 },
+        );
       if (message.method === "initialize")
         return Response.json({
           jsonrpc: "2.0",
           id: message.id,
-          result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "slow" } },
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "slow", version: "1" },
+          },
         });
       if (message.method === "notifications/initialized")
         return new Response(null, { status: 202 });
@@ -145,13 +169,25 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
   it("Streamable HTTP：JSON 响应与 SSE 响应都能读，Authorization 从环境变量带出", async () => {
     const seen: string[] = [];
     const base = serve(async (request) => {
+      if (request.method === "GET") return new Response(null, { status: 405 });
       seen.push(request.headers.get("authorization") ?? "none");
       const message = (await request.json()) as { id: number; method: string; params?: unknown };
+      if (message.method === "server/discover")
+        return Response.json(
+          { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" } },
+          { status: 400 },
+        );
+      if (message.method === "notifications/initialized")
+        return new Response(null, { status: 202 });
       if (message.method === "initialize")
         return Response.json({
           jsonrpc: "2.0",
           id: message.id,
-          result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "http" } },
+          result: {
+            protocolVersion: "2024-11-05",
+            capabilities: { tools: {} },
+            serverInfo: { name: "http", version: "1" },
+          },
         });
       if (message.method === "tools/list") {
         // 这一次特意用 SSE 形状回答：客户端要能从事件流里把结果读出来。
@@ -205,15 +241,29 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
     const ids: number[] = [];
     let initialized = false;
     const base = serve(async (request) => {
+      if (request.method === "GET") return new Response(null, { status: 405 });
       const message = (await request.json()) as {
         id?: number;
         method: string;
         params?: { cursor?: string };
       };
       if (message.id !== undefined) ids.push(message.id);
+      if (message.method === "server/discover")
+        return Response.json(
+          { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" } },
+          { status: 400 },
+        );
       if (message.method === "initialize")
         return Response.json(
-          { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18" } },
+          {
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: "test", version: "1" },
+            },
+          },
           {
             headers: { "mcp-session-id": "synthetic-session" },
           },
@@ -234,8 +284,8 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
         id: message.id,
         result:
           message.params?.cursor === "page-2"
-            ? { tools: [{ name: "second" }] }
-            : { tools: [{ name: "first" }], nextCursor: "page-2" },
+            ? { tools: [{ name: "second", inputSchema: { type: "object" } }] }
+            : { tools: [{ name: "first", inputSchema: { type: "object" } }], nextCursor: "page-2" },
       });
     });
     const session = await connectMcpServer({
@@ -247,7 +297,7 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
       expect(
         (await session.listTools(new AbortController().signal)).map((tool) => tool.name),
       ).toEqual(["first", "second"]);
-      expect(new Set(ids).size).toBe(ids.length);
+      expect(new Set(ids.slice(1)).size).toBe(ids.length - 1);
     } finally {
       await session.close();
     }
@@ -255,28 +305,38 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
 
   it("HTTP SSE 收到结果后取消响应流，关闭连接会取消在途请求", async () => {
     let cancelled = 0;
+    const firstCancelled = Promise.withResolvers<void>();
+    const secondCancelled = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
     const fetchImpl = (async (_url, init) => {
       const message = JSON.parse(String(init?.body)) as { id?: number; method: string };
-      if (message.method === "initialize")
+      if (message.method === "server/discover")
         return Response.json({
           jsonrpc: "2.0",
           id: message.id,
-          result: { protocolVersion: "2025-06-18" },
+          result: {
+            resultType: "complete",
+            ttlMs: 0,
+            cacheScope: "private",
+            supportedVersions: ["2026-07-28"],
+            capabilities: { tools: {} },
+          },
         });
-      if (!message.id) return new Response(null, { status: 202 });
+      if (message.id === undefined) return new Response(null, { status: 202 });
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           if (message.method === "tools/list")
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { tools: [] } })}\n\n`,
+                `data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", ttlMs: 0, cacheScope: "private", tools: [{ name: "wait", inputSchema: { type: "object" } }] } })}\n\n`,
               ),
             );
           else entered.resolve();
         },
         cancel() {
           cancelled += 1;
+          if (cancelled === 1) firstCancelled.resolve();
+          else secondCancelled.resolve();
         },
       });
       return new Response(body, { headers: { "content-type": "text/event-stream" } });
@@ -286,6 +346,7 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
       { fetchImpl },
     );
     await session.listTools(new AbortController().signal);
+    await firstCancelled.promise;
     expect(cancelled).toBe(1);
     const request = session.callTool("wait", {}, new AbortController().signal).then(
       () => null,
@@ -294,6 +355,7 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
     await entered.promise;
     await session.close();
     expect(await request).toMatchObject({ code: "MCP_SERVER_GONE" });
+    await secondCancelled.promise;
     expect(cancelled).toBe(2);
   });
 
@@ -344,11 +406,24 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
       if (request.method === "POST" && url.pathname === "/messages") {
         const message = (await request.json()) as { id: number; method: string };
         received.push(message.method);
+        if (message.id === undefined) return new Response(null, { status: 202 });
         const result =
           message.method === "initialize"
-            ? { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "sse" } }
+            ? {
+                protocolVersion: "2024-11-05",
+                capabilities: { tools: {} },
+                serverInfo: { name: "sse", version: "1" },
+              }
             : message.method === "tools/list"
-              ? { tools: [{ name: "ping", annotations: { readOnlyHint: true } }] }
+              ? {
+                  tools: [
+                    {
+                      name: "ping",
+                      inputSchema: { type: "object" },
+                      annotations: { readOnlyHint: true },
+                    },
+                  ],
+                }
               : { content: [{ type: "text", text: "pong" }] };
         stream?.enqueue(
           encoder.encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`),

@@ -424,6 +424,21 @@ export function McpPanel() {
                   }
                 />
               </Field>
+              <Field
+                label="connections.mcp.trustToolAnnotations"
+                info="connections.mcp.trustToolAnnotationsHint"
+              >
+                <Checkbox
+                  checked={editor.draft.trustToolAnnotations === true}
+                  disabled={busy !== ""}
+                  onCheckedChange={(checked) =>
+                    setEditor({
+                      ...editor,
+                      draft: { ...editor.draft, trustToolAnnotations: checked === true },
+                    })
+                  }
+                />
+              </Field>
               {problem && (
                 <p role="alert" className="text-sm text-destructive">
                   {t(problemKeys[problem])}

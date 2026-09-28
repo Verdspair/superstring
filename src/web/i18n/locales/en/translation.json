@@ -252,6 +252,8 @@
   "connections.mcp.empty": "No MCP services registered. Without a registration nothing connects.",
   "connections.mcp.enabled": "Enabled",
   "connections.mcp.enabledHint": "New registrations start disabled; tools appear after enabling and reconnecting.",
+  "connections.mcp.trustToolAnnotations": "Trust this server's read-only annotations",
+  "connections.mcp.trustToolAnnotationsHint": "Off by default: treat all tools as potentially writing. Enable only for trusted servers to allow declared read-only tools in research and sandbox modes. Unified grants still apply; review grants again after changing this setting.",
   "connections.mcp.env": "Environment references (KEY=VALUE per line)",
   "connections.mcp.envHint": "Write values as $VAR references to host variables; never put real tokens in the registry.",
   "connections.mcp.maxResultChars": "Result character limit (1–200000)",

@@ -162,6 +162,22 @@ describe("MCP panel", () => {
     expect(payload.servers[1].authorizationEnv).toBe("SYNTHETIC_TOKEN");
   });
 
+  it("keeps annotation trust explicit and preserves it across edits", async () => {
+    const save = vi.fn().mockResolvedValue({ ...mcpStatus, revision: "rev-2" });
+    await renderWith(
+      { getMcpServers: vi.fn().mockResolvedValue(mcpStatus), saveMcpServers: save },
+      <McpPanel />,
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "管理" })[0]);
+    const control = screen.getByRole("checkbox", { name: "信任此服务的只读声明" });
+    expect(control.getAttribute("data-state")).toBe("unchecked");
+    fireEvent.click(control);
+    fireEvent.click(screen.getByRole("button", { name: "保存服务" }));
+    await act(async () => {});
+    expect(save.mock.calls[0][0].servers[0].trustToolAnnotations).toBe(true);
+    expect(save.mock.calls[0][0].servers[1]).toEqual(mcpStatus.servers[1].config);
+  });
+
   it("refuses an invalid entry before touching the server", async () => {
     const save = vi.fn();
     await renderWith(

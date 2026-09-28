@@ -252,6 +252,8 @@
   "connections.mcp.empty": "尚未登记 MCP 服务。没有登记时不会建立任何连接。",
   "connections.mcp.enabled": "启用",
   "connections.mcp.enabledHint": "新登记默认停用；启用并重新连接后才会发现工具。",
+  "connections.mcp.trustToolAnnotations": "信任此服务的只读声明",
+  "connections.mcp.trustToolAnnotationsHint": "默认关闭，所有工具按可能写入处理。仅对可信服务开启：其声明的只读工具可进入研究与沙箱，但仍需统一授权。修改后需重新核对工具授权。" ,
   "connections.mcp.env": "环境变量引用（每行 KEY=VALUE）",
   "connections.mcp.envHint": "值写成 $VAR 引用本机环境变量；不要把真实令牌写进登记。",
   "connections.mcp.maxResultChars": "结果字符上限（1–200000）",

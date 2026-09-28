@@ -9,6 +9,7 @@ export interface McpServerDraft {
   name: string;
   transport: "stdio" | "http" | "sse";
   enabled: boolean;
+  trustToolAnnotations: boolean | undefined;
   /** stdio：可执行文件、每行一个参数、每行 KEY=VALUE 的环境引用。 */
   command: string;
   args: string;
@@ -28,6 +29,7 @@ export function draftOf(config: McpServerConfig): McpServerDraft {
     name: config.name,
     transport: config.transport,
     enabled: config.enabled,
+    trustToolAnnotations: config.trustToolAnnotations,
     command: config.transport === "stdio" ? config.command : "",
     args: config.transport === "stdio" ? config.args.join("\n") : "",
     env:
@@ -49,6 +51,7 @@ export function emptyDraft(): McpServerDraft {
     name: "",
     transport: "stdio",
     enabled: false,
+    trustToolAnnotations: false,
     command: "",
     args: "",
     env: "",
@@ -90,6 +93,9 @@ export function serverPayload(
     id: draft.id.trim(),
     name: draft.name.trim(),
     enabled: draft.enabled,
+    ...(draft.trustToolAnnotations === undefined
+      ? {}
+      : { trustToolAnnotations: draft.trustToolAnnotations }),
     timeoutMs,
     maxResultChars,
   };

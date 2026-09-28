@@ -12,6 +12,7 @@ const serverCommon = {
   id: IdSchema,
   name: z.string().min(1).max(100),
   enabled: z.boolean().default(false),
+  trustToolAnnotations: z.boolean().optional(),
   /** 单次请求（含 tools/call）的墙钟上限。 */
   timeoutMs: z.number().int().min(100).max(120_000).default(15_000),
   /** 单次调用结果进入模型上下文前的字符上限；超了判失败，不截断。 */
@@ -91,6 +92,7 @@ export interface McpToolInfo {
   readonly name: string;
   readonly description: string | null;
   readonly inputSchema: Record<string, unknown>;
+  readonly outputSchema?: Record<string, unknown>;
   readonly readOnly: boolean;
 }
 
@@ -99,4 +101,5 @@ export interface McpCallResult {
   readonly text: string;
   readonly isError: boolean;
   readonly omittedParts: number;
+  readonly structuredContent?: unknown;
 }

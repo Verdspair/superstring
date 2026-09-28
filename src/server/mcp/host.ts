@@ -31,6 +31,7 @@ export class McpToolHost {
   private actions: BuiltInAction[] = [];
   private lastRevision: string | null = null;
   private reloading?: Promise<void>;
+  private reloadRequested = false;
   constructor(private readonly options: McpToolHostOptions) {}
 
   /**
@@ -72,7 +73,7 @@ export class McpToolHost {
     try {
       if (loadMcpRegistry(this.options.configPath).revision !== this.lastRevision) {
         this.actions = [];
-        void this.reload();
+        void this.reload().catch((error) => this.report("-", error));
       }
     } catch {
       return [];
@@ -87,6 +88,10 @@ export class McpToolHost {
     if (this.reloading) return this.reloading;
     this.reloading = this.doReload().finally(() => {
       this.reloading = undefined;
+      if (this.reloadRequested) {
+        this.reloadRequested = false;
+        void this.reload().catch((error) => this.report("-", error));
+      }
     });
     return this.reloading;
   }
@@ -134,15 +139,36 @@ export class McpToolHost {
       : this.lifetime.signal;
     for (const server of wanted) {
       if (signal.aborted) break;
-      if (this.connections.has(server.id)) continue;
-      let session: McpSession | undefined;
+      let session: McpSession | undefined = this.connections.get(server.id)?.source.session;
       try {
-        session = await (this.options.connect ?? connectMcpServer)(server, {
+        session ??= await (this.options.connect ?? connectMcpServer)(server, {
           env: this.options.env,
           signal,
+          onToolsChanged: () => {
+            if (this.connections.get(server.id)?.source.session !== session) return;
+            this.actions = this.actions.filter(
+              (action) => action.description.capability !== `mcp.${server.id}`,
+            );
+            if (this.reloading) this.reloadRequested = true;
+            else void this.reload().catch((error) => this.report(server.id, error));
+          },
+          onClosed: () => {
+            if (this.connections.get(server.id)?.source.session !== session) return;
+            this.connections.delete(server.id);
+            this.actions = this.actions.filter(
+              (action) => action.description.capability !== `mcp.${server.id}`,
+            );
+            this.report(
+              server.id,
+              Object.assign(new Error("MCP connection closed"), { code: "MCP_SERVER_GONE" }),
+            );
+          },
+          onDiagnostic: (code) => this.options.onDiagnostic?.({ serverId: server.id, code }),
         });
         const tools = await session.listTools(signal);
         signal.throwIfAborted();
+        const existing = this.connections.get(server.id);
+        if (existing && JSON.stringify(existing.source.tools) === JSON.stringify(tools)) continue;
         const revision = revisionOf(server);
         const connection: Connected = {
           revision,
@@ -167,6 +193,7 @@ export class McpToolHost {
         this.connections.set(server.id, connection);
         this.diagnostics.delete(server.id);
       } catch (error) {
+        this.connections.delete(server.id);
         await session?.close();
         if (!signal.aborted) this.report(server.id, error);
       }
