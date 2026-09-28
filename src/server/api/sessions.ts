@@ -91,7 +91,14 @@ export function sessionRoutes(
   agentRuntime?: AgentRuntime,
   conversation?: Pick<
     WebChannelOptions,
-    "host" | "journal" | "maxSteps" | "modules" | "resolveSource" | "memory"
+    | "host"
+    | "journal"
+    | "maxSteps"
+    | "modules"
+    | "resolveSource"
+    | "memory"
+    | "externalActions"
+    | "tasks"
   >,
 ): Hono {
   const router = new Hono();

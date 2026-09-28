@@ -9,22 +9,26 @@ flowchart TD
   Wake --> Host[OneBotHost]
   Host --> Context[BotContextSource]
   Context --> Modules[Memory and knowledge modules]
-  Context --> Compress[ConversationCompressor]
+  Context --> Packages[Committed summary packages]
   Host --> Runtime[AgentRuntime]
   Runtime --> Action[Available actions]
-  Action --> Score[speech.evaluate]
   Action --> Modules
-  Runtime --> Draft[inline or generate drafts]
-  Draft --> Check[Current source and binding check]
+  Runtime --> Draft[Response intent or direct draft]
+  Draft --> Permit[Host-triggered initiative permission]
+  Permit --> Body[Authorized response body]
+  Body --> Check[Current source and binding check]
   Check -->|new relevant input| Context
   Check -->|commit| Outbox[Output intent and delivery]
+  Outbox --> Queue[Background compression queue]
+  Queue --> Compress[ConversationCompressor leaf]
+  Compress -->|authority check and CAS| Packages
 ~~~
 
 ## Behavior and configuration
 
-The Agent can invoke an action, return drafts, or stop without output. Initiative paths require a current successful speech.evaluate result before committing a reply. That leaf retains the configured score prompt, threshold and judgement readout. The Agent can choose none without first invoking the score action; there is no mandatory judge call for every wake.
+The Agent can invoke an action, propose a response, or stop without output. For initiative paths the host evaluates the intent before independent body generation, retaining the configured score prompt, threshold and judgement projection. A denied or unreadable permission ends silently. The Agent can choose none without a score call; scoring is host-triggered rather than an advertised action.
 
-Shared schemes remain shared configuration. Scene, judge, review, sticker and media text retain their roles. The reply task is derived from the per-speaker setting. Review text guides the Agent after new input; it does not introduce a second fixed review loop.
+Shared schemes remain shared configuration. Scene, judge, reply, review, sticker, media and compression text retain their roles. An unedited reply task is derived from the per-speaker setting; a saved custom task takes precedence. Review text guides the Agent after new input; it does not introduce a second fixed review loop.
 
 Disabling per-speaker replies allows one logical output for the conversation. Enabling it allows one per authorized target. A logical output can still contain transport parts. Platform IDs, recipient mentions and sticker transport payloads are constructed by the host/sender, not accepted as model-authored routing.
 
@@ -40,13 +44,17 @@ Memory retrieval retains the configured modes, scope isolation and manual-correc
 
 Knowledge enablement, selected documents and budget are frozen at run start. The budget accounts for initial evidence and retained nonempty query observations, including their arguments and provenance, across subsequent decisions and re-observation. Empty-result feedback still consumes total model input capacity. Source grants remain live and can revoke previously selected evidence.
 
-The common compressor uses a leaf Agent to summarize selected conversation material. Its output has source references and expiry and is supplemental to the current authorized input. A failed optional summary or retrieval can retain valid raw context and expose retrieval_status to the Agent. Cancellation, access revocation and a full-mode capacity violation remain failures; these are not silently converted to partial evidence.
+The common compressor uses a leaf Agent to summarize selected conversation material. The reply projection reads committed packages and prepares a bounded background job; the host queues it only after the foreground run commits. The worker dispatches replies before starting background compression, without waiting for the summary. Jobs recheck current authority and sources, and an atomic compare-and-swap prevents late results from replacing newer packages. Empty, failed or oversized summaries leave watermarks unchanged. Shutdown cancels and drains the queue.
+
+Backlog reads follow journal sequence, including count/budget-trimmed messages and delivered assistant text. Packages retain source references, checked again when reused; invalid packages are excluded with diagnostics rather than blocking fresh authorized input indefinitely. After interruption, the next reply projection reconstructs work from the stored watermark; in-flight model streams are not resumable. Compression still shares the model concurrency limit. Optional retrieval failures are visible to the Agent; revocation is not reported as an empty search.
 
 Media reading, sticker annotation and sticker selection use the same leaf runtime. Stored contexts carry image references and metadata rather than reusable image bytes. Image acquisition, media failure gates, source expiry, sticker availability and receipt bookkeeping remain channel responsibilities.
 
+The reading adapter declares which media kinds it can actually read. In this version that is images only: voice and video are refused before any attempt is spent, so "not readable here" stays distinct from "a read we tried and failed". An identical source reference already described inside the same conversation is reused without another model call, keeping the original attribution. A document, an unread picture and an unsupported voice message are three different facts in the timeline.
+
 ## Scheduling and diagnostics
 
-WakeScheduler owns durable opportunities and leases. OneBot ingress owns protocol normalization; the host owns the current binding, targets and output transaction. The default production worker is serial. A concurrency capacity setting alone does not create parallel worker execution, and slow runs can delay other Bot conversations.
+WakeScheduler owns durable opportunities and leases. OneBot ingress owns protocol normalization; the host owns the current binding, targets and output transaction. Production workers use bounded cross-conversation lanes while database leases exclude concurrent activation of the same conversation. Model concurrency is limited separately; background compression has its own cancellable single-flight queue.
 
 The frontend groups navigation into conversations, Agents, resources, connections and preferences, while retaining the existing mode and configuration capabilities. Conversation history, run inspection and delivery states are separate projections. Advanced diagnostics do not turn model completion into a delivery confirmation; unknown delivery remains unresolved until reconciled.
 

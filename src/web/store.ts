@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api } from "./api";
+import { createPermissionSettingsActions } from "./features/access/permission-state";
 import { createAgentActions } from "./features/agents/actions";
 import { createModelActions } from "./features/agents/model-actions";
 import { createPageActions } from "./features/agents/page-actions";
@@ -46,6 +47,7 @@ export const useSuperstringStore = create<SuperstringState>()((set, get) => ({
   ...createDirectoryActions(set, get),
   ...createAgentActions(set, get),
   ...createPageActions(set, get),
+  ...createPermissionSettingsActions(set, get),
   ...createModelActions(set, get),
   ...createMemoryActions(set, get),
   ...createRunActions(set, get),

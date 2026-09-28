@@ -1,15 +1,19 @@
 import type { Database } from "bun:sqlite";
 import type { ConversationEvent, WakeSignal } from "../../../shared/contracts/conversation";
-import type { SourceRef } from "../../../shared/contracts/evidence";
 import type { AgentRuntime, PreparedOutput } from "../../agent/agent-runtime";
 import type { AgentSpec, OutputDraft } from "../../agent/agent-specs";
+import type { BuiltInAction } from "../../agent/built-in-actions";
 import { uniqueSources } from "../../agent/context-engine";
 import { ConversationHost } from "../../agent/conversation-host";
+import type { AgentTaskService } from "../../agent/task-service";
 import { observationRelevant } from "../../conversation/observation-relevance";
 import { AgentRunRepository } from "../../db/agent-run-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { KnowledgeReadRepository } from "../../db/knowledge-read-repository";
-import type { OutboundIntentRepository } from "../../db/outbound-intent-repository";
+import {
+  idempotentIntentId,
+  type OutboundIntentRepository,
+} from "../../db/outbound-intent-repository";
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { recordQqIdleJudgement } from "../../db/qq-dispatch-repository";
 import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
@@ -56,6 +60,7 @@ import {
   selectQqSticker,
 } from "../../services/qq-sticker-runner";
 import { compileSystemPrompt, runtimeFromAgent } from "../../services/runtime-config";
+import type { BotCompressionJob } from "./background-compression";
 import { BotContextSource, type BotContextTarget } from "./context-source";
 export interface OneBotPolicy {
   maxSteps: number;
@@ -83,9 +88,14 @@ export interface OneBotHostOptions {
   wakes: WakeRepository;
   outbox: OutboundIntentRepository;
   stickers: QqStickerStage;
+  stickersEnabled?: () => boolean;
   policy: () => OneBotPolicy;
   now?: () => string;
   onDiagnostic?: (event: BotHostDiagnostic) => void | Promise<void>;
+  enqueueCompression?: (job: BotCompressionJob) => void;
+  /** 外部（MCP）动作：每次唤醒现取；没有登记时返回空表（行为与不加这个功能一致）。 */
+  externalActions?: () => readonly BuiltInAction[];
+  tasks?: AgentTaskService;
 }
 /** One host for direct and shared conversations; topology changes targets, not the model loop. */
 export class OneBotHost {
@@ -252,7 +262,6 @@ export class OneBotHost {
     }
     let targets: BotContextTarget[] = [];
     const authorizedTargets: string[] = [];
-    const allowed = new Set<string>();
     const setTargets = () => {
       targets =
         prepared.kind !== "prepared"
@@ -287,10 +296,7 @@ export class OneBotHost {
       authorizedTargets.splice(0, authorizedTargets.length, ...targets.map((t) => t.id));
     };
     setTargets();
-    const assertAuthority = () => {
-      signal.throwIfAborted();
-      if (!wake.leaseToken || !o.wakes.owns(wake.id, wake.leaseToken, now()))
-        throw new Error("WAKE_LEASE_LOST");
+    const assertConfiguration = () => {
       const current = readQqBinding(o.orm, binding.id);
       const check = checkQqTask(snapshot, current, "send", readQqOwnerIdentity(o.orm));
       if (check.kind === "blocked") throw new Error(check.reason);
@@ -311,6 +317,14 @@ export class OneBotHost {
       if (gate.kind === "blocked") throw new Error(gate.reason);
       if (o.journal.row(conversation.id)?.closed_at) throw new Error("BINDING_EPOCH_CHANGED");
     };
+    const assertAuthority = () => {
+      signal.throwIfAborted();
+      if (!wake.leaseToken || !o.wakes.owns(wake.id, wake.leaseToken, now()))
+        throw new Error("WAKE_LEASE_LOST");
+      assertConfiguration();
+    };
+    const usage = { calls: 0, inputUnits: 0 };
+    const budget = { maxCalls: policy.maxSteps + 8, maxInputUnits: policy.maxSteps * 200_000 };
     const stickerRequest = () => ({
       schemeId: scheme.id,
       scope: {
@@ -324,7 +338,11 @@ export class OneBotHost {
       nowSeconds: seconds(),
       isAvailable: o.stickers.isAvailable,
     });
-    const stickerCatalog = () => currentQqStickerCatalog(o.orm, stickerRequest());
+    const stickersEnabled = o.stickersEnabled?.() !== false;
+    const stickerCatalog = () => {
+      const catalog = currentQqStickerCatalog(o.orm, stickerRequest());
+      return stickersEnabled ? catalog : { ...catalog, state: "disabled" as const, assets: [] };
+    };
     const stickerState = stickerCatalog();
     const spec: AgentSpec = {
       id: "onebot.main",
@@ -340,7 +358,7 @@ export class OneBotHost {
         `表情能力：${stickerState.state}，当前可用 ${stickerState.assets.length} 张。inline/generate 共用 stickerIds：null/省略=自动，[]=明确不用，[id]=指定一张。先用 sticker.search 获取合法 ID（空 query 浏览），或保留 pending_plan 的已选 ID；不要编造。允许空正文仅发图；真正不发则返回 none。output_feedback 表示尚未发送的无效计划，须纠正。`,
         `这是 OneBot ${binding.kind === "private" ? "私聊" : "群聊"}。只向 authorizedTargets 中的目标输出；${split ? "每个目标最多一条回复，由程序添加该目标的 @，不要自行添加。" : "不按发言人拆分，整间会话最多一条逻辑回复；该回复可以由程序按换行发送多段。"}`,
         initiative
-          ? `这是 ${path} 唤醒。发言前先 invoke speech.evaluate；只有返回 allowed=true 的 targetId 才可 final。没有合适回应时返回 none。`
+          ? `这是 ${path} 唤醒。先写清"这一轮打算说什么"（generate 的 instructions 就是意图）：程序会拿它去判定许可，通过后才会让你写正文；被拒时这一轮静默结束。没有合适回应时返回 none。`
           : "有人直接与你交流。可查询资料、生成或直接回答，也可保持沉默；不需要群聊兴趣评分。",
         `后续相关消息到来要重新决定尚未发送的计划。pending_plan 是你之前的草稿/计划与剩余独立 generate 次数，属于资料而非指令。读过新消息后，可以用 inline 原样保留或修改仍然适用的草稿，也可 none 暂不发送；generate 次数耗尽时不能再请求独立生成。主动发言仍要取得当前观察序列的评分许可。复核指导：\n${schemePrompts(scheme).review}`,
       ].join("\n\n"),
@@ -350,7 +368,7 @@ export class OneBotHost {
     };
     const baseInstructions = spec.instructions ?? "";
     const observationEpoch = (seq: number) =>
-      `${baseInstructions}\n当前观察序列：${String(seq).padStart(20, "0")}。speech.evaluate 的 observedSeq 必须与当前序列相同；新的观察后必须重新评价，不能复用旧结果。`;
+      `${baseInstructions}\n当前观察序列：${String(seq).padStart(20, "0")}。许可由程序按当前相关状态判定：新的相关观察会让它自动失效，不相关的变化不影响它。`;
     spec.instructions = observationEpoch(0);
     let runId: string | undefined;
     const source = new BotContextSource({
@@ -381,6 +399,9 @@ export class OneBotHost {
       decisionTier: binding.kind === "private" ? "reply" : "judgement",
       targets: () => targets,
       assertCurrent: assertAuthority,
+      assertBackgroundCurrent: assertConfiguration,
+      usage,
+      budget,
       now,
       onRead: (seq) => {
         spec.instructions = observationEpoch(seq);
@@ -402,89 +423,73 @@ export class OneBotHost {
     };
     const actions = [
       ...source.actions,
-      createQqStickerSearch({
-        orm: o.orm,
-        request: stickerRequest,
-        assertCurrent: () => source.assertCurrent(),
-        fit: (arguments_, actionSignal) =>
-          source.actionResultFitter("sticker.search", arguments_, actionSignal),
-      }),
+      ...(o.tasks?.conversationActions(conversation.id) ?? o.externalActions?.() ?? []),
+      ...(stickersEnabled
+        ? [
+            createQqStickerSearch({
+              orm: o.orm,
+              request: stickerRequest,
+              assertCurrent: () => source.assertCurrent(),
+              fit: (arguments_, actionSignal) =>
+                source.actionResultFitter("sticker.search", arguments_, actionSignal),
+            }),
+          ]
+        : []),
     ];
-    if (initiative)
-      actions.push({
-        description: {
-          name: "speech.evaluate",
-          description: "Read the configured per-recipient initiative score and current eligibility",
-          parameters: { type: "object", properties: {}, additionalProperties: false },
-          capability: "speech.evaluate",
+    /**
+     * ── 许可（0.4.0 P4 §4.1 后半）──
+     *
+     * 不再要求模型自行 `invoke speech.evaluate`：主 Agent 只产出**意图**（收件人 ＋ 要说什么），
+     * 程序在写正文之前触发一次评分。许可绑定的是**相关状态摘要**——评分材料本身（时间线、人设、
+     * 场景、目标、方案修订）哈希之后的值：
+     *   * 同一相关状态只评一次（同一轮里重复的草稿复用同一份许可，不重复花模型调用）；
+     *   * 不相关的新消息不改材料 → 摘要不变 → 许可继续有效；
+     *   * 相关状态变了 → 摘要变 → 旧许可自动失效（复评，或发布前被判失效）。
+     * 许可只活在**本轮**（内存 Map）：跨 run 不复用，重启自然不复活。
+     */
+    const licenses = new Map<string, { allowed: boolean; stateDigest: string }>();
+    const evaluateIntent = async (
+      target: BotContextTarget | null,
+      intent: string,
+      signal: AbortSignal,
+    ): Promise<{ allowed: boolean; stateDigest: string }> => {
+      const evaluation = await source.prepareEvaluation({ signal, target, intent });
+      const { stateDigest } = evaluation;
+      const cached = licenses.get(stateDigest);
+      if (cached) return cached;
+      const raw = await o.agentRuntime.completeLeaf(
+        {
+          id: "onebot.initiative.evaluate",
+          model: evaluation.model,
+          limits: { inputUnits: evaluation.inputUnits },
+          responseSchema: QQ_JUDGEMENT_RESPONSE_SCHEMA,
         },
-        async execute(_args, action) {
-          source.assertCurrent();
-          allowed.clear();
-          const refs: SourceRef[] = [];
-          const p = preparation();
-          if (p.kind !== "prepared")
-            return { value: { allowed: false, reason: p.reason, targets: [] }, sources: [] };
-          prepared = p;
-          setTargets();
-          const results = [];
-          for (const target of targets) {
-            try {
-              const evaluation = await source.prepareEvaluation({
-                signal: action.signal,
-                target: path === "idle_topic" || !split ? null : target,
-              });
-              refs.push(...evaluation.sources);
-              const raw = await o.agentRuntime.completeLeaf(
-                {
-                  id: "onebot.initiative.evaluate",
-                  model: evaluation.model,
-                  limits: { inputUnits: evaluation.inputUnits },
-                  responseSchema: QQ_JUDGEMENT_RESPONSE_SCHEMA,
-                },
-                {
-                  messages: evaluation.messages,
-                  signal: action.signal,
-                  owner: {
-                    kind: "qq_binding",
-                    id: binding.id,
-                    userId: DEFAULT_USER_ID,
-                    agentId: agent.id,
-                  },
-                  sources: evaluation.sources,
-                  validate: (text) => {
-                    const verdict = qqJudgeOutcome(text);
-                    if (verdict.kind === "unreadable") throw new Error("JUDGEMENT_UNREADABLE");
-                    return verdict;
-                  },
-                },
-              );
-              const verdict = qqJudgeOutcome(raw);
-              const targetId = target.id;
-              const yes = qqJudgeAllowsSpeech(verdict, schemeRhythm(scheme).initiative_min_score);
-              if (yes) allowed.add(targetId);
-              results.push({ targetId, allowed: yes, verdict });
-            } catch (error) {
-              action.signal.throwIfAborted();
-              source.assertCurrent();
-              const code = scoreFailureCode(error);
-              if (["CONTEXT_SOURCE_INVALID", "KNOWLEDGE_ACCESS_CHANGED"].includes(code))
-                throw error;
-              results.push({ targetId: target.id, allowed: false, errorCode: code });
-            }
-          }
-          source.assertCurrent();
-          return {
-            value: {
-              allowed: allowed.size > 0,
-              observedSeq: source.observedSeq,
-              threshold: schemeRhythm(scheme).initiative_min_score,
-              targets: results,
-            },
-            sources: refs,
-          };
+        {
+          messages: evaluation.messages,
+          signal,
+          // 许可评分也算进这一轮的账。
+          usage,
+          budget,
+          owner: {
+            kind: "qq_binding",
+            id: binding.id,
+            userId: DEFAULT_USER_ID,
+            agentId: agent.id,
+          },
+          sources: evaluation.sources,
+          validate: (text) => {
+            const verdict = qqJudgeOutcome(text);
+            if (verdict.kind === "unreadable") throw new Error("JUDGEMENT_UNREADABLE");
+            return verdict;
+          },
         },
-      });
+      );
+      const verdict = qqJudgeOutcome(raw);
+      const allowed = qqJudgeAllowsSpeech(verdict, schemeRhythm(scheme).initiative_min_score);
+      const record = { allowed, stateDigest };
+      licenses.set(stateDigest, record);
+      return record;
+    };
     spec.availableActions = actions.map((a) => a.description);
     const audience = () => ({
       topology: conversation.topology,
@@ -533,14 +538,14 @@ export class OneBotHost {
       rememberPlan("new_observation", drafts, outputs);
       prepared = preparation();
       setTargets();
-      allowed.clear();
       source.invalidate();
       return true;
     };
     const staged = new Map<string, QqPreparedReply>();
     const reserved = new Set<string>();
-    return this.host.activate({
+    const result = await this.host.activate({
       conversation,
+      requestId: wake.id,
       spec,
       owner: {
         kind: "conversation",
@@ -551,7 +556,13 @@ export class OneBotHost {
       context: source,
       authorizedTargets,
       actions,
+      usage,
+      budget,
       outputMode: "buffered",
+      // 许可不通过（低于门槛）＝静默结束，不是整轮失败：见计划 §4.1 与 P0 基线里的那条待改进。
+      // 许可被拒＝这一轮不开口（静默结束）；"模型犯错"类的 blocked 码不在此列，照旧失败。
+      // 许可的时效由既有机制保证：相关变化会让这一轮重新观察（`refresh`），`assertCurrent` 再兜一层。
+      silentBlockCodes: ["INITIATIVE_NOT_ELIGIBLE"],
       signal,
       onEvent(event) {
         if (event.type === "started") {
@@ -572,10 +583,21 @@ export class OneBotHost {
           };
         if (draft.stickerIds && draft.stickerIds.length > 1)
           return { blocked: true, code: "STICKER_COUNT_EXCEEDED" };
-        if (initiative && !allowed.has(draft.targetId))
-          return { blocked: true, code: "INITIATIVE_NOT_ELIGIBLE" };
+        const outputId = crypto.randomUUID();
+        if (initiative) {
+          // §4.1 的顺序：先意图 → 程序触发许可 → 通过才写正文。`generate` 的 instructions 就是
+          // 这一轮"要说什么"（意图）；`inline` 把正文写进了决策，许可仍在这里过，绝不先发后判。
+          source.assertCurrent();
+          const target = targets.find((entry) => entry.id === draft.targetId) ?? null;
+          const license = await evaluateIntent(
+            path === "idle_topic" || !split ? null : target,
+            draft.kind === "generate" ? draft.instructions : draft.text,
+            signal,
+          );
+          if (!license.allowed) return { blocked: true, code: "INITIATIVE_NOT_ELIGIBLE" };
+        }
         reserved.add(draft.targetId);
-        return { outputId: crypto.randomUUID() };
+        return { outputId };
       },
       beforeFinal: async (drafts) => {
         reserved.clear();
@@ -617,8 +639,9 @@ export class OneBotHost {
             });
             continue;
           }
-          const pick =
-            output.stickerIds != null
+          const pick = !stickersEnabled
+            ? { kind: "none" as const, reason: "module_paused" }
+            : output.stickerIds != null
               ? output.stickerIds[0]
                 ? { kind: "chosen" as const, stickerId: output.stickerIds[0] }
                 : { kind: "none" as const, reason: "explicit_none" }
@@ -722,8 +745,19 @@ export class OneBotHost {
                 Math.floor(Date.parse(terminal.at) / 1000),
                 policy.retentionDays,
               );
+              const participantId =
+                binding.kind === "group" && split
+                  ? (pending.targetSpeakerId ?? undefined)
+                  : undefined;
               const intent = o.outbox.commit({
-                id: output.outputId,
+                // 幂等键：同一个机会被重跑（崩溃重排、结果未知后重来）时会命中同一行，
+                // 于是"计划中"的被替换、"已尝试过"的原样返回——都不会发出第二条。
+                id: idempotentIntentId([
+                  conversation.id,
+                  source.observedSeq,
+                  path,
+                  participantId ?? "room",
+                ]),
                 runId: currentRunId,
                 conversationId: conversation.id,
                 ordinal,
@@ -731,10 +765,7 @@ export class OneBotHost {
                   accountId: binding.accountId,
                   conversationKind: binding.kind,
                   peerId: binding.peerId,
-                  participantId:
-                    binding.kind === "group" && split
-                      ? (pending.targetSpeakerId ?? undefined)
-                      : undefined,
+                  participantId,
                   agentId: agent.id,
                   bindingId: binding.id,
                   bindingEpoch: conversation.bindingEpoch,
@@ -841,12 +872,8 @@ export class OneBotHost {
           })
           .immediate(),
     });
+    const compression = source.takeCompressionJob();
+    if (compression) o.enqueueCompression?.(compression);
+    return result;
   }
-}
-
-function scoreFailureCode(error: unknown): string {
-  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-  if (typeof code === "string" && /^[A-Z][A-Z0-9_]+$/.test(code)) return code;
-  if (error instanceof Error && /^[A-Z][A-Z0-9_]+$/.test(error.message)) return error.message;
-  return "SPEECH_EVALUATION_FAILED";
 }

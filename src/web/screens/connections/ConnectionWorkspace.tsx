@@ -18,8 +18,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/ta
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { BindingEditor, ManualBinding } from "./binding-editor";
+import { McpPanel } from "./mcp-panel";
 import { SchemeStudio } from "./scheme-studio";
+import { SkillsPanel } from "./skills-panel";
 import { StorageInventory } from "./storage-inventory";
+import { ToolGrantsPanel } from "./tool-grants-panel";
 import { TransportSettings } from "./transport-settings";
 
 const phaseNames: Record<string, string> = {
@@ -91,7 +94,13 @@ export function ConnectionWorkspace() {
         ? "schemes"
         : state.settingsRoute === "qq-storage"
           ? "storage"
-          : "bindings";
+          : state.settingsRoute === "mcp-servers"
+            ? "mcp"
+            : state.settingsRoute === "skill-catalog"
+              ? "skills"
+              : state.settingsRoute === "tool-grants"
+                ? "grants"
+                : "bindings";
   return (
     <section
       className="flex h-full min-h-0 flex-col"
@@ -142,15 +151,28 @@ export function ConnectionWorkspace() {
         onValueChange={(value) =>
           value === "bindings"
             ? state.requestPageNavigation("settings", "operating-mode")
-            : state.openSettingsRoute(value === "schemes" ? "qq-scheme-config" : "qq-storage")
+            : state.openSettingsRoute(
+                value === "schemes"
+                  ? "qq-scheme-config"
+                  : value === "storage"
+                    ? "qq-storage"
+                    : value === "mcp"
+                      ? "mcp-servers"
+                      : value === "skills"
+                        ? "skill-catalog"
+                        : "tool-grants",
+              )
         }
         className="flex min-h-0 flex-1 flex-col gap-0"
       >
         <div className="border-b px-6 py-3 lg:px-8">
-          <TabsList>
+          <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
             <TabsTrigger value="bindings">{t("connections.conversationBindings")}</TabsTrigger>
             <TabsTrigger value="schemes">{t("connections.sharedSchemes")}</TabsTrigger>
             <TabsTrigger value="storage">{t("connections.dataRetention")}</TabsTrigger>
+            <TabsTrigger value="mcp">{t("connections.mcp.title")}</TabsTrigger>
+            <TabsTrigger value="skills">{t("connections.skills.title")}</TabsTrigger>
+            <TabsTrigger value="grants">{t("connections.grants.title")}</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="bindings" className="m-0 min-h-0 overflow-y-auto px-6 py-6 lg:px-8">
@@ -261,6 +283,15 @@ export function ConnectionWorkspace() {
         </TabsContent>
         <TabsContent value="storage" className="m-0 min-h-0 flex-1 overflow-y-auto">
           <StorageInventory />
+        </TabsContent>
+        <TabsContent value="mcp" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          <McpPanel />
+        </TabsContent>
+        <TabsContent value="skills" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          <SkillsPanel />
+        </TabsContent>
+        <TabsContent value="grants" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          <ToolGrantsPanel />
         </TabsContent>
       </Tabs>
       {transportOpen && <TransportSettings onClose={() => setTransportOpen(false)} />}

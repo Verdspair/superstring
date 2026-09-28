@@ -77,6 +77,7 @@ describe("one injected QQ media reading", () => {
         await readQqMediaOnce(
           h.orm,
           {
+            capabilities: ["image"] as const,
             read: async () => {
               throw new Error("must not run");
             },
@@ -99,6 +100,7 @@ describe("one injected QQ media reading", () => {
         await readQqMediaOnce(
           h.orm,
           {
+            capabilities: ["image"] as const,
             read: async () => {
               calls++;
               return "不应发生";
@@ -123,6 +125,7 @@ describe("one injected QQ media reading", () => {
       const outcome = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             h.orm.update(schema.agents).set({ isActive: 0 }).run();
             return "过期授权";
@@ -143,6 +146,7 @@ describe("one injected QQ media reading", () => {
       const result = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             h.orm.update(schema.qqBindings).set({ paused: 1, revision: 2 }).run();
             return "不应写回";
@@ -163,6 +167,7 @@ describe("one injected QQ media reading", () => {
       const result = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             h.orm.update(schema.qqBindings).set({ paused: 0, revision: 3 }).run();
             return "旧请求结果";
@@ -183,6 +188,7 @@ describe("one injected QQ media reading", () => {
       const outcome = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             h.orm.update(schema.qqBindings).set({ paused: 1, revision: 2 }).run();
             throw new Error("upstream failed after pause");
@@ -203,6 +209,7 @@ describe("one injected QQ media reading", () => {
       const result = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             h.orm.update(schema.qqMediaNotes).set({ expiresAt: "2000-01-01T00:00:00.000Z" }).run();
             return "过期结果";
@@ -224,6 +231,7 @@ describe("one injected QQ media reading", () => {
       const outcome = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             throw new Error("must not run");
           },
@@ -244,6 +252,7 @@ describe("one injected QQ media reading", () => {
       const outcome = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             calls++;
             return "x";
@@ -275,6 +284,7 @@ describe("one injected QQ media reading", () => {
         started = resolve;
       });
       const reader = {
+        capabilities: ["image"] as const,
         read: () =>
           new Promise<string>((resolve) => {
             finish = resolve;
@@ -301,6 +311,7 @@ describe("one injected QQ media reading", () => {
     const h = setup();
     try {
       const reader = {
+        capabilities: ["image"] as const,
         read: async () => {
           throw new Error("synthetic failure");
         },
@@ -321,11 +332,135 @@ describe("one injected QQ media reading", () => {
     }
   });
 
+  it("reuses a description from the same conversation for an identical reference", async () => {
+    const h = setup("image");
+    try {
+      let calls = 0;
+      const adapter = {
+        capabilities: ["image"] as const,
+        read: async () => {
+          calls++;
+          return "橘猫";
+        },
+      };
+      expect(await readQqMediaOnce(h.orm, adapter, base)).toEqual({
+        kind: "described",
+        attempt: 1,
+      });
+      // 同一张图被再次发出：另一条消息、另一个片段位置、同一个来源引用。
+      h.orm
+        .insert(schema.qqEvents)
+        .values({
+          eventKey: "media-2",
+          accountId: "10001",
+          conversationKind: "group",
+          peerId: "30003",
+          agentId: "00000000-0000-0000-0000-000000000001",
+          messageId: "m2",
+          occurredAtSeconds: Math.floor(Date.now() / 1000),
+          speakerKind: "member",
+          speakerId: "20002",
+          recordedAt: nowIso(),
+        })
+        .run();
+      recordMediaSegment(h.orm, {
+        eventKey: "media-2",
+        segmentIndex: 0,
+        kind: "image",
+        sourceRef: "upstream-ref",
+        occurredAtSeconds: Math.floor(Date.now() / 1000),
+        addressed: true,
+      });
+      expect(await readQqMediaOnce(h.orm, adapter, { ...base, eventKey: "media-2" })).toEqual({
+        kind: "described",
+        attempt: 0,
+      });
+      expect(calls).toBe(1);
+      expect(mediaNoteRow(h.orm, "media-2", 0)).toMatchObject({
+        note: "橘猫",
+        noteModel: "vision-local",
+        attempts: 0,
+      });
+    } finally {
+      h.close();
+    }
+  });
+
+  it("does not reuse a description from another conversation", async () => {
+    const h = setup("image");
+    try {
+      let calls = 0;
+      const adapter = {
+        capabilities: ["image"] as const,
+        read: async () => {
+          calls++;
+          return "橘猫";
+        },
+      };
+      expect(await readQqMediaOnce(h.orm, adapter, base)).toEqual({
+        kind: "described",
+        attempt: 1,
+      });
+      // 另一间群（不同 peer）里的同一来源引用不得照抄描述：先要有那个绑定。
+      const schemeRow = h.orm.select().from(schema.qqSchemes).get();
+      h.orm
+        .insert(schema.qqBindings)
+        .values({
+          id: "22222222-2222-4222-8222-222222222222",
+          accountId: "10001",
+          conversationKind: "group",
+          peerId: "30004",
+          agentId: "00000000-0000-0000-0000-000000000001",
+          schemeId: schemeRow?.id ?? "",
+          paused: 0,
+          shareWebMemory: 0,
+          memoryBatchSize: null,
+          ownerIdentityRevision: null,
+          revision: 1,
+          authorityRevision: 1,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        })
+        .run();
+      h.orm
+        .insert(schema.qqEvents)
+        .values({
+          eventKey: "media-other",
+          accountId: "10001",
+          conversationKind: "group",
+          peerId: "30004",
+          agentId: "00000000-0000-0000-0000-000000000001",
+          messageId: "m3",
+          occurredAtSeconds: Math.floor(Date.now() / 1000),
+          speakerKind: "member",
+          speakerId: "20002",
+          recordedAt: nowIso(),
+        })
+        .run();
+      recordMediaSegment(h.orm, {
+        eventKey: "media-other",
+        segmentIndex: 0,
+        kind: "image",
+        sourceRef: "upstream-ref",
+        occurredAtSeconds: Math.floor(Date.now() / 1000),
+        addressed: true,
+      });
+      expect(await readQqMediaOnce(h.orm, adapter, { ...base, eventKey: "media-other" })).toEqual({
+        kind: "described",
+        attempt: 1,
+      });
+      expect(calls).toBe(2);
+    } finally {
+      h.close();
+    }
+  });
+
   it("stores an attributed description and does not read a second time", async () => {
     const h = setup();
     try {
       let calls = 0;
       const adapter = {
+        capabilities: ["image"] as const,
         read: async (input: {
           kind: "image" | "record" | "video";
           sourceRef: string;
@@ -366,6 +501,7 @@ describe("one injected QQ media reading", () => {
     try {
       let calls = 0;
       const adapter = {
+        capabilities: ["image"] as const,
         read: async () => {
           calls++;
           throw new Error("secret upstream failure");
@@ -404,6 +540,7 @@ describe("one injected QQ media reading", () => {
     try {
       let calls = 0;
       const adapter = {
+        capabilities: ["image"] as const,
         read: async () => {
           calls++;
           return " ";
@@ -423,20 +560,24 @@ describe("one injected QQ media reading", () => {
     }
   });
 
-  it("does not send an unsupported document or use a voice reader without its model", async () => {
-    for (const kind of ["file", "record"] as const) {
+  it("never attempts a document, voice or video segment the adapter cannot read", async () => {
+    for (const kind of ["file", "record", "video"] as const) {
+      // 文件不属于可读种类（策划上就不是媒体理解对象），语音与视频是"实现声明读不了"。
+      const reason = kind === "file" ? "unsupported_kind" : "capability_unavailable";
       const h = setup(kind);
       try {
         const outcome = await readQqMediaOnce(
           h.orm,
           {
+            capabilities: ["image"] as const,
             read: async () => {
               throw new Error("must not run");
             },
           },
           base,
         );
-        expect(outcome.kind).toBe("unreadable");
+        // 0.4.0 P5：能力声明先于一切——读不了的种类连尝试都不花。
+        expect(outcome).toEqual({ kind: "unreadable", reason });
         expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(0);
       } finally {
         h.close();
@@ -447,16 +588,17 @@ describe("one injected QQ media reading", () => {
   /**
    * （第二问）：「试过但没读出来」的闸门只拦**图片**。
    *
-   * 语音与视频在这一版设计上永远读不出来（转写协议未定、没有视频解码器）。把它们算成"失败"，
-   * 就等于只要群里有语音、还有转写模型，那一小时窗口里的自主接话/冷场发起每次都被按住——
-   * 用户报告的"自主接话从不触发"里，这一条是原因之一。
+   * 语音与视频在这一版设计上永远读不出来（转写协议未定、没有视频解码器）。0.4.0 P5 起由
+   * 适配器的能力声明**在花钱之前**判定：配了转写模型也不试、不记尝试、不产生失败——
+   * "本来读不了"与"试过失败"从此是两件事，管理面上不再堆积永远失败的语音行。
    */
-  it("spends an attempt on a voice message but never lets it veto opening", async () => {
+  it("declares voice unavailable instead of spending an attempt that can never succeed", async () => {
     const h = setup("record");
     try {
       const outcome = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             throw new Error("QQ media adapter cannot transcribe voice");
           },
@@ -466,10 +608,9 @@ describe("one injected QQ media reading", () => {
           modelConfig: { visionModelName: null, transcriptionModelName: "whisper-local" },
         },
       );
-      // 尝试真的花掉了（这一行在管理面上仍能看到"试过、没有描述"）……
-      expect(outcome.kind).toBe("failed");
-      expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(1);
-      // ……但它不算"没读懂图"，所以不拦主动开口。
+      expect(outcome).toEqual({ kind: "unreadable", reason: "capability_unavailable" });
+      expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(0);
+      // 不花尝试，也就不拦主动开口。
       expect(attemptedUnreadMediaCount(h.orm, [base.eventKey])).toBe(0);
     } finally {
       h.close();
@@ -482,6 +623,7 @@ describe("one injected QQ media reading", () => {
       const outcome = await readQqMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async () => {
             throw new Error("vision call failed: 400");
           },

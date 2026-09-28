@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { ContextBuilder, estimateMessages } from "../../src/server/agent/conversation-context";
 import { createApp } from "../../src/server/app";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
@@ -11,7 +12,6 @@ import {
 } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
-import { ContextBuilder, estimateMessages } from "../../src/server/services/context-builder";
 import {
   KnowledgeContext,
   knowledgeCost,

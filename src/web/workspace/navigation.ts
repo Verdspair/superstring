@@ -70,7 +70,14 @@ export function activeSpace(
     return "models";
   if (["long-memory", "profile", "knowledge-config", "qq-stickers"].includes(state.settingsRoute))
     return "library";
-  if (["qq-scheme-config", "qq-storage"].includes(state.settingsRoute)) return "connections";
+  if (
+    ["qq-scheme-config", "qq-storage", "mcp-servers", "skill-catalog", "tool-grants"].includes(
+      state.settingsRoute,
+    )
+  )
+    return "connections";
+  if (["task-ledger", "execution-settings", "execution-ledger"].includes(state.settingsRoute))
+    return "runs";
   return "assistants";
 }
 /** Every global destination uses the existing draft-aware transition, never a direct state patch. */

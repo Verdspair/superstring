@@ -770,10 +770,10 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
         responseSchema: AGENT_DECISION_JSON_SCHEMA,
         tools: decisionTools,
       });
+      // 0.4.0 P2：映射出来的是**一批**调用（单调用只是批量为 1 的情形），执行器与协议只有一个形状。
       expect(JSON.parse(raw)).toEqual({
         kind: "invoke",
-        name: "speech.evaluate",
-        arguments: { targetId: "t1", observedSeq: 7 },
+        calls: [{ name: "speech.evaluate", arguments: { targetId: "t1", observedSeq: 7 } }],
       });
     } finally {
       await hosts.dispose();

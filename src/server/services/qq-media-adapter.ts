@@ -10,8 +10,10 @@
 //
 // What it deliberately does not do: transcribe voice (the transcription protocol is still
 // undecided, so that purpose is configurable but not callable), and read video (§7.1 promises no
-// full video understanding and there is no video decoder). Both refuse loudly — the reader records
-// the attempt and stays silent in the conversation, which is §7.1's failure path.
+// full video understanding and there is no video decoder). 0.4.0 P5 declares that in
+// `capabilities` — the reader refuses those kinds **before** spending an attempt, so "not readable
+// here" stays distinct from "a read we tried and failed". The `read` method still refuses loudly
+// if a caller bypasses the declaration.
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -89,6 +91,8 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
     .max(2048)
     .parse(options.maxDimension ?? QQ_MEDIA_READ_MAX_DIMENSION);
   return {
+    // 语音与视频没有实现：能力声明是这一版的产品事实，不是临时限制。
+    capabilities: ["image"] as const,
     async read({ kind, sourceRef, model, source: reference, owner, signal }): Promise<string> {
       if (kind === "record") {
         throw new Error("QQ media adapter cannot transcribe voice: the protocol is undecided");

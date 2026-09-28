@@ -15,5 +15,6 @@ export const EvidenceSchema = z.strictObject({
   sources: z.array(SourceRefSchema),
   scope: z.string().optional(),
   score: z.number().optional(),
+  preview: z.strictObject({ title: z.string(), summary: z.string() }).optional(),
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;

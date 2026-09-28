@@ -1,11 +1,13 @@
 // QQ observation text: storage, retention sweep and the "offered to consolidation"
 // marker. See qq-retention.ts for why text and dedup identity have separate lives.
 
+import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, lte, max } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNull, lt, lte, max } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { fail } from "../errors";
 import type { QqMemoryScope } from "../services/qq-binding-contract";
+import type { QqContextMessage } from "../services/qq-context-contract";
 import {
   isObservationExpired,
   observationExpiresAt,
@@ -112,21 +114,16 @@ function mapMessageRows(
   });
 }
 
-/**
- * 水位缓冲用的老消息：窗口之外、且不早于**历史水位**的时刻，**从最早的开始**。
- *
- * 与时间线同一套字段与同一份映射，只是排序反过来、并且有上界——时间线要最新的，水位缓冲要最老的。
- * 只取**还有正文**的消息：正文过期那条没有可压的内容，留着它只会让每一轮都去撞同一段空、
- * 覆盖水位推不动。下界是闭区间：和"已压到的那条"同一秒的消息不能被永久跳过。
- */
+// 水位与查询同按 journal 序号排序，避免同秒随机 ID 或乱序时间戳跳过未压消息。
 export function conversationMessagesForBackfill(
   orm: Orm,
   scope: QqConversationScope,
-  input: { afterSeconds: number; beforeSeconds: number; limit: number },
-): QqConversationMessageRow[] {
+  input: { conversationId: string; afterSeq: number; beforeSeq: number; limit: number; at: string },
+): QqContextMessage[] {
   if (!Number.isInteger(input.limit) || input.limit <= 0) return [];
   const rows = orm
     .select({
+      seq: schema.conversationEvents.seq,
       eventKey: schema.qqEvents.eventKey,
       occurredAtSeconds: schema.qqEvents.occurredAtSeconds,
       speakerKind: schema.qqEvents.speakerKind,
@@ -139,6 +136,15 @@ export function conversationMessagesForBackfill(
       schema.qqObservationText,
       eq(schema.qqObservationText.eventKey, schema.qqEvents.eventKey),
     )
+    .innerJoin(
+      schema.conversationEvents,
+      and(
+        eq(schema.conversationEvents.sourceId, schema.qqEvents.eventKey),
+        eq(schema.conversationEvents.sourceKind, "qq_event"),
+        eq(schema.conversationEvents.kind, "inbound"),
+        eq(schema.conversationEvents.conversationId, input.conversationId),
+      ),
+    )
     .where(
       and(
         eq(schema.qqEvents.accountId, scope.accountId),
@@ -146,14 +152,77 @@ export function conversationMessagesForBackfill(
         eq(schema.qqEvents.peerId, scope.peerId),
         eq(schema.qqEvents.agentId, scope.agentId),
         inArray(schema.qqEvents.speakerKind, ["member", "anonymous"] as const),
-        gte(schema.qqEvents.occurredAtSeconds, input.afterSeconds),
-        lt(schema.qqEvents.occurredAtSeconds, input.beforeSeconds),
+        gt(schema.conversationEvents.seq, input.afterSeq),
+        lt(schema.conversationEvents.seq, input.beforeSeq),
+        gt(schema.qqObservationText.expiresAt, input.at),
       ),
     )
-    .orderBy(asc(schema.qqEvents.occurredAtSeconds), asc(schema.qqEvents.eventKey))
+    .orderBy(asc(schema.conversationEvents.seq))
     .limit(input.limit)
     .all();
-  return mapMessageRows(orm, rows, true);
+  const db = (orm as Orm & { $client: Database }).$client;
+  const own = db
+    .query(`SELECT MIN(j.seq) AS seq, s.id, s.spoke_at_seconds AS seconds, t.body, t.expires_at AS expiresAt
+    FROM conversation_events j, json_each(j.sources) refs
+    JOIN qq_speech_log s ON json_extract(refs.value,'$.kind')='qq_speech' AND json_extract(refs.value,'$.id')=s.id
+    JOIN qq_speech_text t ON t.speech_id=s.id
+    WHERE j.conversation_id=? AND j.kind='outbound' AND j.seq>? AND j.seq<? AND t.expires_at>?
+      AND s.account_id=? AND s.conversation_kind=? AND s.peer_id=? AND s.agent_id=?
+    GROUP BY s.id ORDER BY seq LIMIT ?`)
+    .all(
+      input.conversationId,
+      input.afterSeq,
+      input.beforeSeq,
+      input.at,
+      scope.accountId,
+      scope.conversationKind,
+      scope.peerId,
+      scope.agentId,
+      input.limit,
+    ) as { seq: number; id: string; seconds: number; body: string; expiresAt: string }[];
+  return [
+    ...rows.map((row) => ({
+      seq: row.seq,
+      message: {
+        occurredAtSeconds: row.occurredAtSeconds,
+        speaker: row.speakerKind === "anonymous" ? ("anonymous" as const) : ("member" as const),
+        speakerId: row.speakerId,
+        text: row.body,
+        mediaNotes: [],
+        mediaUnread: 0,
+        sources: [
+          {
+            kind: "qq_observation",
+            id: row.eventKey,
+            revision: createHash("sha256").update(row.body).digest("hex"),
+            expiresAt: row.expiresAt,
+          },
+        ],
+      },
+    })),
+    ...own.map((row) => ({
+      seq: row.seq,
+      message: {
+        occurredAtSeconds: row.seconds,
+        speaker: "assistant" as const,
+        speakerId: null,
+        text: row.body,
+        mediaNotes: [],
+        mediaUnread: 0,
+        sources: [
+          {
+            kind: "qq_speech",
+            id: row.id,
+            revision: createHash("sha256").update(row.body).digest("hex"),
+            expiresAt: row.expiresAt,
+          },
+        ],
+      },
+    })),
+  ]
+    .sort((left, right) => left.seq - right.seq)
+    .slice(0, input.limit)
+    .map((row) => row.message);
 }
 
 /**

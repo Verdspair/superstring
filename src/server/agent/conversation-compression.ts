@@ -7,7 +7,7 @@ import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { contextDumps, estimateMessages, validateContextIds } from "../modules/memory-query";
 import { estimateTokens } from "../services/token-estimate";
-import type { LeafAgentRuntime } from "./agent-runtime";
+import type { LeafAgentRuntime, RunBudget, RunUsage } from "./agent-runtime";
 import { readJsonBody } from "./agent-specs";
 import { uniqueSources } from "./context-engine";
 import { SUMMARY_RESULT_JSON_SCHEMA } from "./summary-contract";
@@ -64,6 +64,8 @@ export class ConversationCompressor {
       gateway: Pick<ModelGateway, "loadedContextCapacity">;
       owner: RunOwner;
       assertSources: (sources: readonly SourceRef[]) => void;
+      usage?: RunUsage;
+      budget?: RunBudget;
     },
   ) {}
 
@@ -198,6 +200,8 @@ export class ConversationCompressor {
           owner: this.options.owner,
           sources: refs,
           signal,
+          usage: this.options.usage,
+          budget: this.options.budget,
           messages: prepared.messages,
           validate: (text) => {
             const result = Result.parse(JSON.parse(readJsonBody(text)));

@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { AgentRuntime } from "../../agent/agent-runtime";
+import type { BuiltInAction } from "../../agent/built-in-actions";
 import { sourceAccess } from "../../agent/context-access";
 import type { ConversationHost } from "../../agent/conversation-host";
+import type { AgentTaskService } from "../../agent/task-service";
 import { observationRelevant } from "../../conversation/observation-relevance";
 import { OutboundDelivery } from "../../conversation/outbound-delivery";
 import { WakeScheduler } from "../../conversation/wake-scheduler";
@@ -23,6 +25,7 @@ import { qqStickerSelectionForScheme } from "../../services/qq-sticker-candidate
 import { qqStickerUsable } from "../../services/qq-sticker-contract";
 import type { QqStickerStore } from "../../services/qq-sticker-store";
 import { OneBot11Adapter } from "./adapter";
+import { BotCompressionQueue } from "./background-compression";
 import { OneBotHost } from "./bot-host";
 
 export interface BotConversationPolicy {
@@ -31,7 +34,10 @@ export interface BotConversationPolicy {
   retentionDays: number;
   retryDelayMs: number;
   maxAttempts: number;
+  /** 跨会话同时最多几条唤醒（会话内始终串行，由数据库租约保证）。 */
   globalConcurrency: number;
+  /** 进程级模型调用并发：本地模型服务保持 1，登记的外部服务可调大。 */
+  modelCallConcurrency: number;
 }
 
 export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
@@ -40,7 +46,10 @@ export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
   retentionDays: QQ_OBSERVATION_RETENTION_DAYS,
   retryDelayMs: 15_000,
   maxAttempts: 3,
-  globalConcurrency: 1,
+  // 0.4.0 起默认允许跨会话并发：一条慢请求不再堵住别的群；模型调用仍由
+  // `modelCallConcurrency` 单独封顶，所以本地单卡安装的实际模型流量与以前相同。
+  globalConcurrency: 4,
+  modelCallConcurrency: 1,
 };
 
 /** Production composition of protocol ingress, Agent activation and durable delivery. */
@@ -55,12 +64,20 @@ export function createOneBotConversationRuntime(options: {
   store: QqStickerStore;
   port: QqSendPort;
   wake: () => void;
-  policy?: Partial<BotConversationPolicy>;
+  /** 有效策略：函数形式＝每次读取（P7-c 执行配置）；缺省用内置初值。 */
+  policy?: Partial<BotConversationPolicy> | (() => Partial<BotConversationPolicy>);
   modules?: ModuleQueryFactory;
   resolveSource?: ModuleSourceResolver;
+  /** 外部（MCP）动作：每次唤醒现取；没有登记时返回空表。 */
+  externalActions?: () => readonly BuiltInAction[];
+  tasks?: AgentTaskService;
+  stickersEnabled?: () => boolean;
 }) {
   const { orm, db, journal } = options;
-  const policy = { ...DEFAULT_BOT_CONVERSATION_POLICY, ...options.policy };
+  const policy = (): BotConversationPolicy => ({
+    ...DEFAULT_BOT_CONVERSATION_POLICY,
+    ...(typeof options.policy === "function" ? options.policy() : options.policy),
+  });
   const wakes = new WakeRepository(db);
   const outbox = new OutboundIntentRepository(db);
   const adapter = new OneBot11Adapter({
@@ -70,15 +87,17 @@ export function createOneBotConversationRuntime(options: {
     wake: options.wake,
     telemetry: options.telemetry,
   });
+  const compression = new BotCompressionQueue();
   const host = new OneBotHost({
     ...options,
+    enqueueCompression: (job) => compression.enqueue(job),
     wakes,
     outbox,
     stickers: {
       counts: ["confirmed"],
       isAvailable: (asset) => options.store.copyExists(asset.fileName),
     },
-    policy: () => policy,
+    policy,
     onDiagnostic(event) {
       options.telemetry?.record("bot.host.feedback", {
         channel: "onebot11",
@@ -262,9 +281,9 @@ export function createOneBotConversationRuntime(options: {
       return {
         leaseMs,
         renewMs: Math.max(1, Math.floor(leaseMs / 3)),
-        retryDelayMs: policy.retryDelayMs,
-        maxAttempts: policy.maxAttempts,
-        globalConcurrency: policy.globalConcurrency,
+        retryDelayMs: policy().retryDelayMs,
+        maxAttempts: policy().maxAttempts,
+        globalConcurrency: policy().globalConcurrency,
       };
     },
     async activate(wake, signal) {
@@ -275,5 +294,5 @@ export function createOneBotConversationRuntime(options: {
   });
   delivery.recover();
   delivery.housekeep();
-  return { adapter, scheduler, delivery, outbox };
+  return { adapter, scheduler, delivery, outbox, compression };
 }

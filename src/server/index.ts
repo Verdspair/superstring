@@ -74,6 +74,10 @@ const runtime = await (async () => {
       // The transport token is sealed with this key. Passing the resolved layout path is what keeps
       // it under the installation's own state directory instead of the development default.
       qqTransportKeyPath: layout?.paths.qqTransportKey,
+      mcpConfigPath: layout?.paths.mcpServers ?? path.resolve("local/config/mcp-servers.json"),
+      permissionConfigPath:
+        layout?.paths.permissions ?? path.resolve("local/config/permissions.json"),
+      skillRoot: layout?.paths.skills ?? path.resolve("local/config/skills"),
       businessMigrationSql: layout?.businessMigrationSql,
     });
   } catch (error) {

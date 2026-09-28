@@ -23,6 +23,11 @@ import * as schema from "./schema";
 export interface OpenConnectionOptions {
   /** File path for a persistent database. Omit (or ":memory:") for in-memory. */
   path?: string;
+  /**
+   * 已迁移库的序列化字节（测试用模板）。给了它就不再从空库开始，而是直接还原这份快照；
+   * pragma 仍由这里统一施加（`Database.deserialize` 出来的连接不带连接级设置）。
+   */
+  serialized?: Uint8Array;
 }
 
 export interface BusinessDbHandle {
@@ -34,7 +39,7 @@ export interface BusinessDbHandle {
 /** Open a raw connection with the required pragmas applied (no schema gating). */
 export function openConnection(opts?: OpenConnectionOptions): Database {
   const path = opts?.path ?? ":memory:";
-  const db = new Database(path);
+  const db = opts?.serialized ? Database.deserialize(opts.serialized) : new Database(path);
   try {
     // Connection-local only; persistent journal changes belong after the gate.
     db.run("PRAGMA foreign_keys = ON");

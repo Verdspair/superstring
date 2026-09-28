@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type {
@@ -11,6 +12,7 @@ import type {
   RunStatus,
 } from "../../shared/contracts/agent-run";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import type { ExecutionMode } from "../../shared/contracts/permissions";
 import { AgentRunRepository } from "../db/agent-run-repository";
 import { openBusinessDb } from "../db/schema-gate";
 import type { ChatMessage } from "../llm/model-gateway";
@@ -27,6 +29,7 @@ import type {
   TraceScope,
 } from "../observability/runtime-telemetry";
 import { unicodeStrip } from "../services/text";
+import { ActionExecutor } from "./action-executor";
 import {
   AGENT_DECISION_JSON_SCHEMA,
   AgentDecisionSchema,
@@ -36,7 +39,9 @@ import {
   type OutputDraft,
   parseAgentDecision,
 } from "./agent-specs";
-import type { BuiltInAction } from "./built-in-actions";
+import type { ActionContext, BuiltInAction } from "./built-in-actions";
+import { createCodeMode } from "./code-mode";
+import type { CodeRunner, CodeRunnerLimits } from "./code-runner";
 import {
   type ActionObservation,
   ContextEngine,
@@ -47,12 +52,17 @@ import {
   uniqueSources,
 } from "./context-engine";
 import { createModelPort, type ModelPort, type TextModelGateway, textMessages } from "./model-port";
+import { createResearchAction, type ResearchLimits } from "./research-action";
+import { createToolCatalog } from "./tool-catalog";
 
 export interface LeafInput {
   messages: ChatMessage[];
   owner: RunOwner;
   signal?: AbortSignal;
   sources?: readonly SourceRef[];
+  /** 与父 run 共用同一本账（可选）：叶子花的钱算进整棵树。 */
+  usage?: RunUsage;
+  budget?: RunBudget;
   onEvent?: (event: RunEvent) => void | Promise<void>;
   /** Existing domain parser executes inside the persisted step's success boundary. */
   validate?: (text: string) => unknown;
@@ -82,8 +92,12 @@ export interface ConversationInput {
   conversationId?: string;
   requestId?: string;
   onEvent?: (event: RunEvent) => void | Promise<void>;
+  /** 整棵任务树共用的一本账与它的上限（0.4.0 P3）；省略＝只记这个 run 自己的账。 */
+  usage?: RunUsage;
+  budget?: RunBudget;
   /** Host-bound scope/budget handlers, never derived from model arguments. */
   actions?: readonly BuiltInAction[];
+  executionMode?: ExecutionMode;
   onContext?: (
     context: RenderedContext,
     input: { runId: string; phase: "next" | "generate" },
@@ -93,6 +107,12 @@ export interface ConversationInput {
     draft: OutputDraft,
     ordinal: number,
   ) => Promise<{ outputId: string } | { blocked: true; code: string }>;
+  /**
+   * 「被程序挡下」不等于「运行失败」（0.4.0 P4 §4.1）：许可不通过时这一轮该**静默结束**
+   * （`no_output`），而不是整轮失败并触发唤醒重试。只有这里列出的码享有这个语义——
+   * 别的 blocked（重复目标、未授权目标、贴图超额）照旧按失败处理，免得把模型犯错也吞掉。
+   */
+  silentBlockCodes?: readonly string[];
   /** Trusted host configuration and explicit phase view for this authorized output. */
   prepareGeneration?: (
     draft: Extract<OutputDraft, { kind: "generate" }>,
@@ -132,8 +152,25 @@ export interface ConversationRunResult {
   status: "completed" | "no_output";
   outputs: readonly PreparedOutput[];
 }
+/**
+ * 一次任务树的用量与预算（0.4.0 P3"按任务树计预算"）。
+ *
+ * `usage` 是一本**可共享的账**：父 run 与它派生的叶子调用（判断、选图、媒体、压缩…）传同一个对象，
+ * 所以"一次唤醒 ＋ 它的所有子调用"花掉多少是一笔总账；不给 `budget` 时只记账、不拦。
+ */
+export interface RunUsage {
+  calls: number;
+  inputUnits: number;
+}
+export interface RunBudget {
+  maxCalls?: number;
+  maxInputUnits?: number;
+}
+
 interface Running {
   runId: string;
+  usage: RunUsage;
+  budget?: RunBudget;
   spec: LeafAgentSpec;
   signal: AbortSignal;
   callerSignal?: AbortSignal;
@@ -143,6 +180,22 @@ interface Running {
   conversationId?: string;
   onEvent?: (event: RunEvent) => void | Promise<void>;
   dispose(): void;
+  assertActions?: () => void;
+}
+
+/** 调用的稳定签名：键排序后再序列化，用来识别"同一调用被原样重复"。 */
+function callSignature(name: string, args: Record<string, unknown>): string {
+  const sort = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sort);
+    if (value !== null && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, entry]) => [key, sort(entry)]),
+      );
+    return value;
+  };
+  return `${name}\u0000${JSON.stringify(sort(args))}`;
 }
 
 export class AgentRuntimeError extends Error {
@@ -157,19 +210,40 @@ export class AgentRuntimeError extends Error {
 
 /** One inference owner for leaf tasks and iterative conversations. No channel sends here. */
 export class AgentRuntime {
+  private readonly taskTree = new AsyncLocalStorage<{
+    usage: RunUsage;
+    budget?: RunBudget;
+    signal: AbortSignal;
+  }>();
   private readonly contextEngine: ContextEngine;
+  private readonly executor: ActionExecutor;
   private readonly actions: Map<string, BuiltInAction>;
   constructor(
     private readonly options: {
       model: ModelPort;
       repository: AgentRunRepository;
       actions?: readonly BuiltInAction[];
+      actionExecutor?: ActionExecutor;
       contextEngine?: ContextEngine;
       now?: () => string;
       telemetry?: RuntimeTelemetry;
+      researchEnabled?: () => boolean;
+      /** 研究子任务的有效限额；函数形式＝每个父轮重新读取（P7-c 执行配置）。 */
+      researchLimits?: () => ResearchLimits;
+      /** 无进展终止阈值：第 N 次同签名调用结束这一轮（默认 3）。 */
+      noProgressLimit?: () => number;
+      codeMode?: {
+        runner: CodeRunner;
+        enabled(): boolean;
+        supportsModel(model: string | undefined): boolean;
+        /** 沙箱限额；函数形式＝每次编排重新读取。 */
+        limits?: () => Partial<CodeRunnerLimits>;
+      };
     },
   ) {
     this.contextEngine = options.contextEngine ?? new ContextEngine();
+    this.executor = options.actionExecutor ?? new ActionExecutor();
+    createToolCatalog(options.actions ?? []);
     this.actions = new Map(
       (options.actions ?? []).map((action) => [action.description.name, action]),
     );
@@ -304,18 +378,108 @@ export class AgentRuntime {
     spec: AgentSpec,
     input: ConversationInput,
   ): Promise<ConversationRunResult> {
-    const observations: ActionObservation[] = [];
-    const actions = input.actions
-      ? new Map(input.actions.map((action) => [action.description.name, action]))
-      : this.actions;
+    const originalActions = spec.availableActions;
     try {
+      const observations: ActionObservation[] = [];
+      const mode = input.executionMode ?? "direct";
+      const baseActions = (input.actions ?? [...this.actions.values()]).filter((action) =>
+        originalActions.some(
+          (descriptor) =>
+            descriptor.name === action.description.name &&
+            descriptor.capability === action.description.capability,
+        ),
+      );
+      const extensions: BuiltInAction[] = [];
+      if (mode === "direct" && this.options.researchEnabled?.())
+        extensions.push(
+          createResearchAction({
+            runtime: this,
+            executor: this.executor,
+            spec,
+            input,
+            actions: baseActions,
+            limits: this.options.researchLimits?.(),
+          }),
+        );
+      const code = this.options.codeMode;
+      if (
+        mode === "direct" &&
+        code?.enabled() &&
+        code.runner.available &&
+        code.supportsModel(spec.model)
+      ) {
+        const program = createCodeMode({
+          actions: baseActions.filter((action) =>
+            this.executor.allowed(action, { owner: input.owner, signal: active.signal }, "sandbox"),
+          ),
+          runner: code.runner,
+          executor: this.executor,
+          telemetry: this.telemetry,
+          limits: code.limits?.(),
+          assertSources: (sources) => input.context.assertSources?.(sources),
+          assertCurrent: () => {
+            if (!code.runner.available || !code.supportsModel(spec.model))
+              throw new AgentRuntimeError(
+                "CODE_EXECUTION_UNAVAILABLE",
+                "Code execution was disabled",
+              );
+            input.context.assertCurrent?.();
+          },
+        }).action;
+        if (program)
+          extensions.push({
+            ...program,
+            assertAvailable: () => {
+              program.assertAvailable?.();
+              if (!code.runner.available || !code.supportsModel(spec.model))
+                throw new AgentRuntimeError(
+                  "CODE_EXECUTION_UNAVAILABLE",
+                  "Code execution was disabled",
+                );
+            },
+          });
+      }
+      const descriptors = [...originalActions, ...extensions.map((action) => action.description)];
+      if (extensions.length) {
+        input = { ...input, actions: [...baseActions, ...extensions] };
+        input.context.configureActions?.(descriptors);
+      }
+      // 实际用了哪一种编排写进运行追踪（B06）：direct 与 code/research 扩展可对比。
+      active.trace?.update({
+        details: {
+          orchestration: extensions.length ? "extended" : "direct",
+          executionMode: mode,
+          actionCount: descriptors.length,
+        },
+      });
+      /** 调用签名 → 已出现次数（无进展检测）：跨步累计，整轮有效。 */
+      const callSignatures = new Map<string, number>();
+      const actions = input.actions
+        ? new Map(input.actions.map((action) => [action.description.name, action]))
+        : this.actions;
+      const actionContext: ActionContext = {
+        owner: input.owner,
+        signal: active.signal,
+        runId: active.runId,
+        requestId: input.requestId,
+      };
+      const usedActions = new Set<BuiltInAction>();
+      active.assertActions = () => {
+        for (const action of usedActions) this.executor.assert(action, actionContext, mode);
+      };
+      createToolCatalog(input.actions ?? [...actions.values()]);
       await this.emit(active, {
         type: "started",
         ...(input.requestId ? { requestId: input.requestId } : {}),
       });
       for (;;) {
+        active.assertActions();
         this.checkStepBudget(active, spec);
         this.repository.setStatus(active.runId, "deciding", this.now());
+        const availableActions = descriptors.filter((descriptor) => {
+          const action = actions.get(descriptor.name);
+          return !action || this.executor.allowed(action, actionContext, mode);
+        });
         const context = await this.trace(
           active,
           "agent.context",
@@ -327,7 +491,7 @@ export class AgentRuntime {
             const material = await input.context.read({ signal: active.signal, observations });
             active.signal.throwIfAborted();
             const rendered = this.contextEngine.render(
-              spec,
+              { ...spec, availableActions },
               material,
               observations,
               input.authorizedTargets,
@@ -363,7 +527,7 @@ export class AgentRuntime {
               responseSchema: AGENT_DECISION_JSON_SCHEMA,
               // 已广告的动作同时以原生 tools 声明（issue #10）：模型用它表达 invoke，正文只剩
               // final/none。是否真的发送由网关决定——外部路由发，本地服务保持冻结的 JSON 决策。
-              tools: spec.availableActions.map((action) => ({
+              tools: availableActions.map((action) => ({
                 name: action.name,
                 description: action.description,
                 parameters: action.parameters,
@@ -410,49 +574,96 @@ export class AgentRuntime {
           return { runId: active.runId, status: "no_output", outputs: [] };
         }
         if (decision.kind === "invoke") {
-          const descriptor = spec.availableActions.find((action) => action.name === decision.name);
-          const action = actions.get(decision.name);
-          if (!descriptor || !action || descriptor.capability !== action.description.capability) {
-            throw new AgentRuntimeError(
-              "AGENT_ACTION_UNAVAILABLE",
-              "Action is not available to this Agent",
-            );
-          }
+          // 一批调用（0.4.0 P2）：先整体校验再执行——任何一条不可用就整批拒绝，
+          // 不留"执行了一半"的状态。只读的并行，有副作用的串行且保持模型给的顺序。
+          const planned = decision.calls.map((call) => {
+            const descriptor = availableActions.find((action) => action.name === call.name);
+            const action = actions.get(call.name);
+            if (!descriptor || !action || descriptor.capability !== action.description.capability)
+              throw new AgentRuntimeError(
+                "AGENT_ACTION_UNAVAILABLE",
+                "Action is not available to this Agent",
+              );
+            const seen = (callSignatures.get(callSignature(call.name, call.arguments)) ?? 0) + 1;
+            callSignatures.set(callSignature(call.name, call.arguments), seen);
+            // 无进展：同一步里原样重复的倒数第二次仍执行（模型可能确实需要），但把"换个做法"写进观测；
+            // 达到阈值就结束这一轮——它已经不是在用结果，而是在原地打转。
+            const noProgressLimit = Math.max(3, this.options.noProgressLimit?.() ?? 3);
+            if (seen >= noProgressLimit)
+              throw new AgentRuntimeError(
+                "AGENT_NO_PROGRESS",
+                "The same tool call keeps repeating without progress",
+              );
+            return {
+              call,
+              action,
+              effect: action.description.effect ?? "write",
+              repeat: seen === noProgressLimit - 1,
+            };
+          });
           this.repository.setStatus(active.runId, "observing", this.now());
-          const result = await this.trace(
+          const settled = await this.trace<
+            Map<(typeof planned)[number], Omit<ActionObservation, "id" | "name">>
+          >(
             active,
             "agent.action",
             {
               stage: "action",
               sources: context.sources,
-              details: { action: decision.name },
+              details: { actions: planned.map((entry) => entry.call.name).join(",") },
             },
             async (scope) => {
-              const result = await action.execute(decision.arguments, {
-                owner: input.owner,
-                signal: active.signal,
-              });
+              const values = await this.executor.executeBatch(
+                planned.map((entry) => ({ action: entry.action, arguments: entry.call.arguments })),
+                { ...actionContext, sources: context.sources },
+                { mode, assertCurrent: () => input.context.assertCurrent?.() },
+              );
+              const results = new Map(
+                planned.map((entry, index) => {
+                  usedActions.add(entry.action);
+                  return [entry, values[index]] as const;
+                }),
+              );
+              const reads = planned.filter((entry) => entry.effect === "read");
+              const writes = planned.filter((entry) => entry.effect !== "read");
               scope?.update({
-                sources: uniqueSources([...context.sources, ...result.sources]),
-                details: { sourceCount: result.sources.length },
+                sources: uniqueSources([
+                  ...context.sources,
+                  ...planned.flatMap((entry) => results.get(entry)?.sources ?? []),
+                ]),
+                details: {
+                  actionCount: planned.length,
+                  readCount: reads.length,
+                  writeCount: writes.length,
+                },
               });
-              return result;
+              return results;
             },
           );
-          active.signal.throwIfAborted();
-          const observation = {
-            ...result,
-            id: randomUUID(),
-            name: decision.name,
-            arguments: decision.arguments,
-            sources: uniqueSources([...context.sources, ...result.sources]),
-          };
-          observations.push(observation);
-          await this.emit(active, {
-            type: "action_result",
-            name: decision.name,
-            observationId: observation.id,
-          });
+          for (const entry of planned) {
+            const result = settled.get(entry);
+            if (!result)
+              throw new AgentRuntimeError("AGENT_ACTION_UNAVAILABLE", "Action produced no result");
+            const observation = {
+              ...result,
+              ...(entry.repeat
+                ? { repeatWarning: "同一个调用这是第 2 次：换个做法，不要原样重试" }
+                : {}),
+              id: randomUUID(),
+              name: entry.call.name,
+              arguments: entry.call.arguments,
+              // 只带**这次结果自己的**来源：k 条观测不再各复制一遍上下文来源（元数据重复是上下文
+              // 膨胀的来源之一）。归属没有丢——"这条结果是在哪些来源之下产生的"由这一步的上下文
+              // 快照记一次（`context_snapshots.source_refs`，`repository.getContext` 可读）。
+              sources: uniqueSources([...result.sources]),
+            };
+            observations.push(observation);
+            await this.emit(active, {
+              type: "action_result",
+              name: entry.call.name,
+              observationId: observation.id,
+            });
+          }
           continue;
         }
         if (
@@ -637,6 +848,16 @@ export class AgentRuntime {
           continue;
         }
         if (!outputs.some((output) => output.status === "prepared")) {
+          const silent = new Set(input.silentBlockCodes ?? []);
+          const allSilent =
+            silent.size > 0 &&
+            outputs.length > 0 &&
+            outputs.every((output) => output.status === "blocked" && silent.has(output.code ?? ""));
+          if (allSilent) {
+            // 许可不通过＝这一轮不开口：静默结束，不进失败与重试。
+            await this.commitAndFinish(active, input, outputs, "no_output", { type: "no_output" });
+            return { runId: active.runId, status: "no_output", outputs };
+          }
           throw new AgentRuntimeError("AGENT_OUTPUT_FAILED", "No output could be prepared");
         }
         const summaries = outputs.map(({ outputId, targetId, status, code }) => ({
@@ -655,6 +876,7 @@ export class AgentRuntime {
       await this.fail(active, error, input.commitFailure);
       throw error;
     } finally {
+      input.context.configureActions?.(originalActions);
       active.dispose();
     }
   }
@@ -667,6 +889,9 @@ export class AgentRuntime {
       onEvent?: Running["onEvent"];
       conversationId?: string;
       sources?: readonly SourceRef[];
+      /** 共享给整棵任务树的账本；省略＝这个 run 自己一本。 */
+      usage?: RunUsage;
+      budget?: RunBudget;
     },
   ): Running {
     const deadline = new AbortController();
@@ -680,8 +905,12 @@ export class AgentRuntime {
               ),
             spec.limits.deadlineMs,
           );
-    const signal = input.signal
-      ? AbortSignal.any([input.signal, deadline.signal])
+    const parent = this.taskTree.getStore();
+    const callerSignal = parent
+      ? AbortSignal.any([parent.signal, ...(input.signal ? [input.signal] : [])])
+      : input.signal;
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, deadline.signal])
       : deadline.signal;
     const runId = randomUUID();
     this.repository.createRun({
@@ -708,11 +937,13 @@ export class AgentRuntime {
     });
     return {
       runId,
+      usage: parent?.usage ?? input.usage ?? { calls: 0, inputUnits: 0 },
+      budget: parent?.budget ?? input.budget,
       spec,
       signal,
       trace,
       channel,
-      callerSignal: input.signal,
+      callerSignal,
       stepNo: 0,
       conversationId: input.conversationId,
       onEvent: input.onEvent,
@@ -733,12 +964,59 @@ export class AgentRuntime {
     outputId?: string,
   ): Promise<T> {
     active.signal.throwIfAborted();
+    active.assertActions?.();
+    const units = inputUnits(messages);
     const limit = stepSpec.limits?.inputUnits;
-    if (limit !== undefined && inputUnits(messages) > limit)
+    if (limit !== undefined && units > limit) {
+      // 拒绝发生在建 step 之前——没有这一步的模型记录，所以把码与量留在观测里（B06）。
+      this.telemetry?.record("agent.budget", {
+        channel: active.channel,
+        stage: "run",
+        status: "failed",
+        code: "AGENT_CONTEXT_LIMIT",
+        runId: active.runId,
+        sources,
+        details: {
+          inputUnits: units,
+          inputLimit: limit,
+          stepNo: active.stepNo,
+          rejected: "context",
+        },
+      });
       throw new AgentRuntimeError(
         "AGENT_CONTEXT_LIMIT",
         "Context exceeds the configured input budget",
       );
+    }
+    // 记账与拦限都在这里：每一次模型调用（含叶子）都经过 step，是唯一不会漏的地方。
+    active.usage.calls += 1;
+    active.usage.inputUnits += units;
+    const budget = active.budget;
+    if (
+      (budget?.maxCalls !== undefined && active.usage.calls > budget.maxCalls) ||
+      (budget?.maxInputUnits !== undefined && active.usage.inputUnits > budget.maxInputUnits)
+    ) {
+      this.telemetry?.record("agent.budget", {
+        channel: active.channel,
+        stage: "run",
+        status: "failed",
+        code: "AGENT_BUDGET_EXCEEDED",
+        runId: active.runId,
+        sources,
+        details: {
+          calls: active.usage.calls,
+          inputUnits: active.usage.inputUnits,
+          maxCalls: budget?.maxCalls ?? null,
+          maxInputUnits: budget?.maxInputUnits ?? null,
+          stepNo: active.stepNo,
+          rejected: "tree-budget",
+        },
+      });
+      throw new AgentRuntimeError(
+        "AGENT_BUDGET_EXCEEDED",
+        "This task tree has used its whole model budget",
+      );
+    }
     const stepId = randomUUID();
     const now = this.now();
     this.repository.startStep({
@@ -799,7 +1077,9 @@ export class AgentRuntime {
             scope?.update({
               details: {
                 decision: decision.kind,
-                ...(decision.kind === "invoke" ? { action: decision.name } : {}),
+                ...(decision.kind === "invoke"
+                  ? { actions: decision.calls.map((call) => call.name).join(",") }
+                  : {}),
                 ...(decision.kind === "final" ? { outputCount: decision.outputs.length } : {}),
               },
             });
@@ -844,7 +1124,16 @@ export class AgentRuntime {
           try {
             const snapshot = this.repository.getRun(active.runId);
             const status = snapshot?.endedAt ? snapshot.status : "failed";
-            active.trace.update({ details: { stepCount: active.stepNo } });
+            // 预算与累计用量按任务树投影（B06）：上限与实耗都写在这一层，不把估算单位说成账单。
+            active.trace.update({
+              details: {
+                stepCount: active.stepNo,
+                usageCalls: active.usage.calls,
+                usageInputUnits: active.usage.inputUnits,
+                budgetMaxCalls: active.budget?.maxCalls ?? null,
+                budgetMaxInputUnits: active.budget?.maxInputUnits ?? null,
+              },
+            });
             active.trace.end(
               status === "completed" || status === "no_output" || status === "cancelled"
                 ? status
@@ -861,7 +1150,10 @@ export class AgentRuntime {
         }
       }
     };
-    return active.trace ? active.trace.within(execute) : execute();
+    return this.taskTree.run(
+      { usage: active.usage, budget: active.budget, signal: active.signal },
+      () => (active.trace ? active.trace.within(execute) : execute()),
+    );
   }
 
   private trace<T>(
@@ -917,6 +1209,7 @@ export class AgentRuntime {
     status: "completed" | "no_output",
     payload: RunEventPayload,
   ): Promise<void> {
+    active.assertActions?.();
     const committed = await this.trace(
       active,
       "agent.commit",
@@ -1022,7 +1315,8 @@ function errorCode(error: unknown): string {
 
 function decisionMetadata(value: unknown): unknown {
   const decision = AgentDecisionSchema.parse(value);
-  if (decision.kind === "invoke") return { kind: decision.kind, name: decision.name };
+  if (decision.kind === "invoke")
+    return { kind: decision.kind, names: decision.calls.map((call) => call.name).join(",") };
   if (decision.kind === "final")
     return {
       kind: decision.kind,
@@ -1037,8 +1331,24 @@ export function createAgentRuntime(options: {
   vision?: VisionClient;
   repository: AgentRunRepository;
   actions?: readonly BuiltInAction[];
+  actionExecutor?: ActionExecutor;
   contextEngine?: ContextEngine;
   telemetry?: RuntimeTelemetry;
+  researchEnabled?: () => boolean;
+  researchLimits?: () => ResearchLimits;
+  noProgressLimit?: () => number;
+  codeMode?: {
+    runner: CodeRunner;
+    enabled(): boolean;
+    supportsModel(model: string | undefined): boolean;
+    limits?: () => Partial<CodeRunnerLimits>;
+  };
+  /** 进程级模型调用并发（见 `createModelPort`）；省略＝不限，与旧行为一致。 */
+  modelCallConcurrency?: number | (() => number);
+  /** 每个服务单独的并发上限；省略＝不限（沿用旧行为）。 */
+  providerConcurrency?: number | (() => number);
+  /** 模型名 → 服务键；省略＝全部模型共用一个名额池。 */
+  providerKey?: (model: string | undefined) => string;
 }): AgentRuntime {
   return new AgentRuntime({ ...options, model: createModelPort(options) });
 }

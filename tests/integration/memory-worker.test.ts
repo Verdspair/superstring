@@ -139,7 +139,13 @@ const VALID_DRAFT_JSON = JSON.stringify(VALID_DRAFT);
 
 // Fixtures
 
-function setup(options: { heartbeatIntervalMs?: number; jobTimeoutMs?: number } = {}) {
+function setup(
+  options: {
+    heartbeatIntervalMs?: number;
+    jobTimeoutMs?: number | (() => number);
+    enabled?: () => boolean;
+  } = {},
+) {
   const business = openBusinessDb();
   ensureDefaults(business.orm, MODEL);
   const gateway = new WorkerGateway();
@@ -150,6 +156,7 @@ function setup(options: { heartbeatIntervalMs?: number; jobTimeoutMs?: number } 
     pollIntervalMs: 5,
     heartbeatIntervalMs: options.heartbeatIntervalMs ?? 5,
     jobTimeoutMs: options.jobTimeoutMs ?? 2_000,
+    enabled: options.enabled,
   });
   return { business, orm: business.orm, gateway, service };
 }
@@ -690,6 +697,43 @@ describe("auto scheduling", () => {
 // Job execution
 
 describe("job execution", () => {
+  it("finishes an active memory job and retains queued work until resumed", async () => {
+    let enabled = true;
+    const ctx = setup({ enabled: () => enabled, jobTimeoutMs: () => 2_000 });
+    try {
+      const sessionId = newSession(ctx.orm);
+      const firstTurn = completedTurn(ctx.orm, sessionId, "pause-one");
+      const secondTurn = completedTurn(ctx.orm, sessionId, "pause-two");
+      const first = enqueue(ctx.orm, AGENT_ID, "pause-first", {
+        kind: "manual",
+        sessionId,
+        turnIds: [firstTurn],
+      });
+      ctx.gateway.replies = ["block", JSON.stringify({ memory: null })];
+      const running = ctx.service.runJob(first.id);
+      for (let i = 0; i < 50 && !ctx.gateway.blocked; i++) await delay(5);
+      expect(ctx.gateway.blocked).toBe(true);
+      enabled = false;
+      ctx.gateway.release(JSON.stringify({ memory: null }));
+      await running;
+      expect(jobs(ctx.orm).find((job) => job.id === first.id)?.status).toBe("succeeded");
+      const second = enqueue(ctx.orm, AGENT_ID, "pause-second", {
+        kind: "manual",
+        sessionId,
+        turnIds: [secondTurn],
+      });
+      expect(await ctx.service.runCycle()).toBe(false);
+      await ctx.service.runJob(second.id);
+      expect(jobs(ctx.orm).find((job) => job.id === second.id)?.status).toBe("queued");
+      enabled = true;
+      expect(await ctx.service.runCycle()).toBe(true);
+      expect(jobs(ctx.orm).find((job) => job.id === second.id)?.status).toBe("succeeded");
+    } finally {
+      await ctx.service.stop();
+      ctx.business.close();
+    }
+  });
+
   it("runs a queued auto job end to end and publishes an entry with its sources", async () => {
     const { orm, gateway, service } = setup();
     const sessionId = newSession(orm);

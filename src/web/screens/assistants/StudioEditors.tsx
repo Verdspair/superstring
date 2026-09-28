@@ -8,6 +8,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -15,8 +16,10 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { translateNotice } from "@/i18n";
+import { startRead } from "@/services/read-task";
 import type { AgentDraft } from "@/state/types";
 import { useSuperstringStore } from "@/store";
+import { executionPolicy, toolExecutionEnabled } from "../../../shared/contracts/permissions";
 import { compilePersona } from "../../../shared/contracts/persona-compile";
 
 export function IdentityEditor() {
@@ -126,6 +129,90 @@ export function IdentityEditor() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/**
+ * 本 Agent 的有效工具范围（P7-d）：只读投影 + 跳转到统一授权。
+ * 不复制全局设置，也不在这里改授权——范围与批准的唯一编辑入口是「工具授权」。
+ */
+function AgentToolScope({ agentId }: { agentId: string }) {
+  const t = useTranslation().t;
+  const s = useSuperstringStore();
+  const open = s.openSettingsRoute;
+  const [scope, setScope] = useState<{ approved: string[]; pending: number } | null>(null);
+  const [scopeError, setScopeError] = useState("");
+  useEffect(() => {
+    setScope(null);
+    setScopeError("");
+    if (s.editorAgentId === "__new__") {
+      setScope(null);
+      return;
+    }
+    const task = startRead((signal) => s.apiClient.getPermissions(signal), {
+      success: (value) => {
+        const execution = executionPolicy(value.policy);
+        const mine = value.resources.flatMap((resource) => {
+          const grant = value.policy.grants.find((entry) => entry.resource === resource.resource);
+          if (
+            !grant ||
+            (grant.agentIds && !grant.agentIds.includes(agentId)) ||
+            !toolExecutionEnabled(execution, resource.name)
+          )
+            return [];
+          if (grant.revision !== undefined && grant.revision !== resource.revision) return [];
+          if (resource.effect === "write" && !execution.modules.tasks) return [];
+          return [
+            { resource: resource.resource, approved: !resource.approvalRequired || grant.approved },
+          ];
+        });
+        setScope({
+          approved: mine.filter((grant) => grant.approved).map((grant) => grant.resource),
+          pending: mine.filter((grant) => !grant.approved).length,
+        });
+      },
+      failure: (error) => setScopeError(error instanceof Error ? error.message : String(error)),
+    });
+    return () => task.cancel();
+  }, [agentId, s.apiClient, s.editorAgentId]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("library.tools.for.agent")}</CardTitle>
+        <CardDescription>{t("library.tools.for.agent.hint")}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {scope?.approved.length ? (
+          <div className="flex flex-wrap gap-2">
+            {scope.approved.map((resource) => (
+              <Badge key={resource} variant="secondary" className="font-mono text-xs">
+                {resource}
+              </Badge>
+            ))}
+          </div>
+        ) : (
+          <p
+            role={scopeError ? "alert" : "status"}
+            className={scopeError ? "text-sm text-destructive" : "text-sm text-muted-foreground"}
+          >
+            {scopeError ||
+              t(
+                scope === null && s.editorAgentId !== "__new__"
+                  ? "library.loading"
+                  : "library.tools.none",
+              )}
+          </p>
+        )}
+        {!!scope?.pending && (
+          <p className="text-xs text-muted-foreground">
+            {t("library.tools.pending", { "0": scope.pending })}
+          </p>
+        )}
+        <Button variant="outline" onClick={() => open("tool-grants")}>
+          {t("library.tools.manage")}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -307,6 +394,7 @@ export function CapabilityEditor() {
             </Accordion>
           </CardContent>
         </Card>
+        <AgentToolScope agentId={editor.agent.id} />
       </div>
       {confirmDefault && defaultModel && (
         <ConfirmDialog

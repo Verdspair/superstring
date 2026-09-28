@@ -4,6 +4,17 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
+import {
+  ContextBuilder,
+  type ContextDiagnostic,
+  contextDumps,
+  contextKeywords,
+  estimateMessages,
+  estimateTokens,
+  SELECTION_JSON_SCHEMA,
+  SUMMARY_RESULT_JSON_SCHEMA,
+  validateContextIds,
+} from "../../src/server/agent/conversation-context";
 import { createApp } from "../../src/server/app";
 import { WebContextSource } from "../../src/server/channels/web-context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
@@ -32,17 +43,6 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
-import {
-  ContextBuilder,
-  type ContextDiagnostic,
-  contextDumps,
-  contextKeywords,
-  estimateMessages,
-  estimateTokens,
-  SELECTION_JSON_SCHEMA,
-  SUMMARY_RESULT_JSON_SCHEMA,
-  validateContextIds,
-} from "../../src/server/services/context-builder";
 import { unicodeStrip } from "../../src/server/services/text";
 
 const MODEL = "qwen/qwen3-4b-2507";
@@ -736,6 +736,23 @@ describe("R4 ContextBuilder end-to-end", () => {
       ).toBe(material);
       expect(ctx.gateway.completeCalls).toHaveLength(calls);
       if (mode !== "off") {
+        const query = sourceAdapter.actions.find(
+          (action) => action.description.name === "memory.query",
+        );
+        const read = sourceAdapter.actions.find(
+          (action) => action.description.name === "memory.read",
+        );
+        if (!query || !read) throw new Error("missing evidence actions");
+        const actionContext = {
+          owner: { kind: "test", id: "test" },
+          signal: new AbortController().signal,
+        };
+        const result = await query.execute({ query: "共同主题" }, actionContext);
+        const entry = (result.value as { items: { bodyRef: string }[] }).items[0];
+        expect(JSON.stringify(result.value)).not.toContain("共同主题正文");
+        expect(
+          JSON.stringify((await read.execute({ bodyRef: entry.bodyRef }, actionContext)).value),
+        ).toContain("共同主题正文");
         ctx.orm
           .update(schema.memoryEntries)
           .set({ body: "changed after first next" })
@@ -747,6 +764,135 @@ describe("R4 ContextBuilder end-to-end", () => {
       }
     });
   }
+
+  it("charges paged Web knowledge reads to the cumulative knowledge allowance", async () => {
+    const ctx = setup();
+    const sessionId = newSession(ctx.orm);
+    const current = activeTurn(ctx.orm, sessionId, "paged-knowledge", "question");
+    const runtime = {
+      ...current.prepared.runtime,
+      p5_config: { ...current.prepared.runtime.p5_config, retrieval_mode: "off" as const },
+    };
+    if (!runtime.knowledge_read) throw new Error("missing knowledge settings");
+    runtime.knowledge_read = { ...runtime.knowledge_read, budget: 1700 };
+    const agentRuntime = createAgentRuntime({
+      gateway: ctx.gateway,
+      repository: new AgentRunRepository(ctx.business.db),
+    });
+    const adapter = new WebContextSource({
+      db: ctx.business.db,
+      orm: ctx.orm,
+      gateway: ctx.gateway,
+      agentRuntime,
+      builder: null,
+      runtime,
+      sessionId,
+      turnId: current.turn.id,
+      generationToken: current.prepared.generationToken ?? "missing",
+      maxSteps: 16,
+      modules: () => ({
+        memory: { query: async () => [] },
+        knowledge: {
+          query: async () => [
+            {
+              id: "doc",
+              text: "x".repeat(10000),
+              preview: { title: "title", summary: "preview" },
+              sources: [],
+            },
+          ],
+        },
+      }),
+    });
+    const signal = new AbortController().signal;
+    const actionContext = { owner: { kind: "test", id: "test" }, signal };
+    await adapter.read({ signal, observations: [] });
+    const query = adapter.actions.find((a) => a.description.name === "knowledge.query");
+    const read = adapter.actions.find((a) => a.description.name === "knowledge.read");
+    if (!query || !read) throw new Error("missing actions");
+    const found = await query.execute({ query: "question" }, actionContext);
+    const bodyRef = (found.value as { items: { bodyRef: string }[] }).items[0].bodyRef;
+    const observed = [
+      { id: "query", name: "knowledge.query", arguments: { query: "question" }, ...found },
+    ];
+    await adapter.read({ signal, observations: observed });
+    const page = await read.execute({ bodyRef, limit: 4096 }, actionContext);
+    const entry = (page.value as { items: { text: string; nextOffset: number }[] }).items[0];
+    expect(page.value).toMatchObject({ status: "ok" });
+    expect(entry.text.length).toBeLessThan(1700);
+    await adapter.read({
+      signal,
+      observations: [
+        ...observed,
+        { id: "page", name: "knowledge.read", arguments: { bodyRef, limit: 4096 }, ...page },
+      ],
+    });
+    const next = await read.execute({ bodyRef, offset: entry.nextOffset }, actionContext);
+    expect(next.value).toMatchObject({ status: "ok" });
+    const nextEntry = (next.value as { items: { text: string; nextOffset: number }[] }).items[0];
+    expect(nextEntry.text.length).toBeLessThan(entry.text.length);
+    await adapter.read({
+      signal,
+      observations: [
+        ...observed,
+        { id: "page", name: "knowledge.read", arguments: { bodyRef, limit: 4096 }, ...page },
+        {
+          id: "next",
+          name: "knowledge.read",
+          arguments: { bodyRef, offset: entry.nextOffset },
+          ...next,
+        },
+      ],
+    });
+    const exhausted = await read.execute({ bodyRef, offset: nextEntry.nextOffset }, actionContext);
+    expect(exhausted.value).toMatchObject({
+      status: "unavailable",
+      code: "CONTEXT_BUDGET_EXCEEDED",
+    });
+  });
+
+  it("advertises host-provided external actions to the web decision", async () => {
+    const ctx = setup();
+    const sessionId = newSession(ctx.orm);
+    const current = activeTurn(ctx.orm, sessionId, "ext-1", "问题");
+    const runtime = {
+      ...current.prepared.runtime,
+      p5_config: { ...current.prepared.runtime.p5_config, retrieval_mode: "off" as const },
+    };
+    const agentRuntime = createAgentRuntime({
+      gateway: ctx.gateway,
+      repository: new AgentRunRepository(ctx.business.db),
+    });
+    const adapter = new WebContextSource({
+      db: ctx.business.db,
+      orm: ctx.orm,
+      gateway: ctx.gateway,
+      agentRuntime,
+      builder: null,
+      runtime,
+      sessionId,
+      turnId: current.turn.id,
+      generationToken: current.prepared.generationToken ?? "missing",
+      maxSteps: 16,
+      extraActions: [
+        {
+          description: {
+            name: "mcp.demo.echo",
+            description: "外部工具",
+            parameters: { type: "object", properties: {} },
+            capability: "mcp.demo",
+            effect: "read",
+          },
+          async execute() {
+            return { value: { status: "ok", text: "pong" }, sources: [] };
+          },
+        },
+      ],
+    });
+    // 宿主给的外部动作进了执行表，也进了模型看到的动作声明。
+    expect(adapter.actions.map((action) => action.description.name)).toContain("mcp.demo.echo");
+    expect(adapter.spec.availableActions.map((action) => action.name)).toContain("mcp.demo.echo");
+  });
 
   it("publishes a reusable summary with complete source links", async () => {
     const ctx = setup();

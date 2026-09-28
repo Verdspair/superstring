@@ -1,13 +1,18 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
+import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { sourceAccess } from "../../src/server/agent/context-access";
 import { inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
+import { AgentTaskService } from "../../src/server/agent/task-service";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
+import type { BotCompressionJob } from "../../src/server/channels/onebot11/background-compression";
 import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { WakeScheduler } from "../../src/server/conversation/wake-scheduler";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
+import { AgentTaskRepository } from "../../src/server/db/agent-task-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
@@ -29,6 +34,7 @@ import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { PermissionService } from "../../src/server/permissions/service";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import {
   nextQqImmediateReplyTask,
@@ -37,6 +43,7 @@ import {
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { qqStickerSelectionForScheme } from "../../src/server/services/qq-sticker-candidates";
 import { qqStickerUsable } from "../../src/server/services/qq-sticker-contract";
+import type { PermissionPolicy } from "../../src/shared/contracts/permissions";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -49,6 +56,9 @@ function setup(
   options: {
     stickersAvailable?: boolean;
     onDiagnostic?: ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"];
+    enqueueCompression?: ConstructorParameters<typeof OneBotHost>[0]["enqueueCompression"];
+    externalActions?: ConstructorParameters<typeof OneBotHost>[0]["externalActions"];
+    actionExecutor?: ActionExecutor;
   } = {},
 ) {
   const clock = { seconds: nowSeconds };
@@ -81,6 +91,7 @@ function setup(
   const requests: ModelRequest[] = [];
   const runtime = new AgentRuntime({
     repository: runs,
+    actionExecutor: options.actionExecutor,
     now: () => new Date(clock.seconds * 1000).toISOString(),
     model: {
       complete: async (req) => {
@@ -116,6 +127,8 @@ function setup(
     agentRuntime: runtime,
     stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
     onDiagnostic: options.onDiagnostic,
+    enqueueCompression: options.enqueueCompression,
+    externalActions: options.externalActions,
     policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600, retentionDays: 14 }),
     now: () => new Date(clock.seconds * 1000).toISOString(),
   });
@@ -155,6 +168,91 @@ function setup(
   };
 }
 describe("OneBot private common host", () => {
+  it("releases the conversation wake while an external write waits for local approval", async () => {
+    let performed = 0;
+    let calls = 0;
+    const action: BuiltInAction = {
+      permission: { resource: "fixture.write", revision: "v1", approvalRequired: true },
+      description: {
+        name: "fixture.write",
+        capability: "fixture",
+        effect: "write",
+        parameters: {},
+        description: "write",
+      },
+      async execute() {
+        performed += 1;
+        return { value: { status: "ok" }, sources: [] };
+      },
+    };
+    const permissions = new PermissionService({
+      read: () => ({
+        revision: "test",
+        policy: {
+          version: 1,
+          grants: [{ resource: "fixture.write", revision: "v1", approved: false, directories: [] }],
+        },
+      }),
+      replace() {
+        throw new Error("not used");
+      },
+    });
+    const executor = new ActionExecutor(permissions);
+    const h = setup(
+      {
+        async complete() {
+          return ++calls === 1
+            ? JSON.stringify({ kind: "invoke", calls: [{ name: "fixture.write", arguments: {} }] })
+            : '{"kind":"none"}';
+        },
+      },
+      { actionExecutor: executor },
+    );
+    h.receive("123");
+    const conversation = h.journal.ensureOneBot(bindingId);
+    if (!conversation) throw new Error("missing conversation");
+    const tasks = new AgentTaskService({
+      repository: new AgentTaskRepository(h.db),
+      orm: h.orm,
+      executor,
+      actions: () => [action],
+      now: () => new Date(nowSeconds * 1000).toISOString(),
+      resolveSource: (source, owner) => permissions.sourceAccess(source, owner),
+    });
+    const host = new OneBotHost({
+      orm: h.orm,
+      journal: h.journal,
+      wakes: h.wakes,
+      outbox: h.outbox,
+      gateway: h.gateway,
+      agentRuntime: h.runtime,
+      tasks,
+      resolveSource: (source, owner) => permissions.sourceAccess(source, owner),
+      stickers: { counts: ["confirmed"], isAvailable: () => false },
+      policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600, retentionDays: 14 }),
+      now: () => new Date(nowSeconds * 1000).toISOString(),
+    });
+    const scheduler = new WakeScheduler({
+      repository: h.wakes,
+      policy: () => ({ leaseMs: 120000, renewMs: 30000, maxAttempts: 3, retryDelayMs: 1000 }),
+      activate: (wake, signal) => host.activate(wake, signal),
+      now: () => new Date(nowSeconds * 1000).toISOString(),
+      onError: (error) => {
+        throw error;
+      },
+    });
+    await scheduler.runOnce();
+    await tasks.runOnce();
+    expect(tasks.list({ conversationId: conversation.id, limit: 50 }).items[0]?.status).toBe(
+      "waiting_approval",
+    );
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='leased'").get(),
+    ).toEqual({ n: 0 });
+    expect(performed).toBe(0);
+    expect(h.outbox.list({ conversationId: conversation.id })).toEqual([]);
+  });
+
   it("atomically journals intake and wake, runs decide/generate, commits intent before any send and preserves multipart", async () => {
     const h = setup();
     expect(h.receive("1")).toMatchObject({ kind: "recorded", recorded: true });
@@ -187,6 +285,145 @@ describe("OneBot private common host", () => {
       status: "completed",
     });
   });
+  it("applies centralized revocation before a QQ tool call", async () => {
+    let policy: PermissionPolicy = {
+      version: 1,
+      grants: [{ resource: "mcp.demo.read", approved: false, directories: [] }],
+    };
+    const permissions = new PermissionService({
+      read: () => ({ revision: "1", policy }),
+      replace() {
+        throw new Error("unused");
+      },
+    });
+    let executed = false;
+    const h = setup(
+      {
+        complete: async (request) => {
+          expect(request.tools?.some((tool) => tool.name === "mcp.demo.read")).toBe(true);
+          policy = { version: 1, grants: [] };
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [{ name: "mcp.demo.read", arguments: {} }],
+          });
+        },
+      },
+      {
+        actionExecutor: new ActionExecutor(permissions),
+        externalActions: () => [
+          {
+            permission: { resource: "mcp.demo.read", revision: "v1", approvalRequired: false },
+            description: {
+              name: "mcp.demo.read",
+              description: "read",
+              parameters: {},
+              capability: "mcp.demo",
+              effect: "read",
+            },
+            async execute() {
+              executed = true;
+              return { value: "private", sources: [] };
+            },
+          },
+        ],
+      },
+    );
+    h.receive("1");
+    await expect(activate(h)).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    expect(executed).toBe(false);
+    expect(h.outbox.list({})).toHaveLength(0);
+  });
+
+  it("advertises and executes a registered external tool inside the wake", async () => {
+    const executed: Record<string, unknown>[] = [];
+    const seen: string[][] = [];
+    let decisions = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push((request.tools ?? []).map((tool) => tool.name));
+          decisions += 1;
+          if (decisions === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "mcp.demo.echo",
+              arguments: { text: "hi" },
+            });
+          // 第二次决策要能看到上一次调用留下的观测。
+          expect(JSON.stringify(request.messages)).toContain("pong");
+          return '{"kind":"none"}';
+        },
+      },
+      {
+        externalActions: () => [
+          {
+            description: {
+              name: "mcp.demo.echo",
+              description: "demo echo（外部服务）",
+              parameters: { type: "object", properties: {} },
+              capability: "mcp.demo",
+              effect: "read",
+            },
+            async execute(arguments_) {
+              executed.push(arguments_);
+              return { value: { status: "ok", text: "pong" }, sources: [] };
+            },
+          },
+        ],
+      },
+    );
+    h.receive("1");
+    await activate(h);
+    // 外部工具进了广告面，并且真的被调用了一次。
+    expect(seen[0]).toContain("mcp.demo.echo");
+    expect(executed).toEqual([{ text: "hi" }]);
+  });
+
+  it("queues compression after committing the reply and releases it from the wake lease", async () => {
+    let job: BotCompressionJob | undefined;
+    let compressions = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          if (request.responseSchema?.$defs) {
+            compressions++;
+            const part = request.messages[1].content.find((entry) => entry.kind === "text");
+            const data = JSON.parse(part?.kind === "text" ? part.text : "{}");
+            return JSON.stringify({
+              facts: data.events.map((entry: { id: string; speaker: string }) => ({
+                kind: "fact",
+                speaker: entry.speaker,
+                text: "old fact",
+                source_ids: [entry.id],
+              })),
+            });
+          }
+          return '{"kind":"final","outputs":[{"kind":"inline","targetId":"20002","text":"answer","stickerIds":[]}]}';
+        },
+      },
+      {
+        enqueueCompression: (value) => {
+          job = value;
+        },
+      },
+    );
+    h.db.query("UPDATE qq_schemes SET summary_watermark_trigger=1 WHERE id=?").run(h.scheme.id);
+    h.clock.seconds -= 30000;
+    h.receive("1", "old question");
+    h.clock.seconds += 30000;
+    h.receive("2", "new question");
+    h.clock.seconds += 3;
+    await activate(h);
+    expect(compressions).toBe(0);
+    expect(h.outbox.list({})).toHaveLength(1);
+    if (!job) throw new Error("missing background job");
+    await job.run(new AbortController().signal);
+    expect(compressions).toBe(1);
+    expect(h.db.query("SELECT through_seq FROM qq_conversation_summaries").get()).toEqual({
+      through_seq: 1,
+    });
+  });
+
   it("re-enters deciding for a same-second inbound message during generation", async () => {
     let receive: ReturnType<typeof setup>["receive"];
     let decisions = 0,
@@ -831,7 +1068,6 @@ describe("private initiative and cancellation", () => {
   it.each(["off", "full_body"])(
     "uses the global judgement model and respects %s in the score context",
     async (mode) => {
-      let stage = 0;
       let judgement: ModelRequest | undefined;
       const h = setup({
         complete: async (req) => {
@@ -844,9 +1080,8 @@ describe("private initiative and cancellation", () => {
             judgement = req;
             return '{"score":0}';
           }
-          return ++stage === 1
-            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-            : '{"kind":"none"}';
+          // 0.4.0 P4 §4.1：模型只产出意图，评分由程序在写正文之前发出（低于门槛＝静默结束）。
+          return '{"kind":"final","outputs":[{"kind":"generate","targetId":"20002","instructions":"说点 apples 的事"}]}';
         },
       });
       setMemoryMode(h, mode);
@@ -975,7 +1210,7 @@ describe("Bot production knowledge reading settings", () => {
               if (part.kind !== "text") return false;
               try {
                 const data = JSON.parse(part.text);
-                return data.kind === "action_observation" && data.value.value.length > 0;
+                return data.kind === "action_observation" && data.value.value.items.length > 0;
               } catch {
                 return false;
               }
@@ -994,7 +1229,7 @@ describe("Bot production knowledge reading settings", () => {
                 data.kind === "evidence" ||
                 (data.kind === "action_observation" &&
                   data.value.name === "knowledge.query" &&
-                  data.value.value.length > 0)
+                  data.value.value.items.length > 0)
               );
             } catch {
               return false;
@@ -1400,6 +1635,16 @@ describe("sticker search context and permissions", () => {
     );
     h.gateway.loadedContextCapacity = async () => 16000;
     const first = addSticker(h);
+    h.db
+      .query("UPDATE qq_sticker_assets SET description=? WHERE id=?")
+      .run("详细描述".repeat(500), first);
+    const small = extra(
+      h,
+      "small first",
+      [collection(h, first)],
+      "00000000-0000-4000-8000-000000000000",
+    );
+    expect(small).toBe("00000000-0000-4000-8000-000000000000");
     for (let i = 0; i < 20; i++) {
       const id = extra(h, `wave ${i}`, [collection(h, first)]);
       h.db
@@ -1443,7 +1688,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    h.gateway.loadedContextCapacity = async () => 12000;
+    // 0.4.0 P2：决策 schema 带上了批调用（calls），每次调用的固定开销变大；本用例考的是分页，
+    // 不是容量边界，因此把容量余量同步上调（生产默认容量远大于此）。
+    h.gateway.loadedContextCapacity = async () => 12800;
     const anchor = addSticker(h);
     const collections = [collection(h, anchor)];
     setQqStickerEnabled(h.orm, anchor, false);
@@ -1489,7 +1736,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    h.gateway.loadedContextCapacity = async () => 12000;
+    // 0.4.0 P2：决策 schema 带上了批调用（calls），每次调用的固定开销变大；本用例考的是分页，
+    // 不是容量边界，因此把容量余量同步上调（生产默认容量远大于此）。
+    h.gateway.loadedContextCapacity = async () => 12800;
     const large = addSticker(h);
     editQqSticker(h.orm, large, { description: "详".repeat(2000) });
     h.receive("1");

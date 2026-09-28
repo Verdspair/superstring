@@ -59,6 +59,7 @@ const v44 = sql("0044_conversation_avatars.sql");
 const v45 = sql("0045_qq_conversation_summaries.sql");
 const v46 = sql("0046_qq_context_compression.sql");
 const v47 = sql("0047_qq_context_limit_caps.sql");
+const v48 = sql("0048_agent_tasks.sql");
 const QQ_TABLES = ["qq_settings", "qq_owner_identities", "qq_bindings", "qq_events"] as const;
 const NOW = "2026-01-01T00:00:00.000000Z";
 
@@ -294,6 +295,7 @@ describe("0005 QQ transport schema", () => {
           v45,
           v46,
           v47,
+          v48,
         ].join("\n"),
       );
       for (const [table, golden] of Object.entries(GOLDEN)) {
@@ -358,6 +360,7 @@ describe("0005 QQ transport schema", () => {
           v45,
           v46,
           v47,
+          v48,
         ].join("\n"),
       );
       for (const table of [qqSettings, qqOwnerIdentities, qqBindings, qqEvents]) {
@@ -553,7 +556,7 @@ describe("0005 QQ transport schema", () => {
       const legacyTables = legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all());
       const sharedRow = old.query("SELECT model_name, revision FROM organization_settings").get();
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 48 });
       expect(legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all())).toEqual(
         legacyTables,
       );
@@ -650,6 +653,7 @@ describe("0005 QQ transport schema", () => {
           v45,
           v46,
           v47,
+          v48,
         ]),
       ).toThrow();
       expect(db.query("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()).toEqual(
@@ -658,7 +662,7 @@ describe("0005 QQ transport schema", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
       expect(db.query("SELECT count(*) AS n FROM agents").get()).toEqual({ n: 1 });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 48 });
       expect(db.query("SELECT count(*) AS n FROM qq_settings").get()).toEqual({ n: 1 });
     } finally {
       db.close();

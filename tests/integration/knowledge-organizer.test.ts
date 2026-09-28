@@ -124,6 +124,30 @@ describe("knowledge original segmentation", () => {
 });
 
 describe("durable knowledge organizer", () => {
+  it("finishes current work before pausing claims and retains the queued document", async () => {
+    const first = add();
+    let enabled = true;
+    const entered = deferred<void>();
+    const release = deferred<string>();
+    gateway.complete = async () => {
+      entered.resolve();
+      return release.promise;
+    };
+    const instance = worker({ enabled: () => enabled, jobTimeoutMs: () => 3_600_000 });
+    const running = instance.runCycle();
+    await entered.promise;
+    enabled = false;
+    const second = add("另一份合成文档。");
+    release.resolve(output);
+    expect(await running).toBe(true);
+    expect(repo.detail(first.id).organization_status).toBe("succeeded");
+    expect(await instance.runCycle()).toBe(false);
+    expect(repo.detail(second.id).organization_status).toBe("queued");
+    enabled = true;
+    expect(await instance.runCycle()).toBe(true);
+    expect(repo.detail(second.id).organization_status).toBe("succeeded");
+  });
+
   it("publishes an entire draft and exact original chunks without granting access", async () => {
     const doc = add();
     expect(await worker().runCycle()).toBe(true);

@@ -23,10 +23,10 @@ it("strips mixed-in native call markers but never loosens the strict decision pa
     '<｜DSML｜｜parameter name="targetId" string="true">t1</｜DSML｜｜parameter>',
     "</｜DSML｜｜invoke>",
   ].join("\n");
+  // 单调用写法在解析时归一成批量写法（0.4.0 P2）：协议与执行器只见一种形状。
   expect(parseAgentDecision(mixed)).toEqual({
     kind: "invoke",
-    name: "speech.evaluate",
-    arguments: { targetId: "t1" },
+    calls: [{ name: "speech.evaluate", arguments: { targetId: "t1" } }],
   });
   // 剥离不是放宽：只剩标记、或标记之外还夹着散文，照旧失败（读不出 = 沉默）。
   expect(() => parseAgentDecision('<｜DSML｜｜invoke name="x"></｜DSML｜｜invoke>')).toThrow();
@@ -42,8 +42,7 @@ it("strips mixed-in native call markers but never loosens the strict decision pa
   ].join("\n");
   expect(parseAgentDecision(runaway)).toEqual({
     kind: "invoke",
-    name: "speech.evaluate",
-    arguments: { targetId: "t1" },
+    calls: [{ name: "speech.evaluate", arguments: { targetId: "t1" } }],
   });
   expect(() =>
     parseAgentDecision('{"kind":"invoke","name":"speech.evaluate","arguments":{"targetId":"t1"'),

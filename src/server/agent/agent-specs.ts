@@ -5,6 +5,11 @@ export interface ActionDescription {
   description: string;
   parameters: Record<string, unknown>;
   capability: string;
+  /**
+   * 有没有副作用。**默认 `write`（保守）**：没声明的一律串行执行，只有明确声明 `read` 的动作
+   * 才允许同批并行——一个动作"看起来只读"不是理由。
+   */
+  effect?: "read" | "write";
 }
 export interface LeafAgentSpec {
   id: string;
@@ -55,11 +60,21 @@ export const OutputDraftSchema = z.discriminatedUnion("kind", [
   z.strictObject({ ...outputBase, kind: z.literal("generate"), instructions: z.string() }),
 ]);
 export type OutputDraft = z.infer<typeof OutputDraftSchema>;
+/**
+ * 一次工具调用。`effect` 由**动作自己**声明（不写在协议里）：只读的可以并行，有副作用的必须串行
+ * 且按模型给的顺序——调度只认这一处声明，不在执行器里按名字硬编码。
+ */
+export const InvokeCallSchema = z.strictObject({
+  name: z.string().min(1),
+  arguments: z.record(z.string(), z.unknown()),
+});
+export type InvokeCall = z.infer<typeof InvokeCallSchema>;
+/** 一批调用最多几条：再多也不是"这一步需要"，而是模型在扫射。 */
+export const INVOKE_BATCH_LIMIT = 4;
 export const AgentDecisionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("invoke"),
-    name: z.string().min(1),
-    arguments: z.record(z.string(), z.unknown()),
+    calls: z.array(InvokeCallSchema).min(1).max(INVOKE_BATCH_LIMIT),
   }),
   z.strictObject({ kind: z.literal("final"), outputs: z.array(OutputDraftSchema).min(1) }),
   z.strictObject({ kind: z.literal("none") }),
@@ -125,9 +140,33 @@ export function readJsonBody(raw: string): string {
   return decisionBody((fence?.[1] ?? text).trim());
 }
 
+/**
+ * 单调用写法 → 批量写法。老的正文形状（`{kind:"invoke", name, arguments}`）在模型与历史提示词里
+ * 都存在，所以在这里归一，而不是让协议同时容忍两种形状——执行器与遥测只见一种。
+ */
+function normalizeInvoke(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "invoke" || Array.isArray(record.calls)) return value;
+  const name = record.name;
+  if (typeof name !== "string" || name.length === 0) return value;
+  const args = record.arguments;
+  return {
+    kind: "invoke",
+    calls: [
+      {
+        name,
+        arguments: args !== null && typeof args === "object" && !Array.isArray(args) ? args : {},
+      },
+    ],
+  };
+}
+
 /** Transport wrappers are not decisions: accept one complete JSON fence, never prose extraction. */
 export function parseAgentDecision(raw: string): AgentDecision {
-  return AgentDecisionSchema.parse(JSON.parse(readJsonBody(stripToolCallMarkup(raw.trim()))));
+  return AgentDecisionSchema.parse(
+    normalizeInvoke(JSON.parse(readJsonBody(stripToolCallMarkup(raw.trim())))),
+  );
 }
 
 // Ask structured-output models to emit null for auto. The parser also accepts omitted

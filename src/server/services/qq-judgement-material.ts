@@ -14,11 +14,11 @@
 import type { Database } from "bun:sqlite";
 import type { ContentItem } from "../../shared/contracts/content";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import { contextKeywords } from "../agent/conversation-context";
 import { catalogByScopeKeys, type MemoryItem } from "../db/context-repository";
 import { readQqOwnerIdentity } from "../db/qq-owner-repository";
 import type { Orm } from "../db/repositories";
 import { selectionSources } from "../modules/provenance";
-import { contextKeywords } from "./context-builder";
 import { knowledgeCost, knowledgeMessages, qqKnowledgeItems } from "./knowledge-context";
 import { qqMemoryScopeKeyset } from "./memory-scope";
 import { type QqBinding, resolveQqMemoryAccess } from "./qq-binding-contract";

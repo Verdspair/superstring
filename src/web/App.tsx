@@ -26,10 +26,8 @@ const ConnectionWorkspace = lazy(() =>
     default: m.ConnectionWorkspace,
   })),
 );
-const ObservabilityWorkspace = lazy(() =>
-  import("./screens/observability/ObservabilityWorkspace").then((m) => ({
-    default: m.ObservabilityWorkspace,
-  })),
+const RunsWorkspace = lazy(() =>
+  import("./screens/runs/RunsWorkspace").then((m) => ({ default: m.RunsWorkspace })),
 );
 const ModelServices = lazy(() =>
   import("./screens/environment/ModelServices").then((m) => ({ default: m.ModelServices })),
@@ -83,7 +81,7 @@ function Application() {
     assistants: AssistantWorkspace,
     library: LibraryWorkspace,
     connections: ConnectionWorkspace,
-    runs: ObservabilityWorkspace,
+    runs: RunsWorkspace,
     models: ModelServices,
     preferences: Preferences,
   }[space];

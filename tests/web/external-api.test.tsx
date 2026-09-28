@@ -84,6 +84,53 @@ describe("Model services workspace", () => {
       expected_revision: 3,
     });
   });
+  it("preserves all capability declarations when only a provider name changes", async () => {
+    const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: true };
+    const current = { ...provider, models: [{ ...provider.models[0], capabilities }] };
+    const fake = await renderPage([current]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(PROVIDER_ID, {
+      name: "Renamed",
+      base_url: provider.base_url,
+      models: current.models,
+      expected_revision: 3,
+    });
+  });
+  it("edits capabilities without losing the other flags and keeps the draft on conflict", async () => {
+    const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: false };
+    const update = vi.fn().mockRejectedValue(new Error("配置已变化，请刷新"));
+    await renderPage([{ ...provider, models: [{ ...provider.models[0], capabilities }] }], {
+      updateModelProvider: update,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "代码执行（PTC）" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(update.mock.calls[0][1].models[0].capabilities).toEqual({
+      ...capabilities,
+      codeExecution: true,
+    });
+    expect(
+      screen.getByRole("checkbox", { name: "代码执行（PTC）" }).getAttribute("data-state"),
+    ).toBe("checked");
+    expect(
+      screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("配置已变化")),
+    ).toBe(true);
+  });
+  it("keeps absent capabilities absent until edited and can restore the undeclared state", async () => {
+    const fake = await edit();
+    fireEvent.click(screen.getByRole("checkbox", { name: "代码执行（PTC）" }));
+    fireEvent.click(screen.getByRole("button", { name: "清除能力声明" }));
+    fireEvent.change(screen.getByLabelText("上下文窗口"), { target: { value: "131072" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(PROVIDER_ID, {
+      name: provider.name,
+      base_url: provider.base_url,
+      models: [{ name: "deepseek-chat", context_window: 131072 }],
+      expected_revision: 3,
+    });
+  });
   it("clears the saved credential explicitly without discarding other draft fields", async () => {
     const fake = await edit();
     fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Draft name" } });

@@ -222,6 +222,7 @@ export interface QqIntakeRuntimeOptions {
    * shape P4b left behind, because a caller without a vision client must not silently read.
    */
   media?: { vision: VisionClient; agentRuntime?: LeafAgentRuntime };
+  mediaEnabled?: () => boolean;
   /** Seconds since epoch, the unit the dispatch rows use. Injectable so tests own the clock. */
   nowSeconds?: () => number;
   onEvent?: (event: QqIntakeEvent) => void;
@@ -478,7 +479,7 @@ export class QqIntakeRuntime {
     }
     const media: QqEventMediaDeps | undefined = (() => {
       const agentRuntime = this.#mediaRuntime;
-      if (!agentRuntime) return undefined;
+      if (!agentRuntime || this.#options.mediaEnabled?.() === false) return undefined;
       return {
         adapterFor: ({ mediaPrompt, frames, maxDimension }) =>
           createQqMediaAdapter({

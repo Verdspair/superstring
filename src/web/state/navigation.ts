@@ -1,3 +1,4 @@
+import { permissionSettingsDirty } from "../features/access/permission-state";
 import { toDraft } from "../features/agents/draft";
 import { dirtyPages } from "../features/agents/page-drafts";
 import {
@@ -70,6 +71,7 @@ async function performNavigation(
     }
     get().discardMemoryCorrection();
     if (pending.page !== "settings") get().discardKnowledgeEditor();
+    if (discard && pending.page !== "settings") get().discardPermissionSettings();
     if (discard) get().discardQqDrafts();
     set(patch);
     if (pending.conversationId) await get().selectConversation(pending.conversationId);
@@ -178,6 +180,7 @@ export function createNavigationActions(
         get().qqSchemeSaving ||
         get().qqStickerSaving ||
         get().settingsSaving ||
+        get().permissionSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
         get().organizationLoading ||
@@ -268,6 +271,7 @@ export function createNavigationActions(
         get().qqSchemeSaving ||
         get().qqStickerSaving ||
         get().settingsSaving ||
+        get().permissionSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
         get().organizationLoading ||
@@ -304,7 +308,8 @@ export function createNavigationActions(
         return;
       }
       if (
-        (dirtyPages(get().pageEditor).length ||
+        (permissionSettingsDirty(get().permissionEditor) ||
+          dirtyPages(get().pageEditor).length ||
           organizationDirty(get().organizationEditor) ||
           knowledgeModelDirty(get().knowledgeModelEditor) ||
           knowledgeReadDirty(get().knowledgeReadEditor)) &&
@@ -346,6 +351,7 @@ export function createNavigationActions(
         get().qqSchemeSaving ||
         get().qqStickerSaving ||
         get().settingsSaving ||
+        get().permissionSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
         get().organizationLoading ||
@@ -379,6 +385,7 @@ export function createNavigationActions(
         get().qqSchemeSaving ||
         get().qqStickerSaving ||
         get().settingsSaving ||
+        get().permissionSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
         get().organizationLoading ||
@@ -418,6 +425,7 @@ export function createNavigationActions(
         get().qqSchemeSaving ||
         get().qqStickerSaving ||
         get().settingsSaving ||
+        get().permissionSaving ||
         get().editorLoading ||
         get().knowledgeBusy ||
         get().qqMemoryBatchSaving
@@ -434,6 +442,17 @@ export function createNavigationActions(
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
+        });
+        return;
+      }
+      if (
+        pending.kind === "page" &&
+        pending.page !== "settings" &&
+        !(await get().savePermissionSettings())
+      ) {
+        set({
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
         return;
       }
@@ -534,6 +553,7 @@ export function createNavigationActions(
         get().qqSchemeSaving ||
         get().qqStickerSaving ||
         get().settingsSaving ||
+        get().permissionSaving ||
         get().editorLoading ||
         get().knowledgeBusy ||
         get().qqMemoryBatchSaving

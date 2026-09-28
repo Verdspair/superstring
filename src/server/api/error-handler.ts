@@ -1,5 +1,11 @@
 import type { Context } from "hono";
-import { AppError, DatabaseUnavailableError, isAppError } from "../errors";
+import {
+  AppError,
+  DatabaseError,
+  DatabaseUnavailableError,
+  isAppError,
+  isDatabaseError,
+} from "../errors";
 
 /**
  * HTTP error envelope.
@@ -19,34 +25,6 @@ export function errorPayload(code: string, message: string, requestId?: string):
   const error: ErrorEnvelopeBody["error"] = { code, message };
   if (requestId !== undefined) error.request_id = requestId;
   return { error };
-}
-
-/**
- * Marker for storage-layer failures.
- * Only errors of this type are downgraded to `DATABASE_UNAVAILABLE`; unrelated
- * programming errors must not be masked as database outages.
- */
-export class DatabaseError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "DatabaseError";
-  }
-}
-
-export function isDatabaseError(value: unknown): value is DatabaseError {
-  if (value instanceof DatabaseError || (value as { name?: string })?.name === "DatabaseError") {
-    return true;
-  }
-  // A raw `bun:sqlite` error belongs to the same class of storage-layer
-  // failures the mapper sends to `DATABASE_UNAVAILABLE`, so a raw driver
-  // error must also downgrade to 503 at the boundary instead of leaking as
-  // a generic 500 (or being silently mis-handled by marker-only checks).
-  const candidate = value as { name?: string; code?: unknown } | null;
-  return (
-    candidate?.name === "SQLiteError" ||
-    candidate?.name === "SqliteError" ||
-    (typeof candidate?.code === "string" && candidate.code.startsWith("SQLITE_"))
-  );
 }
 
 /** JSON body used for non-`AppError`, non-DB failures. */
@@ -76,4 +54,6 @@ export function handleError(err: unknown, c: Context): Response {
   return c.json({ detail: "Internal Server Error" } satisfies InternalErrorBody, 500);
 }
 
-export { AppError, DatabaseUnavailableError };
+// DatabaseError/isDatabaseError 的稳定定义已挪到 `../errors`（中立模块）；
+// 这里继续导出同名符号，既有导入面不变。
+export { AppError, DatabaseError, DatabaseUnavailableError, isDatabaseError };

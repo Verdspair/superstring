@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
@@ -45,41 +45,67 @@ const checks = [
   ["web-build", node, [packageBin("vite", "bin/vite.js"), "build"]],
 ];
 
-const results = [];
-for (const [name, command, args] of checks) {
-  const started = performance.now();
-  const result = spawnSync(command, args, {
-    cwd: root,
-    encoding: "utf8",
-    // Per-check ceiling, not a budget for the whole run. Raised twice for the same reason:
-    // 300 s was enough while the backend suite took ~270 s, then it grew past that; at 600 s it
-    // grew past THAT (measured 622.6 s on 2026-09-24, when the QQ side reached schema 29 and the
-    // frozen-fingerprint loop replayed 29 migrations per version). A timeout that fires before
-    // the work can finish is worse than a slow check: it reports `ETIMEDOUT` with an empty result,
-    // which reads exactly like a crash. The suite's growth is real (78 files, many replaying the
-    // whole chain), so the ceiling moves with it; if it needs raising again, the honest fix is to
-    // make the fingerprint loop incremental rather than to keep moving this number.
-    timeout: 900000,
-    windowsHide: true,
+/**
+ * 跑一个检查并等它结束。用 spawn（异步）而不是 spawnSync：两个重套件要能同时跑。
+ * 报告顺序仍按 `checks` 的声明顺序回填，历史报告可以逐项对比。
+ */
+function runCheck([name, command, args]) {
+  return new Promise((settle) => {
+    const started = performance.now();
+    const child = spawn(command, args, { cwd: root, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, 900000);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      settle({
+        name,
+        exitCode: code,
+        error: timedOut ? "ETIMEDOUT" : null,
+        durationMs: Math.round(performance.now() - started),
+        passed: code === 0 && !timedOut,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+      });
+    });
   });
-  const entry = {
-    name,
-    exitCode: result.status,
-    error: result.error?.message ?? null,
-    durationMs: Math.round(performance.now() - started),
-    passed: result.status === 0 && !result.error,
-    stdout: (result.stdout ?? "").trim(),
-    stderr: (result.stderr ?? "").trim(),
-  };
-  results.push(entry);
+}
+
+function announce(entry) {
   const summary = entry.stdout
     .split("\n")
     .filter((line) => /pass|fail|Test Files|Tests |error|checked/i.test(line));
-  console.log(`[${entry.passed ? "PASS" : "FAIL"}] ${name} (${entry.durationMs}ms)`);
+  console.log(`[${entry.passed ? "PASS" : "FAIL"}] ${entry.name} (${entry.durationMs}ms)`);
   for (const line of summary.slice(-6)) console.log(`    ${line.trim()}`);
   if (!entry.passed && entry.stderr)
     console.log(`    stderr: ${entry.stderr.split("\n").slice(0, 6).join(" | ")}`);
 }
+
+// 两个重套件互不依赖（后端用自建临时库、前端跑 jsdom），同时跑把门禁从约 4 分钟压到约 2.5 分钟；
+// 其余静态检查都很轻，先跑完它们再等两个套件，输出顺序与历史一致（重套件最后打印）。
+const HEAVY = new Set(["bun-tests", "web-tests"]);
+const heavyRuns = checks.filter(([name]) => HEAVY.has(name)).map((check) => runCheck(check));
+const entries = new Map();
+for (const check of checks.filter(([name]) => !HEAVY.has(name))) {
+  const entry = await runCheck(check);
+  entries.set(entry.name, entry);
+  announce(entry);
+}
+for (const entry of await Promise.all(heavyRuns)) {
+  entries.set(entry.name, entry);
+  announce(entry);
+}
+const results = checks.map(([name]) => entries.get(name));
 
 const timestamp = new Date().toISOString();
 const report = {

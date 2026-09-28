@@ -212,15 +212,21 @@ export function qqKnowledgeItems(
     .flatMap((candidate) => candidate.items.slice(0, 1));
 }
 
+function knowledgePreview(item: ContentItem) {
+  return {
+    title: item.name,
+    summary: item.summary || [...(item.body ?? "")].slice(0, 160).join(""),
+  };
+}
+
 async function chooseKnowledge(
   candidates: Candidate[],
   budget: number,
   select: KnowledgeSelector,
   signal?: AbortSignal,
+  cost = knowledgeCost,
 ): Promise<ContentItem[]> {
-  const viable = candidates.filter((item) =>
-    item.items.some((part) => knowledgeCost([part]) <= budget),
-  );
+  const viable = candidates.filter((item) => item.items.some((part) => cost([part]) <= budget));
   signal?.throwIfAborted();
   const ids = viable.length
     ? await select(
@@ -242,7 +248,7 @@ async function chooseKnowledge(
     for (const item of candidate.items) {
       const key = JSON.stringify(contentBlocks([item]));
       if (seen.has(key)) continue;
-      if (knowledgeCost([...chosen, item]) > budget) continue;
+      if (cost([...chosen, item]) > budget) continue;
       chosen.push(item);
       seen.add(key);
     }
@@ -494,11 +500,27 @@ export class SqliteKnowledgeModule implements KnowledgeModule {
         );
       },
       input.signal,
+      input.projection === "catalog"
+        ? (items) =>
+            estimateMessages([
+              {
+                role: "user",
+                content: contextDumps(
+                  items.map((item) => ({
+                    id: item.id,
+                    ...knowledgePreview(item),
+                    bodyRef: "0".repeat(64),
+                  })),
+                ),
+              },
+            ])
+        : knowledgeCost,
     );
     assertAccess();
     return selected.map((item) => ({
       id: `${item.id}:${item.content_origin}:${item.sources.map((source) => (source.type === "document" ? source.start : "")).join(",")}`,
       text: JSON.stringify(contentBlocks([item])),
+      preview: knowledgePreview(item),
       sources: sources.filter(
         (source) => source.id === item.id || source.id === JSON.stringify([item.id, input.agentId]),
       ),

@@ -118,6 +118,7 @@ export function AssistantWorkspace() {
                       <Button
                         variant="link"
                         className="h-auto max-w-full justify-start p-0 text-base font-semibold"
+                        data-agent-open={agent.id}
                         onClick={() => select(agent.id)}
                       >
                         {agent.name}

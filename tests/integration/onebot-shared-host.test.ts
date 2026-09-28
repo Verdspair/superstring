@@ -25,7 +25,13 @@ const bindingId = "11111111-1111-4111-8111-111111111111",
   time = 2_000_000_000;
 function setup(
   model: Partial<ModelPort> = {},
-  options: { split?: boolean; recomputes?: number; mergeSeconds?: number; follow?: boolean } = {},
+  options: {
+    split?: boolean;
+    recomputes?: number;
+    mergeSeconds?: number;
+    follow?: boolean;
+    stickersEnabled?: () => boolean;
+  } = {},
 ) {
   const h = openBusinessDb();
   handles.push(h);
@@ -106,6 +112,7 @@ function setup(
     agentRuntime: runtime,
     gateway,
     stickers: { counts: ["confirmed"], isAvailable: () => false },
+    stickersEnabled: options.stickersEnabled,
     policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600, retentionDays: 14 }),
     now,
   });
@@ -167,6 +174,30 @@ const generate = (ids: string[]) =>
     outputs: ids.map((targetId) => ({ kind: "generate", targetId, instructions: "respond" })),
   });
 describe("shared Bot model-controlled conversation", () => {
+  it("captures the sticker switch per reply and preserves the text path while paused", async () => {
+    let enabled = true;
+    let offered: string[][] = [];
+    const f = setup(
+      {
+        complete: async (request) => {
+          offered.push(request.tools?.map((tool) => tool.name) ?? []);
+          enabled = false;
+          return generate(["20002"]);
+        },
+      },
+      { stickersEnabled: () => enabled },
+    );
+    f.receive("9901", "20002", true);
+    expect((await f.activate("direct_reply")).status).toBe("completed");
+    expect(offered[0]).toContain("sticker.search");
+    f.clock.seconds += 2;
+    f.receive("9902", "20002", true);
+    offered = [];
+    expect((await f.activate("direct_reply")).status).toBe("completed");
+    expect(offered[0]).not.toContain("sticker.search");
+    expect(f.outbox.list({})).toHaveLength(2);
+  });
+
   it("keeps addressed target even when another speaker is newer; unrelated later events do not block delivery", async () => {
     let h: ReturnType<typeof setup>;
     let generated = 0;
@@ -225,9 +256,9 @@ describe("shared Bot model-controlled conversation", () => {
           return '{"score":9}';
         }
         expect(req.model).toBe("judge-model");
-        return ++decisions === 1
-          ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-          : generate(["20002", "20003"]);
+        // 0.4.0 P4 §4.1：模型只产出意图（每个目标一份），评分由程序在写正文之前逐个发出。
+        decisions++;
+        return generate(["20002", "20003"]);
       },
       async *streamText(req) {
         generated.push(JSON.stringify(req.messages[0]));
@@ -373,14 +404,11 @@ describe("shared configuration and races", () => {
       }
     });
   it("continues another recipient after one generation fails and preserves both output statuses", async () => {
-    let decisions = 0;
     const h = setup({
       complete: async (req) =>
         (req.responseSchema?.properties as Record<string, unknown> | undefined)?.score
           ? '{"score":9}'
-          : ++decisions === 1
-            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-            : generate(["20002", "20003"]),
+          : generate(["20002", "20003"]),
       async *streamText(req) {
         if (JSON.stringify(req.messages[0]).includes('authorizedTarget\\":\\"20002'))
           throw new Error("MODEL_FAILED");
@@ -461,14 +489,11 @@ describe("shared configuration and races", () => {
     expect(h.outbox.get(intent.id)!.status).toBe("stale");
   });
   it("idle initiative threshold and unanswered rule remain active under the same host", async () => {
-    let stage = 0;
     const h = setup({
       complete: async (req) =>
         (req.responseSchema?.properties as Record<string, unknown> | undefined)?.score
           ? '{"score":0}'
-          : ++stage === 1
-            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-            : '{"kind":"none"}',
+          : '{"kind":"final","outputs":[{"kind":"generate","targetId":"30003","instructions":"开个话题"}]}',
     });
     h.receive("1");
     h.db.exec("UPDATE wake_signals SET status='no_output'");
@@ -526,9 +551,7 @@ describe("failed generation and observation epochs", () => {
         const system = JSON.stringify(req.messages[0]);
         const epoch = Number(system.match(/当前观察序列：(\d+)/)?.[1]);
         epochs.push(epoch);
-        return next === 1 || next === 3
-          ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-          : generate(["20002"]);
+        return generate(["20002"]);
       },
       async *streamText() {
         generations++;
@@ -544,7 +567,7 @@ describe("failed generation and observation epochs", () => {
     expect((await h.activate()).status).toBe("completed");
     expect(scores).toBe(2);
     expect(generations).toBe(2);
-    expect(epochs[2]!).toBeGreaterThan(epochs[0]!);
+    expect(epochs[1]!).toBeGreaterThan(epochs[0]!);
     expect(h.outbox.list({})).toHaveLength(1);
   });
 });
@@ -653,7 +676,7 @@ function pendingPlan(
 }
 describe("Agent-directed recovery", () => {
   it.each(["malformed", "model_error"])(
-    "isolates one target's %s score and reports it to the Agent",
+    "keeps the other target replying when one target's score is %s (that one stays silent)",
     async (failure) => {
       let scores = 0,
         decisions = 0;
@@ -667,12 +690,9 @@ describe("Agent-directed recovery", () => {
             }
             return '{"score":9}';
           }
-          if (++decisions === 1) return '{"kind":"invoke","name":"speech.evaluate","arguments":{}}';
-          const text = JSON.stringify(request.messages);
-          expect(text).toContain(
-            failure === "model_error" ? "MODEL_FAILED" : "JUDGEMENT_UNREADABLE",
-          );
-          return generate(["20003"]);
+          // 0.4.0 P4 §4.1：评分由程序在意图之后触发——模型只产出两个目标各自的意图。
+          decisions++;
+          return generate(["20002", "20003"]);
         },
       });
       h.receive("1", "20002");
@@ -780,7 +800,7 @@ it.each(["revoked", "cancelled"])(
           else h.db.exec("DELETE FROM qq_observation_text");
           throw new Error("MODEL_FAILED");
         }
-        return '{"kind":"invoke","name":"speech.evaluate","arguments":{}}';
+        return generate(["20002", "20003"]);
       },
     });
     h.receive("1", "20002");
@@ -806,9 +826,8 @@ describe("durable participant windows across actual Host and delivery", () => {
         complete: async (req) => {
           if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score)
             return '{"score":9}';
-          return ++decisions % 2 === 1
-            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-            : generate([h.clock.seconds === time + 15 ? "20002" : "20003"]);
+          decisions++;
+          return generate([h.clock.seconds === time + 15 ? "20002" : "20003"]);
         },
       },
       { mergeSeconds: 15 },
@@ -895,9 +914,8 @@ describe("durable participant windows across actual Host and delivery", () => {
         complete: async (req) => {
           if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score)
             return '{"score":9}';
-          return ++decisions === 1
-            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-            : generate(["30003"]);
+          decisions++;
+          return generate(["30003"]);
         },
       },
       { split: false, mergeSeconds: 15 },
@@ -919,9 +937,8 @@ describe("durable participant windows across actual Host and delivery", () => {
       complete: async (req) => {
         if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score)
           return '{"score":9}';
-        return ++decisions === 1
-          ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-          : generate(["20002", "20003"]);
+        decisions++;
+        return generate(["20002", "20003"]);
       },
       async *streamText(req) {
         if (JSON.stringify(req.messages[0]).includes("20002")) throw new Error("MODEL_A_FAILED");
@@ -959,9 +976,8 @@ describe("confirmed reply coverage across opportunity paths", () => {
             return '{"score":9}';
           }
           if (!initiative) return generate(["20002"]);
-          return ++decisions % 2 === 1
-            ? '{"kind":"invoke","name":"speech.evaluate","arguments":{}}'
-            : generate([initiativeTarget]);
+          decisions++;
+          return generate([initiativeTarget]);
         },
       },
       { mergeSeconds: 15, follow: false },

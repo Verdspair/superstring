@@ -32,13 +32,23 @@ export interface WakeSchedulerPolicy {
   renewMs: number;
   retryDelayMs: number;
   maxAttempts: number;
+  /**
+   * 本进程同时最多跑几条唤醒（跨会话）。**会话内**始终串行——那是数据库里
+   * `wake_signals` 的租约保证的（同一会话已有 `leased` 行时不会再被领取），不靠这里的计数。
+   */
   globalConcurrency?: number;
 }
-/** Driven by the shared Bot pump: never creates a second global Bot execution slot. */
+/**
+ * 唤醒的领取、租约与结算。
+ *
+ * 并发模型分两层，各自只有一个真源：**能不能领**由数据库决定（同一会话不双领、全局不超过
+ * `globalConcurrency`）；**本进程跑几条**由这里决定（`runOnce` 早于容量上限就直接返回 false）。
+ * 因此多个调用方可以各自循环 `runOnce()` 形成"车道"，而不会重复执行同一条唤醒。
+ */
 export class WakeScheduler {
-  private running = false;
+  private readonly inFlight = new Set<Promise<unknown>>();
+  private readonly controllers = new Set<AbortController>();
   private stopped = false;
-  private active: AbortController | null = null;
   constructor(
     private readonly options: {
       repository: WakeRepository;
@@ -58,13 +68,37 @@ export class WakeScheduler {
       cause,
     });
   }
+  /** 本进程在飞的唤醒数（诊断与测试用；上限见 `policy().globalConcurrency`）。 */
+  get activeCount(): number {
+    return this.inFlight.size;
+  }
+  /** 本进程允许的车道数（= 策略里的跨会话并发上限）。 */
+  get concurrencyLimit(): number {
+    return Math.max(1, this.options.policy().globalConcurrency ?? 1);
+  }
   async runOnce(filter?: { cause?: string; wakeId?: string }): Promise<boolean> {
-    if (this.stopped || this.running) return false;
-    this.running = true;
+    if (this.stopped) return false;
+    // 一次尝试只读一次策略：续租定时器里的那次读取仍是"第二次"，保持原有的失败时序。
+    const policy = this.options.policy();
+    if (this.inFlight.size >= (policy.globalConcurrency ?? 1)) return false;
+    const run = this.startRun(filter, policy);
+    this.inFlight.add(run);
+    let started = false;
+    try {
+      started = (await run).started;
+    } finally {
+      this.inFlight.delete(run);
+    }
+    return started;
+  }
+  private async startRun(
+    filter: { cause?: string; wakeId?: string } | undefined,
+    policy: WakeSchedulerPolicy,
+  ): Promise<{ started: boolean }> {
     const now = () => this.options.now?.() ?? new Date().toISOString();
     let renewal: ReturnType<typeof setInterval> | undefined;
+    let controller: AbortController | null = null;
     try {
-      const policy = this.options.policy();
       const interrupted = this.options.telemetry
         ? (this.options.repository.db
             .query(
@@ -96,7 +130,7 @@ export class WakeScheduler {
         globalConcurrency: policy.globalConcurrency,
         ...filter,
       });
-      if (!wake) return false;
+      if (!wake) return { started: false };
       const conversation = this.options.repository.db
         .query("SELECT agent_id FROM conversations WHERE id=?")
         .get(wake.conversationId) as { agent_id: string } | null;
@@ -111,10 +145,11 @@ export class WakeScheduler {
         details: { cause: wake.cause, attempt: wake.attempts, readyAt: wake.readyAt },
       });
       let renewals = 0;
-      const controller = new AbortController();
-      this.active = controller;
+      const owned = new AbortController();
+      controller = owned;
+      this.controllers.add(owned);
       renewal = setInterval(() => {
-        if (controller.signal.aborted) return;
+        if (owned.signal.aborted) return;
         try {
           if (
             !this.options.repository.renew(
@@ -124,10 +159,10 @@ export class WakeScheduler {
               this.options.policy().leaseMs,
             )
           )
-            controller.abort(new Error("WAKE_LEASE_LOST"));
+            owned.abort(new Error("WAKE_LEASE_LOST"));
           else span?.update({ details: { leaseRenewals: ++renewals } });
         } catch (cause) {
-          controller.abort(
+          owned.abort(
             Object.assign(new Error("WAKE_RENEWAL_FAILED", { cause }), {
               code: "WAKE_RENEWAL_FAILED",
             }),
@@ -135,7 +170,7 @@ export class WakeScheduler {
         }
       }, policy.renewMs);
       try {
-        const run = () => this.options.activate(wake, controller.signal);
+        const run = () => this.options.activate(wake, owned.signal);
         const result = await (span ? span.within(run) : run());
         const settled = this.options.repository.get(wake.id);
         const reason =
@@ -191,15 +226,15 @@ export class WakeScheduler {
         }
         this.options.onError?.(failure, wake);
       }
-      return true;
+      return { started: true };
     } finally {
       if (renewal) clearInterval(renewal);
-      this.active = null;
-      this.running = false;
+      if (controller !== null) this.controllers.delete(controller);
     }
   }
+  /** 停止领取并中止**本进程全部在飞**的唤醒（跨会话并发下，取消必须是整体语义）。 */
   stop(): void {
     this.stopped = true;
-    this.active?.abort(new Error("BOT_STOPPED"));
+    for (const controller of [...this.controllers]) controller.abort(new Error("BOT_STOPPED"));
   }
 }

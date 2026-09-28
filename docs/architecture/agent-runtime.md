@@ -19,7 +19,51 @@ A leaf receives explicit messages and source references and calls ModelPort once
 
 A conversational step returns invoke, final, or none. Only advertised actions and authorized targets are usable. JSON must satisfy the strict decision schema; a complete outer JSON code fence is accepted without extracting instructions from surrounding prose. Parse failure remains visible, not synthetic silence.
 
-Output drafts are not network sends. The channel host owns authorization, current state and output commit. Future tools and Skills can use these action/context seams; no external tools, MCP or Skill provider framework is included.
+Output drafts are not network sends. The channel host owns authorization, current state and output commit.
+
+## Tools, external servers and orchestration
+
+A single tool catalog is the only source of truth: each action declares its parameters, its side-effect class and whether a code sandbox may bind it. Direct model-issued calls and programmatic (script) execution read the same catalog, so the two can never disagree about what exists or what is allowed. Sandbox bindings, wall-clock/call/result limits and the host re-check around every tool call are enforced by the runtime; the sandbox is a replaceable port. Application assembly supplies a QuickJS WebAssembly implementation, while the policy switch defaults to off and an explicit model capability is still required.
+
+MCP registration contains connection settings only. Tool grants and script approvals share a local `permissions.json` policy, a `PermissionService` and an `ActionExecutor`; adapters describe requirements instead of implementing separate allowlists. Policies may narrow access by Agent and declared directory, and approvals for side-effecting tools bind to a resource revision. The same executor checks direct calls and sandbox bindings before execution and after success or failure. Captured actions cannot survive revocation, and runs revalidate consumed actions before further inference and publication.
+
+Permission fingerprints are source references resolved by the existing inspection and delivery boundaries. Knowledge and memory retain their domain-specific ownership and scope checks rather than becoming global tool grants. The local same-origin management API is separate from model-visible actions; instructions cannot approve themselves. Policy writes use revision checks and atomic replacement.
+
+MCP supports multiple enabled servers. Changed or invalid configuration disables captured actions; connection shutdown drains in-flight setup. Credentials should be referenced through environment variables; children receive only necessary and explicitly configured environment values. Local configuration remains protected data and may be included in local backups, so it is not a secret-exclusion guarantee.
+
+Skills expose a metadata catalog and on-demand instructions. Explicitly approved scripts run through a native-process adapter with an explicit interpreter, timeout, output limits and entry-path checks. Script approval is bound to the manifest, instructions and declared entry files; modified content requires approval again. Extra directory grants describe consent, not an operating-system sandbox; native scripts run with the application's privileges and network access. Transitive dependencies and descendant-process isolation require a trusted installation or a real sandbox.
+
+## Durable tool plans and optional execution
+
+External writes are queued through `AgentTaskService`; a queued response is not a successful tool result. `AgentTaskRepository` stores bounded plans, per-call checkpoints and leases, while `ActionExecutor` remains the only execution boundary. Approval waits release the task lease and do not retain a foreground conversation lease. Single-use approvals bind to the task, call ordinal, arguments, tool revision, actor and permission fingerprint; they do not alter persistent grants. Interrupted writes with an uncertain outcome remain `unknown` and are not replayed. Interrupted reads can be reclaimed after lease expiry, and completed checkpoints are skipped.
+
+Task results belong to the originating conversation and are read on demand. They cannot publish messages. Source checks reuse domain memory scopes and knowledge grants; revocation or expiry clears stored arguments and results. Task retention is at most one day and shortens with source expiry. Pause prevents execution without deleting otherwise authorized checkpoints.
+
+Optional research uses the same Runtime with a read-only subset of the parent's advertised tools, one nesting level and at most two child calls. Children have no channel commit callback, inherit cancellation and the shared budget, and return bounded conclusions with source references. Research and code execution switches default to off in the common permission policy. Code mode additionally requires a model declaring `codeExecution` and an available runner. The application supplies QuickJS WebAssembly in a separate Worker; disabled mode creates no Worker and loads no interpreter. Native skill processes are not code sandboxes.
+
+## 持久工具计划与可选执行
+
+外部写操作通过 `AgentTaskService` 排队，排队回执不代表执行成功。`AgentTaskRepository` 保存有界计划、逐调用检查点与租约，实际执行仍只有 `ActionExecutor` 一个入口。审批等待释放任务租约，不占前台会话租约；单次批准绑定任务、调用序号、参数、工具修订、主体和权限指纹，不改变持久授权。中断后结果未知的写调用保持 `unknown`，不重放；只读调用可在租约到期后恢复，已完成检查点跳过。
+
+任务结果归原会话，按需读取而不直接发言；来源复验沿用领域记忆范围和知识授权，撤权或过期清空已存参数与结果。最长保留一天，并随最早来源到期缩短。暂停阻止执行，但不删除仍有权读取的检查点。
+
+可选研究沿用同一 Runtime，只能使用父级已广告工具中的只读子集，最多一层、两个子调用；没有通道提交回调，共享取消和预算，返回有界结论与来源。研究和代码执行开关统一保存在权限策略中，默认关闭；代码模式还要求模型声明 `codeExecution` 且 runner 可用；应用提供独立 Worker 内的 QuickJS WebAssembly 实现，关闭时不创建 Worker、不加载解释器。原生技能进程不等同代码沙箱。
+
+## JavaScript sandbox
+
+`quickjs-runner.ts` owns the Worker, JSON bridge, deadline and termination; `quickjs-worker.ts` owns the QuickJS guest. The guest has no host filesystem, network, environment, process or module loader. Only authorized read-only bindings cross the boundary as JSON. A script is an async JavaScript function body using `await tools["name"]({...})` and returns `{conclusion, refs?}`. Authorized host tools retain their own resource access; the absence of guest network APIs does not remove a remote tool's network access.
+
+Default limits are 20 seconds, 32 MiB of guest allocations, a 256 KiB guest stack, 1 MiB of cumulative JSON transfers, 32 tool calls and 4,000 conclusion characters. The allocation bound is not a process-wide RSS limit. Cancellation terminates the Worker even while guest code loops or awaits an unresolved promise. Results with outstanding tool calls are rejected; late callbacks cannot reopen closed bindings. Every result retains source checks and permission checks. The protected context stores scripts and conclusions; the `agent.code` span records mode, bindings, call counts, duration and failure code without duplicating raw tool data.
+
+Compiled services explicitly embed the worker entrypoint with a fixed project root and compile-time path selection. The WebAssembly variant embeds its bytes, so no runtime download or interpreter file lookup is required.
+
+## JavaScript 沙箱
+
+`quickjs-runner.ts` 管理 Worker、JSON 桥、截止时间与终止；`quickjs-worker.ts` 管理 QuickJS guest。guest 没有主机文件系统、网络、环境、进程或模块加载接口，只有获准的只读工具通过 JSON 交互。脚本是异步 JavaScript 函数体，使用 `await tools["name"]({...})`，返回 `{conclusion, refs?}`。宿主工具保留自身授权范围内的资源访问，guest 没有网络接口不代表远程工具不联网。
+
+默认限制为20秒、32 MiB guest分配、256 KiB guest栈、1 MiB累计JSON传输、32次工具调用和4000字符结论；分配限制不是整个应用的RSS上限。取消会终止Worker，可打断忙循环和未决Promise；有未完成工具调用时拒绝结论，迟到回调不能重新开放绑定。权限与来源仍逐次复验。脚本和结论保存在受保护上下文中，`agent.code`跨度仅保存模式、绑定表、次数、耗时和失败码，不复制原始工具数据。
+
+编译服务显式嵌入Worker入口并固定项目根与编译期路径；WASM字节包含在变体内，不在运行时下载或寻找外部解释器文件。
 
 ## Context and retention
 
@@ -27,7 +71,11 @@ Evidence and action observations carry source identity, revision and expiry. Con
 
 Deleting or revoking a source invalidates derived exact snapshots. Expiry follows the earliest source expiry; the runtime periodically clears expired text. Metadata may remain for diagnosis. This is application-level retention, not a claim of immediate physical disk erasure.
 
-Model capacity, an auxiliary call timeout and a business job deadline are different budgets. An optional Agent deadline does not replace the existing task deadlines. Streaming cancellation must propagate to the underlying request.
+Model capacity, an auxiliary call timeout and a business job deadline are different budgets. An optional Agent deadline does not replace the existing task deadlines. Streaming cancellation must propagate to the underlying request. Nested text and vision leaves automatically inherit the active task tree's call and input budget; unrelated concurrent runs have separate ledgers. Deferred compression explicitly retains its originating ledger. Waiting for a model slot is cancellable, and releasing a slot transfers ownership directly to the next waiter.
+
+Supplemental memory and knowledge queries disclose catalog entries with module-supplied previews and run-local body references. Paged reads reuse the selected body without another selector call, but revalidate authority and source revision on every access. Hosts fit the actual catalog or page envelope, including provenance, against available capacity; a reference is never a grant of access.
+
+Memory recall is two explicit stages: retrieval reads the authorized catalog with keyword scoring, boundaries and no model call; reranking spends a selector model call and may only prune the retrieved candidates. Retired or corrected rows leave the catalog entirely, so a stale selection cannot bring old text back — an out-of-candidate selection is refused and that read yields no memory, with a diagnostic.
 
 ## Staged migration
 

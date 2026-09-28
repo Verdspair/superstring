@@ -5,11 +5,12 @@
 //                    超过方案的 `package_limit` 就把最早的整包丢掉；
 //   * throughSeq   → 历史水位：窗口外的老消息压到哪（只由窗口外那一批推进，保持连续不跳空）；
 //   * coveredSeq   → 已覆盖水位：连"窗口内被条数/预算裁掉"的那段也算进去，避免同一批反复触发。
-// 两个水位都只增不减：并发或迟到的写入不得把它们退回去，否则会重复压缩或重新计数。
-//
-// 这里不做授权判断：调用方已经拿到的是一次**受权会话**的摘要（来源可见性与其它读取一致）。
+// 两个水位都只增不减；事务内复验授权与旧快照，拒绝并发或迟到覆盖。
 
 import { and, eq } from "drizzle-orm";
+import { z } from "zod";
+import { type SourceRef, SourceRefSchema } from "../../shared/contracts/evidence";
+import { uniqueSources } from "../agent/context-engine";
 import type { ConversationSummaryFacts } from "../agent/conversation-compression";
 import type { Orm } from "./repositories";
 import * as schema from "./schema";
@@ -22,6 +23,7 @@ export interface QqSummaryPackage {
   readonly fromSeconds: number;
   readonly throughSeconds: number;
   readonly at: string;
+  readonly sources?: readonly SourceRef[];
 }
 
 export interface QqConversationSummary {
@@ -42,12 +44,31 @@ export interface QqConversationSummary {
  * `content` 的两种形态：0046 起是包数组；同一天的 0045 初版写过"一行一份纯事实数组"。
  * 后者读出来当作一个覆盖范围未知的包（from/through 记 -1、时刻记 0），这样升级后不丢历史。
  */
+function packageSources(
+  facts: ConversationSummaryFacts,
+  sources?: readonly SourceRef[],
+): SourceRef[] {
+  if (sources !== undefined) return z.array(SourceRefSchema).min(1).parse(sources);
+  return uniqueSources(
+    facts.flatMap((fact) =>
+      fact.source_ids.flatMap((id) =>
+        z
+          .array(z.tuple([z.string().min(1), z.string().min(1), z.string()]))
+          .min(1)
+          .parse(JSON.parse(id))
+          .map(([kind, id, revision]) => ({ kind, id, revision })),
+      ),
+    ),
+  );
+}
+
 function parsePackages(content: string, throughSeq: number, updatedAt: string): QqSummaryPackage[] {
   const parsed = JSON.parse(content) as unknown;
   if (Array.isArray(parsed))
     return [
       {
         facts: parsed as ConversationSummaryFacts,
+        sources: packageSources(parsed as ConversationSummaryFacts),
         fromSeq: -1,
         throughSeq,
         fromSeconds: 0,
@@ -66,6 +87,7 @@ function parsePackages(content: string, throughSeq: number, updatedAt: string): 
       fromSeconds: entry.fromSeconds ?? 0,
       throughSeconds: entry.throughSeconds ?? 0,
       at: entry.at ?? updatedAt,
+      sources: packageSources(entry.facts ?? [], entry.sources),
     });
   });
 }
@@ -134,38 +156,48 @@ export function saveQqConversationSummary(
     configSnapshot: unknown;
     estimatedTokens: number;
     at: string;
+    expected: QqConversationSummary | null;
+    assertCurrent(): void;
   },
-): void {
-  const current = readQqConversationSummary(orm, input.conversationId, input.agentId);
-  const throughSeq = Math.max(current?.throughSeq ?? -1, input.throughSeq);
-  const coveredSeq = Math.max(current?.coveredSeq ?? -1, input.coveredSeq);
-  const content = JSON.stringify({ packages: input.packages });
-  orm
-    .insert(schema.qqConversationSummaries)
-    .values({
-      conversationId: input.conversationId,
-      agentId: input.agentId,
-      throughSeq,
-      coveredSeq,
-      content,
-      modelName: input.modelName,
-      configSnapshot: JSON.stringify(input.configSnapshot),
-      estimatedTokens: input.estimatedTokens,
-      createdAt: current?.updatedAt ?? input.at,
-      updatedAt: input.at,
-    })
-    .onConflictDoUpdate({
-      target: schema.qqConversationSummaries.conversationId,
-      set: {
-        agentId: input.agentId,
-        throughSeq,
-        coveredSeq,
-        content,
-        modelName: input.modelName,
-        configSnapshot: JSON.stringify(input.configSnapshot),
-        estimatedTokens: input.estimatedTokens,
-        updatedAt: input.at,
-      },
-    })
-    .run();
+): boolean {
+  return orm.transaction(
+    () => {
+      input.assertCurrent();
+      const current = readQqConversationSummary(orm, input.conversationId, input.agentId);
+      if (JSON.stringify(current) !== JSON.stringify(input.expected)) return false;
+      const throughSeq = Math.max(current?.throughSeq ?? -1, input.throughSeq);
+      const coveredSeq = Math.max(current?.coveredSeq ?? -1, input.coveredSeq);
+      const content = JSON.stringify({ packages: input.packages });
+      orm
+        .insert(schema.qqConversationSummaries)
+        .values({
+          conversationId: input.conversationId,
+          agentId: input.agentId,
+          throughSeq,
+          coveredSeq,
+          content,
+          modelName: input.modelName,
+          configSnapshot: JSON.stringify(input.configSnapshot),
+          estimatedTokens: input.estimatedTokens,
+          createdAt: current?.updatedAt ?? input.at,
+          updatedAt: input.at,
+        })
+        .onConflictDoUpdate({
+          target: schema.qqConversationSummaries.conversationId,
+          set: {
+            agentId: input.agentId,
+            throughSeq,
+            coveredSeq,
+            content,
+            modelName: input.modelName,
+            configSnapshot: JSON.stringify(input.configSnapshot),
+            estimatedTokens: input.estimatedTokens,
+            updatedAt: input.at,
+          },
+        })
+        .run();
+      return true;
+    },
+    { behavior: "immediate" },
+  );
 }

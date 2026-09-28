@@ -48,6 +48,14 @@ import {
   RunEventSchema,
   RunSnapshotSchema,
 } from "../shared/contracts/agent-run";
+import {
+  TaskAckSchema,
+  type TaskApproval,
+  TaskBodyPageSchema,
+  TaskDetailSchema,
+  TaskListSchema,
+  type TaskStatus,
+} from "../shared/contracts/agent-task";
 import { type ChatV2Event, ChatV2EventSchema } from "../shared/contracts/chat-v2";
 import {
   ConversationEventsSchema,
@@ -72,10 +80,16 @@ import {
   KnowledgeSettingsSchema,
   type KnowledgeSettingsUpdate,
 } from "../shared/contracts/knowledge";
+import { type McpServerConfig, McpStatusResponseSchema } from "../shared/contracts/mcp";
 import {
   OrganizationSettingsSchema,
   type OrganizationSettingsUpdate,
 } from "../shared/contracts/organization";
+import {
+  type PermissionPolicy,
+  PermissionSnapshotSchema,
+  PermissionsResponseSchema,
+} from "../shared/contracts/permissions";
 import {
   type CreateQqBindingRequest,
   type CreateQqSchemeRequest,
@@ -115,6 +129,7 @@ import {
   RuntimeTraceDetailSchema,
   RuntimeTracesPageSchema,
 } from "../shared/contracts/runtime-observability";
+import { SkillCatalogResponseSchema, SkillDetailResponseSchema } from "../shared/contracts/skill";
 import { msg } from "./i18n";
 
 export class ApiError extends Error {
@@ -442,6 +457,89 @@ export const api = {
       `/models/capacity?model=${encodeURIComponent(model)}`,
       ModelCapacityResponseSchema,
     );
+  },
+  // ---- 接入管理（P7-d）：MCP 登记、技能目录、工具授权、任务与执行配置 ----
+  getMcpServers(signal?: AbortSignal) {
+    return requestJson("/v2/mcp/servers", McpStatusResponseSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  saveMcpServers(body: { expectedRevision: string; servers: McpServerConfig[] }) {
+    return requestJson("/v2/mcp/servers", McpStatusResponseSchema, json("PUT", body));
+  },
+  reloadMcpServers() {
+    return requestJson("/v2/mcp/reload", McpStatusResponseSchema, { method: "POST" });
+  },
+  getSkills(signal?: AbortSignal) {
+    return requestJson("/v2/skills", SkillCatalogResponseSchema, { signal, cache: "no-store" });
+  },
+  getSkill(name: string, signal?: AbortSignal) {
+    return requestJson(`/v2/skills/${encodeURIComponent(name)}`, SkillDetailResponseSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  getPermissions(signal?: AbortSignal) {
+    return requestJson("/v2/permissions", PermissionsResponseSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  savePermissions(body: { expectedRevision: string; policy: PermissionPolicy }) {
+    return requestJson("/v2/permissions", PermissionSnapshotSchema, json("PUT", body));
+  },
+  listTasks(
+    filters: {
+      conversationId?: string;
+      agentId?: string;
+      status?: TaskStatus;
+      originRunId?: string;
+      limit?: number;
+      cursor?: string;
+    } = {},
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(`/v2/permissions/tasks?${query}`, TaskListSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  getTask(id: string, signal?: AbortSignal) {
+    return requestJson(`/v2/permissions/tasks/${encodeURIComponent(id)}`, TaskDetailSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  getTaskBody(
+    id: string,
+    ordinal: number,
+    field: "arguments" | "result",
+    offset = 0,
+    limit = 2048,
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    return requestJson(
+      `/v2/permissions/tasks/${encodeURIComponent(id)}/calls/${ordinal}/${field}?${query}`,
+      TaskBodyPageSchema,
+      { signal, cache: "no-store" },
+    );
+  },
+  approveTask(id: string, body: TaskApproval) {
+    return requestJson(
+      `/v2/permissions/tasks/${encodeURIComponent(id)}/approval`,
+      TaskAckSchema,
+      json("POST", body),
+    );
+  },
+  cancelTask(id: string) {
+    return requestJson(`/v2/permissions/tasks/${encodeURIComponent(id)}/cancel`, TaskAckSchema, {
+      method: "POST",
+    });
   },
   getPolicy(agentId: string): Promise<PolicyView> {
     return requestJson(`/agents/${agentId}/memory/policy`, PolicyViewSchema);

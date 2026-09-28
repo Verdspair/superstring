@@ -13,6 +13,7 @@ import type {
 } from "../../shared/contracts";
 import type { SuperstringApi, streamChatV2 } from "../api";
 import type { BrowserStateStorage } from "../browser-state";
+import type { PermissionSettingsState } from "../features/access/permission-state";
 import type { ConversationState } from "../features/chat/conversation-state";
 import type { ConversationDirectoryState } from "../features/conversations/directory-state";
 import type { DesktopSettingsState } from "../features/general/desktop-state";
@@ -81,6 +82,7 @@ export interface AgentDraft {
 
 export interface SuperstringState
   extends ConversationState,
+    PermissionSettingsState,
     ConversationDirectoryState,
     RunState,
     KnowledgeState,

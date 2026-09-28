@@ -2,7 +2,6 @@ import { Cpu, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  CreateModelProviderRequestSchema,
   MODEL_PROVIDER_MODEL_LIMIT,
   type ModelProviderResponse,
 } from "../../../shared/contracts/models";
@@ -10,6 +9,7 @@ import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import {
   Sheet,
@@ -27,30 +27,15 @@ import {
   TableRow,
 } from "../../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
+import {
+  createProviderEditor,
+  type ProviderEditor,
+  providerPayload,
+} from "../../features/models/provider-draft";
 import { translateNotice } from "../../i18n";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { useSuperstringStore } from "../../store";
 import { ModelDefaults } from "./model-defaults";
-
-interface ProviderEditor {
-  source: ModelProviderResponse | null;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  models: { key: string; name: string; window: string }[];
-}
-const editorOf = (source: ModelProviderResponse | null): ProviderEditor => ({
-  source,
-  name: source?.name ?? "",
-  baseUrl: source?.base_url ?? "",
-  apiKey: "",
-  models:
-    source?.models.map((model) => ({
-      key: model.name,
-      name: model.name,
-      window: String(model.context_window),
-    })) ?? [],
-});
 
 export function ModelServices() {
   const { t } = useTranslation();
@@ -112,19 +97,10 @@ export function ModelServices() {
       recheck.current = null;
     };
   }, [apiClient, providers]);
-  const parsed = editor
-    ? CreateModelProviderRequestSchema.safeParse({
-        name: editor.name.trim(),
-        base_url: editor.baseUrl.trim(),
-        ...(editor.apiKey ? { api_key: editor.apiKey } : {}),
-        models: editor.models.map((model) => ({
-          name: model.name.trim(),
-          context_window: Number(model.window),
-        })),
-      })
-    : null;
+  const parsed = editor ? providerPayload(editor) : null;
   const dirty =
-    editor !== null && JSON.stringify(editor) !== JSON.stringify(editorOf(editor.source));
+    editor !== null &&
+    JSON.stringify(editor) !== JSON.stringify(createProviderEditor(editor.source));
   useEffect(() => {
     if (!dirty && !saving) return;
     const warn = (event: BeforeUnloadEvent) => {
@@ -201,7 +177,7 @@ export function ModelServices() {
                 {t("models.externalHint")}
               </p>
             </div>
-            <Button onClick={() => setEditor(editorOf(null))}>
+            <Button onClick={() => setEditor(createProviderEditor(null))}>
               <Plus />
               {t("models.addProvider")}
             </Button>
@@ -238,7 +214,7 @@ export function ModelServices() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setEditor(editorOf(provider))}
+                        onClick={() => setEditor(createProviderEditor(provider))}
                       >
                         {t("models.configure")}
                       </Button>
@@ -339,53 +315,126 @@ export function ModelServices() {
                 <h3 className="font-medium">{t("models.registeredModels")}</h3>
                 <p className="text-xs text-muted-foreground">{t("models.windowHint")}</p>
                 {editor.models.map((model) => (
-                  <div
-                    key={model.key}
-                    className="grid grid-cols-[minmax(0,1fr)_8rem_auto] items-end gap-2"
-                  >
-                    <Field label="models.modelId">
-                      <Input
-                        value={model.name}
+                  <div key={model.key} className="space-y-3">
+                    <div className="grid grid-cols-[minmax(0,1fr)_6rem_auto] items-end gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
+                      <Field label="models.modelId">
+                        <Input
+                          value={model.name}
+                          disabled={saving}
+                          onChange={(e) =>
+                            setEditor({
+                              ...editor,
+                              models: editor.models.map((item) =>
+                                item.key === model.key ? { ...item, name: e.target.value } : item,
+                              ),
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field label="models.contextWindow">
+                        <Input
+                          inputMode="numeric"
+                          value={model.window}
+                          disabled={saving}
+                          onChange={(e) =>
+                            setEditor({
+                              ...editor,
+                              models: editor.models.map((item) =>
+                                item.key === model.key ? { ...item, window: e.target.value } : item,
+                              ),
+                            })
+                          }
+                        />
+                      </Field>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t("models.removeModel", { "0": model.name })}
                         disabled={saving}
-                        onChange={(e) =>
+                        onClick={() =>
                           setEditor({
                             ...editor,
-                            models: editor.models.map((item) =>
-                              item.key === model.key ? { ...item, name: e.target.value } : item,
-                            ),
+                            models: editor.models.filter((item) => item.key !== model.key),
                           })
                         }
-                      />
-                    </Field>
-                    <Field label="models.contextWindow">
-                      <Input
-                        inputMode="numeric"
-                        value={model.window}
-                        disabled={saving}
-                        onChange={(e) =>
-                          setEditor({
-                            ...editor,
-                            models: editor.models.map((item) =>
-                              item.key === model.key ? { ...item, window: e.target.value } : item,
-                            ),
-                          })
-                        }
-                      />
-                    </Field>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={t("models.removeModel", { "0": model.name })}
-                      disabled={saving}
-                      onClick={() =>
-                        setEditor({
-                          ...editor,
-                          models: editor.models.filter((item) => item.key !== model.key),
-                        })
-                      }
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                    <fieldset
+                      className="min-w-0 space-y-3"
+                      aria-label={t("models.capabilitiesFor", { "0": model.name })}
                     >
-                      <Trash2 />
-                    </Button>
+                      <legend className="text-sm font-medium">{t("models.capabilities")}</legend>
+                      <p className="text-xs text-muted-foreground">
+                        {t("models.capabilitiesHint")}
+                      </p>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        {(
+                          [
+                            ["toolCalling", "models.toolCalling"],
+                            ["parallelToolCalls", "models.parallelToolCalls"],
+                            ["codeExecution", "models.codeExecution"],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <Field key={key} label={label}>
+                            <Checkbox
+                              checked={model.capabilities?.[key] ?? false}
+                              disabled={saving}
+                              onCheckedChange={(checked) =>
+                                setEditor({
+                                  ...editor,
+                                  models: editor.models.map((item) =>
+                                    item.key !== model.key
+                                      ? item
+                                      : {
+                                          ...item,
+                                          capabilities: {
+                                            toolCalling: false,
+                                            parallelToolCalls: false,
+                                            codeExecution: false,
+                                            ...item.capabilities,
+                                            [key]: checked === true,
+                                          },
+                                        },
+                                  ),
+                                })
+                              }
+                            />
+                          </Field>
+                        ))}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          model.capabilities
+                            ? "models.capabilitiesDeclared"
+                            : "models.capabilitiesUndeclared",
+                        )}
+                      </p>
+                      {model.capabilities && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={saving}
+                          onClick={() =>
+                            setEditor({
+                              ...editor,
+                              models: editor.models.map((item) =>
+                                item.key !== model.key
+                                  ? item
+                                  : {
+                                      key: item.key,
+                                      name: item.name,
+                                      window: item.window,
+                                    },
+                              ),
+                            })
+                          }
+                        >
+                          {t("models.clearCapabilities")}
+                        </Button>
+                      )}
+                    </fieldset>
                   </div>
                 ))}
                 <Button

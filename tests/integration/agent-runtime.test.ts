@@ -9,17 +9,43 @@ import {
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import { createBuiltInActions } from "../../src/server/agent/built-in-actions";
 import { inputUnits, textMessage } from "../../src/server/agent/context-engine";
-import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
+import { estimateMessages } from "../../src/server/agent/conversation-context";
+import {
+  createModelCallLimiter,
+  type ModelPort,
+  type ModelRequest,
+} from "../../src/server/agent/model-port";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createLmStudioVisionClient } from "../../src/server/llm/vision-client";
-import { estimateMessages } from "../../src/server/services/context-builder";
 import {
   type RunEvent,
   RunEventSchema,
   RunSnapshotSchema,
 } from "../../src/shared/contracts/agent-run";
+
+it("cancels a queued model call without waiting for a busy model and keeps slot handoff atomic", async () => {
+  const limiter = createModelCallLimiter(1);
+  const release = await limiter.acquire();
+  const controller = new AbortController();
+  const cancelled = limiter.acquire(controller.signal);
+  controller.abort(new Error("cancel queued"));
+  await expect(cancelled).rejects.toThrow("cancel queued");
+  const second = limiter.acquire();
+  release();
+  let entered = false;
+  const third = limiter.acquire().then((done) => {
+    entered = true;
+    return done;
+  });
+  const secondRelease = await second;
+  expect(entered).toBe(false);
+  secondRelease();
+  const thirdRelease = await third;
+  expect(entered).toBe(true);
+  thirdRelease();
+});
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -315,7 +341,7 @@ describe("unified AgentRuntime", () => {
     );
   });
 
-  it("retains invoke arguments as data and inherits parent sources after a context refresh", async () => {
+  it("retains invoke arguments as data and keeps provenance on the step snapshot after a context refresh", async () => {
     let step = 0;
     const parent = { kind: "question", id: "old-question", revision: "1" };
     const { runtime, repository } = setup({
@@ -335,10 +361,11 @@ describe("unified AgentRuntime", () => {
         );
         const part = observation?.content[0];
         if (part?.kind !== "text") throw new Error("Missing observation");
-        expect(JSON.parse(part.text).value).toMatchObject({
-          arguments: { query: "private query" },
-          sources: [parent],
-        });
+        const payload = JSON.parse(part.text).value;
+        expect(payload).toMatchObject({ arguments: { query: "private query" } });
+        // 0.4.0 P3：观测只带结果自己的来源（这里是空）；父来源由这一步的上下文快照记一次——
+        // 本用例末尾对 `getContext(...).sources` 的断言就是在验它。
+        expect(payload.sources).toEqual([]);
         return '{"kind":"none"}';
       },
     });
@@ -360,12 +387,16 @@ describe("unified AgentRuntime", () => {
       },
     );
     const snapshot = repository.getRun(result.runId);
-    const next = snapshot?.steps[1].context;
-    if (!next) throw new Error("Missing second step");
-    expect(repository.getContext(next)?.sources).toContainEqual(parent);
+    // 归属记在"动作是在哪一步的上下文之下执行的"那份快照上（一步一次）；随后上下文刷新
+    // （父来源不再出现在材料里）也不会让这条记录消失，逐条观测则不再各复制一份。
+    const holder = (snapshot?.steps ?? []).find((entry) =>
+      repository.getContext(entry.context)?.sources.some((source) => source.id === parent.id),
+    );
+    if (!holder) throw new Error("Missing the step snapshot that owns the parent source");
+    expect(repository.getContext(holder.context)?.sources).toContainEqual(parent);
     expect(JSON.stringify(repository.listEvents(result.runId))).not.toContain("private query");
     repository.redactSource(parent.kind, parent.id, "revoked");
-    expect(repository.getContext(next)?.messages).toBeNull();
+    expect(repository.getContext(holder.context)?.messages).toBeNull();
   });
 
   it("commits an explicit none so a host can acknowledge a wake without creating an output", async () => {

@@ -38,7 +38,8 @@ export interface KnowledgeOrganizerOptions {
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   leaseMs?: number;
-  jobTimeoutMs?: number;
+  jobTimeoutMs?: number | (() => number);
+  enabled?: () => boolean;
 }
 
 /** Durable single-consumer queue. No model call or await holds a transaction. */
@@ -107,7 +108,8 @@ export class KnowledgeOrganizer {
     }
   }
   runCycle(): Promise<boolean> {
-    if (this.current || this.stopped) return Promise.resolve(false);
+    if (this.current || this.stopped || this.options.enabled?.() === false)
+      return Promise.resolve(false);
     // Defer so synchronous failures cannot leave an already-settled current promise installed.
     this.current = Promise.resolve()
       .then(() => this.cycle())
@@ -235,6 +237,11 @@ export class KnowledgeOrganizer {
     }
   }
   private async cycle(): Promise<boolean> {
+    if (this.options.enabled?.() === false) return false;
+    const timeoutMs =
+      (typeof this.options.jobTimeoutMs === "function"
+        ? this.options.jobTimeoutMs()
+        : this.options.jobTimeoutMs) ?? 3_600_000;
     const job = this.claim();
     if (!job) return false;
     const span = this.options.telemetry?.start("knowledge.job", {
@@ -252,10 +259,10 @@ export class KnowledgeOrganizer {
         { kind: "knowledge_document", id: job.document_id, revision: String(job.content_version) },
       ],
     });
-    const work = () => this.runJob(job, span);
+    const work = () => this.runJob(job, timeoutMs, span);
     return span ? span.within(work) : work();
   }
-  private async runJob(job: Job, span?: TraceScope): Promise<boolean> {
+  private async runJob(job: Job, timeoutMs: number, span?: TraceScope): Promise<boolean> {
     const controller = new AbortController();
     this.controller = controller;
     const signal = controller.signal;
@@ -279,7 +286,7 @@ export class KnowledgeOrganizer {
     // segment, so the budget must outlive several slow calls, not just one.
     const timeout = setTimeout(
       () => controller.abort(new OrganizerFailure("KNOWLEDGE_TIMEOUT")),
-      this.options.jobTimeoutMs ?? 3_600_000,
+      timeoutMs,
     );
     try {
       const chunks = knowledgeSegments(job.original_text);

@@ -28,7 +28,10 @@ export type QqMediaCycleResult =
       readonly segmentIndex: number;
       readonly result: QqMediaReadResult;
     }
-  | { readonly kind: "idle"; readonly reason: "no_media" | "all_described" };
+  | {
+      readonly kind: "idle";
+      readonly reason: "no_media" | "all_described" | "unsupported_kind";
+    };
 
 const Input = z.strictObject({
   eventKey: z.string().min(1),
@@ -58,8 +61,15 @@ export async function readQqAddressedMediaOnce(
   const value = parsed.data;
   const segments = mediaSegmentsForEvent(orm, value.eventKey);
   if (segments.length === 0) return { kind: "idle", reason: "no_media" };
-  const target = segments.find((segment) => segment.described !== true);
-  if (target === undefined) return { kind: "idle", reason: "all_described" };
+  // 声明读不了的片段直接轮不到（语音/视频/文件）：不选它，也就没有"试一次失败"。
+  const canRead = (segment: { kind: string }) =>
+    segment.kind !== "file" && (adapter.capabilities as readonly string[]).includes(segment.kind);
+  const target = segments.find((segment) => segment.described !== true && canRead(segment));
+  if (target === undefined)
+    return {
+      kind: "idle",
+      reason: segments.some(canRead) ? "all_described" : "unsupported_kind",
+    };
   const result = await readQqMediaOnce(orm, adapter, {
     eventKey: target.eventKey,
     segmentIndex: target.segmentIndex,

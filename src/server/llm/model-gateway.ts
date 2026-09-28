@@ -27,6 +27,7 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
+import { INVOKE_BATCH_LIMIT } from "../agent/agent-specs";
 import { ModelUnavailableError } from "../errors";
 import {
   announceStrictSchemaSkip,
@@ -137,30 +138,35 @@ function reportResolvedModel(callback: ((model: string) => void) | undefined, mo
 }
 
 /**
- * 原生工具调用 → 现有 invoke 决策（issue #10）。
+ * 原生工具调用 → invoke 决策（issue #10；0.4.0 P2 起支持**一批**调用）。
  *
- * 一次回复只认一个决策，所以只有第一个调用算数（多调用是并行意图，本协议一步一个动作；后续步骤
- * 会重新决策）。参数由服务端按函数参数 schema 校验过形状，这一层只守最后一道：读不出就不猜，
- * 返回 null 交给调用方按"读不出 = 沉默"处理。
+ * 一次回复仍只算一个决策，但决策可以是"这批工具一起叫"：只读的会并行执行、有副作用的按顺序串行
+ * （谁来定，见 `ActionDescription.effect`）。多调用**不再被丢掉**——丢掉等于模型以为自己查过了。
+ *
+ * 参数由服务端按函数参数 schema 校验过形状，这一层只守最后一道：只要有**一个**调用读不出来就返回
+ * null（读不出就不猜，交给调用方按"读不出 = 沉默"处理），不猜着丢掉坏的那个、留下好的。
  */
 function decisionTextFromToolCalls(calls: unknown): string | null {
-  const first = Array.isArray(calls)
-    ? (calls[0] as { function?: { name?: unknown; arguments?: unknown } } | undefined)
-    : undefined;
-  const name = first?.function?.name;
-  if (typeof name !== "string" || name.length === 0) return null;
-  const rawArguments = first?.function?.arguments;
-  let parsed: unknown;
-  if (rawArguments === undefined || rawArguments === null || rawArguments === "") parsed = {};
-  else if (typeof rawArguments === "string") {
-    try {
-      parsed = JSON.parse(rawArguments);
-    } catch {
-      return null;
-    }
-  } else parsed = rawArguments;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  return JSON.stringify({ kind: "invoke", name, arguments: parsed });
+  if (!Array.isArray(calls) || calls.length === 0) return null;
+  const batch: { name: string; arguments: Record<string, unknown> }[] = [];
+  for (const entry of calls.slice(0, INVOKE_BATCH_LIMIT)) {
+    const call = entry as { function?: { name?: unknown; arguments?: unknown } } | undefined;
+    const name = call?.function?.name;
+    if (typeof name !== "string" || name.length === 0) return null;
+    const rawArguments = call?.function?.arguments;
+    let parsed: unknown;
+    if (rawArguments === undefined || rawArguments === null || rawArguments === "") parsed = {};
+    else if (typeof rawArguments === "string") {
+      try {
+        parsed = JSON.parse(rawArguments);
+      } catch {
+        return null;
+      }
+    } else parsed = rawArguments;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    batch.push({ name, arguments: parsed as Record<string, unknown> });
+  }
+  return JSON.stringify({ kind: "invoke", calls: batch });
 }
 
 /** 读不出的调用只记一个摘要：这是诊断，不是内容。 */

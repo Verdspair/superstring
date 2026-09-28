@@ -59,6 +59,9 @@ export function resolveAppPaths(options: AppPathOptions) {
     browserStateKey: path.join(privateRoot, "state", "browser-state.key"),
     qqTransportKey: path.join(privateRoot, "state", "qq-transport.key"),
     appearance: path.join(privateRoot, "state", "desktop-appearance.json"),
+    mcpServers: path.join(privateRoot, "config", "mcp-servers.json"),
+    permissions: path.join(privateRoot, "config", "permissions.json"),
+    skills: path.join(privateRoot, "config", "skills"),
     // User-imported sticker copies live in their own feature namespace rather than beside the
     // database: §10 keeps material governance independent of the media cache, and grouping by
     // feature keeps a future split of the QQ feature to one path.
@@ -284,6 +287,7 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0047_qq_context_limit_caps.sql",
     ),
+    agentTasksMigration: path.join(resourceRoot, "migrations", "versions", "0048_agent_tasks.sql"),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

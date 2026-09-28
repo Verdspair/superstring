@@ -4,7 +4,12 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { readBindingByConversation } from "../db/qq-binding-repository";
-import { mediaNoteRow, recordMediaAttempt, recordMediaNote } from "../db/qq-media-repository";
+import {
+  mediaNoteRow,
+  recordMediaAttempt,
+  recordMediaNote,
+  reusableMediaNote,
+} from "../db/qq-media-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../db/repositories";
 import { qqEvents } from "../db/schema";
@@ -25,7 +30,13 @@ const Input = z.strictObject({
   }),
 });
 
+/**
+ * 适配器**声明**自己能读哪些种类（0.4.0 P5）：语音与视频在这一版没有转写协议、也没有解码器，
+ * 与其让每次被叫到都去"试一次然后失败"，不如让实现方把能力说清楚——阅读器在花钱之前就据此
+ * 判"不可用"，不消耗尝试次数、也不产生失败叶子。未来的转写实现只需把 `record` 加进这份声明。
+ */
 export interface QqMediaReadAdapter {
+  readonly capabilities: readonly ("image" | "record" | "video")[];
   read(input: {
     kind: "image" | "record" | "video";
     sourceRef: string;
@@ -37,6 +48,7 @@ export interface QqMediaReadAdapter {
 }
 
 export type QqMediaReadResult =
+  /** `attempt: 0` ＝ 复用了同会话里同一引用的已有描述，这一行没有花过读取尝试。 */
   | { readonly kind: "described"; readonly attempt: number }
   | { readonly kind: "unreadable"; readonly reason: string }
   | {
@@ -99,6 +111,32 @@ export async function readQqMediaOnce(
   if (row.segmentKind !== "image" && row.segmentKind !== "record" && row.segmentKind !== "video")
     return { kind: "unreadable", reason: "unsupported_kind" };
   const kind = row.segmentKind;
+  // 能力先于配置：声明读不了的种类，配了模型也不试（不记尝试、不产生失败）。
+  if (!adapter.capabilities.includes(kind))
+    return { kind: "unreadable", reason: "capability_unavailable" };
+  // 复用先于花钱：同一会话里同一张图已经读过，就照抄那份描述（不消耗尝试、不调模型）。
+  const reused = reusableMediaNote(orm, {
+    accountId: event.accountId,
+    conversationKind: event.conversationKind as "group" | "private",
+    peerId: event.peerId,
+    kind,
+    sourceRef: row.sourceRef,
+    at: new Date().toISOString(),
+  });
+  if (reused) {
+    try {
+      recordMediaNote(orm, {
+        eventKey: value.eventKey,
+        segmentIndex: value.segmentIndex,
+        note: reused.note,
+        noteModel: reused.noteModel,
+        validateBeforeWrite: authorized,
+      });
+    } catch {
+      return { kind: "unreadable", reason: "segment_changed" };
+    }
+    return { kind: "described", attempt: 0 };
+  }
   const choice = qqMediaModelFor(kind, value.modelConfig);
   if (choice.kind !== "configured") return { kind: "unreadable", reason: "model_not_configured" };
   const retry = checkQqMediaRetry({

@@ -59,6 +59,7 @@ export class SqliteMemoryModule implements MemoryModule {
     return (await this.queryItems({ ...input, runtime })).map((item) => ({
       id: item.id,
       text: JSON.stringify(contentBlocks([item])),
+      preview: { title: item.name, summary: item.summary },
       sources: [{ kind: "memory", id: item.id, revision: item.revision }],
       scope: input.scopes === null ? input.agentId : JSON.stringify(input.scopes),
     }));
@@ -191,9 +192,24 @@ export class SqliteMemoryModule implements MemoryModule {
       },
       select,
       cost:
-        this.options.cost ??
-        ((items) =>
-          estimateMessages([{ role: "user", content: contextDumps(contentBlocks(items)) }])),
+        input.projection === "catalog"
+          ? (items) =>
+              estimateMessages([
+                {
+                  role: "user",
+                  content: contextDumps(
+                    items.map((item) => ({
+                      id: item.id,
+                      title: item.name,
+                      summary: item.summary,
+                      bodyRef: "0".repeat(64),
+                    })),
+                  ),
+                },
+              ])
+          : (this.options.cost ??
+            ((items) =>
+              estimateMessages([{ role: "user", content: contextDumps(contentBlocks(items)) }]))),
     });
     assertCurrent();
     return result;

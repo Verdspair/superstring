@@ -20,7 +20,7 @@ import { type BusinessDbHandle, openConnection } from "./connection";
 import * as schema from "./schema";
 
 /** Ordered resources are also supplied explicitly by installed entrypoints. */
-export const BUSINESS_SCHEMA_VERSION = 47 as const;
+export const BUSINESS_SCHEMA_VERSION = 48 as const;
 export const BUSINESS_MIGRATION_FILES = [
   "0001_initial.sql",
   "0002_knowledge.sql",
@@ -69,8 +69,10 @@ export const BUSINESS_MIGRATION_FILES = [
   "0045_qq_conversation_summaries.sql",
   "0046_qq_context_compression.sql",
   "0047_qq_context_limit_caps.sql",
+  "0048_agent_tasks.sql",
 ] as const;
 export type BusinessMigrationSql = readonly [
+  string,
   string,
   string,
   string,
@@ -186,6 +188,8 @@ export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "runtime_spans",
   "conversation_avatars",
   "qq_conversation_summaries",
+  "agent_tasks",
+  "agent_task_calls",
 ];
 
 function loadMigrationSql(): BusinessMigrationSql {
@@ -238,6 +242,7 @@ function loadMigrationSql(): BusinessMigrationSql {
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[44]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[45]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[46]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[47]), "utf8"),
   ];
 }
 
@@ -455,17 +460,35 @@ export function ensureBusinessSchema(
  * a file-backed database. The gate runs first; on rejection the connection is
  * closed so no open handle leaks. Always call `close()` when done.
  */
+/**
+ * 已迁移的**内存库模板**（进程内缓存）。
+ *
+ * 测试每个文件、每个用例都开一次库，而每次真实迁移要重放 47 份 SQL 并在**每一步之后**做结构指纹
+ * 校验（近似 O(版本²)，实测一次 `openBusinessDb()` 约 88ms）。第一次开库照常走真实迁移，成功后把
+ * 结果 `serialize()` 存下来；此后默认的内存开库直接还原这份快照（连接级 pragma 仍由
+ * `openConnection` 施加）。
+ *
+ * 边界：只对"默认路径 ＋ 未显式传 migrationSql"生效——文件库、显式迁移集、以及 schema-gate 的
+ * 拒绝用例都走真实迁移；模板来自一次**成功**的迁移，因此不会把被拒绝的库形状带进来。
+ */
+let memoryTemplate: Uint8Array | null = null;
+
 export function openBusinessDb(opts?: {
   path?: string;
   migrationSql?: BusinessMigrationSql;
 }): BusinessDbHandle {
+  const isFile = !!opts?.path && opts.path !== ":memory:";
+  const explicitMigrations = opts?.migrationSql !== undefined;
   const migrationSql = opts?.migrationSql ?? loadMigrationSql();
   // Resolve and validate resources before touching a file-backed database.
   validateResources(migrationSql);
-  const db = openConnection(opts);
-  const isFile = !!opts?.path && opts.path !== ":memory:";
+  const reusable = !isFile && !explicitMigrations ? memoryTemplate : null;
+  const db = openConnection(reusable === null ? opts : { ...opts, serialized: reusable });
   try {
-    ensureBusinessSchema(db, migrationSql);
+    if (reusable === null) {
+      ensureBusinessSchema(db, migrationSql);
+      if (!isFile && !explicitMigrations) memoryTemplate = db.serialize();
+    }
     // Only switch journal mode after structural validation. Tests prove rejected
     // closed DELETE-mode fixtures retain bytes and gain no WAL/SHM sidecars;
     // existing WAL/hot-journal recovery is outside that guarantee.

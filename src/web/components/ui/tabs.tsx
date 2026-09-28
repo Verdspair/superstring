@@ -68,7 +68,12 @@ function TabsContent({ className, ...props }: React.ComponentProps<typeof TabsPr
   return (
     <TabsPrimitive.Content
       data-slot="tabs-content"
-      className={cn("flex-1 text-sm outline-none", className)}
+      // 面板是 tabindex=0 的可聚焦区域：保留 outline-none 的同时给键盘焦点一个内嵌 ring，
+      // 否则键盘用户 Tab 进面板后完全看不出焦点在哪（页面级验收工具会按可见性断言）。
+      className={cn(
+        "flex-1 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset",
+        className,
+      )}
       {...props}
     />
   );

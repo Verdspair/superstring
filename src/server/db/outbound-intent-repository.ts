@@ -58,6 +58,27 @@ const mapPart = (r: PartRow): DeliveryPart => ({
       ? (JSON.parse(r.payload) as { stickerId: string }).stickerId
       : null,
 });
+/**
+ * 「同一个逻辑回复」的稳定身份 → 确定性 UUID（0.4.0 P1 的幂等键）。
+ *
+ * 为什么需要：一次唤醒可能在崩溃后被重新排程，或在结果未知后重跑；两次运行的 `run_id` 与临时
+ * `outputId` 都不同，靠它们去重是去不掉的。把"会话 + 观察序号 + 发言类别 + 收件人"拼成一个稳定键，
+ * 重跑就会命中同一行出站意图——**已尝试过的原样返回，计划中的被替换**，于是群里只会收到一条。
+ *
+ * 版本位与变体位按 UUID 形状固定，纯为了可读（它就是个哈希，不需要真随机）。
+ */
+export function idempotentIntentId(parts: readonly (string | number | null)[]): string {
+  const hex = createHash("sha256")
+    .update(parts.map((part) => String(part ?? "")).join("\u0000"))
+    .digest("hex")
+    .slice(0, 32)
+    .split("");
+  hex[12] = "5";
+  hex[16] = "a";
+  const join = (from: number, to: number) => hex.slice(from, to).join("");
+  return `${join(0, 8)}-${join(8, 12)}-${join(12, 16)}-${join(16, 20)}-${join(20, 32)}`;
+}
+
 export class OutboundIntentRepository {
   constructor(readonly db: Database) {}
   row(id: string): IntentRow | null {
@@ -131,6 +152,34 @@ export class OutboundIntentRepository {
         .get(input.runId, input.ordinal) as { id: string } | null;
       if (existing) return this.get(existing.id)!;
       const id = input.id ?? crypto.randomUUID();
+      // 幂等提交（0.4.0 P1）：调用方给的 id 由"逻辑回复的身份"派生时，**同一个机会重跑**会落到同一行——
+      // 已尝试过的（在发、已确认、失败、结果未知）一律原样返回，绝不产生第二条；还只是"计划中"的，
+      // 用新一轮的内容替换它的部件（同一个逻辑回复的更新版），投递仍然只有一次。
+      const byId = this.get(id);
+      if (byId !== null) {
+        if (byId.status !== "planned") return byId;
+        this.db.query("DELETE FROM outbound_parts WHERE intent_id=?").run(id);
+        this.db
+          .query(
+            "UPDATE outbound_intents SET run_id=?, deliver_by=?, created_at=?, expires_at=? WHERE id=?",
+          )
+          .run(input.runId, input.deliverBy, input.createdAt, input.expiresAt, id);
+        for (const [ordinal, part] of input.parts.entries())
+          this.db
+            .query(
+              "INSERT INTO outbound_parts(id,intent_id,ordinal,kind,payload,status) VALUES(?,?,?,?,?,'planned')",
+            )
+            .run(
+              crypto.randomUUID(),
+              id,
+              ordinal,
+              part.kind,
+              JSON.stringify(
+                part.kind === "text" ? { text: part.text } : { stickerId: part.stickerId },
+              ),
+            );
+        return this.get(id)!;
+      }
       this.db
         .query(
           "INSERT INTO outbound_intents(id,run_id,conversation_id,output_ordinal,target,speech_kind,source_through_seq,deliver_by,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,'planned',?,?)",

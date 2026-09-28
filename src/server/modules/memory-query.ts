@@ -140,6 +140,30 @@ export async function boundedRecallIds(
   return selected.map((candidate) => String(candidate.id));
 }
 
+/**
+ * 检索阶段（0.4.0 P5）：从**已授权**目录里按问题关键词取一批有界候选。
+ *
+ * 它与重排阶段是分开的两件事，分开是刻意的：
+ *   * 检索**没有模型调用**、同一输入同一顺序——候选集是确定且可复用的；
+ *   * 重排（`select`）是模型调用、有成本、可能失败，而且**只能在候选集里选**（越界由选择器实现拒绝）。
+ * 两段各自有预算与直接测试，不再混在一个函数里靠调用方猜。
+ *
+ * 全目录/全部正文两档是有意的例外：全目录按批扫描、每批立即重排（否则选择器提示词会超出模型容量），
+ * 这段"边扫边排"留在 `recallMemoryItems` 里，不套用本函数。
+ */
+export function retrieveMemoryCandidates(input: {
+  question: string;
+  limit: number;
+  catalog: (options: {
+    keywords?: string[];
+    limit: number;
+    afterId?: string | null;
+    allEntries?: boolean;
+  }) => MemoryItem[];
+}): MemoryItem[] {
+  return input.catalog({ keywords: contextKeywords(input.question), limit: input.limit });
+}
+
 export async function recallMemoryItems(input: {
   runtime: RuntimeConfig;
   question: string;
@@ -210,9 +234,10 @@ export async function recallMemoryItems(input: {
     if (input.fingerprint() !== fingerprint)
       fail("CONTEXT_SOURCE_INVALID", "全量读取期间授权目录发生变化，扫描结果不可使用");
   } else {
-    const batch = input.catalog({
-      keywords: contextKeywords(input.question),
+    const batch = retrieveMemoryCandidates({
+      question: input.question,
       limit: preset.candidate_limit,
+      catalog: input.catalog,
     });
     if (batch.length > 0)
       selected = await input.select(

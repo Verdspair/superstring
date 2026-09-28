@@ -117,6 +117,34 @@ export function fail(code: ErrorCode, message: string, status = 409): never {
   throw new AppError(code, message, status);
 }
 
+/**
+ * Marker for storage-layer failures (中立定义：数据库层与 HTTP 层都引用这里，
+ * 不让仓储反向依赖 `api/`）。只有这一类错误会被降级为 `DATABASE_UNAVAILABLE`；
+ * 无关的编程错误不得被伪装成数据库故障。
+ */
+export class DatabaseError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "DatabaseError";
+  }
+}
+
+export function isDatabaseError(value: unknown): value is DatabaseError {
+  if (value instanceof DatabaseError || (value as { name?: string })?.name === "DatabaseError") {
+    return true;
+  }
+  // A raw `bun:sqlite` error belongs to the same class of storage-layer
+  // failures the mapper sends to `DATABASE_UNAVAILABLE`, so a raw driver
+  // error must also downgrade to 503 at the boundary instead of leaking as
+  // a generic 500 (or being silently mis-handled by marker-only checks).
+  const candidate = value as { name?: string; code?: unknown } | null;
+  return (
+    candidate?.name === "SQLiteError" ||
+    candidate?.name === "SqliteError" ||
+    (typeof candidate?.code === "string" && candidate.code.startsWith("SQLITE_"))
+  );
+}
+
 /** Validation failure → 422 `VALIDATION_ERROR`. */
 export class ValidationError extends AppError {
   constructor(message = "请求参数不合法") {

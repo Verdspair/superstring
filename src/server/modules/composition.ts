@@ -109,9 +109,17 @@ export function createSqliteModules(options: {
   telemetry?: RuntimeTelemetry;
   memoryWorker?: MemoryService;
   knowledgeWorker?: KnowledgeOrganizer;
+  knowledgeJobEnabled?: () => boolean;
+  knowledgeJobTimeoutMs?: () => number;
 }): SqliteModules {
   const memoryWorker = options.memoryWorker ?? new MemoryService(options);
-  const knowledgeWorker = options.knowledgeWorker ?? new KnowledgeOrganizer(options);
+  const knowledgeWorker =
+    options.knowledgeWorker ??
+    new KnowledgeOrganizer({
+      ...options,
+      enabled: options.knowledgeJobEnabled,
+      jobTimeoutMs: options.knowledgeJobTimeoutMs,
+    });
   const knowledgeRepository = new KnowledgeRepository(options.db);
   const bind = createSqliteQueryFactory(options);
   const runtimeFor = (agentId: string): RuntimeConfig => {
@@ -197,7 +205,10 @@ export function createSqliteModules(options: {
             .get(target);
           if (!queued) return { didWork: false };
           await memoryWorker.runJob(target);
-          return { didWork: true };
+          const stillQueued = options.db
+            .query("SELECT id FROM memory_jobs WHERE id=? AND status='queued'")
+            .get(target);
+          return { didWork: !stillQueued };
         }
         return { didWork: await memoryWorker.runCycle() };
       },

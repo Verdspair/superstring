@@ -97,7 +97,7 @@ describe("context limit caps (0047)", () => {
         "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,judgement_message_limit,reply_message_limit) VALUES ('old','旧方案',3,'then','then',137,321)",
       );
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 47 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 48 });
       expect(
         db
           .query(

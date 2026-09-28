@@ -49,6 +49,11 @@ export function NavigationGuard() {
           {translateNotice(state.error)}
         </p>
       )}
+      {state.permissionError && (
+        <p role="alert" className="text-sm text-destructive">
+          {t(state.permissionError)}
+        </p>
+      )}
       <div className="flex flex-wrap justify-end gap-2">
         <Button
           variant="outline"

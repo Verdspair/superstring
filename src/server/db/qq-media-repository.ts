@@ -206,6 +206,44 @@ export function attemptedUnreadMediaCount(orm: Orm, eventKeys: readonly string[]
   return row?.total ?? 0;
 }
 
+/**
+ * 同一会话里同一个来源引用已经读出来的描述（0.4.0 P5 的"复用"）：同图重发时直接照抄，
+ * 不再花一次视觉模型。范围严格限定在同一 account＋kind＋peer（也就是同一间会话）：
+ * 描述不会跨会话漂移，也不改变"模型描述"的归属（`note_model` 原样带过去）。
+ */
+export function reusableMediaNote(
+  orm: Orm,
+  input: {
+    accountId: string;
+    conversationKind: "group" | "private";
+    peerId: string;
+    kind: QqMediaKind;
+    sourceRef: string;
+    at: string;
+  },
+): { note: string; noteModel: string } | null {
+  const row = orm
+    .select({ note: schema.qqMediaNotes.note, noteModel: schema.qqMediaNotes.noteModel })
+    .from(schema.qqMediaNotes)
+    .innerJoin(schema.qqEvents, eq(schema.qqEvents.eventKey, schema.qqMediaNotes.eventKey))
+    .where(
+      and(
+        eq(schema.qqEvents.accountId, input.accountId),
+        eq(schema.qqEvents.conversationKind, input.conversationKind),
+        eq(schema.qqEvents.peerId, input.peerId),
+        eq(schema.qqMediaNotes.segmentKind, input.kind),
+        eq(schema.qqMediaNotes.sourceRef, input.sourceRef),
+        gt(schema.qqMediaNotes.expiresAt, input.at),
+      ),
+    )
+    .orderBy(desc(schema.qqMediaNotes.updatedAt))
+    .all()
+    .find((candidate) => candidate.note !== null && candidate.noteModel !== null);
+  return row?.note !== null && row?.note !== undefined && row.noteModel !== null
+    ? { note: row.note, noteModel: row.noteModel }
+    : null;
+}
+
 export function mediaNoteRow(
   orm: Orm,
   eventKey: string,

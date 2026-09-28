@@ -28,9 +28,9 @@ import {
   DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
   DEFAULT_MEMORY_RETRIEVAL_PROMPT,
 } from "../../shared/contracts/agent";
-import { DatabaseError } from "../api/error-handler";
 import {
   AppError,
+  DatabaseError,
   GenerationAlreadyActiveError,
   GenerationCancelledError,
   GenerationOwnershipLostError,

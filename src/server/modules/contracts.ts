@@ -17,6 +17,7 @@ export interface MemoryQuery {
   scopes: MemoryScopeKeys;
   query: string;
   budget: number;
+  projection?: "catalog";
   owner: { kind: string; id: string; userId?: string; agentId?: string };
   signal?: AbortSignal;
   sources?: SourceRef[];
@@ -25,6 +26,7 @@ export interface KnowledgeQuery {
   agentId: string;
   query: string;
   budget: number;
+  projection?: "catalog";
   owner: MemoryQuery["owner"];
   signal?: AbortSignal;
   sources?: SourceRef[];

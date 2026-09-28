@@ -111,11 +111,16 @@ fs.mkdirSync(service, { recursive: true });
 run(bun, [
   "build",
   "--compile",
+  "--root",
+  ".",
+  "--define",
+  "SUPERSTRING_COMPILED=true",
   `--target=bun-${platform}-${arch}`,
   "--define",
   "SUPERSTRING_RELEASE=true",
   "--minify-syntax",
   "src/server/desktop-entry.ts",
+  "src/server/agent/quickjs-worker.ts",
   "--outfile",
   path.join(service, "superstring-server"),
 ]);

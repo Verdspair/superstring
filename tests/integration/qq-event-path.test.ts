@@ -171,6 +171,7 @@ function fixture(patch: Parameters<typeof observation>[0], notes?: string[]) {
       // The end-to-end case below runs the real adapter instead.
       adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => {
         return {
+          capabilities: ["image"] as const,
           async read({
             kind,
             sourceRef,
@@ -339,6 +340,7 @@ describe("waking a failed read on a same-speaker supplement", () => {
       const deps = {
         media: {
           adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
+            capabilities: ["image"] as const,
             read: ({ model }: { model: string }) =>
               vision.annotate({ model, prompt: mediaPrompt, images: [] }),
           }),
@@ -396,6 +398,7 @@ describe("waking a failed read on a same-speaker supplement", () => {
       const deps = {
         media: {
           adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
+            capabilities: ["image"] as const,
             read: ({ model }: { model: string }) =>
               vision.annotate({ model, prompt: mediaPrompt, images: [] }),
           }),
@@ -436,6 +439,7 @@ describe("waking a failed read on a same-speaker supplement", () => {
       const deps = {
         media: {
           adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
+            capabilities: ["image"] as const,
             read: ({ model }: { model: string }) =>
               vision.annotate({ model, prompt: mediaPrompt, images: [] }),
           }),
@@ -502,6 +506,7 @@ describe("waking a failed read on a same-speaker supplement", () => {
       const deps = {
         media: {
           adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
+            capabilities: ["image"] as const,
             read: ({ model }: { model: string }) =>
               vision.annotate({ model, prompt: mediaPrompt, images: [] }),
           }),
@@ -644,6 +649,96 @@ describe("the transport runtime drives the event path", () => {
       expect(readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')).not.toBeNull();
       runtime.stop();
     } finally {
+      s.close();
+    }
+  }, 15_000);
+
+  it("lets an active image read finish and pauses subsequent reads without dropping messages", async () => {
+    const s = setup();
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      updateQqTransportConfig(s.h.orm, {
+        endpoint: "ws://127.0.0.1:3000/",
+        token: TOKEN,
+        expectedRevision: readQqSettings(s.h.orm).revision,
+        keyPath: s.keyPath,
+      });
+      let enabled = true;
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<string>();
+      const vision = fakeVision(["图里是一只猫"]);
+      const original = vision.annotate.bind(vision);
+      vision.annotate = async (...args) => {
+        entered.resolve();
+        await release.promise;
+        return original(...args);
+      };
+      const socket = new FakeSocket();
+      const events: QqIntakeEvent[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: s.h.orm,
+        transportKeyPath: s.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        media: { vision },
+        mediaEnabled: () => enabled,
+        nowSeconds: () => NOW,
+        socketFactory: () => socket,
+        onEvent: (event) => events.push(event),
+      });
+      const starting = runtime.start();
+      completeHandshake(socket);
+      await starting;
+      const responder = socket.onSend;
+      socket.onSend = (request) =>
+        request.action === "get_image"
+          ? socket.deliver({
+              status: "ok",
+              retcode: 0,
+              data: { file: DATA_URL },
+              echo: request.echo,
+            })
+          : responder?.(request);
+      socket.deliver(
+        wireMessage({ message_id: -91, message: [{ type: "image", data: { file: "first" } }] }),
+      );
+      await entered.promise;
+      enabled = false;
+      release.resolve("done");
+      for (let i = 0; i < 60 && !events.some((event) => event.kind === "follow_up"); i++)
+        await Bun.sleep(5);
+      expect(vision.calls).toHaveLength(1);
+      expect(
+        s.h.orm
+          .select()
+          .from(schema.qqMediaNotes)
+          .all()
+          .filter((row) => row.note),
+      ).toHaveLength(1);
+      socket.deliver(
+        wireMessage({ message_id: -92, message: [{ type: "image", data: { file: "second" } }] }),
+      );
+      for (
+        let i = 0;
+        i < 60 && events.filter((event) => event.kind === "follow_up").length < 2;
+        i++
+      )
+        await Bun.sleep(5);
+      expect(vision.calls).toHaveLength(1);
+      expect(s.h.orm.select().from(schema.qqEvents).all()).toHaveLength(2);
+      enabled = true;
+      socket.deliver(
+        wireMessage({ message_id: -93, message: [{ type: "image", data: { file: "third" } }] }),
+      );
+      for (
+        let i = 0;
+        i < 60 && events.filter((event) => event.kind === "follow_up").length < 3;
+        i++
+      )
+        await Bun.sleep(5);
+      expect(vision.calls).toHaveLength(2);
+    } finally {
+      runtime?.stop();
       s.close();
     }
   }, 15_000);

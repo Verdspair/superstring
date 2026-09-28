@@ -1929,7 +1929,47 @@ export const qqConversationSummaries = sqliteTable("qq_conversation_summaries", 
   updatedAt: text("updated_at").notNull(),
 });
 
+export const agentTasks = sqliteTable("agent_tasks", {
+  id: text("id").primaryKey().notNull(),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  originRunId: text("origin_run_id").references(() => agentRuns.runId, { onDelete: "set null" }),
+  dedupeKey: text("dedupe_key").notNull().unique(),
+  status: text("status").notNull(),
+  sources: text("sources").notNull(),
+  leaseToken: text("lease_token"),
+  leaseExpiresAt: text("lease_expires_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  errorCode: text("error_code"),
+});
+export const agentTaskCalls = sqliteTable(
+  "agent_task_calls",
+  {
+    taskId: text("task_id")
+      .notNull()
+      .references(() => agentTasks.id, { onDelete: "cascade" }),
+    ordinal: integer("ordinal").notNull(),
+    name: text("name").notNull(),
+    revision: text("revision").notNull(),
+    effect: text("effect").notNull(),
+    arguments: text("arguments"),
+    status: text("status").notNull(),
+    approvalRevision: text("approval_revision"),
+    result: text("result"),
+    errorCode: text("error_code"),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.ordinal] })],
+);
+
 export const businessTables = {
+  agentTasks,
+  agentTaskCalls,
   qqConversationSummaries,
   conversationAvatars,
   runtimeSpans,

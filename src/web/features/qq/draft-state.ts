@@ -1,6 +1,7 @@
 import type { QqBindingResponse, QqSettingsResponse } from "../../../shared/contracts/qq";
 import { msg } from "../../i18n";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import { permissionSettingsDirty } from "../access/permission-state";
 import { dirtyPages } from "../agents/page-drafts";
 import { knowledgeModelDirty, knowledgeReadDirty, organizationDirty } from "../knowledge/types";
 import { qqSchemeChanges, qqSchemeDirty, qqStickerEditorDirty, qqStickerEditorFrom } from "./types";
@@ -195,6 +196,7 @@ export function settingsHaveDrafts(state: SuperstringState) {
     state.dirty ||
     state.memoryCorrectionDirty ||
     state.knowledgeDirty ||
+    permissionSettingsDirty(state.permissionEditor) ||
     dirtyPages(state.pageEditor).length > 0 ||
     organizationDirty(state.organizationEditor) ||
     knowledgeModelDirty(state.knowledgeModelEditor) ||

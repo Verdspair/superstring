@@ -193,3 +193,132 @@ it("publishes stable error codes without exposing failure text", async () => {
   expect(h.a.get(next.id)?.errorCode).not.toContain("private");
   opaque.stop();
 });
+
+describe("跨会话并发与车道（0.4.0 P1）", () => {
+  it("两条车道同时领不同会话，且同一会话绝不会被领两次", async () => {
+    const h = fixture();
+    offer(h, 0, "a");
+    offer(h, 1, "b");
+    const started: string[] = [];
+    const finished: string[] = [];
+    let release: (() => void) | undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({
+        leaseMs: 60_000,
+        renewMs: 30_000,
+        retryDelayMs: 100,
+        maxAttempts: 3,
+        globalConcurrency: 2,
+      }),
+      activate: async (wake) => {
+        started.push(wake.conversationId);
+        if (started.length === 2) release?.();
+        // 两条都起来了才放行：这是"真的并发"，不是先后错开。
+        await bothStarted;
+        finished.push(wake.conversationId);
+        h.a.complete(wake.id, wake.leaseToken!, "no_output", wake.throughSeq, at);
+      },
+    });
+    const lanes = await Promise.all([scheduler.runOnce(), scheduler.runOnce()]);
+
+    expect(lanes).toEqual([true, true]);
+    expect([...started].sort()).toEqual([h.ids[0]!, h.ids[1]!].sort());
+    expect([...finished].sort()).toEqual([h.ids[0]!, h.ids[1]!].sort());
+    expect(scheduler.activeCount).toBe(0);
+  });
+
+  it("同一会话有两条候选时，第二条车道领不到", async () => {
+    const h = fixture();
+    offer(h, 0, "a");
+    offer(h, 0, "a2");
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({
+        leaseMs: 60_000,
+        renewMs: 30_000,
+        retryDelayMs: 100,
+        maxAttempts: 3,
+        globalConcurrency: 2,
+      }),
+      activate: async (wake) => {
+        await gate;
+        h.a.complete(wake.id, wake.leaseToken!, "no_output", wake.throughSeq, at);
+      },
+    });
+    const first = scheduler.runOnce();
+    expect(await scheduler.runOnce()).toBe(false);
+    release?.();
+    expect(await first).toBe(true);
+    expect(await scheduler.runOnce()).toBe(true);
+  });
+
+  it("车道数就是策略里的并发上限：1 时第二条车道直接放弃", async () => {
+    const h = fixture();
+    offer(h, 0, "a");
+    offer(h, 1, "b");
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: async (wake) => {
+        await gate;
+        h.a.complete(wake.id, wake.leaseToken!, "no_output", wake.throughSeq, at);
+      },
+    });
+    expect(scheduler.concurrencyLimit).toBe(1);
+    const first = scheduler.runOnce();
+    expect(await scheduler.runOnce()).toBe(false);
+    expect(scheduler.activeCount).toBe(1);
+    release?.();
+    await first;
+    expect(scheduler.activeCount).toBe(0);
+  });
+
+  it("stop() 中止全部在飞唤醒（跨会话一起取消）", async () => {
+    const h = fixture();
+    offer(h, 0, "a");
+    offer(h, 1, "b");
+    const aborted: string[] = [];
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({
+        leaseMs: 60_000,
+        renewMs: 30_000,
+        retryDelayMs: 100,
+        maxAttempts: 3,
+        globalConcurrency: 2,
+      }),
+      activate: (wake, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted.push(wake.conversationId);
+              reject(new DOMException("aborted", "AbortError"));
+            },
+            { once: true },
+          );
+        }),
+    });
+    const lanes = [scheduler.runOnce(), scheduler.runOnce()];
+    await Bun.sleep(5);
+    scheduler.stop();
+    await Promise.all(lanes);
+    expect([...aborted].sort()).toEqual([h.ids[0]!, h.ids[1]!].sort());
+  });
+});

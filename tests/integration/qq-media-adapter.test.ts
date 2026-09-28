@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import upstream from "omggif";
 import { createEphemeralAgentRuntime } from "../../src/server/agent/agent-runtime";
-import { recordMediaSegment } from "../../src/server/db/qq-media-repository";
+import { mediaNoteRow, recordMediaSegment } from "../../src/server/db/qq-media-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { ensureDefaults, nowIso } from "../../src/server/db/repositories";
@@ -253,6 +253,7 @@ describe("one reading turn per message", () => {
       const result = await readQqAddressedMediaOnce(
         h.orm,
         {
+          capabilities: ["image"] as const,
           read: async ({ sourceRef }) => {
             seen.push(sourceRef);
             return "第一张的说明";
@@ -270,7 +271,7 @@ describe("one reading turn per message", () => {
       // The second turn picks up the next segment, because the first now has a note.
       const second = await readQqAddressedMediaOnce(
         h.orm,
-        { read: async () => "第二张的说明" },
+        { capabilities: ["image"] as const, read: async () => "第二张的说明" },
         cycleInput,
       );
       expect(second).toEqual({
@@ -279,7 +280,11 @@ describe("one reading turn per message", () => {
         result: { kind: "described", attempt: 1 },
       });
       expect(
-        await readQqAddressedMediaOnce(h.orm, { read: async () => "不该再读" }, cycleInput),
+        await readQqAddressedMediaOnce(
+          h.orm,
+          { capabilities: ["image"] as const, read: async () => "不该再读" },
+          cycleInput,
+        ),
       ).toEqual({ kind: "idle", reason: "all_described" });
     } finally {
       h.close();
@@ -290,8 +295,73 @@ describe("one reading turn per message", () => {
     const h = fixture("image", 0);
     try {
       expect(
-        await readQqAddressedMediaOnce(h.orm, { read: async () => "不该读" }, cycleInput),
+        await readQqAddressedMediaOnce(
+          h.orm,
+          { capabilities: ["image"] as const, read: async () => "不该读" },
+          cycleInput,
+        ),
       ).toEqual({ kind: "idle", reason: "no_media" });
+    } finally {
+      h.close();
+    }
+  });
+
+  it("skips a segment the adapter cannot read and reads the next readable one", async () => {
+    const h = fixture("record", 1);
+    try {
+      // 同一条消息：先是一条语音（声明读不了），后是一张图。
+      recordMediaSegment(h.orm, {
+        eventKey: "media-1",
+        segmentIndex: 1,
+        kind: "image",
+        sourceRef: "upstream-ref-image",
+        occurredAtSeconds: Math.floor(Date.now() / 1000),
+        addressed: true,
+      });
+      const seen: string[] = [];
+      const result = await readQqAddressedMediaOnce(
+        h.orm,
+        {
+          capabilities: ["image"] as const,
+          read: async ({ sourceRef }) => {
+            seen.push(sourceRef);
+            return "图里的说明";
+          },
+        },
+        cycleInput,
+      );
+      // 语音不消耗尝试也不入选；这一轮读的是那张图。
+      expect(result).toEqual({
+        kind: "read",
+        segmentIndex: 1,
+        result: { kind: "described", attempt: 1 },
+      });
+      expect(seen).toEqual(["upstream-ref-image"]);
+      expect(mediaNoteRow(h.orm, "media-1", 0)).toMatchObject({ attempts: 0, note: null });
+    } finally {
+      h.close();
+    }
+  });
+
+  it("reports unsupported media as idle instead of attempting it", async () => {
+    const h = fixture("video", 1);
+    try {
+      let calls = 0;
+      expect(
+        await readQqAddressedMediaOnce(
+          h.orm,
+          {
+            capabilities: ["image"] as const,
+            read: async () => {
+              calls++;
+              return "不该读";
+            },
+          },
+          cycleInput,
+        ),
+      ).toEqual({ kind: "idle", reason: "unsupported_kind" });
+      expect(calls).toBe(0);
+      expect(mediaNoteRow(h.orm, "media-1", 0)).toMatchObject({ attempts: 0, note: null });
     } finally {
       h.close();
     }

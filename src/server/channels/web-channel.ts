@@ -3,8 +3,10 @@ import type { RuntimeConfig } from "../../shared/contracts";
 import type { RunEvent } from "../../shared/contracts/agent-run";
 import type { ChatV2Event } from "../../shared/contracts/chat-v2";
 import { type AgentRuntime, AgentRuntimeError, createAgentRuntime } from "../agent/agent-runtime";
+import type { BuiltInAction } from "../agent/built-in-actions";
 import { ContextBuilder } from "../agent/conversation-context";
 import { ConversationHost } from "../agent/conversation-host";
+import type { AgentTaskService } from "../agent/task-service";
 import { AgentRunRepository } from "../db/agent-run-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import {
@@ -45,10 +47,13 @@ export interface WebChannelOptions {
   modules?: ModuleQueryFactory;
   memory?: Pick<MemoryModule, "observe">;
   resolveSource?: ModuleSourceResolver;
+  /** 外部（MCP）动作：每轮现取一次；没有登记时为空。 */
+  externalActions?: () => readonly BuiltInAction[];
+  tasks?: AgentTaskService;
   leaseSeconds?: number;
   heartbeatIntervalMs?: number;
   /** Configurable Agent iteration budget; model/token/time policies retain existing settings. */
-  maxSteps?: number;
+  maxSteps?: number | (() => number);
 }
 export interface WebRequest {
   sessionId: string;
@@ -237,11 +242,13 @@ export class WebChannel {
       builder: this.builder,
       modules: o.modules,
       resolveSource: o.resolveSource,
+      extraActions:
+        o.tasks?.conversationActions(args.conversation.id) ?? o.externalActions?.() ?? [],
       runtime: args.runtime,
       sessionId: args.sessionId,
       turnId: args.turnId,
       generationToken: args.generationToken,
-      maxSteps: o.maxSteps ?? 16,
+      maxSteps: typeof o.maxSteps === "function" ? o.maxSteps() : (o.maxSteps ?? 16),
     });
     const classify = (
       error: unknown,

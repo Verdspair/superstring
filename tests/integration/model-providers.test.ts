@@ -17,7 +17,10 @@ import { ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { createLmStudioClient, pickUsableModel } from "../../src/server/llm/model-gateway";
 import { createLmStudioVisionClient } from "../../src/server/llm/vision-client";
-import type { ModelProviderResponse } from "../../src/shared/contracts/models";
+import {
+  ModelProviderModelSchema,
+  type ModelProviderResponse,
+} from "../../src/shared/contracts/models";
 
 const MODEL = "local-model";
 
@@ -71,6 +74,21 @@ describe("视觉调用也走外部路由（0032 后续）", () => {
     await vision.annotate({ model: "local-vlm", prompt: "看图", images: [] });
     expect(seen[0]).toBe("https://relay.invalid/v1/chat/completions");
     expect(seen[1]).toBe("http://127.0.0.1:1234/v1/chat/completions");
+  });
+});
+
+describe("model execution capability declarations", () => {
+  it("preserves old registrations and requires an explicit code capability", () => {
+    expect(
+      ModelProviderModelSchema.parse({ name: "m", context_window: 4096 }).capabilities,
+    ).toBeUndefined();
+    expect(
+      ModelProviderModelSchema.parse({
+        name: "m",
+        context_window: 4096,
+        capabilities: { codeExecution: true },
+      }).capabilities,
+    ).toEqual({ codeExecution: true, toolCalling: false, parallelToolCalls: false });
   });
 });
 

@@ -1,22 +1,26 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../../src/server/app";
+import { createModelProvider } from "../../src/server/db/model-provider-repository";
 import {
   readQqSettings,
   updateQqSettings,
   updateQqTransportConfig,
 } from "../../src/server/db/qq-settings-repository";
+import { createSession, ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { FilePermissionStore, PermissionService } from "../../src/server/permissions/service";
 import {
   createRuntime,
   DEFAULT_BUSINESS_DB_PATH,
   resolveBusinessDbPath,
 } from "../../src/server/runtime";
 import type { MemoryService } from "../../src/server/services/memory-service";
+import { PermissionPolicySchema } from "../../src/shared/contracts/permissions";
 
 const testBrowserStateSecret = "runtime-lifecycle-synthetic-secret";
 const gateway: ModelGateway = {
@@ -170,6 +174,131 @@ describe("application runtime lifecycle", () => {
       expect(await status.json()).toEqual({ connection: { phase: "idle", reason: null } });
     } finally {
       business.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the default model limit when only another conversation policy is overridden", async () => {
+    let active = 0;
+    let peak = 0;
+    const runtime = createRuntime({
+      businessDbPath: ":memory:",
+      browserStateSecret: testBrowserStateSecret,
+      botConversationPolicy: { maxSteps: 4 },
+      gateway: {
+        ...gateway,
+        async complete() {
+          active += 1;
+          peak = Math.max(peak, active);
+          await Bun.sleep(10);
+          active -= 1;
+          return "ok";
+        },
+      },
+    });
+    try {
+      await Promise.all(
+        ["a", "b"].map((id) =>
+          runtime.agentRuntime.completeLeaf(
+            { id },
+            { owner: { kind: "test", id }, messages: [{ role: "user", content: id }] },
+          ),
+        ),
+      );
+      expect(peak).toBe(1);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it("wires the real sandbox only for an enabled policy and a declared model capability", async () => {
+    const parent = path.join(import.meta.dir, "../../artifacts/validation/0.4.0/P6");
+    mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(path.join(parent, "policy-"));
+    const file = path.join(dir, "permissions.json");
+    const policy = new PermissionService(new FilePermissionStore(file));
+    const business = openBusinessDb();
+    const model = "code-capable";
+    ensureDefaults(business.orm, model);
+    let enabled = false,
+      calls = 0;
+    const runtime = createRuntime({
+      business,
+      permissionConfigPath: file,
+      browserStateSecret: testBrowserStateSecret,
+      gateway: {
+        ...gateway,
+        async complete(request) {
+          const code = request.tools?.some((tool) => tool.name === "code.run") ?? false;
+          expect(code).toBe(enabled && request.model === model);
+          if (code && ++calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                { name: "code.run", arguments: { script: 'return {conclusion:"sandbox-42"};' } },
+              ],
+            });
+          if (code) expect(JSON.stringify(request.messages)).toContain("sandbox-42");
+          return JSON.stringify({
+            kind: "final",
+            outputs: [{ kind: "generate", targetId: "reply", instructions: "answer" }],
+          });
+        },
+      },
+    });
+    try {
+      createModelProvider(business.orm, {
+        id: crypto.randomUUID(),
+        name: "fixture",
+        baseUrl: "http://synthetic.invalid",
+        models: [
+          {
+            name: model,
+            context_window: 65536,
+            capabilities: { codeExecution: true, toolCalling: true, parallelToolCalls: true },
+          },
+        ],
+        keyPath: path.join(dir, "unused.key"),
+      });
+      const session = createSession(business.orm, "sandbox", { modelName: model });
+      const chat = async (message: string) => {
+        const response = await runtime.app.request("http://localhost/v2/chat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            session_id: session.id,
+            client_request_id: crypto.randomUUID(),
+            message,
+          }),
+        });
+        const body = await response.text();
+        expect(body).toContain("event: completed");
+        expect(body).not.toContain("event: failed");
+      };
+      await chat("default off");
+      policy.replace(
+        policy.snapshot().revision,
+        // 只写要改的键：其余执行分组按缺省值生效（有效值由 executionPolicy 补齐）。
+        PermissionPolicySchema.parse({
+          version: 1,
+          grants: [],
+          execution: { code: true, research: false },
+        }),
+      );
+      enabled = true;
+      await chat("use code");
+      expect(calls).toBe(2);
+      const trace = business.db
+        .query("SELECT status,code,details FROM runtime_spans WHERE name='agent.code'")
+        .get() as { status: string; code: string; details: string };
+      expect(trace.status).toBe("completed");
+      expect(trace.code).toBe("CODE_COMPLETED");
+      expect(JSON.parse(trace.details)).toMatchObject({ orchestration: "code", toolCalls: 0 });
+      policy.replace(policy.snapshot().revision, { version: 1, grants: [] });
+      enabled = false;
+      await chat("off again");
+    } finally {
+      await runtime.stop();
       rmSync(dir, { recursive: true, force: true });
     }
   });

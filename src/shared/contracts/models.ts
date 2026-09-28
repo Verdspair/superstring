@@ -181,6 +181,13 @@ export const ModelProviderModelSchema = z.strictObject({
    * 复核/选图与标注都先过这道闸）——所以这里没有默认值：填了才可用。
    */
   context_window: z.number().int().min(256).max(10_000_000),
+  capabilities: z
+    .strictObject({
+      toolCalling: z.boolean().default(false),
+      parallelToolCalls: z.boolean().default(false),
+      codeExecution: z.boolean().default(false),
+    })
+    .optional(),
 });
 export type ModelProviderModel = z.infer<typeof ModelProviderModelSchema>;
 

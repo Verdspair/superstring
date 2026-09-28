@@ -207,6 +207,9 @@ export type QqMediaModelChoice =
  * A `file` segment is never read. OneBot's file segment carries a document's name and URL,
  * and the plan's input capability covers pictures, animations and voice; a document is not
  * one of them, so this returns "not configured" rather than choosing a model.
+ *
+ * 0.4.0 P5：这个函数回答的是"该用哪个模型"，而"这一版到底读不读得出来"由适配器的
+ * `capabilities` 声明先在读取器里判掉——语音即使配了转写模型，只要没有实现声明它，就不会被尝试。
  */
 export function qqMediaModelFor(kind: unknown, config: unknown): QqMediaModelChoice {
   const mediaKind = parse(MediaKindSchema, kind);

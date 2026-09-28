@@ -80,7 +80,8 @@ export interface MemoryServiceOptions {
    * budget meant a slow-but-healthy job was killed by the job timer instead of
    * finishing, or failed with the less specific MEMORY_TIMEOUT.
    */
-  jobTimeoutMs?: number;
+  jobTimeoutMs?: number | (() => number);
+  enabled?: () => boolean;
 }
 
 export interface MemoryInputs {
@@ -99,7 +100,8 @@ export class MemoryService {
   private readonly telemetry?: RuntimeTelemetry;
   private readonly pollIntervalMs: number;
   private readonly heartbeatIntervalMs: number;
-  private readonly jobTimeoutMs: number;
+  private readonly jobTimeoutMs: number | (() => number);
+  private readonly enabled: () => boolean;
 
   private loopPromise: Promise<void> | null = null;
   private stopped = false;
@@ -119,6 +121,7 @@ export class MemoryService {
     this.pollIntervalMs = options.pollIntervalMs ?? 5_000;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
     this.jobTimeoutMs = options.jobTimeoutMs ?? 3_600_000;
+    this.enabled = options.enabled ?? (() => true);
   }
 
   /** `MemoryService.start`. */
@@ -169,6 +172,7 @@ export class MemoryService {
    * Returns `true` when a job was run.
    */
   async runCycle(): Promise<boolean> {
+    if (!this.enabled()) return false;
     this.recoverExpired();
     this.scheduleAuto();
     const jobId = this.nextQueuedJobId();
@@ -532,6 +536,9 @@ export class MemoryService {
    * publishing stale work is exactly what the lease exists to prevent.
    */
   async runJob(jobId: string): Promise<void> {
+    if (!this.enabled()) return;
+    const timeoutMs =
+      typeof this.jobTimeoutMs === "function" ? this.jobTimeoutMs() : this.jobTimeoutMs;
     const before = this.telemetry
       ? (this.db.query("SELECT status FROM memory_jobs WHERE id=?").get(jobId) as {
           status: string;
@@ -563,13 +570,14 @@ export class MemoryService {
       details: { jobId, kind: claimed.kind },
       code: "MEMORY_JOB_CLAIMED",
     });
-    const work = () => this.runClaimedJob(claimed.agentId, jobId, claimed.token!, span);
+    const work = () => this.runClaimedJob(claimed.agentId, jobId, claimed.token!, timeoutMs, span);
     await (span ? span.within(work) : work());
   }
   private async runClaimedJob(
     agentId: string,
     jobId: string,
     token: string,
+    timeoutMs: number,
     span?: TraceScope,
   ): Promise<void> {
     let stopped = false;
@@ -648,7 +656,7 @@ export class MemoryService {
         },
       );
 
-      await this.waitForFirst(heartbeat, work, cancelled);
+      await this.waitForFirst(heartbeat, work, cancelled, timeoutMs);
       if (stopped) throw WORKER_STOPPED;
       if (heartbeatDone && heartbeatError !== undefined) throw heartbeatError;
       if (!workDone) fail("MEMORY_TIMEOUT", "记忆整理超时");
@@ -744,6 +752,7 @@ export class MemoryService {
     heartbeat: Promise<void>,
     work: Promise<void>,
     cancelled: Promise<void>,
+    timeoutMs: number,
   ): Promise<void> {
     return new Promise<void>((resolve) => {
       let settled = false;
@@ -753,7 +762,7 @@ export class MemoryService {
         clearTimeout(timer);
         resolve();
       };
-      const timer = setTimeout(done, this.jobTimeoutMs);
+      const timer = setTimeout(done, timeoutMs);
       void heartbeat.then(done, done);
       void work.then(done, done);
       void cancelled.then(done);

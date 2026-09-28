@@ -5,7 +5,11 @@ import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { AgentRuntime } from "../agent/agent-runtime";
 import type { AgentSpec } from "../agent/agent-specs";
-import { type BuiltInAction, createBuiltInActions } from "../agent/built-in-actions";
+import {
+  type BuiltInAction,
+  createBuiltInActions,
+  evidenceCatalogEntry,
+} from "../agent/built-in-actions";
 import { sourceAccess } from "../agent/context-access";
 import {
   type ActionObservation,
@@ -45,6 +49,8 @@ export class WebContextSource implements ConversationContextSource {
       agentRuntime: AgentRuntime;
       modules?: ModuleQueryFactory;
       resolveSource?: ModuleSourceResolver;
+      /** 外部（MCP）动作：这一轮开始时取一次；没有登记时为空。 */
+      extraActions?: readonly BuiltInAction[];
       builder: ContextBuilder | null;
       runtime: RuntimeConfig;
       sessionId: string;
@@ -64,51 +70,103 @@ export class WebContextSource implements ConversationContextSource {
       runtime,
       assertSources: (sources) => this.assertSources(sources),
     });
-    this.actions = createBuiltInActions({
-      ...(runtime.p5_config.retrieval_mode !== "off"
-        ? {
-            memory: {
-              query: async (
-                input: { query: string; limit?: number },
-                context: { signal: AbortSignal },
-              ) =>
-                this.query("memory.query", input, (budget) =>
-                  memory.query({
-                    agentId: runtime.agent_id,
-                    sessionId: options.sessionId,
-                    mode: runtime.p5_config.retrieval_mode,
-                    scopes: null,
-                    query: input.query,
-                    budget,
-                    owner: this.owner,
-                    signal: context.signal,
-                    sources: this.sources(),
-                  }),
-                ),
-            },
-          }
-        : {}),
-      ...(runtime.knowledge_read?.config.enabled !== false
-        ? {
-            knowledge: {
-              query: async (
-                input: { query: string; limit?: number },
-                context: { signal: AbortSignal },
-              ) =>
-                this.query("knowledge.query", input, (budget) =>
-                  knowledge.query({
-                    agentId: runtime.agent_id,
-                    query: input.query,
-                    budget,
-                    owner: this.owner,
-                    signal: context.signal,
-                    sources: this.sources(),
-                  }),
-                ),
-            },
-          }
-        : {}),
-    });
+    this.actions = createBuiltInActions(
+      {
+        ...(runtime.p5_config.retrieval_mode !== "off"
+          ? {
+              memory: {
+                query: async (
+                  input: { query: string; limit?: number },
+                  context: { signal: AbortSignal },
+                ) =>
+                  this.query("memory.query", input, (budget) =>
+                    memory.query({
+                      agentId: runtime.agent_id,
+                      sessionId: options.sessionId,
+                      mode: runtime.p5_config.retrieval_mode,
+                      scopes: null,
+                      query: input.query,
+                      projection: "catalog",
+                      budget,
+                      owner: this.owner,
+                      signal: context.signal,
+                      sources: this.sources(),
+                    }),
+                  ),
+              },
+            }
+          : {}),
+        ...(runtime.knowledge_read?.config.enabled !== false
+          ? {
+              knowledge: {
+                query: async (
+                  input: { query: string; limit?: number },
+                  context: { signal: AbortSignal },
+                ) =>
+                  this.query("knowledge.query", input, (budget) =>
+                    knowledge.query({
+                      agentId: runtime.agent_id,
+                      query: input.query,
+                      projection: "catalog",
+                      budget,
+                      owner: this.owner,
+                      signal: context.signal,
+                      sources: this.sources(),
+                    }),
+                  ),
+              },
+            }
+          : {}),
+      },
+      {
+        assertSources: (sources) => {
+          this.assertCurrent();
+          this.assertSources(sources);
+        },
+        fit: async (name, arguments_, signal) => {
+          signal.throwIfAborted();
+          return (value, sources) => {
+            const observations = [
+              ...this.observations,
+              {
+                id: "00000000-0000-0000-0000-000000000000",
+                name,
+                arguments: arguments_,
+                value,
+                sources,
+              },
+            ];
+            const fitsContext =
+              this.engine.render(this.spec, this.material ?? {}, observations, ["reply"], "stream")
+                .units <=
+              (this.spec.limits.inputUnits ??
+                runtime.p5_config.context_window ??
+                Number.MAX_SAFE_INTEGER);
+            if (!name.startsWith("knowledge.")) return fitsContext;
+            const nonempty = observations.filter((observation) => {
+              const result = observation.value as { items?: unknown[] } | null;
+              return (
+                observation.name.startsWith("knowledge.") &&
+                Array.isArray(result?.items) &&
+                result.items.length > 0
+              );
+            });
+            const actionUnits =
+              this.engine.render(this.spec, {}, nonempty, ["reply"], "stream").units -
+              this.engine.render(this.spec, {}, [], ["reply"], "stream").units;
+            return (
+              fitsContext &&
+              (this.usage?.components.knowledge ?? 0) + actionUnits <=
+                (runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
+            );
+          };
+        },
+        requireAll: (kind) =>
+          kind === "memory" &&
+          ["full_catalog", "full_body"].includes(runtime.p5_config.retrieval_mode),
+      },
+    );
+    this.actions = [...this.actions, ...(options.extraActions ?? [])];
     this.spec = {
       id: "conversation.web",
       version: "2",
@@ -127,6 +185,9 @@ export class WebContextSource implements ConversationContextSource {
       availableActions: this.actions.map((a) => a.description),
       limits: { steps: options.maxSteps },
     };
+  }
+  configureActions(actions: AgentSpec["availableActions"]): void {
+    this.spec.availableActions = actions;
   }
   async read(input: {
     signal: AbortSignal;
@@ -188,7 +249,7 @@ export class WebContextSource implements ConversationContextSource {
       ...this.observations.flatMap((observation) => observation.sources),
     ];
   }
-  private assertSources(sources: readonly SourceRef[]): void {
+  assertSources(sources: readonly SourceRef[]): void {
     const o = this.options;
     currentUser(o.orm, o.runtime.agent_id, o.sessionId, o.turnId, {
       generationToken: o.generationToken,
@@ -236,8 +297,10 @@ export class WebContextSource implements ConversationContextSource {
     for (const observation of this.observations) {
       const units =
         this.engine.render(this.spec, {}, [observation], [], "stream").units - observationBase;
-      if (observation.name === "memory.query") memoryUnits += units;
-      else if (observation.name === "knowledge.query") knowledgeUnits += units;
+      if (observation.name === "memory.query" || observation.name === "memory.read")
+        memoryUnits += units;
+      else if (observation.name === "knowledge.query" || observation.name === "knowledge.read")
+        knowledgeUnits += units;
     }
     const protocol =
       context.units -
@@ -281,7 +344,14 @@ export class WebContextSource implements ConversationContextSource {
         material,
         [
           ...this.observations,
-          { ...empty, value: items, sources: items.flatMap((i) => i.sources) },
+          {
+            ...empty,
+            value: {
+              status: "ok",
+              items: items.map((item) => evidenceCatalogEntry(name.split(".")[0], item)),
+            },
+            sources: items.flatMap((i) => i.sources),
+          },
         ],
         ["reply"],
         "stream",

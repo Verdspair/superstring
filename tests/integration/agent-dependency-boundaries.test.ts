@@ -37,6 +37,26 @@ describe("Agent inference and leaf dependency boundaries", () => {
     expect(violations).toEqual([]);
   });
 
+  it("keeps authorization policy independent of transport, channels and model execution", () => {
+    const violations: string[] = [];
+    for (const [file, source] of sources) {
+      const name = moduleName(file);
+      if (!name.startsWith("permissions/")) continue;
+      for (const dependency of valueImports(file, source)) {
+        const target = moduleName(dependency);
+        if (["channels/", "mcp/", "skills/", "agent/"].some((prefix) => target.startsWith(prefix)))
+          violations.push(`${name} -> ${target}`);
+      }
+    }
+    expect(violations).toEqual([]);
+    const execute = sources.get(resolve(root, "agent/agent-runtime.ts")) ?? "";
+    const codeMode = sources.get(resolve(root, "agent/code-mode.ts")) ?? "";
+    expect(execute).toContain("this.executor.execute");
+    expect(codeMode).toContain("executor.execute");
+    expect(execute).not.toContain("entry.action.execute(");
+    expect(codeMode).not.toContain("target.execute(");
+  });
+
   it("keeps leaf consumers from importing conversation assembly through helpers", () => {
     const entries = files.filter((file) => {
       const name = moduleName(file);
@@ -62,7 +82,6 @@ describe("Agent inference and leaf dependency boundaries", () => {
             "agent/context-engine.ts",
             "agent/conversation-context.ts",
             "agent/conversation-host.ts",
-            "services/context-builder.ts",
           ].includes(name)
         ) {
           violations.push(moduleName(entry) + " -> " + name);
