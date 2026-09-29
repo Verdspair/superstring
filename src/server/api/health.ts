@@ -12,11 +12,12 @@
 
 import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
+import { version } from "../../../package.json";
 import { BUSINESS_SCHEMA_VERSION } from "../db/schema-gate";
 import type { ModelGateway } from "../llm/model-gateway";
 
-/** Product SemVer; keep identical to package.json and the installer version. */
-export const APP_VERSION = "0.3.0-beta";
+/** Product SemVer; read from package.json so /health cannot drift from the release version. */
+export const APP_VERSION: string = version;
 
 /** Generated once per process. */
 export const PROCESS_INSTANCE_ID = crypto.randomUUID();
