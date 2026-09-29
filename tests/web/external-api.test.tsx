@@ -117,6 +117,28 @@ describe("Model services workspace", () => {
       ).toBeTruthy();
     },
   );
+  it.each(["zh-CN", "en"] as const)(
+    "describes tool calls as a transport switch and parallel calls as a declaration in %s",
+    async (locale) => {
+      selectLocale(locale);
+      await renderPage();
+      fireEvent.click(
+        screen.getByRole("button", { name: locale === "zh-CN" ? "配置" : "Configure" }),
+      );
+      // 工具调用：填过声明的模型按声明执行——未勾选就不发原生 tools，JSON 决策协议仍在。
+      expect(
+        screen.getByText(
+          locale === "zh-CN"
+            ? /不再接收原生工具声明/
+            : /no longer receives native tool declarations/,
+        ),
+      ).toBeTruthy();
+      // 并行工具调用：只是声明记录；批量调用的安全调度与它无关。
+      expect(
+        screen.getByText(locale === "zh-CN" ? /只读并行、写串行/ : /read-only in parallel/),
+      ).toBeTruthy();
+    },
+  );
   it("edits capabilities without losing the other flags and keeps the draft on conflict", async () => {
     const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: false };
     const update = vi.fn().mockRejectedValue(new Error("配置已变化，请刷新"));

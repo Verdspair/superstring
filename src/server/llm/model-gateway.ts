@@ -144,12 +144,14 @@ function reportResolvedModel(callback: ((model: string) => void) | undefined, mo
  * （谁来定，见 `ActionDescription.effect`）。多调用**不再被丢掉**——丢掉等于模型以为自己查过了。
  *
  * 参数由服务端按函数参数 schema 校验过形状，这一层只守最后一道：只要有**一个**调用读不出来就返回
- * null（读不出就不猜，交给调用方按"读不出 = 沉默"处理），不猜着丢掉坏的那个、留下好的。
+ * null（读不出就不猜，交给调用方按"读不出 = 沉默"处理），不猜着丢掉坏的那个、留下好的。超过批量上限
+ * 的整批同样读不出——截断等于替模型丢掉它叫过的调用，正文 JSON 路径对超量也是直接拒绝。
  */
 function decisionTextFromToolCalls(calls: unknown): string | null {
   if (!Array.isArray(calls) || calls.length === 0) return null;
+  if (calls.length > INVOKE_BATCH_LIMIT) return null;
   const batch: { name: string; arguments: Record<string, unknown> }[] = [];
-  for (const entry of calls.slice(0, INVOKE_BATCH_LIMIT)) {
+  for (const entry of calls) {
     const call = entry as { function?: { name?: unknown; arguments?: unknown } } | undefined;
     const name = call?.function?.name;
     if (typeof name !== "string" || name.length === 0) return null;
@@ -508,6 +510,8 @@ export interface ExternalModelRoute {
   readonly baseUrl: string;
   readonly apiKey: string | null;
   readonly contextWindow: number;
+  /** 能力声明里的"工具调用"；undefined = 从未声明过能力，维持现状（照发原生 tools）。 */
+  readonly toolCalling?: boolean;
 }
 
 /**
@@ -671,7 +675,8 @@ export function createLmStudioClient(
       const requested = options.model || config.model;
       const used = await effectiveModel(requested);
       reportResolvedModel(options.onModelResolved, used);
-      const isExternal = routeOfExternal(used) !== null;
+      const externalRoute = routeOfExternal(used);
+      const isExternal = externalRoute !== null;
       const cfg = routeFor(used);
       const key = structuredOutputKey(cfg.baseUrl, used);
       // External providers that proxy OpenAI's strict mode reject an optional property
@@ -684,10 +689,14 @@ export function createLmStudioClient(
           : isExternal
             ? toStrictRequiredSchema(options.responseSchema)
             : options.responseSchema;
-      // 原生 tools 只发给外部路由（issue #10）：本地模型服务保持那份冻结的 JSON 决策协议，本次改动
-      // 不动它。某个服务明确拒绝过 tools 之后，本进程不再带（见 tool-calling.ts）。
+      // 原生 tools 只发给外部路由（issue #10）：本地模型服务保持那份冻结的 JSON 决策协议。声明的
+      // toolCalling:false 是传输开关；明确拒绝过 tools 的服务本进程也不再带（见 tool-calling.ts）。
       const toolDeclarations = options.tools ?? [];
-      let sendTools = isExternal && toolDeclarations.length > 0 && !toolsUnavailable(key);
+      let sendTools =
+        isExternal &&
+        externalRoute?.toolCalling !== false &&
+        toolDeclarations.length > 0 &&
+        !toolsUnavailable(key);
       const send = async (level: StructuredOutputLevel, withTools: boolean) => {
         const body: Record<string, unknown> = {
           model: used,

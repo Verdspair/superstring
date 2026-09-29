@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { Server } from "node:http";
 import http from "node:http";
-import { AGENT_DECISION_JSON_SCHEMA } from "../../src/server/agent/agent-specs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { AGENT_DECISION_JSON_SCHEMA, INVOKE_BATCH_LIMIT } from "../../src/server/agent/agent-specs";
+import { createModelProvider } from "../../src/server/db/model-provider-repository";
 import { createLmStudioClient, resolveLmStudioConfig } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 import { QQ_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
@@ -853,6 +856,136 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
     }
   });
 
+  it("tool_calls 达到上限映射为一批调用，超过上限不截断（整体读不出 = 空正文）", async () => {
+    const callsFor = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        id: `call_${index}`,
+        type: "function",
+        function: {
+          name: "speech.evaluate",
+          arguments: JSON.stringify({ targetId: `t${index}` }),
+        },
+      }));
+    let toolCalls: unknown[] = callsFor(INVOKE_BATCH_LIMIT);
+    const cloud = bodyOf((_b, res) =>
+      answer(res, {
+        choices: [
+          { finish_reason: "tool_calls", message: { content: null, tool_calls: toolCalls } },
+        ],
+      }),
+    );
+    const hosts = await gatewayWith(cloud);
+    try {
+      const complete = () =>
+        hosts.gateway.complete({
+          messages: [],
+          model: "cloud/model",
+          responseSchema: AGENT_DECISION_JSON_SCHEMA,
+          tools: decisionTools,
+        });
+      const atLimit = JSON.parse(await complete()) as { kind?: string; calls?: unknown[] };
+      expect(atLimit.kind).toBe("invoke");
+      expect(atLimit.calls).toHaveLength(INVOKE_BATCH_LIMIT);
+      // 超一个不截断成上限个：截断会让模型以为自己叫过被丢掉的调用，整体按读不出处理。
+      toolCalls = callsFor(INVOKE_BATCH_LIMIT + 1);
+      expect(await complete()).toBe("");
+    } finally {
+      await hosts.dispose();
+    }
+  });
+
+  for (const status of [429, 408] as const) {
+    it(`HTTP ${status} 是暂时故障：不降级重发，也不把该服务记成 tools 不可用`, async () => {
+      const warnings: string[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+      const cloud = bodyOf((_b, res) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: `synthetic ${status}` } }));
+      });
+      let hosts: Awaited<ReturnType<typeof gatewayWith>> | undefined;
+      try {
+        hosts = await gatewayWith(cloud);
+        const gateway = hosts.gateway;
+        const call = () =>
+          gateway.complete({
+            messages: [],
+            model: "cloud/model",
+            responseSchema: AGENT_DECISION_JSON_SCHEMA,
+            tools: decisionTools,
+          });
+        const capture = (pending: Promise<string>) =>
+          pending.then(
+            () => null,
+            (error: unknown) => error as { code?: string; status?: number },
+          );
+        const first = await capture(call());
+        expect(first?.code).toBe("MODEL_ERROR");
+        expect(first?.status).toBe(status);
+        // 一次调用只发一个请求：既没有去掉 tools 重发，也没有降级 response_format 再撞一次。
+        expect(cloud.seen).toHaveLength(1);
+        expect(cloud.seen[0]?.tools).toBeDefined();
+        // 档位没被记住：下一次同类调用的请求里 tools 仍在（这是"永久丢 tools"的回归点）。
+        const second = await capture(call());
+        expect(second?.status).toBe(status);
+        expect(cloud.seen).toHaveLength(2);
+        expect(cloud.seen[1]?.tools).toBeDefined();
+        expect(warnings.some((line) => line.includes("[model-tools]"))).toBe(false);
+      } finally {
+        console.warn = original;
+        if (hosts) await hosts.dispose();
+      }
+    });
+  }
+
+  it("声明的 toolCalling:false 是传输开关；true 与未声明（undefined）照发", async () => {
+    const cloud = bodyOf((_b, res) => none(res));
+    const local = bodyOf((_b, res) => none(res));
+    const cloudHost = await listen(cloud.handler);
+    const localHost = await listen(local.handler);
+    const declarations: Record<string, boolean | undefined> = {
+      "cloud/off": false,
+      "cloud/on": true,
+      "cloud/undeclared": undefined,
+    };
+    const gateway = createLmStudioClient(
+      {
+        baseUrl: `http://127.0.0.1:${localHost.port}/v1`,
+        model: "local/model",
+        timeoutSeconds: 5,
+        apiKey: "test-token",
+      },
+      {
+        externalModel: (model) => {
+          if (!(model in declarations)) return null;
+          const toolCalling = declarations[model];
+          return {
+            baseUrl: `http://127.0.0.1:${cloudHost.port}/v1`,
+            apiKey: null,
+            contextWindow: 8192,
+            ...(toolCalling === undefined ? {} : { toolCalling }),
+          };
+        },
+      },
+    );
+    try {
+      for (const model of Object.keys(declarations)) {
+        await gateway.complete({
+          messages: [],
+          model,
+          responseSchema: AGENT_DECISION_JSON_SCHEMA,
+          tools: decisionTools,
+        });
+      }
+      expect(cloud.seen[0]?.tools).toBeUndefined();
+      expect(cloud.seen[1]?.tools).toBeDefined();
+      expect(cloud.seen[2]?.tools).toBeDefined();
+    } finally {
+      await close(cloudHost.server);
+      await close(localHost.server);
+    }
+  });
+
   /**
    * 文本路径也要能回答"服务端说了什么"：唤醒失败以前只记映射后的码（"本地模型调用失败"），
    * 而中继/服务端的原文被映射吞掉——2026-09-29 那轮 kanglives 5xx 就是这么卡住的。视觉路径已经
@@ -901,5 +1034,91 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
     expect(logged).toContain("[model] cloud/model");
     expect(logged).toContain("HTTP 500");
     expect(logged).toContain("internal_server_error");
+  });
+});
+
+// runtime 装配级（漂移三）：toolCalling 声明经 runtime.ts 自己的 externalModel 闭包进入网关。
+// 闭包绑定数据库、每次调用现读，所以这里通过 runtime.gateway 真调一次，而不是在测试里复刻闭包。
+describe("runtime 把能力声明接到原生 tools 传输开关", () => {
+  it("toolCalling:false 的模型不带 tools，true 与未声明照发", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const stub = http.createServer((req, res) => {
+      if (req.url?.endsWith("/chat/completions")) {
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          seen.push(raw === "" ? {} : (JSON.parse(raw) as Record<string, unknown>));
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              choices: [{ finish_reason: "stop", message: { content: '{"kind":"none"}' } }],
+            }),
+          );
+        });
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [] }));
+    });
+    await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", () => resolve()));
+    const origin = `http://127.0.0.1:${(stub.address() as { port: number }).port}/v1`;
+    const savedBaseUrl = process.env.LM_STUDIO_BASE_URL;
+    process.env.LM_STUDIO_BASE_URL = origin;
+    const keyPath = path.join(tmpdir(), `synthetic-provider-${crypto.randomUUID()}.key`);
+    let runtime: ReturnType<typeof createRuntime> | undefined;
+    try {
+      runtime = createRuntime({
+        businessDbPath: ":memory:",
+        browserStateSecret: "synthetic-review-secret",
+        modelProviderKeyPath: keyPath,
+      });
+      createModelProvider(runtime.business.orm, {
+        id: crypto.randomUUID(),
+        name: "Synthetic cloud",
+        baseUrl: origin,
+        apiKey: null,
+        models: [
+          {
+            name: "cloud/declared-off",
+            context_window: 8192,
+            capabilities: { toolCalling: false, parallelToolCalls: false, codeExecution: false },
+          },
+          {
+            name: "cloud/declared-on",
+            context_window: 8192,
+            capabilities: { toolCalling: true, parallelToolCalls: true, codeExecution: false },
+          },
+          { name: "cloud/undeclared", context_window: 8192 },
+        ],
+        keyPath,
+      });
+      const tools = [
+        {
+          name: "speech.evaluate",
+          description: "Score one target",
+          parameters: { type: "object", properties: { targetId: { type: "string" } } },
+        },
+      ];
+      for (const model of ["cloud/declared-off", "cloud/declared-on", "cloud/undeclared"]) {
+        expect(
+          await runtime.gateway.complete({
+            messages: [{ role: "user", content: "hi" }],
+            model,
+            responseSchema: AGENT_DECISION_JSON_SCHEMA,
+            tools,
+          }),
+        ).toBe('{"kind":"none"}');
+      }
+      expect(seen[0]?.tools).toBeUndefined();
+      expect(seen[1]?.tools).toBeDefined();
+      expect(seen[2]?.tools).toBeDefined();
+    } finally {
+      if (runtime) await runtime.stop();
+      if (savedBaseUrl === undefined) delete process.env.LM_STUDIO_BASE_URL;
+      else process.env.LM_STUDIO_BASE_URL = savedBaseUrl;
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
   });
 });

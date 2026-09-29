@@ -169,11 +169,18 @@ export function nextStructuredOutputLevel(
  * 这个失败值得降级吗？只有"请求形状被服务端拒绝"才算。
  *
  * 看 HTTP 状态而不是错误文字：4xx 是服务端在说"这个请求我不接受"，其中 401/403 是凭据问题
- * （降级只会掩盖真正的配置错误），其余 4xx 才可能是结构化输出字段。
+ * （降级只会掩盖真正的配置错误）。408（请求超时）与 429（限流）是暂时状态：误当形状拒绝降级，
+ * 还会把该服务永久记成"不支持 tools"。
  */
 export function structuredOutputRejected(error: unknown): boolean {
   const status = (error as { status?: unknown } | null)?.status;
   return (
-    typeof status === "number" && status >= 400 && status < 500 && status !== 401 && status !== 403
+    typeof status === "number" &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 401 &&
+    status !== 403 &&
+    status !== 408 &&
+    status !== 429
   );
 }

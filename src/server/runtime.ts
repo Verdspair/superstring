@@ -213,9 +213,18 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         model,
         options.modelProviderKeyPath ?? DEFAULT_MODEL_PROVIDER_KEY_PATH,
       );
-      return route === null
-        ? null
-        : { baseUrl: route.baseUrl, apiKey: route.apiKey, contextWindow: route.contextWindow };
+      if (route === null) return null;
+      // 能力声明是传输开关，每次调用现读：填过声明的模型按声明执行，从未填过的维持现状。
+      const declared = readModelProviders(business.orm)
+        .flatMap((provider) => provider.models)
+        .find((entry) => entry.name === model);
+      const capabilities = declared?.capabilities;
+      return {
+        baseUrl: route.baseUrl,
+        apiKey: route.apiKey,
+        contextWindow: route.contextWindow,
+        ...(capabilities === undefined ? {} : { toolCalling: capabilities.toolCalling }),
+      };
     };
     gateway = options.gateway ?? createLmStudioClient(resolveLmStudioConfig(), { externalModel });
     const visionClient =

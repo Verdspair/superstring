@@ -372,16 +372,16 @@ export function ModelServices() {
                       <div className="grid gap-3 sm:grid-cols-3">
                         {(
                           [
-                            ["toolCalling", "models.toolCalling"],
-                            ["parallelToolCalls", "models.parallelToolCalls"],
-                            ["codeExecution", "models.codeExecution"],
+                            ["toolCalling", "models.toolCalling", "models.toolCallingHint"],
+                            [
+                              "parallelToolCalls",
+                              "models.parallelToolCalls",
+                              "models.parallelToolCallsHint",
+                            ],
+                            ["codeExecution", "models.codeExecution", "models.codeExecutionHint"],
                           ] as const
-                        ).map(([key, label]) => (
-                          <Field
-                            key={key}
-                            label={label}
-                            info={key === "codeExecution" ? "models.codeExecutionHint" : undefined}
-                          >
+                        ).map(([key, label, hint]) => (
+                          <Field key={key} label={label} info={hint}>
                             <Checkbox
                               checked={model.capabilities?.[key] ?? false}
                               disabled={saving}
