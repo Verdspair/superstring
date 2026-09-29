@@ -57,7 +57,7 @@ export const SETTINGS_ROUTES = [
     state: "transition",
     note: "workspace.what_the_qq_side_keeps_how_long_it_keeps_it_and_the_one_cleanup_entry_th",
   },
-  // 接入（P7-d）：MCP 登记、技能目录与统一工具授权；三者都是应用级资源，不跟随某个助手。
+  // 接入（P7-d）：MCP 登记、技能目录、统一工具授权与联网配置；都是应用级资源，不跟随某个助手。
   {
     id: "mcp-servers",
     title: "connections.mcp.title",
@@ -75,6 +75,12 @@ export const SETTINGS_ROUTES = [
     title: "connections.grants.title",
     state: "transition",
     note: "connections.grants.description",
+  },
+  {
+    id: "web-access",
+    title: "connections.web.title",
+    state: "transition",
+    note: "connections.web.description",
   },
   // 运行（P7-d）：执行台账、任务与审批、执行配置。
   {

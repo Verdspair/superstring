@@ -69,6 +69,7 @@ const permissions: PermissionsResponse = {
       modules: {
         mcp: true,
         skills: true,
+        web: false,
         tasks: true,
         memoryJobs: true,
         knowledgeJobs: true,

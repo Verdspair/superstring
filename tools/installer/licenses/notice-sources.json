@@ -114,12 +114,20 @@
       "sha256": "a650b959a7efc5cbd7757c683d3bde89d97770a71e17a9a39670bb2c3d07dcd6"
     },
     {
+      "file": "web-access-NOTICES.txt",
+      "source": "Pinned npm packages listed individually in web-access-NOTICES.txt",
+      "component": "web-access-runtime-dependencies",
+      "version": "@mozilla/readability 0.6.0, linkedom 0.18.13, turndown 7.2.4, @types/turndown 5.0.6",
+      "license": "Apache-2.0, ISC and MIT; four original texts",
+      "sha256": "5b3b1f021e060c5794a06701e505d261bfa1bf5de75476e44fff734ae34206b4"
+    },
+    {
       "file": "production-NOTICES.txt",
       "source": "Original license and NOTICE texts from the pinned production dependency closure",
       "component": "production-dependencies",
       "version": "0.3.0-beta",
       "license": "Individual upstream terms reproduced verbatim",
-      "sha256": "a73555a834279521c049a4364050f410b11a8e36c94775cc57d3067f3ab82f78"
+      "sha256": "d53b6fb8462de79fd49c3f729351a2fe192273b94dcd8aecb21aa4d0a1b0de65"
     }
   ]
 }

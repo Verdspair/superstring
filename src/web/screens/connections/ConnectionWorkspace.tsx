@@ -24,6 +24,7 @@ import { SkillsPanel } from "./skills-panel";
 import { StorageInventory } from "./storage-inventory";
 import { ToolGrantsPanel } from "./tool-grants-panel";
 import { TransportSettings } from "./transport-settings";
+import { WebAccessPanel } from "./web-access-panel";
 
 const phaseNames: Record<string, string> = {
   unavailable: "connections.thisProcessHasNoTransportRuntime",
@@ -100,7 +101,9 @@ export function ConnectionWorkspace() {
               ? "skills"
               : state.settingsRoute === "tool-grants"
                 ? "grants"
-                : "bindings";
+                : state.settingsRoute === "web-access"
+                  ? "web"
+                  : "bindings";
   return (
     <section
       className="flex h-full min-h-0 flex-col"
@@ -160,7 +163,9 @@ export function ConnectionWorkspace() {
                       ? "mcp-servers"
                       : value === "skills"
                         ? "skill-catalog"
-                        : "tool-grants",
+                        : value === "grants"
+                          ? "tool-grants"
+                          : "web-access",
               )
         }
         className="flex min-h-0 flex-1 flex-col gap-0"
@@ -173,6 +178,7 @@ export function ConnectionWorkspace() {
             <TabsTrigger value="mcp">{t("connections.mcp.title")}</TabsTrigger>
             <TabsTrigger value="skills">{t("connections.skills.title")}</TabsTrigger>
             <TabsTrigger value="grants">{t("connections.grants.title")}</TabsTrigger>
+            <TabsTrigger value="web">{t("connections.web.title")}</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="bindings" className="m-0 min-h-0 overflow-y-auto px-6 py-6 lg:px-8">
@@ -292,6 +298,9 @@ export function ConnectionWorkspace() {
         </TabsContent>
         <TabsContent value="grants" className="m-0 min-h-0 flex-1 overflow-y-auto">
           <ToolGrantsPanel />
+        </TabsContent>
+        <TabsContent value="web" className="m-0 min-h-0 flex-1 overflow-y-auto">
+          <WebAccessPanel />
         </TabsContent>
       </Tabs>
       {transportOpen && <TransportSettings onClose={() => setTransportOpen(false)} />}

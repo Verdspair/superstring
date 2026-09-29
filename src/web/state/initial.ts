@@ -12,6 +12,7 @@ import type {
 } from "../../shared/contracts";
 import type { BrowserStateStorage } from "../browser-state";
 import { permissionInitial } from "../features/access/permission-state";
+import { webAccessInitial } from "../features/access/web-access-state";
 import { initialConversationState } from "../features/chat/conversation-state";
 import { directoryInitial } from "../features/conversations/directory-state";
 import { desktopSettingsInitial } from "../features/general/desktop-state";
@@ -36,6 +37,7 @@ import type {
 
 export const initial = {
   ...permissionInitial,
+  ...webAccessInitial,
   ...initialRunState,
   ...initialConversationState,
   ...directoryInitial,

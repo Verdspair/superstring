@@ -55,6 +55,8 @@ import type { QqSendPort } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
 import { createSkillActions } from "./skills/actions";
 import { skillSourceAccess } from "./skills/sources";
+import { createWebActions } from "./web-access/actions";
+import { FileWebAccessConfigStore } from "./web-access/config";
 
 export const DEFAULT_BUSINESS_DB_PATH = path.resolve("data/superstring.sqlite");
 
@@ -98,6 +100,8 @@ export interface RuntimeOptions {
   /** MCP 服务器登记文件（0.4.0 P6）；缺省＝不启用 MCP（行为与不加这个功能一致）。 */
   mcpConfigPath?: string;
   permissionConfigPath?: string;
+  /** 联网配置（web-access 单元）：端点文件；缺省＝工具只走必应、管理路由不挂载。 */
+  webAccessConfigPath?: string;
   skillRoot?: string;
   codeRunner?: CodeRunner;
   businessMigrationSql?: BusinessMigrationSql;
@@ -133,6 +137,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   const permissions = options.permissionConfigPath
     ? new PermissionService(new FilePermissionStore(options.permissionConfigPath))
     : unconfiguredPermissions;
+  const webAccess = options.webAccessConfigPath
+    ? new FileWebAccessConfigStore(options.webAccessConfigPath)
+    : undefined;
   // 有效执行配置（P7-c）：开关与数值分组都从这里读；消费方在各自的新 run/新任务/新领取时取值。
   const execution = () => executionPolicy(permissions.snapshot().policy);
   /** QQ 通道的有效策略：配置给缺省，显式注入（测试与固定入口）优先。 */
@@ -184,9 +191,12 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     mcpHost && mcpConfigPath
       ? createMcpManagement({ configPath: mcpConfigPath, host: mcpHost })
       : undefined;
+  // 通道自带动作的唯一装配点：MCP、技能与联网工具都在这里现取一次，Web 与 QQ 两通道、
+  // 任务服务与 /v2/permissions 资源投影共用这份清单；模块开关与授权在各自消费点过滤。
   const externalActions = () => [
     ...(mcpHost?.current() ?? []),
     ...(options.skillRoot ? createSkillActions(options.skillRoot) : []),
+    ...createWebActions(webAccess ? { config: () => webAccess.read().config } : {}),
   ];
   const tasks = new AgentTaskService({
     repository: new AgentTaskRepository(business.db),
@@ -405,6 +415,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       externalActions,
       tasks,
       permissions: options.permissionConfigPath ? permissions : undefined,
+      webAccess,
       mcpManagement,
       skillsRoot: options.skillRoot,
       webMaxSteps: () => execution().loop.maxSteps,

@@ -170,6 +170,29 @@ function json(method: string, body: unknown): RequestInit {
   };
 }
 
+// ---- 联网配置（/v2/web-access）---------------------------------------------------------------
+// 读取与保存共用同一份 {revision, config} 快照；自检结果带通道、耗时与可选错误文本。端点校验
+// 以服务端 web-access 模块的 schema 为准，保存失败会带 WEB_CONFIG_INVALID 回来说明原因，
+// 这里只保证类型不撒谎。
+
+const WebAccessConfigSchema = z.strictObject({
+  version: z.literal(1),
+  searxngEndpoint: z.string().min(1).optional(),
+});
+export type WebAccessConfig = z.infer<typeof WebAccessConfigSchema>;
+export const WebAccessSnapshotSchema = z.strictObject({
+  revision: z.string(),
+  config: WebAccessConfigSchema,
+});
+export type WebAccessSnapshot = z.infer<typeof WebAccessSnapshotSchema>;
+export const WebAccessTestResultSchema = z.strictObject({
+  ok: z.boolean(),
+  channel: z.enum(["searxng", "bing"]),
+  elapsedMs: z.number().int().nonnegative(),
+  error: z.string().optional(),
+});
+export type WebAccessTestResult = z.infer<typeof WebAccessTestResultSchema>;
+
 export const api = {
   saveConversationAvatar: (id: string, value: GeneratedAvatar | File | null) => {
     let init: RequestInit;
@@ -488,6 +511,15 @@ export const api = {
   },
   savePermissions(body: { expectedRevision: string; policy: PermissionPolicy }) {
     return requestJson("/v2/permissions", PermissionSnapshotSchema, json("PUT", body));
+  },
+  getWebAccess(signal?: AbortSignal) {
+    return requestJson("/v2/web-access", WebAccessSnapshotSchema, { signal, cache: "no-store" });
+  },
+  saveWebAccess(body: { expectedRevision: string; config: WebAccessConfig }) {
+    return requestJson("/v2/web-access", WebAccessSnapshotSchema, json("PUT", body));
+  },
+  testWebAccess() {
+    return requestJson("/v2/web-access/test", WebAccessTestResultSchema, { method: "POST" });
   },
   listTasks(
     filters: {

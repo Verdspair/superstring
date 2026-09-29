@@ -61,6 +61,7 @@ export function resolveAppPaths(options: AppPathOptions) {
     appearance: path.join(privateRoot, "state", "desktop-appearance.json"),
     mcpServers: path.join(privateRoot, "config", "mcp-servers.json"),
     permissions: path.join(privateRoot, "config", "permissions.json"),
+    webAccess: path.join(privateRoot, "config", "web-access.json"),
     skills: path.join(privateRoot, "config", "skills"),
     // User-imported sticker copies live in their own feature namespace rather than beside the
     // database: §10 keeps material governance independent of the media cache, and grouping by

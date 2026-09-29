@@ -73,9 +73,14 @@ export function activeSpace(
   if (["long-memory", "profile", "knowledge-config", "qq-stickers"].includes(state.settingsRoute))
     return "library";
   if (
-    ["qq-scheme-config", "qq-storage", "mcp-servers", "skill-catalog", "tool-grants"].includes(
-      state.settingsRoute,
-    )
+    [
+      "qq-scheme-config",
+      "qq-storage",
+      "mcp-servers",
+      "skill-catalog",
+      "tool-grants",
+      "web-access",
+    ].includes(state.settingsRoute)
   )
     return "connections";
   if (["task-ledger", "execution-settings", "execution-ledger"].includes(state.settingsRoute))

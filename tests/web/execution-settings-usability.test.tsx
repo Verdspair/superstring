@@ -19,6 +19,7 @@ const permissions: PermissionsResponse = {
       modules: {
         mcp: true,
         skills: true,
+        web: false,
         tasks: true,
         memoryJobs: true,
         knowledgeJobs: true,
@@ -81,6 +82,7 @@ const NUMERIC: [string, string[]][] = [
 const SWITCHES: [string, "checked" | "unchecked"][] = [
   ["使用 MCP 工具", "checked"],
   ["使用本地技能", "checked"],
+  ["使用联网工具", "unchecked"],
   ["执行工具任务", "checked"],
   ["执行记忆整理任务", "checked"],
   ["执行知识整理任务", "checked"],
@@ -114,7 +116,7 @@ afterEach(() => {
 });
 
 describe("execution settings layout and usability", () => {
-  it("shows all 25 numeric fields and the 9 switches with their saved values", async () => {
+  it("shows all 25 numeric fields and the 10 switches with their saved values", async () => {
     await renderSettings({ getPermissions: vi.fn().mockResolvedValue(permissions) });
     let count = 0;
     for (const [label, values] of NUMERIC) {
@@ -149,8 +151,8 @@ describe("execution settings layout and usability", () => {
     }
     expect(scroll).toHaveBeenCalledTimes(links.length);
     expect(scroll).toHaveBeenCalledWith({ block: "start" });
-    // 不折叠、不隐藏：点击后 9 个开关与重复标签的两个输入框仍然在场。
-    expect(screen.getAllByRole("checkbox")).toHaveLength(9);
+    // 不折叠、不隐藏：点击后 10 个开关与重复标签的两个输入框仍然在场。
+    expect(screen.getAllByRole("checkbox")).toHaveLength(10);
     expect(screen.getAllByLabelText("结论字符上限")).toHaveLength(2);
   });
 

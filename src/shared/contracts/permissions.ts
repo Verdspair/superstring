@@ -61,6 +61,8 @@ export const ExecutionQqLimitsSchema = z.strictObject({
 export const ExecutionModulesSchema = z.strictObject({
   mcp: z.boolean().default(true),
   skills: z.boolean().default(true),
+  /** 联网工具（web.search / web.fetch）：默认关闭。 */
+  web: z.boolean().default(false),
   tasks: z.boolean().default(true),
   memoryJobs: z.boolean().default(true),
   knowledgeJobs: z.boolean().default(true),
@@ -111,7 +113,8 @@ export function toolExecutionEnabled(execution: ExecutionPolicy, name: string): 
   return (
     !execution.pausedTools.includes(name) &&
     (!name.startsWith("mcp.") || execution.modules.mcp) &&
-    (!name.startsWith("skill.") || execution.modules.skills)
+    (!name.startsWith("skill.") || execution.modules.skills) &&
+    (!name.startsWith("web.") || execution.modules.web)
   );
 }
 

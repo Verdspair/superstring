@@ -10,6 +10,7 @@ import {
 } from "../../shared/contracts/agent-task";
 import {
   executionPolicy,
+  type PermissionResource,
   PermissionSnapshotSchema,
   PermissionsResponseSchema,
   PermissionUpdateSchema,
@@ -49,19 +50,30 @@ export function permissionRoutes(
   router.use("*", managementGuard());
   router.get("/", (c) => {
     const snapshot = service.snapshot();
+    // 资源投影按 resource 去重：一条授权覆盖一个 resource（web.search / web.fetch 共用 "web"），
+    // 同一 resource 只投影一次，授权面板与执行器都按 resource 记账。
+    const resources = new Map<string, PermissionResource>();
+    for (const action of actions()) {
+      const requirement = action.permission;
+      if (!requirement || resources.has(requirement.resource)) continue;
+      resources.set(requirement.resource, {
+        name: action.description.name,
+        description: action.description.description,
+        effect: action.description.effect ?? "write",
+        resource: requirement.resource,
+        revision: requirement.revision,
+        approvalRequired: requirement.approvalRequired,
+        ...(requirement.directories === undefined
+          ? {}
+          : { directories: [...requirement.directories] }),
+      });
+    }
     return c.json(
       PermissionsResponseSchema.parse({
         ...snapshot,
         // 有效执行配置：老策略文件里没有该组时也给出缺省值，页面不必自己补。
         policy: { ...snapshot.policy, execution: executionPolicy(snapshot.policy) },
-        resources: actions()
-          .filter((action) => action.permission)
-          .map((action) => ({
-            name: action.description.name,
-            description: action.description.description,
-            effect: action.description.effect ?? "write",
-            ...action.permission,
-          })),
+        resources: [...resources.values()],
       }),
     );
   });

@@ -77,6 +77,7 @@ const runtime = await (async () => {
       mcpConfigPath: layout?.paths.mcpServers ?? path.resolve("local/config/mcp-servers.json"),
       permissionConfigPath:
         layout?.paths.permissions ?? path.resolve("local/config/permissions.json"),
+      webAccessConfigPath: layout?.paths.webAccess ?? path.resolve("local/config/web-access.json"),
       skillRoot: layout?.paths.skills ?? path.resolve("local/config/skills"),
       businessMigrationSql: layout?.businessMigrationSql,
     });

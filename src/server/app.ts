@@ -22,6 +22,7 @@ import { qqRoutes } from "./api/qq";
 import { runRoutes } from "./api/runs";
 import { sessionRoutes } from "./api/sessions";
 import { skillsRoutes } from "./api/skills";
+import { webAccessRoutes } from "./api/web-access";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
@@ -39,6 +40,7 @@ import {
   createQqStickerAnnotator,
   type QqStickerAnnotator,
 } from "./services/qq-sticker-annotation";
+import type { WebAccessConfigStore } from "./web-access/config";
 
 export interface CreateAppOptions {
   /** Mount business routes over an already-opened database. */
@@ -74,6 +76,8 @@ export interface CreateAppOptions {
   externalActions?: () => readonly BuiltInAction[];
   permissions?: PermissionService;
   tasks?: AgentTaskService;
+  /** 联网配置存储（web-access 单元）：给了就挂 `/v2/web-access` 的读取、保存与自检。 */
+  webAccess?: WebAccessConfigStore;
   /** MCP 管理端口（P7-b）：读写登记与重连都经同一宿主；缺省＝不挂管理路由。 */
   mcpManagement?: McpManagement;
   /** 技能目录根（P7-b）：给了就挂 `/v2/skills` 的目录与详情读取。 */
@@ -145,6 +149,7 @@ export function createApp(opts: CreateAppOptions): Hono {
         "/v2/permissions",
         permissionRoutes(opts.permissions, opts.externalActions ?? (() => []), opts.tasks),
       );
+    if (opts.webAccess) app.route("/v2/web-access", webAccessRoutes(opts.webAccess));
     if (opts.mcpManagement) app.route("/v2/mcp", mcpRoutes(opts.mcpManagement));
     if (opts.skillsRoot) app.route("/v2/skills", skillsRoutes(opts.skillsRoot));
     app.route(
