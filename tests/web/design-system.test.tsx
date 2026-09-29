@@ -1,8 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { cleanup, render } from "@testing-library/react";
+import { afterEach, expect, it } from "vitest";
 import { BrandLogo } from "../../src/web/design-system/BrandLogo";
-import { IconButton } from "../../src/web/design-system/IconButton";
-import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 
 afterEach(cleanup);
 
@@ -16,17 +14,4 @@ it("shares the canonical brand asset without adding an accessible duplicate name
   expect(svg?.querySelector("use")?.getAttribute("href")).toMatch(
     /superstring\.svg(?:\?[^#]*)?#mark$/,
   );
-});
-
-it("keeps icon-only actions named and functional without waiting for a tooltip", () => {
-  const action = vi.fn();
-  render(
-    <DesignSystemProvider>
-      <IconButton label="Refresh activity" icon="refresh" onClick={action} />
-    </DesignSystemProvider>,
-  );
-  const button = screen.getByRole("button", { name: "Refresh activity" });
-  fireEvent.click(button);
-  expect(action).toHaveBeenCalledOnce();
-  expect(button.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
 });

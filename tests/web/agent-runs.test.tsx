@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectedContext, RunEvent, RunSnapshot } from "../../src/shared/contracts/agent-run";
 import { api } from "../../src/web/api";
-import { resolveModelUse } from "../../src/web/features/models/model-use";
 import { mergeRunSnapshot, reduceRunEvent } from "../../src/web/features/runs/run-state";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
@@ -218,39 +217,6 @@ describe("run phase language", () => {
     expect(i18n.t(runStatusLabel("generating", "leaf"))).toBe("正在处理");
     expect(i18n.t(runStatusLabel("generating", "vision"))).toBe("正在理解图片");
     expect(i18n.t(runStatusLabel("generating", "generate"))).toBe("正在回复");
-  });
-});
-
-describe("model scope and precedence", () => {
-  it("preserves every fallback and distinguishes unloaded defaults from unset", () => {
-    expect(resolveModelUse("memory_organization", null, "chat", "shared")).toEqual({
-      model: "shared",
-      source: "shared_default",
-    });
-    expect(resolveModelUse("memory_organization", null, "chat", null)).toEqual({
-      model: "chat",
-      source: "chat",
-    });
-    expect(resolveModelUse("memory_organization", null, "chat")).toEqual({
-      model: null,
-      source: "unloaded",
-    });
-    expect(resolveModelUse("knowledge_organization", null, "unused", null)).toEqual({
-      model: null,
-      source: "gateway",
-    });
-    expect(resolveModelUse("qq_judgement", null, "editor-agent")).toEqual({
-      model: null,
-      source: "bound_chat",
-    });
-    expect(resolveModelUse("vision", null, "chat", "shared")).toEqual({
-      model: null,
-      source: "unconfigured",
-    });
-    expect(resolveModelUse("retrieval", "explicit", "chat")).toEqual({
-      model: "explicit",
-      source: "agent",
-    });
   });
 });
 

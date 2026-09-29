@@ -12,7 +12,6 @@ compose them in task screens instead of building a parallel component or CSS sys
 - `design-system/BrandLogo.tsx`: theme-colored SVG reference to the canonical
   `src/shared/brand/superstring.svg`, independent from functional icons. The favicon and desktop
   renderer share this master; do not add local copies of its paths or generated image files.
-- `design-system/Icon.tsx`: semantic Lucide names for business components.
 - `components/`: small business compositions over registry components (field association, confirmations, context ring).
 - `screens/`: fresh task workspaces; `features/` retains state and API actions only.
 - `i18n/locales/`: standard i18next JSON catalogs. UI uses `react-i18next` directly.
