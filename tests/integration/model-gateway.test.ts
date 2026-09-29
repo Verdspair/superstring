@@ -852,4 +852,54 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
       if (hosts) await hosts.dispose();
     }
   });
+
+  /**
+   * 文本路径也要能回答"服务端说了什么"：唤醒失败以前只记映射后的码（"本地模型调用失败"），
+   * 而中继/服务端的原文被映射吞掉——2026-09-29 那轮 kanglives 5xx 就是这么卡住的。视觉路径已经
+   * 把原文记进日志（状态码 + 截断的响应体），文本路径现在保持一致：码与用户文案不变，原文进日志。
+   */
+  it("服务端 5xx：码保持通用，provider 原文进日志", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    const cloud = bodyOf((_b, res) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: {
+            message:
+              'Post "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent": EOF',
+            type: "server_error",
+            code: "internal_server_error",
+          },
+        }),
+      );
+    });
+    let hosts: Awaited<ReturnType<typeof gatewayWith>> | undefined;
+    let failure: { code?: string; status?: number } | null = null;
+    try {
+      hosts = await gatewayWith(cloud);
+      failure = await hosts.gateway
+        .complete({
+          messages: [],
+          model: "cloud/model",
+          responseSchema: AGENT_DECISION_JSON_SCHEMA,
+          tools: decisionTools,
+        })
+        .then(
+          () => null,
+          (error: unknown) => error as { code?: string; status?: number },
+        );
+    } finally {
+      console.warn = original;
+      if (hosts) await hosts.dispose();
+    }
+    // 错误码走网关那张表（通用值），状态码跟着走，原文只进日志。
+    expect(failure?.code).toBe("MODEL_ERROR");
+    expect(failure?.status).toBe(500);
+    const logged = warnings.join("\n");
+    expect(logged).toContain("[model] cloud/model");
+    expect(logged).toContain("HTTP 500");
+    expect(logged).toContain("internal_server_error");
+  });
 });

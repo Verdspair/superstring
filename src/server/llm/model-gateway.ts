@@ -189,6 +189,22 @@ function providerReason(error: unknown): string {
 }
 
 /**
+ * 文本调用失败时的一行诊断：码与用户文案不变，provider 自己说的话（HTTP 状态 + 被 `request()`
+ * 装进原始错误消息里的响应体）只进日志。视觉路径早就这么做了，文本路径此前只剩映射后的
+ * "本地模型调用失败"——中继站回 5xx 时无从查起（2026-09-29）。
+ * 取消（调用方 abort）不是模型故障，调用点先判 `signal.aborted` 再进这里。
+ */
+function warnTextCallFailure(model: string, error: unknown, startedAt: number): void {
+  const reason =
+    (error as { providerMessage?: string } | null)?.providerMessage ?? providerReason(error);
+  console.warn(
+    `[model] ${model} 调用失败（HTTP ${(error as { status?: number } | null)?.status ?? "?"}，${
+      Date.now() - startedAt
+    }ms）：${reason}`,
+  );
+}
+
+/**
  * LM Studio rejects every unauthenticated call with 401 once its server is set
  * to require an API token. Shares `MODEL_SERVICE_UNAVAILABLE` (the
  * taxonomy has no auth code) but says what actually happened AND what to do:
@@ -226,6 +242,9 @@ export function mapModelError(error: unknown): ModelUnavailableError {
   // 请求的形状"（4xx）与"服务坏了/超时"（5xx、网络），只靠文案猜是不行的。
   const withStatus = (mapped: ModelUnavailableError): ModelUnavailableError => {
     if (typeof status === "number") (mapped as { status?: number }).status = status;
+    // provider 自己说的话（HTTP 状态行 + 响应体，来自 request() 组装的原始消息）留在错误对象上，
+    // 只给日志用：用户文案保持上面那张表的措辞，错误信封也只取 code/message，不会带出去。
+    (mapped as { providerMessage?: string }).providerMessage = providerReason(error);
     return mapped;
   };
 
@@ -728,37 +747,43 @@ export function createLmStudioClient(
       // 结构化输出的自动降级：有些服务不接受严格的 json_schema 而直接 4xx，
       // 而我们的解析本来就是严格的，所以退回 json_object、再退回不带该字段都是安全的。
       let payload: Awaited<ReturnType<typeof send>>;
-      if (options.responseSchema === undefined) {
-        payload = await attempt("none");
-      } else {
-        // 形状注定被严格模式整单拒绝的 schema（判别联合的 oneOf）不去白撞一次 400：直接起步于
-        // json_object。本地路由不参与这个判断。
-        const strictAccepted = !isExternal || strictSchemaAccepted(outboundSchema);
-        if (!strictAccepted) announceStrictSchemaSkip(key, used);
-        let level = structuredOutputStart(key, strictAccepted);
-        // 只有"这一轮真的撞过更严的档"才值得记住并提示；直接跳过不算。
-        const attemptedStrict = level === "json_schema";
-        for (;;) {
-          try {
-            payload = await attempt(level);
-            if (level !== "json_schema" && attemptedStrict) {
-              rememberStructuredOutput(key, level);
+      const startedAt = Date.now();
+      try {
+        if (options.responseSchema === undefined) {
+          payload = await attempt("none");
+        } else {
+          // 形状注定被严格模式整单拒绝的 schema（判别联合的 oneOf）不去白撞一次 400：直接起步于
+          // json_object。本地路由不参与这个判断。
+          const strictAccepted = !isExternal || strictSchemaAccepted(outboundSchema);
+          if (!strictAccepted) announceStrictSchemaSkip(key, used);
+          let level = structuredOutputStart(key, strictAccepted);
+          // 只有"这一轮真的撞过更严的档"才值得记住并提示；直接跳过不算。
+          const attemptedStrict = level === "json_schema";
+          for (;;) {
+            try {
+              payload = await attempt(level);
+              if (level !== "json_schema" && attemptedStrict) {
+                rememberStructuredOutput(key, level);
+                console.warn(
+                  `[model-structured] ${used} 本进程起改用 ${level}（该服务不接受更严的档）`,
+                );
+              }
+              break;
+            } catch (error) {
+              if (!structuredOutputRejected(error)) throw error;
+              const next = nextStructuredOutputLevel(level);
+              if (next === null) throw error;
+              const status = (error as { status?: number }).status;
               console.warn(
-                `[model-structured] ${used} 本进程起改用 ${level}（该服务不接受更严的档）`,
+                `[model-structured] ${used} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}：${providerReason(error)}`,
               );
+              level = next;
             }
-            break;
-          } catch (error) {
-            if (!structuredOutputRejected(error)) throw error;
-            const next = nextStructuredOutputLevel(level);
-            if (next === null) throw error;
-            const status = (error as { status?: number }).status;
-            console.warn(
-              `[model-structured] ${used} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}：${providerReason(error)}`,
-            );
-            level = next;
           }
         }
+      } catch (error) {
+        if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
+        throw error;
       }
       const choice = payload.choices?.[0];
       if (typeof choice?.message?.content === "string") {
@@ -812,6 +837,7 @@ export function createLmStudioClient(
       }
 
       const lifetime = requestLifetime(timeoutMs, options.signal);
+      const startedAt = Date.now();
       try {
         const response = await request(
           cfg,
@@ -878,6 +904,7 @@ export function createLmStudioClient(
           );
         }
       } catch (error) {
+        if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
         lifetime.rethrow(error);
       } finally {
         lifetime.close();

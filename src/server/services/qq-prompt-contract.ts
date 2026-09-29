@@ -25,6 +25,7 @@ import {
   type QqSchemePrompts,
   QqSchemePromptsSchema,
 } from "../../shared/contracts/qq";
+import { readJsonBody } from "../agent/agent-specs";
 import { ContextMessageSchema, type QqContextMessage } from "./qq-context-contract";
 
 /**
@@ -512,7 +513,10 @@ export type QqJudgeOutcome =
 export function qqJudgeOutcome(raw: string): QqJudgeOutcome {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    // 与决策/叶子同一条读取规则（readJsonBody）：允许**一条完整的 ``` 围栏**——外部模型
+    // （实测 gemini 系、尤其经网页桥）习惯把 JSON 包进 ```json 围栏，围栏是传输层包装、不是内容；
+    // 其余照旧严格：散文、第二个对象、被截断的半截 JSON 一律读不出（fail-closed，不猜）。
+    parsed = JSON.parse(readJsonBody(raw));
   } catch {
     return { kind: "unreadable" };
   }

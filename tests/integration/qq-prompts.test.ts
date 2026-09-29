@@ -437,6 +437,24 @@ describe("QQ judgement output fails closed", () => {
     expect(qqJudgeAllowsSpeech(qqJudgeOutcome('{"score":0}'), 0)).toBe(true);
     expect(qqJudgeAllowsSpeech(qqJudgeOutcome('{"score":9}'), 10)).toBe(false);
   });
+
+  /**
+   * 外部模型（实测 gemini 系，尤其经网页桥）习惯把 JSON 包进 ```json 围栏——围栏是传输层包装、
+   * 不是内容，决策与叶子解析早已用同一条规则（readJsonBody）。2026-09-29 经本地网页桥时判断路径
+   * 仍是裸 JSON.parse：干净的围栏输出被记成 JUDGEMENT_UNREADABLE，自主接话整批失败。
+   */
+  it("reads one complete fence, the same rule as decisions and leaves", () => {
+    expect(qqJudgeOutcome('```json\n{"score":8,"reason":" 相关 "}\n```')).toEqual({
+      kind: "scored",
+      score: 8,
+      reason: "相关",
+    });
+    expect(qqJudgeOutcome('```\n{"score":6}\n```')).toEqual({
+      kind: "scored",
+      score: 6,
+      reason: null,
+    });
+  });
   for (const raw of [
     "",
     "```json\n{}\n```",
@@ -449,6 +467,9 @@ describe("QQ judgement output fails closed", () => {
     '{"score":-1}',
     '{"score":8,"text":"send this"}',
     JSON.stringify({ score: 8, reason: "x".repeat(201) }),
+    // 围栏也不放宽内容规则：散文前缀、以及"半截 JSON 后从头重来"的拼接输出都读不出（不猜）。
+    '好的，{"score":8}',
+    '```json\n{"score":3,"reason":"断在这里```json\n{"score":5,"reason":"重来"}\n```',
   ]) {
     it(`refuses malformed verdict ${raw.slice(0, 30)}`, () => {
       const outcome = qqJudgeOutcome(raw);
