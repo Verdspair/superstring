@@ -13,34 +13,12 @@
 // - Timestamp / microsecond precision is the caller's responsibility; this
 // module only (de)serializes plain JSON values.
 
+import { contextDumps } from "../modules/memory-query";
+
 /**
  * Serialize a value to a canonical JSON string: object keys sorted recursively
  * arrays left in their original order.
  */
 export function stableStringify(value: unknown): string {
-  return JSON.stringify(sortKeys(value));
-}
-
-/**
- * Parse a JSON string previously produced by {@link stableStringify} (or any
- * valid JSON text) back into a value of type T.
- */
-export function parseJson<T = unknown>(text: string): T {
-  return JSON.parse(text) as T;
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    // Preserve array order — do not sort.
-    return value.map(sortKeys);
-  }
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      out[key] = sortKeys(record[key]);
-    }
-    return out;
-  }
-  return value;
+  return contextDumps(value);
 }

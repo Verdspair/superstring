@@ -1,3 +1,5 @@
+import { estimateTokens } from "./token-estimate";
+
 export interface KnowledgeSegment {
   ordinal: number;
   start: number;
@@ -5,7 +7,7 @@ export interface KnowledgeSegment {
   body: string;
 }
 
-export const utf8Size = (text: string): number => Buffer.byteLength(text, "utf8");
+export const utf8Size = (text: string): number => estimateTokens(text);
 
 /** UTF-16 half-open offsets, matching String.slice and the content contract.
  * Never split decimals, surrogate pairs or an oversized sentence to meet a budget.

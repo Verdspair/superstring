@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { getTableConfig } from "drizzle-orm/sqlite-core";
 import { openConnection } from "../../src/server/db/connection";
-import { parseJson, stableStringify } from "../../src/server/db/json-text";
+import { stableStringify } from "../../src/server/db/json-text";
 import { businessTables } from "../../src/server/db/schema";
 import {
   BUSINESS_SCHEMA_VERSION,
@@ -1180,7 +1180,7 @@ describe("json-text canonical serialization", () => {
   it("preserves array element order", () => {
     const s = stableStringify({ x: [3, 1, 2], y: ["z", "a"] });
     expect(s).toBe('{"x":[3,1,2],"y":["z","a"]}');
-    const back = parseJson<{ x: number[]; y: string[] }>(s);
+    const back = JSON.parse(s) as { x: number[]; y: string[] };
     expect(back.x).toEqual([3, 1, 2]);
     expect(back.y).toEqual(["z", "a"]);
   });
@@ -1192,7 +1192,7 @@ describe("json-text canonical serialization", () => {
 
   it("round-trips arbitrary JSON", () => {
     const value = { name: "x", nested: { arr: [1, 2], flag: true }, n: null };
-    const round = parseJson<typeof value>(stableStringify(value));
+    const round = JSON.parse(stableStringify(value)) as typeof value;
     expect(round).toEqual(value);
   });
 });
