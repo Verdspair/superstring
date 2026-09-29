@@ -44,16 +44,23 @@ export class RuntimeSpanRepository {
     userId = DEFAULT_USER_ID,
     now = new Date().toISOString(),
   ): RuntimeTracesPage {
-    const visible = spanQuery({}, userId, now);
     const matched = spanQuery(filters, userId, now);
-    const cte = `WITH visible AS (SELECT * FROM runtime_spans s WHERE ${visible.where}),
-      matches AS (SELECT s.id,s.trace_id FROM runtime_spans s WHERE ${matched.where}),
-      groups AS (SELECT s.trace_id,MIN(s.id) AS cursorId,
+    // One scan of the visible spans groups by trace and counts matches per group in the same
+    // pass. The earlier shape (visible CTE + matches CTE + a correlated COUNT over matches per
+    // group) re-evaluated the match set for every group; on a large span table that took
+    // minutes and, because bun:sqlite is synchronous, froze the whole server while it ran.
+    const countExpr = matched.filterWhere
+      ? `SUM(CASE WHEN ${matched.filterWhere} THEN 1 ELSE 0 END)`
+      : "COUNT(*)";
+    const cte = `WITH groups AS MATERIALIZED (SELECT * FROM (SELECT s.trace_id AS traceId,MIN(s.id) AS cursorId,
         MAX(s.status='started') AS active,MAX(s.status='failed') AS failed,
         MAX(COALESCE(s.finished_at,s.started_at)) AS lastActivityAt,
-        (SELECT COUNT(*) FROM matches m WHERE m.trace_id=s.trace_id) AS matchedSpanCount
-        FROM visible s WHERE s.trace_id IN(SELECT trace_id FROM matches) GROUP BY s.trace_id)`;
-    const params = [...visible.params, ...matched.params];
+        ${countExpr} AS matchedSpanCount
+        FROM runtime_spans s WHERE ${matched.visibilityWhere} GROUP BY s.trace_id)
+        WHERE matchedSpanCount>0)`;
+    // Text order inside the statement: the CASE's filter placeholders come before the scan's
+    // visibility placeholders, so the filter params bind first.
+    const params = [...matched.filterParams, ...matched.visibilityParams];
     const summary = this.db
       .query(`${cte} SELECT COUNT(*) AS totalTraces,
       COALESCE(SUM(active),0) AS activeTraces,COALESCE(SUM(failed),0) AS failedTraces,
@@ -61,16 +68,16 @@ export class RuntimeSpanRepository {
       .get(...params) as Omit<RuntimeTracesPage["summary"], "now">;
     const limit = filters.limit ?? 50;
     const groups = this.db
-      .query(`${cte} SELECT trace_id,matchedSpanCount FROM groups
+      .query(`${cte} SELECT traceId,matchedSpanCount FROM groups
       ${filters.beforeId ? "WHERE cursorId<?" : ""} ORDER BY cursorId DESC LIMIT ?`)
       .all(...params, ...(filters.beforeId ? [filters.beforeId] : []), limit + 1) as {
-      trace_id: string;
+      traceId: string;
       matchedSpanCount: number;
     }[];
     const items = groups
       .slice(0, limit)
       .map((group) =>
-        summarizeTrace(this.traceSpans(group.trace_id, userId, now), group.matchedSpanCount, now),
+        summarizeTrace(this.traceSpans(group.traceId, userId, now), group.matchedSpanCount, now),
       );
     return {
       items,
@@ -110,7 +117,7 @@ export class RuntimeSpanRepository {
 }
 
 function spanQuery(filters: RuntimeSpanFilters, userId: string, now: string) {
-  const conditions = [
+  const visibility = [
     "s.user_id=?",
     "s.expires_at>?",
     `(s.conversation_id IS NULL OR EXISTS (
@@ -118,7 +125,9 @@ function spanQuery(filters: RuntimeSpanFilters, userId: string, now: string) {
       ((c.channel='web' AND EXISTS(SELECT 1 FROM sessions x WHERE x.id=c.source_id AND x.agent_id=c.agent_id AND x.user_id=c.user_id)) OR
        (c.channel='onebot11' AND EXISTS(SELECT 1 FROM qq_bindings b WHERE b.id=c.source_id AND b.agent_id=c.agent_id)))))`,
   ];
-  const params: SQLQueryBindings[] = [userId, now];
+  const visibilityParams: SQLQueryBindings[] = [userId, now];
+  const conditions: string[] = [];
+  const filterParams: SQLQueryBindings[] = [];
   const fields = {
     channel: "channel",
     stage: "stage",
@@ -132,31 +141,40 @@ function spanQuery(filters: RuntimeSpanFilters, userId: string, now: string) {
     const value = filters[key as keyof typeof fields];
     if (value) {
       conditions.push(`s.${column}=?`);
-      params.push(value);
+      filterParams.push(value);
     }
   }
   if (filters.conversationId) {
     conditions.push(
       `s.conversation_id IN(SELECT c.id FROM conversations c JOIN conversations anchor ON anchor.id=? WHERE c.channel=anchor.channel AND c.source_id=anchor.source_id AND c.agent_id=anchor.agent_id AND c.user_id=anchor.user_id)`,
     );
-    params.push(filters.conversationId);
+    filterParams.push(filters.conversationId);
   }
   if (filters.from) {
     conditions.push("s.started_at>=?");
-    params.push(new Date(filters.from).toISOString());
+    filterParams.push(new Date(filters.from).toISOString());
   }
   if (filters.to) {
     conditions.push("s.started_at<=?");
-    params.push(new Date(filters.to).toISOString());
+    filterParams.push(new Date(filters.to).toISOString());
   }
   if (filters.q) {
     conditions.push(
       "instr(lower(s.name||' '||s.code||' '||s.trace_id||' '||s.span_id||' '||COALESCE(s.run_id,'')||' '||COALESCE(s.wake_id,'')||' '||COALESCE(s.output_id,'')||' '||COALESCE(s.model,'')||' '||s.details),lower(?))>0",
     );
-    params.push(filters.q);
+    filterParams.push(filters.q);
   }
-  const where = conditions.join(" AND ");
-  return { where, params };
+  const where = [...visibility, ...conditions].join(" AND ");
+  // The pieces travel too: `traces` needs the visibility predicate alone plus the filters as a
+  // per-row boolean, so one scan can both group by trace and count matches without rescanning.
+  return {
+    where,
+    params: [...visibilityParams, ...filterParams],
+    visibilityWhere: visibility.join(" AND "),
+    visibilityParams,
+    filterWhere: conditions.join(" AND "),
+    filterParams,
+  };
 }
 
 function summarizeTrace(items: RuntimeSpan[], matchedSpanCount: number, now: string): RuntimeTrace {
