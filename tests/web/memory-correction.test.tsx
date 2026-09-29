@@ -125,9 +125,9 @@ describe("memory correction UI and navigation", () => {
   it("discards only the correction without fetching clean assistant settings", async () => {
     const fetch = vi.spyOn(store.getState().apiClient, "getAgent");
     await edit();
-    store.getState().requestSectionNavigation("C");
+    store.getState().openChat();
     await store.getState().confirmDiscardAndContinue();
-    expect(store.getState().activeSection).toBe("C");
+    expect(store.getState().page).toBe("chat");
     expect(store.getState().memoryCorrectionDraft).toBeNull();
     expect(fetch).not.toHaveBeenCalled();
   });

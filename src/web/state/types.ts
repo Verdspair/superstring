@@ -185,7 +185,6 @@ export interface SuperstringState
   closeAgentSettings: () => void;
   requestPageNavigation: (page: Page, settingsView?: SettingsView) => void;
   requestAgentNavigation: (id: string | "__new__") => void;
-  requestSectionNavigation: (section: SectionKey) => void;
   confirmSaveAndContinue: () => Promise<void>;
   confirmDiscardAndContinue: () => Promise<void>;
   cancelPendingNavigation: () => void;
@@ -202,15 +201,12 @@ export interface SuperstringState
   retryChat: () => Promise<void>;
   resendKnowledgeChat: () => Promise<void>;
   cancelKnowledgeResend: () => void;
-  setActiveSection: (section: SectionKey) => void;
   editAgent: (id: string | "__new__") => Promise<boolean>;
   patchDraft: (patch: Partial<AgentDraft>) => void;
-  patchPersona: (patch: Partial<PersonaResponse>) => void;
   saveCurrentSection: () => Promise<boolean>;
   savePersona: (
     patch: Partial<PersonaResponse> & { persona_intensity: number },
   ) => Promise<boolean>;
-  deleteEditorAgent: () => Promise<void>;
   deleteAgents: (ids: string[]) => Promise<void>;
   refreshModels: () => Promise<void>;
   refreshCapacityPreview: (

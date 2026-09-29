@@ -150,7 +150,6 @@ export function createNavigationActions(
   | "closeAgentSettings"
   | "requestPageNavigation"
   | "requestAgentNavigation"
-  | "requestSectionNavigation"
   | "confirmSaveAndContinue"
   | "confirmDiscardAndContinue"
   | "cancelPendingNavigation"
@@ -378,44 +377,6 @@ export function createNavigationActions(
         return;
       }
       void get().editAgent(id);
-    },
-    requestSectionNavigation: (section) => {
-      if (
-        get().qqAccessSaving ||
-        get().qqSchemeSaving ||
-        get().qqStickerSaving ||
-        get().settingsSaving ||
-        get().permissionSaving ||
-        get().editorLoading ||
-        get().knowledgeReadLoading ||
-        get().organizationLoading ||
-        get().knowledgeModelLoading ||
-        get().memoryCorrectionSaving ||
-        get().qqMemoryBatchSaving ||
-        get().knowledgeBusy
-      )
-        return;
-      if (section === get().activeSection) return;
-      // 新建草稿尚未创建基础记录时，除 A 外的分区不可用（UI 会禁用）。
-      if (get().editorAgentId === "__new__" && get().editorDraft !== null && section !== "A") {
-        set({ feedback: msg("请先创建 Agent 基础记录，再切换到其它分区。") });
-        return;
-      }
-      if (
-        get().dirty ||
-        get().memoryCorrectionDirty ||
-        Object.keys(get().qqMemoryBatchDrafts).length > 0 ||
-        dirtyPages(get().pageEditor).length ||
-        knowledgeReadDirty(get().knowledgeReadEditor)
-      ) {
-        set({
-          pendingNavigation: { kind: "section", section },
-          navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("当前分区有未保存修改，是否先保存再切换？"),
-        });
-        return;
-      }
-      set({ activeSection: section, feedback: "" });
     },
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;

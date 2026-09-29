@@ -13,13 +13,10 @@ export function createAgentActions(
 ): Pick<
   SuperstringState,
   | "setNewSessionAgent"
-  | "setActiveSection"
   | "editAgent"
   | "patchDraft"
-  | "patchPersona"
   | "saveCurrentSection"
   | "savePersona"
-  | "deleteEditorAgent"
   | "deleteAgents"
 > {
   let editorRequest = 0;
@@ -28,7 +25,6 @@ export function createAgentActions(
       set({ selectedNewSessionAgentId: id });
       persistBrowserState(get().browserStateStorage, "superstring-agent", id);
     },
-    setActiveSection: (activeSection) => get().requestSectionNavigation(activeSection),
     editAgent: async (id) => {
       if (get().settingsSaving) return false;
       const request = ++editorRequest;
@@ -118,12 +114,6 @@ export function createAgentActions(
       set((state) => ({
         pageEditor: null,
         editorDraft: state.editorDraft ? { ...state.editorDraft, ...patch } : null,
-        dirty: true,
-      })),
-    patchPersona: (patch) =>
-      set((state) => ({
-        pageEditor: null,
-        persona: state.persona ? { ...state.persona, ...patch } : null,
         dirty: true,
       })),
     saveCurrentSection: async () => {
@@ -256,33 +246,6 @@ export function createAgentActions(
       } catch (error) {
         set({ error: errorText(error) });
         return false;
-      }
-    },
-    deleteEditorAgent: async () => {
-      const id = get().editorAgentId;
-      if (id === "__new__") return;
-      try {
-        await get().apiClient.deleteAgent(id);
-        const agents = get().agents.filter((item) => item.id !== id);
-        set({
-          agents,
-          editorAgentId: "__new__",
-          editorDraft: null,
-          pageEditor: null,
-          persona: null,
-          policy: null,
-          memorySessions: [],
-          memoryTurns: [],
-          memoryEntries: [],
-          memoryEntryTotal: 0,
-          memoryEntryDetail: null,
-          memoryJobs: [],
-          dirty: false,
-          feedback: msg("Agent 已删除"),
-        });
-        await get().editAgent("__new__");
-      } catch (error) {
-        set({ error: errorText(error) });
       }
     },
     deleteAgents: async (ids) => {

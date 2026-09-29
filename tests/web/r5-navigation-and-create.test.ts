@@ -302,12 +302,13 @@ describe("R5 未保存导航保护", () => {
     });
   });
 
-  it("切换分区时先保留当前分区并显示原版三选确认", () => {
-    useSuperstringStore.getState().requestSectionNavigation("B");
+  it("切换页面前先保留当前位置并显示原版三选确认", () => {
+    useSuperstringStore.getState().requestPageNavigation("chat");
     const state = useSuperstringStore.getState();
-    expect(state.activeSection).toBe("A");
-    expect(state.pendingNavigation).toEqual({ kind: "section", section: "B" });
-    expect(state.navigationConfirmMessage).toBe("当前分区有未保存修改，是否先保存再切换？");
+    expect(state.page).toBe("settings");
+    expect(state.settingsView).toBe("agents");
+    expect(state.pendingNavigation).toEqual({ kind: "page", page: "chat", settingsView: "hub" });
+    expect(state.navigationConfirmMessage).toBe("当前 Agent 有未保存修改，是否先保存再离开？");
   });
 
   it("取消导航会保留草稿、dirty 与当前位置", () => {
@@ -342,13 +343,13 @@ describe("R5 未保存导航保护", () => {
   it("保存失败时保持目标排队、保持 dirty，并继续显示确认区", async () => {
     const updateAgent = vi.fn().mockRejectedValue(new Error("版本冲突"));
     useSuperstringStore.setState({ apiClient: fakeClient({ updateAgent }) });
-    useSuperstringStore.getState().requestSectionNavigation("B");
+    useSuperstringStore.getState().requestPageNavigation("chat");
 
     await useSuperstringStore.getState().confirmSaveAndContinue();
 
     const state = useSuperstringStore.getState();
-    expect(state.activeSection).toBe("A");
-    expect(state.pendingNavigation).toEqual({ kind: "section", section: "B" });
+    expect(state.page).toBe("settings");
+    expect(state.pendingNavigation).toEqual({ kind: "page", page: "chat", settingsView: "hub" });
     expect(state.navigationConfirmOpen).toBe(true);
     expect(state.navigationConfirmMessage).toContain("保存失败：版本冲突");
     expect(state.dirty).toBe(true);
@@ -732,16 +733,20 @@ describe("R5 创建流程真实行为", () => {
 });
 
 describe("R5 创建前分区保护", () => {
-  it("新建草稿切换非 A 分区被拦截并提示先创建基础记录", async () => {
+  it("新建草稿保存非 A 分区被拦截并提示先创建基础记录", async () => {
     await useSuperstringStore.getState().editAgent("__new__");
     useSuperstringStore.getState().patchDraft({ name: "草稿名" });
+    // 新建草稿实际只停留在 A 分区；直接构造非 A 位置，验证保存层仍拒绝未创建的跨分区保存。
+    useSuperstringStore.setState({ activeSection: "B" });
+    const createAgent = vi.fn();
+    useSuperstringStore.setState({ apiClient: fakeClient({ createAgent }) });
 
-    useSuperstringStore.getState().requestSectionNavigation("B");
+    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(false);
 
     const state = useSuperstringStore.getState();
-    expect(state.activeSection).toBe("A");
-    expect(state.feedback).toContain("创建");
+    expect(state.feedback).toContain("请先创建 Agent 基础记录");
     expect(state.editorDraft?.name).toBe("草稿名");
+    expect(createAgent).not.toHaveBeenCalled();
   });
 });
 

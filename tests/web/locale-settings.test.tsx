@@ -95,10 +95,18 @@ describe("general settings and status bar", () => {
   });
 });
 
-describe("section identities", () => {
-  it("new assistants cannot enter knowledge before creation", async () => {
+describe("new assistant knowledge entry", () => {
+  it("cannot leave an unsaved new draft for knowledge without a decision", async () => {
+    useSuperstringStore.setState({ page: "settings", settingsView: "agents" });
     await useSuperstringStore.getState().editAgent("__new__");
-    useSuperstringStore.getState().requestSectionNavigation("knowledge");
-    expect(useSuperstringStore.getState().activeSection).toBe("A");
+    useSuperstringStore.getState().patchDraft({ name: "草稿名" });
+    useSuperstringStore.getState().openSettingsRoute("knowledge-config");
+    const state = useSuperstringStore.getState();
+    expect(state.settingsView).toBe("agents");
+    expect(state.navigationConfirmOpen).toBe(true);
+    expect(state.pendingNavigation).toMatchObject({
+      kind: "page",
+      settingsRoute: "knowledge-config",
+    });
   });
 });
