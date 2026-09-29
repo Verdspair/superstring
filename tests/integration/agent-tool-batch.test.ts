@@ -242,19 +242,26 @@ describe("工具批处理（0.4.0 P2）", () => {
   });
 
   it("参数不同就不算重复", async () => {
-    const state = { active: 0, peak: 0, order: [] as string[] };
+    const inputs: Record<string, unknown>[] = [];
+    const args = [{ query: "x" }, { query: "y" }, { query: "y", cursor: "next" }];
     const setupResult = setup({
-      actions: [probe("a.read", "read", state)],
+      actions: [
+        action("a.read", "read", async (input) => {
+          inputs.push(input);
+          return input;
+        }),
+      ],
       decisions: [
-        batch({ name: "a.read", arguments: { query: "x" } }),
-        batch({ name: "a.read", arguments: { query: "y" } }),
-        batch({ name: "a.read", arguments: { query: "z" } }),
+        ...args.map((arguments_) => batch({ name: "a.read", arguments: arguments_ })),
         finalGenerate,
       ],
     });
     const result = await setupResult.run();
 
     expect(result.status).toBe("completed");
-    expect(state.order).toEqual(["a.read", "a.read", "a.read"]);
+    expect(inputs).toEqual(args);
+    expect(JSON.stringify(setupResult.requests.map((request) => request.messages))).not.toContain(
+      "repeatWarning",
+    );
   });
 });

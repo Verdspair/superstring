@@ -33,7 +33,7 @@ import {
   type ModuleComposition,
   type ModuleSourceResolver,
 } from "./modules/composition";
-import type { PermissionService } from "./permissions/service";
+import { type PermissionService, unconfiguredPermissions } from "./permissions/service";
 import {
   createQqStickerAnnotator,
   type QqStickerAnnotator,
@@ -84,12 +84,11 @@ export interface CreateAppOptions {
 /** Pure Hono factory: does not open databases, start workers or bind sockets. */
 export function createApp(opts: CreateAppOptions): Hono {
   const { business } = opts;
-  // A caller-supplied resolver wins: the runtime composes one from tasks → permissions →
-  // skills → injected, and consulting the app's own stores first would query them twice.
+  const permissions = opts.permissions ?? unconfiguredPermissions;
   const resolveSource: ModuleSourceResolver = (source, owner, at) =>
-    opts.resolveSource?.(source, owner, at) ??
     opts.tasks?.sourceAccess(source, owner) ??
-    opts.permissions?.sourceAccess(source, owner);
+    permissions.sourceAccess(source, owner) ??
+    opts.resolveSource?.(source, owner, at);
   const app = new Hono();
   app.onError(handleError);
 

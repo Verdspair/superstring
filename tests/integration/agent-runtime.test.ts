@@ -6,8 +6,8 @@ import {
   AgentRuntimeError,
   createAgentRuntime,
 } from "../../src/server/agent/agent-runtime";
-import type { AgentSpec } from "../../src/server/agent/agent-specs";
-import { createBuiltInActions } from "../../src/server/agent/built-in-actions";
+import type { ActionDescription, AgentSpec } from "../../src/server/agent/agent-specs";
+import { type BuiltInAction, createBuiltInActions } from "../../src/server/agent/built-in-actions";
 import { inputUnits, textMessage } from "../../src/server/agent/context-engine";
 import { estimateMessages } from "../../src/server/agent/conversation-context";
 import {
@@ -70,7 +70,10 @@ const direct = {
     },
   },
 };
-function setup(model: Partial<ModelPort> = {}) {
+function setup(
+  model: Partial<ModelPort> = {},
+  options: Omit<ConstructorParameters<typeof AgentRuntime>[0], "model" | "repository"> = {},
+) {
   const h = openBusinessDb();
   handles.push(h);
   const repository = new AgentRunRepository(h.db);
@@ -86,8 +89,267 @@ function setup(model: Partial<ModelPort> = {}) {
     },
     ...model,
   };
-  return { h, repository, runtime: new AgentRuntime({ model: port, repository }) };
+  return { h, repository, runtime: new AgentRuntime({ ...options, model: port, repository }) };
 }
+
+function boundAction(name = "records.query"): BuiltInAction {
+  return {
+    description: {
+      name,
+      capability: "records.read",
+      description: "Read records matching a query or cursor",
+      parameters: { type: "object", properties: { query: { type: "string" } } },
+      effect: "read",
+    },
+    async execute(args) {
+      return { value: args, sources: [] };
+    },
+  };
+}
+
+describe("AgentRuntime tool catalog binding", () => {
+  it("rejects duplicate constructor bindings before any run is created", () => {
+    const action = boundAction();
+    expect(() => {
+      setup({}, { actions: [action, { ...action }] });
+    }).toThrow("TOOL_CATALOG_DUPLICATE: records.query");
+    expect(handles.at(-1)?.db.query("SELECT COUNT(*) AS count FROM agent_runs").get()).toEqual({
+      count: 0,
+    });
+  });
+
+  it.each(["advertised", "undeclared", "mismatched"])(
+    "rejects duplicate per-run bindings even when %s",
+    async (visibility) => {
+      let calls = 0;
+      const { runtime, repository } = setup({
+        async complete() {
+          calls++;
+          return '{"kind":"none"}';
+        },
+      });
+      const action = boundAction();
+      const availableActions =
+        visibility === "undeclared"
+          ? []
+          : [
+              {
+                ...action.description,
+                capability: visibility === "mismatched" ? "other" : action.description.capability,
+              },
+            ];
+      await expect(
+        runtime.run({ ...spec, availableActions }, { ...direct, actions: [action, { ...action }] }),
+      ).rejects.toMatchObject({ code: "TOOL_CATALOG_DUPLICATE" });
+      expect(calls).toBe(0);
+      const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
+      expect(run).toMatchObject({
+        status: "failed",
+        errorCode: "TOOL_CATALOG_DUPLICATE",
+        steps: [],
+      });
+      expect(repository.listEvents(run.runId).map((event) => event.type)).toEqual(["failed"]);
+    },
+  );
+
+  it("rejects duplicate spec names even when neither declaration has an implementation", async () => {
+    const { runtime, repository } = setup();
+    const declaration = boundAction().description;
+    await expect(
+      runtime.run(
+        {
+          ...spec,
+          availableActions: [declaration, { ...declaration, capability: "other" }],
+        },
+        direct,
+      ),
+    ).rejects.toMatchObject({ code: "TOOL_CATALOG_DUPLICATE" });
+    expect(repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0]).toMatchObject({
+      status: "failed",
+      steps: [],
+    });
+  });
+
+  it.each(["research.run", "code.run"])(
+    "rejects an extension colliding with %s, including unadvertised bindings",
+    async (name) => {
+      for (const declared of [true, false]) {
+        for (const perRun of [true, false]) {
+          let calls = 0;
+          const action = boundAction(name);
+          const { runtime, repository } = setup(
+            {
+              async complete() {
+                calls++;
+                return '{"kind":"none"}';
+              },
+            },
+            {
+              actions: perRun ? [] : [action],
+              researchEnabled: () => name === "research.run",
+              codeMode: {
+                enabled: () => name === "code.run",
+                allowsModel: () => true,
+                runner: { available: true, run: async () => ({ conclusion: "unused" }) },
+              },
+            },
+          );
+          await expect(
+            runtime.run(
+              { ...spec, availableActions: declared ? [action.description] : [] },
+              { ...direct, ...(perRun ? { actions: [action] } : {}) },
+            ),
+          ).rejects.toMatchObject({ code: "TOOL_CATALOG_DUPLICATE" });
+          expect(calls).toBe(0);
+          expect(
+            repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0],
+          ).toMatchObject({
+            status: "failed",
+            errorCode: "TOOL_CATALOG_DUPLICATE",
+            steps: [],
+          });
+        }
+      }
+    },
+  );
+
+  it("advertises bound metadata in spec order and restores the host spec after context configuration", async () => {
+    const action = boundAction();
+    const second = boundAction("records.next");
+    action.description.effect = "write";
+    action.sandboxCallable = false;
+    const forged = {
+      ...action.description,
+      description: "forged read-only description",
+      parameters: { type: "object", properties: { forged: { type: "boolean" } } },
+      effect: "read" as const,
+    };
+    const originalActions = [forged, second.description];
+    const runSpec: AgentSpec = { ...spec, availableActions: originalActions };
+    const descriptions = [action.description, second.description];
+    const seen: ModelRequest[] = [];
+    const configurations: (readonly ActionDescription[])[] = [];
+    let atRead: readonly ActionDescription[] | undefined;
+    const { runtime } = setup(
+      {
+        async complete(request) {
+          seen.push(request);
+          return '{"kind":"none"}';
+        },
+      },
+      { actions: [second, action] },
+    );
+    await runtime.run(runSpec, {
+      ...direct,
+      context: {
+        configureActions(actions) {
+          configurations.push(actions);
+          runSpec.availableActions = actions;
+        },
+        async read() {
+          atRead = runSpec.availableActions;
+          return direct.context.read();
+        },
+      },
+    });
+    expect(seen[0]?.tools).toEqual(
+      descriptions.map(({ name, description, parameters }) => ({ name, description, parameters })),
+    );
+    const prompt = seen[0].messages
+      .flatMap((message) =>
+        message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+      )
+      .join("\n");
+    expect(prompt).toContain(JSON.stringify(descriptions));
+    expect(prompt).not.toContain("forged");
+    expect(prompt).not.toContain("sandboxCallable");
+    expect(atRead).toEqual(descriptions);
+    expect(configurations.at(-1)).toBe(originalActions);
+    expect(runSpec.availableActions).toBe(originalActions);
+  });
+
+  it.each(["missing", "mismatched"])(
+    "does not advertise a %s binding and rejects its invocation",
+    async (binding) => {
+      const action = boundAction();
+      let executed = false;
+      action.execute = async () => {
+        executed = true;
+        return { value: null, sources: [] };
+      };
+      const declarations = [
+        { ...action.description, capability: binding === "mismatched" ? "other" : "records.read" },
+      ];
+      const seen: ModelRequest[] = [];
+      const configurations: (readonly ActionDescription[])[] = [];
+      const runSpec: AgentSpec = { ...spec, availableActions: declarations };
+      const { runtime, repository } = setup({
+        async complete(request) {
+          seen.push(request);
+          return JSON.stringify({ kind: "invoke", name: action.description.name, arguments: {} });
+        },
+      });
+      await expect(
+        runtime.run(runSpec, {
+          ...direct,
+          actions: binding === "missing" ? [] : [action],
+          context: {
+            ...direct.context,
+            configureActions(actions) {
+              configurations.push(actions);
+              runSpec.availableActions = actions;
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_ACTION_UNAVAILABLE" });
+      expect(seen[0]?.tools).toEqual([]);
+      expect(JSON.stringify(seen[0]?.messages)).not.toContain(action.description.name);
+      expect(configurations[0]).toEqual([]);
+      expect(configurations.at(-1)).toBe(declarations);
+      expect(runSpec.availableActions).toBe(declarations);
+      expect(executed).toBe(false);
+      expect(repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0]).toMatchObject({
+        status: "failed",
+        errorCode: "AGENT_ACTION_UNAVAILABLE",
+      });
+    },
+  );
+
+  it("uses per-run bindings exclusively and does not leak them into the constructor catalog", async () => {
+    const constructorAction = boundAction();
+    const runAction = boundAction();
+    const executed: string[] = [];
+    constructorAction.execute = async () => {
+      executed.push("constructor");
+      return { value: null, sources: [] };
+    };
+    runAction.execute = async () => {
+      executed.push("run");
+      return { value: null, sources: [] };
+    };
+    const seen: ModelRequest[] = [];
+    const { runtime } = setup(
+      {
+        async complete(request) {
+          seen.push(request);
+          return seen.length % 2
+            ? '{"kind":"invoke","name":"records.query","arguments":{}}'
+            : '{"kind":"none"}';
+        },
+      },
+      { actions: [constructorAction] },
+    );
+    const runSpec = { ...spec, availableActions: [constructorAction.description] };
+    await runtime.run(runSpec, { ...direct, actions: [runAction] });
+    await runtime.run(runSpec, direct);
+    expect(executed).toEqual(["run", "constructor"]);
+    await expect(runtime.run(runSpec, { ...direct, actions: [] })).rejects.toMatchObject({
+      code: "AGENT_ACTION_UNAVAILABLE",
+    });
+    expect(seen.at(-1)?.tools).toEqual([]);
+    expect(executed).toEqual(["run", "constructor"]);
+  });
+});
 
 describe("unified AgentRuntime", () => {
   it("preserves leaf messages/model/options and validates before recording success without conversation recursion", async () => {

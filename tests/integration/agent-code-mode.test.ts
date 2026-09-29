@@ -69,6 +69,44 @@ describe("工具目录（0.4.0 P6）", () => {
   it("重名在构造时就拒绝，而不是静默覆盖", () => {
     expect(() => createToolCatalog([tool("a"), tool("a")])).toThrow(/TOOL_CATALOG_DUPLICATE/);
   });
+
+  it("resolves each original binding while preserving the public description shape", () => {
+    const read = tool("records.query");
+    const hidden = tool("records.hidden", "read", false);
+    const legacy = tool("records.legacy");
+    delete legacy.description.effect;
+    const catalog = createToolCatalog([read, hidden, legacy]);
+    expect(catalog.resolve("records.query")).toBe(read);
+    expect(catalog.resolve("records.hidden")).toBe(hidden);
+    expect(catalog.resolve("records.legacy")).toBe(legacy);
+    expect(catalog.resolve("missing")).toBeUndefined();
+    expect(catalog.get("missing")).toBeUndefined();
+    expect(catalog.get("records.query")).toEqual({
+      ...read.description,
+      effect: "read",
+      sandboxCallable: true,
+    });
+    expect(catalog.sandboxable().map((entry) => entry.name)).toEqual(["records.query"]);
+    expect(catalog.advertised()).toEqual([
+      read.description,
+      hidden.description,
+      legacy.description,
+    ]);
+    expect(catalog.advertised()[2]).not.toHaveProperty("effect");
+    for (const description of catalog.advertised()) {
+      expect(description).not.toHaveProperty("sandboxCallable");
+      expect(description).not.toHaveProperty("execute");
+    }
+  });
+
+  it("rejects duplicate bindings before sandbox availability or whitelist filtering", () => {
+    expect(() =>
+      createCodeMode({
+        actions: [tool("duplicate", "write"), tool("duplicate", "read", false)],
+        runner: unavailableCodeRunner,
+      }),
+    ).toThrow(/TOOL_CATALOG_DUPLICATE/);
+  });
 });
 
 describe("程序化工具调用（0.4.0 P6）", () => {
@@ -107,6 +145,23 @@ describe("程序化工具调用（0.4.0 P6）", () => {
     });
     // 工具读到的来源与沙箱声明的引用都在观测来源里（去重后）。
     expect(observation.sources).toEqual([...sources.memory]);
+  });
+
+  it("executes repeated read queries and cursors through the same catalog binding", async () => {
+    const args = [{ query: "first" }, { query: "second" }, { cursor: "next" }];
+    const results: unknown[] = [];
+    const mode = createCodeMode({
+      actions: [tool("records.query")],
+      runner: runnerOf(async ({ bindings }) => {
+        for (const input of args) results.push(await bindings["records.query"](input));
+        return { conclusion: "Read all requested pages" };
+      }),
+    });
+    if (!mode.action) throw new Error("missing action");
+    const result = await mode.action.execute({ script: "read pages" }, context);
+    expect(result.value).toMatchObject({ status: "ok", calls: 3 });
+    expect(executed).toEqual(["records.query", "records.query", "records.query"]);
+    expect(results).toEqual(args.map((input) => ({ echo: "records.query", arguments: input })));
   });
 
   it("结论超限、空结论与运行失败都判 unavailable，不截断也不猜", async () => {

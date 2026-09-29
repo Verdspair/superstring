@@ -378,7 +378,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       conversationHost: host,
       conversationJournal: journal,
       modules,
-      resolveSource,
+      resolveSource: (source, owner, at) =>
+        skillSourceAccess(options.skillRoot, source) ?? options.resolveSource?.(source, owner, at),
       qqTransportKeyPath: options.qqTransportKeyPath,
       modelProviderKeyPath: options.modelProviderKeyPath,
       // The page reads the transport's own state; nothing is inferred from a saved endpoint.

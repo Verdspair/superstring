@@ -52,6 +52,7 @@ import {
 } from "./context-engine";
 import { createModelPort, type ModelPort, type TextModelGateway, textMessages } from "./model-port";
 import { createResearchAction, type ResearchLimits } from "./research-action";
+import { createToolCatalog, type ToolCatalog } from "./tool-catalog";
 
 export interface LeafInput {
   messages: ChatMessage[];
@@ -215,7 +216,7 @@ export class AgentRuntime {
   }>();
   private readonly contextEngine: ContextEngine;
   private readonly executor: ActionExecutor;
-  private readonly actions: Map<string, BuiltInAction>;
+  private readonly actions: ToolCatalog;
   constructor(
     private readonly options: {
       model: ModelPort;
@@ -241,9 +242,7 @@ export class AgentRuntime {
   ) {
     this.contextEngine = options.contextEngine ?? new ContextEngine();
     this.executor = options.actionExecutor ?? new ActionExecutor();
-    this.actions = new Map(
-      (options.actions ?? []).map((action) => [action.description.name, action]),
-    );
+    this.actions = createToolCatalog(options.actions ?? []);
   }
 
   get repository(): AgentRunRepository {
@@ -378,13 +377,18 @@ export class AgentRuntime {
     try {
       const observations: ActionObservation[] = [];
       const mode = input.executionMode ?? "direct";
-      const baseActions = (input.actions ?? [...this.actions.values()]).filter((action) =>
-        originalActions.some(
-          (descriptor) =>
-            descriptor.name === action.description.name &&
-            descriptor.capability === action.description.capability,
-        ),
-      );
+      const catalog = input.actions ? createToolCatalog(input.actions) : this.actions;
+      const declaredNames = new Set<string>();
+      const baseActions = originalActions.flatMap((descriptor) => {
+        if (declaredNames.has(descriptor.name))
+          throw new AgentRuntimeError(
+            "TOOL_CATALOG_DUPLICATE",
+            `TOOL_CATALOG_DUPLICATE: ${descriptor.name}`,
+          );
+        declaredNames.add(descriptor.name);
+        const action = catalog.resolve(descriptor.name);
+        return action && action.description.capability === descriptor.capability ? [action] : [];
+      });
       const extensions: BuiltInAction[] = [];
       if (mode === "direct" && this.options.researchEnabled?.())
         extensions.push(
@@ -435,11 +439,18 @@ export class AgentRuntime {
             },
           });
       }
-      const descriptors = [...originalActions, ...extensions.map((action) => action.description)];
-      if (extensions.length) {
-        input = { ...input, actions: [...baseActions, ...extensions] };
-        input.context.configureActions?.(descriptors);
-      }
+      const actions = extensions.length
+        ? createToolCatalog([
+            ...catalog.advertised().flatMap((descriptor) => {
+              const action = catalog.resolve(descriptor.name);
+              return action ? [action] : [];
+            }),
+            ...extensions,
+          ])
+        : catalog;
+      const descriptors = actions.advertised(
+        [...baseActions, ...extensions].map((action) => action.description.name),
+      );
       // 实际用了哪一种编排写进运行追踪（B06）：direct 与 code/research 扩展可对比。
       active.trace?.update({
         details: {
@@ -450,9 +461,6 @@ export class AgentRuntime {
       });
       /** 调用签名 → 已出现次数（无进展检测）：跨步累计，整轮有效。 */
       const callSignatures = new Map<string, number>();
-      const actions = input.actions
-        ? new Map(input.actions.map((action) => [action.description.name, action]))
-        : this.actions;
       const actionContext: ActionContext = {
         owner: input.owner,
         signal: active.signal,
@@ -472,9 +480,10 @@ export class AgentRuntime {
         this.checkStepBudget(active, spec);
         this.repository.setStatus(active.runId, "deciding", this.now());
         const availableActions = descriptors.filter((descriptor) => {
-          const action = actions.get(descriptor.name);
-          return !action || this.executor.allowed(action, actionContext, mode);
+          const action = actions.resolve(descriptor.name);
+          return action && this.executor.allowed(action, actionContext, mode);
         });
+        input.context.configureActions?.(availableActions);
         const context = await this.trace(
           active,
           "agent.context",
@@ -573,7 +582,7 @@ export class AgentRuntime {
           // 不留"执行了一半"的状态。只读的并行，有副作用的串行且保持模型给的顺序。
           const planned = decision.calls.map((call) => {
             const descriptor = availableActions.find((action) => action.name === call.name);
-            const action = actions.get(call.name);
+            const action = actions.resolve(call.name);
             if (!descriptor || !action || descriptor.capability !== action.description.capability)
               throw new AgentRuntimeError(
                 "AGENT_ACTION_UNAVAILABLE",

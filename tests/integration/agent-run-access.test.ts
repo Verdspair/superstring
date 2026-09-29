@@ -20,6 +20,7 @@ import {
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { unconfiguredPermissions } from "../../src/server/permissions/service";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 
@@ -80,6 +81,30 @@ function setup() {
 }
 
 describe("run diagnostics authorization and source lifetime", () => {
+  it.each([true, false])(
+    "does not let a custom resolver override revoked permissions (configured=%s)",
+    async (configured) => {
+      const { business, repository, snapshot } = setup();
+      const resolved: string[] = [];
+      const app = createApp({
+        business,
+        permissions: configured ? unconfiguredPermissions : undefined,
+        resolveSource(source) {
+          resolved.push(source.kind);
+          return "available";
+        },
+      });
+      const handle = snapshot([
+        { kind: "tool_permission", id: "mcp.documents.read", revision: "revoked-grant" },
+      ]);
+      const response = await app.request(`/v2/runs/${handle.runId}/context/${handle.stepId}`);
+      expect(response.status).toBe(200);
+      expect((await response.json()).status).toBe("revoked");
+      expect(repository.getContext(handle)?.messages).toBeNull();
+      expect(resolved).not.toContain("tool_permission");
+    },
+  );
+
   it("uses the application's module resolver for inspection without bypassing owner or fallback checks", async () => {
     const { business, repository, snapshot } = setup();
     let current = true;

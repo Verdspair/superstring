@@ -53,7 +53,6 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
   if (!options.runner.available) return { action: null, catalog };
   const executor = options.executor ?? new ActionExecutor();
   const limits: CodeRunnerLimits = { ...CODE_RUN_DEFAULT_LIMITS, ...options.limits };
-  const byName = new Map(options.actions.map((action) => [action.description.name, action]));
   const consumed = new Set<BuiltInAction>();
   const action: BuiltInAction = {
     sandboxCallable: false,
@@ -103,7 +102,7 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
         (args: Record<string, unknown>) => Promise<unknown>
       >;
       for (const descriptor of catalog.sandboxable()) {
-        const target = byName.get(descriptor.name);
+        const target = catalog.resolve(descriptor.name);
         if (!target || !executor.allowed(target, context, "sandbox")) continue;
         bindings[descriptor.name] = async (args) => {
           signal.throwIfAborted();

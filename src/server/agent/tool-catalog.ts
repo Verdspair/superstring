@@ -7,8 +7,9 @@ export interface ToolDescriptor extends Omit<ActionDescription, "effect"> {
 }
 export interface ToolCatalog {
   get(name: string): ToolDescriptor | undefined;
+  resolve(name: string): BuiltInAction | undefined;
   sandboxable(): readonly ToolDescriptor[];
-  advertised(): readonly ActionDescription[];
+  advertised(names?: readonly string[]): readonly ActionDescription[];
 }
 export function describeTool(action: BuiltInAction): ToolDescriptor {
   const effect = action.description.effect ?? "write";
@@ -19,16 +20,27 @@ export function describeTool(action: BuiltInAction): ToolDescriptor {
   });
 }
 export function createToolCatalog(actions: readonly BuiltInAction[]): ToolCatalog {
-  const descriptors = Object.freeze(actions.map(describeTool));
-  const byName = new Map<string, ToolDescriptor>();
-  for (const descriptor of descriptors) {
-    if (byName.has(descriptor.name)) throw new Error(`TOOL_CATALOG_DUPLICATE: ${descriptor.name}`);
-    byName.set(descriptor.name, descriptor);
+  const byName = new Map<string, { action: BuiltInAction; descriptor: ToolDescriptor }>();
+  for (const action of actions) {
+    const descriptor = describeTool(action);
+    if (byName.has(descriptor.name))
+      throw Object.assign(new Error(`TOOL_CATALOG_DUPLICATE: ${descriptor.name}`), {
+        code: "TOOL_CATALOG_DUPLICATE",
+      });
+    byName.set(descriptor.name, { action, descriptor });
   }
   return {
-    get: (name) => byName.get(name),
-    sandboxable: () => descriptors.filter((descriptor) => descriptor.sandboxCallable),
-    advertised: () => actions.map((action) => ({ ...action.description })),
+    get: (name) => byName.get(name)?.descriptor,
+    resolve: (name) => byName.get(name)?.action,
+    sandboxable: () =>
+      [...byName.values()]
+        .map((entry) => entry.descriptor)
+        .filter((descriptor) => descriptor.sandboxCallable),
+    advertised: (names = [...byName.keys()]) =>
+      names.flatMap((name) => {
+        const entry = byName.get(name);
+        return entry ? [{ ...entry.action.description }] : [];
+      }),
   };
 }
 export function advertisedActions(catalog: ToolCatalog): readonly ActionDescription[] {

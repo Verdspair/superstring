@@ -57,6 +57,16 @@ describe("Agent inference and leaf dependency boundaries", () => {
     expect(codeMode).not.toContain("target.execute(");
   });
 
+  it("resolves runtime and sandbox bindings through the shared tool catalog", () => {
+    for (const name of ["agent/agent-runtime.ts", "agent/code-mode.ts"]) {
+      const file = resolve(root, name);
+      const source = sources.get(file) ?? "";
+      expect(valueImports(file, source)).toContain(resolve(root, "agent/tool-catalog.ts"));
+      expect(source).toMatch(/\b(?:actions|catalog)\.resolve\(/);
+      expect(source).not.toMatch(/new Map\([^;]*action\.description\.name/s);
+    }
+  });
+
   it("keeps leaf consumers from importing conversation assembly through helpers", () => {
     const entries = files.filter((file) => {
       const name = moduleName(file);
