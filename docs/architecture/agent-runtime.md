@@ -35,7 +35,9 @@ The MCP adapter uses the official TypeScript client with 2026-07-28-first negoti
 
 MCP 适配使用官方 TypeScript 客户端，优先协商 2026-07-28 并兼容旧传输。JSON Schema 2020-12 与 draft-07 校验不读取网络引用；结构化结果保留原 JSON 值，并和文本共同受结果上限约束。目录变化先使已捕获工具失效再重新发现，取消与请求期限由适配层管理。只有显式信任的服务，其只读提示才影响执行方式，统一授权仍必需；应用不声明可选的模型采样、信息征询和根目录能力，也不提供交互式 OAuth 登录。
 
-Skills expose a metadata catalog and on-demand instructions. Explicitly approved scripts run through a native-process adapter with an explicit interpreter, timeout, output limits and entry-path checks. Script approval is bound to the manifest, instructions and declared entry files; modified content requires approval again. Extra directory grants describe consent, not an operating-system sandbox; native scripts run with the application's privileges and network access. Transitive dependencies and descendant-process isolation require a trusted installation or a real sandbox.
+Skills use the Agent Skills document format: each directory contains `SKILL.md` with YAML frontmatter. The name matches its directory, names and descriptions follow the format limits, and license, compatibility, string metadata and the experimental `allowed-tools` declaration are preserved. The application exposes a metadata catalog and loads the complete document on demand; installed content remains subordinate to host instructions and grants. It does not consume `skill.json` or execute bundled scripts. `allowed-tools` is descriptive only and cannot approve a tool. Duplicate YAML keys, unsafe paths and oversized files are rejected by the host; file-size limits are application safeguards, not the specification's recommended token or line counts.
+
+Skills 使用 Agent Skills 文档格式：每个目录包含带 YAML frontmatter 的 `SKILL.md`，名称须匹配目录并遵守格式长度与字符规则，保留许可证、兼容性、字符串元数据及实验性 `allowed-tools` 声明。应用提供元数据目录，按需读取完整文档；技能内容仍受宿主指令和授权约束，不读取 `skill.json`、不执行附带脚本。`allowed-tools` 只作声明，不能批准工具。宿主拒绝重复 YAML 键、越界路径及超大文件；文件大小限制是应用保护，不是规范建议的 token 或行数上限。
 
 ## Durable tool plans and optional execution
 
@@ -51,7 +53,7 @@ Optional research uses the same Runtime with a read-only subset of the parent's 
 
 任务结果归原会话，按需读取而不直接发言；来源复验沿用领域记忆范围和知识授权，撤权或过期清空已存参数与结果。最长保留一天，并随最早来源到期缩短。暂停阻止执行，但不删除仍有权读取的检查点。
 
-可选研究沿用同一 Runtime，只能使用父级已广告工具中的只读子集，最多一层、两个子调用；没有通道提交回调，共享取消和预算，返回有界结论与来源。研究和代码执行开关统一保存在权限策略中，默认关闭；代码模式还要求为模型开启本地执行许可（`codeExecution`）且 runner 可用，该设置不表示供应商提供托管 PTC；应用提供独立 Worker 内的 QuickJS WebAssembly 实现，关闭时不创建 Worker、不加载解释器。原生技能进程不等同代码沙箱。
+可选研究沿用同一 Runtime，只能使用父级已广告工具中的只读子集，最多一层、两个子调用；没有通道提交回调，共享取消和预算，返回有界结论与来源。研究和代码执行开关统一保存在权限策略中，默认关闭；代码模式还要求为模型开启本地执行许可（`codeExecution`）且 runner 可用，该设置不表示供应商提供托管 PTC；应用提供独立 Worker 内的 QuickJS WebAssembly 实现，关闭时不创建 Worker、不加载解释器。文档技能不会因此获得原生脚本执行能力。
 
 ## JavaScript sandbox
 

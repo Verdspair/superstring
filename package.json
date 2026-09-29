@@ -58,6 +58,7 @@
     "react-dom": "19.3.0",
     "react-i18next": "17.0.15",
     "react-resizable-panels": "4.13.3",
+    "yaml": "2.9.1",
     "zod": "4.6.2",
     "zustand": "5.0.15"
   },

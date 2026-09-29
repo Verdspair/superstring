@@ -907,6 +907,27 @@ describe("Model catalog + error envelope", () => {
     ).toBe(false);
   });
 
+  it("preserves document skill management errors in the shared envelope", () => {
+    const statuses = {
+      SKILL_NOT_FOUND: 404,
+      SKILL_FILE_TOO_LARGE: 409,
+      SKILL_PATH_ESCAPE: 409,
+      SKILL_FILE_INVALID: 409,
+      SKILL_NAME_MISMATCH: 409,
+      SKILL_DOCUMENT_INVALID: 409,
+      SKILL_METADATA_INVALID: 409,
+      SKILL_CATALOG_UNAVAILABLE: 503,
+      PERMISSION_MANAGEMENT_FORBIDDEN: 403,
+      PERMISSION_REVISION_CHANGED: 409,
+    } as const;
+    for (const [code, status] of Object.entries(statuses)) {
+      const result = ErrorEnvelopeSchema.safeParse({ error: { code, message: "Skill error" } });
+      expect(result.success).toBe(true);
+      if (result.success) expect(getErrorHttpStatus(result.data.error.code)).toBe(status);
+    }
+    expect(ok(ErrorCodeSchema, "SKILL_UNDECLARED_ERROR")).toBe(false);
+  });
+
   it("ErrorCodeSchema accepts SSE-exclusive + message-level codes", () => {
     expect(ok(ErrorCodeSchema, "MODEL_ERROR")).toBe(true);
     expect(ok(ErrorCodeSchema, "MESSAGE_PERSISTENCE_ERROR")).toBe(true);

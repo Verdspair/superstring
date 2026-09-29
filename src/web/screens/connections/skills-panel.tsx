@@ -59,6 +59,7 @@ export function SkillsPanel() {
       failure: (caught) => setError(errorText(caught)),
     });
   };
+  const metadata = Object.entries(detail?.metadata ?? {});
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -84,7 +85,7 @@ export function SkillsPanel() {
             <TableRow>
               <TableHead>{t("connections.skills.name")}</TableHead>
               <TableHead>{t("connections.skills.descriptionColumn")}</TableHead>
-              <TableHead>{t("connections.skills.scripts")}</TableHead>
+              <TableHead>{t("connections.skills.type")}</TableHead>
               <TableHead className="text-right">{t("connections.actions")}</TableHead>
             </TableRow>
           </TableHeader>
@@ -94,13 +95,7 @@ export function SkillsPanel() {
                 <TableCell className="font-mono text-sm">{skill.name}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{skill.description}</TableCell>
                 <TableCell>
-                  {skill.scriptCount ? (
-                    <Badge variant="outline">
-                      {t("connections.skills.scriptCount", { "0": skill.scriptCount })}
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline">{t("connections.skills.readOnly")}</Badge>
-                  )}
+                  <Badge variant="outline">{t("connections.skills.documentSkill")}</Badge>
                 </TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="sm" onClick={() => open(skill.name)}>
@@ -164,54 +159,46 @@ export function SkillsPanel() {
                   {detail.instructions}
                 </pre>
               </section>
-              <section className="space-y-3">
-                <h3 className="text-sm font-medium">{t("connections.skills.scripts")}</h3>
-                {detail.scripts.length ? (
-                  <div className="overflow-hidden rounded-lg border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>{t("connections.skills.scriptName")}</TableHead>
-                          <TableHead>{t("connections.skills.command")}</TableHead>
-                          <TableHead>{t("connections.skills.limits")}</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {detail.scripts.map((script) => (
-                          <TableRow key={script.name}>
-                            <TableCell className="align-top">
-                              <div className="font-medium">{script.name}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {script.description}
-                              </div>
-                            </TableCell>
-                            <TableCell className="max-w-72 align-top font-mono text-xs break-words">
-                              {[script.command, ...script.args].join(" ")}
-                              {!!script.resolvedDirectories.length && (
-                                <div className="mt-1 text-muted-foreground">
-                                  {script.resolvedDirectories.join(" · ")}
-                                </div>
-                              )}
-                            </TableCell>
-                            <TableCell className="align-top text-xs text-muted-foreground">
-                              {t("connections.skills.limitValues", {
-                                "0": script.timeoutMs,
-                                "1": script.maxOutputChars,
-                              })}
-                              <div className="mt-1 font-mono">{script.resource}</div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    {t("connections.skills.noScripts")}
+              {detail.license?.trim() && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-medium">{t("connections.skills.license")}</h3>
+                  <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">
+                    {detail.license}
                   </p>
-                )}
-                <p className="text-xs text-muted-foreground">{t("connections.skills.grantHint")}</p>
-              </section>
+                </section>
+              )}
+              {detail.compatibility?.trim() && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-medium">{t("connections.skills.compatibility")}</h3>
+                  <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">
+                    {detail.compatibility}
+                  </p>
+                </section>
+              )}
+              {!!metadata.length && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-medium">{t("connections.skills.metadata")}</h3>
+                  <dl className="space-y-2 text-sm">
+                    {metadata.map(([key, value]) => (
+                      <div key={key} className="space-y-1 whitespace-pre-wrap break-words">
+                        <dt className="font-mono text-xs">{key}</dt>
+                        <dd className="text-muted-foreground">{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              )}
+              {detail["allowed-tools"]?.trim() && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-medium">{t("connections.skills.allowedTools")}</h3>
+                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 font-mono text-xs leading-relaxed">
+                    {detail["allowed-tools"]}
+                  </pre>
+                  <p className="text-xs text-muted-foreground">
+                    {t("connections.skills.allowedToolsHint")}
+                  </p>
+                </section>
+              )}
             </div>
           )}
         </SheetContent>

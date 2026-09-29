@@ -100,9 +100,28 @@ export const KNOWLEDGE_ERROR_CODES = [
   "KNOWLEDGE_SNAPSHOT_INVALID",
   "KNOWLEDGE_CONTEXT_BUDGET",
 ] as const;
-export type ErrorCode = (typeof ERROR_CODES)[number] | (typeof KNOWLEDGE_ERROR_CODES)[number];
+export const SKILL_ERROR_HTTP_STATUS = {
+  SKILL_NOT_FOUND: 404,
+  SKILL_FILE_TOO_LARGE: 409,
+  SKILL_PATH_ESCAPE: 409,
+  SKILL_FILE_INVALID: 409,
+  SKILL_NAME_MISMATCH: 409,
+  SKILL_DOCUMENT_INVALID: 409,
+  SKILL_METADATA_INVALID: 409,
+  SKILL_CATALOG_UNAVAILABLE: 503,
+  PERMISSION_MANAGEMENT_FORBIDDEN: 403,
+  PERMISSION_REVISION_CHANGED: 409,
+} as const;
+export type ErrorCode =
+  | (typeof ERROR_CODES)[number]
+  | (typeof KNOWLEDGE_ERROR_CODES)[number]
+  | keyof typeof SKILL_ERROR_HTTP_STATUS;
 
-export const ErrorCodeSchema = z.enum([...ERROR_CODES, ...KNOWLEDGE_ERROR_CODES]);
+export const ErrorCodeSchema = z.enum([
+  ...ERROR_CODES,
+  ...KNOWLEDGE_ERROR_CODES,
+  ...(Object.keys(SKILL_ERROR_HTTP_STATUS) as (keyof typeof SKILL_ERROR_HTTP_STATUS)[]),
+]);
 
 /**
  * Only MESSAGE_PERSISTENCE_ERROR is SSE-exclusive.
@@ -238,7 +257,11 @@ export const KNOWLEDGE_ERROR_HTTP_STATUS = {
 
 export function getErrorHttpStatus(code: ErrorCode): number | undefined {
   return (
-    { ...ERROR_HTTP_STATUS, ...KNOWLEDGE_ERROR_HTTP_STATUS } as Partial<Record<ErrorCode, number>>
+    {
+      ...ERROR_HTTP_STATUS,
+      ...KNOWLEDGE_ERROR_HTTP_STATUS,
+      ...SKILL_ERROR_HTTP_STATUS,
+    } as Partial<Record<ErrorCode, number>>
   )[code];
 }
 
