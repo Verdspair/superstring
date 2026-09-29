@@ -148,6 +148,8 @@ export class BotContextSource {
   private readonly initialMemory: BotInitialMemoryQuery;
   private compressionJob?: BotCompressionJob;
   private observations: readonly ActionObservation[] = [];
+  /** 同批在飞动作各自的投影增量（token→相对基线 cost(observations) 的 units；按档取最大值）。 */
+  private reservations = new Map<symbol, number>();
   private sequence = 0;
   private pendingPlan?: { value: unknown; sources: SourceRef[] };
   private readSources?: SourceRef[];
@@ -258,6 +260,7 @@ export class BotContextSource {
     this.assertSources(sources);
     this.pendingPlan = { value: structuredClone(value), sources: uniqueSources(sources) };
     this.views.clear();
+    this.reservations.clear();
   }
   private withPendingPlan(material: ContextMaterial): ContextMaterial {
     if (!this.pendingPlan && !this.retrievalFailures.length) return material;
@@ -293,6 +296,7 @@ export class BotContextSource {
     // 新观测意味着问题可能变了、授权也可能变了：快照必须跟着作废，不能跨观测复用。
     this.evidence = undefined;
     this.compressionJob = undefined;
+    this.reservations.clear();
   }
   configureActions(actions: AgentSpec["availableActions"]): void {
     this.options.spec.availableActions = actions;
@@ -302,6 +306,8 @@ export class BotContextSource {
     observations: readonly ActionObservation[];
   }): Promise<ContextMaterial> {
     this.observations = input.observations;
+    // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
+    this.reservations.clear();
     this.assertCurrent();
     input.signal.throwIfAborted();
     // 观测累到"材料 + 现有观测"顶住上限时重装一次（窗口自动收窄，循环继续），
@@ -1132,6 +1138,9 @@ ${intent.trim()}`,
     this.assertCurrent();
     await this.view(this.options.decisionTier, signal);
     await this.view("reply", signal);
+    // 同批只读工具并发跑，每个的 fit 只看到"上一轮已提交的 observations"；
+    // 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许下一步渲染炸轮。
+    const token = Symbol("action-result-fit");
     return (value, sources) => {
       const observation: ActionObservation = {
         id: "00000000-0000-0000-0000-000000000000",
@@ -1140,14 +1149,33 @@ ${intent.trim()}`,
         value,
         sources: uniqueSources(sources),
       };
-      return [...this.views].every(
-        ([tier, view]) =>
-          this.cost(tier, view.material, [...this.observations, observation]) <= view.limit &&
-          (!name.startsWith("knowledge.") ||
-            this.knowledgeUnits(view.material, [...this.observations, observation]) <=
-              (this.options.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)),
-      );
+      // 检查与登记必须在同一同步块内完成，才能消除并发竞态（JS 单线程）。
+      let reservation = 0;
+      for (const [tier, view] of this.views) {
+        const projected = this.cost(tier, view.material, [...this.observations, observation]);
+        // 各档增量不同，预留取最大值（保守）。
+        reservation = Math.max(
+          reservation,
+          projected - this.cost(tier, view.material, this.observations),
+        );
+        if (projected + this.reservedUnits(token) > view.limit) return false;
+        if (
+          name.startsWith("knowledge.") &&
+          this.knowledgeUnits(view.material, [...this.observations, observation]) >
+            (this.options.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
+        )
+          return false;
+      }
+      // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
+      this.reservations.set(token, reservation);
+      return true;
     };
+  }
+  /** 在飞预留总和；`except` 用于排除 fitter 自己那笔。 */
+  private reservedUnits(except?: symbol): number {
+    let total = 0;
+    for (const [key, units] of this.reservations) if (key !== except) total += units;
+    return total;
   }
   /**
    * 补充资料查询。返回**信封**而不是裸数组：`ok`＋空＝真的没有相关内容，`unavailable`＋`code`＝
@@ -1179,9 +1207,9 @@ ${intent.trim()}`,
     });
     const cost = (view: View, tier: QqContextTier, items: readonly Evidence[]) =>
       this.cost(tier, view.material, [...this.observations, observation(items)]);
-    const budget = Math.min(
-      ...[...this.views].map(([tier, view]) => view.limit - cost(view, tier, [])),
-    );
+    const budget =
+      Math.min(...[...this.views].map(([tier, view]) => view.limit - cost(view, tier, []))) -
+      this.reservedUnits();
     const o = this.options;
     if (budget < 1) {
       // 补充资料是**模型主动要的可选动作**——这一轮没地方就先不给（带码诊断，

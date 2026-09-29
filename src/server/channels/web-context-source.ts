@@ -38,6 +38,8 @@ export class WebContextSource implements ConversationContextSource {
   readonly actions: BuiltInAction[];
   private material?: ContextMaterial;
   private observations: readonly ActionObservation[] = [];
+  /** 同批在飞动作各自的投影增量（token→相对基线 U(observations) 的 units）。 */
+  private reservations = new Map<symbol, number>();
   private usage?: ContextUsage;
   private readonly engine = new ContextEngine();
   private readonly owner: RunOwner;
@@ -125,7 +127,22 @@ export class WebContextSource implements ConversationContextSource {
         },
         fit: async (name, arguments_, signal) => {
           signal.throwIfAborted();
+          // 同批只读工具并发跑，每个的 fit 只看到"上一轮已提交的 observations"；
+          // 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许下一步渲染炸轮。
+          const token = Symbol("action-result-fit");
+          const limit =
+            this.spec.limits.inputUnits ??
+            runtime.p5_config.context_window ??
+            Number.MAX_SAFE_INTEGER;
           return (value, sources) => {
+            // 检查与登记必须在同一同步块内完成，才能消除并发竞态（JS 单线程）。
+            const base = this.engine.render(
+              this.spec,
+              this.material ?? {},
+              this.observations,
+              ["reply"],
+              "stream",
+            ).units;
             const observations = [
               ...this.observations,
               {
@@ -136,29 +153,35 @@ export class WebContextSource implements ConversationContextSource {
                 sources,
               },
             ];
-            const fitsContext =
-              this.engine.render(this.spec, this.material ?? {}, observations, ["reply"], "stream")
-                .units <=
-              (this.spec.limits.inputUnits ??
-                runtime.p5_config.context_window ??
-                Number.MAX_SAFE_INTEGER);
-            if (!name.startsWith("knowledge.")) return fitsContext;
-            const nonempty = observations.filter((observation) => {
-              const result = observation.value as { items?: unknown[] } | null;
-              return (
-                observation.name.startsWith("knowledge.") &&
-                Array.isArray(result?.items) &&
-                result.items.length > 0
-              );
-            });
-            const actionUnits =
-              this.engine.render(this.spec, {}, nonempty, ["reply"], "stream").units -
-              this.engine.render(this.spec, {}, [], ["reply"], "stream").units;
-            return (
-              fitsContext &&
-              (this.usage?.components.knowledge ?? 0) + actionUnits <=
+            const projected = this.engine.render(
+              this.spec,
+              this.material ?? {},
+              observations,
+              ["reply"],
+              "stream",
+            ).units;
+            if (projected + this.reservedUnits(token) > limit) return false;
+            if (name.startsWith("knowledge.")) {
+              const nonempty = observations.filter((observation) => {
+                const result = observation.value as { items?: unknown[] } | null;
+                return (
+                  observation.name.startsWith("knowledge.") &&
+                  Array.isArray(result?.items) &&
+                  result.items.length > 0
+                );
+              });
+              const actionUnits =
+                this.engine.render(this.spec, {}, nonempty, ["reply"], "stream").units -
+                this.engine.render(this.spec, {}, [], ["reply"], "stream").units;
+              if (
+                (this.usage?.components.knowledge ?? 0) + actionUnits >
                 (runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
-            );
+              )
+                return false;
+            }
+            // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
+            this.reservations.set(token, projected - base);
+            return true;
           };
         },
         requireAll: (kind) =>
@@ -194,6 +217,8 @@ export class WebContextSource implements ConversationContextSource {
     observations: readonly ActionObservation[];
   }): Promise<ContextMaterial> {
     this.observations = input.observations;
+    // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
+    this.reservations.clear();
     input.signal.throwIfAborted();
     const o = this.options;
     if (!this.material) {
@@ -248,6 +273,12 @@ export class WebContextSource implements ConversationContextSource {
       ...(this.material?.sources ?? []),
       ...this.observations.flatMap((observation) => observation.sources),
     ];
+  }
+  /** 在飞预留总和；`except` 用于排除 fitter 自己那笔。 */
+  private reservedUnits(except?: symbol): number {
+    let total = 0;
+    for (const [key, units] of this.reservations) if (key !== except) total += units;
+    return total;
   }
   assertSources(sources: readonly SourceRef[]): void {
     const o = this.options;
@@ -356,7 +387,7 @@ export class WebContextSource implements ConversationContextSource {
         ["reply"],
         "stream",
       ).units;
-    const budget = limit - cost([]);
+    const budget = limit - cost([]) - this.reservedUnits();
     if (budget < 1) fail("CONTEXT_BUDGET_EXCEEDED", "没有可用空间读取补充资料");
     const result = await read(budget);
     this.assertCurrent();

@@ -1308,6 +1308,45 @@ describe("Bot production knowledge reading settings", () => {
     });
 });
 
+it("把输出预留下发为 max_tokens：私聊决策与生成都用回复预留，方案改值后新轮生效", async () => {
+  const seen: ModelRequest[] = [];
+  const h = setup({
+    complete: async (request) => {
+      seen.push(request);
+      return finalGenerate;
+    },
+    async *streamText(request) {
+      seen.push(request);
+      yield "answer";
+    },
+  });
+  const textOf = (request: ModelRequest) =>
+    request.messages
+      .flatMap((message) =>
+        message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+      )
+      .join("\n");
+  const find = (marker: string) => seen.find((request) => textOf(request).includes(marker));
+  h.receive("1");
+  expect((await activate(h)).status).toBe("completed");
+  // 私聊没有独立判断档：决策与生成都按回复预留下发（默认 2048），与 available() 的预算口径一致。
+  const decision = find("Return exactly one JSON decision");
+  const generation = find("Write only the response body");
+  expect(decision?.maxTokens).toBe(2048);
+  expect(generation?.maxTokens).toBe(2048);
+  seen.length = 0;
+  updateQqScheme(h.orm, h.scheme.id, {
+    name: h.scheme.name,
+    outputReserve: { judgement_output_reserved: 640, reply_output_reserved: 896 },
+    expectedRevision: h.scheme.revision,
+  });
+  h.clock.seconds += 2;
+  h.receive("2");
+  expect((await activate(h)).status).toBe("completed");
+  expect(find("Return exactly one JSON decision")?.maxTokens).toBe(896);
+  expect(find("Write only the response body")?.maxTokens).toBe(896);
+});
+
 it("private conversation commits one logical output while retaining all transport parts", async () => {
   const h = setup({
     complete: async () =>

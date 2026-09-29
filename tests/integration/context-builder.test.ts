@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
+import { evidenceCatalogEntry } from "../../src/server/agent/built-in-actions";
+import { ContextEngine } from "../../src/server/agent/context-engine";
 import {
   ContextBuilder,
   type ContextDiagnostic,
@@ -44,6 +46,7 @@ import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { unicodeStrip } from "../../src/server/services/text";
+import type { Evidence } from "../../src/shared/contracts/evidence";
 
 const MODEL = "qwen/qwen3-4b-2507";
 
@@ -1110,4 +1113,216 @@ it("answers without memory when the memory read exceeds its own budget", async (
   } finally {
     ctx.business.close();
   }
+});
+
+/**
+ * 漂移 A（Web 侧）：同一批里的多个只读资料工具并发跑时，每个 fit 只看得到"上一轮已提交的
+ * observations"。各自单独放得下、合起来超过下一步上限 → 下一步渲染时整轮 `AGENT_CONTEXT_LIMIT`。
+ * 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许炸轮。
+ */
+function webJointFixture() {
+  const ctx = setup();
+  const sessionId = newSession(ctx.orm);
+  completedTurn(ctx.orm, sessionId, "joint-history", "历史上的问题", "历史上的回答");
+  const current = activeTurn(ctx.orm, sessionId, "joint-current", "现在的问题");
+  const runtime = {
+    ...current.prepared.runtime,
+    p5_config: {
+      ...current.prepared.runtime.p5_config,
+      retrieval_mode: "standard" as const,
+      compression_enabled: false,
+    },
+  };
+  if (!runtime.knowledge_read) throw new Error("missing knowledge settings");
+  runtime.knowledge_read = { ...runtime.knowledge_read, budget: 1_000_000 };
+  const lengths = { memory: 0, knowledge: 0 };
+  const evidence = (id: string, length: number): Evidence => ({
+    id,
+    text: "body",
+    sources: [],
+    preview: { title: id, summary: "x".repeat(length) },
+  });
+  const items = {
+    memory: () => [evidence("m1", lengths.memory)],
+    knowledge: () => [evidence("k1", lengths.knowledge), evidence("k2", lengths.knowledge)],
+  };
+  const agentRuntime = createAgentRuntime({
+    gateway: ctx.gateway,
+    repository: new AgentRunRepository(ctx.business.db),
+  });
+  const adapter = new WebContextSource({
+    db: ctx.business.db,
+    orm: ctx.orm,
+    gateway: ctx.gateway,
+    agentRuntime,
+    builder: builder(ctx),
+    runtime,
+    sessionId,
+    turnId: current.turn.id,
+    generationToken: current.prepared.generationToken ?? "missing",
+    maxSteps: 16,
+    modules: () => ({
+      memory: { query: async () => (lengths.memory ? items.memory() : []) },
+      knowledge: {
+        query: async () => {
+          if (!lengths.knowledge) return [];
+          // 让 memory 的拟合先登记：并发顺序确定，断言才稳定。
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return items.knowledge();
+        },
+      },
+    }),
+  });
+  return { ctx, sessionId, current, runtime, agentRuntime, adapter, lengths, items };
+}
+/** 与 WebContextSource.fit 同口径的投影增量：U(observations + [probe]) - U(observations)。 */
+function webProjection(
+  adapter: WebContextSource,
+  material: Awaited<ReturnType<WebContextSource["read"]>>,
+) {
+  const engine = new ContextEngine();
+  const base = engine.render(adapter.spec, material, [], ["reply"], "stream").units;
+  return {
+    base,
+    project: (name: "memory.query" | "knowledge.query", value: unknown) =>
+      engine.render(
+        adapter.spec,
+        material,
+        [
+          {
+            id: "00000000-0000-0000-0000-000000000000",
+            name,
+            arguments: { query: "apples" },
+            value,
+            sources: [],
+          },
+        ],
+        ["reply"],
+        "stream",
+      ).units - base,
+  };
+}
+/** 模型桩：按脚本回答决策；其它叶子调用给空答复。 */
+function scriptedGateway(ctx: Setup, responses: string[]) {
+  const seen: Parameters<ModelGateway["complete"]>[0][] = [];
+  const base = ctx.gateway.complete.bind(ctx.gateway);
+  ctx.gateway.complete = async (request) => {
+    seen.push(request);
+    if (request.messages[0]?.content.includes("Return exactly one JSON decision"))
+      return responses.shift() ?? '{"kind":"none"}';
+    return base(request);
+  };
+  return seen;
+}
+function actionObservations(request: Parameters<ModelGateway["complete"]>[0]) {
+  return request.messages.flatMap((message) => {
+    try {
+      const data = JSON.parse(message.content) as { kind?: string; value?: unknown };
+      return data.kind === "action_observation"
+        ? [
+            data.value as {
+              name: string;
+              value: { status: string; items: { id: string }[] };
+            },
+          ]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+}
+const jointWebInput = (fixture: ReturnType<typeof webJointFixture>, requestId: string) => ({
+  owner: {
+    kind: "web_turn",
+    id: fixture.current.turn.id,
+    userId: DEFAULT_USER_ID,
+    agentId: fixture.runtime.agent_id,
+  },
+  context: fixture.adapter,
+  actions: fixture.adapter.actions,
+  authorizedTargets: ["reply"],
+  outputMode: "stream" as const,
+  signal: new AbortController().signal,
+  requestId,
+});
+describe("Web 同批资料工具的联合预留（漂移 A）", () => {
+  it("同批两个查询合起来超限时后者被裁到装得下，整轮完成而不是上下文超限失败", async () => {
+    const fixture = webJointFixture();
+    const { ctx, adapter, lengths, items } = fixture;
+    const material = await adapter.read({ signal: new AbortController().signal, observations: [] });
+    const limit = adapter.spec.limits.inputUnits;
+    if (limit === undefined) throw new Error("missing Web input limit");
+    const projection = webProjection(adapter, material);
+    const room = limit - projection.base;
+    const value = (kind: "memory" | "knowledge", count: number) => ({
+      status: "ok",
+      items: items[kind]()
+        .slice(0, count)
+        .map((item) => evidenceCatalogEntry(kind, item)),
+    });
+    const measure = (kind: "memory" | "knowledge", count: number, length: number) => {
+      const saved = lengths[kind];
+      lengths[kind] = length;
+      const projected = projection.project(`${kind}.query`, value(kind, count));
+      lengths[kind] = saved;
+      return projected;
+    };
+    lengths.memory = Math.max(0, Math.floor(room * 0.6) - measure("memory", 1, 0));
+    lengths.knowledge = Math.max(0, Math.floor(room * 0.3) - measure("knowledge", 1, 0));
+    // 预置条件自检（与 fitter 同口径）：单独都装得下，合起来装不下 → 第二个条目必被裁。
+    expect(measure("memory", 1, lengths.memory)).toBeLessThanOrEqual(room);
+    expect(
+      measure("knowledge", 1, lengths.knowledge) + measure("memory", 1, lengths.memory),
+    ).toBeLessThanOrEqual(room);
+    expect(
+      measure("knowledge", 2, lengths.knowledge) + measure("memory", 1, lengths.memory),
+    ).toBeGreaterThan(room);
+    const seen = scriptedGateway(ctx, [
+      JSON.stringify({
+        kind: "invoke",
+        calls: [
+          { name: "memory.query", arguments: { query: "apples" } },
+          { name: "knowledge.query", arguments: { query: "apples" } },
+        ],
+      }),
+      JSON.stringify({
+        kind: "final",
+        outputs: [{ kind: "generate", targetId: "reply", instructions: "answer" }],
+      }),
+    ]);
+    // 装配在下一步渲染时按 stepSpec.limits.inputUnits 复查：这里不裁就会整轮 AGENT_CONTEXT_LIMIT。
+    const result = await fixture.agentRuntime.run(
+      adapter.spec,
+      jointWebInput(fixture, "joint-web"),
+    );
+    expect(result.status).toBe("completed");
+    expect(seen).toHaveLength(2);
+    const observed = actionObservations(seen[1]);
+    const memory = observed.find((entry) => entry.name === "memory.query");
+    const knowledge = observed.find((entry) => entry.name === "knowledge.query");
+    expect(memory?.value.items.map((item) => item.id)).toEqual(["m1"]);
+    expect(knowledge?.value.status).toBe("ok");
+    expect(knowledge?.value.items.map((item) => item.id)).toEqual(["k1"]);
+  });
+  it("顺序单查询不回归：没有同批兄弟时整份结果照装", async () => {
+    const fixture = webJointFixture();
+    const { ctx, adapter, lengths } = fixture;
+    await adapter.read({ signal: new AbortController().signal, observations: [] });
+    lengths.knowledge = 1000;
+    const seen = scriptedGateway(ctx, [
+      JSON.stringify({
+        kind: "invoke",
+        calls: [{ name: "knowledge.query", arguments: { query: "apples" } }],
+      }),
+      JSON.stringify({
+        kind: "final",
+        outputs: [{ kind: "generate", targetId: "reply", instructions: "answer" }],
+      }),
+    ]);
+    const result = await fixture.agentRuntime.run(adapter.spec, jointWebInput(fixture, "solo-web"));
+    expect(result.status).toBe("completed");
+    const observed = actionObservations(seen[1]);
+    const knowledge = observed.find((entry) => entry.name === "knowledge.query");
+    expect(knowledge?.value.items.map((item) => item.id)).toEqual(["k1", "k2"]);
+  });
 });

@@ -81,6 +81,8 @@ export function createQqStickerSearch(options: {
     description: {
       name: "sticker.search",
       capability: "sticker.read",
+      // 只读检索：声明 effect 才进只读并行批与沙箱可绑定目录（否则按 write 保守分类）。
+      effect: "read",
       description:
         "Search authorized usable stickers; empty query browses. Results fit context and paginate. Use returned IDs; prefer recentlyUsed=false.",
       parameters: z.toJSONSchema(SearchSchema),

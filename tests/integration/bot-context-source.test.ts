@@ -265,6 +265,75 @@ async function compress(source: BotContextSource, signal = readInput().signal): 
     job.failed(error);
   }
 }
+/**
+ * 漂移 A 的标定：在空动作源上二分出"单个目录条目"的最大可装文本长度。fit 用的就是实现自己的
+ * 检查口径（cost ≤ 档上限），所以这个长度近似等于该档剩余房间，测试不必手算协议开销。
+ */
+async function measureJointRoom(h: ReturnType<typeof setup>): Promise<number> {
+  const scratch = h.newSource();
+  const fit = await scratch.actionResultFitter(
+    "knowledge.query",
+    { query: "calibrate" },
+    new AbortController().signal,
+  );
+  const probe = (length: number) => ({
+    status: "ok",
+    items: [{ id: "k", title: "k", summary: "x".repeat(length), bodyRef: "h" }],
+  });
+  let lo = 0,
+    hi = 1 << 20;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fit(probe(mid), [])) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+/** 漂移 A 夹具：动作读到的条目大小可调；初始读取（无 projection）始终返回空，保持视图干净。 */
+function jointFixture() {
+  const sizes = { memory: 0, knowledge: 0 };
+  const h = setup({
+    tokenBudget: 16384,
+    mode: "standard",
+    modules: () => ({
+      memory: {
+        query: async (input: { projection?: string }) =>
+          input.projection === "catalog" && sizes.memory > 0
+            ? [
+                {
+                  id: "m1",
+                  text: "body",
+                  sources: [],
+                  preview: { title: "m", summary: `M:${"m".repeat(sizes.memory)}` },
+                },
+              ]
+            : [],
+      },
+      knowledge: {
+        query: async (input: { projection?: string }) => {
+          if (input.projection !== "catalog" || sizes.knowledge === 0) return [];
+          // 让 memory 的拟合先登记：并发顺序确定，断言才稳定。
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return ["K1", "K2"].map((tag, index) => ({
+            id: tag,
+            text: "body",
+            sources: [],
+            preview: { title: tag, summary: `${tag}:${"k".repeat(sizes.knowledge)}:${index}` },
+          }));
+        },
+      },
+    }),
+  });
+  h.gateway.loadedContextCapacity = async () => 32768;
+  h.seed("question");
+  return { h, sizes };
+}
+const catalogEntry = (id: string, summary: string) => ({
+  id,
+  title: id,
+  summary,
+  bodyRef: `ref-${id}`,
+});
 async function nextWithPackages(h: ReturnType<typeof setup>, source = h.source) {
   await source.read(readInput());
   await compress(source);
@@ -1130,6 +1199,114 @@ describe("shared Bot context source", () => {
       new AbortController().signal,
     );
     expect(fits({ status: "available", items: [], nextCursor: null }, [])).toBe(true);
+  });
+  /**
+   * 漂移 A：同一批里的多个只读资料工具并发跑时，每个 fit 只看得到"上一轮已提交的 observations"。
+   * 各自单独放得下、合起来超过下一步上限 → 下一步渲染时整轮 `AGENT_CONTEXT_LIMIT`。
+   * 保守联合预留：把本批其它在飞结果的增量也计入检查；宁可少装，不许炸轮。
+   */
+  it("联合预留：同批两个查询各自能装、合起来超限时后者被拒（不再下一步炸轮）", async () => {
+    const { h, sizes } = jointFixture();
+    await h.source.read(readInput());
+    const room = await measureJointRoom(h);
+    expect(room).toBeGreaterThan(0);
+    // 每条按"单独能装上限"的一半：各自装得下，两条合起来必然超限（差值是一个信封余量以上）。
+    sizes.memory = Math.floor(room * 0.5);
+    sizes.knowledge = Math.floor(room * 0.5);
+    const signal = new AbortController().signal;
+    const valueM = {
+      status: "ok",
+      items: [catalogEntry("m1", `M:${"m".repeat(sizes.memory)}`)],
+    };
+    const valueK1 = {
+      status: "ok",
+      items: [catalogEntry("K1", `K1:${"k".repeat(sizes.knowledge)}:0`)],
+    };
+    // ② 顺序单查询不回归：没有同批兄弟时，整份结果照装。
+    const solo = h.newSource();
+    const soloFit = await solo.actionResultFitter("knowledge.query", { query: "apples" }, signal);
+    expect(soloFit(valueK1, [])).toBe(true);
+    // ① 同批：memory 先登记，knowledge 与在飞结果合起来超限 → 第二个被 fit 拒。
+    const joint = h.newSource();
+    const memoryFit = await joint.actionResultFitter("memory.query", { query: "apples" }, signal);
+    const knowledgeFit = await joint.actionResultFitter(
+      "knowledge.query",
+      { query: "apples" },
+      signal,
+    );
+    expect(memoryFit(valueM, [])).toBe(true);
+    expect(knowledgeFit(valueK1, [])).toBe(false);
+    // 观测被 read() 替换后，上一批的预留不再重复计入：下一批的单查询不被旧在飞结果挡住。
+    await joint.read(readInput());
+    const clearedFit = await joint.actionResultFitter("memory.query", { query: "again" }, signal);
+    expect(clearedFit(valueM, [])).toBe(true);
+  });
+  /**
+   * 同一件事走真实运行时：模型一次 invoke 批两个查询，第二个被联合预留裁小（unavailable），
+   * 下一步渲染保持在上限内——整轮以 completed 收场，而不是 `AGENT_CONTEXT_LIMIT` 失败。
+   */
+  it("真实运行时里同批两个查询：联合预留使后者在批内被裁，整轮完成而非上下文超限", async () => {
+    const { h, sizes } = jointFixture();
+    await h.source.read(readInput());
+    const room = await measureJointRoom(h);
+    sizes.memory = Math.floor(room * 0.5);
+    sizes.knowledge = Math.floor(room * 0.5);
+    const decisions = [
+      JSON.stringify({
+        kind: "invoke",
+        calls: [
+          { name: "memory.query", arguments: { query: "apples" } },
+          { name: "knowledge.query", arguments: { query: "apples" } },
+        ],
+      }),
+      JSON.stringify({
+        kind: "final",
+        outputs: [{ kind: "inline", targetId: "alice", text: "ok" }],
+      }),
+    ];
+    const seen: Parameters<ModelGateway["complete"]>[0][] = [];
+    h.gateway.complete = async (request) => {
+      seen.push(request);
+      if (request.messages[0]?.content.includes("Return exactly one JSON decision"))
+        return decisions.shift() ?? '{"kind":"none"}';
+      return JSON.stringify({ ids: [] });
+    };
+    const result = await h.agentRuntime.run(h.spec, {
+      owner: {
+        kind: "qq_binding",
+        id: h.binding.id,
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      },
+      context: h.source,
+      actions: h.source.actions,
+      authorizedTargets: ["alice", "bob"],
+      outputMode: "buffered",
+      signal: new AbortController().signal,
+      requestId: "joint-batch",
+    });
+    expect(result.status).toBe("completed");
+    expect(seen).toHaveLength(2);
+    const observations = seen[1].messages.flatMap((message) => {
+      try {
+        const data = JSON.parse(message.content) as { kind?: string; value?: unknown };
+        return data.kind === "action_observation"
+          ? [data.value as { name: string; value: { status: string; items: { id: string }[] } }]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+    const memoryObs = observations.find((entry) => entry.name === "memory.query");
+    const knowledgeObs = observations.find((entry) => entry.name === "knowledge.query");
+    expect(memoryObs?.value).toMatchObject({ status: "ok" });
+    expect(memoryObs?.value.items.map((item) => item.id)).toEqual(["m1"]);
+    // 第二个查询被联合预留拒掉：模型看到的是"这次取不到"，而不是塞满后下一步渲染炸轮。
+    expect(knowledgeObs?.value).toMatchObject({
+      status: "unavailable",
+      code: "CONTEXT_BUDGET_EXCEEDED",
+      items: [],
+    });
   });
   /**
    * 窗口是"配置的预算"，但预算可能比这台模型能装的还大（换模型、调输出预留或装配

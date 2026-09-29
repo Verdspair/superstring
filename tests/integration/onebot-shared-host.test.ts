@@ -7,7 +7,7 @@ import { OutboundDelivery } from "../../src/server/conversation/outbound-deliver
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
-import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { createQqScheme, updateQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { recordQqSend } from "../../src/server/db/qq-send-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
@@ -196,6 +196,43 @@ describe("shared Bot model-controlled conversation", () => {
     expect((await f.activate("direct_reply")).status).toBe("completed");
     expect(offered[0]).not.toContain("sticker.search");
     expect(f.outbox.list({})).toHaveLength(2);
+  });
+
+  it("把输出预留下发为 max_tokens：群聊决策用判断预留、生成用回复预留，方案改值后新轮生效", async () => {
+    const seen: ModelRequest[] = [];
+    const h = setup({
+      complete: async (request) => {
+        seen.push(request);
+        return generate(["20002"]);
+      },
+      async *streamText(request) {
+        seen.push(request);
+        yield "answer";
+      },
+    });
+    const textOf = (request: ModelRequest) =>
+      request.messages
+        .flatMap((message) =>
+          message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+        )
+        .join("\n");
+    const find = (marker: string) => seen.find((request) => textOf(request).includes(marker));
+    h.receive("1", "20002", true);
+    expect((await h.activate("direct_reply")).status).toBe("completed");
+    // 群聊决策档是判断档（默认预留 512），生成/重算按回复预留（默认 2048）下发。
+    expect(find("Return exactly one JSON decision")?.maxTokens).toBe(512);
+    expect(find("Write only the response body")?.maxTokens).toBe(2048);
+    seen.length = 0;
+    updateQqScheme(h.orm, h.scheme.id, {
+      name: h.scheme.name,
+      outputReserve: { judgement_output_reserved: 640, reply_output_reserved: 896 },
+      expectedRevision: h.scheme.revision,
+    });
+    h.clock.seconds += 2;
+    h.receive("2", "20002", true);
+    expect((await h.activate("direct_reply")).status).toBe("completed");
+    expect(find("Return exactly one JSON decision")?.maxTokens).toBe(640);
+    expect(find("Write only the response body")?.maxTokens).toBe(896);
   });
 
   it("keeps addressed target even when another speaker is newer; unrelated later events do not block delivery", async () => {

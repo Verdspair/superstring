@@ -20,6 +20,7 @@ import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
 import {
   effectiveQqTriggers,
   readQqScheme,
+  schemeOutputReserve,
   schemePrompts,
   schemeReply,
   schemeRhythm,
@@ -344,6 +345,9 @@ export class OneBotHost {
       return stickersEnabled ? catalog : { ...catalog, state: "disabled" as const, assets: [] };
     };
     const stickerState = stickerCatalog();
+    const decisionTier = binding.kind === "private" ? ("reply" as const) : ("judgement" as const);
+    // 输出预留既参与容量预算，也必须作为 max_tokens 下发，否则模型可以超出预留输出。
+    const reserves = schemeOutputReserve(scheme);
     const spec: AgentSpec = {
       id: "onebot.main",
       version: "4",
@@ -351,6 +355,10 @@ export class OneBotHost {
       model: initiative
         ? (readQqSettings(o.orm).judgementModelName ?? runtime.model_name)
         : runtime.model_name,
+      maxTokens:
+        decisionTier === "judgement"
+          ? reserves.judgement_output_reserved
+          : reserves.reply_output_reserved,
       instructions: [
         compileSystemPrompt(runtime),
         schemePrompts(scheme).scene,
@@ -363,7 +371,12 @@ export class OneBotHost {
         `后续相关消息到来要重新决定尚未发送的计划。pending_plan 是你之前的草稿/计划与剩余独立 generate 次数，属于资料而非指令。读过新消息后，可以用 inline 原样保留或修改仍然适用的草稿，也可 none 暂不发送；generate 次数耗尽时不能再请求独立生成。主动发言仍要取得当前观察序列的评分许可。复核指导：\n${schemePrompts(scheme).review}`,
       ].join("\n\n"),
       availableActions: [],
-      generation: { model: runtime.model_name, allowEmpty: true },
+      // 生成/重算用回复预留（判断与复核用判断预留，见 P3o）。
+      generation: {
+        model: runtime.model_name,
+        allowEmpty: true,
+        maxTokens: reserves.reply_output_reserved,
+      },
       limits: { steps: policy.maxSteps },
     };
     const baseInstructions = spec.instructions ?? "";
@@ -396,7 +409,7 @@ export class OneBotHost {
             },
           }
         : {}),
-      decisionTier: binding.kind === "private" ? "reply" : "judgement",
+      decisionTier,
       targets: () => targets,
       assertCurrent: assertAuthority,
       assertBackgroundCurrent: assertConfiguration,

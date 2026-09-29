@@ -19,6 +19,8 @@ import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import upstream from "omggif";
+import { createToolCatalog, describeTool } from "../../src/server/agent/tool-catalog";
+import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   addQqStickerToCollections,
   createQqStickerCollection,
@@ -34,9 +36,10 @@ import {
   setQqStickerEnabled,
   updateQqStickerCollection,
 } from "../../src/server/db/qq-sticker-repository";
-import { ensureDefaults } from "../../src/server/db/repositories";
+import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
+import { createQqStickerSearch } from "../../src/server/services/qq-sticker-capability";
 import { resolveQqStickerLibrary } from "../../src/server/services/qq-sticker-contract";
 import { importQqStickerCopy } from "../../src/server/services/qq-sticker-import";
 import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
@@ -500,5 +503,43 @@ describe("the undecided material operations remain absent", () => {
     }
     // The only removal is the membership one, plus the store's rollback helper.
     expect(names).toContain("removeQqStickerFromCollection");
+  });
+});
+
+/**
+ * 统一工具目录按 `description.effect` 判只读（未声明按 write 保守分类）。sticker.search 只做
+ * 授权范围内的检索，必须声明 read，否则进不了只读并行批，也不能被程序化工具调用绑定。
+ */
+describe("sticker.search 在统一工具目录里是只读工具", () => {
+  it("describeTool 给出 effect=read 与 sandboxCallable=true", () => {
+    const h = tracked();
+    const scheme = createQqScheme(h.orm, { name: "工具目录" });
+    const action = createQqStickerSearch({
+      orm: h.orm,
+      request: () => ({
+        schemeId: scheme.id,
+        scope: {
+          kind: "qq",
+          accountId: "10001",
+          conversationKind: "group",
+          peerId: "20001",
+          agentId: DEFAULT_AGENT_ID,
+        },
+        counts: ["confirmed"],
+        nowSeconds: 1_700_000_000,
+        isAvailable: () => true,
+      }),
+      assertCurrent: () => {},
+      fit: async () => () => true,
+    });
+    const descriptor = describeTool(action);
+    expect(action.description.effect).toBe("read");
+    expect(descriptor.effect).toBe("read");
+    expect(descriptor.sandboxCallable).toBe(true);
+    expect(
+      createToolCatalog([action])
+        .sandboxable()
+        .map((entry) => entry.name),
+    ).toEqual(["sticker.search"]);
   });
 });
