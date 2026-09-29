@@ -7,9 +7,7 @@
 // attempted message is never answered twice, and a message that has gone stale is dropped rather
 // than answered late.
 
-import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { type BusinessDbHandle, toOrmHandle } from "../../src/server/db/connection";
 import {
   claimQqDispatchLease,
   claimQqImmediateLease,
@@ -21,12 +19,12 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { recordQqSpeech } from "../../src/server/db/qq-speech-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { openBusinessDb } from "../../src/server/db/schema-gate";
 import {
   nextQqImmediateReplyTask,
   QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS,
 } from "../../src/server/services/qq-dispatch";
 import { runQqImmediateReplyCycle } from "../fixtures/legacy-qq/qq-dispatch-cycle";
+import { cloneBusinessDb } from "../harness/business-db";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const bindingId = "11111111-1111-4111-8111-111111111111";
@@ -34,20 +32,6 @@ const now = 2_000_000_000;
 
 /** The stage a production host passes: no sticker copies exist in these fixtures. */
 const stage = { counts: ["confirmed"] as const, isAvailable: () => false };
-
-const migratedImage = (() => {
-  const h = openBusinessDb();
-  const image = h.db.serialize();
-  h.close();
-  return image;
-})();
-
-function cloneBusinessDb(): BusinessDbHandle {
-  const db = Database.deserialize(migratedImage);
-  db.run("PRAGMA foreign_keys = ON");
-  db.run("PRAGMA busy_timeout = 5000");
-  return toOrmHandle(db);
-}
 
 /** One account, one scheme with every trigger on, one bound group, one bound private chat. */
 function setup(options: { directReply?: boolean } = {}) {

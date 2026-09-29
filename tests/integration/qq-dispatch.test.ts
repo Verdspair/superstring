@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { type BusinessDbHandle, toOrmHandle } from "../../src/server/db/connection";
 import {
   claimQqDispatchLease,
   forgetQqIdleJudgementsExcept,
@@ -41,6 +40,7 @@ import {
   sweepQqIdleTopics,
 } from "../../src/server/services/qq-dispatch";
 import { runQqDispatchCycle } from "../fixtures/legacy-qq/qq-dispatch-cycle";
+import { cloneBusinessDb } from "../harness/business-db";
 
 // The sticker stage's two seams, pinned to "no library copies": these cases are about the text
 // path, so no sticker call may appear (P4i). `counts` is explicit because U13 has no default.
@@ -127,32 +127,6 @@ function seedConversation(orm: Orm, peers: string[] = ["30003"]) {
     event(orm, `latest-${peerId}`, now - 40, "新消息", peerId);
   });
   return scheme;
-}
-
-/**
- * A migrated in-memory image, cloned per case.
- *
- * Every case below needs a fully migrated database and the business chain is 23 files, so the
- * whole file would otherwise spend ~12 s replaying migrations. Cloning the image of one
- * migrated database keeps the same schema, the same constraints and the same enforcement while
- * skipping the replay.
- *
- * `PRAGMA foreign_keys` is per CONNECTION and is NOT carried by the image, so it is re-applied
- * on every clone exactly as `connection.ts` does — the ordering guarantees in these tests rely
- * on it being ON.
- */
-const migratedImage = (() => {
-  const h = openBusinessDb();
-  const image = h.db.serialize();
-  h.close();
-  return image;
-})();
-
-function cloneBusinessDb(): BusinessDbHandle {
-  const db = Database.deserialize(migratedImage);
-  db.run("PRAGMA foreign_keys = ON");
-  db.run("PRAGMA busy_timeout = 5000");
-  return toOrmHandle(db);
 }
 
 function setup(options: { peers?: string[] } = {}) {

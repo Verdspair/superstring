@@ -5,36 +5,20 @@
 // whether something may be prepared, generated, reviewed or sent has to read the same resolved
 // answer, or a group that switched a module off would still end up speaking.
 
-import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { createApp } from "../../src/server/app";
-import { type BusinessDbHandle, toOrmHandle } from "../../src/server/db/connection";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { nextQqImmediateReplyTask } from "../../src/server/services/qq-dispatch";
 import { prepareQqJudgement } from "../../src/server/services/qq-judgement-preparation";
 import type { QqBindingResponse } from "../../src/shared/contracts/qq";
+import { cloneBusinessDb } from "../harness/business-db";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const bindingId = "11111111-1111-4111-8111-111111111111";
 const now = 2_000_000_000;
-
-const migratedImage = (() => {
-  const h = openBusinessDb();
-  const image = h.db.serialize();
-  h.close();
-  return image;
-})();
-
-function cloneBusinessDb(): BusinessDbHandle {
-  const db = Database.deserialize(migratedImage);
-  db.run("PRAGMA foreign_keys = ON");
-  db.run("PRAGMA busy_timeout = 5000");
-  return toOrmHandle(db);
-}
 
 function setup(options: { schemeTriggers?: Partial<Record<string, boolean>> } = {}) {
   const h = cloneBusinessDb();

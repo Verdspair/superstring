@@ -1,8 +1,6 @@
-import { Database } from "bun:sqlite";
 import { describe, expect, it, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { type BusinessDbHandle, toOrmHandle } from "../../src/server/db/connection";
 import {
   listQqDispatchCandidates,
   readQqDispatchLease,
@@ -11,9 +9,10 @@ import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { BUSINESS_SCHEMA_VERSION, openBusinessDb } from "../../src/server/db/schema-gate";
+import { BUSINESS_SCHEMA_VERSION } from "../../src/server/db/schema-gate";
 import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
 import { QqRuntime, type QqRuntimeEvent, qqDispatchRunner } from "../fixtures/legacy-qq/qq-runtime";
+import { cloneBusinessDb } from "../harness/business-db";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const bindingId = "11111111-1111-4111-8111-111111111111";
@@ -76,25 +75,6 @@ function seed(orm: Orm): void {
     .run();
   event(orm, "old-30003", now - 90, "旧消息");
   event(orm, "latest-30003", now - 40, "新消息");
-}
-
-/**
- * A migrated in-memory image, cloned per case — the business chain is 24 files, so replaying it
- * per case would dominate this file. `PRAGMA foreign_keys` is per connection and is re-applied
- * exactly as `connection.ts` does.
- */
-const migratedImage = (() => {
-  const h = openBusinessDb();
-  const image = h.db.serialize();
-  h.close();
-  return image;
-})();
-
-function cloneBusinessDb(): BusinessDbHandle {
-  const db = Database.deserialize(migratedImage);
-  db.run("PRAGMA foreign_keys = ON");
-  db.run("PRAGMA busy_timeout = 5000");
-  return toOrmHandle(db);
 }
 
 /** The sweep's quiet threshold is 15 minutes for the seeded scheme. */

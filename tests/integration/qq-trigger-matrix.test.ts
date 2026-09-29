@@ -11,15 +11,13 @@
 // 再逐个数断言"关掉一个不影响另外三个"，最后钉住一处容易出错的交叉：被立即路径回过的那条消息，
 // 留在队列里的自主接话候选不能因此再回一次。
 
-import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { type BusinessDbHandle, toOrmHandle } from "../../src/server/db/connection";
+import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { recordQqSpeech } from "../../src/server/db/qq-speech-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { openBusinessDb } from "../../src/server/db/schema-gate";
 import {
   enqueueQqDispatchFromEvent,
   nextQqImmediateReplyTask,
@@ -32,6 +30,7 @@ import {
   runQqDispatchCycle,
   runQqImmediateReplyCycle,
 } from "../fixtures/legacy-qq/qq-dispatch-cycle";
+import { cloneBusinessDb } from "../harness/business-db";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const bindingId = "11111111-1111-4111-8111-111111111111";
@@ -46,20 +45,6 @@ const ALL_ON: QqSpeechTriggers = Object.freeze({
   chiming_in: true,
   idle_topic: true,
 });
-
-const migratedImage = (() => {
-  const h = openBusinessDb();
-  const image = h.db.serialize();
-  h.close();
-  return image;
-})();
-
-function cloneBusinessDb(): BusinessDbHandle {
-  const db = Database.deserialize(migratedImage);
-  db.run("PRAGMA foreign_keys = ON");
-  db.run("PRAGMA busy_timeout = 5000");
-  return toOrmHandle(db);
-}
 
 /** One account, one scheme whose four switches are given, one bound group. */
 function setup(triggers: QqSpeechTriggers = ALL_ON) {
