@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { agentPageDirty, policyDirty } from "@/features/agents/page-drafts";
+import { agentPageDirty, p5Fields, policyDirty } from "@/features/agents/page-drafts";
 import { useLiveResource } from "@/services/use-live-resource";
 import { errorText } from "@/state/helpers";
 import { useSuperstringStore } from "@/store";
@@ -95,15 +95,17 @@ export function MemoryLibrary() {
     s.memoryCorrectionDirty ||
     s.memoryCorrectionSaving ||
     Object.keys(s.qqMemoryBatchDrafts).length > 0;
-  /**
-   * 记忆维护：它是**网页对话记忆**这一分区自己的
-   * 面板，与 QQ 分区的绑定控制同位同风格。后端与保存白名单都没动——字段仍属 `long-memory` 组，
-   * 走同一个草稿与 `saveSettingsPage`，所以两个页面看到的是同一份草稿，不会各存一份。
-   */
+  // 与资料规则页共用同一份 `long-memory` 草稿：保存记忆规则会一并提交工具额度改动。
   const editor = s.pageEditor;
-  const webScope = scope !== "" && memoryScopeIdentity(scope, agentId).kind === "web";
+  const showMaintenance = scope === "" || memoryScopeIdentity(scope, agentId).kind === "web";
   const maintenanceDirty =
     !!editor && (policyDirty(editor) || agentPageDirty(editor, "long-memory"));
+  const allowancePending =
+    !!editor &&
+    p5Fields("long-memory").some(
+      (key) =>
+        JSON.stringify(editor.draft.p5_config[key]) !== JSON.stringify(editor.agent.p5_config[key]),
+    );
   useEffect(() => {
     if (ready && !editor?.policy) void s.loadMemoryPolicy();
   }, [ready, editor?.policy, s.loadMemoryPolicy]);
@@ -235,96 +237,6 @@ export function MemoryLibrary() {
                         {memoryScopeLabel(selectedScope.write_scope_key, agentId, t)}
                       </p>
                     </div>
-                    {webScope && (
-                      <div className="space-y-4 border-t pt-4">
-                        <p className="text-xs font-medium">{t("library.memory.maintenance")}</p>
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                          {t(
-                            "library.web.conversations.use.a.turn.based.policy.connected.conversations",
-                          )}
-                        </p>
-                        {editor?.policyDraft ? (
-                          <>
-                            <Field label="library.automatically.organize.web.memories">
-                              <Checkbox
-                                disabled={locked}
-                                checked={editor.policyDraft.auto_enabled}
-                                onCheckedChange={(value) =>
-                                  s.patchPagePolicy({ auto_enabled: value === true })
-                                }
-                              />
-                            </Field>
-                            <Field label="library.organize.every.n.turns">
-                              <Input
-                                type="number"
-                                min={1}
-                                max={200}
-                                disabled={locked}
-                                value={editor.policyDraft.every_turns}
-                                onChange={(e) =>
-                                  s.patchPagePolicy({ every_turns: Number(e.target.value) })
-                                }
-                              />
-                            </Field>
-                            <Field label="library.target.memory.characters">
-                              <Input
-                                type="number"
-                                min={50}
-                                max={4000}
-                                disabled={locked}
-                                value={editor.policyDraft.target_chars}
-                                onChange={(e) =>
-                                  s.patchPagePolicy({ target_chars: Number(e.target.value) })
-                                }
-                              />
-                            </Field>
-                          </>
-                        ) : (
-                          <p className="text-xs text-muted-foreground">{t("library.loading")}</p>
-                        )}
-                        <Field label="library.memory.organization.prompt">
-                          <Textarea
-                            rows={4}
-                            disabled={locked}
-                            value={editor?.draft.memory_consolidation_prompt ?? ""}
-                            onChange={(e) =>
-                              s.patchPageAgent("long-memory", {
-                                memory_consolidation_prompt: e.target.value,
-                              })
-                            }
-                          />
-                        </Field>
-                        <Field label="library.additional.organization.instructions">
-                          <Textarea
-                            rows={3}
-                            disabled={locked}
-                            value={editor?.draft.memory_consolidation_additional_instructions ?? ""}
-                            onChange={(e) =>
-                              s.patchPageAgent("long-memory", {
-                                memory_consolidation_additional_instructions: e.target.value,
-                              })
-                            }
-                          />
-                        </Field>
-                        <div className="flex flex-wrap justify-end gap-2 border-t pt-3">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={!maintenanceDirty || locked}
-                            onClick={discardMaintenance}
-                          >
-                            {t("library.discard.changes")}
-                          </Button>
-                          <Button
-                            size="sm"
-                            disabled={!maintenanceDirty || locked || s.settingsSaving}
-                            onClick={() => void saveMaintenance()}
-                          >
-                            {t("library.save.memory.rules")}
-                          </Button>
-                        </div>
-                      </div>
-                    )}
                     {binding && (
                       <BindingMemoryControls
                         binding={binding}
@@ -543,6 +455,119 @@ export function MemoryLibrary() {
                   </Button>
                 </div>
               </div>
+              {showMaintenance && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex flex-wrap items-center gap-2">
+                      {t("library.memory.maintenance")}
+                      <Badge variant="secondary">{t("library.scope.web")}</Badge>
+                    </CardTitle>
+                    <CardDescription>
+                      {t(
+                        "library.web.conversations.use.a.turn.based.policy.connected.conversations",
+                      )}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {editor?.policyDraft ? (
+                      <>
+                        <Field label="library.automatically.organize.web.memories">
+                          <Checkbox
+                            disabled={locked}
+                            checked={editor.policyDraft.auto_enabled}
+                            onCheckedChange={(value) =>
+                              s.patchPagePolicy({ auto_enabled: value === true })
+                            }
+                          />
+                        </Field>
+                        <Field label="library.organize.every.n.turns">
+                          <Input
+                            type="number"
+                            min={1}
+                            max={200}
+                            disabled={locked}
+                            value={editor.policyDraft.every_turns}
+                            onChange={(e) =>
+                              s.patchPagePolicy({ every_turns: Number(e.target.value) })
+                            }
+                          />
+                        </Field>
+                        <Field label="library.target.memory.characters">
+                          <Input
+                            type="number"
+                            min={50}
+                            max={4000}
+                            disabled={locked}
+                            value={editor.policyDraft.target_chars}
+                            onChange={(e) =>
+                              s.patchPagePolicy({ target_chars: Number(e.target.value) })
+                            }
+                          />
+                        </Field>
+                      </>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">{t("library.loading")}</p>
+                    )}
+                    <Field label="library.memory.organization.prompt">
+                      <Textarea
+                        rows={4}
+                        disabled={locked}
+                        value={editor?.draft.memory_consolidation_prompt ?? ""}
+                        onChange={(e) =>
+                          s.patchPageAgent("long-memory", {
+                            memory_consolidation_prompt: e.target.value,
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="library.additional.organization.instructions">
+                      <Textarea
+                        rows={3}
+                        disabled={locked}
+                        value={editor?.draft.memory_consolidation_additional_instructions ?? ""}
+                        onChange={(e) =>
+                          s.patchPageAgent("long-memory", {
+                            memory_consolidation_additional_instructions: e.target.value,
+                          })
+                        }
+                      />
+                    </Field>
+                    <p className="text-xs text-muted-foreground">
+                      {t("library.memory.maintenance.save.scope")}
+                    </p>
+                    {allowancePending && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("library.memory.maintenance.allowance.pending")}
+                      </p>
+                    )}
+                    <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
+                      <Button
+                        size="sm"
+                        variant="link"
+                        className="mr-auto"
+                        onClick={() => s.openSettingsRoute("models")}
+                      >
+                        {t("library.open.model.services")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!maintenanceDirty || locked}
+                        onClick={discardMaintenance}
+                      >
+                        {t("library.discard.changes")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={!maintenanceDirty || locked || s.settingsSaving}
+                        onClick={() => void saveMaintenance()}
+                      >
+                        {t("library.save.memory.rules")}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </div>
           <Card>

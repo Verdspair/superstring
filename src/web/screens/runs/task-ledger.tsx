@@ -1,5 +1,5 @@
 import { ListChecks, RefreshCw, XCircle } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   TaskBodyPage,
@@ -11,6 +11,7 @@ import type {
 import { AlertDialog, ConfirmDialog } from "../../components/confirmation";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
 import {
   Sheet,
@@ -30,6 +31,7 @@ import {
 import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
+import { RunLink } from "./RunEntry";
 
 const statuses: TaskStatus[] = [
   "queued",
@@ -43,12 +45,35 @@ const statuses: TaskStatus[] = [
 ];
 const statusKey = (status: TaskStatus) => `connections.tasks.status.${status}`;
 
+/** One drafted filter form: typing never queries; Apply commits all four fields at once. */
+type FilterDraft = {
+  status: TaskStatus | "";
+  agentId: string;
+  conversationId: string;
+  originRunId: string;
+};
+const emptyFilters: FilterDraft = {
+  status: "",
+  agentId: "",
+  conversationId: "",
+  originRunId: "",
+};
+const sameFilters = (left: FilterDraft, right: FilterDraft) =>
+  left.status === right.status &&
+  left.agentId === right.agentId &&
+  left.conversationId === right.conversationId &&
+  left.originRunId === right.originRunId;
+
 export function TaskLedger() {
   const { t, i18n } = useTranslation();
+  const filterId = useId();
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const summaryById = useSuperstringStore((s) => s.summaryById);
+  const directoryIds = useSuperstringStore((s) => s.directoryIds);
+  const agents = useSuperstringStore((s) => s.agents);
   const [list, setList] = useState<TaskList | null>(null);
-  const [status, setStatus] = useState<TaskStatus | "">("");
+  const [draft, setDraft] = useState<FilterDraft>(emptyFilters);
+  const [filters, setFilters] = useState<FilterDraft>(emptyFilters);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -63,9 +88,22 @@ export function TaskLedger() {
     (cursor?: string) => {
       pending.current?.cancel();
       setLoading(true);
+      // A new filter generation starts from an empty first page, so pages of two filter sets
+      // never sit side by side; "load more" keeps appending to the current cursor chain.
+      if (!cursor) setList(null);
       pending.current = startRead(
         (signal) =>
-          apiClient.listTasks({ ...(status ? { status } : {}), cursor, limit: 50 }, signal),
+          apiClient.listTasks(
+            {
+              ...(filters.status ? { status: filters.status } : {}),
+              ...(filters.agentId ? { agentId: filters.agentId } : {}),
+              ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
+              ...(filters.originRunId ? { originRunId: filters.originRunId } : {}),
+              cursor,
+              limit: 50,
+            },
+            signal,
+          ),
         {
           success: (page) => {
             setList((previous) =>
@@ -78,7 +116,7 @@ export function TaskLedger() {
         },
       );
     },
-    [apiClient, status],
+    [apiClient, filters],
   );
   useEffect(() => {
     load();
@@ -87,6 +125,14 @@ export function TaskLedger() {
       pendingDetail.current?.cancel();
     };
   }, [load]);
+  const updateDraft = <K extends keyof FilterDraft>(key: K, value: FilterDraft[K]) =>
+    setDraft((previous) => ({ ...previous, [key]: value }));
+  const applyFilters = () =>
+    setFilters((previous) => (sameFilters(previous, draft) ? previous : { ...draft }));
+  const clearFilters = () => {
+    setDraft(emptyFilters);
+    setFilters((previous) => (sameFilters(previous, emptyFilters) ? previous : emptyFilters));
+  };
   const openDetail = (id: string) => {
     pendingDetail.current?.cancel();
     setError("");
@@ -97,7 +143,14 @@ export function TaskLedger() {
   };
   const decide = async (approve: boolean) => {
     const call = detail?.calls.find((entry) => entry.status === "waiting_approval");
-    if (!detail || !call?.approvalRevision || mutation.current) return;
+    if (!detail || !call || mutation.current) return;
+    // A waiting call without an approval ticket cannot be decided; say so instead of returning
+    // silently, so a stale state never looks like a no-op.
+    if (!call.approvalRevision) {
+      setApproving(false);
+      setNotice(t("connections.tasks.approvalUnavailable"));
+      return;
+    }
     mutation.current = true;
     setSaving(true);
     try {
@@ -147,11 +200,24 @@ export function TaskLedger() {
             {t("connections.tasks.description")}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" disabled={loading} onClick={() => load()}>
+          <RefreshCw />
+          {t("connections.common.refresh")}
+        </Button>
+      </div>
+      <form
+        className="flex flex-wrap items-end gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          applyFilters();
+        }}
+      >
+        <label className="grid min-w-0 gap-1.5 text-xs font-medium" htmlFor={`${filterId}-status`}>
+          <span>{t("connections.tasks.filterStatus")}</span>
           <NativeSelect
-            aria-label={t("connections.tasks.filterStatus")}
-            value={status}
-            onChange={(e) => setStatus(e.target.value as TaskStatus | "")}
+            id={`${filterId}-status`}
+            value={draft.status}
+            onChange={(event) => updateDraft("status", event.target.value as TaskStatus | "")}
           >
             <option value="">{t("connections.tasks.allStatuses")}</option>
             {statuses.map((value) => (
@@ -160,12 +226,72 @@ export function TaskLedger() {
               </option>
             ))}
           </NativeSelect>
-          <Button variant="outline" disabled={loading} onClick={() => load()}>
-            <RefreshCw />
-            {t("connections.common.refresh")}
+        </label>
+        <label className="grid min-w-0 gap-1.5 text-xs font-medium" htmlFor={`${filterId}-agent`}>
+          <span>{t("connections.tasks.filterAgent")}</span>
+          <NativeSelect
+            id={`${filterId}-agent`}
+            className="max-w-60"
+            value={draft.agentId}
+            onChange={(event) => updateDraft("agentId", event.target.value)}
+          >
+            <option value="">{t("connections.all")}</option>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </NativeSelect>
+        </label>
+        <fieldset className="min-w-0 space-y-1.5">
+          <legend className="text-xs font-medium">
+            {t("connections.tasks.filterConversation")}
+          </legend>
+          <div className="flex flex-wrap items-start gap-2">
+            <div className="grid min-w-0 gap-1.5">
+              <NativeSelect
+                className="max-w-60"
+                aria-label={t("connections.tasks.filterConversation")}
+                value={draft.conversationId}
+                onChange={(event) => updateDraft("conversationId", event.target.value)}
+              >
+                <option value="">{t("connections.all")}</option>
+                {directoryIds.map((id) => (
+                  <option key={id} value={id}>
+                    {summaryById[id]?.title ?? id}
+                  </option>
+                ))}
+              </NativeSelect>
+              {/* The dropdown only offers loaded conversations and says so; the ID input beside it is
+                  the way to filter by a conversation that has not been loaded yet. */}
+              <p className="text-xs text-muted-foreground">{t("workspace.loaded_conversations")}</p>
+            </div>
+            <Input
+              className="w-64 max-w-full"
+              aria-label={t("observability.conversationId")}
+              placeholder={t("observability.conversationId")}
+              value={draft.conversationId}
+              onChange={(event) => updateDraft("conversationId", event.target.value)}
+            />
+          </div>
+        </fieldset>
+        <label className="grid min-w-0 gap-1.5 text-xs font-medium" htmlFor={`${filterId}-run`}>
+          <span>{t("connections.tasks.filterOriginRun")}</span>
+          <Input
+            id={`${filterId}-run`}
+            className="w-64 max-w-full"
+            placeholder={t("observability.runId")}
+            value={draft.originRunId}
+            onChange={(event) => updateDraft("originRunId", event.target.value)}
+          />
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="submit">{t("connections.tasks.applyFilters")}</Button>
+          <Button type="button" variant="outline" onClick={clearFilters}>
+            {t("connections.tasks.clearFilters")}
           </Button>
         </div>
-      </div>
+      </form>
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -254,11 +380,7 @@ export function TaskLedger() {
                 {detail.errorCode && (
                   <span className="font-mono text-xs text-destructive">{detail.errorCode}</span>
                 )}
-                {detail.originRunId && (
-                  <span className="font-mono text-xs text-muted-foreground">
-                    run {detail.originRunId.slice(0, 8)}
-                  </span>
-                )}
+                {detail.originRunId && <RunLink runId={detail.originRunId} />}
               </div>
               <p className="text-xs text-muted-foreground">{t("connections.tasks.boundary")}</p>
               <div className="space-y-3">
@@ -281,16 +403,27 @@ export function TaskLedger() {
                     </Button>
                   )}
                 {waiting && (
-                  <Button className="ml-auto" onClick={() => setApproving(true)}>
-                    {t("connections.tasks.reviewApproval")}
-                  </Button>
+                  <>
+                    {!waiting.approvalRevision && (
+                      <p className="text-xs text-muted-foreground">
+                        {t("connections.tasks.approvalUnavailable")}
+                      </p>
+                    )}
+                    <Button
+                      className="ml-auto"
+                      disabled={!waiting.approvalRevision || saving}
+                      onClick={() => setApproving(true)}
+                    >
+                      {t("connections.tasks.reviewApproval")}
+                    </Button>
+                  </>
                 )}
               </div>
             </div>
           )}
         </SheetContent>
       </Sheet>
-      {approving && detail && waiting && (
+      {approving && detail && waiting?.approvalRevision && (
         <AlertDialog
           title={t("connections.tasks.approvalTitle")}
           onCancel={() => setApproving(false)}

@@ -55,6 +55,12 @@ export function ModelServices() {
   const [revision, setRevision] = useState(0);
   const [tab, setTab] = useState(settingsRoute === "external-api" ? "providers" : "defaults");
   const [pending, setPending] = useState<"close" | "delete" | null>(null);
+  // The route owns the visible tab: the external API entry opens providers, quick model management
+  // opens defaults. This only retargets the tab — the provider editor lives in its own Sheet outside
+  // the tab panels, so a route-driven tab change never closes it or discards an unsaved draft.
+  useEffect(() => {
+    setTab(settingsRoute === "external-api" ? "providers" : "defaults");
+  }, [settingsRoute]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit refresh generation
   useEffect(() => {
     setLoading(true);

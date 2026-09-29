@@ -23,6 +23,8 @@ const MODES = {
   standard: "library.standard",
   broad: "library.broad",
 } as const;
+// 三个预设默认全部展开：档名由 AccordionTrigger 显示，三个额度字段直接可见，标题不再内嵌裸数字。
+const PRESET_MODES = ["conservative", "standard", "broad"] as const;
 export function ResourceRules() {
   const s = useSuperstringStore();
   const t = useTranslation().t;
@@ -41,7 +43,7 @@ export function ResourceRules() {
   const read = s.knowledgeReadEditor?.agentId === editor.agent.id ? s.knowledgeReadEditor : null;
   return (
     <div className="grid items-start gap-6 xl:grid-cols-2">
-      <div className="space-y-6">
+      <div className="min-w-0 space-y-6">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -74,49 +76,50 @@ export function ResourceRules() {
               </p>
             )}
             <p className="text-sm text-muted-foreground">{t("library.memory.tools.on.demand")}</p>
-            <Accordion type="multiple">
-              {(["conservative", "standard", "broad"] as const).map((mode) => {
+            <Accordion type="multiple" defaultValue={[...PRESET_MODES]}>
+              {PRESET_MODES.map((mode) => {
                 const preset = p5.retrieval_presets[mode];
                 return (
                   <AccordionItem key={mode} value={mode}>
-                    <AccordionTrigger>
-                      {t(MODES[mode])} · {preset.candidate_limit} / {preset.max_entries} /{" "}
-                      {preset.max_tokens}
-                    </AccordionTrigger>
+                    <AccordionTrigger>{t(MODES[mode])}</AccordionTrigger>
                     <AccordionContent className="space-y-4 pt-2">
-                      <div className="grid gap-4 sm:grid-cols-3">
+                      <div className="grid min-w-0 gap-4 sm:grid-cols-2">
                         {(["candidate_limit", "max_entries", "max_tokens"] as const).map((key) => (
-                          <Field
+                          <div
                             key={key}
-                            label={
-                              {
-                                candidate_limit: "library.memory.tools.scan.limit",
-                                max_entries: "library.memory.tools.page.limit",
-                                max_tokens: "library.memory.tools.turn.budget",
-                              }[key]
-                            }
+                            className={key === "max_tokens" ? "min-w-0 sm:col-span-2" : "min-w-0"}
                           >
-                            <Input
-                              type="number"
-                              min={1}
-                              max={
-                                key === "max_tokens"
-                                  ? 1048576
-                                  : key === "candidate_limit"
-                                    ? 300
-                                    : Math.min(100, preset.candidate_limit)
+                            <Field
+                              label={
+                                {
+                                  candidate_limit: "library.memory.tools.scan.limit",
+                                  max_entries: "library.memory.tools.page.limit",
+                                  max_tokens: "library.memory.tools.turn.budget",
+                                }[key]
                               }
-                              value={preset[key]}
-                              onChange={(e) =>
-                                patch({
-                                  retrieval_presets: {
-                                    ...p5.retrieval_presets,
-                                    [mode]: { ...preset, [key]: Number(e.target.value) },
-                                  },
-                                })
-                              }
-                            />
-                          </Field>
+                            >
+                              <Input
+                                type="number"
+                                min={1}
+                                max={
+                                  key === "max_tokens"
+                                    ? 1048576
+                                    : key === "candidate_limit"
+                                      ? 300
+                                      : Math.min(100, preset.candidate_limit)
+                                }
+                                value={preset[key]}
+                                onChange={(e) =>
+                                  patch({
+                                    retrieval_presets: {
+                                      ...p5.retrieval_presets,
+                                      [mode]: { ...preset, [key]: Number(e.target.value) },
+                                    },
+                                  })
+                                }
+                              />
+                            </Field>
+                          </div>
                         ))}
                       </div>
                       <p className="text-sm text-muted-foreground">
@@ -127,10 +130,16 @@ export function ResourceRules() {
                 );
               })}
             </Accordion>
+            {/* 草稿安全跳转：经 openSettingsRoute 进入库内网页记忆分区维护整理提示，页面草稿保留。 */}
+            <div className="flex flex-wrap justify-end border-t pt-4">
+              <Button variant="link" size="sm" onClick={() => s.openSettingsRoute("long-memory")}>
+                {t("connections.goToLongTermMemory")}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <BookOpen className="size-4" />

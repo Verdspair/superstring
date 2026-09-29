@@ -1,5 +1,5 @@
 import { RefreshCw, Save, SlidersHorizontal } from "lucide-react";
-import { useEffect } from "react";
+import { type MouseEvent, useEffect, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { EXECUTION_MODULE_KEYS } from "../../../shared/contracts/permissions";
 import { Field } from "../../components/form-field";
@@ -143,8 +143,31 @@ const qqFields: NumericField[] = [
   },
 ];
 
+/** 页内锚点与卡片一一对应：标题和导航复用同一份标签，顺序即页面顺序。 */
+const SECTIONS = {
+  switches: "connections.execution.switches",
+  maintenance: "connections.execution.maintenance",
+  tasks: "connections.execution.tasks",
+  research: "connections.execution.researchGroup",
+  code: "connections.execution.codeGroup",
+  loop: "connections.execution.loop",
+  qq: "connections.execution.qq",
+} as const;
+type SectionKey = keyof typeof SECTIONS;
+const SECTION_ORDER: SectionKey[] = [
+  "switches",
+  "maintenance",
+  "tasks",
+  "research",
+  "code",
+  "loop",
+  "qq",
+];
+
 export function ExecutionSettings() {
   const { t } = useTranslation();
+  const uid = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
   const editor = useSuperstringStore((s) => s.permissionEditor);
   const loading = useSuperstringStore((s) => s.permissionLoading);
   const saving = useSuperstringStore((s) => s.permissionSaving);
@@ -163,13 +186,33 @@ export function ExecutionSettings() {
   const draft = editor?.execution;
   const dirty = permissionSettingsDirty(editor, "execution");
   const patch = (key: keyof ExecutionDraft, value: string | boolean) => update({ [key]: value });
-  const group = (title: string, fields: NumericField[]) => (
+  // 同一屏幕可能被渲染多份：锚点 id 用 useId 派生，实例之间不冲突。
+  const panelId = (section: SectionKey) => `${uid}execution-${section}`;
+  const jumpToSection = (section: SectionKey, event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    const panel = document.getElementById(panelId(section));
+    if (!panel) return;
+    panel.focus();
+    panel.scrollIntoView({ block: "start" });
+  };
+  const handleSave = async () => {
+    if (await save("execution")) return;
+    const root = rootRef.current;
+    const target =
+      root?.querySelector<HTMLElement>('[aria-invalid="true"]') ??
+      root?.querySelector<HTMLElement>('[role="alert"]');
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "center" });
+  };
+  const sectionTitle = (section: SectionKey) => (
+    <CardTitle id={panelId(section)} tabIndex={-1} role="heading" aria-level={3}>
+      {t(SECTIONS[section])}
+    </CardTitle>
+  );
+  const group = (section: SectionKey, fields: NumericField[]) => (
     <Card>
-      <CardHeader>
-        <CardTitle role="heading" aria-level={3}>
-          {t(title)}
-        </CardTitle>
-      </CardHeader>
+      <CardHeader>{sectionTitle(section)}</CardHeader>
       <CardContent className="grid gap-5 sm:grid-cols-2">
         {fields.map((field) => (
           <Field key={field.key} label={field.label} info={field.info}>
@@ -191,7 +234,7 @@ export function ExecutionSettings() {
     </Card>
   );
   return (
-    <div className="mx-auto max-w-5xl space-y-6 px-6 py-6 lg:px-8">
+    <div ref={rootRef} className="w-full min-w-0 space-y-6 px-6 py-6 lg:px-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="flex items-center gap-2 font-semibold">
@@ -214,14 +257,14 @@ export function ExecutionSettings() {
           >
             {t("library.discard.changes")}
           </Button>
-          <Button disabled={!dirty || saving || loading} onClick={() => void save("execution")}>
+          <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()}>
             <Save />
             {t("connections.execution.save")}
           </Button>
         </div>
       </div>
       {error && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" tabIndex={-1} className="text-sm text-destructive">
           {t(error)}
         </p>
       )}
@@ -233,61 +276,77 @@ export function ExecutionSettings() {
       {dirty && !notice && (
         <p className="text-xs text-muted-foreground">{t("connections.execution.unsaved")}</p>
       )}
-      <Card>
-        <CardHeader>
-          <CardTitle role="heading" aria-level={3}>
-            {t("connections.execution.switches")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-5 sm:grid-cols-2">
-          {EXECUTION_MODULE_KEYS.map((module) => (
-            <Field
-              key={module}
-              label={`connections.execution.modules.${module}`}
-              info={`connections.execution.modules.${module}Hint`}
-            >
+      <nav aria-label={t("connections.execution.title")} className="flex flex-wrap gap-1">
+        {SECTION_ORDER.map((section) => (
+          <Button key={section} asChild variant="ghost">
+            <a href={`#${panelId(section)}`} onClick={(event) => jumpToSection(section, event)}>
+              {t(SECTIONS[section])}
+            </a>
+          </Button>
+        ))}
+      </nav>
+      <div className="grid items-start gap-6 xl:grid-cols-2">
+        <Card className="xl:col-span-2">
+          <CardHeader>{sectionTitle("switches")}</CardHeader>
+          <CardContent className="grid gap-5 sm:grid-cols-2">
+            {EXECUTION_MODULE_KEYS.map((module) => (
+              <Field
+                key={module}
+                label={`connections.execution.modules.${module}`}
+                info={`connections.execution.modules.${module}Hint`}
+              >
+                <Checkbox
+                  checked={draft?.modules[module] ?? false}
+                  disabled={saving || !draft}
+                  onCheckedChange={(checked) =>
+                    draft && update({ modules: { ...draft.modules, [module]: checked === true } })
+                  }
+                />
+              </Field>
+            ))}
+            <Field label="connections.execution.research" info="connections.execution.researchHint">
               <Checkbox
-                checked={draft?.modules[module] ?? false}
+                checked={draft?.research ?? false}
                 disabled={saving || !draft}
-                onCheckedChange={(checked) =>
-                  draft && update({ modules: { ...draft.modules, [module]: checked === true } })
-                }
+                onCheckedChange={(checked) => patch("research", checked === true)}
               />
             </Field>
-          ))}
-          <Field label="connections.execution.research" info="connections.execution.researchHint">
-            <Checkbox
-              checked={draft?.research ?? false}
-              disabled={saving || !draft}
-              onCheckedChange={(checked) => patch("research", checked === true)}
-            />
-          </Field>
-          <Field label="connections.execution.code" info="connections.execution.codeHint">
-            <Checkbox
-              checked={draft?.code ?? false}
-              disabled={saving || !draft}
-              onCheckedChange={(checked) => patch("code", checked === true)}
-            />
-          </Field>
-        </CardContent>
-      </Card>
-      {group("connections.execution.maintenance", [
-        {
-          key: "memoryTimeoutSeconds",
-          label: "connections.execution.memoryTimeoutSeconds",
-          info: "connections.execution.memoryTimeoutSecondsHint",
-        },
-        {
-          key: "knowledgeTimeoutSeconds",
-          label: "connections.execution.knowledgeTimeoutSeconds",
-          info: "connections.execution.knowledgeTimeoutSecondsHint",
-        },
-      ])}
-      {group("connections.execution.tasks", taskFields)}
-      {group("connections.execution.researchGroup", researchFields)}
-      {group("connections.execution.codeGroup", codeFields)}
-      {group("connections.execution.loop", loopFields)}
-      {group("connections.execution.qq", qqFields)}
+            <Field label="connections.execution.code" info="connections.execution.codeHint">
+              <Checkbox
+                checked={draft?.code ?? false}
+                disabled={saving || !draft}
+                onCheckedChange={(checked) => patch("code", checked === true)}
+              />
+            </Field>
+          </CardContent>
+        </Card>
+        {group("maintenance", [
+          {
+            key: "memoryTimeoutSeconds",
+            label: "connections.execution.memoryTimeoutSeconds",
+            info: "connections.execution.memoryTimeoutSecondsHint",
+          },
+          {
+            key: "knowledgeTimeoutSeconds",
+            label: "connections.execution.knowledgeTimeoutSeconds",
+            info: "connections.execution.knowledgeTimeoutSecondsHint",
+          },
+        ])}
+        {group("tasks", taskFields)}
+        {group("research", researchFields)}
+        {group("code", codeFields)}
+        {group("loop", loopFields)}
+        {group("qq", qqFields)}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()}>
+          <Save />
+          {t("workspace.save")}
+        </Button>
+        <Button variant="outline" disabled={!dirty || saving} onClick={() => discard("execution")}>
+          {t("library.discard.changes")}
+        </Button>
+      </div>
       <p className="text-xs text-muted-foreground">{t("connections.execution.timing")}</p>
     </div>
   );

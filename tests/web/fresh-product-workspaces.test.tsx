@@ -101,10 +101,20 @@ describe("fresh assistant studio", () => {
     const broad = structuredClone(
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad,
     );
-    await userEvent.click(screen.getByRole("button", { name: /保守 ·/ }));
-    const candidates = screen.getByLabelText("每次查询扫描候选上限") as HTMLInputElement;
-    const entries = screen.getByLabelText("每页最大返回项") as HTMLInputElement;
-    const budget = screen.getByLabelText(
+    // 三档预设默认展开：三个预设的额度输入初始都可见，标题只剩档名。
+    for (const label of [
+      "每次查询扫描候选上限",
+      "每页最大返回项",
+      "每轮记忆工具结果总预算（UTF-8 字节）",
+    ]) {
+      expect(screen.getAllByLabelText(label)).toHaveLength(3);
+    }
+    const conservative = screen.getByRole("button", { name: "保守" });
+    const panel = document.getElementById(conservative.getAttribute("aria-controls") ?? "");
+    if (!panel) throw new Error("Missing conservative preset panel");
+    const candidates = within(panel).getByLabelText("每次查询扫描候选上限") as HTMLInputElement;
+    const entries = within(panel).getByLabelText("每页最大返回项") as HTMLInputElement;
+    const budget = within(panel).getByLabelText(
       "每轮记忆工具结果总预算（UTF-8 字节）",
     ) as HTMLInputElement;
     expect([candidates.min, candidates.max]).toEqual(["1", "300"]);
@@ -123,7 +133,7 @@ describe("fresh assistant studio", () => {
     expect(screen.queryByLabelText("每批目录条数")).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText(/技能文本不能授予资料访问权限/)).toBeTruthy();
-    expect(screen.getByText(/每次查询最多扫描 300 条候选/)).toBeTruthy();
+    expect(within(panel).getByText(/每次查询最多扫描 300 条候选/)).toBeTruthy();
     expect(screen.getByText(/全局每轮预算：2048 UTF-8 字节/)).toBeTruthy();
   });
   it.each(["full_catalog", "full_body"] as const)(
@@ -283,11 +293,12 @@ describe("fresh library tasks", () => {
     expect(screen.getByText("关闭共享不会搬迁或删除任何已有记忆。")).toBeTruthy();
   });
   /**
-   * 记忆维护（自动整理/轮数/目标字符/整理提示词）从 Agent 的资料规则页迁到
-   * 资料库→记忆的**网页对话记忆**分区面板，与 QQ 分区那套绑定控制同位。它属于那个分区，不是整页：
-   * 没选中该分区时不出现；保存仍走 long-memory 白名单（后端与字段归属没变）。
+   * 记忆维护（自动整理/轮数/目标字符/整理提示词）位于资料库→记忆的正文区：
+   * 空 scope（所有分区）即可用，选中网页对话记忆分区仍可用；QQ 分区只显示绑定控制，不混入网页维护。
+   * 保存仍走 long-memory 白名单（后端与字段归属没变）。资料规则页（Agent）不再承载维护编辑器，
+   * 只保留跳转入口（不是第二个编辑器），这里断言没有重复维护控件。
    */
-  it("keeps memory maintenance inside the web conversation partition and saves its own whitelist", async () => {
+  it("keeps memory maintenance available without a selected partition and saves its own whitelist", async () => {
     const client = setupLibrary({
       updatePolicy: vi.fn(async (_id: string, body: object) => ({
         ...policy,
@@ -301,8 +312,11 @@ describe("fresh library tasks", () => {
       })),
     });
     await act(async () => render(<MemoryLibrary />));
-    expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
+    // 空 scope 也能管理：不选中任何分区时维护卡已在正文区。
+    expect(screen.getByLabelText("自动整理网页对话记忆")).toBeTruthy();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /网页对话记忆/ })));
+    // 选中网页对话记忆分区后仍可用。
+    expect(screen.getByLabelText("自动整理网页对话记忆")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("每隔多少轮整理"), { target: { value: "30" } });
     expect(store.getState().pageEditor?.policyDraft?.every_turns).toBe(30);
     fireEvent.change(screen.getByLabelText("记忆整理提示词"), { target: { value: "保留事实" } });
@@ -316,9 +330,14 @@ describe("fresh library tasks", () => {
       A,
       expect.objectContaining({ memory_consolidation_prompt: "保留事实" }),
     );
-    // 原位置（Agent 的资料规则页）不再承载这块界面，也不该有第二个入口。
+    // 切到 QQ 分区：只对应绑定控制，不混入网页维护。
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /QQ · 私聊 20002/ })));
+    expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
+    expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
+    // 资料规则页（Agent）只保留「前往长期记忆」跳转入口（不是第二个编辑器），没有重复维护控件。
     cleanup();
     await act(async () => render(<ResourceRules />));
+    expect(screen.getByRole("button", { name: "前往长期记忆" })).toBeTruthy();
     expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
     expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
   });

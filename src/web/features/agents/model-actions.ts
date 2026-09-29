@@ -4,7 +4,7 @@ import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 
 type Capacity = Awaited<ReturnType<SuperstringApi["getModelCapacity"]>>;
-type CapacityLabel = "聊天" | "摘要";
+type CapacityLabel = "聊天" | "上下文压缩";
 export function createModelActions(
   set: StoreSet,
   get: StoreGet,
@@ -119,7 +119,7 @@ export function createModelActions(
       const compressionModel = probeModels ? probeModels[2] : draft.context_compression_model_name;
       const models = [
         ["聊天", chatModel],
-        ["摘要", compressionModel ?? chatModel],
+        ["上下文压缩", compressionModel ?? chatModel],
       ] as const;
       const cache = new Map<string, Capacity>();
       const results: Array<readonly [CapacityLabel, Capacity]> = [];

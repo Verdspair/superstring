@@ -189,6 +189,7 @@ export function qqSchemeDirty(editor: QqSchemeEditor | null): boolean {
 export interface QqSchemeChange {
   /** `group.field` — the page turns this into a label; the rule stays language-free. */
   readonly field: string;
+  /** Text as stored; a boolean arrives as the language-neutral `true`/`false`. */
   readonly before: string;
   readonly after: string;
 }
@@ -202,8 +203,10 @@ export interface QqSchemeChange {
 export function qqSchemeChanges(editor: QqSchemeEditor | null): readonly QqSchemeChange[] {
   if (!editor) return [];
   const changes: QqSchemeChange[] = [];
-  const text = (value: unknown) =>
-    typeof value === "boolean" ? (value ? "开" : "关") : String(value);
+  // Language-neutral on purpose: a boolean reads as `true`/`false` here, and only the page knows
+  // which fields really are switches — so only it renders on/off labels, and a text value that
+  // happens to read "true" or "开" is never translated.
+  const text = (value: unknown) => String(value);
   const compare = (field: string, before: unknown, after: unknown) => {
     if (text(before) !== text(after))
       changes.push({ field, before: text(before), after: text(after) });

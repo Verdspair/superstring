@@ -44,6 +44,58 @@ import {
   utcMinutes,
 } from "./scheme-fields";
 
+/** Only these fields are switches; text that reads "true"/"开"/"关" is the user's own content. */
+const schemeBooleanFields: ReadonlySet<string> = new Set([
+  ...Object.keys(TRIGGER_LABELS).map((key) => `triggers.${key}`),
+  "rhythm.active_hours_enabled",
+  "reply.split_by_speaker",
+]);
+
+const schemeFieldLabels: Readonly<Record<string, string>> = {
+  name: "connections.schemeName",
+  description: "connections.description",
+  ...Object.fromEntries(
+    Object.entries(TRIGGER_LABELS).map(([key, label]) => [`triggers.${key}`, label]),
+  ),
+  ...Object.fromEntries(participationFields.map(([name, label]) => [`rhythm.${name}`, label])),
+  ...Object.fromEntries(mediaFields.map(([group, name, label]) => [`${group}.${name}`, label])),
+  "rhythm.active_hours_enabled": "connections.allowedHours",
+  "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
+  "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
+  "context.judgement_message_limit": "connections.judgementRecentMessages",
+  "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
+  "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
+  "context.reply_message_limit": "connections.replyRecentMessages",
+  "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
+  "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
+  "compression.watermark_trigger": "connections.watermarkTriggerMessages",
+  "compression.package_limit": "connections.watermarkPackageLimit",
+  "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
+  "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
+  "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
+  "sticker_collections.collection_ids": "connections.authorizedCollections",
+  "prompts.scene": "connections.sceneAndBehaviour",
+  "prompts.judge": "connections.judgementTask",
+  "prompts.reply": "connections.effectiveReplyTask",
+  "prompts.review": "connections.reviewTask",
+  "prompts.sticker": "connections.stickerTask",
+  "prompts.media": "connections.mediaNoteTask",
+  "prompts.compress": "connections.watermarkCompressionTask",
+  "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
+};
+
+/** Collection ids read as names; an id no known collection matches stays visible instead of vanishing. */
+function schemeCollectionNames(
+  joined: string,
+  collections: readonly { readonly id: string; readonly name: string }[],
+): string {
+  if (joined.trim() === "") return joined;
+  return joined
+    .split("、")
+    .map((id) => collections.find((collection) => collection.id === id)?.name ?? id)
+    .join("、");
+}
+
 function SchemeNumber({
   group,
   name,
@@ -284,6 +336,25 @@ export function SchemeStudio() {
     void loadQqStickers();
   }, [loadQqSchemes, loadQqStickers]);
   const changes = qqSchemeChanges(editor);
+  const previewValue = (field: string, raw: string) => {
+    if (field === "sticker_collections.collection_ids")
+      return schemeCollectionNames(raw, state.qqStickerCollections);
+    // Stored ratio/UTC minutes; the form edits percent and local clock, so the preview does too.
+    if (field === "compression.headroom_ratio") {
+      const ratio = Number(raw);
+      return Number.isFinite(ratio) ? String(Math.round(ratio * 100)) : raw;
+    }
+    if (
+      field === "rhythm.active_hours_start_minutes" ||
+      field === "rhythm.active_hours_end_minutes"
+    ) {
+      const minutes = Number(raw);
+      return Number.isFinite(minutes) ? localClock(minutes) : raw;
+    }
+    return schemeBooleanFields.has(field) && (raw === "true" || raw === "false")
+      ? t(raw === "true" ? "connections.on" : "connections.off")
+      : raw;
+  };
   const invalid =
     Object.keys(state.qqInputs.schemeInvalid).length > 0 || invalidSchemeInputs(state).length > 0;
   const dirty = qqSchemeDirty(editor) || invalid;
@@ -450,7 +521,8 @@ export function SchemeStudio() {
                     />
                     {t("connections.allowedHours")}
                   </Label>
-                  <div className="grid grid-cols-2 gap-5">
+                  {/* 窄屏单列：两个 time 输入并排会被压到内容裁切，sm 起恢复两列。 */}
+                  <div className="grid gap-5 sm:grid-cols-2">
                     {(["start", "end"] as const).map((side) => {
                       const key = `active_hours_${side}_minutes` as const;
                       return (
@@ -801,17 +873,22 @@ export function SchemeStudio() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {changes.map((change) => (
-                <TableRow key={change.field}>
-                  <TableCell className="font-mono text-xs">{change.field}</TableCell>
-                  <TableCell className="max-w-64 whitespace-pre-wrap break-words">
-                    {change.before}
-                  </TableCell>
-                  <TableCell className="max-w-64 whitespace-pre-wrap break-words">
-                    {change.after}
-                  </TableCell>
-                </TableRow>
-              ))}
+              {changes.map((change) => {
+                const label = schemeFieldLabels[change.field];
+                return (
+                  <TableRow key={change.field}>
+                    <TableCell className="text-xs whitespace-normal break-words">
+                      {label ? t(label) : <span className="font-mono">{change.field}</span>}
+                    </TableCell>
+                    <TableCell className="max-w-64 whitespace-pre-wrap break-words">
+                      {previewValue(change.field, change.before)}
+                    </TableCell>
+                    <TableCell className="max-w-64 whitespace-pre-wrap break-words">
+                      {previewValue(change.field, change.after)}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </DialogContent>

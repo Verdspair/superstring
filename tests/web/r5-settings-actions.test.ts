@@ -65,7 +65,7 @@ describe("R5 设置页动作", () => {
     expect(getModelCapacity).toHaveBeenCalledWith("qwen/a");
     expect(useSuperstringStore.getState().capacityPreview).toContain("聊天：实际 32768");
     expect(useSuperstringStore.getState().capacityPreview).not.toContain("记忆读取");
-    expect(useSuperstringStore.getState().capacityPreview).toContain("摘要：实际 32768");
+    expect(useSuperstringStore.getState().capacityPreview).toContain("上下文压缩：实际 32768");
     const p5 = P5ConfigSchema.parse({});
     const available = 32768 - p5.max_output_tokens - Math.ceil(32768 * p5.safety_margin_ratio);
     expect(useSuperstringStore.getState().capacityPreview).toContain(`输入可用约 ${available}`);

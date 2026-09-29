@@ -66,7 +66,9 @@ export function activeSpace(
   if (state.settingsView === "operating-mode") return "connections";
   if (state.settingsView === "knowledge") return "library";
   if (state.settingsView === "agents") return "assistants";
-  if (["external-api", "management", "knowledge-model"].includes(state.settingsRoute))
+  // "models" is the canonical route every quick-management entry normalizes to; the legacy aliases
+  // and the external API entry stay here so each destination keeps its own screen and tab.
+  if (["models", "external-api", "management", "knowledge-model"].includes(state.settingsRoute))
     return "models";
   if (["long-memory", "profile", "knowledge-config", "qq-stickers"].includes(state.settingsRoute))
     return "library";
