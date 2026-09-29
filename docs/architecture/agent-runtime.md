@@ -35,9 +35,13 @@ The MCP adapter uses the official TypeScript client with 2026-07-28-first negoti
 
 MCP 适配使用官方 TypeScript 客户端，优先协商 2026-07-28 并兼容旧传输。JSON Schema 2020-12 与 draft-07 校验不读取网络引用；结构化结果保留原 JSON 值，并和文本共同受结果上限约束。目录变化先使已捕获工具失效再重新发现，取消与请求期限由适配层管理。只有显式信任的服务，其只读提示才影响执行方式，统一授权仍必需；应用不声明可选的模型采样、信息征询和根目录能力，也不提供交互式 OAuth 登录。
 
-Skills use the Agent Skills document format: each directory contains `SKILL.md` with YAML frontmatter. The name matches its directory, names and descriptions follow the format limits, and license, compatibility, string metadata and the experimental `allowed-tools` declaration are preserved. The application exposes a metadata catalog and loads the complete document on demand; installed content remains subordinate to host instructions and grants. It does not consume `skill.json` or execute bundled scripts. `allowed-tools` is descriptive only and cannot approve a tool. Duplicate YAML keys, unsafe paths and oversized files are rejected by the host; file-size limits are application safeguards, not the specification's recommended token or line counts.
+Skills use the Agent Skills document format: each directory contains `SKILL.md` with YAML frontmatter. The name matches its directory, names and descriptions follow the format limits, and license, compatibility, string metadata and the experimental `allowed-tools` declaration are preserved. The application exposes a metadata catalog, loads the complete document on demand as task guidance (always subordinate to the system prompt and permissions), and reads text resources inside the skill directory as paged plain text; resources travel as material, not instructions. It does not consume `skill.json` or execute bundled scripts, and `allowed-tools` is descriptive only — it cannot approve a tool. Document and resource revisions travel as source references and are re-verified at every checkpoint. Duplicate YAML keys, unsafe paths, binary resources and oversized files are rejected by the host; file-size limits are application safeguards, not the specification's recommended token or line counts.
 
-Skills 使用 Agent Skills 文档格式：每个目录包含带 YAML frontmatter 的 `SKILL.md`，名称须匹配目录并遵守格式长度与字符规则，保留许可证、兼容性、字符串元数据及实验性 `allowed-tools` 声明。应用提供元数据目录，按需读取完整文档；技能内容仍受宿主指令和授权约束，不读取 `skill.json`、不执行附带脚本。`allowed-tools` 只作声明，不能批准工具。宿主拒绝重复 YAML 键、越界路径及超大文件；文件大小限制是应用保护，不是规范建议的 token 或行数上限。
+Skills 使用 Agent Skills 文档格式：每个目录包含带 YAML frontmatter 的 `SKILL.md`，名称须匹配目录并遵守格式长度与字符规则，保留许可证、兼容性、字符串元数据及实验性 `allowed-tools` 声明。应用提供元数据目录；按需把完整文档作为任务指导读入（始终服从系统提示与权限），并按分页纯文本读取技能目录内的文本资源；资源是材料、不是指令。不读取 `skill.json`、不执行附带脚本，`allowed-tools` 只作声明、不能批准工具。文档与资源的修订随来源引用出行，并在每个检查点复验。宿主拒绝重复 YAML 键、越界路径、二进制资源及超大文件；文件大小限制是应用保护，不是规范建议的 token 或行数上限。
+
+Revocation and expiry are re-verified at execution checkpoints and at the commit boundary; text already streamed to a client cannot be recalled, so a mid-stream revocation stops the run at the next checkpoint instead of retracting output.
+
+撤权与过期在执行检查点和提交边界复验；已经流出的文本无法收回——中途撤权会让运行在下一个检查点停止，而不是撤回已发出的内容。
 
 ## Durable tool plans and optional execution
 

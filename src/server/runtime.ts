@@ -49,6 +49,7 @@ import { QqIntakeRuntime } from "./services/qq-intake";
 import type { QqSendPort } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
 import { createSkillActions } from "./skills/actions";
+import { skillSourceAccess } from "./skills/sources";
 
 export const DEFAULT_BUSINESS_DB_PATH = path.resolve("data/superstring.sqlite");
 
@@ -148,7 +149,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   };
   const actionExecutor = new ActionExecutor(permissions, () => execution().loop.readBatch);
   const resolveDomainSource: ModuleSourceResolver = (source, owner, at) =>
-    permissions.sourceAccess(source, owner) ?? options.resolveSource?.(source, owner, at);
+    permissions.sourceAccess(source, owner) ??
+    skillSourceAccess(options.skillRoot, source) ??
+    options.resolveSource?.(source, owner, at);
   const resolveSource: ModuleSourceResolver = (source, owner, at) =>
     tasks.sourceAccess(source, owner) ?? resolveDomainSource(source, owner, at);
   // MCP 宿主（0.4.0 P6）：只有给了登记文件才建。没有配置文件＝没有 MCP，行为与不加这个功能一致。

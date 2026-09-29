@@ -90,6 +90,24 @@ describe("standard skills management", () => {
     expect(JSON.stringify(detail.metadata)).toBe('{"__proto__":"literal","constructor":"exact"}');
   });
 
+  it("keeps on-demand text resources out of the management catalog and detail", async () => {
+    const f = workspace();
+    skill(f.dir, "demo");
+    mkdirSync(path.join(f.dir, "demo", "references"), { recursive: true });
+    writeFileSync(path.join(f.dir, "demo", "references", "notes.txt"), "RESOURCE-BODY-MARKER");
+    writeFileSync(
+      path.join(f.dir, "demo", "references", "icon.png"),
+      Buffer.from([0x89, 0x50, 0x00]),
+    );
+    const catalog = await (await f.app.request("/v2/skills")).json();
+    const detail = await (await f.app.request("/v2/skills/demo")).json();
+    expect(JSON.stringify(catalog)).not.toContain("RESOURCE-BODY-MARKER");
+    expect(JSON.stringify(detail)).not.toContain("RESOURCE-BODY-MARKER");
+    expect(Object.keys(catalog.skills[0]).sort()).toEqual(["description", "name", "revision"]);
+    expect(detail).not.toHaveProperty("resources");
+    expect(detail).not.toHaveProperty("resource");
+  });
+
   it("rescans catalog and detail on each request instead of retaining stale or invalid entries", async () => {
     const f = workspace();
     skill(f.dir, "demo");

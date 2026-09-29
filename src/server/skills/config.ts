@@ -103,6 +103,62 @@ function documentFile(dir: string): { dir: string; instructions: string; revisio
   }
 }
 
+export interface SkillResourceFile {
+  readonly text: string;
+  readonly sha256: string;
+}
+
+/** Stable resource identity: sha256(documentRevision + "\n" + path + "\n" + fileSha256). */
+export function skillResourceRevision(
+  documentRevision: string,
+  relative: string,
+  fileSha256: string,
+): string {
+  return createHash("sha256")
+    .update(`${documentRevision}\n${relative}\n${fileSha256}`)
+    .digest("hex");
+}
+
+/** Read one text resource inside a skill directory; binary content never becomes text. */
+export function readSkillResource(dir: string, relative: string): SkillResourceFile {
+  try {
+    const resolved = resolveSkillFile(dir, relative);
+    const fd = openSync(resolved, "r");
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile()) throw new PermissionError("SKILL_FILE_INVALID");
+      if (info.size > DOCUMENT_MAX_BYTES) throw new PermissionError("SKILL_FILE_TOO_LARGE");
+      const current = resolveSkillFile(dir, relative);
+      const currentInfo = statSync(current);
+      if (current !== resolved || currentInfo.dev !== info.dev || currentInfo.ino !== info.ino)
+        throw new PermissionError("SKILL_FILE_INVALID");
+      const buffer = Buffer.alloc(DOCUMENT_MAX_BYTES + 1);
+      let length = 0;
+      for (;;) {
+        const count = readSync(fd, buffer, length, buffer.length - length, null);
+        length += count;
+        if (length > DOCUMENT_MAX_BYTES) throw new PermissionError("SKILL_FILE_TOO_LARGE");
+        if (count === 0) break;
+      }
+      const bytes = buffer.subarray(0, length);
+      let text: string;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+      } catch {
+        throw new PermissionError("SKILL_FILE_INVALID");
+      }
+      // A NUL means the bytes are not a text resource; the spec reads text only.
+      if (text.includes("\u0000")) throw new PermissionError("SKILL_FILE_INVALID");
+      return { text, sha256: createHash("sha256").update(bytes).digest("hex") };
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if (error instanceof PermissionError) throw error;
+    throw new PermissionError("SKILL_FILE_INVALID");
+  }
+}
+
 function parseMetadata(instructions: string): SkillMetadata {
   const opening = /^\uFEFF?---\r?\n/u.exec(instructions);
   if (!opening) throw new PermissionError("SKILL_DOCUMENT_INVALID");
