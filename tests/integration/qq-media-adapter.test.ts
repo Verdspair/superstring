@@ -10,7 +10,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import upstream from "omggif";
-import { createEphemeralAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { mediaNoteRow, recordMediaSegment } from "../../src/server/db/qq-media-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
@@ -21,6 +20,7 @@ import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames"
 import { createQqMediaAdapter } from "../../src/server/services/qq-media-adapter";
 import { readQqAddressedMediaOnce } from "../../src/server/services/qq-media-cycle";
 import { createQqMediaSourceFetcher } from "../../src/server/services/qq-media-source";
+import { createEphemeralAgentRuntime } from "../harness/ephemeral-runtime";
 
 const AGENT = "00000000-0000-0000-0000-000000000001";
 const PNG = new Uint8Array(encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(0x40), 8, 8));

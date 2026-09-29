@@ -278,21 +278,24 @@ describe("unified AgentRuntime", () => {
         yield "B";
       },
     });
-    const actions = createBuiltInActions({
-      memory: {
-        async query(input, ctx) {
-          expect(input.query).toBe("rule");
-          expect(ctx.owner.agentId).toBe("a");
-          return [
-            {
-              id: "m",
-              text: "untrusted rule",
-              sources: [{ kind: "memory", id: "m", revision: "1" }],
-            },
-          ];
+    const actions = createBuiltInActions(
+      {
+        memory: {
+          async query(input, ctx) {
+            expect(input.query).toBe("rule");
+            expect(ctx.owner.agentId).toBe("a");
+            return [
+              {
+                id: "m",
+                text: "untrusted rule",
+                sources: [{ kind: "memory", id: "m", revision: "1" }],
+              },
+            ];
+          },
         },
       },
-    });
+      { assertSources: () => {}, fit: async () => () => true },
+    );
     const events: RunEvent[] = [];
     let committed = false;
     const result = await runtime.run(
@@ -369,7 +372,10 @@ describe("unified AgentRuntime", () => {
         return '{"kind":"none"}';
       },
     });
-    const actions = createBuiltInActions({ memory: { query: async () => [] } });
+    const actions = createBuiltInActions(
+      { memory: { query: async () => [] } },
+      { assertSources: () => {}, fit: async () => () => true },
+    );
     const result = await runtime.run(
       { ...spec, availableActions: actions.map((action) => action.description) },
       {
@@ -475,13 +481,16 @@ describe("unified AgentRuntime", () => {
    * ②原生调用映射回来的仍是同一个决策入口，所以"没被广告过的动作"照旧拒绝——引入 tools 不放松授权。
    */
   it("decides on a reply that mixes the decision JSON with native call markers", async () => {
-    const actions = createBuiltInActions({
-      memory: {
-        async query() {
-          return [];
+    const actions = createBuiltInActions(
+      {
+        memory: {
+          async query() {
+            return [];
+          },
         },
       },
-    });
+      { assertSources: () => {}, fit: async () => () => true },
+    );
     const seen: ModelRequest[] = [];
     const { runtime } = setup({
       async complete(request) {
@@ -623,13 +632,16 @@ describe("unified AgentRuntime", () => {
 
   it("declares advertised actions as native tools, and still refuses an action nobody advertised", async () => {
     const seen: ModelRequest[] = [];
-    const actions = createBuiltInActions({
-      memory: {
-        async query() {
-          return [];
+    const actions = createBuiltInActions(
+      {
+        memory: {
+          async query() {
+            return [];
+          },
         },
       },
-    });
+      { assertSources: () => {}, fit: async () => () => true },
+    );
     const declared = actions.map((action) => action.description);
     const declaredRun = setup({
       async complete(request) {
@@ -638,13 +650,13 @@ describe("unified AgentRuntime", () => {
       },
     });
     await declaredRun.runtime.run({ ...spec, availableActions: declared }, { ...direct, actions });
-    expect(seen[0]?.tools).toEqual([
-      {
-        name: "memory.query",
-        description: declared[0]?.description,
-        parameters: declared[0]?.parameters,
-      },
-    ]);
+    expect(seen[0]?.tools).toEqual(
+      declared.map((description) => ({
+        name: description.name,
+        description: description.description,
+        parameters: description.parameters,
+      })),
+    );
     // 叶子任务仍然只用 responseSchema，不声明 tools。
     const leafSeen: ModelRequest[] = [];
     const leaf = setup({

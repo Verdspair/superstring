@@ -6,7 +6,6 @@ export interface ToolDescriptor extends Omit<ActionDescription, "effect"> {
   readonly sandboxCallable: boolean;
 }
 export interface ToolCatalog {
-  list(): readonly ToolDescriptor[];
   get(name: string): ToolDescriptor | undefined;
   sandboxable(): readonly ToolDescriptor[];
   advertised(): readonly ActionDescription[];
@@ -27,7 +26,6 @@ export function createToolCatalog(actions: readonly BuiltInAction[]): ToolCatalo
     byName.set(descriptor.name, descriptor);
   }
   return {
-    list: () => descriptors,
     get: (name) => byName.get(name),
     sandboxable: () => descriptors.filter((descriptor) => descriptor.sandboxCallable),
     advertised: () => actions.map((action) => ({ ...action.description })),

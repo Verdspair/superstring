@@ -13,8 +13,7 @@ import type {
 } from "../../shared/contracts/agent-run";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ExecutionMode } from "../../shared/contracts/permissions";
-import { AgentRunRepository } from "../db/agent-run-repository";
-import { openBusinessDb } from "../db/schema-gate";
+import type { AgentRunRepository } from "../db/agent-run-repository";
 import type { ChatMessage } from "../llm/model-gateway";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
 import {
@@ -53,7 +52,6 @@ import {
 } from "./context-engine";
 import { createModelPort, type ModelPort, type TextModelGateway, textMessages } from "./model-port";
 import { createResearchAction, type ResearchLimits } from "./research-action";
-import { createToolCatalog } from "./tool-catalog";
 
 export interface LeafInput {
   messages: ChatMessage[];
@@ -243,7 +241,6 @@ export class AgentRuntime {
   ) {
     this.contextEngine = options.contextEngine ?? new ContextEngine();
     this.executor = options.actionExecutor ?? new ActionExecutor();
-    createToolCatalog(options.actions ?? []);
     this.actions = new Map(
       (options.actions ?? []).map((action) => [action.description.name, action]),
     );
@@ -264,24 +261,15 @@ export class AgentRuntime {
     return this.withRun(active, () => this.completeLeafRun(active, spec, input));
   }
 
-  private async completeLeafRun(
-    active: Running,
-    spec: LeafAgentSpec,
-    input: LeafInput,
-  ): Promise<string> {
-    try {
-      await this.emit(active, { type: "started" });
-      this.repository.setStatus(active.runId, "generating", this.now());
+  private completeLeafRun(active: Running, spec: LeafAgentSpec, input: LeafInput): Promise<string> {
+    return this.completeLeafTask(active, "leaf", input, () => {
       const messages = [
         ...(spec.instructions === undefined ? [] : [textMessage("system", spec.instructions)]),
         ...textMessages(input.messages),
       ];
-      const value = await this.step(
-        active,
-        "leaf",
+      return {
         messages,
-        input.sources ?? [],
-        async (capture, onModelResolved) => {
+        invoke: async (capture, onModelResolved) => {
           const raw = await this.options.model.complete({
             messages,
             model: spec.model,
@@ -296,15 +284,8 @@ export class AgentRuntime {
           await input.validate?.(raw);
           return raw;
         },
-      );
-      await this.finish(active, "completed", { type: "completed", outputs: [] });
-      return value;
-    } catch (error) {
-      await this.fail(active, error);
-      throw error;
-    } finally {
-      active.dispose();
-    }
+      };
+    });
   }
 
   async completeVisionLeaf(spec: LeafAgentSpec, input: VisionLeafInput): Promise<string> {
@@ -312,14 +293,12 @@ export class AgentRuntime {
     return this.withRun(active, () => this.completeVisionRun(active, spec, input));
   }
 
-  private async completeVisionRun(
+  private completeVisionRun(
     active: Running,
     spec: LeafAgentSpec,
     input: VisionLeafInput,
   ): Promise<string> {
-    try {
-      await this.emit(active, { type: "started" });
-      this.repository.setStatus(active.runId, "generating", this.now());
+    return this.completeLeafTask(active, "vision", input, () => {
       const source = input.sources?.[0];
       const messages: ModelMessage[] = [
         ...(spec.instructions === undefined ? [] : [textMessage("system", spec.instructions)]),
@@ -337,12 +316,9 @@ export class AgentRuntime {
           ],
         },
       ];
-      const value = await this.step(
-        active,
-        "vision",
+      return {
         messages,
-        input.sources ?? [],
-        async (capture) => {
+        invoke: async (capture) => {
           const raw = await this.options.model.completeMultimodal({
             systemPrompt: spec.instructions,
             temperature: spec.temperature,
@@ -357,7 +333,27 @@ export class AgentRuntime {
           await input.validate?.(raw);
           return raw;
         },
-      );
+      };
+    });
+  }
+
+  private async completeLeafTask(
+    active: Running,
+    phase: "leaf" | "vision",
+    input: { sources?: readonly SourceRef[] },
+    prepare: () => {
+      messages: ModelMessage[];
+      invoke: (
+        capture: (text: string, complete?: boolean) => void,
+        onModelResolved: (model: string) => void,
+      ) => Promise<string>;
+    },
+  ): Promise<string> {
+    try {
+      await this.emit(active, { type: "started" });
+      this.repository.setStatus(active.runId, "generating", this.now());
+      const { messages, invoke } = prepare();
+      const value = await this.step(active, phase, messages, input.sources ?? [], invoke);
       await this.finish(active, "completed", { type: "completed", outputs: [] });
       return value;
     } catch (error) {
@@ -467,7 +463,6 @@ export class AgentRuntime {
       active.assertActions = () => {
         for (const action of usedActions) this.executor.assert(action, actionContext, mode);
       };
-      createToolCatalog(input.actions ?? [...actions.values()]);
       await this.emit(active, {
         type: "started",
         ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -1351,16 +1346,4 @@ export function createAgentRuntime(options: {
   providerKey?: (model: string | undefined) => string;
 }): AgentRuntime {
   return new AgentRuntime({ ...options, model: createModelPort(options) });
-}
-
-/** Explicit isolated test runtime; production assembly always supplies the business repository. */
-export function createEphemeralAgentRuntime(options: {
-  gateway?: TextModelGateway;
-  vision?: VisionClient;
-}): AgentRuntime & { close(): void } {
-  const handle = openBusinessDb();
-  return Object.assign(
-    createAgentRuntime({ ...options, repository: new AgentRunRepository(handle.db) }),
-    { close: () => handle.close() },
-  );
 }

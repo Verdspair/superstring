@@ -79,7 +79,7 @@ const unavailable = { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", it
 
 export function createBuiltInActions(
   modules: { memory?: EvidenceQueryModule; knowledge?: EvidenceQueryModule },
-  options?: EvidenceActionOptions,
+  options: EvidenceActionOptions,
 ): BuiltInAction[] {
   return Object.entries(modules).flatMap(([kind, module]): BuiltInAction[] => {
     const bodies = new Map<string, Evidence>();
@@ -87,7 +87,7 @@ export function createBuiltInActions(
     const query: BuiltInAction = {
       description: {
         name: `${kind}.query`,
-        description: `Search authorized ${kind}. Returns {status, code?, items}. ${options ? `Items are {id,title,summary,bodyRef}; use ${kind}.read for paged text.` : "Items contain evidence text."} ok with empty items means nothing relevant; unavailable means this read failed, not nothing found.`,
+        description: `Search authorized ${kind}. Returns {status, code?, items}. Items are {id,title,summary,bodyRef}; use ${kind}.read for paged text. ok with empty items means nothing relevant; unavailable means this read failed, not nothing found.`,
         parameters: z.toJSONSchema(QuerySchema),
         capability: `${kind}.read`,
         effect: "read",
@@ -101,7 +101,6 @@ export function createBuiltInActions(
           : (result as EvidenceQueryResult);
         context.signal.throwIfAborted();
         const sources = uniqueSources(envelope.items.flatMap((entry) => entry.sources));
-        if (!options) return { value: envelope, sources };
         options.assertSources(sources);
         const fits = await options.fit(`${kind}.query`, arguments_, context.signal);
         context.signal.throwIfAborted();
@@ -133,8 +132,6 @@ export function createBuiltInActions(
         };
       },
     };
-    if (!options) return [query];
-    const access = options;
     return [
       query,
       {
@@ -150,10 +147,10 @@ export function createBuiltInActions(
           const input = ReadSchema.parse(arguments_);
           const evidence = bodies.get(input.bodyRef);
           if (!evidence) fail("CONTEXT_INVALID_SELECTION", "正文引用不属于本轮已授权查询");
-          access.assertSources(evidence.sources);
-          const fits = await access.fit(`${kind}.read`, arguments_, context.signal);
+          options.assertSources(evidence.sources);
+          const fits = await options.fit(`${kind}.read`, arguments_, context.signal);
           context.signal.throwIfAborted();
-          access.assertSources(evidence.sources);
+          options.assertSources(evidence.sources);
           const text = [...evidence.text];
           const offset = input.offset ?? 0;
           if (offset > text.length) fail("CONTEXT_INVALID_SELECTION", "正文分页位置超出范围");
