@@ -184,3 +184,52 @@ export function structuredOutputRejected(error: unknown): boolean {
     status !== 429
   );
 }
+
+export interface StructuredOutputChainOptions<T> {
+  /** 服务+模型身份，见 `structuredOutputKey`。 */
+  readonly key: string;
+  /** 日志里显示的模型名。 */
+  readonly model: string;
+  /** 有响应 schema 才走降级链；没有就直接发 "none"。 */
+  readonly hasSchema: boolean;
+  /** 形状是否被严格模式接受；由调用方判定（本地路由不参与这个判断）。 */
+  readonly strictAccepted: boolean;
+  readonly send: (level: StructuredOutputLevel) => Promise<T>;
+  /** 降级日志尾部的失败详情；不提供则不加。 */
+  readonly rejectionDetail?: (error: unknown) => string;
+}
+
+/**
+ * 降级链的驱动：严格 json_schema → json_object → 不带该字段。网关的文本调用与视觉调用共用它，
+ * 差别只在发送层（网关还叠了 tools 重试）、日志里的模型名与降级日志是否附失败详情。
+ */
+export async function withStructuredOutputChain<T>(
+  options: StructuredOutputChainOptions<T>,
+): Promise<T> {
+  const { key, model, hasSchema, strictAccepted, send, rejectionDetail } = options;
+  if (!hasSchema) return send("none");
+  if (!strictAccepted) announceStrictSchemaSkip(key, model);
+  let level = structuredOutputStart(key, strictAccepted);
+  // 只有"这一轮真的撞过更严的档"才值得记住并提示；直接跳过不算。
+  const attemptedStrict = level === "json_schema";
+  for (;;) {
+    try {
+      const payload = await send(level);
+      if (level !== "json_schema" && attemptedStrict) {
+        rememberStructuredOutput(key, level);
+        console.warn(`[model-structured] ${model} 本进程起改用 ${level}（该服务不接受更严的档）`);
+      }
+      return payload;
+    } catch (error) {
+      if (!structuredOutputRejected(error)) throw error;
+      const next = nextStructuredOutputLevel(level);
+      if (next === null) throw error;
+      const status = (error as { status?: number }).status;
+      const detail = rejectionDetail === undefined ? "" : `：${rejectionDetail(error)}`;
+      console.warn(
+        `[model-structured] ${model} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}${detail}`,
+      );
+      level = next;
+    }
+  }
+}

@@ -30,15 +30,12 @@ import { Readable } from "node:stream";
 import { INVOKE_BATCH_LIMIT } from "../agent/agent-specs";
 import { ModelUnavailableError } from "../errors";
 import {
-  announceStrictSchemaSkip,
-  nextStructuredOutputLevel,
-  rememberStructuredOutput,
   type StructuredOutputLevel,
   strictSchemaAccepted,
   structuredOutputKey,
   structuredOutputRejected,
-  structuredOutputStart,
   toStrictRequiredSchema,
+  withStructuredOutputChain,
 } from "./strict-json-schema";
 import { announceToolsFallback, rememberToolsUnavailable, toolsUnavailable } from "./tool-calling";
 
@@ -758,38 +755,16 @@ export function createLmStudioClient(
       let payload: Awaited<ReturnType<typeof send>>;
       const startedAt = Date.now();
       try {
-        if (options.responseSchema === undefined) {
-          payload = await attempt("none");
-        } else {
+        payload = await withStructuredOutputChain({
+          key,
+          model: used,
+          hasSchema: options.responseSchema !== undefined,
           // 形状注定被严格模式整单拒绝的 schema（判别联合的 oneOf）不去白撞一次 400：直接起步于
           // json_object。本地路由不参与这个判断。
-          const strictAccepted = !isExternal || strictSchemaAccepted(outboundSchema);
-          if (!strictAccepted) announceStrictSchemaSkip(key, used);
-          let level = structuredOutputStart(key, strictAccepted);
-          // 只有"这一轮真的撞过更严的档"才值得记住并提示；直接跳过不算。
-          const attemptedStrict = level === "json_schema";
-          for (;;) {
-            try {
-              payload = await attempt(level);
-              if (level !== "json_schema" && attemptedStrict) {
-                rememberStructuredOutput(key, level);
-                console.warn(
-                  `[model-structured] ${used} 本进程起改用 ${level}（该服务不接受更严的档）`,
-                );
-              }
-              break;
-            } catch (error) {
-              if (!structuredOutputRejected(error)) throw error;
-              const next = nextStructuredOutputLevel(level);
-              if (next === null) throw error;
-              const status = (error as { status?: number }).status;
-              console.warn(
-                `[model-structured] ${used} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}：${providerReason(error)}`,
-              );
-              level = next;
-            }
-          }
-        }
+          strictAccepted: !isExternal || strictSchemaAccepted(outboundSchema),
+          send: attempt,
+          rejectionDetail: providerReason,
+        });
       } catch (error) {
         if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
         throw error;

@@ -12,14 +12,10 @@
 
 import { DEFAULT_LM_STUDIO_API_KEY, type LmStudioConfig, mapModelError } from "./model-gateway";
 import {
-  announceStrictSchemaSkip,
-  nextStructuredOutputLevel,
-  rememberStructuredOutput,
   type StructuredOutputLevel,
   strictSchemaAccepted,
   structuredOutputKey,
-  structuredOutputRejected,
-  structuredOutputStart,
+  withStructuredOutputChain,
 } from "./strict-json-schema";
 
 export interface VisionImage {
@@ -177,38 +173,15 @@ export function createLmStudioVisionClient(
         }
       };
       // 与网关同一条降级链：严格 json_schema → json_object → 不带该字段。
-      let payload: Awaited<ReturnType<typeof send>>;
-      if (request.responseSchema === undefined) {
-        payload = await send("none");
-      } else {
+      const payload = await withStructuredOutputChain({
+        key,
+        model: request.model,
+        hasSchema: request.responseSchema !== undefined,
         // 与网关同一条规则：形状注定被严格模式整单拒绝的 schema 直接起步于 json_object
         // ；本地模型服务不参与这个判断。
-        const strictAccepted = external === null || strictSchemaAccepted(request.responseSchema);
-        if (!strictAccepted) announceStrictSchemaSkip(key, request.model);
-        let level = structuredOutputStart(key, strictAccepted);
-        const attemptedStrict = level === "json_schema";
-        for (;;) {
-          try {
-            payload = await send(level);
-            if (level !== "json_schema" && attemptedStrict) {
-              rememberStructuredOutput(key, level);
-              console.warn(
-                `[model-structured] ${request.model} 本进程起改用 ${level}（该服务不接受更严的档）`,
-              );
-            }
-            break;
-          } catch (error) {
-            if (!structuredOutputRejected(error)) throw error;
-            const next = nextStructuredOutputLevel(level);
-            if (next === null) throw error;
-            const status = (error as { status?: number }).status;
-            console.warn(
-              `[model-structured] ${request.model} 拒绝 ${level}（HTTP ${status ?? "?"}），降级到 ${next}`,
-            );
-            level = next;
-          }
-        }
-      }
+        strictAccepted: external === null || strictSchemaAccepted(request.responseSchema),
+        send,
+      });
       return payload.choices?.[0]?.message?.content ?? "";
     },
   };

@@ -59,44 +59,76 @@ export function resolveSkillFile(dir: string, relative: string): string {
   }
 }
 
+interface BoundedFileRequest {
+  /** Absolute path, already produced by `resolveSkillFile`. */
+  readonly resolved: string;
+  /** Re-resolve the same path after opening it, to verify dev/ino did not change. */
+  readonly recheck: () => string;
+  /** Hard size bound in bytes. */
+  readonly maxBytes: number;
+  /** Code for a decode failure; the two callers classify "not text" differently. */
+  readonly decodeErrorCode: string;
+  /** Whether a NUL byte also means "not text" (resources require it, documents do not). */
+  readonly rejectNul: boolean;
+}
+
+/**
+ * Read one already-resolved file with a hard size bound, verifying the path still points at the
+ * same file (dev/ino) before the bytes are trusted. `decodeErrorCode` and `rejectNul` keep the
+ * document and resource callers' own error semantics.
+ */
+function readBoundedFile(request: BoundedFileRequest): { bytes: Uint8Array; text: string } {
+  const { resolved, recheck, maxBytes, decodeErrorCode, rejectNul } = request;
+  const fd = openSync(resolved, "r");
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new PermissionError("SKILL_FILE_INVALID");
+    if (info.size > maxBytes) throw new PermissionError("SKILL_FILE_TOO_LARGE");
+    const current = recheck();
+    const currentInfo = statSync(current);
+    if (current !== resolved || currentInfo.dev !== info.dev || currentInfo.ino !== info.ino)
+      throw new PermissionError("SKILL_FILE_INVALID");
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    for (;;) {
+      const count = readSync(fd, buffer, length, buffer.length - length, null);
+      length += count;
+      if (length > maxBytes) throw new PermissionError("SKILL_FILE_TOO_LARGE");
+      if (count === 0) break;
+    }
+    const bytes = buffer.subarray(0, length);
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new PermissionError(decodeErrorCode);
+    }
+    // A NUL means the bytes are not a text resource; the spec reads text only.
+    if (rejectNul && text.includes("\u0000")) throw new PermissionError("SKILL_FILE_INVALID");
+    return { bytes, text };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function documentFile(dir: string): { dir: string; instructions: string; revision: string } {
   try {
     const root = skillDirectory(dir);
     if (!readdirSync(root).includes("SKILL.md"))
       throw new PermissionError("SKILL_DOCUMENT_INVALID");
     const resolved = resolveSkillFile(root, "SKILL.md");
-    const fd = openSync(resolved, "r");
-    try {
-      const info = fstatSync(fd);
-      if (!info.isFile()) throw new PermissionError("SKILL_FILE_INVALID");
-      if (info.size > DOCUMENT_MAX_BYTES) throw new PermissionError("SKILL_FILE_TOO_LARGE");
-      const current = resolveSkillFile(root, "SKILL.md");
-      const currentInfo = statSync(current);
-      if (current !== resolved || currentInfo.dev !== info.dev || currentInfo.ino !== info.ino)
-        throw new PermissionError("SKILL_FILE_INVALID");
-      const buffer = Buffer.alloc(DOCUMENT_MAX_BYTES + 1);
-      let length = 0;
-      for (;;) {
-        const count = readSync(fd, buffer, length, buffer.length - length, null);
-        length += count;
-        if (length > DOCUMENT_MAX_BYTES) throw new PermissionError("SKILL_FILE_TOO_LARGE");
-        if (count === 0) break;
-      }
-      const bytes = buffer.subarray(0, length);
-      let instructions: string;
-      try {
-        instructions = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-      } catch {
-        throw new PermissionError("SKILL_DOCUMENT_INVALID");
-      }
-      return {
-        dir: root,
-        instructions,
-        revision: createHash("sha256").update(bytes).digest("hex"),
-      };
-    } finally {
-      closeSync(fd);
-    }
+    const { bytes, text: instructions } = readBoundedFile({
+      resolved,
+      recheck: () => resolveSkillFile(root, "SKILL.md"),
+      maxBytes: DOCUMENT_MAX_BYTES,
+      decodeErrorCode: "SKILL_DOCUMENT_INVALID",
+      rejectNul: false,
+    });
+    return {
+      dir: root,
+      instructions,
+      revision: createHash("sha256").update(bytes).digest("hex"),
+    };
   } catch (error) {
     if (error instanceof PermissionError) throw error;
     throw new PermissionError("SKILL_FILE_INVALID");
@@ -123,36 +155,14 @@ export function skillResourceRevision(
 export function readSkillResource(dir: string, relative: string): SkillResourceFile {
   try {
     const resolved = resolveSkillFile(dir, relative);
-    const fd = openSync(resolved, "r");
-    try {
-      const info = fstatSync(fd);
-      if (!info.isFile()) throw new PermissionError("SKILL_FILE_INVALID");
-      if (info.size > DOCUMENT_MAX_BYTES) throw new PermissionError("SKILL_FILE_TOO_LARGE");
-      const current = resolveSkillFile(dir, relative);
-      const currentInfo = statSync(current);
-      if (current !== resolved || currentInfo.dev !== info.dev || currentInfo.ino !== info.ino)
-        throw new PermissionError("SKILL_FILE_INVALID");
-      const buffer = Buffer.alloc(DOCUMENT_MAX_BYTES + 1);
-      let length = 0;
-      for (;;) {
-        const count = readSync(fd, buffer, length, buffer.length - length, null);
-        length += count;
-        if (length > DOCUMENT_MAX_BYTES) throw new PermissionError("SKILL_FILE_TOO_LARGE");
-        if (count === 0) break;
-      }
-      const bytes = buffer.subarray(0, length);
-      let text: string;
-      try {
-        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-      } catch {
-        throw new PermissionError("SKILL_FILE_INVALID");
-      }
-      // A NUL means the bytes are not a text resource; the spec reads text only.
-      if (text.includes("\u0000")) throw new PermissionError("SKILL_FILE_INVALID");
-      return { text, sha256: createHash("sha256").update(bytes).digest("hex") };
-    } finally {
-      closeSync(fd);
-    }
+    const { bytes, text } = readBoundedFile({
+      resolved,
+      recheck: () => resolveSkillFile(dir, relative),
+      maxBytes: DOCUMENT_MAX_BYTES,
+      decodeErrorCode: "SKILL_FILE_INVALID",
+      rejectNul: true,
+    });
+    return { text, sha256: createHash("sha256").update(bytes).digest("hex") };
   } catch (error) {
     if (error instanceof PermissionError) throw error;
     throw new PermissionError("SKILL_FILE_INVALID");
