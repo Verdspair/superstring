@@ -297,34 +297,6 @@ export function qqMemberEventCount(orm: Orm, scope: QqConversationScope): number
   return row?.total ?? 0;
 }
 
-/**
- * 某个发言人在这个会话里的消息条数（0037）。
- *
- * 判断改成"每人一次"之后，"判断间隔"也要按人算：张三又说了三条才重问一次张三，李四说话不花张三那次
- * 判断。用它取代原来的会话级计数，同时避开"同秒两条消息"这类时间戳比较的坑。
- */
-export function qqSpeakerEventCount(
-  orm: Orm,
-  scope: QqConversationScope,
-  speakerId: string,
-): number {
-  const row = orm
-    .select({ total: count() })
-    .from(schema.qqEvents)
-    .where(
-      and(
-        eq(schema.qqEvents.accountId, scope.accountId),
-        eq(schema.qqEvents.conversationKind, scope.conversationKind),
-        eq(schema.qqEvents.peerId, scope.peerId),
-        eq(schema.qqEvents.agentId, scope.agentId),
-        inArray(schema.qqEvents.speakerKind, ["member", "anonymous"] as const),
-        eq(schema.qqEvents.speakerId, speakerId),
-      ),
-    )
-    .get();
-  return row?.total ?? 0;
-}
-
 export interface QqObservedConversation {
   readonly accountId: string;
   readonly kind: "group" | "private";

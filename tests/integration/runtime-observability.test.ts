@@ -177,26 +177,22 @@ describe("execution observability", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const root = telemetry.observe(
-      "web.request",
-      { channel: "web", stage: "ingress" },
-      async () => {
-        await gate;
-        await telemetry.observe(
-          "memory.retrieve",
-          { channel: "memory", stage: "model", model: "local" },
-          async () => 1,
-        );
-      },
-    );
+    const request = telemetry.start("web.request", { channel: "web", stage: "ingress" });
+    const root = request.within(async () => {
+      await gate;
+      const nested = telemetry.start("memory.retrieve", {
+        channel: "memory",
+        stage: "model",
+        model: "local",
+      });
+      nested.end();
+    });
     expect(repository.page({ status: "started" }).summary.active).toBe(1);
-    await telemetry.observe(
-      "onebot.ingress",
-      { channel: "onebot11", stage: "ingress" },
-      async () => 2,
-    );
+    const ingress = telemetry.start("onebot.ingress", { channel: "onebot11", stage: "ingress" });
+    ingress.end();
     release();
     await root;
+    request.end();
     const spans = RuntimeSpansPageSchema.parse(repository.page({})).items;
     const web = spans.find((s) => s.name === "web.request")!;
     const child = spans.find((s) => s.name === "memory.retrieve")!;
@@ -275,11 +271,13 @@ describe("execution observability", () => {
   it("keeps error plaintext out of records and preserves original failures", async () => {
     const { telemetry, repository, h } = setup();
     const error = Object.assign(new Error("SECRET_PROMPT token=private"), { code: "MODEL_FAILED" });
+    const model = telemetry.start("model", { channel: "web", stage: "model" });
     await expect(
-      telemetry.observe("model", { channel: "web", stage: "model" }, async () => {
+      model.within(async () => {
         throw error;
       }),
     ).rejects.toBe(error);
+    model.end("failed", "MODEL_FAILED");
     const result = repository.page({}).items[0]!;
     expect(result).toMatchObject({ status: "failed", code: "MODEL_FAILED" });
     expect(JSON.stringify(h.db.query("SELECT * FROM runtime_spans").all())).not.toContain(
@@ -340,10 +338,11 @@ describe("execution observability", () => {
     expect(scope.within(() => telemetry.activeMetadata())).toBeUndefined();
     h.db.exec("DROP TRIGGER reject_diagnostic_write");
   });
-  it("applies source expiry to the whole trace including subsequently-created stages", async () => {
+  it("applies source expiry to the whole trace including subsequently-created stages", () => {
     const { telemetry, repository, h } = setup();
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
-    await telemetry.observe("root", { channel: "onebot11", stage: "run" }, async () => {
+    const root = telemetry.start("root", { channel: "onebot11", stage: "run" });
+    root.within(() => {
       telemetry.record("context", {
         channel: "onebot11",
         stage: "context",
@@ -351,6 +350,7 @@ describe("execution observability", () => {
       });
       telemetry.record("later", { channel: "onebot11", stage: "delivery" });
     });
+    root.end();
     expect(h.db.query("SELECT DISTINCT expires_at FROM runtime_spans").all()).toEqual([
       { expires_at: expiresAt },
     ]);

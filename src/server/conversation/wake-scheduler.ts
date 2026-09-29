@@ -62,12 +62,6 @@ export class WakeScheduler {
   nextReadyAt(): string | null {
     return this.options.repository.nextReadyAt();
   }
-  peek(cause?: string): WakeSignal | null {
-    return this.options.repository.peek({
-      at: this.options.now?.() ?? new Date().toISOString(),
-      cause,
-    });
-  }
   /** 本进程在飞的唤醒数（诊断与测试用；上限见 `policy().globalConcurrency`）。 */
   get activeCount(): number {
     return this.inFlight.size;
@@ -76,12 +70,12 @@ export class WakeScheduler {
   get concurrencyLimit(): number {
     return Math.max(1, this.options.policy().globalConcurrency ?? 1);
   }
-  async runOnce(filter?: { cause?: string; wakeId?: string }): Promise<boolean> {
+  async runOnce(): Promise<boolean> {
     if (this.stopped) return false;
     // 一次尝试只读一次策略：续租定时器里的那次读取仍是"第二次"，保持原有的失败时序。
     const policy = this.options.policy();
     if (this.inFlight.size >= (policy.globalConcurrency ?? 1)) return false;
-    const run = this.startRun(filter, policy);
+    const run = this.startRun(policy);
     this.inFlight.add(run);
     let started = false;
     try {
@@ -91,10 +85,7 @@ export class WakeScheduler {
     }
     return started;
   }
-  private async startRun(
-    filter: { cause?: string; wakeId?: string } | undefined,
-    policy: WakeSchedulerPolicy,
-  ): Promise<{ started: boolean }> {
+  private async startRun(policy: WakeSchedulerPolicy): Promise<{ started: boolean }> {
     const now = () => this.options.now?.() ?? new Date().toISOString();
     let renewal: ReturnType<typeof setInterval> | undefined;
     let controller: AbortController | null = null;
@@ -128,7 +119,6 @@ export class WakeScheduler {
         at: now(),
         leaseMs: policy.leaseMs,
         globalConcurrency: policy.globalConcurrency,
-        ...filter,
       });
       if (!wake) return { started: false };
       const conversation = this.options.repository.db

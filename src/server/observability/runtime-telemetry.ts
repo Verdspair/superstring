@@ -129,31 +129,6 @@ export class RuntimeTelemetry {
     const scope = this.start(name, metadata);
     scope.end(metadata.status ?? "observed", metadata.code);
   }
-  async observe<T>(
-    name: string,
-    metadata: TraceMetadata,
-    work: (scope: TraceScope) => Promise<T>,
-  ): Promise<T> {
-    const scope = this.start(name, metadata);
-    return scope.within(async () => {
-      try {
-        const result = await work(scope);
-        scope.end();
-        return result;
-      } catch (error) {
-        // Error messages may contain provider URLs, input or credentials. Only stable codes are stored.
-        const code =
-          error instanceof Error &&
-          "code" in error &&
-          typeof error.code === "string" &&
-          /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code)
-            ? error.code
-            : "OPERATION_FAILED";
-        scope.end("failed", code);
-        throw error;
-      }
-    });
-  }
   parentFor(
     field: "run_id" | "wake_id" | "output_id",
     id: string,

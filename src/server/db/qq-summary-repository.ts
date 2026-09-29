@@ -7,7 +7,7 @@
 //   * coveredSeq   → 已覆盖水位：连"窗口内被条数/预算裁掉"的那段也算进去，避免同一批反复触发。
 // 两个水位都只增不减；事务内复验授权与旧快照，拒绝并发或迟到覆盖。
 
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { type SourceRef, SourceRefSchema } from "../../shared/contracts/evidence";
 import { uniqueSources } from "../agent/context-engine";
@@ -114,30 +114,6 @@ export function readQqConversationSummary(
     estimatedTokens: row.estimatedTokens,
     updatedAt: row.updatedAt,
   });
-}
-
-/**
- * 历史水位对应的时刻——水位缓冲的下界：只取比它更晚、又早于窗口起点的老消息。
- * 事件已被清理或 seq 对不上时返回 null，调用方按"从头补"处理。
- */
-export function qqSummaryCoveredSeconds(
-  orm: Orm,
-  conversationId: string,
-  seq: number,
-): number | null {
-  const row = orm
-    .select({ occurredAt: schema.conversationEvents.occurredAt })
-    .from(schema.conversationEvents)
-    .where(
-      and(
-        eq(schema.conversationEvents.conversationId, conversationId),
-        eq(schema.conversationEvents.seq, seq),
-      ),
-    )
-    .get();
-  if (!row) return null;
-  const seconds = Math.floor(Date.parse(row.occurredAt) / 1000);
-  return Number.isFinite(seconds) ? seconds : null;
 }
 
 /**
