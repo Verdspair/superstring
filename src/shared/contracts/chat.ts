@@ -50,7 +50,7 @@ export const SseDeltaEventSchema = z.strictObject({
 export type SseDeltaEvent = z.infer<typeof SseDeltaEventSchema>;
 
 /** `done` event: normal completion; terminates the stream. */
-export const SseDoneEventSchema = z.strictObject({
+const SseDoneEventSchema = z.strictObject({
   event: z.literal("done"),
   request_id: z.string(),
   message_id: z.string(),
@@ -71,7 +71,7 @@ export const SseErrorEventSchema = z.strictObject({
 export type SseErrorEvent = z.infer<typeof SseErrorEventSchema>;
 
 /** Read-only accounting for the assembled request, emitted before model deltas. */
-export const SseContextEventSchema = z.strictObject({
+const SseContextEventSchema = z.strictObject({
   event: z.literal("context"),
   request_id: z.string(),
   usage: ContextUsageSchema,

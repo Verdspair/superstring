@@ -15,9 +15,7 @@
 import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { type BunSQLiteDatabase, drizzle } from "drizzle-orm/bun-sqlite";
-import { type BusinessDbHandle, openConnection } from "./connection";
-import * as schema from "./schema";
+import { type BusinessDbHandle, openConnection, toOrmHandle } from "./connection";
 
 /** Ordered resources are also supplied explicitly by installed entrypoints. */
 export const BUSINESS_SCHEMA_VERSION = 48 as const;
@@ -495,8 +493,7 @@ export function openBusinessDb(opts?: {
     if (isFile) {
       db.run("PRAGMA journal_mode = WAL");
     }
-    const orm: BunSQLiteDatabase<typeof schema> = drizzle(db, { schema });
-    return { db, orm, close: () => db.close() };
+    return toOrmHandle(db);
   } catch (err) {
     db.close();
     throw err;

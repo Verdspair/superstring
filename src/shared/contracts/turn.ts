@@ -18,7 +18,7 @@ export const TurnSchema = z.strictObject({
 export type Turn = z.infer<typeof TurnSchema>;
 
 /** A single processed/unprocessed turn row (api-contract.md §1.4). */
-export const MemoryTurnRowSchema = z.strictObject({
+const MemoryTurnRowSchema = z.strictObject({
   id: z.string(),
   sequence_no: z.number().int(),
   user: z.string(),

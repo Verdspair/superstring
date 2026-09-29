@@ -26,7 +26,7 @@ export const MemorySummarySchema = z.strictObject({
 export type MemorySummary = z.infer<typeof MemorySummarySchema>;
 
 /** Provenance / source reference of a memory entry (scope + scope_key). */
-export const MemorySourceSchema = z.strictObject({
+const MemorySourceSchema = z.strictObject({
   scope: z.string(),
   scope_key: z.string(),
 });

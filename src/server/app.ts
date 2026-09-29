@@ -84,10 +84,12 @@ export interface CreateAppOptions {
 /** Pure Hono factory: does not open databases, start workers or bind sockets. */
 export function createApp(opts: CreateAppOptions): Hono {
   const { business } = opts;
+  // A caller-supplied resolver wins: the runtime composes one from tasks → permissions →
+  // skills → injected, and consulting the app's own stores first would query them twice.
   const resolveSource: ModuleSourceResolver = (source, owner, at) =>
+    opts.resolveSource?.(source, owner, at) ??
     opts.tasks?.sourceAccess(source, owner) ??
-    opts.permissions?.sourceAccess(source, owner) ??
-    opts.resolveSource?.(source, owner, at);
+    opts.permissions?.sourceAccess(source, owner);
   const app = new Hono();
   app.onError(handleError);
 
