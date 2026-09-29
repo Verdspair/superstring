@@ -91,9 +91,17 @@ Deleting or revoking a source invalidates derived exact snapshots. Expiry follow
 
 Model capacity, an auxiliary call timeout and a business job deadline are different budgets. An optional Agent deadline does not replace the existing task deadlines. Streaming cancellation must propagate to the underlying request. Nested text and vision leaves automatically inherit the active task tree's call and input budget; unrelated concurrent runs have separate ledgers. Deferred compression explicitly retains its originating ledger. Waiting for a model slot is cancellable, and releasing a slot transfers ownership directly to the next waiter.
 
-Supplemental memory and knowledge queries disclose catalog entries with module-supplied previews and run-local body references. Paged reads reuse the selected body without another selector call, but revalidate authority and source revision on every access. Hosts fit the actual catalog or page envelope, including provenance, against available capacity; a reference is never a grant of access.
+Memory and knowledge are read on demand through query/read tools, not automatically inserted before the first decision. Queries scan bounded authorized batches and return previews, opaque run-local body references and continuation cursors. The main Agent chooses which bodies to read; there is no hidden selection-model call. Unicode text pages and catalog envelopes, including provenance and continuation metadata, share the configured domain allowance and the actual remaining context budget. References never grant access, and authority and source revisions are revalidated at each checkpoint.
 
-Memory recall is two explicit stages: retrieval reads the authorized catalog with keyword scoring, boundaries and no model call; reranking spends a selector model call and may only prune the retrieved candidates. Retired or corrected rows leave the catalog entirely, so a stale selection cannot bring old text back — an out-of-candidate selection is refused and that read yields no memory, with a diagnostic.
+记忆与知识通过 query/read 工具按需读取，不在首次决策前自动注入。查询扫描有界的授权批次，返回预览、当前运行内的不透明正文引用和续查游标；主 Agent 决定读取哪些正文，不再隐藏调用独立选择模型。Unicode 正文分页和目录信封连同来源与续读信息，共用该资料域的配置额度并受真实上下文余量约束；引用不是授权，每个检查点重新验证权限与来源修订。
+
+Memory tools preserve the off setting and Agent/conversation scopes. Conservative, standard and broad presets bound scanned candidates, page entries and cumulative result units. Stored legacy full modes use the broad preset rather than an unbounded preload. Existing data remains parseable; visiting settings does not rewrite it. Retired corrections and invalid sources cannot be selected back into context, while retained history keeps its correction constraints.
+
+记忆工具保留关闭设置与助手/会话隔离；保守、标准和广泛预设分别约束候选扫描、每页条数与累计结果额度。已存旧全量模式按广泛额度执行，不再全量预载；已有数据保持可解析，打开设置不会自动改写配置。已退役纠正与无效来源不能重新被选入上下文，保留的历史仍受人工纠正约束。
+
+Historical conversation messages and already-stored summaries use the same query/read envelope, scoped to the current conversation. They do not create summaries or advance compression watermarks. QQ judgement projections do not install summary tools. Web history freezes whether correction reading is enabled, so memory off cannot be bypassed through historical evidence. Source revisions include the scope and stored content; execution, task use and inspection recheck the durable source before external resolvers can claim it. Completed runs release temporary references and cursors, and Web generation-token-bound cleanup releases retained context checkpoints without deleting stored history.
+
+历史会话消息和已存摘要复用同一 query/read 信封，仅能读取当前会话，不创建摘要或推进压缩水位；QQ 判断档不安装摘要工具。Web 历史固定本轮是否允许读取纠正，不能绕过记忆关闭设置。来源修订包含范围与存储内容，执行、任务和检查先从持久来源复验，再考虑外部解析器。运行结束释放临时引用与游标；Web 按生成令牌清理上下文检查点，不删除已存历史。
 
 ## Staged migration
 

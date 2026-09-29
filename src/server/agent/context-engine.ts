@@ -1,5 +1,6 @@
 import type { ModelMessage } from "../../shared/contracts/agent-run";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
+import { uniqueSources } from "../services/source-refs";
 import { estimateTokens } from "../services/token-estimate";
 import type { AgentSpec, OutputDraft } from "./agent-specs";
 import { AGENT_DECISION_JSON_SCHEMA } from "./agent-specs";
@@ -81,6 +82,7 @@ export class ContextEngine {
           outputMode === "stream"
             ? "This direct request requires one generated response: final.outputs must contain exactly one generate draft for the authorized target. Additional evidence may be read before final."
             : "Each output draft has its own authorized target and inline body or generation instructions.",
+          "Use advertised query and read tools when the answer needs information not in the current context. Catalog previews are not complete documents. Follow nextCursor or nextOffset only when more evidence is needed; a page with a continuation is not an exhaustive search. References do not grant access. Never claim to have read an unreturned page or understood unread media.",
           JSON.stringify({
             actions: spec.availableActions,
             authorizedTargets: targets,
@@ -126,15 +128,4 @@ export function inputUnits(messages: readonly ModelMessage[]): number {
   );
 }
 
-export function uniqueSources(sources: readonly SourceRef[]): SourceRef[] {
-  const result = new Map<string, SourceRef>();
-  for (const source of sources) {
-    const key = JSON.stringify([source.kind, source.id, source.revision]);
-    const old = result.get(key);
-    result.set(
-      key,
-      old?.expiresAt && (!source.expiresAt || old.expiresAt < source.expiresAt) ? old : source,
-    );
-  }
-  return [...result.values()];
-}
+export { uniqueSources };

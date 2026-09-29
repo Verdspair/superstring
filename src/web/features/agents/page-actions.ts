@@ -8,6 +8,7 @@ import {
   agentPageDirty,
   dirtyPages,
   type EditablePage,
+  mergeRetrievalPresets,
   PAGE_AGENT_FIELDS,
   PAGE_PERSONA_FIELDS,
   type PageEditor,
@@ -47,7 +48,11 @@ export function createPageActions(
     if (!editor || editor.token !== token) return false;
     const id = editor.agent.id;
     const matches = () => get().pageEditor?.token === token && get().editorAgentId === id;
-    if (page !== "expression" && agentPageDirty(editor, page)) {
+    const normalizeMemoryMode =
+      page === "long-memory" &&
+      (editor.draft.p5_config.retrieval_mode === "full_catalog" ||
+        editor.draft.p5_config.retrieval_mode === "full_body");
+    if (page !== "expression" && (agentPageDirty(editor, page) || normalizeMemoryMode)) {
       if (page === "context" && editor.draft.p5_config.context_window !== null) {
         // Validate against the SAVED model, not another page's unsaved model choice.
         const capacity = await get().apiClient.getModelCapacity(editor.agent.model_name);
@@ -113,6 +118,7 @@ export function createPageActions(
           .filter((key) => Object.hasOwn(patch, key))
           .map((key) => [key, patch[key]]),
       );
+      const presets = patch.p5_config?.retrieval_presets;
       set({
         pageEditor: {
           ...editor,
@@ -126,6 +132,14 @@ export function createPageActions(
                   .filter((key) => patch.p5_config && Object.hasOwn(patch.p5_config, key))
                   .map((key) => [key, patch.p5_config?.[key]]),
               ),
+              ...(page === "long-memory" && presets
+                ? {
+                    retrieval_presets: mergeRetrievalPresets(
+                      editor.agent.p5_config.retrieval_presets,
+                      presets,
+                    ),
+                  }
+                : {}),
             },
           },
         },
@@ -164,8 +178,7 @@ export function createPageActions(
     },
     saveSettingsPage: (page) => save([page]),
     saveAllSettingsPages: () => save(dirtyPages(get().pageEditor)),
-    // 一键覆盖：四个文本用途一起改，然后立刻保存模型页。走 page 的保存通路
-    // （同一份校验、同一个 expected_version 比较交换），所以它不是一条绕过保存的第二条路。
+    // 三个文本用途共用模型页的白名单与版本校验；旧独立检索模型值保持原样。
     applyDefaultModelToAgent: async (modelName) => {
       const editor = get().pageEditor;
       if (!editor || get().settingsSaving || get().editorLoading) return false;
@@ -173,21 +186,19 @@ export function createPageActions(
       const draft = editor.draft;
       const already =
         draft.model_name === modelName &&
-        draft.memory_retrieval_model_name === modelName &&
         draft.memory_consolidation_model_name === modelName &&
         draft.context_compression_model_name === modelName;
       if (already) {
-        set({ feedback: msg("四个文本用途已经是这个模型，无需覆盖。") });
+        set({ feedback: msg("三个文本用途已经是这个模型，旧独立检索模型值不变。") });
         return true;
       }
       get().patchPageAgent("models", {
         model_name: modelName,
-        memory_retrieval_model_name: modelName,
         memory_consolidation_model_name: modelName,
         context_compression_model_name: modelName,
       });
       const saved = await save(["models"]);
-      if (saved) set({ feedback: msg("已把这个默认模型覆盖到当前助手的四个文本用途。") });
+      if (saved) set({ feedback: msg("已更新当前助手的三个文本用途，旧独立检索模型值不变。") });
       return saved;
     },
     discardSettingsPages: () => {

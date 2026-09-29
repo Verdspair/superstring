@@ -374,6 +374,7 @@ export class AgentRuntime {
     input: ConversationInput,
   ): Promise<ConversationRunResult> {
     const originalActions = spec.availableActions;
+    let releaseActions: readonly BuiltInAction[] = [];
     try {
       const observations: ActionObservation[] = [];
       const mode = input.executionMode ?? "direct";
@@ -389,6 +390,7 @@ export class AgentRuntime {
         const action = catalog.resolve(descriptor.name);
         return action && action.description.capability === descriptor.capability ? [action] : [];
       });
+      releaseActions = baseActions;
       const extensions: BuiltInAction[] = [];
       if (mode === "direct" && this.options.researchEnabled?.())
         extensions.push(
@@ -880,8 +882,16 @@ export class AgentRuntime {
       await this.fail(active, error, input.commitFailure);
       throw error;
     } finally {
-      input.context.configureActions?.(originalActions);
-      active.dispose();
+      try {
+        input.context.configureActions?.(originalActions);
+      } finally {
+        try {
+          for (const action of releaseActions)
+            action.release?.({ owner: input.owner, runId: active.runId });
+        } finally {
+          active.dispose();
+        }
+      }
     }
   }
 

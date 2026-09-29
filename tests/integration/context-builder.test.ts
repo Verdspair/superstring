@@ -1,7 +1,8 @@
 // R4 context-builder integration tests and
 // No live model is called.
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { eq } from "drizzle-orm";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { evidenceCatalogEntry } from "../../src/server/agent/built-in-actions";
@@ -18,6 +19,7 @@ import {
   validateContextIds,
 } from "../../src/server/agent/conversation-context";
 import { createApp } from "../../src/server/app";
+import { WebChannel } from "../../src/server/channels/web-channel";
 import { WebContextSource } from "../../src/server/channels/web-context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import {
@@ -28,11 +30,13 @@ import {
   summaries,
   systemPrompt,
 } from "../../src/server/db/context-repository";
+import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
 import {
   createSession,
   DEFAULT_AGENT_ID,
   DEFAULT_USER_ID,
+  deleteMessage,
   ensureDefaults,
   getTurnByRequest,
   immediate,
@@ -41,12 +45,15 @@ import {
   type Orm,
   prepareTurn,
   saveCompletedAssistantMessage,
+  saveFailedAssistantMessage,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { SqliteKnowledgeModule } from "../../src/server/modules/knowledge-module";
+import { SqliteMemoryModule } from "../../src/server/modules/memory-module";
 import { unicodeStrip } from "../../src/server/services/text";
-import type { Evidence } from "../../src/shared/contracts/evidence";
+import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
 
 const MODEL = "qwen/qwen3-4b-2507";
 
@@ -203,8 +210,60 @@ function expectCode(fn: () => unknown, code: string): void {
   expect((caught as { code?: string })?.code).toBe(code);
 }
 
+describe("tool-first initial context", () => {
+  for (const mode of [
+    "off",
+    "conservative",
+    "standard",
+    "broad",
+    "full_catalog",
+    "full_body",
+  ] as const) {
+    it(`never prefetches memory or knowledge or runs a selector in ${mode}`, async () => {
+      const ctx = setup();
+      const memoryQuery = spyOn(SqliteMemoryModule.prototype, "query");
+      const knowledgeQuery = spyOn(SqliteKnowledgeModule.prototype, "query");
+      try {
+        const sessionId = newSession(ctx.orm);
+        const previous = completedTurn(ctx.orm, sessionId, "prefetch-source");
+        seedMemory(ctx.orm, previous.id, 1, "unread memory body");
+        const repository = new KnowledgeRepository(ctx.business.db);
+        const document = repository.importDocument({
+          category_id: "default",
+          name: "unread document",
+          original_text: "unread knowledge body",
+        });
+        repository.replaceGrants(document.id, document.revision, [DEFAULT_AGENT_ID]);
+        const current = activeTurn(ctx.orm, sessionId, "prefetch-now", "qwen strasse");
+        const runtime = structuredClone(current.prepared.runtime);
+        runtime.p5_config.retrieval_mode = mode;
+        runtime.p5_config.compression_enabled = false;
+        let sources: SourceRef[] = [];
+        const result = await builder(ctx).build({
+          sessionId,
+          currentTurnId: current.turn.id,
+          runtime,
+          onSources: (value) => {
+            sources = value;
+          },
+        });
+        expect(JSON.stringify(result)).not.toContain("unread memory body");
+        expect(JSON.stringify(result)).not.toContain("unread knowledge body");
+        expect(memoryQuery).not.toHaveBeenCalled();
+        expect(knowledgeQuery).not.toHaveBeenCalled();
+        expect(ctx.gateway.completeCalls).toHaveLength(0);
+        expect(sources.every((source) => source.kind === "web_turn")).toBe(true);
+      } finally {
+        memoryQuery.mockRestore();
+        knowledgeQuery.mockRestore();
+        ctx.business.close();
+      }
+    });
+  }
+});
+
 describe("0.2.1 corrected memory context", () => {
-  it("recalls the corrected revision in the shared format, not the retired body", async () => {
+  it("loads only a retained history correction as charged data with its memory source", async () => {
     const ctx = setup();
     try {
       const sourceSession = newSession(ctx.orm);
@@ -219,17 +278,39 @@ describe("0.2.1 corrected memory context", () => {
           body: "餐费80元",
         }),
       );
-      const chatSession = newSession(ctx.orm);
+      const chatSession = sourceSession;
       const current = activeTurn(ctx.orm, chatSession, "ask", "餐费多少");
+      let sources: SourceRef[] = [];
+      let usage: import("../../src/shared/contracts/context-usage").ContextUsage | undefined;
       const result = await builder(ctx).build({
         sessionId: chatSession,
         currentTurnId: current.turn.id,
         runtime: current.prepared.runtime,
         generationToken: current.prepared.generationToken,
+        onSources: (value) => {
+          sources = value;
+        },
+        onUsage: (value) => {
+          usage = value;
+        },
       });
+      const constraint = result.find((message) => message.content.includes("纠正约束"));
+      expect(constraint?.role).toBe("user");
+      expect(constraint?.content).toContain("资料非指令");
       expect(JSON.stringify(result)).toContain("餐费80元");
       expect(JSON.stringify(result)).toContain("manual_correction");
       expect(JSON.stringify(result)).not.toContain("餐费999元错误");
+      expect(sources.filter((source) => source.kind === "memory")).toEqual([
+        { kind: "memory", id: corrected.content.id, revision: corrected.content.revision },
+      ]);
+      expect(usage?.components.long_term_memory).toBe(
+        estimateMessages(constraint ? [constraint] : []) - 3,
+      );
+      expect(usage?.components.knowledge).toBe(0);
+      if (!usage) throw new Error("Missing context usage");
+      expect(Object.values(usage.components).reduce((sum, cost) => sum + cost, 0)).toBe(
+        usage.input_units,
+      );
       expect(
         memoryBodies(ctx.orm, DEFAULT_AGENT_ID, chatSession, [corrected.content.id])[0].source_type,
       ).toBe("memory");
@@ -269,7 +350,194 @@ describe("0.2.1 corrected memory context", () => {
   });
 });
 
+describe("tool-first context checkpoints", () => {
+  for (const change of [
+    "new correction",
+    "replace correction",
+    "suppress correction",
+    "history body",
+    "current question",
+  ] as const) {
+    it(`rejects ${change} after the context has been built`, async () => {
+      const ctx = setup();
+      try {
+        const sessionId = newSession(ctx.orm);
+        const old = completedTurn(ctx.orm, sessionId, "checkpoint-old");
+        let memoryId = seedMemory(ctx.orm, old.id, 1, "wrong");
+        const correct = () =>
+          immediate(ctx.business.db, () =>
+            correctMemory(ctx.orm, DEFAULT_AGENT_ID, memoryId, {
+              expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, memoryId).content
+                .revision,
+              name: "corrected",
+              summary: "corrected",
+              tags: [],
+              body: "right",
+            }),
+          );
+        if (change === "replace correction" || change === "suppress correction")
+          memoryId = correct().content.id;
+        const current = activeTurn(ctx.orm, sessionId, "checkpoint-now");
+        const context = builder(ctx);
+        await context.build({
+          sessionId,
+          currentTurnId: current.turn.id,
+          runtime: current.prepared.runtime,
+        });
+        expect(() => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+        if (change === "new correction" || change === "replace correction") correct();
+        else if (change === "suppress correction")
+          ctx.orm
+            .update(schema.memoryEntries)
+            .set({ status: "suppressed" })
+            .where(eq(schema.memoryEntries.id, memoryId))
+            .run();
+        else
+          ctx.business.db
+            .query("UPDATE messages SET content='changed' WHERE turn_id=? AND role='user'")
+            .run(change === "history body" ? old.id : current.turn.id);
+        expectCode(
+          () => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID),
+          "CONTEXT_SOURCE_INVALID",
+        );
+      } finally {
+        ctx.business.close();
+      }
+    });
+  }
+  it("fails rather than omitting an oversized correction while retaining its historical error", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const old = completedTurn(ctx.orm, sessionId, "oversized-old", "old incorrect claim");
+      const id = seedMemory(ctx.orm, old.id, 1, "old incorrect claim");
+      immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, DEFAULT_AGENT_ID, id, {
+          expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, id).content.revision,
+          name: "correction",
+          summary: "right",
+          tags: [],
+          body: "correct ".repeat(900),
+        }),
+      );
+      const current = activeTurn(ctx.orm, sessionId, "oversized-now");
+      const runtime = structuredClone(current.prepared.runtime);
+      Object.assign(runtime.p5_config, {
+        context_window: 4096,
+        max_output_tokens: 512,
+        compression_enabled: false,
+      });
+      const context = builder(ctx);
+      await expect(
+        context.build({ sessionId, currentTurnId: current.turn.id, runtime }),
+      ).rejects.toMatchObject({ code: "CONTEXT_BUDGET_EXCEEDED" });
+      expectCode(
+        () => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID),
+        "CONTEXT_SOURCE_INVALID",
+      );
+    } finally {
+      ctx.business.close();
+    }
+  });
+  it("ignores unread corrections in another session and revoked unread knowledge", async () => {
+    const ctx = setup();
+    try {
+      const elsewhere = newSession(ctx.orm);
+      const old = completedTurn(ctx.orm, elsewhere, "unread-source");
+      const memoryId = seedMemory(ctx.orm, old.id, 1, "unread wrong");
+      const sessionId = newSession(ctx.orm);
+      const current = activeTurn(ctx.orm, sessionId, "unread-now");
+      const repository = new KnowledgeRepository(ctx.business.db);
+      const document = repository.importDocument({
+        category_id: "default",
+        name: "unread",
+        original_text: "unread knowledge",
+      });
+      repository.replaceGrants(document.id, document.revision, [DEFAULT_AGENT_ID]);
+      const context = builder(ctx);
+      let sources: SourceRef[] = [];
+      const messages = await context.build({
+        sessionId,
+        currentTurnId: current.turn.id,
+        runtime: current.prepared.runtime,
+        onSources: (value) => {
+          sources = value;
+        },
+      });
+      immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, DEFAULT_AGENT_ID, memoryId, {
+          expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, memoryId).content.revision,
+          name: "unread correction",
+          summary: "elsewhere",
+          tags: [],
+          body: "unread right",
+        }),
+      );
+      repository.replaceGrants(document.id, repository.detail(document.id).revision, []);
+      expect(() => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+      expect(sources.map((source) => [source.kind, source.id])).toEqual([
+        ["web_turn", current.turn.id],
+      ]);
+      expect(JSON.stringify(messages)).not.toContain("unread");
+      expectCode(
+        () => context.assertCurrent(current.turn.id, "foreign-agent"),
+        "CONTEXT_SOURCE_INVALID",
+      );
+      expectCode(
+        () => context.assertCurrent("missing-turn", DEFAULT_AGENT_ID),
+        "CONTEXT_SOURCE_INVALID",
+      );
+    } finally {
+      ctx.business.close();
+    }
+  });
+});
+
 describe("0.2.1 disabled memory isolation", () => {
+  it("neither loads nor tracks an existing correction when memory is off", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const old = completedTurn(ctx.orm, sessionId, "off-old");
+      const id = seedMemory(ctx.orm, old.id, 1, "wrong");
+      const correction = immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, DEFAULT_AGENT_ID, id, {
+          expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, id).content.revision,
+          name: "correction",
+          summary: "correct",
+          tags: [],
+          body: "existing correction body",
+        }),
+      );
+      const current = activeTurn(ctx.orm, sessionId, "off-now");
+      current.prepared.runtime.p5_config.retrieval_mode = "off";
+      const context = builder(ctx);
+      let sources: SourceRef[] = [];
+      let usage: import("../../src/shared/contracts/context-usage").ContextUsage | undefined;
+      const messages = await context.build({
+        sessionId,
+        currentTurnId: current.turn.id,
+        runtime: current.prepared.runtime,
+        onSources: (value) => {
+          sources = value;
+        },
+        onUsage: (value) => {
+          usage = value;
+        },
+      });
+      expect(JSON.stringify(messages)).not.toContain("existing correction body");
+      expect(sources.every((source) => source.kind === "web_turn")).toBe(true);
+      expect(usage?.components.long_term_memory).toBe(0);
+      ctx.orm
+        .update(schema.memoryEntries)
+        .set({ status: "suppressed" })
+        .where(eq(schema.memoryEntries.id, correction.content.id))
+        .run();
+      expect(() => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+    } finally {
+      ctx.business.close();
+    }
+  });
   it("does not fail an off-mode request when an unrelated correction changes", async () => {
     const ctx = setup();
     try {
@@ -304,6 +572,94 @@ describe("0.2.1 disabled memory isolation", () => {
 });
 
 describe("0.2.1 corrected summary lifecycle", () => {
+  for (const keepFact of [true, false]) {
+    it(`tracks only retained raw turns and nonempty summary dependencies (facts=${keepFact})`, async () => {
+      const ctx = setup();
+      try {
+        const sessionId = newSession(ctx.orm);
+        const old = completedTurn(ctx.orm, sessionId, "dependency-old", "old claim ".repeat(160));
+        const memoryId = seedMemory(ctx.orm, old.id, 1, "wrong old claim");
+        const recent = completedTurn(ctx.orm, sessionId, "dependency-recent");
+        const current = activeTurn(ctx.orm, sessionId, "dependency-now");
+        const runtime = structuredClone(current.prepared.runtime);
+        Object.assign(runtime.p5_config, {
+          context_window: 4096,
+          max_output_tokens: 512,
+          compression_trigger_ratio: 0.1,
+          recent_turns: 1,
+          summary_target_tokens: 1024,
+          summary_max_tokens: 2048,
+        });
+        const correct = () =>
+          immediate(ctx.business.db, () =>
+            correctMemory(ctx.orm, DEFAULT_AGENT_ID, memoryId, {
+              expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, memoryId).content
+                .revision,
+              name: "correction",
+              summary: "right",
+              tags: [],
+              body: "corrected old claim",
+            }),
+          );
+        const corrected = correct();
+        ctx.gateway.completeReply = (call) => {
+          const data = JSON.parse(call.messages[1].content) as { turns: { id: string }[] };
+          return JSON.stringify({
+            facts: keepFact
+              ? [
+                  {
+                    kind: "fact",
+                    speaker: "user",
+                    text: "corrected old claim",
+                    source_ids: [data.turns[0].id],
+                  },
+                ]
+              : [],
+          });
+        };
+        const context = builder(ctx);
+        let sources: SourceRef[] = [];
+        const messages = await context.build({
+          sessionId,
+          currentTurnId: current.turn.id,
+          runtime,
+          onSources: (value) => {
+            sources = value;
+          },
+        });
+        expect(
+          sources
+            .filter((source) => source.kind === "web_turn")
+            .map((source) => source.id)
+            .sort(),
+        ).toEqual([current.turn.id, recent.id, ...(keepFact ? [old.id] : [])].sort());
+        expect(sources.filter((source) => source.kind === "memory")).toEqual(
+          keepFact
+            ? [{ kind: "memory", id: corrected.content.id, revision: corrected.content.revision }]
+            : [],
+        );
+        expect(JSON.stringify(messages).includes("纠正约束")).toBe(keepFact);
+        expect(JSON.stringify(messages)).not.toContain("wrong old claim");
+        immediate(ctx.business.db, () =>
+          correctMemory(ctx.orm, DEFAULT_AGENT_ID, corrected.content.id, {
+            expected_revision: corrected.content.revision,
+            name: "new correction",
+            summary: "new",
+            tags: [],
+            body: "new correction body",
+          }),
+        );
+        if (keepFact)
+          expectCode(
+            () => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID),
+            "CONTEXT_SOURCE_INVALID",
+          );
+        else expect(() => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+      } finally {
+        ctx.business.close();
+      }
+    });
+  }
   it("invalidates the old summary, supplies correction to regeneration and never reuses it in off mode", async () => {
     const ctx = setup();
     try {
@@ -630,6 +986,53 @@ describe("R4 ContextBuilder end-to-end", () => {
     expect((caught as Error)?.name).toBe("AbortError");
   });
 
+  it("propagates cancellation during compression without publishing a summary or retaining a checkpoint", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      completedTurn(ctx.orm, sessionId, "abort-summary-old", "history ".repeat(300));
+      completedTurn(ctx.orm, sessionId, "abort-summary-recent");
+      const current = activeTurn(ctx.orm, sessionId, "abort-summary-now");
+      const runtime = structuredClone(current.prepared.runtime);
+      Object.assign(runtime.p5_config, {
+        context_window: 4096,
+        max_output_tokens: 512,
+        compression_trigger_ratio: 0.1,
+        recent_turns: 1,
+      });
+      const controller = new AbortController();
+      let aborted = false;
+      ctx.gateway.complete = async (call) => {
+        call.signal?.addEventListener(
+          "abort",
+          () => {
+            aborted = true;
+          },
+          { once: true },
+        );
+        controller.abort(new DOMException("cancelled", "AbortError"));
+        return '{"facts":[]}';
+      };
+      const context = builder(ctx);
+      await expect(
+        context.build({
+          sessionId,
+          currentTurnId: current.turn.id,
+          runtime,
+          signal: controller.signal,
+        }),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(aborted).toBe(true);
+      expect(ctx.orm.select().from(schema.sessionSummaries).all()).toHaveLength(0);
+      expectCode(
+        () => context.assertCurrent(current.turn.id, DEFAULT_AGENT_ID),
+        "CONTEXT_SOURCE_INVALID",
+      );
+    } finally {
+      ctx.business.close();
+    }
+  });
+
   it("builds base + complete history + current question and freezes main capacity", async () => {
     const ctx = setup();
     const sessionId = newSession(ctx.orm);
@@ -658,112 +1061,114 @@ describe("R4 ContextBuilder end-to-end", () => {
     expect(ctx.gateway.capacityCalls).toBe(2); // initial observation + final refresh
   });
 
-  for (const [mode, expected] of [
-    ["off", 0],
-    ["conservative", 3],
-    ["standard", 3],
-    ["broad", 3],
-    ["full_catalog", 3],
-    ["full_body", 3],
+  for (const mode of [
+    "off",
+    "conservative",
+    "standard",
+    "broad",
+    "full_catalog",
+    "full_body",
   ] as const) {
-    it(`implements retrieval mode ${mode}`, async () => {
+    it(`exposes only on-demand paged memory reads in ${mode}`, async () => {
       const ctx = setup();
-      const sessionId = newSession(ctx.orm);
-      const source = completedTurn(ctx.orm, sessionId, `source-${mode}`);
-      for (let index = 1; index <= 3; index += 1)
-        seedMemory(ctx.orm, source.id, index, `共同主题正文${index}`);
-      const current = activeTurn(ctx.orm, sessionId, `current-${mode}`, "共同主题是什么");
-      const runtime = {
-        ...current.prepared.runtime,
-        p5_config: {
-          ...current.prepared.runtime.p5_config,
-          retrieval_mode: mode,
-          compression_enabled: false,
-        },
-      };
-      const messages = await builder(ctx).build({
-        sessionId,
-        currentTurnId: current.turn.id,
-        runtime,
-        generationToken: current.prepared.generationToken,
-      });
-      const injected = messages.find((item) => item.content.startsWith("以下是授权的长期记忆数据"));
-      if (expected === 0) {
-        expect(injected).toBeUndefined();
-      } else {
-        expect(injected).toBeDefined();
-        const payload = JSON.parse(
-          injected?.content.split("\n").slice(1).join("\n") ?? "[]",
-        ) as unknown[];
-        expect(payload).toHaveLength(expected);
-      }
-      if (mode === "off" || mode === "full_body") {
-        expect(ctx.gateway.completeCalls).toHaveLength(0);
-      } else {
-        expect(ctx.gateway.completeCalls.length).toBeGreaterThan(0);
-      }
-      // The Web context source must preserve each mode's automatic initial injection,
-      // then reuse that material through later Agent steps without re-running selectors.
-      const agentRuntime = createAgentRuntime({
-        gateway: ctx.gateway,
-        repository: new AgentRunRepository(ctx.business.db),
-      });
-      const sourceAdapter = new WebContextSource({
-        db: ctx.business.db,
-        orm: ctx.orm,
-        gateway: ctx.gateway,
-        agentRuntime,
-        builder: builder(ctx),
-        runtime,
-        sessionId,
-        turnId: current.turn.id,
-        generationToken: current.prepared.generationToken ?? "missing",
-        maxSteps: 16,
-      });
-      const material = await sourceAdapter.read({
-        signal: new AbortController().signal,
-        observations: [],
-      });
-      const injectedMaterial = material.history
-        ?.flatMap((message) => message.content)
-        .find((part) => part.kind === "text" && part.text.startsWith("以下是授权的长期记忆数据"));
-      if (expected === 0) expect(injectedMaterial).toBeUndefined();
-      else
-        expect(injectedMaterial).toEqual({
-          kind: "text",
-          text: injected?.content ?? "missing initial memory",
+      try {
+        const sessionId = newSession(ctx.orm);
+        const source = completedTurn(ctx.orm, sessionId, `source-${mode}`);
+        for (let index = 1; index <= 3; index += 1)
+          seedMemory(ctx.orm, source.id, index, `共同主题正文${index}`);
+        const current = activeTurn(ctx.orm, sessionId, `current-${mode}`, "共同主题是什么");
+        const runtime = {
+          ...current.prepared.runtime,
+          p5_config: {
+            ...current.prepared.runtime.p5_config,
+            retrieval_mode: mode,
+            compression_enabled: false,
+          },
+        };
+        const agentRuntime = createAgentRuntime({
+          gateway: ctx.gateway,
+          repository: new AgentRunRepository(ctx.business.db),
         });
-      const calls = ctx.gateway.completeCalls.length;
-      expect(
-        await sourceAdapter.read({ signal: new AbortController().signal, observations: [] }),
-      ).toBe(material);
-      expect(ctx.gateway.completeCalls).toHaveLength(calls);
-      if (mode !== "off") {
+        const sourceAdapter = new WebContextSource({
+          db: ctx.business.db,
+          orm: ctx.orm,
+          gateway: ctx.gateway,
+          agentRuntime,
+          builder: builder(ctx),
+          runtime,
+          sessionId,
+          turnId: current.turn.id,
+          generationToken: current.prepared.generationToken ?? "missing",
+          maxSteps: 16,
+        });
+        const signal = new AbortController().signal;
+        const material = await sourceAdapter.read({ signal, observations: [] });
+        expect(JSON.stringify(material)).not.toContain("共同主题正文");
+        expect(material.sources?.every((source) => source.kind === "web_turn")).toBe(true);
+        expect(ctx.gateway.completeCalls).toHaveLength(0);
+        expect(await sourceAdapter.read({ signal, observations: [] })).toBe(material);
         const query = sourceAdapter.actions.find(
           (action) => action.description.name === "memory.query",
         );
         const read = sourceAdapter.actions.find(
           (action) => action.description.name === "memory.read",
         );
+        if (mode === "off") {
+          expect(query).toBeUndefined();
+          expect(read).toBeUndefined();
+          return;
+        }
         if (!query || !read) throw new Error("missing evidence actions");
         const actionContext = {
-          owner: { kind: "test", id: "test" },
-          signal: new AbortController().signal,
+          owner: {
+            kind: "web_turn",
+            id: current.turn.id,
+            agentId: runtime.agent_id,
+            userId: DEFAULT_USER_ID,
+          },
+          signal,
+          runId: `read-${mode}`,
         };
-        const result = await query.execute({ query: "共同主题" }, actionContext);
-        const entry = (result.value as { items: { bodyRef: string }[] }).items[0];
+        const result = await query.execute({ query: "共同主题", limit: 1 }, actionContext);
+        const entries = (result.value as { items: { id: string; bodyRef: string }[] }).items;
+        expect(entries).toHaveLength(1);
+        const entry = entries[0];
         expect(JSON.stringify(result.value)).not.toContain("共同主题正文");
-        expect(
-          JSON.stringify((await read.execute({ bodyRef: entry.bodyRef }, actionContext)).value),
-        ).toContain("共同主题正文");
+        const first = await read.execute({ bodyRef: entry.bodyRef, limit: 4 }, actionContext);
+        const page = (first.value as { items: { text: string; nextOffset: number }[] }).items[0];
+        expect(page.text).toBe("共同主题");
+        expect(page.nextOffset).toBe(4);
+        const second = await read.execute(
+          { bodyRef: entry.bodyRef, offset: page.nextOffset, limit: 4 },
+          actionContext,
+        );
+        expect(JSON.stringify(second.value)).toContain("正文");
+        expect(ctx.gateway.completeCalls).toHaveLength(0);
+        const observations = [
+          {
+            id: "query",
+            name: "memory.query",
+            arguments: { query: "共同主题", limit: 1 },
+            ...result,
+          },
+          {
+            id: "page",
+            name: "memory.read",
+            arguments: { bodyRef: entry.bodyRef, limit: 4 },
+            ...first,
+          },
+        ];
+        await sourceAdapter.read({ signal, observations });
         ctx.orm
           .update(schema.memoryEntries)
           .set({ body: "changed after first next" })
-          .where(eq(schema.memoryEntries.id, "00000000-0000-4000-8000-000000000001"))
+          .where(eq(schema.memoryEntries.id, entry.id))
           .run();
-        await expect(
-          sourceAdapter.read({ signal: new AbortController().signal, observations: [] }),
-        ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+        await expect(sourceAdapter.read({ signal, observations })).rejects.toMatchObject({
+          code: "CONTEXT_SOURCE_INVALID",
+        });
+      } finally {
+        ctx.business.close();
       }
     });
   }
@@ -964,7 +1369,7 @@ describe("R4 ContextBuilder end-to-end", () => {
     expect(saved[0].turnIds).toEqual([old.id]);
   });
 
-  it("rejects a memory body changed during the final capacity refresh", async () => {
+  it("ignores an unread memory body changed during the final capacity refresh", async () => {
     const ctx = setup();
     const sessionId = newSession(ctx.orm);
     const source = completedTurn(ctx.orm, sessionId, "mut-source");
@@ -990,7 +1395,8 @@ describe("R4 ContextBuilder end-to-end", () => {
     } catch (error) {
       code = (error as { code?: string }).code ?? "";
     }
-    expect(code).toBe("CONTEXT_SOURCE_INVALID");
+    expect(code).toBe("");
+    expect(ctx.gateway.completeCalls).toHaveLength(0);
   });
 
   it("production POST /chat really uses ContextBuilder before streamChat", async () => {
@@ -1050,7 +1456,7 @@ describe("R4 ContextBuilder end-to-end", () => {
   });
 });
 
-it("marks a malformed context selector failed in the shared runtime", async () => {
+it("never runs a hidden selector even when its configured model would return malformed IDs", async () => {
   const ctx = setup();
   try {
     const sessionId = newSession(ctx.orm);
@@ -1058,31 +1464,24 @@ it("marks a malformed context selector failed in the shared runtime", async () =
     seedMemory(ctx.orm, source.id, 1, "记忆正文");
     const current = activeTurn(ctx.orm, sessionId, "selection-current", "qwen strasse");
     ctx.gateway.completeReply = () => '{"ids":["outside-candidates"]}';
-    await expect(
-      builder(ctx).build({
-        sessionId,
-        currentTurnId: current.turn.id,
-        runtime: current.prepared.runtime,
-        generationToken: current.prepared.generationToken,
-      }),
-    ).rejects.toThrow();
+    const messages = await builder(ctx).build({
+      sessionId,
+      currentTurnId: current.turn.id,
+      runtime: current.prepared.runtime,
+      generationToken: current.prepared.generationToken,
+    });
+    expect(JSON.stringify(messages)).not.toContain("记忆正文");
+    expect(ctx.gateway.completeCalls).toHaveLength(0);
     expect(
-      ctx.business.db
-        .query<{ status: string }, []>(
-          "SELECT status FROM agent_runs WHERE spec_id = 'context.select'",
-        )
-        .get()?.status,
-    ).toBe("failed");
+      ctx.business.db.query("SELECT status FROM agent_runs WHERE spec_id = 'context.select'").all(),
+    ).toHaveLength(0);
   } finally {
     ctx.business.close();
   }
 });
 
-/**
- * （与 QQ 侧同一纪律）：记忆是可选材料——它自己的预算检查（选中的正文超过本轮可用
- * 额度）不该让整轮失败。降级成"这一轮没有记忆"，回答照常，并把降级原因写进诊断。
- */
-it("answers without memory when the memory read exceeds its own budget", async () => {
+/** An unused retrieval allowance must not trigger either a read or a degraded initial context. */
+it("answers without prefetch or a degradation when an unused memory allowance is tiny", async () => {
   const ctx = setup();
   try {
     const sourceSession = newSession(ctx.orm);
@@ -1108,8 +1507,9 @@ it("answers without memory when the memory read exceeds its own budget", async (
     expect(JSON.stringify(built)).not.toContain("很长的一段记忆正文");
     const ready = diagnostics.at(-1);
     expect(ready?.status).toBe("ready");
-    expect(ready?.error_code).toBe("CONTEXT_MEMORY_BUDGET");
+    expect(ready?.error_code).toBeUndefined();
     expect(ready?.memory_ids).toEqual([]);
+    expect(ctx.gateway.completeCalls).toHaveLength(0);
   } finally {
     ctx.business.close();
   }
@@ -1135,6 +1535,11 @@ function webJointFixture() {
   };
   if (!runtime.knowledge_read) throw new Error("missing knowledge settings");
   runtime.knowledge_read = { ...runtime.knowledge_read, budget: 1_000_000 };
+  // Isolate the joint context ceiling from each domain's independent tool allowance.
+  runtime.p5_config.retrieval_presets.standard = {
+    ...runtime.p5_config.retrieval_presets.standard,
+    max_tokens: 1_000_000,
+  };
   const lengths = { memory: 0, knowledge: 0 };
   const evidence = (id: string, length: number): Evidence => ({
     id,
@@ -1324,5 +1729,309 @@ describe("Web 同批资料工具的联合预留（漂移 A）", () => {
     const observed = actionObservations(seen[1]);
     const knowledge = observed.find((entry) => entry.name === "knowledge.query");
     expect(knowledge?.value.items.map((item) => item.id)).toEqual(["k1", "k2"]);
+  });
+});
+
+/**
+ * 白盒探针：泄漏目标就是私有的检查点 Map。一轮终态落库后，其检查点闭包无法再区分
+ * “已释放”和“仍被保留”（两种情况下 assertCurrent 都会因生成已结束而失败），
+ * 所以泄漏本身只能直接观察这个 Map。
+ */
+function retainedCheckpoints(context: ContextBuilder): Map<string, unknown> {
+  return (context as unknown as { checkpoints: Map<string, unknown> }).checkpoints;
+}
+
+/** 记录每次释放时该会话助手消息的落库状态，证明清理发生在提交/终态写入之后。 */
+function trackRelease(
+  context: ContextBuilder,
+  orm: Orm,
+  sessionId: string,
+): Array<string | undefined> {
+  const original = context.release.bind(context);
+  const states: Array<string | undefined> = [];
+  context.release = (turnId, generationToken) => {
+    states.push(
+      listMessages(orm, sessionId).find((message) => message.role === "assistant")?.status,
+    );
+    original(turnId, generationToken);
+  };
+  return states;
+}
+
+function webReleaseFixture(options: { heartbeatIntervalMs?: number } = {}) {
+  const ctx = setup();
+  const contextBuilder = builder(ctx);
+  const channel = new WebChannel({
+    db: ctx.business.db,
+    orm: ctx.orm,
+    gateway: ctx.gateway,
+    contextBuilder,
+    ...(options.heartbeatIntervalMs === undefined
+      ? {}
+      : { heartbeatIntervalMs: options.heartbeatIntervalMs }),
+  });
+  return { ctx, contextBuilder, channel };
+}
+
+describe("turn checkpoint release", () => {
+  it("releases the checkpoint after a completed web reply, only after the commit", async () => {
+    const { ctx, contextBuilder, channel } = webReleaseFixture();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const reply = await channel.openReply({
+        sessionId,
+        message: "你好",
+        clientRequestId: "release-completed",
+      });
+      const turn = getTurnByRequest(ctx.orm, sessionId, "release-completed");
+      if (!turn) throw new Error("turn missing");
+      const states = trackRelease(contextBuilder, ctx.orm, sessionId);
+      const types: string[] = [];
+      let retainedWhileStreaming = false;
+      for await (const event of reply) {
+        // 用量事件说明上下文已构建完成：终态落库前检查点必须仍在。
+        if (event.type === "context_usage")
+          retainedWhileStreaming =
+            retainedWhileStreaming || retainedCheckpoints(contextBuilder).has(turn.id);
+        types.push(event.type);
+      }
+      expect(types.at(-1)).toBe("completed");
+      expect(types).toContain("output_delta");
+      expect(retainedWhileStreaming).toBe(true);
+      // 提交完成后才清理：释放时助手消息已落库为 completed。
+      expect(states.length).toBeGreaterThan(0);
+      expect(states.every((status) => status === "completed")).toBe(true);
+      expect(retainedCheckpoints(contextBuilder).has(turn.id)).toBe(false);
+    } finally {
+      ctx.business.close();
+    }
+  });
+
+  it("releases the checkpoint when the reply fails with partial output", async () => {
+    const { ctx, contextBuilder, channel } = webReleaseFixture();
+    try {
+      const sessionId = newSession(ctx.orm);
+      ctx.gateway.streamChat = async function* (): AsyncGenerator<string> {
+        yield "partial";
+        throw new Error("broken");
+      };
+      const reply = await channel.openReply({
+        sessionId,
+        message: "问题",
+        clientRequestId: "release-failed",
+      });
+      const turn = getTurnByRequest(ctx.orm, sessionId, "release-failed");
+      if (!turn) throw new Error("turn missing");
+      const states = trackRelease(contextBuilder, ctx.orm, sessionId);
+      let failure: unknown;
+      try {
+        for await (const _event of reply) {
+          /* drain to the classified failure */
+        }
+      } catch (error) {
+        failure = error;
+      }
+      expect((failure as { code?: string } | undefined)?.code).toBe("MODEL_ERROR");
+      const assistant = listMessages(ctx.orm, sessionId).find((m) => m.role === "assistant");
+      expect(assistant?.status).toBe("failed");
+      expect(assistant?.content).toBe("partial");
+      expect(states.length).toBeGreaterThan(0);
+      expect(states.every((status) => status === "failed")).toBe(true);
+      expect(retainedCheckpoints(contextBuilder).has(turn.id)).toBe(false);
+    } finally {
+      ctx.business.close();
+    }
+  });
+
+  it("releases the checkpoint when the consumer disconnects mid-stream", async () => {
+    const { ctx, contextBuilder, channel } = webReleaseFixture();
+    try {
+      const sessionId = newSession(ctx.orm);
+      ctx.gateway.streamChat = async function* (): AsyncGenerator<string> {
+        yield "第一段";
+        await sleep(40);
+        yield "第二段";
+      };
+      const reply = await channel.openReply({
+        sessionId,
+        message: "问题",
+        clientRequestId: "release-disconnect",
+      });
+      const turn = getTurnByRequest(ctx.orm, sessionId, "release-disconnect");
+      if (!turn) throw new Error("turn missing");
+      const states = trackRelease(contextBuilder, ctx.orm, sessionId);
+      // 拉到首个输出增量再放弃消费：上下文已构建、生产者在等确认，检查点必须还在。
+      let item = await reply.next();
+      while (
+        !item.done &&
+        item.value.type !== "output_delta" &&
+        !["completed", "failed", "cancelled", "replay"].includes(item.value.type)
+      )
+        item = await reply.next();
+      if (item.done || item.value.type !== "output_delta") throw new Error("missing output delta");
+      expect(retainedCheckpoints(contextBuilder).has(turn.id)).toBe(true);
+      await reply.return(undefined);
+      // 既有断开语义不变：cancelled + CLIENT_DISCONNECTED，且先落库再释放。
+      const assistant = listMessages(ctx.orm, sessionId).find((m) => m.role === "assistant");
+      expect(assistant?.status).toBe("cancelled");
+      expect(assistant?.errorCode).toBe("CLIENT_DISCONNECTED");
+      expect(states.length).toBeGreaterThan(0);
+      expect(states.every((status) => status === "cancelled")).toBe(true);
+      expect(retainedCheckpoints(contextBuilder).has(turn.id)).toBe(false);
+    } finally {
+      ctx.business.close();
+    }
+  });
+
+  it("releases the checkpoint when the turn is cancelled mid-stream", async () => {
+    const { ctx, contextBuilder, channel } = webReleaseFixture({ heartbeatIntervalMs: 5 });
+    try {
+      const sessionId = newSession(ctx.orm);
+      ctx.gateway.streamChat = async function* (): AsyncGenerator<string> {
+        yield "第一段";
+        await sleep(40);
+        yield "第二段";
+      };
+      const reply = await channel.openReply({
+        sessionId,
+        message: "问题",
+        clientRequestId: "release-cancelled",
+      });
+      const turn = getTurnByRequest(ctx.orm, sessionId, "release-cancelled");
+      if (!turn) throw new Error("turn missing");
+      const states = trackRelease(contextBuilder, ctx.orm, sessionId);
+      let failure: unknown;
+      let cancelled = false;
+      try {
+        for await (const event of reply) {
+          // 增量未确认前生产者不会继续；此时删除用户消息即用户取消本轮。
+          if (event.type === "output_delta" && !cancelled) {
+            const user = listMessages(ctx.orm, sessionId).find((m) => m.role === "user");
+            if (!user) throw new Error("user message missing");
+            deleteMessage(ctx.orm, sessionId, user.id);
+            cancelled = true;
+          }
+        }
+      } catch (error) {
+        failure = error;
+      }
+      expect((failure as { code?: string } | undefined)?.code).toBe("GENERATION_CANCELLED");
+      const assistant = listMessages(ctx.orm, sessionId).find((m) => m.role === "assistant");
+      expect(assistant?.status).toBe("cancelled");
+      expect(assistant?.errorCode).toBe("GENERATION_CANCELLED");
+      expect(states.length).toBeGreaterThan(0);
+      expect(states.every((status) => status === "cancelled")).toBe(true);
+      expect(retainedCheckpoints(contextBuilder).has(turn.id)).toBe(false);
+    } finally {
+      ctx.business.close();
+    }
+  });
+
+  it("keeps another active turn's checkpoint and its protection intact after a release", async () => {
+    const ctx = setup();
+    try {
+      const sessionA = newSession(ctx.orm);
+      completedTurn(ctx.orm, sessionA, "iso-old-a");
+      const activeA = activeTurn(ctx.orm, sessionA, "iso-now-a");
+      const sessionB = newSession(ctx.orm);
+      const sourceB = completedTurn(ctx.orm, sessionB, "iso-old-b");
+      const memoryId = seedMemory(ctx.orm, sourceB.id, 1, "旧错误");
+      const corrected = immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, DEFAULT_AGENT_ID, memoryId, {
+          expected_revision: memoryContent(ctx.orm, DEFAULT_AGENT_ID, memoryId).content.revision,
+          name: "更正",
+          summary: "新",
+          tags: [],
+          body: "最初更正",
+        }),
+      );
+      const activeB = activeTurn(ctx.orm, sessionB, "iso-now-b");
+      const tokenA = activeA.prepared.generationToken;
+      const tokenB = activeB.prepared.generationToken;
+      if (!tokenA || !tokenB) throw new Error("fresh tokens expected");
+      const context = builder(ctx);
+      await context.build({
+        sessionId: sessionA,
+        currentTurnId: activeA.turn.id,
+        runtime: activeA.prepared.runtime,
+        generationToken: tokenA,
+      });
+      await context.build({
+        sessionId: sessionB,
+        currentTurnId: activeB.turn.id,
+        runtime: activeB.prepared.runtime,
+        generationToken: tokenB,
+      });
+      expect(() => context.assertCurrent(activeA.turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+      expect(() => context.assertCurrent(activeB.turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+      // 共用一个 builder 的两轮：释放 A 只删除 A 的检查点。
+      context.release(activeA.turn.id, tokenA);
+      expectCode(
+        () => context.assertCurrent(activeA.turn.id, DEFAULT_AGENT_ID),
+        "CONTEXT_SOURCE_INVALID",
+      );
+      expect(retainedCheckpoints(context).has(activeB.turn.id)).toBe(true);
+      expect(() => context.assertCurrent(activeB.turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+      // B 仍保留检查点：后续纠正变化照旧被拦截。
+      immediate(ctx.business.db, () =>
+        correctMemory(ctx.orm, DEFAULT_AGENT_ID, corrected.content.id, {
+          expected_revision: corrected.content.revision,
+          name: "第二次更正",
+          summary: "新2",
+          tags: [],
+          body: "后续更正",
+        }),
+      );
+      expectCode(
+        () => context.assertCurrent(activeB.turn.id, DEFAULT_AGENT_ID),
+        "CONTEXT_SOURCE_INVALID",
+      );
+    } finally {
+      ctx.business.close();
+    }
+  });
+
+  it("cannot let a stale release drop the renewed generation's checkpoint for the same turn", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const first = prepareTurn(ctx.orm, sessionId, "重试问题", "retry-turn");
+      const turn = getTurnByRequest(ctx.orm, sessionId, "retry-turn");
+      if (!first.generationToken || !turn) throw new Error("first generation missing");
+      const context = builder(ctx);
+      await context.build({
+        sessionId,
+        currentTurnId: turn.id,
+        runtime: first.runtime,
+        generationToken: first.generationToken,
+      });
+      // 第一代失败后，同一 client_request_id 重试得到新一代 token（Turn 不变）。
+      saveFailedAssistantMessage(
+        ctx.orm,
+        sessionId,
+        "retry-turn",
+        "MODEL_ERROR",
+        first.generationToken,
+      );
+      const second = prepareTurn(ctx.orm, sessionId, "重试问题", "retry-turn");
+      if (!second.generationToken) throw new Error("renewed generation missing");
+      if (second.generationToken === first.generationToken) throw new Error("token must renew");
+      await context.build({
+        sessionId,
+        currentTurnId: turn.id,
+        runtime: second.runtime,
+        generationToken: second.generationToken,
+      });
+      expect(() => context.assertCurrent(turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+      // 旧代的收尾清理不得删除新代检查点（Turn 仍活跃、内容未变，不抛证明仍在）。
+      context.release(turn.id, first.generationToken);
+      expect(() => context.assertCurrent(turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+      expect(retainedCheckpoints(context).has(turn.id)).toBe(true);
+      // 新代自己的收尾仍能正常释放。
+      context.release(turn.id, second.generationToken);
+      expectCode(() => context.assertCurrent(turn.id, DEFAULT_AGENT_ID), "CONTEXT_SOURCE_INVALID");
+    } finally {
+      ctx.business.close();
+    }
   });
 });

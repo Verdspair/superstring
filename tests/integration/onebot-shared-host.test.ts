@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
+import { inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
+import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { createQqScheme, updateQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { recordQqSend } from "../../src/server/db/qq-send-repository";
@@ -16,6 +18,7 @@ import { WakeRepository } from "../../src/server/db/wake-repository";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
+import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -1127,5 +1130,372 @@ describe("confirmed reply coverage across opportunity paths", () => {
     expect((await h.activate("chiming_in")).status).toBe("completed");
     expect(h.evaluations).toBe(1);
     expect(h.outbox.list({})).toHaveLength(2);
+  });
+});
+
+interface EvidenceEnvelope {
+  status: "ok" | "unavailable";
+  code?: string;
+  items: {
+    id: string;
+    title?: string;
+    summary?: string;
+    bodyRef: string;
+    text?: string;
+    offset?: number;
+    nextOffset?: number | null;
+  }[];
+  nextCursor?: string | null;
+}
+
+/** The latest rendered `action_observation` envelope with this action name, if any. */
+function evidencePage(request: ModelRequest, name: string): EvidenceEnvelope | undefined {
+  let found: EvidenceEnvelope | undefined;
+  for (const message of request.messages)
+    for (const part of message.content) {
+      if (part.kind !== "text") continue;
+      try {
+        const data = JSON.parse(part.text) as {
+          kind?: string;
+          value?: { name?: string; value?: EvidenceEnvelope };
+        };
+        if (data.kind === "action_observation" && data.value?.name === name)
+          found = data.value.value;
+      } catch {}
+    }
+  return found;
+}
+
+interface CommittedObservation {
+  id: string;
+  name: string;
+  arguments: unknown;
+  value: unknown;
+  sources: unknown;
+}
+
+/** Every distinct evidence observation the run ever produced, deduped by observation id. */
+function committedObservations(
+  requests: readonly ModelRequest[],
+  prefix: string,
+): CommittedObservation[] {
+  const observations = new Map<string, CommittedObservation>();
+  for (const request of requests)
+    for (const message of request.messages)
+      for (const part of message.content) {
+        if (part.kind !== "text") continue;
+        try {
+          const data = JSON.parse(part.text) as {
+            kind?: string;
+            value?: CommittedObservation;
+          };
+          const observation = data.value;
+          if (
+            data.kind !== "action_observation" ||
+            typeof observation?.name !== "string" ||
+            !observation.name.startsWith(prefix) ||
+            typeof observation.id !== "string"
+          )
+            continue;
+          observations.set(observation.id, observation);
+        } catch {}
+      }
+  return [...observations.values()];
+}
+
+/**
+ * Mirrors the production charge for one published observation (`observationUnits` in
+ * built-in-actions): the rendered action_observation envelope measured by `inputUnits`.
+ * The id placeholder is the same length as a real observation id, so the charge matches.
+ */
+function observationCharge(observation: CommittedObservation): number {
+  const message: ModelMessage = {
+    role: "user",
+    content: [
+      {
+        kind: "text",
+        text: JSON.stringify({
+          kind: "action_observation",
+          trust: "data_only",
+          value: {
+            id: "00000000-0000-0000-0000-000000000000",
+            name: observation.name,
+            arguments: observation.arguments,
+            value: observation.value,
+            sources: observation.sources,
+          },
+        }),
+      },
+    ],
+  };
+  return inputUnits([message]) - inputUnits([]);
+}
+
+describe("Bot tool-first knowledge reading in the shared host", () => {
+  function seedKnowledge(h: ReturnType<typeof setup>, name: string, text: string) {
+    const library = new KnowledgeRepository(h.db);
+    const doc = library.importDocument({ name, category_id: "default", original_text: text });
+    library.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
+    return doc;
+  }
+  function setKnowledgeBudget(h: ReturnType<typeof setup>, budget: number) {
+    h.db
+      .query("UPDATE agent_knowledge_read_settings SET context_budget=? WHERE agent_id=?")
+      .run(budget, DEFAULT_AGENT_ID);
+  }
+
+  it("keeps knowledge raw until the Agent explicitly queries and reads it", async () => {
+    const seen: ModelRequest[] = [];
+    let decisions = 0;
+    let h: ReturnType<typeof setup>;
+    h = setup({
+      complete: async (request) => {
+        seen.push(request);
+        decisions++;
+        if (decisions === 1)
+          return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+        if (decisions === 2) {
+          const catalog = evidencePage(request, "knowledge.query");
+          expect(catalog?.status).toBe("ok");
+          expect(catalog?.items).toHaveLength(1);
+          expect(catalog?.items[0]?.title).toBe("apples manual");
+          return JSON.stringify({
+            kind: "invoke",
+            name: "knowledge.read",
+            arguments: { bodyRef: catalog!.items[0]!.bodyRef },
+          });
+        }
+        return '{"kind":"none"}';
+      },
+    });
+    // 正文标记特意放在 160 字摘要之外：目录信封即使带摘要也不得泄漏正文。
+    seedKnowledge(h, "apples manual", "apples " + "Q".repeat(200) + " SECRET_BODY");
+    h.receive("1", "20002", true, "apples question");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    expect(decisions).toBe(3);
+    // 预取已移除：第一条决策里没有正文、没有证据信封、没有检索失败状态。
+    const first = JSON.stringify(seen[0]!.messages);
+    expect(first).not.toContain("SECRET_BODY");
+    expect(first).not.toContain("retrieval_status");
+    expect(evidencePage(seen[0]!, "knowledge.query")).toBeUndefined();
+    // 工具可用 ≠ 内容注入；独立 selector 已移除（任何请求都不再出现 ids 选择 schema）。
+    expect(seen[0]!.tools?.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(["knowledge.query", "knowledge.read"]),
+    );
+    for (const request of seen)
+      expect(
+        (request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids,
+      ).toBeUndefined();
+    // 显式 query 只给目录信封（标题/摘要/bodyRef）：正文标记落在 160 字摘要之外，仍不进入模型输入。
+    const second = JSON.stringify(seen[1]!.messages);
+    expect(second).toContain("apples manual");
+    expect(second).not.toContain("SECRET_BODY");
+    // 只有 knowledge.read 之后正文才进入，并带着资料文档与授权的来源。
+    const read = evidencePage(seen[2]!, "knowledge.read");
+    expect(read?.items[0]?.text).toContain("SECRET_BODY");
+    expect(JSON.stringify(seen[2]!.messages)).toContain("knowledge_grant");
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("bounds explicit query and paged reads by the frozen knowledge budget", async () => {
+    const seen: ModelRequest[] = [];
+    const body = "apples " + "Q".repeat(4000);
+    let h: ReturnType<typeof setup>;
+    h = setup({
+      complete: async (request) => {
+        seen.push(request);
+        const read = evidencePage(request, "knowledge.read");
+        if (read) {
+          if (read.status !== "ok") return '{"kind":"none"}';
+          const page = read.items[0]!;
+          if (page.nextOffset == null) return '{"kind":"none"}';
+          return JSON.stringify({
+            kind: "invoke",
+            name: "knowledge.read",
+            arguments: { bodyRef: page.bodyRef, offset: page.nextOffset, limit: 4096 },
+          });
+        }
+        const catalog = evidencePage(request, "knowledge.query");
+        if (!catalog)
+          return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+        if (catalog.status !== "ok") return '{"kind":"none"}';
+        return JSON.stringify({
+          kind: "invoke",
+          name: "knowledge.read",
+          arguments: { bodyRef: catalog.items[0]!.bodyRef },
+        });
+      },
+    });
+    seedKnowledge(h, "apples", body);
+    setKnowledgeBudget(h, 3000);
+    h.receive("1", "20002", true, "apples question");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+
+    const pages = seen
+      .map((request) => evidencePage(request, "knowledge.read"))
+      .filter((page): page is EvidenceEnvelope => page !== undefined);
+    const text = pages
+      .filter((page) => page.status === "ok")
+      .map((page) => page.items[0]!.text)
+      .join("");
+    // 预算是逐页截断而不是放行：读到的正文是原文前缀，且在读完之前就被截住。
+    expect(text.length).toBeGreaterThan(0);
+    expect(body.startsWith(text)).toBe(true);
+    expect(text.length).toBeLessThan(body.length);
+    expect(
+      pages.some(
+        (page) => page.status === "unavailable" && page.code === "CONTEXT_BUDGET_EXCEEDED",
+      ),
+    ).toBe(true);
+    // 已放行披露的观察加总不超过冻结预算：生产每次放行前先记账（同一域累计）。
+    // "取不到"的失败信封不再参与额度结算、也无法再截断，是必要的失败告知，单独按形状断言。
+    const disclosed = committedObservations(seen, "knowledge.").filter(
+      (observation) => (observation.value as { status?: unknown }).status === "ok",
+    );
+    const charge = disclosed.reduce(
+      (total, observation) => total + observationCharge(observation),
+      0,
+    );
+    expect(disclosed.length).toBeGreaterThan(0);
+    expect(charge).toBeGreaterThan(0);
+    expect(charge).toBeLessThanOrEqual(3000);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("serves the frozen reading settings for the whole turn and applies edits to the next turn", async () => {
+    const seen: ModelRequest[] = [];
+    let turn = 0;
+    let h: ReturnType<typeof setup>;
+    h = setup({
+      complete: async (request) => {
+        seen.push(request);
+        if (turn !== 0) return '{"kind":"none"}';
+        if (evidencePage(request, "knowledge.read")) return '{"kind":"none"}';
+        const catalog = evidencePage(request, "knowledge.query");
+        if (catalog)
+          return JSON.stringify({
+            kind: "invoke",
+            name: "knowledge.read",
+            arguments: { bodyRef: catalog.items[0]!.bodyRef },
+          });
+        // 决策中途改设置：本轮必须继续按激活时冻结的快照服务。
+        h.db.exec(
+          "UPDATE agent_knowledge_read_settings SET enabled=0, context_budget=1, document_ids='[]', revision=revision+1",
+        );
+        return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+      },
+    });
+    const selected = seedKnowledge(h, "apples selected", "apples ALLOWED_KNOWLEDGE");
+    seedKnowledge(h, "apples excluded", "apples EXCLUDED_KNOWLEDGE");
+    h.db
+      .query(
+        "UPDATE agent_knowledge_read_settings SET scope='selected', document_ids=? WHERE agent_id=?",
+      )
+      .run(JSON.stringify([selected.id]), DEFAULT_AGENT_ID);
+    h.receive("1", "20002", true, "apples");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    const frozenText = JSON.stringify(seen.map((request) => request.messages));
+    expect(frozenText).toContain("ALLOWED_KNOWLEDGE");
+    expect(frozenText).not.toContain("EXCLUDED_KNOWLEDGE");
+    expect(seen.flatMap((request) => request.tools?.map((tool) => tool.name) ?? [])).toContain(
+      "knowledge.query",
+    );
+
+    // 下一轮（新的激活）读到的是改后的设置：读取能力整体关闭，工具与内容都不再出现。
+    turn = 1;
+    seen.length = 0;
+    h.clock.seconds += 2;
+    h.receive("2", "20002", true, "apples again");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    const nextText = JSON.stringify(seen.map((request) => request.messages));
+    expect(nextText).not.toContain("ALLOWED_KNOWLEDGE");
+    expect(nextText).not.toContain("EXCLUDED_KNOWLEDGE");
+    for (const request of seen)
+      expect(request.tools?.map((tool) => tool.name) ?? []).not.toContain("knowledge.query");
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("returns an unavailable envelope with retrieval_status instead of failing the turn", async () => {
+    const seen: ModelRequest[] = [];
+    let h: ReturnType<typeof setup>;
+    h = setup({
+      complete: async (request) => {
+        seen.push(request);
+        if (seen.length === 1)
+          return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+        return '{"kind":"none"}';
+      },
+    });
+    // 预算落在"装得下取不到信封（266）、装不下一条目录（380）"的窗口：
+    // 冻结额度先于正文内容生效，模型直接收到知识模块的不可用码而不是工厂的兜底码。
+    seedKnowledge(h, "apples", "apples " + "Q".repeat(200) + " OPTIONAL_BODY");
+    setKnowledgeBudget(h, 300);
+    h.receive("1", "20002", true, "valid raw question");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+
+    // "取不到"是信封状态，不是整轮失败；原始提问照常留在输入里。
+    const page = evidencePage(seen[1]!, "knowledge.query");
+    expect(page).toMatchObject({
+      status: "unavailable",
+      code: "KNOWLEDGE_CONTEXT_BUDGET",
+      items: [],
+    });
+    const text = JSON.stringify(seen[1]!.messages);
+    expect(text).toContain("valid raw question");
+    expect(text).toContain("retrieval_status");
+    expect(text).toContain("KNOWLEDGE_CONTEXT_BUDGET");
+    expect(text).not.toContain("OPTIONAL_BODY");
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("fails the turn hard when the grant is revoked between query and read", async () => {
+    const seen: ModelRequest[] = [];
+    let h: ReturnType<typeof setup>;
+    h = setup({
+      complete: async (request) => {
+        seen.push(request);
+        if (seen.length === 1)
+          return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+        const catalog = evidencePage(request, "knowledge.query")!;
+        h.db.exec("DELETE FROM knowledge_grants");
+        return JSON.stringify({
+          kind: "invoke",
+          name: "knowledge.read",
+          arguments: { bodyRef: catalog.items[0]!.bodyRef },
+        });
+      },
+    });
+    seedKnowledge(h, "apples", "apples " + "Q".repeat(200) + " REVOKED_BODY");
+    h.receive("1", "20002", true, "apples question");
+    await expect(h.activate("direct_reply")).rejects.toMatchObject({
+      code: "CONTEXT_SOURCE_INVALID",
+    });
+    // 撤权不是"这次取不到"：不回 ok/空、也不回 unavailable 信封，正文永不兑现。
+    for (const request of seen) expect(evidencePage(request, "knowledge.read")).toBeUndefined();
+    expect(JSON.stringify(seen)).not.toContain("REVOKED_BODY");
+    expect(h.outbox.list({})).toEqual([]);
+    expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
+  });
+
+  it("rejects instead of swallowing cancellation into an unavailable envelope", async () => {
+    const controller = new AbortController();
+    const seen: ModelRequest[] = [];
+    let h: ReturnType<typeof setup>;
+    h = setup({
+      complete: async (request) => {
+        seen.push(request);
+        controller.abort();
+        return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+      },
+    });
+    seedKnowledge(h, "apples", "apples CANCELLED_BODY");
+    h.receive("1", "20002", true, "apples question");
+    const wake = h.wakes.claim({ at: h.now(), leaseMs: 120000 })!;
+    await expect(h.host.activate(wake, controller.signal)).rejects.toBeDefined();
+    expect(seen).toHaveLength(1);
+    expect(evidencePage(seen[0]!, "knowledge.query")).toBeUndefined();
+    expect(JSON.stringify(seen)).not.toContain("CANCELLED_BODY");
+    expect(h.outbox.list({})).toEqual([]);
+    expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
   });
 });

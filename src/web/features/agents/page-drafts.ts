@@ -12,12 +12,7 @@ export const EDITABLE_PAGES = [
 ] as const;
 // Explicit ownership: no future p5 field is silently assigned to a page.
 export const PAGE_P5_FIELDS = {
-  "long-memory": [
-    "retrieval_mode",
-    "retrieval_presets",
-    "max_catalog_batches",
-    "catalog_batch_size",
-  ],
+  "long-memory": ["retrieval_mode", "retrieval_presets"],
   context: [
     "context_window",
     "max_output_tokens",
@@ -49,17 +44,12 @@ export const PAGE_AGENT_FIELDS = {
   models: [
     "model_name",
     "temperature",
-    "memory_retrieval_model_name",
     "memory_consolidation_model_name",
     "context_compression_model_name",
   ],
   identity: ["additional_instructions"],
   expression: ["persona_intensity"],
-  "long-memory": [
-    "memory_retrieval_prompt",
-    "memory_consolidation_prompt",
-    "memory_consolidation_additional_instructions",
-  ],
+  "long-memory": ["memory_consolidation_prompt", "memory_consolidation_additional_instructions"],
   context: [],
 } as const;
 export const PAGE_PERSONA_FIELDS = {
@@ -118,7 +108,24 @@ export function dirtyPages(editor: PageEditor | null): EditablePage[] {
       )
     : [];
 }
+export function mergeRetrievalPresets(
+  baseline: AgentDraft["p5_config"]["retrieval_presets"],
+  draft: AgentDraft["p5_config"]["retrieval_presets"],
+) {
+  const merged = { ...baseline };
+  for (const mode of ["conservative", "standard", "broad"] as const) {
+    // Only tool allowances are editable; retain the stored relevance instruction verbatim.
+    merged[mode] = {
+      ...baseline[mode],
+      candidate_limit: draft[mode].candidate_limit,
+      max_entries: draft[mode].max_entries,
+      max_tokens: draft[mode].max_tokens,
+    };
+  }
+  return merged;
+}
 export function pageAgentPayload(editor: PageEditor, page: EditablePage) {
+  const p5 = editor.draft.p5_config;
   // Intensity belongs to the persona endpoint; the generic agent endpoint rejects it.
   return {
     ...Object.fromEntries(
@@ -130,7 +137,19 @@ export function pageAgentPayload(editor: PageEditor, page: EditablePage) {
       ? {
           p5_config: {
             ...editor.agent.p5_config,
-            ...Object.fromEntries(p5Fields(page).map((key) => [key, editor.draft.p5_config[key]])),
+            ...Object.fromEntries(p5Fields(page).map((key) => [key, p5[key]])),
+            ...(page === "long-memory"
+              ? {
+                  retrieval_mode:
+                    p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body"
+                      ? "broad"
+                      : p5.retrieval_mode,
+                  retrieval_presets: mergeRetrievalPresets(
+                    editor.agent.p5_config.retrieval_presets,
+                    p5.retrieval_presets,
+                  ),
+                }
+              : {}),
           },
         }
       : {}),

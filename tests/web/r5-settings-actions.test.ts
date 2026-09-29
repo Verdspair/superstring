@@ -48,7 +48,7 @@ describe("R5 设置页动作", () => {
         memory_consolidation_model_name: null,
         memory_consolidation_prompt: "整理",
         memory_consolidation_additional_instructions: "",
-        memory_retrieval_model_name: null,
+        memory_retrieval_model_name: "legacy-retrieval",
         memory_retrieval_prompt: "检索",
         context_compression_model_name: null,
         p5_config: P5ConfigSchema.parse({}),
@@ -62,9 +62,47 @@ describe("R5 设置页动作", () => {
     await useSuperstringStore.getState().refreshCapacityPreview();
 
     expect(getModelCapacity).toHaveBeenCalledTimes(1);
+    expect(getModelCapacity).toHaveBeenCalledWith("qwen/a");
     expect(useSuperstringStore.getState().capacityPreview).toContain("聊天：实际 32768");
-    expect(useSuperstringStore.getState().capacityPreview).toContain("记忆读取：实际 32768");
+    expect(useSuperstringStore.getState().capacityPreview).not.toContain("记忆读取");
     expect(useSuperstringStore.getState().capacityPreview).toContain("摘要：实际 32768");
+    const p5 = P5ConfigSchema.parse({});
+    const available = 32768 - p5.max_output_tokens - Math.ceil(32768 * p5.safety_margin_ratio);
+    expect(useSuperstringStore.getState().capacityPreview).toContain(`输入可用约 ${available}`);
+    getModelCapacity.mockClear();
+    await useSuperstringStore
+      .getState()
+      .refreshCapacityPreview(["chat", "ignored-retrieval", "compress"]);
+    expect(getModelCapacity.mock.calls.map(([name]) => name)).toEqual(["chat", "compress"]);
+    const draft = useSuperstringStore.getState().editorDraft;
+    if (!draft) throw new Error("Missing editor draft");
+    useSuperstringStore.setState({
+      editorDraft: { ...draft, p5_config: { ...draft.p5_config, max_output_tokens: 1000 } },
+    });
+    useSuperstringStore.getState().recalculateCapacityPreview();
+    expect(getModelCapacity).toHaveBeenCalledTimes(2);
+    expect(useSuperstringStore.getState().capacityPreview).toContain(
+      `输入可用约 ${32768 - 1000 - Math.ceil(32768 * p5.safety_margin_ratio)}`,
+    );
+    let finish:
+      | ((value: Awaited<ReturnType<SuperstringApi["getModelCapacity"]>>) => void)
+      | undefined;
+    getModelCapacity.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = useSuperstringStore
+      .getState()
+      .refreshCapacityPreview(["late-chat", "ignored", "late-compress"]);
+    useSuperstringStore.setState({ editorAgentId: OTHER_ID, capacityPreview: "new editor" });
+    if (!finish) throw new Error("Missing capacity request");
+    finish({ model: "late-chat", status: "loaded", context_length: 32768 });
+    await pending;
+    expect(getModelCapacity).toHaveBeenCalledTimes(3);
+    expect(useSuperstringStore.getState().capacityPreview).toBe("new editor");
+    expect(useSuperstringStore.getState().chatContextCapacity).toBeNull();
   });
 
   it("批量删除按部分成功结果移除条目并保留前三条失败原因", async () => {

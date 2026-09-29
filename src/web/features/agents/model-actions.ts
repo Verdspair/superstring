@@ -4,7 +4,7 @@ import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 
 type Capacity = Awaited<ReturnType<SuperstringApi["getModelCapacity"]>>;
-type CapacityLabel = "聊天" | "记忆读取" | "摘要";
+type CapacityLabel = "聊天" | "摘要";
 export function createModelActions(
   set: StoreSet,
   get: StoreGet,
@@ -114,14 +114,11 @@ export function createModelActions(
         chatContextCapacity: null,
         capacityPreview: msg("正在刷新容量预览…"),
       });
-      const [chatModel, retrievalModel, compressionModel] = probeModels ?? [
-        draft.model_name,
-        draft.memory_retrieval_model_name,
-        draft.context_compression_model_name,
-      ];
+      // Keep the public tuple shape; the retired retrieval slot is never probed.
+      const chatModel = probeModels?.[0] ?? draft.model_name;
+      const compressionModel = probeModels ? probeModels[2] : draft.context_compression_model_name;
       const models = [
         ["聊天", chatModel],
-        ["记忆读取", retrievalModel ?? chatModel],
         ["摘要", compressionModel ?? chatModel],
       ] as const;
       const cache = new Map<string, Capacity>();

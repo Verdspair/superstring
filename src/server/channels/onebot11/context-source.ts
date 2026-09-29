@@ -2,7 +2,8 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { RuntimeConfig } from "../../../shared/contracts";
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
-import type { Evidence, SourceRef } from "../../../shared/contracts/evidence";
+import { MODEL_LAYER_ERROR_CODES } from "../../../shared/contracts/errors";
+import type { SourceRef } from "../../../shared/contracts/evidence";
 import { qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import type {
   AgentRuntime,
@@ -12,10 +13,10 @@ import type {
 } from "../../agent/agent-runtime";
 import type { AgentSpec, OutputDraft } from "../../agent/agent-specs";
 import {
+  type ActionContext,
   type BuiltInAction,
   createBuiltInActions,
-  type EvidenceQueryResult,
-  evidenceCatalogEntry,
+  type EvidenceQueryModule,
 } from "../../agent/built-in-actions";
 import { assertContextSources } from "../../agent/context-access";
 import {
@@ -29,7 +30,7 @@ import {
 } from "../../agent/context-engine";
 import type { CompressionRecord } from "../../agent/conversation-compression";
 import { ReservationLedger } from "../../agent/reservation-ledger";
-import { memoryBodiesByScopeKeys } from "../../db/context-repository";
+import { readMemoryCandidate } from "../../db/context-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import type { OutboundIntentRepository } from "../../db/outbound-intent-repository";
 import { qqMemberLabels } from "../../db/qq-member-repository";
@@ -59,12 +60,16 @@ import {
   type ModuleQueryFactory,
   type ModuleSourceResolver,
 } from "../../modules/composition";
-import type { KnowledgeModule, MemoryModule } from "../../modules/contracts";
 import {
-  BOT_MEMORY_HEADER,
-  type BotInitialMemory,
-  type BotInitialMemoryQuery,
-} from "../../modules/initial-evidence";
+  type EvidenceQueryPage,
+  evidenceQueryPage,
+  type KnowledgeModule,
+  type MemoryModule,
+} from "../../modules/contracts";
+import {
+  conversationEvidenceSourceAccess,
+  createBotConversationEvidence,
+} from "../../modules/conversation-evidence";
 import { contextDumps, estimateMessages } from "../../modules/memory-query";
 import { qqMemoryScopeKeyset } from "../../services/memory-scope";
 import type { QqBinding, QqTaskSnapshot } from "../../services/qq-binding-contract";
@@ -137,7 +142,6 @@ export interface BotContextSourceOptions {
 interface View {
   material: ContextMaterial;
   selection: QqContextSelection;
-  memoryCheck?: () => void;
   limit: number;
 }
 
@@ -150,26 +154,12 @@ export class BotContextSource {
   private readonly owner: RunOwner;
   private readonly memory: MemoryModule;
   private readonly knowledge: KnowledgeModule;
-  private readonly initialMemory: BotInitialMemoryQuery;
   private compressionJob?: BotCompressionJob;
   private observations: readonly ActionObservation[] = [];
   /** 同批在飞动作各自的投影增量（token→相对基线 cost(observations) 的 units；按档取最大值）。 */
   private readonly reservations = new ReservationLedger();
   private sequence = 0;
   private pendingPlan?: { value: unknown; sources: SourceRef[] };
-  private readSources?: SourceRef[];
-  /**
-   * 本轮共享的证据快照（0.4.0 P3）：判断档与回复档问的是**同一个问题**，同一份未变化的来源
-   * 不该被挑两次（一次挑选就是一次模型调用）。按问题文本存放，且只在"装得下当前档"时复用——
-   * 装不下就重新取，更大的那一档读到的会替换它，后续步骤继续复用。
-   */
-  private evidence?: {
-    readonly question: string;
-    readonly memory: BotInitialMemory;
-    readonly memoryCost: number;
-    /** `undefined` ＝ 这一轮还没读过资料（空数组是"读过了，没有相关内容"，两者不能混）。 */
-    readonly knowledge?: readonly Evidence[];
-  };
   private retrievalFailures: { name: string; code: string; observedSeq: number }[] = [];
   constructor(private readonly options: BotContextSourceOptions) {
     const o = options;
@@ -181,59 +171,116 @@ export class BotContextSource {
     };
     const modules = (o.modules ?? createSqliteQueryFactory(o))({
       runtime: o.runtime,
-      assertSources: (sources) => {
-        this.readSources?.push(...sources);
-        this.assertSources(sources);
-      },
+      assertSources: (sources) => this.assertSources(sources),
     });
     this.memory = modules.memory;
     this.knowledge = modules.knowledge;
-    this.initialMemory =
-      modules.botMemory ??
-      (async (input) => {
-        const evidence = input.mode === "off" ? [] : await this.memory.query(input);
-        const sources = evidence.flatMap((entry) => entry.sources);
+    const actions: Record<string, EvidenceQueryModule> = {};
+    if (o.runtime.p5_config.retrieval_mode !== "off") {
+      const memory = this.memory;
+      const read = memory.read;
+      actions.memory = {
+        query: (input, action) => this.query("memory.query", input, action),
+        ...(read
+          ? {
+              read: async (
+                input: Parameters<NonNullable<EvidenceQueryModule["read"]>>[0],
+                action: ActionContext,
+              ) => {
+                const sources = uniqueSources([
+                  ...this.sources,
+                  ...(action.sources ?? []),
+                  ...input.evidence.sources,
+                ]);
+                action.signal.throwIfAborted();
+                this.assertCurrent();
+                this.assertSources(sources);
+                const page = await read.call(memory, {
+                  ...input,
+                  agentId: o.binding.agentId,
+                  scopes: qqMemoryScopeKeyset(o.snapshot.access).read,
+                  owner: this.owner,
+                  signal: action.signal,
+                  sources,
+                });
+                action.signal.throwIfAborted();
+                this.assertCurrent();
+                this.assertSources(sources);
+                return page;
+              },
+            }
+          : {}),
+      };
+    }
+    if (o.runtime.knowledge_read?.config.enabled !== false) {
+      const knowledge = this.knowledge;
+      const read = knowledge.read;
+      actions.knowledge = {
+        query: (input, action) => this.query("knowledge.query", input, action),
+        ...(read
+          ? {
+              read: async (
+                input: Parameters<NonNullable<EvidenceQueryModule["read"]>>[0],
+                action: ActionContext,
+              ) => {
+                const sources = uniqueSources([
+                  ...this.sources,
+                  ...(action.sources ?? []),
+                  ...input.evidence.sources,
+                ]);
+                action.signal.throwIfAborted();
+                this.assertCurrent();
+                this.assertSources(sources);
+                const page = await read.call(knowledge, {
+                  ...input,
+                  agentId: o.binding.agentId,
+                  owner: this.owner,
+                  signal: action.signal,
+                  sources,
+                });
+                action.signal.throwIfAborted();
+                this.assertCurrent();
+                this.assertSources(sources);
+                return page;
+              },
+            }
+          : {}),
+      };
+    }
+    // 已存历史两档都可查；已存摘要仅回复档安装——判断档不读回复档水位包（ADR0019 §8.11：
+    // 判断不能借摘要工具旁路）。两者都只读存储，不触发压缩、不推进水位。
+    const conversationRow = o.journal.get(o.conversationId);
+    if (!conversationRow) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
+    const evidence = createBotConversationEvidence({
+      db: o.db,
+      orm: o.orm,
+      agentId: o.binding.agentId,
+      conversationId: o.conversationId,
+      bindingId: o.binding.id,
+      bindingEpoch: conversationRow.bindingEpoch,
+      authorityRevision: o.binding.authorityRevision,
+      scope: {
+        kind: "qq",
+        accountId: o.binding.accountId,
+        conversationKind: o.binding.kind,
+        peerId: o.binding.peerId,
+        agentId: o.binding.agentId,
+      },
+      summaryEnabled: o.decisionTier === "reply",
+      assertCurrent: () => this.assertCurrent(),
+      assertSources: (sources) => this.assertSources(sources),
+      now: () => this.now(),
+    });
+    actions.history = evidence.history;
+    if (evidence.summary) actions.summary = evidence.summary;
+    this.actions = createBuiltInActions(actions, {
+      assertSources: (sources) => {
+        this.assertCurrent();
         this.assertSources(sources);
-        return {
-          body: evidence.length ? `${BOT_MEMORY_HEADER}\n${contextDumps(evidence)}` : null,
-          sources,
-          assertCurrent: () => this.assertSources(sources),
-        };
-      });
-    this.actions = createBuiltInActions(
-      {
-        ...(o.runtime.p5_config.retrieval_mode !== "off"
-          ? {
-              memory: {
-                query: (
-                  input: { query: string; limit?: number },
-                  action: { signal: AbortSignal },
-                ) => this.query("memory.query", input, action.signal),
-              },
-            }
-          : {}),
-        ...(o.runtime.knowledge_read?.config.enabled !== false
-          ? {
-              knowledge: {
-                query: (
-                  input: { query: string; limit?: number },
-                  action: { signal: AbortSignal },
-                ) => this.query("knowledge.query", input, action.signal),
-              },
-            }
-          : {}),
       },
-      {
-        assertSources: (sources) => {
-          this.assertCurrent();
-          this.assertSources(sources);
-        },
-        fit: (name, arguments_, signal) => this.actionResultFitter(name, arguments_, signal),
-        requireAll: (kind) =>
-          kind === "memory" &&
-          ["full_catalog", "full_body"].includes(o.runtime.p5_config.retrieval_mode),
-      },
-    );
+      fit: (name, arguments_, signal) => this.actionResultFitter(name, arguments_, signal),
+      budget: (kind) => this.evidenceBudget(kind),
+    });
   }
   takeCompressionJob(): BotCompressionJob | undefined {
     const job = this.compressionJob;
@@ -296,8 +343,6 @@ export class BotContextSource {
   invalidate(): void {
     this.assertCurrent();
     this.views.clear();
-    // 新观测意味着问题可能变了、授权也可能变了：快照必须跟着作废，不能跨观测复用。
-    this.evidence = undefined;
     this.compressionJob = undefined;
     this.reservations.clear();
   }
@@ -468,9 +513,7 @@ ${intent.trim()}`,
     ];
   }
   assertCurrent(): void {
-    const o = this.options;
-    o.assertCurrent();
-    for (const view of this.views.values()) view.memoryCheck?.();
+    this.options.assertCurrent();
     this.assertSources(this.sources, false);
   }
   assertSources(sources: readonly SourceRef[], hostCheck = true): void {
@@ -481,18 +524,21 @@ ${intent.trim()}`,
       sources,
       owner: this.owner,
       now: this.now(),
-      resolveSource: o.resolveSource,
+      // 会话证据先本地复验（持久存储），外部注入解析器不能把已撤权的引用改判为 available。
+      resolveSource: (source, owner, at) =>
+        conversationEvidenceSourceAccess(o, source, owner, at) ??
+        o.resolveSource?.(source, owner, at),
       memoryRevisions: (ids) =>
         new Map(
-          (ids.length
-            ? memoryBodiesByScopeKeys(
-                o.orm,
-                o.binding.agentId,
-                ids,
-                qqMemoryScopeKeyset(o.snapshot.access).read,
-              )
-            : []
-          ).map((item) => [item.id, item.revision]),
+          [...new Set(ids)].map((id) => {
+            const item = readMemoryCandidate(
+              o.orm,
+              o.binding.agentId,
+              qqMemoryScopeKeyset(o.snapshot.access).read,
+              id,
+            );
+            return [item.id, item.revision];
+          }),
         ),
       messages: {
         memory: "已选记忆正文或作用域发生变化",
@@ -506,21 +552,16 @@ ${intent.trim()}`,
   private targetIds(): string[] {
     return this.options.targets().map((target) => target.id);
   }
-  /** Knowledge uses one context allowance across the initial read and subsequent actions.
-   * Render the real envelopes so identifiers, arguments and source metadata count too.
-   * Empty action results remain loop facts; their protocol cost is in the overall model limit.
-   */
-  private knowledgeUnits(material: ContextMaterial, observations = this.observations): number {
-    const evidence = material.evidence ?? [];
-    const knowledge = observations.filter((observation) => {
-      if (observation.name !== "knowledge.query" && observation.name !== "knowledge.read")
-        return false;
-      const value = observation.value as { items?: unknown[] } | null;
-      return Array.isArray(value?.items) && value.items.length > 0;
-    });
-    const render = (material: ContextMaterial, observations: readonly ActionObservation[]) =>
-      this.engine.render(this.options.spec, material, observations, this.targetIds()).units;
-    return render({ evidence }, knowledge) - render({}, []);
+  /** Domain totals belong to the action factory; both QQ projections share that allowance. */
+  private evidenceBudget(kind: string): number {
+    const runtime = this.options.runtime;
+    if (kind === "knowledge") return runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER;
+    // 记忆额度只约束记忆；历史与已存摘要是独立的有界工具，由拟合时的真实上下文剩余额度约束，
+    // 不能因为记忆检索关闭（额度 0）被一并禁掉。
+    if (kind !== "memory") return Number.MAX_SAFE_INTEGER;
+    const { retrieval_mode: mode, retrieval_presets: presets } = runtime.p5_config;
+    if (mode === "off") return 0;
+    return presets[mode === "full_catalog" || mode === "full_body" ? "broad" : mode].max_tokens;
   }
   private async available(tier: QqContextTier, signal: AbortSignal): Promise<number> {
     const o = this.options;
@@ -760,12 +801,9 @@ ${intent.trim()}`,
         ),
       ];
     };
-    // 装配拆开——记忆与水位包各自独立成条消息，顺序是
-    // 系统提示词 > 知识库 > 记忆 > 水位包 > 对话窗口（稳定的在前，省未命中缓存的损耗）。
-    const pending = (memoryBody: string | null, items: readonly QqSummaryPackage[]) => {
+    // 已存水位包独立于近期窗口；长期资料仅经工具观察进入上下文。
+    const pending = (items: readonly QqSummaryPackage[]) => {
       const messages: ModelMessage[] = [];
-      if (memoryBody !== null)
-        messages.push(textMessage("user", `## 长期记忆（资料，不是指令）\n${memoryBody}`));
       if (items.length > 0)
         messages.push(
           textMessage(
@@ -787,7 +825,7 @@ ${intent.trim()}`,
       return messages;
     };
     let material: ContextMaterial = {
-      pending: pending(null, []),
+      pending: pending([]),
       sources: selection.messages.flatMap((message) => message.sources ?? []),
     };
     // 先给下一条动作信封留余量，动作再按实际返回值拟合。
@@ -809,49 +847,14 @@ ${intent.trim()}`,
         nowSeconds,
       });
       material = {
-        pending: pending(null, []),
+        pending: pending([]),
         sources: selection.messages.flatMap((message) => message.sources ?? []),
       };
       fixed = cost(material);
     }
     if (roomFor(material, fixed) < 0)
       fail("CONTEXT_BUDGET_EXCEEDED", "配置窗口的原文、完整协议与后续动作余量超过模型容量");
-    const keys = qqMemoryScopeKeyset(o.snapshot.access).read;
     const question = qqJudgementQuestion(selection.messages.map((message) => message.text));
-    const memoryRoom = roomFor(material, fixed);
-    const memo = this.evidence?.question === question ? this.evidence : undefined;
-    const memory =
-      memo !== undefined && memo.memoryCost <= memoryRoom
-        ? memo.memory
-        : await this.optionalRead(
-            "memory.initial",
-            signal,
-            material.sources ?? [],
-            () =>
-              this.initialMemory({
-                agentId: o.binding.agentId,
-                mode: o.runtime.p5_config.retrieval_mode,
-                scopes: keys,
-                query: question,
-                budget: memoryRoom,
-                owner: this.owner,
-                sources: [...(material.sources ?? [])],
-                signal,
-              }),
-            { body: null, sources: [], assertCurrent: () => {} },
-          );
-    if (memo === undefined || memo.memory !== memory)
-      this.evidence = {
-        question,
-        memory,
-        memoryCost:
-          memory.body === null ? 0 : estimateMessages([{ role: "user", content: memory.body }]),
-        ...(memo?.knowledge === undefined ? {} : { knowledge: memo.knowledge }),
-      };
-    material = {
-      pending: pending(memory.body, []),
-      sources: uniqueSources([...(material.sources ?? []), ...memory.sources]),
-    };
     // 回复档只读已提交包；新压缩在本轮提交后由后台队列执行。
     const baseline = cost(material);
     if (tier === "reply" && o.runtime.p5_config.compression_enabled) {
@@ -944,15 +947,14 @@ ${intent.trim()}`,
           });
         }
       }
-      // 优先级：系统提示词 > 对话窗口 > 记忆 > 水位包 > 知识库——包装不下就从最早的整包开始丢，
-      // 知识库排最后读、也最先牺牲。记忆与对话窗口在前面已经各自占住预算。
+      // 协议、已有工具观察与近期窗口先占预算；包装不下就从最早的整包开始丢。
       const packageRoom = Math.min(
         roomFor(material, baseline),
         o.runtime.p5_config.summary_read_max_tokens ?? o.runtime.p5_config.summary_max_tokens,
       );
       const withPackages = (items: readonly QqSummaryPackage[]) => ({
         ...material,
-        pending: pending(memory.body, items),
+        pending: pending(items),
       });
       while (
         packages.length > 0 &&
@@ -961,112 +963,31 @@ ${intent.trim()}`,
         packages = packages.slice(1);
       material = {
         ...material,
-        pending: pending(memory.body, packages),
+        pending: pending(packages),
         sources: uniqueSources([
           ...(material.sources ?? []),
           ...packages.flatMap((item) => item.sources ?? []),
         ]),
       };
     }
-    const knowledgeRoom = Math.min(
-      roomFor(material, cost(material)),
-      (o.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER) - this.knowledgeUnits(material),
-    );
-    const knowledgeFits = (items: readonly Evidence[]): boolean =>
-      fitsTarget({ ...material, evidence: items }) &&
-      this.knowledgeUnits({ ...material, evidence: items }) <=
-        (o.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER);
-    const knowledgeMemo = this.evidence?.question === question ? this.evidence : undefined;
-    const memoKnowledge = knowledgeMemo?.knowledge;
-    let knowledge: readonly Evidence[] | undefined =
-      memoKnowledge !== undefined && knowledgeFits(memoKnowledge) ? memoKnowledge : undefined;
-    if (
-      knowledge === undefined &&
-      knowledgeRoom > 0 &&
-      o.runtime.knowledge_read?.config.enabled !== false
-    ) {
-      const found = await this.optionalRead(
-        "knowledge.initial",
-        signal,
-        material.sources ?? [],
-        () =>
-          this.knowledge.query({
-            agentId: o.binding.agentId,
-            query: question,
-            budget: knowledgeRoom,
-            owner: this.owner,
-            sources: [...(material.sources ?? [])],
-            signal,
-          }),
-        [],
-      );
-      knowledge = this.fitGroups(found, knowledgeFits);
-      if (this.evidence?.question === question) this.evidence = { ...this.evidence, knowledge };
-    }
-    if (knowledge !== undefined) {
-      material = {
-        ...material,
-        evidence: knowledge,
-        sources: uniqueSources([
-          ...(material.sources ?? []),
-          ...knowledge.flatMap((item) => item.sources),
-        ]),
-      };
-    }
     if (!fitsTarget(material))
-      fail("CONTEXT_BUDGET_EXCEEDED", "初始资料、协议与后续动作余量超过可用容量");
+      fail("CONTEXT_BUDGET_EXCEEDED", "近期窗口、水位包、协议与后续动作余量超过可用容量");
+    signal.throwIfAborted();
     this.assertSources(material.sources ?? []);
-    const view: View = { material, selection, limit: ceiling, memoryCheck: memory.assertCurrent };
+    const view: View = { material, selection, limit: ceiling };
     this.views.set(tier, view);
     this.assertCurrent();
     return view;
   }
-  private async optionalRead<T>(
-    name: string,
-    signal: AbortSignal,
-    parents: readonly SourceRef[],
-    run: () => Promise<T>,
-    fallback: T,
-  ): Promise<T> {
-    const outer = this.readSources;
-    const sources: SourceRef[] = [];
-    this.readSources = sources;
-    try {
-      const result = await run();
-      this.retrievalFailures = this.retrievalFailures.filter((failure) => failure.name !== name);
-      return result;
-    } catch (error) {
-      signal.throwIfAborted();
-      this.assertCurrent();
-      // Even a failed selector may have observed private candidates: never mask their revocation.
-      this.assertSources([...parents, ...sources]);
-      const code = failureCode(error, { pattern: /^MODEL_[A-Z_]+$/ });
-      if (
-        !code.startsWith("MODEL_") &&
-        ![
-          "CONTEXT_CAPACITY_UNKNOWN",
-          "CONTEXT_CAPACITY_ERROR",
-          "CONTEXT_AUX_BUDGET",
-          "CONTEXT_INVALID_SELECTION",
-          // 记忆读取是可选材料：它自己的预算检查（选中的正文超过本轮可用额度）**不该打死整次唤醒**
-          // ——这就是群里"处理失败 CONTEXT_MEMORY_BUDGET"的来源。这一轮没有记忆，
-          // 但判断与回复照常，并留下 supplemental_retrieval_failed 诊断。
-          "CONTEXT_MEMORY_BUDGET",
-        ].includes(code)
-      )
-        throw error;
-      this.retrievalFailures = [
-        ...this.retrievalFailures.filter((failure) => failure.name !== name),
-        { name, code, observedSeq: this.sequence },
-      ];
-      const event = { kind: "supplemental_retrieval_failed" as const, name, code };
-      if (this.options.onDiagnostic) this.options.onDiagnostic(event);
-      else console.warn("bot_context", event);
-      return fallback;
-    } finally {
-      outer?.push(...sources);
-      this.readSources = outer;
-    }
+  private unavailable(name: string, code: string): EvidenceQueryPage {
+    this.retrievalFailures = [
+      ...this.retrievalFailures.filter((failure) => failure.name !== name),
+      { name, code, observedSeq: this.sequence },
+    ];
+    const event = { kind: "supplemental_retrieval_failed" as const, name, code };
+    if (this.options.onDiagnostic) this.options.onDiagnostic(event);
+    else console.warn("bot_context", event);
+    return { status: "unavailable", code, items: [] };
   }
   private compressionRecords(messages: readonly QqContextMessage[]): CompressionRecord[] {
     return messages.map((message, index) => {
@@ -1093,27 +1014,6 @@ ${intent.trim()}`,
         sources,
       };
     });
-  }
-  private fitGroups(
-    found: readonly Evidence[],
-    fits: (candidate: Evidence[]) => boolean,
-    limit?: number,
-  ): Evidence[] {
-    const groups = new Map<string, Evidence[]>();
-    for (const item of found) {
-      // The current SQLite knowledge backend emits original/derived pairs for the same offset.
-      // Keep that pair intact without requiring every selected chunk of a document to fit together.
-      const key = item.sources.some((source) => source.kind === "knowledge_document")
-        ? item.id.replace(/:(?:original|derived):/, ":")
-        : item.id;
-      groups.set(key, [...(groups.get(key) ?? []), item]);
-    }
-    let kept: Evidence[] = [];
-    for (const group of groups.values()) {
-      if (limit !== undefined && kept.length + group.length > limit) continue;
-      if (fits([...kept, ...group])) kept = [...kept, ...group];
-    }
-    return kept;
   }
   /** Fit a channel action's actual result envelope against both decision and reply projections. */
   async actionResultFitter(
@@ -1145,12 +1045,6 @@ ${intent.trim()}`,
           projected - this.cost(tier, view.material, this.observations),
         );
         if (projected + this.reservations.reserved(token) > view.limit) return false;
-        if (
-          name.startsWith("knowledge.") &&
-          this.knowledgeUnits(view.material, [...this.observations, observation]) >
-            (this.options.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
-        )
-          return false;
       }
       // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
       this.reservations.set(token, reservation);
@@ -1164,9 +1058,11 @@ ${intent.trim()}`,
    */
   private async query(
     name: "memory.query" | "knowledge.query",
-    input: { query: string; limit?: number },
-    signal: AbortSignal,
-  ): Promise<EvidenceQueryResult> {
+    input: { query: string; limit?: number; cursor?: string },
+    action: ActionContext,
+  ): Promise<EvidenceQueryPage> {
+    const { signal } = action;
+    signal.throwIfAborted();
     this.assertCurrent();
     await this.view(this.options.decisionTier, signal);
     await this.view("reply", signal);
@@ -1174,61 +1070,38 @@ ${intent.trim()}`,
       id: "00000000-0000-0000-0000-000000000000",
       name,
       arguments: input,
-      value: [],
+      value: { status: "ok", items: [], nextCursor: null },
       sources: [],
     };
-    const observation = (items: readonly Evidence[]): ActionObservation => ({
-      ...empty,
-      value: {
-        status: "ok",
-        items: items.map((item) => evidenceCatalogEntry(name.split(".")[0], item)),
-      },
-      sources: uniqueSources(items.flatMap((item) => item.sources)),
-    });
-    const cost = (view: View, tier: QqContextTier, items: readonly Evidence[]) =>
-      this.cost(tier, view.material, [...this.observations, observation(items)]);
-    const budget =
-      Math.min(...[...this.views].map(([tier, view]) => view.limit - cost(view, tier, []))) -
-      this.reservations.reserved();
+    const budget = Math.min(
+      this.evidenceBudget(name === "memory.query" ? "memory" : "knowledge"),
+      Math.min(
+        ...[...this.views].map(
+          ([tier, view]) =>
+            view.limit - this.cost(tier, view.material, [...this.observations, empty]),
+        ),
+      ) - this.reservations.reserved(),
+    );
+    const sources = uniqueSources([...this.sources, ...(action.sources ?? [])]);
+    signal.throwIfAborted();
+    this.assertCurrent();
+    this.assertSources(sources);
+    if (budget < 1) return this.unavailable(name, "CONTEXT_BUDGET_EXCEEDED");
     const o = this.options;
-    if (budget < 1) {
-      // 补充资料是**模型主动要的可选动作**——这一轮没地方就先不给（带码诊断，
-      // 运行详情能看到），绝不因为"要不下资料"打死整轮。窗口本身已按容量收窄（见 view 里那段）。
-      const event = {
-        kind: "supplemental_retrieval_failed" as const,
-        name,
-        code: "CONTEXT_BUDGET_EXCEEDED",
-      };
-      if (o.onDiagnostic) o.onDiagnostic(event);
-      else console.warn("bot_context", event);
-      return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
-    }
     const common = {
       agentId: o.binding.agentId,
       query: input.query,
+      limit: input.limit,
+      cursor: input.cursor,
       projection: "catalog" as const,
-      budget:
-        name === "knowledge.query"
-          ? Math.min(
-              budget,
-              ...[...this.views.values()].map(
-                (view) =>
-                  (o.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER) -
-                  this.knowledgeUnits(view.material),
-              ),
-            )
-          : budget,
+      budget,
       owner: this.owner,
-      sources: this.sources,
+      sources,
       signal,
     };
-    if (common.budget < 1)
-      return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
-    const result = await this.optionalRead(
-      name,
-      signal,
-      this.sources,
-      async () =>
+    let page: EvidenceQueryPage;
+    try {
+      page = evidenceQueryPage(
         name === "memory.query"
           ? await this.memory.query({
               ...common,
@@ -1236,45 +1109,35 @@ ${intent.trim()}`,
               scopes: qqMemoryScopeKeyset(o.snapshot.access).read,
             })
           : await this.knowledge.query(common),
-      [],
-    );
-    this.assertCurrent();
-    this.assertSources(result.flatMap((item) => item.sources));
-    // 可选读取失败时 `optionalRead` 会把原因记进 retrievalFailures——把它翻成信封，别让模型
-    // 把"取不到"当成"没有"。（撤权／来源失效不会走到这里：那是硬失败，整轮直接失败。）
-    const failure = this.retrievalFailures.find((entry) => entry.name === name);
-    if (failure)
-      return {
-        status: "unavailable",
-        code: failure.code,
-        items: [],
-      } satisfies EvidenceQueryResult;
-    const fits = (items: Evidence[]) =>
-      [...this.views].every(
-        ([tier, view]) =>
-          cost(view, tier, items) <= view.limit &&
-          (name !== "knowledge.query" ||
-            this.knowledgeUnits(view.material, [...this.observations, observation(items)]) <=
-              (o.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)),
       );
-    if (
-      name === "memory.query" &&
-      ["full_catalog", "full_body"].includes(o.runtime.p5_config.retrieval_mode)
-    ) {
-      // 全量模式"要么全给、要么不给"的纪律不变，但**不给也不该打死整轮**——
-      // 问一次要不到资料而已（带码诊断），本轮照常判断与回复。
-      if (!fits([...result])) {
-        const event = {
-          kind: "supplemental_retrieval_failed" as const,
-          name,
-          code: "CONTEXT_BUDGET_EXCEEDED",
-        };
-        if (o.onDiagnostic) o.onDiagnostic(event);
-        else console.warn("bot_context", event);
-        return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
-      }
-      return { status: "ok", items: result };
+    } catch (error) {
+      signal.throwIfAborted();
+      this.assertCurrent();
+      this.assertSources(sources);
+      const code = failureCode(error, { pattern: /^MODEL_[A-Z_]+$/, allowErrorCode: true });
+      if (
+        ![
+          ...MODEL_LAYER_ERROR_CODES,
+          "MODEL_EMPTY_RESPONSE",
+          "CONTEXT_CAPACITY_UNKNOWN",
+          "CONTEXT_CAPACITY_ERROR",
+          "CONTEXT_CAPACITY_INSUFFICIENT",
+          "CONTEXT_CAPACITY_TIMEOUT",
+          "CONTEXT_AUX_BUDGET",
+          "CONTEXT_MEMORY_BUDGET",
+          "KNOWLEDGE_CONTEXT_BUDGET",
+          "CONTEXT_BUDGET_EXCEEDED",
+        ].includes(code)
+      )
+        throw error;
+      return this.unavailable(name, code);
     }
-    return { status: "ok", items: this.fitGroups(result, fits, input.limit) };
+    signal.throwIfAborted();
+    this.assertCurrent();
+    this.assertSources([...sources, ...page.items.flatMap((item) => item.sources)]);
+    if (page.status === "unavailable" && page.code) this.unavailable(name, page.code);
+    else this.retrievalFailures = this.retrievalFailures.filter((failure) => failure.name !== name);
+    // The factory fits the envelope and retains undisclosed candidates before following nextCursor.
+    return page;
   }
 }

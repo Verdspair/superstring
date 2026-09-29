@@ -225,19 +225,17 @@ export function CapabilityEditor() {
     void s.loadOrganization();
   }, [s.loadOrganization]);
   const modelName = editor?.draft.model_name;
-  const retrievalModel = editor?.draft.memory_retrieval_model_name;
   const compressionModel = editor?.draft.context_compression_model_name;
   useEffect(() => {
     if (s.editorAgentId !== "__new__" && modelName)
-      void s.refreshCapacityPreview([modelName, retrievalModel ?? null, compressionModel ?? null]);
-  }, [s.editorAgentId, modelName, retrievalModel, compressionModel, s.refreshCapacityPreview]);
+      void s.refreshCapacityPreview([modelName, modelName, compressionModel ?? null]);
+  }, [s.editorAgentId, modelName, compressionModel, s.refreshCapacityPreview]);
   if (!editor) return null;
   const defaultModel = s.organizationEditor?.modelName;
   const alreadyDefault =
     !!defaultModel &&
     [
       editor.draft.model_name,
-      editor.draft.memory_retrieval_model_name,
       editor.draft.memory_consolidation_model_name,
       editor.draft.context_compression_model_name,
     ].every((name) => name === defaultModel);
@@ -247,7 +245,6 @@ export function CapabilityEditor() {
     s.patchPageAgent("context", { p5_config: { ...p5, ...value } });
   const modelFields = [
     ["model_name", "library.chat.model"],
-    ["memory_retrieval_model_name", "library.memory.reading.model"],
     ["memory_consolidation_model_name", "library.memory.organization.model"],
     ["context_compression_model_name", "library.context.compression.model"],
   ] as const;
@@ -312,6 +309,7 @@ export function CapabilityEditor() {
           </Field>
           <Button
             variant="outline"
+            className="h-auto min-h-9 max-w-full whitespace-normal break-words"
             disabled={!defaultModel || alreadyDefault || s.settingsSaving}
             onClick={() => setConfirmDefault(true)}
           >
@@ -328,7 +326,8 @@ export function CapabilityEditor() {
           <CardHeader>
             <CardTitle>{t("library.context.capacity")}</CardTitle>
             <CardDescription>
-              {translateNotice(s.capacityPreview) || t("library.reading.capacity")}
+              {s.capacityPreview.split("\n").map(translateNotice).join("\n") ||
+                t("library.reading.capacity")}
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-5 sm:grid-cols-2">

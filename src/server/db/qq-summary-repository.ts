@@ -10,8 +10,8 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { type SourceRef, SourceRefSchema } from "../../shared/contracts/evidence";
-import { uniqueSources } from "../agent/context-engine";
 import type { ConversationSummaryFacts } from "../agent/conversation-compression";
+import { uniqueSources } from "../services/source-refs";
 import type { Orm } from "./repositories";
 import * as schema from "./schema";
 

@@ -22,18 +22,25 @@ import {
 } from "../agent/context-engine";
 import type { ContextBuilder } from "../agent/conversation-context";
 import { ReservationLedger } from "../agent/reservation-ledger";
-import { currentUser, memoryBodies, systemPrompt } from "../db/context-repository";
+import { currentUser, readMemoryCandidate, systemPrompt } from "../db/context-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
-import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import {
   createSqliteQueryFactory,
   type ModuleQueryFactory,
   type ModuleSourceResolver,
 } from "../modules/composition";
+import {
+  type EvidenceQueryPage,
+  type EvidenceQueryResponse,
+  evidenceQueryPage,
+} from "../modules/contracts";
+import {
+  conversationEvidenceSourceAccess,
+  createWebConversationEvidence,
+} from "../modules/conversation-evidence";
 import { turnSources } from "../modules/provenance";
 
-/** Web's existing compression and initial evidence policy, reusable by the Agent loop. */
 export class WebContextSource implements ConversationContextSource {
   readonly spec: AgentSpec;
   readonly actions: BuiltInAction[];
@@ -73,13 +80,29 @@ export class WebContextSource implements ConversationContextSource {
       runtime,
       assertSources: (sources) => this.assertSources(sources),
     });
+    // 已存历史与摘要是显式查询的有界只读工具：不预取、不触发压缩，模块本身不随记忆检索开关关闭。
+    const evidence = createWebConversationEvidence({
+      db: options.db,
+      orm: options.orm,
+      agentId: runtime.agent_id,
+      sessionId: options.sessionId,
+      currentTurnId: options.turnId,
+      retrievalEnabled: runtime.p5_config.retrieval_mode !== "off",
+      assertCurrent: () => this.assertCurrent(),
+      assertSources: (sources) => this.assertSources(sources),
+    });
+    const readMemory = memory.read?.bind(memory);
+    const readKnowledge = knowledge.read?.bind(knowledge);
+    const mode = runtime.p5_config.retrieval_mode;
+    const preset =
+      mode === "conservative" || mode === "standard" || mode === "broad" ? mode : "broad";
     this.actions = createBuiltInActions(
       {
         ...(runtime.p5_config.retrieval_mode !== "off"
           ? {
               memory: {
                 query: async (
-                  input: { query: string; limit?: number },
+                  input: { query: string; limit?: number; cursor?: string },
                   context: { signal: AbortSignal },
                 ) =>
                   this.query("memory.query", input, (budget) =>
@@ -88,7 +111,7 @@ export class WebContextSource implements ConversationContextSource {
                       sessionId: options.sessionId,
                       mode: runtime.p5_config.retrieval_mode,
                       scopes: null,
-                      query: input.query,
+                      ...input,
                       projection: "catalog",
                       budget,
                       owner: this.owner,
@@ -96,6 +119,25 @@ export class WebContextSource implements ConversationContextSource {
                       sources: this.sources(),
                     }),
                   ),
+                ...(readMemory
+                  ? {
+                      read: (
+                        input: { evidence: Evidence; offset: number; limit: number },
+                        context: { signal: AbortSignal },
+                      ) => {
+                        this.assertCurrent();
+                        return readMemory({
+                          ...input,
+                          agentId: runtime.agent_id,
+                          sessionId: options.sessionId,
+                          scopes: null,
+                          owner: this.owner,
+                          signal: context.signal,
+                          sources: this.sources(),
+                        });
+                      },
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -103,13 +145,13 @@ export class WebContextSource implements ConversationContextSource {
           ? {
               knowledge: {
                 query: async (
-                  input: { query: string; limit?: number },
+                  input: { query: string; limit?: number; cursor?: string },
                   context: { signal: AbortSignal },
                 ) =>
                   this.query("knowledge.query", input, (budget) =>
                     knowledge.query({
                       agentId: runtime.agent_id,
-                      query: input.query,
+                      ...input,
                       projection: "catalog",
                       budget,
                       owner: this.owner,
@@ -117,9 +159,28 @@ export class WebContextSource implements ConversationContextSource {
                       sources: this.sources(),
                     }),
                   ),
+                ...(readKnowledge
+                  ? {
+                      read: (
+                        input: { evidence: Evidence; offset: number; limit: number },
+                        context: { signal: AbortSignal },
+                      ) => {
+                        this.assertCurrent();
+                        return readKnowledge({
+                          ...input,
+                          agentId: runtime.agent_id,
+                          owner: this.owner,
+                          signal: context.signal,
+                          sources: this.sources(),
+                        });
+                      },
+                    }
+                  : {}),
               },
             }
           : {}),
+        history: evidence.history,
+        summary: evidence.summary,
       },
       {
         assertSources: (sources) => {
@@ -185,9 +246,12 @@ export class WebContextSource implements ConversationContextSource {
             return true;
           };
         },
-        requireAll: (kind) =>
-          kind === "memory" &&
-          ["full_catalog", "full_body"].includes(runtime.p5_config.retrieval_mode),
+        budget: (kind) =>
+          kind === "memory"
+            ? runtime.p5_config.retrieval_presets[preset].max_tokens
+            : kind === "knowledge"
+              ? (runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
+              : Number.MAX_SAFE_INTEGER,
       },
     );
     this.actions = [...this.actions, ...(options.extraActions ?? [])];
@@ -264,7 +328,7 @@ export class WebContextSource implements ConversationContextSource {
     currentUser(o.orm, o.runtime.agent_id, o.sessionId, o.turnId, {
       generationToken: o.generationToken,
     });
-    o.builder?.assertKnowledgeAccess(o.turnId, o.runtime.agent_id);
+    o.builder.assertCurrent(o.turnId, o.runtime.agent_id);
     this.assertSources(this.sources());
   }
   private sources(): SourceRef[] {
@@ -283,12 +347,16 @@ export class WebContextSource implements ConversationContextSource {
       sources,
       owner: this.owner,
       now: new Date().toISOString(),
-      resolveSource: o.resolveSource,
+      // 会话证据先本地复验（持久存储），外部注入解析器不能把已撤权的引用改判为 available。
+      resolveSource: (source, owner, at) =>
+        conversationEvidenceSourceAccess(o, source, owner, at) ??
+        o.resolveSource?.(source, owner, at),
       memoryRevisions: (ids) =>
         new Map(
-          (ids.length ? memoryBodies(o.orm, o.runtime.agent_id, o.sessionId, ids) : []).map(
-            (item) => [item.id, item.revision],
-          ),
+          [...new Set(ids)].map((id) => {
+            const item = readMemoryCandidate(o.orm, o.runtime.agent_id, null, id, o.sessionId);
+            return [item.id, item.revision];
+          }),
         ),
       skip: (source) => source.kind === "web_turn" && source.id === o.turnId,
       messages: {
@@ -332,9 +400,9 @@ export class WebContextSource implements ConversationContextSource {
   }
   private async query(
     name: string,
-    input: { query: string; limit?: number },
-    read: (budget: number) => Promise<readonly Evidence[]>,
-  ): Promise<readonly Evidence[]> {
+    input: { query: string; limit?: number; cursor?: string },
+    read: (budget: number) => Promise<EvidenceQueryResponse>,
+  ): Promise<EvidenceQueryPage> {
     this.assertCurrent();
     const material = this.material as ContextMaterial;
     const empty: ActionObservation = {
@@ -367,22 +435,9 @@ export class WebContextSource implements ConversationContextSource {
         "stream",
       ).units;
     const budget = limit - cost([]) - this.reservations.reserved();
-    if (budget < 1) fail("CONTEXT_BUDGET_EXCEEDED", "没有可用空间读取补充资料");
-    const result = await read(budget);
+    if (budget < 1) return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
+    const result = evidenceQueryPage(await read(budget));
     this.assertCurrent();
-    this.assertSources(result.flatMap((entry) => entry.sources));
-    const full =
-      name === "memory.query" &&
-      ["full_catalog", "full_body"].includes(this.options.runtime.p5_config.retrieval_mode);
-    if (full) {
-      if (cost(result) > limit) fail("CONTEXT_BUDGET_EXCEEDED", "完整记忆及协议开销超过剩余容量");
-      return result;
-    }
-    const selected: Evidence[] = [];
-    for (const entry of result) {
-      if (input.limit !== undefined && selected.length >= input.limit) break;
-      if (cost([...selected, entry]) <= limit) selected.push(entry);
-    }
-    return selected;
+    return result;
   }
 }

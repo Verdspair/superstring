@@ -294,6 +294,8 @@ export function assertContextSources(options: {
   );
   const memory = options.memoryRevisions(refs.map((ref) => ref.id));
   for (const source of sources) {
+    if (source.expiresAt !== undefined && Date.parse(source.expiresAt) <= Date.parse(now))
+      fail("CONTEXT_SOURCE_INVALID", options.messages.other);
     if (options.skip?.(source)) continue;
     if (
       source.kind === "memory" &&

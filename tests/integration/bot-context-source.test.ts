@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
-import { ContextEngine } from "../../src/server/agent/context-engine";
+import { type ActionObservation, ContextEngine } from "../../src/server/agent/context-engine";
 import { ConversationCompressor } from "../../src/server/agent/conversation-compression";
 import { BotCompressionQueue } from "../../src/server/channels/onebot11/background-compression";
 import {
@@ -202,7 +202,7 @@ function setup(
     return id;
   };
   const memory = (body: string, peer = "30003") => {
-    const id = seed(body, 20, peer),
+    const id = seed("memory source event", 20, peer),
       key = qqMemoryScopeKey({ ...qqConversationScope(binding), peerId: peer });
     h.orm
       .insert(schema.memoryEntries)
@@ -289,7 +289,7 @@ async function measureJointRoom(h: ReturnType<typeof setup>): Promise<number> {
   }
   return lo;
 }
-/** 漂移 A 夹具：动作读到的条目大小可调；初始读取（无 projection）始终返回空，保持视图干净。 */
+/** 联合预留夹具：目录大小可调，域预算与模型容量分别约束。 */
 function jointFixture() {
   const sizes = { memory: 0, knowledge: 0 };
   const h = setup({
@@ -324,6 +324,8 @@ function jointFixture() {
       },
     }),
   });
+  // Isolate the shared model ceiling from the independently tested domain allowance.
+  h.runtime.p5_config.retrieval_presets.standard.max_tokens = 65536;
   h.gateway.loadedContextCapacity = async () => 32768;
   h.seed("question");
   return { h, sizes };
@@ -346,34 +348,61 @@ const compressionRuns = (h: ReturnType<typeof setup>) =>
     .filter((run) => run.specId === "context.compress.events");
 describe("shared Bot context source", () => {
   it.each(["off", "conservative", "standard", "broad", "full_catalog", "full_body"] as const)(
-    "preserves initial %s memory, scope and unchanged-step reuse",
+    "%s starts with no evidence calls or bodies and keeps queries scoped",
     async (mode) => {
       const h = setup({ mode });
       const own = h.memory("own apples"),
         foreign = h.memory("foreign pears", "40004");
+      const repo = new KnowledgeRepository(h.db);
+      const doc = repo.importDocument({
+        name: "apples manual",
+        category_id: "default",
+        original_text: "knowledge body not prefetched",
+      });
+      repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
       h.seed("apples?");
       const material = await h.source.read(readInput());
       expect(JSON.stringify(material)).not.toContain(foreign);
-      expect(JSON.stringify(h.calls)).not.toContain("foreign pears");
-      expect(
-        material.sources?.some((source) => source.kind === "memory" && source.id === own),
-      ).toBe(mode !== "off");
-      expect(h.calls.length > 0).toBe(mode !== "off" && mode !== "full_body");
+      expect(JSON.stringify(material)).not.toContain("own apples");
+      expect(JSON.stringify(material)).not.toContain("knowledge body not prefetched");
+      expect(material.evidence ?? []).toEqual([]);
+      expect(material.sources?.some((source) => source.kind === "memory")).toBe(false);
       const evaluation = await h.source.prepareEvaluation({ ...readInput(), target: null });
-      expect(
-        evaluation.sources.some((source) => source.kind === "memory" && source.id === own),
-      ).toBe(mode !== "off");
-      expect(JSON.stringify(evaluation.messages)).not.toContain("foreign pears");
-      const count = h.calls.length;
-      await h.source.prepareEvaluation({ ...readInput(), target: null });
+      expect(evaluation.sources.some((source) => source.kind === "memory")).toBe(false);
+      expect(JSON.stringify(evaluation.messages)).not.toContain("own apples");
+      expect(JSON.stringify(evaluation.messages)).not.toContain("knowledge body not prefetched");
+      const context = new ContextEngine().render(h.spec, material, [], ["alice"]);
+      const reply = await h.source.prepareGeneration(
+        { kind: "generate", targetId: "alice", instructions: "answer" },
+        { context, outputId: "initial", signal: readInput().signal },
+      );
+      expect(JSON.stringify(reply.context?.messages)).not.toContain("own apples");
+      expect(JSON.stringify(reply.context?.messages)).not.toContain(
+        "knowledge body not prefetched",
+      );
       expect(await h.source.read(readInput())).toBe(material);
-      expect(h.calls).toHaveLength(count);
-      if (mode !== "off") {
-        h.db.query("UPDATE memory_entries SET body='revised' WHERE id=?").run(own);
-        await expect(h.source.read(readInput())).rejects.toMatchObject({
-          code: "CONTEXT_SOURCE_INVALID",
-        });
+      expect(h.calls).toHaveLength(0);
+      const query = h.source.actions.find((action) => action.description.name === "memory.query");
+      if (mode === "off") {
+        expect(
+          h.source.actions.some((action) => action.description.name.startsWith("memory.")),
+        ).toBe(false);
+        return;
       }
+      if (!query) throw new Error("missing memory query");
+      const result = await query.execute(
+        { query: "apples" },
+        { owner: { kind: "test", id: "test" }, signal: readInput().signal },
+      );
+      expect(result.value).toMatchObject({ status: "ok", items: [{ id: own }] });
+      expect(JSON.stringify(result)).not.toContain(foreign);
+      expect(h.calls).toHaveLength(0);
+      const observations = [{ id: "query", name: "memory.query", ...result }];
+      await h.source.read({ ...readInput(), observations });
+      h.db.query("UPDATE memory_entries SET body='revised' WHERE id=?").run(own);
+      await expect(h.source.read({ ...readInput(), observations })).rejects.toMatchObject({
+        code: "CONTEXT_SOURCE_INVALID",
+      });
     },
   );
   it("returns memory metadata without body and reads only this run's authorized reference", async () => {
@@ -441,43 +470,100 @@ describe("shared Bot context source", () => {
     });
   });
 
-  it("uses the injected memory module for initial Bot evidence and later actions", async () => {
-    let reads = 0;
-    const h = setup({
-      mode: "full_body",
-      modules: () => ({
-        memory: {
-          query: async () => {
-            reads++;
-            return [
-              {
-                id: "custom",
-                text: "opaque external memory",
-                sources: [{ kind: "external", id: "memory", revision: "1" }],
-              },
-            ];
-          },
+  it.each(["memory", "knowledge"] as const)(
+    "%s lazy reads receive host authority, never tool-supplied owners or scopes",
+    async (kind) => {
+      const queries: unknown[] = [],
+        reads: unknown[] = [];
+      const remote = { kind: "external", id: kind, revision: "1" };
+      const h = setup({
+        mode: "full_body",
+        modules: () => {
+          const backend = {
+            async query(input: unknown) {
+              queries.push(input);
+              return [{ id: "custom", text: "must not use eager text", sources: [remote] }];
+            },
+            async read(input: { offset: number; limit: number }) {
+              reads.push(input);
+              const text = "lazy remote body";
+              const end = Math.min(input.offset + input.limit, text.length);
+              return {
+                text: text.slice(input.offset, end),
+                offset: input.offset,
+                total: text.length,
+                nextOffset: end < text.length ? end : null,
+              };
+            },
+          };
+          return {
+            memory: kind === "memory" ? backend : { query: async () => [] },
+            knowledge: kind === "knowledge" ? backend : { query: async () => [] },
+          };
         },
-        knowledge: { query: async () => [] },
-      }),
-      resolveSource: (source) => (source.kind === "external" ? "available" : undefined),
-    });
-    h.memory("SQLite memory should not be read");
-    h.seed("question");
-    const material = await h.source.read(readInput());
-    expect(JSON.stringify(material.pending)).toContain("opaque external memory");
-    // The raw conversation legitimately contains the seeded event, so inspect only the memory section.
-    expect(JSON.stringify(material.sources)).not.toContain('"kind":"memory"');
-    const action = h.source.actions.find((entry) => entry.description.name === "memory.query");
-    if (!action) throw new Error("missing action");
-    await action.execute(
-      { query: "follow up" },
-      { owner: { kind: "test", id: "test" }, signal: new AbortController().signal },
-    );
-    expect(reads).toBe(2);
-  });
+        resolveSource: (source) => (source.kind === "external" ? "available" : undefined),
+      });
+      h.seed("question");
+      const material = await h.source.read(readInput());
+      expect(queries).toEqual([]);
+      expect(reads).toEqual([]);
+      expect(JSON.stringify(material)).not.toContain("must not use eager text");
+      const query = h.source.actions.find((entry) => entry.description.name === `${kind}.query`);
+      const read = h.source.actions.find((entry) => entry.description.name === `${kind}.read`);
+      if (!query || !read) throw new Error("missing evidence actions");
+      const context = {
+        owner: { kind: "test", id: "untrusted-owner" },
+        signal: readInput().signal,
+      };
+      await expect(
+        query.execute({ query: "details", scopes: null, owner: context.owner }, context),
+      ).rejects.toThrow();
+      expect(queries).toEqual([]);
+      const result = await query.execute({ query: "details", limit: 2 }, context);
+      const entry = (result.value as { items: { bodyRef: string }[] }).items[0];
+      const owner = {
+        kind: "qq_binding",
+        id: h.binding.id,
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      };
+      expect(queries).toHaveLength(1);
+      expect(queries[0]).toMatchObject({
+        owner,
+        agentId: DEFAULT_AGENT_ID,
+        limit: 2,
+        projection: "catalog",
+      });
+      if (kind === "memory")
+        expect(queries[0]).toMatchObject({
+          scopes: [qqMemoryScopeKey(qqConversationScope(h.binding))],
+        });
+      expect(JSON.stringify(result.value)).not.toContain("must not use eager text");
+      await expect(
+        read.execute({ bodyRef: entry.bodyRef, scopes: null, owner: context.owner }, context),
+      ).rejects.toThrow();
+      expect(reads).toEqual([]);
+      const page = await read.execute({ bodyRef: entry.bodyRef, offset: 5, limit: 6 }, context);
+      expect(page.value).toMatchObject({
+        status: "ok",
+        items: [{ text: "remote", offset: 5, nextOffset: 11 }],
+      });
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).toMatchObject({
+        owner,
+        agentId: DEFAULT_AGENT_ID,
+        offset: 5,
+        limit: 6,
+        evidence: { id: "custom" },
+      });
+      if (kind === "memory")
+        expect(reads[0]).toMatchObject({
+          scopes: [qqMemoryScopeKey(qqConversationScope(h.binding))],
+        });
+    },
+  );
 
-  it("accepts a replaceable query backend with explicit source authority and rejects its later revocation", async () => {
+  it("uses external Evidence.text only on explicit read and rejects consumed-source revocation", async () => {
     let valid = true,
       reads = 0;
     const remote = { kind: "remote_document", id: "doc", revision: "7" };
@@ -496,19 +582,28 @@ describe("shared Bot context source", () => {
     });
     h.seed("question");
     const material = await h.source.read(readInput());
-    expect(material.evidence?.[0].text).toBe("external knowledge");
-    expect(material.sources).toContainEqual(remote);
-    await h.source.read(readInput());
+    expect(material.evidence ?? []).toEqual([]);
+    expect(reads).toBe(0);
+    const query = h.source.actions.find((entry) => entry.description.name === "knowledge.query");
+    const read = h.source.actions.find((entry) => entry.description.name === "knowledge.read");
+    if (!query || !read) throw new Error("missing evidence actions");
+    const context = { owner: { kind: "test", id: "test" }, signal: readInput().signal };
+    const result = await query.execute({ query: "external" }, context);
+    const entry = (result.value as { items: { bodyRef: string }[] }).items[0];
+    expect(result.sources).toContainEqual(remote);
+    expect(JSON.stringify(result.value)).not.toContain("external knowledge");
+    const page = await read.execute({ bodyRef: entry.bodyRef }, context);
+    expect(JSON.stringify(page.value)).toContain("external knowledge");
+    const observations = [{ id: "read", name: "knowledge.read", ...page }];
+    await h.source.read({ ...readInput(), observations });
     expect(reads).toBe(1);
     valid = false;
-    await expect(h.source.read(readInput())).rejects.toMatchObject({
+    await expect(h.source.read({ ...readInput(), observations })).rejects.toMatchObject({
       code: "CONTEXT_SOURCE_INVALID",
     });
   });
 
-  it("同一轮同一问题只挑一次：判断档与回复档共用证据快照（0.4.0 P3 出口）", async () => {
-    // 一次挑选就是一次模型调用（记忆选择器）。判断档先建、回复档后建，问的是同一个问题——
-    // 后者必须复用前者的快照，而不是再挑一遍。
+  it("both tiers start without queries and inherit explicit evidence observations without reselection", async () => {
     let memoryReads = 0,
       knowledgeReads = 0;
     const h = setup({
@@ -518,7 +613,14 @@ describe("shared Bot context source", () => {
         memory: {
           query: async () => {
             memoryReads++;
-            return [{ id: "m1", text: "memory body", sources: [] }];
+            return [
+              {
+                id: "m1",
+                text: "memory body",
+                preview: { title: "memory title", summary: "memory preview" },
+                sources: [],
+              },
+            ];
           },
         },
         knowledge: {
@@ -531,17 +633,35 @@ describe("shared Bot context source", () => {
     });
     h.seed("question");
     await h.source.read(readInput());
-    expect([memoryReads, knowledgeReads]).toEqual([1, 1]);
-
-    const action = h.source.actions.find((entry) => entry.description.name === "memory.query");
-    if (!action) throw new Error("missing action");
-    await action.execute(
-      { query: "follow up" },
-      { owner: { kind: "test", id: "test" }, signal: new AbortController().signal },
+    await h.source.prepareEvaluation({ ...readInput(), target: null });
+    expect([memoryReads, knowledgeReads]).toEqual([0, 0]);
+    const query = h.source.actions.find((entry) => entry.description.name === "memory.query");
+    const read = h.source.actions.find((entry) => entry.description.name === "memory.read");
+    if (!query || !read) throw new Error("missing evidence actions");
+    const action = { owner: { kind: "test", id: "test" }, signal: readInput().signal };
+    const result = await query.execute({ query: "follow up" }, action);
+    const entry = (result.value as { items: { bodyRef: string }[] }).items[0];
+    const page = await read.execute({ bodyRef: entry.bodyRef }, action);
+    const observations: ActionObservation[] = [
+      { id: "query", name: "memory.query", ...result },
+      { id: "read", name: "memory.read", ...page },
+    ];
+    const material = await h.source.read({ ...readInput(), observations });
+    const context = new ContextEngine().render(h.spec, material, observations, ["alice"]);
+    const reply = await h.source.prepareGeneration(
+      { kind: "generate", targetId: "alice", instructions: "answer" },
+      { context, outputId: "output", signal: readInput().signal },
     );
-    // 回复档建立时复用快照：资料一次都没有再挑；记忆只多了动作自己那一次。
-    expect(knowledgeReads).toBe(1);
-    expect(memoryReads).toBe(2);
+    expect(JSON.stringify(reply.context?.messages)).toContain("memory preview");
+    expect(JSON.stringify(reply.context?.messages)).toContain("memory body");
+    expect(JSON.stringify(reply.context?.messages)).not.toContain("knowledge body");
+    const evaluation = await h.source.prepareEvaluation({ ...readInput(), target: null });
+    expect(JSON.stringify(evaluation.messages)).toContain("memory body");
+    h.seed("new question");
+    h.source.invalidate();
+    await h.source.read({ ...readInput(), observations });
+    expect([memoryReads, knowledgeReads]).toEqual([1, 0]);
+    expect(h.calls).toHaveLength(0);
   });
 
   it("撤权在查询动作里是硬失败，不是空结果（0.4.0 P2 出口）", async () => {
@@ -570,7 +690,7 @@ describe("shared Bot context source", () => {
     ).rejects.toMatchObject({ code: "KNOWLEDGE_ACCESS_CHANGED" });
   });
 
-  it("injects semantic knowledge initially with grant provenance and rejects revocation on reuse", async () => {
+  it("does not fail when unread knowledge is revoked, but retains queried grant provenance", async () => {
     const h = setup();
     h.seed("apples?");
     const repo = new KnowledgeRepository(h.db);
@@ -581,13 +701,128 @@ describe("shared Bot context source", () => {
     });
     repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
     const material = await h.source.read(readInput());
-    expect(JSON.stringify(material.evidence)).toContain("cold storage");
-    expect(material.sources?.some((source) => source.kind === "knowledge_grant")).toBe(true);
+    expect(material.evidence ?? []).toEqual([]);
+    expect(material.sources?.some((source) => source.kind === "knowledge_grant")).toBe(false);
     repo.replaceGrants(doc.id, repo.detail(doc.id).revision, []);
-    await expect(h.source.read(readInput())).rejects.toMatchObject({
+    expect(await h.source.read(readInput())).toBe(material);
+    await h.source.prepareEvaluation({ ...readInput(), target: null });
+    expect(h.calls).toHaveLength(0);
+    repo.replaceGrants(doc.id, repo.detail(doc.id).revision, [DEFAULT_AGENT_ID]);
+    const query = h.source.actions.find((action) => action.description.name === "knowledge.query");
+    if (!query) throw new Error("missing knowledge query");
+    const result = await query.execute(
+      { query: "apples" },
+      { owner: { kind: "test", id: "test" }, signal: readInput().signal },
+    );
+    expect(result.sources?.some((source) => source.kind === "knowledge_grant")).toBe(true);
+    const observations = [{ id: "query", name: "knowledge.query", ...result }];
+    await h.source.read({ ...readInput(), observations });
+    repo.replaceGrants(doc.id, repo.detail(doc.id).revision, []);
+    await expect(h.source.read({ ...readInput(), observations })).rejects.toMatchObject({
       code: "CONTEXT_SOURCE_INVALID",
     });
   });
+
+  it("disabled memory and knowledge expose no read actions and never call injected backends", async () => {
+    let calls = 0;
+    const backend = {
+      query: async () => {
+        calls++;
+        return [];
+      },
+      read: async () => {
+        calls++;
+        return { text: "", offset: 0, total: 0, nextOffset: null };
+      },
+    };
+    const h = setup({ mode: "off", modules: () => ({ memory: backend, knowledge: backend }) });
+    h.runtime.knowledge_read = {
+      config: { enabled: false, context_budget: null, scope: "all", document_ids: [] },
+      revision: 1,
+      budget: 4096,
+      budget_source: "global",
+      global_revision: 1,
+      auto_enabled: true,
+    };
+    const source = h.newSource();
+    source.configureActions(source.actions.map((action) => action.description));
+    h.seed("question");
+    const material = await source.read(readInput());
+    await source.prepareEvaluation({ ...readInput(), target: null });
+    const context = new ContextEngine().render(h.spec, material, [], ["alice"]);
+    await source.prepareGeneration(
+      { kind: "generate", targetId: "alice", instructions: "answer" },
+      { context, outputId: "off", signal: readInput().signal },
+    );
+    // 关闭时不装记忆/知识读工具；已存历史两档都装，已存摘要仅回复档装（本用例为回复档）。
+    const names = source.actions.map((action) => action.description.name);
+    expect(
+      names.filter((name) => name.startsWith("memory.") || name.startsWith("knowledge.")),
+    ).toEqual([]);
+    expect(names).toContain("history.query");
+    expect(names).toContain("history.read");
+    expect(names).toContain("summary.query");
+    expect(names).toContain("summary.read");
+    expect(calls).toBe(0);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it.each(["full_catalog", "full_body"] as const)(
+    "legacy %s uses the stored broad budget and continues undisclosed items before the backend cursor",
+    async (mode) => {
+      const inputs: { cursor?: string; limit?: number; budget: number }[] = [];
+      const h = setup({
+        mode,
+        modules: () => ({
+          memory: {
+            query: async (input) => {
+              inputs.push(input);
+              const ids = input.cursor === undefined ? ["m1", "m2", "m3"] : ["m4"];
+              return {
+                status: "ok",
+                items: ids.map((id) => ({ id, text: `body-${id}`, sources: [] })),
+                nextCursor: input.cursor === undefined ? "backend-next" : null,
+              };
+            },
+          },
+          knowledge: { query: async () => [] },
+        }),
+      });
+      h.runtime.p5_config.retrieval_presets.broad.max_tokens = 4096;
+      h.seed("question");
+      await h.source.read(readInput());
+      expect(inputs).toEqual([]);
+      const query = h.source.actions.find((action) => action.description.name === "memory.query");
+      if (!query) throw new Error("missing memory query");
+      const context = { owner: { kind: "test", id: "test" }, signal: readInput().signal };
+      let cursor: string | undefined;
+      const ids: string[] = [];
+      for (let index = 0; index < 4; index++) {
+        const result = await query.execute(
+          { query: "", limit: 1, ...(cursor ? { cursor } : {}) },
+          context,
+        );
+        const page = result.value as {
+          status: string;
+          items: { id: string }[];
+          nextCursor: string | null;
+        };
+        expect(page.status).toBe("ok");
+        expect(page.items).toHaveLength(1);
+        ids.push(page.items[0].id);
+        if (index < 3) expect(typeof page.nextCursor).toBe("string");
+        else expect(page.nextCursor).toBeNull();
+        cursor = page.nextCursor ?? undefined;
+        expect(inputs).toHaveLength(index < 3 ? 1 : 2);
+      }
+      expect(ids).toEqual(["m1", "m2", "m3", "m4"]);
+      expect(inputs).toMatchObject([
+        { limit: 1, budget: 4096 },
+        { limit: 1, budget: 4096, cursor: "backend-next" },
+      ]);
+      expect(h.calls).toHaveLength(0);
+    },
+  );
   it("preserves distinct judgement/reply windows and per-target trusted instructions", async () => {
     const h = setup({ decisionTier: "judgement" });
     h.seed("older reply-only fact", 7200);
@@ -602,9 +837,8 @@ describe("shared Bot context source", () => {
     expect(JSON.stringify(prepared.context?.messages)).toContain("older reply-only fact");
     expect(prepared.instructions).toContain("20003");
     expect(prepared.model).toBe("reply-model");
-    // 回复档看得到更宽的窗口（内容断言见上）。来源数不再要求"严格更多"：判断档现在也会把
-    // **窗口之外**的老消息压成滚动摘要，两边的来源集因此可能相同。
-    expect(prepared.context?.sources.length).toBeGreaterThanOrEqual(context.sources.length);
+    // 判断档不读水位包；回复档更宽的原文窗口保留其额外来源。
+    expect(prepared.context?.sources.length).toBeGreaterThan(context.sources.length);
     const count = h.calls.length;
     await h.source.read(readInput());
     expect(h.calls).toHaveLength(count);
@@ -616,9 +850,16 @@ describe("shared Bot context source", () => {
     const initial = await h.source.read(readInput());
     const ref = initial.sources?.find((source) => source.id === observed);
     if (!ref) throw new Error("Missing observed source");
+    const query = h.source.actions.find((action) => action.description.name === "memory.query");
+    if (!query) throw new Error("missing memory query");
+    const result = await query.execute(
+      { query: "factual" },
+      { owner: { kind: "test", id: "test" }, signal: readInput().signal },
+    );
     await h.source.read({
       ...readInput(),
       observations: [
+        { id: "query", name: "memory.query", ...result },
         { id: "observation", name: "memory.query", value: "supplemental result", sources: [ref] },
       ],
     });
@@ -680,13 +921,26 @@ describe("shared Bot context source", () => {
     const material = await h.source.read(readInput());
     expect(JSON.stringify(material.pending)).toContain("question");
     expect(JSON.stringify(material.pending)).not.toContain("长期记忆");
+    expect(h.diagnostics).toEqual([]);
+    const query = h.source.actions.find((action) => action.description.name === "memory.query");
+    if (!query) throw new Error("missing memory query");
+    const result = await query.execute(
+      { query: "question" },
+      { owner: { kind: "test", id: "test" }, signal: readInput().signal },
+    );
+    expect(result.value).toMatchObject({
+      status: "unavailable",
+      code: "CONTEXT_MEMORY_BUDGET",
+      items: [],
+    });
     expect(h.diagnostics).toMatchObject([
       {
         kind: "supplemental_retrieval_failed",
-        name: "memory.initial",
+        name: "memory.query",
         code: "CONTEXT_MEMORY_BUDGET",
       },
     ]);
+    expect(JSON.stringify(await h.source.read(readInput()))).toContain("question");
   });
   /**
    * 水位压缩：窗口边界按回复档；凡没进最终原文窗口的消息进水位；
@@ -818,10 +1072,13 @@ describe("shared Bot context source", () => {
 
   it("returns a small catalog when the full memory exceeds the foreground budget", async () => {
     const h = setup({ mode: "full_body" });
+    h.gateway.loadedContextCapacity = async () => 16384;
     const id = h.memory("short title");
-    h.db.query("UPDATE memory_entries SET body=? WHERE id=?").run("huge body ".repeat(9000), id);
+    // A valid stored body, still much larger than this model's foreground allowance.
+    h.db.query("UPDATE memory_entries SET body=? WHERE id=?").run("huge body ".repeat(1500), id);
     h.seed("question");
     await h.source.read(readInput());
+    expect(h.spec.limits.inputUnits).toBeLessThan(15000);
     const query = h.source.actions.find((action) => action.description.name === "memory.query");
     const read = h.source.actions.find((action) => action.description.name === "memory.read");
     if (!query || !read) throw new Error("missing actions");
@@ -865,6 +1122,18 @@ describe("shared Bot context source", () => {
     await compress(h.source);
     expect(compressionRuns(h)).toHaveLength(1);
     expect(h.orm.select().from(schema.qqConversationSummaries).get()?.throughSeq).toBe(1);
+    // Even an invalid stored package must remain completely untouched by judgement.
+    h.db
+      .query("UPDATE qq_conversation_summaries SET content='null' WHERE conversation_id=?")
+      .run(h.conversation.id);
+    const judgement = h.newSource();
+    const next = await judgement.read(readInput());
+    const evaluation = await judgement.prepareEvaluation({ ...readInput(), target: null });
+    expect(JSON.stringify(next.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(evaluation.messages)).not.toContain("old fact");
+    expect(judgement.takeCompressionJob()).toBeUndefined();
+    expect(compressionRuns(h)).toHaveLength(1);
+    expect(h.diagnostics).toEqual([]);
   });
   it("honors the originating budget and live authority before background inference", async () => {
     for (const denied of ["budget", "authority"] as const) {
@@ -1111,7 +1380,7 @@ describe("shared Bot context source", () => {
     ]);
     expect(h.orm.select().from(schema.qqConversationSummaries).get()).toBeUndefined();
   });
-  it("counts prior action observations and refuses partial full-mode evidence", async () => {
+  it("counts prior observations before a legacy full-mode query and returns an explicit budget failure", async () => {
     const h = setup({ mode: "full_body" });
     h.memory("own memory");
     h.seed("question");
@@ -1128,8 +1397,7 @@ describe("shared Bot context source", () => {
       ...readInput(),
       observations: [{ id: "large", name: "memory.query", value: "x".repeat(65000), sources: [] }],
     });
-    // 全量模式仍然"要么全给、要么不给"，但**不给也不再打死整轮**——
-    // 返回空结果并留一条带码诊断（本轮照常判断与回复）。
+    // 已有观察耗尽父上下文时，连新目录信封也不能再装；这不是空命中或整批全量语义。
     const second = await action.execute(
       { query: "memory" },
       { owner: { kind: "test", id: "test" }, signal: new AbortController().signal },
@@ -1155,12 +1423,15 @@ describe("shared Bot context source", () => {
    */
   it("reserves room for the loop's next action observation inside the tier ceiling", async () => {
     const h = setup({ tokenBudget: 16384 });
-    h.gateway.loadedContextCapacity = async () => 8192;
+    // 固定协议（含已接线的 history/summary 工具目录）＋最新一条＋下一条观测预留，实测至少需要
+    // 约 8268 单位的上限（容量 10752）；原 8192 容量（上限 5836）已低于最低协议。这里取 12288
+    // 留出余量，仍小于配置预算 16384，窗口裁剪照旧发生。
+    h.gateway.loadedContextCapacity = async () => 12288;
     for (let index = 0; index < 40; index += 1) h.seed(`old ${"x".repeat(480)}`, 1);
     h.seed("newest question", 0);
     await h.source.read(readInput());
-    // 8192 − 2048（回复档输出预留）= 6144；× (1 − 5%) = 5836——这是容量上限，步骤预算用它。
-    expect(h.spec.limits.inputUnits).toBe(5836);
+    // 12288 − 2048（回复档输出预留）= 10240；× (1 − 5%) = 9728——这是容量上限，步骤预算用它。
+    expect(h.spec.limits.inputUnits).toBe(9728);
     // 窗口收到"材料 + 下一条观测"放得下为止：动作自己的拟合必须通过。
     const fits = await h.source.actionResultFitter(
       "sticker.search",
@@ -1314,7 +1585,8 @@ describe("shared Bot context source", () => {
    */
   it("shrinks the configured window instead of failing when the model is smaller", async () => {
     const h = setup({ tokenBudget: 16384 });
-    h.gateway.loadedContextCapacity = async () => 8192;
+    // 同「reserves room…」用例：8192 容量已低于含 history/summary 工具目录的最低协议开销，取 12288。
+    h.gateway.loadedContextCapacity = async () => 12288;
     for (let index = 0; index < 20; index += 1) h.seed(`old ${"x".repeat(480)}`, 1);
     h.seed("newest question", 0);
     const material = await h.source.read(readInput());
@@ -1346,29 +1618,36 @@ describe("shared Bot context source", () => {
     }
   });
 
-  it("rejects deleted parent input before a selector child starts after an asynchronous capacity probe", async () => {
+  it("rejects deleted parent input during an asynchronous capacity probe before any query backend starts", async () => {
     for (const kind of ["memory", "knowledge"] as const) {
-      const h = setup({ mode: kind === "memory" ? "standard" : "off" });
-      h.runtime.memory_retrieval_model_name = "selector-model";
-      if (kind === "memory") h.memory("candidate apples");
-      else {
-        const repo = new KnowledgeRepository(h.db);
-        const doc = repo.importDocument({
-          name: "apples",
-          category_id: "default",
-          original_text: "apples",
-        });
-        repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
-      }
+      let queries = 0;
+      const backend = {
+        query: async () => {
+          queries++;
+          return [];
+        },
+      };
+      const h = setup({
+        mode: "standard",
+        decisionTier: "judgement",
+        modules: () => ({ memory: backend, knowledge: backend }),
+      });
       const question = h.seed("apples question");
+      await h.source.read(readInput());
       h.gateway.loadedContextCapacity = async (model) => {
-        if (model === "selector-model")
+        if (model === "reply-model")
           h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(question);
         return 65536;
       };
-      await expect(h.source.read(readInput())).rejects.toMatchObject({
-        code: "CONTEXT_SOURCE_INVALID",
-      });
+      const query = h.source.actions.find((action) => action.description.name === `${kind}.query`);
+      if (!query) throw new Error("missing query");
+      await expect(
+        query.execute(
+          { query: "apples" },
+          { owner: { kind: "test", id: "test" }, signal: readInput().signal },
+        ),
+      ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+      expect(queries).toBe(0);
       expect(h.calls).toHaveLength(0);
       expect(h.runs.listRuns({ ownerKind: "qq_binding", ownerId: h.binding.id })).toHaveLength(0);
     }
@@ -1422,13 +1701,17 @@ describe("shared Bot context source", () => {
   });
 });
 
-it("optional memory backend failure leaves raw input and a visible retrieval status", async () => {
+it("an explicit recoverable query failure leaves raw input and visible status, cleared by a successful retry", async () => {
+  let failed = true,
+    queries = 0;
   const h = setup({
     mode: "standard",
     modules: () => ({
       memory: {
         query: async () => {
-          throw new Error("MODEL_FAILED");
+          queries++;
+          if (failed) fail("MODEL_TIMEOUT", "temporary failure");
+          return [];
         },
       },
       knowledge: { query: async () => [] },
@@ -1437,22 +1720,151 @@ it("optional memory backend failure leaves raw input and a visible retrieval sta
   h.seed("raw question survives");
   const material = await h.source.read(readInput());
   expect(JSON.stringify(material.pending)).toContain("raw question survives");
-  expect(JSON.stringify(material.pending)).toContain("retrieval_status");
-  expect(h.diagnostics).toContainEqual({
-    kind: "supplemental_retrieval_failed",
-    name: "memory.initial",
-    code: "MODEL_FAILED",
+  expect(JSON.stringify(material.pending)).not.toContain("retrieval_status");
+  expect(queries).toBe(0);
+  expect(h.diagnostics).toEqual([]);
+  const action = h.source.actions.find((entry) => entry.description.name === "memory.query");
+  if (!action) throw new Error("missing memory query");
+  const context = { owner: { kind: "test", id: "test" }, signal: readInput().signal };
+  expect(await action.execute({ query: "more" }, context)).toMatchObject({
+    value: { status: "unavailable", code: "MODEL_TIMEOUT", items: [] },
   });
-  const action = h.source.actions.find((action) => action.description.name === "memory.query")!;
-  expect(
-    await action.execute(
-      { query: "more" },
-      { owner: { kind: "test", id: "test" }, signal: new AbortController().signal },
-    ),
-  ).toMatchObject({ value: { status: "unavailable", code: "MODEL_FAILED", items: [] } });
+  expect(JSON.stringify((await h.source.read(readInput())).pending)).toContain("retrieval_status");
   expect(h.diagnostics).toContainEqual({
     kind: "supplemental_retrieval_failed",
     name: "memory.query",
-    code: "MODEL_FAILED",
+    code: "MODEL_TIMEOUT",
   });
+  failed = false;
+  expect(await action.execute({ query: "more" }, context)).toMatchObject({
+    value: { status: "ok", items: [] },
+  });
+  expect(JSON.stringify((await h.source.read(readInput())).pending)).not.toContain(
+    "retrieval_status",
+  );
+  expect(queries).toBe(2);
 });
+
+it.each([
+  "CONTEXT_INVALID_SELECTION",
+  "KNOWLEDGE_ACCESS_CHANGED",
+  "CONTEXT_SOURCE_INVALID",
+  "TOOL_PERMISSION_REVOKED",
+  "MODEL_UNRECOGNIZED",
+])("does not turn %s into a recoverable empty query", async (code) => {
+  const h = setup({
+    modules: () => ({
+      memory: { query: async () => [] },
+      knowledge: {
+        query: async () => {
+          throw Object.assign(new Error(code), { code });
+        },
+      },
+    }),
+  });
+  h.seed("question");
+  await h.source.read(readInput());
+  const query = h.source.actions.find((action) => action.description.name === "knowledge.query");
+  if (!query) throw new Error("missing knowledge query");
+  await expect(
+    query.execute(
+      { query: "details" },
+      { owner: { kind: "test", id: "test" }, signal: readInput().signal },
+    ),
+  ).rejects.toMatchObject({ code });
+  expect(h.diagnostics).toEqual([]);
+});
+
+it.each(["cancel", "source"] as const)(
+  "%s remains a hard failure after a pending query",
+  async (failure) => {
+    const started = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const h = setup({
+      modules: () => ({
+        memory: { query: async () => [] },
+        knowledge: {
+          query: async () => {
+            started.resolve();
+            await release.promise;
+            fail("MODEL_TIMEOUT", "temporary failure");
+          },
+        },
+      }),
+    });
+    const parent = h.seed("question");
+    await h.source.read(readInput());
+    const query = h.source.actions.find((action) => action.description.name === "knowledge.query");
+    if (!query) throw new Error("missing knowledge query");
+    const controller = new AbortController();
+    const work = query.execute(
+      { query: "details" },
+      { owner: { kind: "test", id: "test" }, signal: controller.signal },
+    );
+    await started.promise;
+    if (failure === "cancel") controller.abort(new Error("caller cancelled"));
+    else h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(parent);
+    release.resolve();
+    if (failure === "cancel") await expect(work).rejects.toThrow("caller cancelled");
+    else await expect(work).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    expect(h.diagnostics).toEqual([]);
+  },
+);
+
+it.each(["memory", "knowledge"] as const)(
+  "%s query and body pages share a cumulative domain budget",
+  async (kind) => {
+    const budgets: number[] = [];
+    const backend = {
+      query: async (input: { budget: number }) => {
+        budgets.push(input.budget);
+        return [{ id: "entry", text: "x".repeat(10000), sources: [] }];
+      },
+    };
+    const h = setup({
+      mode: "full_body",
+      modules: () => ({ memory: backend, knowledge: backend }),
+    });
+    h.runtime.p5_config.retrieval_presets.broad.max_tokens = 2400;
+    h.runtime.knowledge_read = {
+      config: { enabled: true, context_budget: 2400, scope: "all", document_ids: [] },
+      revision: 1,
+      budget: 2400,
+      budget_source: "assistant",
+      global_revision: 1,
+      auto_enabled: true,
+    };
+    h.seed("question");
+    const query = h.source.actions.find((action) => action.description.name === `${kind}.query`);
+    const read = h.source.actions.find((action) => action.description.name === `${kind}.read`);
+    if (!query || !read) throw new Error("missing evidence actions");
+    const context = { owner: { kind: "test", id: "test" }, signal: readInput().signal };
+    const result = await query.execute({ query: "entry" }, context);
+    const entry = (result.value as { items: { bodyRef: string }[] }).items[0];
+    expect(budgets).toEqual([2400]);
+    const observations: ActionObservation[] = [{ id: "query", name: `${kind}.query`, ...result }];
+    let offset = 0,
+      exhausted = false;
+    for (let index = 0; index < 12; index++) {
+      const page = await read.execute({ bodyRef: entry.bodyRef, offset, limit: 4096 }, context);
+      const value = page.value as {
+        status: string;
+        code?: string;
+        items: { text: string; nextOffset: number | null }[];
+      };
+      if (value.status === "unavailable") {
+        expect(value.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+        exhausted = true;
+        break;
+      }
+      observations.push({ id: `read-${index}`, name: `${kind}.read`, ...page });
+      expect(value.items[0].nextOffset).not.toBeNull();
+      offset = value.items[0].nextOffset ?? offset;
+      // Clearing host reservations cannot reset the factory's cumulative domain charge.
+      await h.source.read({ ...readInput(), observations });
+    }
+    expect(offset).toBeGreaterThan(0);
+    expect(offset).toBeLessThan(2400);
+    expect(exhausted).toBe(true);
+  },
+);

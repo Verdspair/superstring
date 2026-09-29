@@ -3,12 +3,13 @@
 // never in this repository. Callers own transaction boundaries.
 
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, sql } from "drizzle-orm";
 import type { ContentItem, RuntimeConfig } from "../../shared/contracts";
 import { AppError } from "../errors";
 import { AGENT_LEVEL_SCOPE_KEY } from "../services/memory-contract";
-import { correctionMetadata } from "../services/memory-revision";
+import { correctionMetadata, isCorrectionRetired } from "../services/memory-revision";
 import type { MemoryScopeKeys } from "../services/memory-scope";
+import { qqConversationKey, qqMemoryScopeKey } from "../services/qq-binding-contract";
 import { compileSystemPrompt } from "../services/runtime-config";
 import { fullCasefold } from "../services/text";
 import { correctionsForTurns, memoryRevision } from "./memory-content-repository";
@@ -211,13 +212,15 @@ function validMemoryRows(
   orm: Orm,
   agentId: string,
   scopeKeys?: MemoryScopeKeys,
+  boundedRows?: ReturnType<typeof entries>,
 ): ReturnType<typeof entries> {
-  const rows = entries(orm, agentId, undefined, { status: "active", scopeKeys });
+  const rows = boundedRows ?? entries(orm, agentId, undefined, { status: "active", scopeKeys });
   const observations = observationSources(
     orm,
     rows.map((row) => row.id),
   );
   return rows.filter((entry) => {
+    if (isCorrectionRetired(entry.configSnapshot)) return false;
     const sources = orm
       .select()
       .from(schema.memorySources)
@@ -229,7 +232,38 @@ function validMemoryRows(
     // A QQ memory may be backed by observations instead; web memory may not.
     return (
       acceptsObservationSources(entry.scopeKey, agentId) &&
-      observationSourcesIntact(orm, observations.get(entry.id) ?? [])
+      observationSourcesIntact(orm, observations.get(entry.id) ?? []) &&
+      (boundedRows === undefined ||
+        (observations.get(entry.id) ?? []).every((source) => {
+          const event = orm
+            .select()
+            .from(schema.qqEvents)
+            .where(eq(schema.qqEvents.eventKey, source.eventKey))
+            .get();
+          if (
+            !event ||
+            event.agentId !== agentId ||
+            !["group", "private"].includes(event.conversationKind)
+          )
+            return false;
+          const kind = event.conversationKind as "group" | "private";
+          try {
+            return (
+              source.scopeKey === entry.scopeKey &&
+              qqMemoryScopeKey({
+                kind: "qq",
+                accountId: event.accountId,
+                conversationKind: kind,
+                peerId: event.peerId,
+                agentId,
+              }) === entry.scopeKey &&
+              source.conversationKey ===
+                qqConversationKey({ accountId: event.accountId, kind, peerId: event.peerId })
+            );
+          } catch {
+            return false;
+          }
+        }))
     );
   });
 }
@@ -240,17 +274,41 @@ function turnSourceIntact(
   agentId: string,
   source: typeof schema.memorySources.$inferSelect,
 ): boolean {
-  const turn = orm.select().from(schema.turns).where(eq(schema.turns.id, source.turnId)).get();
+  const turn = orm
+    .select({
+      id: schema.turns.id,
+      sessionId: schema.turns.sessionId,
+      sourceValid: schema.turns.sourceValid,
+      contextValid: schema.turns.contextValid,
+      generationStatus: schema.turns.generationStatus,
+    })
+    .from(schema.turns)
+    .where(eq(schema.turns.id, source.turnId))
+    .get();
   const session = turn
-    ? orm.select().from(schema.sessions).where(eq(schema.sessions.id, turn.sessionId)).get()
+    ? orm
+        .select({
+          id: schema.sessions.id,
+          agentId: schema.sessions.agentId,
+          userId: schema.sessions.userId,
+        })
+        .from(schema.sessions)
+        .where(eq(schema.sessions.id, turn.sessionId))
+        .get()
     : undefined;
+  const messageFields = {
+    turnId: schema.messages.turnId,
+    sessionId: schema.messages.sessionId,
+    role: schema.messages.role,
+    status: schema.messages.status,
+  };
   const user = orm
-    .select()
+    .select(messageFields)
     .from(schema.messages)
     .where(eq(schema.messages.id, source.userMessageId))
     .get();
   const assistant = orm
-    .select()
+    .select(messageFields)
     .from(schema.messages)
     .where(eq(schema.messages.id, source.assistantMessageId))
     .get();
@@ -317,6 +375,82 @@ function asMemoryItem(
     ],
     ...(withBody ? { body: row.body } : {}),
   };
+}
+
+/** Tool reads select at most 300 authorized rows BEFORE validating sources or hashing bodies.
+ * Complete bodies are needed by memoryRevision: at most 16,000 UTF-16 units per row
+ * (64,000 UTF-8 bytes guarded in SQL), hence at most 19,200,000 body bytes per scan.
+ * Search scoring uses only a 4,096-code-point prefix; legacy readers remain separate.
+ */
+export function scanMemoryCandidates(
+  orm: Orm,
+  agentId: string,
+  scopeKeys: MemoryScopeKeys,
+  options: { afterId?: string; limit: number; sessionId?: string; id?: string },
+): {
+  items: Array<{ item: MemoryItem; searchText: string }>;
+  scannedIds: string[];
+  hasMore: boolean;
+} {
+  if (options.sessionId) ownedSession(orm, agentId, options.sessionId);
+  const limit = Math.min(300, Math.max(1, Math.trunc(options.limit)));
+  const conditions = [
+    eq(schema.memoryEntries.agentId, agentId),
+    eq(schema.memoryEntries.userId, DEFAULT_USER_ID),
+    eq(schema.memoryEntries.status, "active"),
+  ];
+  if (scopeKeys !== null) conditions.push(inArray(schema.memoryEntries.scopeKey, [...scopeKeys]));
+  if (options.afterId !== undefined) conditions.push(gt(schema.memoryEntries.id, options.afterId));
+  if (options.id !== undefined) conditions.push(eq(schema.memoryEntries.id, options.id));
+  const rows = orm
+    .select({
+      ...getTableColumns(schema.memoryEntries),
+      // Reject oversized damaged rows without materializing their body in JavaScript.
+      body: sql<string>`CASE WHEN length(CAST(${schema.memoryEntries.body} AS BLOB)) <= 64000 THEN ${schema.memoryEntries.body} ELSE '' END`,
+      bodyBytes: sql<number>`length(CAST(${schema.memoryEntries.body} AS BLOB))`,
+    })
+    .from(schema.memoryEntries)
+    .where(and(...conditions))
+    .orderBy(asc(schema.memoryEntries.id))
+    .limit(limit)
+    .all();
+  const last = rows.at(-1)?.id;
+  const hasMore =
+    last !== undefined &&
+    orm
+      .select({ id: schema.memoryEntries.id })
+      .from(schema.memoryEntries)
+      .where(and(...conditions, gt(schema.memoryEntries.id, last)))
+      .orderBy(asc(schema.memoryEntries.id))
+      .limit(1)
+      .get() !== undefined;
+  const valid = validMemoryRows(
+    orm,
+    agentId,
+    scopeKeys,
+    rows.filter((row) => row.bodyBytes <= 64000 && row.body.length <= 16000),
+  );
+  return {
+    items: valid.map((row) => ({
+      item: asMemoryItem(orm, row, options.id !== undefined),
+      searchText: [...row.body].slice(0, 4096).join(""),
+    })),
+    scannedIds: rows.map((row) => row.id),
+    hasMore,
+  };
+}
+
+export function readMemoryCandidate(
+  orm: Orm,
+  agentId: string,
+  scopeKeys: MemoryScopeKeys,
+  id: string,
+  sessionId?: string,
+): MemoryItem {
+  const item = scanMemoryCandidates(orm, agentId, scopeKeys, { id, sessionId, limit: 1 }).items[0]
+    ?.item;
+  if (!item) contextFail("已选记忆的权限、状态或来源已变化");
+  return item;
 }
 
 export function catalog(

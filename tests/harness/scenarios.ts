@@ -4,7 +4,16 @@
 //
 // 场景只描述"收到什么、模型回什么、按什么顺序"，不写断言：断言属于测试，指标属于基线。
 
-import { decideGenerate, decideGenerateMany, decideNone, rawText, say, scoreOf } from "./model";
+import type { ModelMessage } from "../../src/shared/contracts/agent-run";
+import {
+  decideGenerate,
+  decideGenerateMany,
+  decideInvoke,
+  decideNone,
+  type ModelStep,
+  say,
+  scoreOf,
+} from "./model";
 import { createOneBotHarness, type OneBotHarness } from "./onebot";
 
 export interface ScenarioMetric {
@@ -40,6 +49,58 @@ export function reasonOf(result: unknown): string | null {
   if (result === null || typeof result !== "object" || !("reason" in result)) return null;
   const reason = (result as { reason: unknown }).reason;
   return typeof reason === "string" ? reason : null;
+}
+
+/** `action_observation` 的载荷：工具结果 + 只带结果自身的来源。 */
+export interface ActionObservation {
+  readonly name?: string;
+  readonly value?: {
+    readonly status?: string;
+    readonly items?: readonly {
+      readonly id?: string;
+      readonly bodyRef?: string;
+      readonly text?: string;
+      readonly summary?: string;
+    }[];
+  };
+}
+
+/** 从消息序列尾部解析最近一条 `action_observation`（上下文引擎把它渲成一条 JSON 文本消息）。 */
+export function lastActionObservation(messages: readonly ModelMessage[]): ActionObservation | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const text = (messages[index]?.content ?? [])
+      .flatMap((part) => (part.kind === "text" ? [part.text] : []))
+      .join("");
+    if (!text.includes("action_observation")) continue;
+    try {
+      const parsed = JSON.parse(text) as { kind?: string; value?: ActionObservation };
+      if (parsed.kind === "action_observation") return parsed.value ?? null;
+    } catch {
+      // 不是 JSON 的整段文本：跳过，继续往前找。
+    }
+  }
+  return null;
+}
+
+/**
+ * 0.4.0 工具优先：主 Agent 显式 query→read→final，不再有辅助选择叶子。
+ * `scriptedModel` 的步骤是静态的，这里在模型端口外面包一层：看到上一 `action_observation`
+ * 再按需补下一步（如 read 的 bodyRef 从候选观察里解析）。装好必须 `restart()`，
+ * 运行时（在 `build()` 里展开端口）才会拿到新端口。
+ */
+function driveToolFirst(
+  harness: OneBotHarness,
+  decide: (observation: ActionObservation | null) => readonly ModelStep[] | null,
+): void {
+  const scripted = harness.model;
+  if (scripted === null) throw new Error("该场景需要脚本化模型");
+  const original = scripted.port.complete;
+  scripted.port.complete = async (request) => {
+    const steps = decide(lastActionObservation(request.messages));
+    if (steps !== null) scripted.push(steps);
+    return original(request);
+  };
+  harness.restart();
 }
 
 function snapshot(
@@ -310,74 +371,103 @@ export async function rerunKeepsSingleReply(): Promise<ScenarioRun> {
 }
 
 /**
- * 记忆更正后旧正文不可复活（0.4.0 P5，从 P0 前移）：
- *   ① 一条记忆被选中并真的进了模型上下文；
- *   ② 人工纠正后，新唤醒只带更正的正文，旧正文在任何一次调用里都不出现；
- *   ③ 选择器若还指着已退休的旧行，整轮失败关闭——旧正文不会被"猜"回来。
+ * 记忆更正后旧正文不可复活（0.4.0 P5，从 P0 前移；取数改为主 Agent 显式 query→read→final）：
+ *   ① 第一轮 query 拿候选，read 的 bodyRef 从上一 action_observation 解析，旧正文真的进了上下文；
+ *   ② 人工纠正后：新轮只取到更正行（候选列表里没有已退休的旧行），正文只剩更正后的；
+ *   ③ 模型复用第一轮的旧引用再读：整轮硬失败关闭（CONTEXT_INVALID_SELECTION），旧正文不会被"猜"回来。
  */
 export async function memoryCorrection(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({ kind: "private", model: [] });
   const memoryId = harness.memory("错误金额999元", { name: "订单金额", summary: "用户订单金额" });
-  harness.model?.push([
-    rawText(JSON.stringify({ ids: [memoryId] })),
-    decideGenerate("20002"),
-    say("金额我再确认一下"),
-  ]);
+
+  let oldBodyRef: string | null = null;
+  let reply = "金额我再确认一下";
+  let staleRound = false;
+  driveToolFirst(harness, (observation) => {
+    if (observation?.name === "memory.query" && observation.value?.status === "ok") {
+      const item = observation.value.items?.[0];
+      if (staleRound && oldBodyRef !== null) {
+        return [decideInvoke("memory.read", { bodyRef: oldBodyRef, offset: 0, limit: 4096 })];
+      }
+      if (item?.bodyRef !== undefined) {
+        if (oldBodyRef === null) oldBodyRef = item.bodyRef;
+        return [decideInvoke("memory.read", { bodyRef: item.bodyRef, offset: 0, limit: 4096 })];
+      }
+      return [decideGenerate("20002"), say("这轮没有可用记忆")];
+    }
+    if (observation?.name === "memory.read" && observation.value?.status === "ok") {
+      return [decideGenerate("20002"), say(reply)];
+    }
+    return null;
+  });
+
+  harness.model?.push([decideInvoke("memory.query", { query: "订单金额" })]);
   harness.receive({ id: "1", text: "订单金额是多少" });
   const first = await harness.activate("direct_reply");
   await harness.deliver();
 
-  const corrected = harness.correctMemory(memoryId, {
+  harness.correctMemory(memoryId, {
     name: "订单金额",
     summary: "用户订单金额（已更正）",
     tags: [],
     body: "正确金额80元",
   });
-  harness.model?.push([
-    rawText(JSON.stringify({ ids: [corrected.content.id] })),
-    decideGenerate("20002"),
-    say("这是更正后的金额"),
-  ]);
+  reply = "这是更正后的金额";
+  harness.model?.push([decideInvoke("memory.query", { query: "订单金额" })]);
   harness.receive({ id: "2", text: "订单金额是多少" });
   const second = await harness.activate("direct_reply");
   await harness.deliver();
 
-  // ③ 已退休的旧行不再是候选：选择器指名它 = 越界选择，这一轮**没有记忆**（失败关闭 + 诊断），
-  //    旧正文不会被端回来；选择器那次叶子运行以失败留痕。
-  harness.model?.push([
-    rawText(JSON.stringify({ ids: [memoryId] })),
-    decideGenerate("20002"),
-    say("这轮没有可用记忆"),
-  ]);
+  // ③ 旧引用已不属于任何一轮授权查询：read 抛 CONTEXT_INVALID_SELECTION，整轮失败关闭；
+  //    前两轮照常投递，旧正文不会借这个引用复活。
+  staleRound = true;
+  harness.model?.push([decideInvoke("memory.query", { query: "错误金额" })]);
   harness.receive({ id: "3", text: "订单金额是多少" });
-  const third = await harness.activate("direct_reply");
+  let third: string;
+  try {
+    third = statusOf(await harness.activate("direct_reply"));
+  } catch (error) {
+    third = `failed:${(error as { code?: string }).code ?? "unknown"}`;
+  }
   await harness.deliver();
   return snapshot(
     "记忆更正后旧正文不可复活",
     harness,
-    `${statusOf(first)}/${statusOf(second)}/${statusOf(third)}`,
+    `${statusOf(first)}/${statusOf(second)}/${third}`,
   );
 }
 
 /**
- * 资料撤权后不再进上下文（0.4.0 P5，从 P0 前移）：
- *   ① 已授权的资料被选中并进了上下文；
- *   ② 撤权之后，新的唤醒不再包含它的正文（失败关闭＝直接看不见，而不是换个说法）。
+ * 资料撤权后不再进上下文（0.4.0 P5，从 P0 前移；取数改为主 Agent 显式 query→read→final）：
+ *   ① 已授权的资料：query→read 后正文进了上下文；
+ *   ② 撤权之后：新 query 返回空候选，生成里不再有正文（失败关闭＝直接看不见，不是换个说法）。
  */
 export async function knowledgeRevocation(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({ kind: "private", model: [] });
   const documentId = harness.knowledge("价格手册", "苹果单价是每斤八元");
-  harness.model?.push([
-    rawText(JSON.stringify({ ids: [`${documentId}:0`] })),
-    decideGenerate("20002"),
-    say("每斤八元"),
-  ]);
+
+  driveToolFirst(harness, (observation) => {
+    if (observation?.name === "knowledge.query" && observation.value?.status === "ok") {
+      const item = observation.value.items?.[0];
+      if (item?.bodyRef !== undefined) {
+        return [decideInvoke("knowledge.read", { bodyRef: item.bodyRef, offset: 0, limit: 4096 })];
+      }
+      // 撤权后候选为空：收口说"查不到"，而不是把原文换个说法编出来。
+      return [decideGenerate("20002"), say("这个我查不到了")];
+    }
+    if (observation?.name === "knowledge.read" && observation.value?.status === "ok") {
+      return [decideGenerate("20002"), say("每斤八元")];
+    }
+    return null;
+  });
+
+  harness.model?.push([decideInvoke("knowledge.query", { query: "苹果" })]);
   harness.receive({ id: "1", text: "苹果多少钱一斤" });
   const first = await harness.activate("direct_reply");
   await harness.deliver();
 
   harness.revokeKnowledge(documentId);
-  harness.model?.push([decideGenerate("20002"), say("这个我查不到了")]);
+  harness.model?.push([decideInvoke("knowledge.query", { query: "苹果" })]);
   harness.receive({ id: "2", text: "苹果多少钱一斤" });
   const second = await harness.activate("direct_reply");
   await harness.deliver();

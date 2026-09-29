@@ -54,48 +54,48 @@ function setup() {
 }
 
 describe("shared leaf modules", () => {
-  it("runs standalone semantic knowledge selection through the persisted Agent runtime with grant provenance", async () => {
+  it("returns authorized knowledge previews and lazy text without a selector model run", async () => {
     const h = setup();
     try {
+      h.gateway.complete = async () => {
+        throw new Error("Unexpected selector call");
+      };
       const doc = h.repo.importDocument({
         name: "设备",
         category_id: "default",
         original_text: "低于10°C禁止启动，维护模式例外。",
       });
       h.repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
-      const evidence = await h.module.query({
+      const result = await h.module.query({
         agentId: DEFAULT_AGENT_ID,
-        query: "寒冷时可以开机吗？",
+        query: "设备",
         budget: 4096,
         owner: h.owner,
       });
-      expect(evidence).toHaveLength(1);
-      expect(evidence[0].text).toContain("10°C");
-      expect(evidence[0].sources.some((source) => source.kind === "knowledge_grant")).toBe(true);
-      const runs = h.business.db
-        .query<{ spec_id: string; status: string }, []>("SELECT spec_id,status FROM agent_runs")
-        .all();
-      expect(runs).toEqual([{ spec_id: "knowledge.select", status: "completed" }]);
-      const snapshot = h.business.db
-        .query<{ protected_messages: string; source_refs: string }, []>(
-          "SELECT protected_messages,source_refs FROM context_snapshots",
-        )
-        .get();
-      if (!snapshot) throw new Error("Missing context snapshot");
-      expect(snapshot.protected_messages).toContain("寒冷");
-      expect(
-        JSON.parse(snapshot.source_refs).some(
-          (source: { kind: string; id: string }) =>
-            source.kind === "knowledge_grant" &&
-            source.id === JSON.stringify([doc.id, DEFAULT_AGENT_ID]),
-        ),
-      ).toBe(true);
+      expect(result.status).toBe("ok");
+      const evidence = result.items[0];
+      if (!evidence) throw new Error("Missing authorized evidence");
+      expect(evidence.text).toBe("");
+      expect(evidence.sources).toContainEqual({
+        kind: "knowledge_grant",
+        id: JSON.stringify([doc.id, DEFAULT_AGENT_ID]),
+        revision: expect.any(String),
+      });
+      const page = await h.module.read({
+        agentId: DEFAULT_AGENT_ID,
+        evidence,
+        offset: 0,
+        limit: 4096,
+        owner: h.owner,
+      });
+      expect(page.text).toContain("10°C");
+      expect(h.business.db.query("SELECT spec_id FROM agent_runs").all()).toEqual([]);
     } finally {
       h.business.close();
     }
   });
 
-  it("does not return a revoked candidate after semantic selection", async () => {
+  it("does not return revoked text after its preview was disclosed", async () => {
     const h = setup();
     try {
       const doc = h.repo.importDocument({
@@ -104,23 +104,31 @@ describe("shared leaf modules", () => {
         original_text: "源正文",
       });
       h.repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
-      h.gateway.complete = async (request) => {
-        const data = JSON.parse(request.messages[1].content);
-        const latest = h.repo.detail(doc.id);
-        h.repo.replaceGrants(doc.id, latest.revision, []);
-        return JSON.stringify({
-          ids: data.candidates.map((candidate: { id: string }) => candidate.id),
-        });
-      };
+      const result = await h.module.query({
+        agentId: DEFAULT_AGENT_ID,
+        query: "正文",
+        budget: 4096,
+        owner: h.owner,
+      });
+      const evidence = result.items[0];
+      if (!evidence) throw new Error("Missing authorized evidence");
+      h.repo.replaceGrants(doc.id, h.repo.detail(doc.id).revision, []);
       await expect(
-        h.module.query({ agentId: DEFAULT_AGENT_ID, query: "正文", budget: 4096, owner: h.owner }),
-      ).rejects.toThrow("资料已更新");
+        h.module.read({
+          agentId: DEFAULT_AGENT_ID,
+          evidence,
+          offset: 0,
+          limit: 4096,
+          owner: h.owner,
+        }),
+      ).rejects.toThrow();
+      expect(h.business.db.query("SELECT spec_id FROM agent_runs").all()).toEqual([]);
     } finally {
       h.business.close();
     }
   });
 
-  it("records invalid semantic selection as a failed leaf run", async () => {
+  it("rejects a forged knowledge evidence identity without starting a model", async () => {
     const h = setup();
     try {
       const doc = h.repo.importDocument({
@@ -129,18 +137,24 @@ describe("shared leaf modules", () => {
         original_text: "阈值42。",
       });
       h.repo.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
-      h.gateway.complete = async () => '{"ids":["not-an-authorized-candidate"]}';
+      const result = await h.module.query({
+        agentId: DEFAULT_AGENT_ID,
+        query: "阈值",
+        budget: 4096,
+        owner: h.owner,
+      });
+      const evidence = result.items[0];
+      if (!evidence) throw new Error("Missing authorized evidence");
       await expect(
-        h.module.query({
+        h.module.read({
           agentId: DEFAULT_AGENT_ID,
-          query: "阈值？",
-          budget: 4096,
+          evidence: { ...evidence, id: "not-an-authorized-candidate" },
+          offset: 0,
+          limit: 4096,
           owner: h.owner,
         }),
       ).rejects.toThrow();
-      expect(
-        h.business.db.query<{ status: string }, []>("SELECT status FROM agent_runs").get()?.status,
-      ).toBe("failed");
+      expect(h.business.db.query("SELECT spec_id FROM agent_runs").all()).toEqual([]);
     } finally {
       h.business.close();
     }

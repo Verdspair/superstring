@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
-import { sourceAccess } from "../../src/server/agent/context-access";
+import { inspectContext, sourceAccess } from "../../src/server/agent/context-access";
 import { inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { AgentTaskService } from "../../src/server/agent/task-service";
@@ -33,7 +33,9 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { ModelUnavailableError } from "../../src/server/errors";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { createSqliteQueryFactory } from "../../src/server/modules/composition";
 import { PermissionService } from "../../src/server/permissions/service";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import {
@@ -59,6 +61,7 @@ function setup(
     enqueueCompression?: ConstructorParameters<typeof OneBotHost>[0]["enqueueCompression"];
     externalActions?: ConstructorParameters<typeof OneBotHost>[0]["externalActions"];
     actionExecutor?: ActionExecutor;
+    modules?: ConstructorParameters<typeof OneBotHost>[0]["modules"];
   } = {},
 ) {
   const clock = { seconds: nowSeconds };
@@ -125,6 +128,7 @@ function setup(
     outbox,
     gateway,
     agentRuntime: runtime,
+    modules: options.modules,
     stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
     onDiagnostic: options.onDiagnostic,
     enqueueCompression: options.enqueueCompression,
@@ -701,6 +705,20 @@ function stickerObservation(request: ModelRequest): {
   expect(matches.length).toBeGreaterThan(0);
   return matches.at(-1).value;
 }
+function actionObservation(request: ModelRequest, name: string) {
+  const matches = modelData(request, "action_observation").filter((value) => value.name === name);
+  expect(matches.length).toBeGreaterThan(0);
+  return matches.at(-1) as {
+    name: string;
+    arguments?: Record<string, unknown>;
+    value: {
+      status: string;
+      code?: string;
+      items?: { id: string; title?: string; summary?: string; bodyRef?: string; text?: string }[];
+      nextCursor?: string | null;
+    };
+  };
+}
 function pendingOutput(request: ModelRequest) {
   // pending_plan is itself a source-owned data envelope nested in a pending user message.
   const plans = modelData(request, "pending_plan");
@@ -746,7 +764,7 @@ function addMemory(h: ReturnType<typeof setup>, body = "apples are green") {
       memoryId: id,
       eventKey: event.event_key,
       scopeKey: JSON.stringify(["qq", "10001", "private", "20002", DEFAULT_AGENT_ID]),
-      conversationKey: JSON.stringify(["10001", "private", "20002"]),
+      conversationKey: JSON.stringify(["qq", "10001", "private", "20002"]),
       messageId: "900",
       occurredAtSeconds: nowSeconds,
       speakerKind: "member",
@@ -757,10 +775,28 @@ function addMemory(h: ReturnType<typeof setup>, body = "apples are green") {
 }
 describe("private feature preservation", () => {
   it("preserves a sticker-only generated reply and inherited source references", async () => {
-    let count = 0;
+    let decisions = 0;
     const h = setup(
       {
-        complete: async () => (++count === 1 ? finalGenerate : "1"),
+        complete: async (request) => {
+          // 表情自动选择仍是叶子：没有决策 schema 的调用按候选编号回答。
+          if (request.responseSchema === undefined) return "1";
+          decisions++;
+          if (decisions === 1)
+            return '{"kind":"invoke","name":"memory.query","arguments":{"query":"apples"}}';
+          if (decisions === 2) {
+            const page = actionObservation(request, "memory.query");
+            expect(page.value.status).toBe("ok");
+            const item = page.value.items?.[0];
+            if (!item?.bodyRef) throw new Error("missing memory bodyRef");
+            return JSON.stringify({
+              kind: "invoke",
+              name: "memory.read",
+              arguments: { bodyRef: item.bodyRef },
+            });
+          }
+          return finalGenerate;
+        },
         async *streamText() {
           yield "";
         },
@@ -768,11 +804,12 @@ describe("private feature preservation", () => {
       { stickersAvailable: true },
     );
     const id = addSticker(h);
-    setMemoryMode(h, "full_body");
+    setMemoryMode(h, "standard");
     const memoryId = addMemory(h);
     h.receive("1");
     const result = await activate(h);
     expect(result.status).toBe("completed");
+    expect(decisions).toBe(3);
     expect(h.outbox.parts(h.outbox.list({})[0]!.id).map((p) => JSON.parse(p.payload!))).toEqual([
       { stickerId: id },
     ]);
@@ -781,16 +818,25 @@ describe("private feature preservation", () => {
     ).toEqual({ status: "completed" });
     const snapshot = h.db
       .query(
-        "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.sticker.select'",
+        "SELECT s.run_id, c.step_id, c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.sticker.select'",
       )
-      .get() as { source_refs: string };
-    expect(JSON.parse(snapshot.source_refs).map((r: { kind: string }) => r.kind)).toContain(
-      "qq_observation",
-    );
-    expect(JSON.parse(snapshot.source_refs).some((r: { id: string }) => r.id === memoryId)).toBe(
-      true,
-    );
+      .get() as { run_id: string; step_id: string; source_refs: string };
+    const refs = JSON.parse(snapshot.source_refs) as { kind: string; id: string }[];
+    // 自动表情叶子继承的是"这一轮真正读过的来源"：观测 + 显式读入的记忆 + 候选表情。
+    expect(refs.map((ref) => ref.kind)).toContain("qq_observation");
+    expect(refs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
+    expect(refs).toContainEqual(expect.objectContaining({ kind: "qq_sticker", id }));
     h.db.query("DELETE FROM memory_entries WHERE id=?").run(memoryId);
+    // 撤权后必须经检查接口复验为 revoked，原文才不再保留（惰性脱敏）。
+    expect(
+      inspectContext(
+        h.db,
+        h.runs,
+        { runId: snapshot.run_id, stepId: snapshot.step_id },
+        { userId: DEFAULT_USER_ID },
+        stamp(),
+      ),
+    ).toMatchObject({ status: "revoked" });
     expect(
       h.db
         .query(
@@ -864,39 +910,93 @@ describe("private feature preservation", () => {
     ).toEqual({ n: 0 });
   });
   for (const mode of ["off", "conservative", "standard", "broad", "full_catalog", "full_body"]) {
-    it(`preserves initial memory ${mode} mode and selector routing`, async () => {
-      let id = "",
-        selectors = 0;
-      let mainContext = "";
+    it(`keeps ${mode} memory out of the initial context and reads it only on demand`, async () => {
+      let id = "";
+      let decisions = 0;
+      const main: ModelRequest[] = [];
       const h = setup({
-        complete: async (req) => {
-          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
-            selectors++;
-            expect(req.model).toBe("memory-selector");
-            return JSON.stringify({ ids: [id] });
+        complete: async (request) => {
+          main.push(request);
+          const tools = (request.tools ?? []).map((tool) => tool.name);
+          decisions++;
+          if (mode === "off") {
+            expect(tools).not.toContain("memory.query");
+            expect(tools).not.toContain("memory.read");
+            expect(JSON.stringify(request.messages)).not.toContain("apples are green");
+            return '{"kind":"none"}';
           }
-          mainContext = JSON.stringify(req.messages);
+          expect(tools).toContain("memory.query");
+          expect(tools).toContain("memory.read");
+          if (decisions === 1) {
+            // 初始一步不得注入记忆正文：要正文必须显式 query + read。
+            expect(JSON.stringify(request.messages)).not.toContain("apples are green");
+            return '{"kind":"invoke","name":"memory.query","arguments":{"query":"apples"}}';
+          }
+          if (decisions === 2) {
+            const page = actionObservation(request, "memory.query");
+            expect(page.value.status).toBe("ok");
+            expect(page.value.items?.map((item) => item.id)).toEqual([id]);
+            // 目录只给摘要与引用，不给正文。
+            expect(JSON.stringify(request.messages)).not.toContain("apples are green");
+            const item = page.value.items?.[0];
+            if (!item?.bodyRef) throw new Error("missing memory bodyRef");
+            return JSON.stringify({
+              kind: "invoke",
+              name: "memory.read",
+              arguments: { bodyRef: item.bodyRef },
+            });
+          }
+          const page = actionObservation(request, "memory.read");
+          expect(page.value.status).toBe("ok");
+          expect(page.value.items?.[0]?.text).toContain("apples are green");
+          expect(JSON.stringify(request.messages)).toContain("apples are green");
           return '{"kind":"none"}';
         },
       });
       setMemoryMode(h, mode);
       id = addMemory(h);
       h.receive("1", "apples");
-      await activate(h);
-      expect(mainContext.includes("apples are green")).toBe(mode !== "off");
-      expect(selectors > 0).toBe(!["off", "full_body"].includes(mode));
+      expect((await activate(h)).status).toBe("no_output");
+      expect(decisions).toBe(mode === "off" ? 1 : 3);
+      // 旧的独立 selector 已删除：没有请求走 selector 模型，也没有 ids 选择协议。
+      for (const request of main) {
+        expect(request.model).not.toBe("memory-selector");
+        expect(
+          (request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids,
+        ).toBeUndefined();
+      }
+      if (mode === "off") expect(JSON.stringify(main)).not.toContain("apples are green");
     });
   }
   it("source deletion while generating blocks commit and preserves source cursor", async () => {
     let remove = () => {};
+    let id = "";
+    let decisions = 0;
     const h = setup({
+      complete: async (request) => {
+        decisions++;
+        if (decisions === 1)
+          return '{"kind":"invoke","name":"memory.query","arguments":{"query":"apples"}}';
+        if (decisions === 2) {
+          const page = actionObservation(request, "memory.query");
+          expect(page.value.items?.map((item) => item.id)).toEqual([id]);
+          const item = page.value.items?.[0];
+          if (!item?.bodyRef) throw new Error("missing memory bodyRef");
+          return JSON.stringify({
+            kind: "invoke",
+            name: "memory.read",
+            arguments: { bodyRef: item.bodyRef },
+          });
+        }
+        return finalGenerate;
+      },
       async *streamText() {
         remove();
         yield "uses deleted memory";
       },
     });
-    setMemoryMode(h, "full_body");
-    const id = addMemory(h);
+    setMemoryMode(h, "standard");
+    id = addMemory(h);
     remove = () => {
       h.db.query("DELETE FROM memory_entries WHERE id=?").run(id);
     };
@@ -904,6 +1004,18 @@ describe("private feature preservation", () => {
     await expect(activate(h)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
     expect(h.outbox.list({})).toEqual([]);
     expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
+    // 原文必须先被工具真正读进上下文，删除才是对"已读来源"的撤权，而不是对预取的清理。
+    const snapshots = h.db
+      .query(
+        "SELECT s.run_id AS runId, c.step_id AS stepId FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id WHERE c.source_refs LIKE ?",
+      )
+      .all(`%${id}%`) as { runId: string; stepId: string }[];
+    expect(snapshots.length).toBeGreaterThan(0);
+    for (const handle of snapshots) {
+      expect(
+        inspectContext(h.db, h.runs, handle, { userId: DEFAULT_USER_ID }, stamp()),
+      ).toMatchObject({ status: "revoked" });
+    }
     expect(
       h.db
         .query(
@@ -1069,23 +1181,54 @@ describe("private initiative and cancellation", () => {
     "uses the global judgement model and respects %s in the score context",
     async (mode) => {
       let judgement: ModelRequest | undefined;
+      const main: ModelRequest[] = [];
       const h = setup({
-        complete: async (req) => {
-          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
-            const text = req.messages[1]!.content.find((p) => p.kind === "text");
-            const data = JSON.parse(text?.kind === "text" ? text.text : "{}");
-            return JSON.stringify({ ids: data.candidates.map((c: { id: string }) => c.id) });
-          }
-          if ((req.responseSchema?.properties as Record<string, unknown> | undefined)?.score) {
-            judgement = req;
+        complete: async (request) => {
+          const properties = request.responseSchema?.properties as
+            | Record<string, unknown>
+            | undefined;
+          if (properties?.ids) throw new Error("selector protocol is no longer expected");
+          if (properties?.score) {
+            judgement = request;
             return '{"score":0}';
+          }
+          main.push(request);
+          if (main.length === 1) {
+            // 初始零资料：正文必须靠显式 query/read 进入评分上下文，不能预取。
+            expect(JSON.stringify(request.messages)).not.toContain("apples knowledge line");
+            expect(JSON.stringify(request.messages)).not.toContain("apples are green");
+            return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+          }
+          if (main.length === 2) {
+            const page = actionObservation(request, "knowledge.query");
+            const item = page.value.items?.[0];
+            if (!item?.bodyRef) throw new Error("missing knowledge bodyRef");
+            return JSON.stringify({
+              kind: "invoke",
+              name: "knowledge.read",
+              arguments: { bodyRef: item.bodyRef },
+            });
+          }
+          if (mode !== "off") {
+            if (main.length === 3)
+              return '{"kind":"invoke","name":"memory.query","arguments":{"query":"apples"}}';
+            if (main.length === 4) {
+              const page = actionObservation(request, "memory.query");
+              const item = page.value.items?.[0];
+              if (!item?.bodyRef) throw new Error("missing memory bodyRef");
+              return JSON.stringify({
+                kind: "invoke",
+                name: "memory.read",
+                arguments: { bodyRef: item.bodyRef },
+              });
+            }
           }
           // 0.4.0 P4 §4.1：模型只产出意图，评分由程序在写正文之前发出（低于门槛＝静默结束）。
           return '{"kind":"final","outputs":[{"kind":"generate","targetId":"20002","instructions":"说点 apples 的事"}]}';
         },
       });
       setMemoryMode(h, mode);
-      addMemory(h);
+      const memoryId = addMemory(h);
       const repo = new KnowledgeRepository(h.db);
       const doc = repo.importDocument({
         name: "apples manual",
@@ -1109,17 +1252,25 @@ describe("private initiative and cancellation", () => {
       });
       const result = await activate(h);
       expect(result.status).toBe("no_output");
+      expect(main).toHaveLength(mode === "off" ? 3 : 5);
       expect(judgement?.model).toBe("global-judge");
       const text = JSON.stringify(judgement?.messages);
-      expect(text.includes("apples are green")).toBe(mode !== "off");
       expect(text).toContain("apples knowledge line");
+      expect(text.includes("apples are green")).toBe(mode !== "off");
+      for (const request of main) {
+        expect(request.model).not.toBe("memory-selector");
+        expect(
+          (request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids,
+        ).toBeUndefined();
+      }
       expect(h.outbox.list({})).toEqual([]);
       const sources = h.db
         .query(
           "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.initiative.evaluate'",
         )
         .get() as { source_refs: string };
-      expect(JSON.parse(sources.source_refs).map((r: { kind: string }) => r.kind)).toEqual(
+      const refs = JSON.parse(sources.source_refs) as { kind: string; id: string }[];
+      expect(refs.map((ref) => ref.kind)).toEqual(
         expect.arrayContaining([
           ...(mode === "off" ? [] : ["memory"]),
           "knowledge_document",
@@ -1127,6 +1278,11 @@ describe("private initiative and cancellation", () => {
           "qq_observation",
         ]),
       );
+      expect(refs).toContainEqual(
+        expect.objectContaining({ kind: "knowledge_document", id: doc.id }),
+      );
+      if (mode !== "off")
+        expect(refs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
     },
   );
   it("cancellation during generation records a cancelled run without advancing source cursor", async () => {
@@ -1174,11 +1330,8 @@ describe("Bot production knowledge reading settings", () => {
       let h: ReturnType<typeof setup>;
       h = setup({
         complete: async (request) => {
-          if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
-            const part = request.messages[1]!.content.find((part) => part.kind === "text");
-            const data = JSON.parse(part?.kind === "text" ? part.text : "{}");
-            return JSON.stringify({ ids: data.candidates.map((item: { id: string }) => item.id) });
-          }
+          if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids)
+            throw new Error("selector protocol is no longer expected");
           mainRequests.push(request);
           decisions++;
           if (decisions <= 2)
@@ -1218,7 +1371,10 @@ describe("Bot production knowledge reading settings", () => {
           ),
         ).toBe(true);
       }
-      expect(JSON.stringify(mainRequests[0]!.messages)).toContain(body);
+      // 初始零资料：查询动作由模型显式发起，首轮上下文既没有正文也没有资料目录。
+      expect(JSON.stringify(mainRequests[0]!.messages)).not.toContain(body);
+      expect(JSON.stringify(mainRequests[0]!.messages)).not.toContain(doc.id);
+      let deliveredEnvelopes = 0;
       for (const request of mainRequests) {
         const knowledgeMessages = request.messages.filter((message) =>
           message.content.some((part) => {
@@ -1238,8 +1394,34 @@ describe("Bot production knowledge reading settings", () => {
         );
         // Count the messages actually delivered to the model, not backend estimates or bodies alone.
         expect(inputUnits(knowledgeMessages) - 3).toBeLessThanOrEqual(budget);
-        expect(JSON.stringify(request.messages)).toContain("knowledge_grant");
+        // 重复 query 交付的是真实信封：目录项、来源与续读游标都由同一个预算覆盖。
+        for (const message of knowledgeMessages)
+          for (const part of message.content) {
+            if (part.kind !== "text") continue;
+            let data: {
+              kind?: string;
+              value?: {
+                value?: { nextCursor?: string | null };
+                sources?: { kind: string }[];
+              };
+            };
+            try {
+              data = JSON.parse(part.text);
+            } catch {
+              continue;
+            }
+            if (data.kind !== "action_observation") continue;
+            deliveredEnvelopes++;
+            expect(
+              data.value?.value?.nextCursor === null ||
+                typeof data.value?.value?.nextCursor === "string",
+            ).toBe(true);
+            expect(
+              (data.value?.sources ?? []).some((source) => source.kind === "knowledge_grant"),
+            ).toBe(true);
+          }
       }
+      expect(deliveredEnvelopes).toBeGreaterThan(0);
       const last = JSON.stringify(mainRequests.at(-1)!.messages);
       expect(last).toContain("apples additional detail");
       expect(last.match(/action_observation/g)).toHaveLength(2);
@@ -1253,19 +1435,27 @@ describe("Bot production knowledge reading settings", () => {
       let h: ReturnType<typeof setup>;
       h = setup({
         complete: async (request) => {
+          if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids)
+            throw new Error("selector protocol is no longer expected");
           seen.push(request);
-          if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
-            const part = request.messages[1]!.content.find((part) => part.kind === "text");
-            const data = JSON.parse(part?.kind === "text" ? part.text : "{}");
-            return JSON.stringify({ ids: data.candidates.map((item: { id: string }) => item.id) });
-          }
           decisions++;
-          if (decisions === 1 && mode !== "disabled") {
+          if (mode === "disabled") return '{"kind":"none"}';
+          if (decisions === 1) {
             if (mode === "frozen")
               h.db.exec(
                 "UPDATE agent_knowledge_read_settings SET enabled=0, context_budget=1, document_ids='[]', revision=revision+1",
               );
             return '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}';
+          }
+          if (decisions === 2) {
+            const bodyRef = actionObservation(request, "knowledge.query").value.items?.[0]?.bodyRef;
+            // tiny_budget 的信封里没有可读正文，模型拿不到 bodyRef 就只能停在这里。
+            if (!bodyRef) return '{"kind":"none"}';
+            return JSON.stringify({
+              kind: "invoke",
+              name: "knowledge.read",
+              arguments: { bodyRef },
+            });
           }
           return '{"kind":"none"}';
         },
@@ -1298,13 +1488,26 @@ describe("Bot production knowledge reading settings", () => {
       const text = JSON.stringify(seen.map((request) => request.messages));
       expect(text).not.toContain("EXCLUDED_KNOWLEDGE");
       expect(text.includes("ALLOWED_KNOWLEDGE")).toBe(mode === "selected" || mode === "frozen");
-      const selectors = seen.filter(
-        (request) =>
-          (request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids,
-      );
-      expect(selectors.length > 0).toBe(mode === "selected" || mode === "frozen");
-      if (mode === "disabled") expect(text).not.toContain("knowledge.query");
-      if (mode === "frozen") expect(selectors).toHaveLength(2);
+      const observations = seen.flatMap((request) => modelData(request, "action_observation"));
+      const query = observations.filter((value) => value.name === "knowledge.query").at(-1);
+      if (mode === "disabled") {
+        expect(text).not.toContain("knowledge.query");
+        expect(observations).toHaveLength(0);
+      } else {
+        // 显式 query 取代了隐式预取/选择器：信封自带来源，续读只能靠 nextCursor。
+        expect(query).toBeDefined();
+        if (mode === "tiny_budget") {
+          // 预算 1 连一个目录项都装不下：安全地回 unavailable，不伪造成"没有相关内容"。
+          expect(query?.value).toMatchObject({ status: "unavailable", items: [] });
+        } else {
+          expect(query?.value?.status).toBe("ok");
+          expect(query?.value?.items?.length).toBeGreaterThan(0);
+          expect(JSON.stringify(query?.sources ?? [])).toContain(selected.id);
+        }
+      }
+      // selected/frozen 继续按配置显式 read 出正文；disabled/tiny_budget 没有可读引用。
+      const reads = observations.filter((value) => value.name === "knowledge.read");
+      expect(reads.length > 0).toBe(mode === "selected" || mode === "frozen");
     });
 });
 
@@ -1381,19 +1584,43 @@ describe("optional Bot retrieval failure", () => {
       let h: ReturnType<typeof setup>,
         decisions = 0;
       const main: ModelRequest[] = [];
-      h = setup({
-        complete: async (request) => {
-          if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids) {
-            if (failure === "revoked") h.db.exec("DELETE FROM knowledge_grants");
-            if (failure === "cancelled") controller.abort();
-            throw new Error("MODEL_FAILED");
-          }
-          main.push(request);
-          return ++decisions === 1
-            ? '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}'
-            : '{"kind":"none"}';
+      h = setup(
+        {
+          complete: async (request) => {
+            if ((request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids)
+              throw new Error("selector protocol is no longer expected");
+            main.push(request);
+            return ++decisions === 1
+              ? '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"apples"}}'
+              : '{"kind":"none"}';
+          },
         },
-      });
+        {
+          // 只读检索现在直接走 composition 工厂：这里包一层 query 注入三种失败。
+          modules: (binding) => {
+            const modules = createSqliteQueryFactory({
+              db: h.db,
+              orm: h.orm,
+              gateway: h.gateway,
+              agentRuntime: h.runtime,
+            })(binding);
+            return {
+              ...modules,
+              knowledge: {
+                query: async (input) => {
+                  if (failure === "unavailable")
+                    throw new ModelUnavailableError("MODEL_TIMEOUT", "本地模型响应超时，请重试");
+                  if (failure === "cancelled") controller.abort();
+                  const page = await modules.knowledge.query(input);
+                  // 已经消费（拿到底稿候选）的来源在披露前被撤权：必须硬失败。
+                  if (failure === "revoked") h.db.exec("DELETE FROM knowledge_grants");
+                  return page;
+                },
+              },
+            };
+          },
+        },
+      );
       setMemoryMode(h, "off");
       const library = new KnowledgeRepository(h.db);
       const doc = library.importDocument({
@@ -1407,15 +1634,25 @@ describe("optional Bot retrieval failure", () => {
       const result = h.host.activate(wake, controller.signal);
       if (failure === "unavailable") {
         expect((await result).status).toBe("no_output");
-        expect(JSON.stringify(main)).toContain("valid raw question");
-        expect(JSON.stringify(main)).toContain("retrieval_status");
-        expect(JSON.stringify(main)).toContain("MODEL_FAILED");
-        expect(JSON.stringify(main)).not.toContain("apples optional knowledge");
+        const text = JSON.stringify(main);
+        expect(text).toContain("valid raw question");
+        expect(text).toContain("retrieval_status");
+        expect(text).toContain("MODEL_TIMEOUT");
+        expect(text).not.toContain("apples optional knowledge");
+        // 失败以安全信封回给模型（unavailable + 码），不是硬失败也不是"没搜到"。
+        expect(main).toHaveLength(2);
+        expect(actionObservation(main[1]!, "knowledge.query").value).toMatchObject({
+          status: "unavailable",
+          code: "MODEL_TIMEOUT",
+          items: [],
+        });
       } else {
         if (failure === "revoked")
           await expect(result).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
         else await expect(result).rejects.toBeDefined();
-        expect(main).toHaveLength(0);
+        expect(main).toHaveLength(1);
+        expect(JSON.stringify(main)).toContain("valid raw question");
+        expect(JSON.stringify(main)).not.toContain("apples optional knowledge");
         expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
       }
       expect(h.outbox.list({})).toHaveLength(0);
@@ -1672,7 +1909,7 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    h.gateway.loadedContextCapacity = async () => 16000;
+    h.gateway.loadedContextCapacity = async () => 16250;
     const first = addSticker(h);
     h.db
       .query("UPDATE qq_sticker_assets SET description=? WHERE id=?")
@@ -1703,7 +1940,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(12000 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(16300 - 2048);
           calls++;
           if (calls > 1) {
             const page = stickerObservation(request);
@@ -1727,9 +1964,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    // 0.4.0 P2：决策 schema 带上了批调用（calls），每次调用的固定开销变大；本用例考的是分页，
-    // 不是容量边界，因此把容量余量同步上调（生产默认容量远大于此）。
-    h.gateway.loadedContextCapacity = async () => 12800;
+    // 0.4.0 P2 批调用与工具目录（query/read 动作描述）把固定协议基线抬到 ~11.8k；本用例考的是
+    // 分页，不是容量边界，容量按实测最小值同步上调（生产默认容量远大于此）。
+    h.gateway.loadedContextCapacity = async () => 16300;
     const anchor = addSticker(h);
     const collections = [collection(h, anchor)];
     setQqStickerEnabled(h.orm, anchor, false);
@@ -1758,7 +1995,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(12000 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(16300 - 2048);
           if (++calls === 1)
             return JSON.stringify({
               kind: "invoke",
@@ -1775,9 +2012,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    // 0.4.0 P2：决策 schema 带上了批调用（calls），每次调用的固定开销变大；本用例考的是分页，
-    // 不是容量边界，因此把容量余量同步上调（生产默认容量远大于此）。
-    h.gateway.loadedContextCapacity = async () => 12800;
+    // 0.4.0 P2 批调用与工具目录（query/read 动作描述）把固定协议基线抬到 ~11.8k；本用例考的是
+    // 分页，不是容量边界，容量按实测最小值同步上调（生产默认容量远大于此）。
+    h.gateway.loadedContextCapacity = async () => 16300;
     const large = addSticker(h);
     editQqSticker(h.orm, large, { description: "详".repeat(2000) });
     h.receive("1");

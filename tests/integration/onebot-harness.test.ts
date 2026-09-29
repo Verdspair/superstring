@@ -6,8 +6,10 @@
 // 用途：① 当前内核的行为基线（0.4.0 换内核后逐条对照）；② 验收夹具本身——不接网络、不读真实数据。
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { closeHarnesses } from "../harness/onebot";
+import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
+import { closeHarnesses, type OneBotHarness } from "../harness/onebot";
 import {
+  type ActionObservation,
   addressedThenInterrupted,
   belowThresholdButFinal,
   chimingInAboveThreshold,
@@ -17,6 +19,7 @@ import {
   groupUnsplitReply,
   idleTopic,
   knowledgeRevocation,
+  lastActionObservation,
   mediaReadFailureThenSupplement,
   memoryCorrection,
   multipleSpeakers,
@@ -28,6 +31,34 @@ import {
 } from "../harness/scenarios";
 
 afterEach(closeHarnesses);
+
+/** 本会话的 `onebot.main` 运行（新的在前）。 */
+function mainRuns(h: OneBotHarness): RunSnapshot[] {
+  return h.runs
+    .listRuns({ ownerKind: "conversation", ownerId: h.conversationId })
+    .filter((run) => run.specId === "onebot.main");
+}
+
+/** 运行的全部步骤上下文的文本拼接：`getContext` 回读全量消息，绕开调用记录的 4000 字截断。 */
+function fullContextText(h: OneBotHarness, run: RunSnapshot): string {
+  const parts: string[] = [];
+  for (const step of run.steps) {
+    for (const message of h.runs.getContext(step.context)?.messages ?? []) {
+      for (const part of message.content) if (part.kind === "text") parts.push(part.text);
+    }
+  }
+  return parts.join("\n");
+}
+
+/** 运行里每一步上下文能解析到的最近一条 action_observation（同一条会出现在后续步骤里）。 */
+function runObservations(h: OneBotHarness, run: RunSnapshot): ActionObservation[] {
+  const found: ActionObservation[] = [];
+  for (const step of run.steps) {
+    const observation = lastActionObservation(h.runs.getContext(step.context)?.messages ?? []);
+    if (observation !== null) found.push(observation);
+  }
+  return found;
+}
 
 describe("P0 场景基线：OneBot 整链（离线）", () => {
   it("私聊直接回应：一次决策 + 一次生成，回复发给对方且不加 @", async () => {
@@ -227,65 +258,101 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
     ]);
   });
 
-  it("记忆更正后旧正文不可复活：旧正文进过上下文，之后只在更正后才出现", async () => {
+  it("记忆更正后旧正文不可复活：显式 query→read 取正文，更正后只剩新正文，旧引用整轮硬失败", async () => {
     const { status, harness: h } = await memoryCorrection();
 
-    expect(status).toBe("completed/completed/completed");
+    expect(status).toBe("completed/completed/failed:CONTEXT_INVALID_SELECTION");
     const calls = h.model?.calls ?? [];
-    // 每轮：选择器（辅助叶子）→ 决策 → 生成。
+    // 全程主 Agent 显式取数（query→read），没有辅助选择调用；失败轮停在 read 执行处。
+    expect(calls.every((call) => call.phase !== "auxiliary")).toBe(true);
     expect(calls.map((call) => call.phase)).toEqual([
-      "auxiliary",
+      "next",
+      "next",
       "next",
       "generate",
-      "auxiliary",
+      "next",
+      "next",
       "next",
       "generate",
-      "auxiliary",
       "next",
-      "generate",
+      "next",
     ]);
-    // ① 旧正文确实进过第一轮（生成调用带上了完整装配；决策调用被 4000 字截断，断言看生成）。
-    expect(calls[2]?.text).toContain("错误金额999元");
-    // ② 更正之后的每一轮只有更正后的正文。
-    expect(calls[5]?.text).toContain("正确金额80元");
-    const afterCorrection = calls
-      .slice(3)
-      .map((call) => call.text)
-      .join("\n");
-    expect(afterCorrection).not.toContain("错误金额999元");
-    // ③ 指名已退休旧行的选择被判越界：这一轮没有记忆（失败关闭），并留下失败的选择器运行。
-    expect(calls[8]?.text).not.toContain("正确金额80元");
-    const selectorRuns = h.runs
-      .listRuns({ ownerKind: "qq_binding", ownerId: h.bindingId })
-      .filter((run) => run.specId === "memory.select");
-    expect(selectorRuns.some((run) => run.status === "failed")).toBe(true);
-    // 三轮都投递成功：越界选择只影响那一轮的记忆，不影响会话继续。
-    expect(h.sent).toHaveLength(3);
+    // ① 旧正文真的进过第一轮（生成调用带完整装配；更正会撤权清空该轮落库快照，只能看调用记录）。
+    expect(calls[3]?.text).toContain("错误金额999元");
+
+    const runs = mainRuns(h);
+    expect(runs).toHaveLength(3);
+    const failed = runs.find((run) => run.errorCode === "CONTEXT_INVALID_SELECTION");
+    if (failed === undefined) throw new Error("缺少 CONTEXT_INVALID_SELECTION 的失败运行");
+    // ② 更正后的新轮：候选只有更正行，正文只剩更正后的（全量上下文回读，不受 4000 截断影响）。
+    const corrected = runs.find((run) => fullContextText(h, run).includes("正确金额80元"));
+    if (corrected === undefined) throw new Error("缺少更正后带新正文的运行");
+    const query = runObservations(h, corrected).find((obs) => obs.name === "memory.query");
+    expect(query?.value?.items).toHaveLength(1);
+    expect(query?.value?.items?.[0]?.summary).toContain("已更正");
+    expect(fullContextText(h, corrected)).not.toContain("错误金额999元");
+    // ③ 旧引用再读被判越界：整轮硬失败，旧正文不回填；已退休的行也不在候选里。
+    const staleQuery = runObservations(h, failed).find((obs) => obs.name === "memory.query");
+    expect(staleQuery?.value?.items).toHaveLength(0);
+    expect(fullContextText(h, failed)).not.toContain("错误金额999元");
+    const staleStep = failed.steps[1];
+    if (staleStep === undefined) throw new Error("失败运行缺少第二步");
+    expect(h.runs.getContext(staleStep.context)?.output?.text).toContain("memory.read");
+    // 硬失败只关掉那一轮：前两轮照常投递，没有编出第三条。
+    expect(h.sent).toEqual([
+      {
+        kind: "private",
+        peerId: "20002",
+        message: [{ type: "text", data: { text: "金额我再确认一下" } }],
+      },
+      {
+        kind: "private",
+        peerId: "20002",
+        message: [{ type: "text", data: { text: "这是更正后的金额" } }],
+      },
+    ]);
   });
 
-  it("资料撤权后不再进上下文：撤权后的新读取看不见它，也不换种说法编出来", async () => {
+  it("资料撤权后不再进上下文：新 query 为空，正文不再出现也不换种说法编出来", async () => {
     const { status, harness: h } = await knowledgeRevocation();
 
     expect(status).toBe("completed/completed");
     const calls = h.model?.calls ?? [];
-    // 第一轮：资料选择（辅助）+ 决策 + 生成；撤权后没有资料可挑，选择器调用消失。
+    // 第一轮：query→read→final；撤权后候选为空，直接收口；全程没有辅助选择调用。
+    expect(calls.every((call) => call.phase !== "auxiliary")).toBe(true);
     expect(calls.map((call) => call.phase)).toEqual([
-      "auxiliary",
+      "next",
+      "next",
       "next",
       "generate",
+      "next",
       "next",
       "generate",
     ]);
-    expect(calls[2]?.text).toContain("苹果单价是每斤八元");
-    expect(calls[4]?.text).not.toContain("苹果单价是每斤八元");
+    // ① 已授权时正文真的进过上下文（生成调用带完整装配）。
+    expect(calls[3]?.text).toContain("苹果单价是每斤八元");
+    // ② 撤权后的轮次：调用记录与全量上下文都没有正文；query 观察是空候选。
     expect(
       calls
-        .slice(3)
+        .slice(4)
         .map((call) => call.text)
         .join("\n"),
     ).not.toContain("苹果单价是每斤八元");
+    const runs = mainRuns(h);
+    expect(runs).toHaveLength(2);
+    const revoked = runs.find((run) =>
+      runObservations(h, run).some(
+        (obs) => obs.name === "knowledge.query" && obs.value?.items?.length === 0,
+      ),
+    );
+    if (revoked === undefined) throw new Error("缺少撤权后空候选的运行");
+    expect(fullContextText(h, revoked)).not.toContain("苹果单价是每斤八元");
     expect(h.sent).toEqual([
-      { kind: "private", peerId: "20002", message: [{ type: "text", data: { text: "每斤八元" } }] },
+      {
+        kind: "private",
+        peerId: "20002",
+        message: [{ type: "text", data: { text: "每斤八元" } }],
+      },
       {
         kind: "private",
         peerId: "20002",

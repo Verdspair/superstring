@@ -26,12 +26,6 @@ import type {
   SourceEvent,
   SourceReceipt,
 } from "./contracts";
-import {
-  type BotInitialMemoryQuery,
-  sqliteBotInitialMemory,
-  sqliteWebInitialEvidence,
-  type WebInitialEvidenceFactory,
-} from "./initial-evidence";
 import { SqliteKnowledgeModule } from "./knowledge-module";
 import { SqliteMemoryModule } from "./memory-module";
 import { turnSources } from "./provenance";
@@ -39,9 +33,6 @@ import { turnSources } from "./provenance";
 export interface ModuleQueries {
   memory: MemoryModule;
   knowledge: KnowledgeModule;
-  /** Optional preservation of a backend's existing Web frozen-read policy. */
-  webInitial?: WebInitialEvidenceFactory;
-  botMemory?: BotInitialMemoryQuery;
 }
 /** Unknown kinds fall through to the application's existing source resolver; never auto-authorize. */
 export type ModuleSourceResolver = (
@@ -95,8 +86,6 @@ export function createSqliteQueryFactory(options: {
   return ({ runtime, assertSources }) => ({
     memory: new SqliteMemoryModule({ ...options, runtime: () => runtime, assertSources }),
     knowledge: new SqliteKnowledgeModule({ ...options, runtime: () => runtime, assertSources }),
-    webInitial: (input) => sqliteWebInitialEvidence({ ...options, assertSources }, input),
-    botMemory: sqliteBotInitialMemory({ ...options, runtime: () => runtime, assertSources }),
   });
 }
 
@@ -131,6 +120,10 @@ export function createSqliteModules(options: {
     bind,
     memory: {
       query: (input) => bind({ runtime: runtimeFor(input.agentId) }).memory.query(input),
+      read: (input) =>
+        new SqliteMemoryModule({ ...options, runtime: () => runtimeFor(input.agentId) }).read(
+          input,
+        ),
       observe(source) {
         const payload = source.payload as SqliteObservation;
         if (payload.kind === "qq_event") {
@@ -215,6 +208,10 @@ export function createSqliteModules(options: {
     },
     knowledge: {
       query: (input) => bind({ runtime: runtimeFor(input.agentId) }).knowledge.query(input),
+      read: (input) =>
+        new SqliteKnowledgeModule({ ...options, runtime: () => runtimeFor(input.agentId) }).read(
+          input,
+        ),
       ingest(source) {
         const id = z.uuid().parse(source.id);
         const payload = z

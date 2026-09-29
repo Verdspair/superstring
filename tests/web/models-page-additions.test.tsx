@@ -1,7 +1,5 @@
-// 默认模型页的两处新增：
-//   1. 「一键覆盖当前助手的模型」——把当前助手的四个**文本用途**一次改成共同默认模型并立即保存；
-//      图片理解与语音转写不是助手的字段，所以不在覆盖范围（用户弹窗答复：只覆盖文本用途并直接保存）。
-//   2. 「QQ 判断模型」——QQ 全局的一份设置（0038），第三方聊天总开关关着时置灰并给出去处。
+// 模型用途边界：聊天、记忆整理、压缩可一起采用默认模型；旧独立检索值保留。
+// 图片理解、语音转写与 QQ 判断模型不属于当前助手的覆盖范围。
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +7,7 @@ import type { AgentResponse, PersonaResponse } from "../../src/shared/contracts"
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
 import type { SuperstringApi } from "../../src/web/api";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
-import { selectLocale } from "../../src/web/i18n";
+import { selectLocale, translateNotice } from "../../src/web/i18n";
 import { ModelDefaults } from "../../src/web/screens/environment/model-defaults";
 import { useSuperstringStore as store } from "../../src/web/store";
 
@@ -93,29 +91,44 @@ afterEach(() => {
 });
 
 describe("Model purpose boundaries", () => {
-  it("applies the shared model to four text purposes with the current Agent version", async () => {
-    const fake = renderOrganization(client());
-    await act(async () => {});
-    await act(async () => {
-      expect(await store.getState().applyDefaultModelToAgent("default-model")).toBe(true);
-    });
-    expect(fake.updateAgent).toHaveBeenCalledWith(
-      agent().id,
-      expect.objectContaining({
+  it.each([null, "legacy-retrieval"])(
+    "applies three text purposes with CAS while preserving the old retrieval value %s",
+    async (retrieval) => {
+      const current = agent({ memory_retrieval_model_name: retrieval });
+      const fake = renderOrganization(
+        client({
+          updateAgent: vi.fn(async (_id, body) => ({ ...current, ...body, config_version: 8 })),
+        }),
+      );
+      store.setState({ pageEditor: newPageEditor(current, persona) });
+      await act(async () => {});
+      await act(async () => {
+        expect(await store.getState().applyDefaultModelToAgent("default-model")).toBe(true);
+      });
+      expect(fake.updateAgent).toHaveBeenCalledWith(agent().id, {
         expected_version: 7,
         model_name: "default-model",
-        memory_retrieval_model_name: "default-model",
+        temperature: 0.7,
         memory_consolidation_model_name: "default-model",
         context_compression_model_name: "default-model",
-      }),
-    );
-  });
-  it("does not write when all four purposes already match", async () => {
+      });
+      expect(store.getState().pageEditor?.draft.memory_retrieval_model_name).toBe(retrieval);
+      expect(store.getState().pageEditor?.agent.memory_retrieval_model_name).toBe(retrieval);
+      const notice = store.getState().feedback;
+      expect(notice).toContain("三个文本用途");
+      selectLocale("en");
+      expect(translateNotice(notice)).toContain(
+        "legacy independent retrieval model value is unchanged",
+      );
+      selectLocale("zh-CN");
+    },
+  );
+  it("does not write when three purposes match even if the legacy retrieval model differs", async () => {
     const fake = client();
     store.getState().resetForTests(fake);
     const current = agent({
       model_name: "same",
-      memory_retrieval_model_name: "same",
+      memory_retrieval_model_name: "legacy-retrieval",
       memory_consolidation_model_name: "same",
       context_compression_model_name: "same",
     });

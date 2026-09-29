@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
-import { canReadRun, inspectContext, sourceAccess } from "../../src/server/agent/context-access";
+import {
+  assertContextSources,
+  canReadRun,
+  inspectContext,
+  sourceAccess,
+} from "../../src/server/agent/context-access";
 import { handleError } from "../../src/server/api/error-handler";
 import { runRoutes } from "../../src/server/api/runs";
 import { createApp } from "../../src/server/app";
@@ -149,6 +154,23 @@ describe("run diagnostics authorization and source lifetime", () => {
     expect((await (await app.request(url)).json()).status).toBe("revoked");
     expect(repository.getContext(handle)?.messages).toBeNull();
     expect(repository.getContext(handle)?.layout.length).toBeGreaterThan(0);
+  });
+
+  it("keeps source expiry authoritative during tool execution even when a resolver accepts it", () => {
+    const { business } = setup();
+    expect(() =>
+      assertContextSources({
+        db: business.db,
+        sources: [
+          { kind: "external", id: "expired", revision: "1", expiresAt: "2030-01-01T00:00:00.000Z" },
+        ],
+        owner: { kind: "test", id: "run", userId: DEFAULT_USER_ID },
+        now: "2030-01-02T00:00:00.000Z",
+        resolveSource: () => "available",
+        memoryRevisions: () => new Map(),
+        messages: { memory: "memory changed", other: "source expired" },
+      }),
+    ).toThrow("source expired");
   });
 
   it("keeps the retained source expiry authoritative when a module returns available", () => {

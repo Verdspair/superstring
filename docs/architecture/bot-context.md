@@ -8,11 +8,10 @@ flowchart TD
   Journal --> Wake[WakeScheduler]
   Wake --> Host[OneBotHost]
   Host --> Context[BotContextSource]
-  Context --> Modules[Memory and knowledge modules]
   Context --> Packages[Committed summary packages]
   Host --> Runtime[AgentRuntime]
   Runtime --> Action[Available actions]
-  Action --> Modules
+  Action --> Modules[Memory and knowledge query/read modules]
   Runtime --> Draft[Response intent or direct draft]
   Draft --> Permit[Host-triggered initiative permission]
   Permit --> Body[Authorized response body]
@@ -38,11 +37,15 @@ One target's score or generation failure need not discard another target's succe
 
 ## Context and module boundaries
 
-BotContextSource owns decision/reply projections with their separately configured windows and output reserves. ContextEngine renders those materials through the common protocol. Web retains its retry snapshot and evidence selection strategy; shared rendering does not replace every source's strategy with the same algorithm.
+BotContextSource owns decision/reply projections with their separately configured windows and output reserves. ContextEngine renders those materials through the common protocol. Recent conversation windows, pending input and background compression remain host-managed; memory and knowledge are not automatically prefetched into either projection.
 
-Memory retrieval retains the configured modes, scope isolation and manual-correction precedence. MemoryModule and KnowledgeModule return evidence with provenance; default SQLite ingestion, maintenance and storage remain module-specific. Alternate backends can provide query and source-resolution implementations through modules/composition.ts without emulating SQLite chunks.
+MemoryModule and KnowledgeModule expose bounded query/read operations with source provenance. The main Agent decides whether to browse, search or read another page; no independent selector runs behind a query. Memory off disables memory tools, and the other presets bound scans, page entries and cumulative result units while preserving scope isolation and manual-correction precedence. Default SQLite ingestion, maintenance and storage remain module-specific. Alternate backends can provide query and source-resolution implementations through modules/composition.ts without emulating SQLite chunks.
 
-Knowledge enablement, selected documents and budget are frozen at run start. The budget accounts for initial evidence and retained nonempty query observations, including their arguments and provenance, across subsequent decisions and re-observation. Empty-result feedback still consumes total model input capacity. Source grants remain live and can revoke previously selected evidence.
+Knowledge enablement, selected documents and budget are frozen at run start. Query/read envelopes, including arguments, provenance and continuation metadata, consume the cumulative allowance across decisions and re-observation; all feedback also consumes total model input capacity. Domain allowances and shared in-flight reservations prevent parallel reads from independently claiming the same remaining space. Source grants remain live and can revoke previously selected evidence.
+
+BotContextSource 保留分别配置的判断/回复窗口与输出预留；近期原文、本轮输入和后台压缩仍由宿主控制，记忆与知识不再自动预取到任一档。主 Agent 通过有界 query/read 决定是否检索和续读，没有隐藏选择模型；记忆关闭禁用对应工具，其余档位约束扫描、每页条数与累计结果额度，范围隔离和人工纠正优先级不变。
+
+知识开关、选定文档和额度在本轮开始时冻结，查询/正文信封的参数、来源和续读信息跨决策及重观察累计计费；所有反馈同时占用模型上下文。资料域额度与同批预留共同约束并发读取，不能各自重复占用同一余量；已消费资料的授权仍实时复验。
 
 The common compressor uses a leaf Agent to summarize selected conversation material. The reply projection reads committed packages and prepares a bounded background job; the host queues it only after the foreground run commits. The worker dispatches replies before starting background compression, without waiting for the summary. Jobs recheck current authority and sources, and an atomic compare-and-swap prevents late results from replacing newer packages. Empty, failed or oversized summaries leave watermarks unchanged. Shutdown cancels and drains the queue.
 

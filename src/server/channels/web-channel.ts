@@ -130,7 +130,6 @@ export class WebChannel {
         db: this.db,
         gateway: options.gateway,
         agentRuntime: this.runtime,
-        modules: options.modules,
         resolveSource: options.resolveSource,
       });
   }
@@ -449,6 +448,10 @@ export class WebChannel {
           }
         }
         bridge.end(failure);
+      } finally {
+        // Commits and final source revalidation are done; the turn no longer needs its
+        // checkpoint. Token-bound so a stale producer cannot drop a renewed generation's.
+        this.builder.release(args.turnId, args.generationToken);
       }
     })();
     try {
@@ -467,6 +470,8 @@ export class WebChannel {
       bridge.cancel();
       await producer;
       if (!committed && !recorded && ownership === "active") record("CLIENT_DISCONNECTED");
+      // Release only after the durable terminal write and every source revalidation.
+      this.builder.release(args.turnId, args.generationToken);
     }
   }
 }

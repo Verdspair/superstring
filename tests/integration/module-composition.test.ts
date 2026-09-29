@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { ContextBuilder } from "../../src/server/agent/conversation-context";
+import { WebContextSource } from "../../src/server/channels/web-context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import {
@@ -138,7 +139,7 @@ describe("concrete module composition", () => {
     ).toThrow();
     expect(h.db.query("SELECT event_key FROM qq_events").all()).toHaveLength(1);
   });
-  it("uses alternate memory and knowledge modules for the initial Web context without SQLite payload parsing", async () => {
+  it("registers alternate modules without initial reads and consumes their paged evidence only on demand", async () => {
     const h = setup();
     const session = createSession(h.orm, "custom modules", { modelName: "test-model" });
     const request = crypto.randomUUID();
@@ -149,12 +150,25 @@ describe("concrete module composition", () => {
     runtime.p5_config.retrieval_mode = "full_body";
     let valid = true;
     const seen: string[] = [];
-    const builder = new ContextBuilder({
+    const contextBuilder = new ContextBuilder({
+      orm: h.orm,
+      db: h.db,
+      gateway: h.gateway,
+      agentRuntime: h.agentRuntime,
+    });
+    const adapter = new WebContextSource({
       ...h,
+      builder: contextBuilder,
+      runtime,
+      sessionId: session.id,
+      turnId: turn.id,
+      generationToken: prepared.generationToken,
+      maxSteps: 16,
       modules: () => ({
         memory: {
           query: async (input) => {
-            seen.push(input.mode);
+            expect(input.sessionId).toBe(session.id);
+            seen.push("memory.query");
             return [
               {
                 id: "remote-memory",
@@ -166,32 +180,84 @@ describe("concrete module composition", () => {
         },
         knowledge: {
           query: async () => {
-            seen.push("knowledge");
-            return [
-              {
-                id: "remote-knowledge",
-                text: "opaque knowledge material",
-                sources: [{ kind: "external", id: "knowledge", revision: "1" }],
-              },
-            ];
+            seen.push("knowledge.query");
+            return {
+              status: "ok",
+              items: [
+                {
+                  id: "remote-knowledge",
+                  text: "",
+                  sources: [{ kind: "external", id: "knowledge", revision: "1" }],
+                },
+              ],
+              nextCursor: null,
+            };
+          },
+          read: async (input) => {
+            seen.push(`knowledge.read:${input.offset}`);
+            const text = [..."opaque knowledge material"];
+            const end = Math.min(text.length, input.offset + input.limit);
+            return {
+              text: text.slice(input.offset, end).join(""),
+              offset: input.offset,
+              total: text.length,
+              nextOffset: end < text.length ? end : null,
+            };
           },
         },
       }),
       resolveSource: (source) =>
         source.kind === "external" ? (valid ? "available" : "revoked") : undefined,
     });
-    const result = await builder.build({
-      sessionId: session.id,
-      currentTurnId: turn.id,
-      generationToken: prepared.generationToken,
-      runtime,
-    });
-    expect(seen).toEqual(["full_body", "knowledge"]);
-    expect(JSON.stringify(result)).toContain("opaque memory material");
-    expect(JSON.stringify(result)).toContain("opaque knowledge material");
+    const signal = new AbortController().signal;
+    const material = await adapter.read({ signal, observations: [] });
+    expect(seen).toEqual([]);
+    expect(JSON.stringify(material)).not.toContain("opaque");
     expect(h.db.query("SELECT turn_id FROM turn_knowledge_snapshots").all()).toHaveLength(0);
+    // Revoking evidence that has never been queried cannot invalidate the initial history.
     valid = false;
-    expect(() => builder.assertKnowledgeAccess(turn.id, DEFAULT_AGENT_ID)).toThrow();
+    expect(await adapter.read({ signal, observations: [] })).toBe(material);
+    valid = true;
+    const actionContext = {
+      owner: { kind: "web_turn", id: turn.id, agentId: DEFAULT_AGENT_ID },
+      signal,
+      runId: "custom-read",
+    };
+    const observations = [];
+    for (const kind of ["memory", "knowledge"]) {
+      const query = adapter.actions.find((action) => action.description.name === `${kind}.query`);
+      const read = adapter.actions.find((action) => action.description.name === `${kind}.read`);
+      if (!query || !read) throw new Error("missing actions");
+      const result = await query.execute({ query: "opaque" }, actionContext);
+      const entry = (result.value as { items: { bodyRef: string }[] }).items[0];
+      expect(JSON.stringify(result.value)).not.toContain(`opaque ${kind} material`);
+      const page = await read.execute({ bodyRef: entry.bodyRef, limit: 7 }, actionContext);
+      const item = (page.value as { items: { text: string; nextOffset: number }[] }).items[0];
+      expect(item.text).toBe("opaque ");
+      const rest = await read.execute(
+        { bodyRef: entry.bodyRef, offset: item.nextOffset, limit: 4096 },
+        actionContext,
+      );
+      expect(JSON.stringify(rest.value)).toContain(`${kind} material`);
+      observations.push({
+        id: `${kind}-query`,
+        name: `${kind}.query`,
+        arguments: { query: "opaque" },
+        ...result,
+      });
+    }
+    expect(seen).toEqual([
+      "memory.query",
+      "knowledge.query",
+      "knowledge.read:0",
+      "knowledge.read:7",
+    ]);
+    await adapter.read({ signal, observations });
+    valid = false;
+    expect(() => contextBuilder.assertCurrent(turn.id, DEFAULT_AGENT_ID)).not.toThrow();
+    await expect(adapter.read({ signal, observations })).rejects.toMatchObject({
+      code: "CONTEXT_SOURCE_INVALID",
+    });
   });
 
   it("accepts only completed owned Web turns without duplicating their canonical source", () => {

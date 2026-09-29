@@ -484,6 +484,8 @@
   "唤醒记录": "Wake activity",
   "唤醒记录恢复": "Wake record recovery",
   "唤醒调度": "Wake scheduling",
+  "三个文本用途已经是这个模型，旧独立检索模型值不变。": "All three text purposes already use this model; the legacy independent retrieval model value is unchanged.",
+  "已更新当前助手的三个文本用途，旧独立检索模型值不变。": "The current Agent's three text purposes now use this model; the legacy independent retrieval model value is unchanged.",
   "四个文本用途已经是这个模型，无需覆盖。": "All four text purposes already use this model; nothing to overwrite.",
   "回到最新": "Jump to latest",
   "回复": "Reply",

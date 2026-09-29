@@ -37,6 +37,7 @@ import {
   type ModuleComposition,
   type ModuleSourceResolver,
 } from "./modules/composition";
+import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
 import { RuntimeTelemetry } from "./observability/runtime-telemetry";
 import {
   FilePermissionStore,
@@ -148,8 +149,10 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     };
   };
   const actionExecutor = new ActionExecutor(permissions, () => execution().loop.readBatch);
+  // 权限优先；会话证据在技能与外部注入解析器之前，用持久存储复验（任务执行与运行检查同理）。
   const resolveDomainSource: ModuleSourceResolver = (source, owner, at) =>
     permissions.sourceAccess(source, owner) ??
+    conversationEvidenceSourceAccess(business, source, owner, at) ??
     skillSourceAccess(options.skillRoot, source) ??
     options.resolveSource?.(source, owner, at);
   const resolveSource: ModuleSourceResolver = (source, owner, at) =>

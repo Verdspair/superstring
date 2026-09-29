@@ -28,22 +28,34 @@ function agent(id = "A") {
     updated_at: "2026-09-19T00:00:00.000Z",
   });
 }
-it("目录批数归长期记忆，摘要读取与共用超时归上下文且互不夹带", () => {
+it("旧目录与检索字段只取已存基线，工具额度与上下文白名单互不夹带", () => {
   const editor = newPageEditor(agent(), persona());
   editor.draft.p5_config = structuredClone(editor.draft.p5_config);
   editor.draft.p5_config.max_catalog_batches = 7;
   editor.draft.p5_config.catalog_batch_size = 9;
+  editor.draft.p5_config.retrieval_presets.broad.candidate_limit = 200;
+  editor.draft.p5_config.retrieval_presets.broad.relevance_instruction = "ignored";
+  editor.draft.memory_retrieval_prompt = "ignored prompt";
+  editor.draft.memory_retrieval_model_name = "ignored model";
   editor.draft.p5_config.summary_read_max_tokens = 800;
   editor.draft.p5_config.auxiliary_timeout_seconds = 360;
-  const memory = pageAgentPayload(editor, "long-memory").p5_config;
+  const payload = pageAgentPayload(editor, "long-memory");
+  const memory = payload.p5_config;
   const context = pageAgentPayload(editor, "context").p5_config;
   if (!memory || !context) throw new Error("Missing page config");
-  expect(memory.max_catalog_batches).toBe(7);
-  expect(memory.catalog_batch_size).toBe(9);
+  expect(payload).not.toHaveProperty("memory_retrieval_prompt");
+  expect(pageAgentPayload(editor, "models")).not.toHaveProperty("memory_retrieval_model_name");
+  expect(memory.max_catalog_batches).toBe(100);
+  expect(memory.catalog_batch_size).toBe(30);
+  expect(memory.retrieval_presets.broad).toEqual({
+    ...editor.agent.p5_config.retrieval_presets.broad,
+    candidate_limit: 200,
+  });
   expect(memory.summary_read_max_tokens).toBeUndefined();
   expect(memory.auxiliary_timeout_seconds).toBe(900);
   expect(context.max_catalog_batches).toBe(100);
   expect(context.catalog_batch_size).toBe(30);
+  expect(context.retrieval_presets).toEqual(editor.agent.p5_config.retrieval_presets);
   expect(context.summary_read_max_tokens).toBe(800);
   expect(context.auxiliary_timeout_seconds).toBe(360);
 });
@@ -135,6 +147,72 @@ afterEach(() => {
 });
 
 describe("页面草稿与白名单保存", () => {
+  it.each(["full_catalog", "full_body", "off"] as const)(
+    "%s survives visits, other-page saves and reloads; only a memory save normalizes full modes",
+    async (mode) => {
+      persisted = {
+        ...persisted,
+        memory_retrieval_model_name: "legacy-model",
+        memory_retrieval_prompt: "旧检索提示\r\n不改",
+        p5_config: {
+          ...persisted.p5_config,
+          retrieval_mode: mode,
+          max_catalog_batches: 17,
+          catalog_batch_size: 23,
+        },
+      };
+      await store.getState().editAgent("A");
+      const original = structuredClone(persisted);
+      store.getState().patchPageAgent("models", { memory_retrieval_model_name: "ignored" });
+      store.getState().patchPageAgent("long-memory", {
+        memory_retrieval_prompt: "ignored",
+        p5_config: {
+          ...persisted.p5_config,
+          max_catalog_batches: 999,
+          catalog_batch_size: 999,
+          retrieval_presets: {
+            ...persisted.p5_config.retrieval_presets,
+            broad: {
+              ...persisted.p5_config.retrieval_presets.broad,
+              relevance_instruction: "ignored",
+            },
+          },
+        },
+      });
+      expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+      expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe(
+        original.memory_retrieval_prompt,
+      );
+      expect(store.getState().pageEditor?.draft.memory_retrieval_model_name).toBe("legacy-model");
+      expect(store.getState().pageEditor?.draft.p5_config).toEqual(original.p5_config);
+      store.getState().openSettingsRoute("models");
+      store.getState().patchPageAgent("models", { model_name: "new-chat" });
+      store.getState().openSettingsRoute("long-memory");
+      store
+        .getState()
+        .patchPageAgent("context", { p5_config: { ...persisted.p5_config, recent_turns: 12 } });
+      expect(await store.getState().saveSettingsPage("context")).toBe(true);
+      expect(persisted.p5_config.retrieval_mode).toBe(mode);
+      expect(persisted.model_name).toBe("model");
+      expect(dirtyPages(store.getState().pageEditor)).toEqual(["models"]);
+      expect(await store.getState().saveSettingsPage("models")).toBe(true);
+      await store.getState().editAgent("A");
+      expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
+      expect(await store.getState().saveSettingsPage("long-memory")).toBe(true);
+      expect(persisted.p5_config.retrieval_mode).toBe(mode === "off" ? "off" : "broad");
+      await store.getState().editAgent("A");
+      expect(store.getState().pageEditor?.draft).toMatchObject({
+        memory_retrieval_model_name: "legacy-model",
+        memory_retrieval_prompt: original.memory_retrieval_prompt,
+        p5_config: {
+          max_catalog_batches: 17,
+          catalog_batch_size: 23,
+          retrieval_presets: original.p5_config.retrieval_presets,
+        },
+      });
+      expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+    },
+  );
   it("p5两页白名单双向隔离并保留其他页草稿", async () => {
     const baseline = persisted.p5_config;
     store.getState().patchPageAgent("long-memory", {
@@ -155,12 +233,12 @@ describe("页面草稿与白名单保存", () => {
     expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
   });
   it("policy只在保存时提交，部分失败重试不重复agent请求", async () => {
-    store.getState().patchPageAgent("long-memory", { memory_retrieval_prompt: "new rule" });
+    store.getState().patchPageAgent("long-memory", { memory_consolidation_prompt: "new rule" });
     store.getState().patchPagePolicy({ every_turns: 25 });
     expect(client.updatePolicy).not.toHaveBeenCalled();
     vi.mocked(client.updatePolicy).mockRejectedValueOnce(new Error("policy failed"));
     expect(await store.getState().saveSettingsPage("long-memory")).toBe(false);
-    expect(persisted.memory_retrieval_prompt).toBe("new rule");
+    expect(persisted.memory_consolidation_prompt).toBe("new rule");
     expect(store.getState().pageEditor?.policyDraft?.every_turns).toBe(25);
     expect(await store.getState().saveSettingsPage("long-memory")).toBe(true);
     expect(client.updateAgent).toHaveBeenCalledTimes(1);
@@ -499,7 +577,7 @@ describe("页面草稿与白名单保存", () => {
 
   it.each(["save", "discard"] as const)("记忆纠正%s后切页保留其他配置草稿", async (choice) => {
     store.getState().patchPageAgent("long-memory", {
-      memory_retrieval_prompt: "unsaved config",
+      memory_consolidation_prompt: "unsaved config",
     });
     const originalSave = store.getState().saveMemoryCorrection;
     const save = vi.fn(async () => {
@@ -518,7 +596,7 @@ describe("页面草稿与白名单保存", () => {
       else await store.getState().confirmDiscardAndContinue();
       expect(store.getState().settingsRoute).toBe("context");
       expect(store.getState().memoryCorrectionDirty).toBe(false);
-      expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("unsaved config");
+      expect(store.getState().pageEditor?.draft.memory_consolidation_prompt).toBe("unsaved config");
       expect(client.updateAgent).not.toHaveBeenCalled();
       expect(save).toHaveBeenCalledTimes(choice === "save" ? 1 : 0);
     } finally {

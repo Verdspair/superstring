@@ -33,6 +33,7 @@ import {
   type ModuleComposition,
   type ModuleSourceResolver,
 } from "./modules/composition";
+import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
 import { type PermissionService, unconfiguredPermissions } from "./permissions/service";
 import {
   createQqStickerAnnotator,
@@ -85,9 +86,11 @@ export interface CreateAppOptions {
 export function createApp(opts: CreateAppOptions): Hono {
   const { business } = opts;
   const permissions = opts.permissions ?? unconfiguredPermissions;
+  // 权限与任务优先；会话证据在外部注入解析器之前，用持久存储复验（外部不能把撤权改判为可用）。
   const resolveSource: ModuleSourceResolver = (source, owner, at) =>
     opts.tasks?.sourceAccess(source, owner) ??
     permissions.sourceAccess(source, owner) ??
+    (business ? conversationEvidenceSourceAccess(business, source, owner, at) : undefined) ??
     opts.resolveSource?.(source, owner, at);
   const app = new Hono();
   app.onError(handleError);

@@ -10,6 +10,20 @@ export type MemoryReadMode =
   | "full_body";
 
 /** Public query contracts carry intent and authority, not one backend's Agent configuration. */
+export interface EvidenceQueryPage {
+  readonly status: "ok" | "unavailable";
+  readonly code?: string;
+  readonly items: readonly Evidence[];
+  readonly nextCursor?: string | null;
+}
+export type EvidenceQueryResponse = readonly Evidence[] | EvidenceQueryPage;
+export interface EvidenceTextPage {
+  readonly text: string;
+  readonly offset: number;
+  readonly total: number;
+  readonly nextOffset: number | null;
+}
+
 export interface MemoryQuery {
   agentId: string;
   mode: MemoryReadMode;
@@ -17,6 +31,8 @@ export interface MemoryQuery {
   scopes: MemoryScopeKeys;
   query: string;
   budget: number;
+  limit?: number;
+  cursor?: string;
   projection?: "catalog";
   owner: { kind: string; id: string; userId?: string; agentId?: string };
   signal?: AbortSignal;
@@ -26,10 +42,29 @@ export interface KnowledgeQuery {
   agentId: string;
   query: string;
   budget: number;
+  limit?: number;
+  cursor?: string;
   projection?: "catalog";
   owner: MemoryQuery["owner"];
   signal?: AbortSignal;
   sources?: SourceRef[];
+}
+export interface EvidenceReadInput {
+  agentId: string;
+  evidence: Evidence;
+  offset: number;
+  limit: number;
+  owner: MemoryQuery["owner"];
+  signal?: AbortSignal;
+  sources?: SourceRef[];
+}
+export interface MemoryReadInput extends EvidenceReadInput {
+  sessionId?: string;
+  scopes: MemoryScopeKeys;
+}
+
+export function evidenceQueryPage(result: EvidenceQueryResponse): EvidenceQueryPage {
+  return Array.isArray(result) ? { status: "ok", items: result } : (result as EvidenceQueryPage);
 }
 export interface SourceEvent {
   source: SourceRef;
@@ -50,12 +85,14 @@ export interface MaintenanceResult {
 
 /** Query is the only mandatory capability: a read-only backend has no fake mutation methods. */
 export interface MemoryModule {
-  query(input: MemoryQuery): Promise<readonly Evidence[]>;
+  query(input: MemoryQuery): Promise<EvidenceQueryResponse>;
+  read?(input: MemoryReadInput): Promise<EvidenceTextPage>;
   observe?(source: SourceEvent): SourceReceipt | Promise<SourceReceipt>;
   maintain?(target?: string): Promise<MaintenanceResult>;
 }
 export interface KnowledgeModule {
-  query(input: KnowledgeQuery): Promise<readonly Evidence[]>;
+  query(input: KnowledgeQuery): Promise<EvidenceQueryResponse>;
+  read?(input: EvidenceReadInput): Promise<EvidenceTextPage>;
   ingest?(source: KnowledgeSource): SourceReceipt | Promise<SourceReceipt>;
   maintain?(target?: string): Promise<MaintenanceResult>;
 }

@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readMode, readTheme, THEMES } from "../../src/web/appearance";
-import { selectLocale } from "../../src/web/i18n";
+import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
+import { msg, selectLocale } from "../../src/web/i18n";
 import en from "../../src/web/i18n/locales/en/translation.json";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
@@ -36,6 +37,38 @@ afterEach(() => {
 });
 
 describe("fresh assistant studio", () => {
+  it("translates each capacity notice in the English tool settings view", async () => {
+    selectLocale("en");
+    store.setState({
+      refreshCapacityPreview: vi.fn().mockResolvedValue(undefined),
+      capacityPreview: [
+        msg(
+          "{0}：实际 {1}，预算 {2}，输入可用约 {3}；回复预留 {4}{5}",
+          msg("聊天"),
+          32768,
+          32768,
+          20000,
+          4096,
+          "",
+        ),
+        msg(
+          "{0}：实际 {1}，预算 {2}，输入可用约 {3}；回复预留 {4}{5}",
+          msg("摘要"),
+          32768,
+          32768,
+          20000,
+          4096,
+          "",
+        ),
+      ].join("\n"),
+    });
+    await act(async () => render(<CapabilityEditor />));
+    expect(screen.getByText(/Chat: capacity 32768/).textContent).toContain(
+      "Summary: capacity 32768",
+    );
+    expect(screen.getByText(/Chat: capacity 32768/).textContent).not.toContain("实际");
+  });
+
   it("keeps editing identity, new-conversation default, and current conversation independent", async () => {
     store.setState({ settingsView: "agents", selectedNewSessionAgentId: A });
     await act(async () => render(<AssistantWorkspace />));
@@ -58,30 +91,97 @@ describe("fresh assistant studio", () => {
     expect(store.getState().pageEditor?.draft.name).toBe("Draft name");
     expect(store.getState().pageEditor?.agent.name).toBe("Agent A");
   });
-  it("keeps all six retrieval modes and independent presets", async () => {
+  it("shows four tool allowance modes and independent bounded presets without retired controls", async () => {
     await act(async () => render(<ResourceRules />));
-    expect(within(screen.getByLabelText("检索模式")).getAllByRole("option")).toHaveLength(6);
+    expect(
+      within(screen.getByLabelText("记忆工具额度模式"))
+        .getAllByRole("option")
+        .map((option) => (option as HTMLOptionElement).value),
+    ).toEqual(["off", "conservative", "standard", "broad"]);
     const broad = structuredClone(
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad,
     );
     await userEvent.click(screen.getByRole("button", { name: /保守 ·/ }));
-    fireEvent.change(screen.getByLabelText("候选数量"), { target: { value: "30" } });
+    const candidates = screen.getByLabelText("每次查询扫描候选上限") as HTMLInputElement;
+    const entries = screen.getByLabelText("每页最大返回项") as HTMLInputElement;
+    const budget = screen.getByLabelText(
+      "每轮记忆工具结果总预算（UTF-8 字节）",
+    ) as HTMLInputElement;
+    expect([candidates.min, candidates.max]).toEqual(["1", "300"]);
+    expect([budget.min, budget.max]).toEqual(["1", "1048576"]);
+    fireEvent.change(candidates, { target: { value: "200" } });
+    expect(entries.max).toBe("100");
+    fireEvent.change(candidates, { target: { value: "30" } });
+    expect(entries.max).toBe("30");
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad).toEqual(broad);
     expect(
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative.candidate_limit,
     ).toBe(30);
+    expect(screen.queryByLabelText("相关性判断指令")).toBeNull();
+    expect(screen.queryByLabelText("记忆读取提示词")).toBeNull();
+    expect(screen.queryByLabelText("最多目录批次")).toBeNull();
+    expect(screen.queryByLabelText("每批目录条数")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByText(/技能文本不能授予资料访问权限/)).toBeTruthy();
+    expect(screen.getByText(/每次查询最多扫描 300 条候选/)).toBeTruthy();
+    expect(screen.getByText(/全局每轮预算：2048 UTF-8 字节/)).toBeTruthy();
   });
-  it("selected-empty knowledge scope never broadens access and expired IDs can be removed", async () => {
+  it.each(["full_catalog", "full_body"] as const)(
+    "displays %s as broad without mutating drafts on visits, tab changes or reloads",
+    async (mode) => {
+      const editor = store.getState().pageEditor;
+      if (!editor) throw new Error("Missing editor");
+      const legacy = {
+        ...agent,
+        p5_config: { ...agent.p5_config, retrieval_mode: mode },
+      };
+      store.setState({ pageEditor: newPageEditor(legacy, editor.persona) });
+      const before = store.getState().pageEditor;
+      await act(async () => render(<ResourceRules />));
+      expect((screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement).value).toBe("broad");
+      expect(screen.getByText(/旧全量档.*保存记忆规则时/).textContent).toContain(mode);
+      expect(store.getState().pageEditor).toBe(before);
+      expect(dirtyPages(before)).toEqual([]);
+      cleanup();
+      act(() => store.getState().openSettingsRoute("models"));
+      act(() => store.getState().openSettingsRoute("long-memory"));
+      await act(async () => render(<ResourceRules />));
+      expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
+      expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+      fireEvent.click(screen.getByRole("button", { name: "改为广泛额度" }));
+      expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe("broad");
+      expect(dirtyPages(store.getState().pageEditor)).toEqual(["long-memory"]);
+      act(() => store.getState().discardSettingsPages());
+      expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
+      fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "off" } });
+      expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe("off");
+      expect(screen.queryByText(/旧全量档.*保存记忆规则时/)).toBeNull();
+    },
+  );
+  it("selected-empty knowledge scope never broadens access across CAS save and refresh", async () => {
+    const config = {
+      enabled: true,
+      context_budget: null,
+      scope: "selected" as const,
+      document_ids: [],
+    };
+    const client = setupLibrary({
+      saveAgentKnowledgeRead: vi.fn().mockResolvedValue({ revision: 2, config }),
+    });
     await act(async () => render(<ResourceRules />));
     fireEvent.change(screen.getByLabelText("读取范围"), { target: { value: "selected" } });
     expect(store.getState().knowledgeReadEditor?.draft.document_ids).toEqual([]);
     act(() => store.getState().patchKnowledgeRead({ document_ids: [M] }));
     expect(screen.getByText("授权已失效")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "移除" }));
-    expect(store.getState().knowledgeReadEditor?.draft).toMatchObject({
-      scope: "selected",
-      document_ids: [],
-    });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存知识规则" })));
+    expect(client.saveAgentKnowledgeRead).toHaveBeenCalledWith(A, { expected_revision: 1, config });
+    vi.mocked(client.getAgentKnowledgeRead).mockResolvedValue({ revision: 2, config });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "刷新授权" })));
+    expect(store.getState().knowledgeReadEditor?.draft).toEqual(config);
+    expect(screen.getByRole("checkbox", { name: "Reference" }).getAttribute("data-state")).toBe(
+      "unchecked",
+    );
   });
   it("knowledge access has a separate CAS save from agent identity", async () => {
     const save = vi.fn().mockResolvedValue({
@@ -99,16 +199,42 @@ describe("fresh assistant studio", () => {
     });
     expect(store.getState().pageEditor?.draft.name).toBe("Unsaved agent");
   });
-  it("default-model replacement names the explicit target and waits for confirmation", async () => {
-    const apply = vi.fn().mockResolvedValue(true);
-    store.setState({ applyDefaultModelToAgent: apply });
-    await act(async () => render(<CapabilityEditor />));
-    fireEvent.click(screen.getByRole("button", { name: /四项文本任务使用默认模型/ }));
-    expect(screen.getByRole("alertdialog").textContent).toContain("Agent A");
-    expect(apply).not.toHaveBeenCalled();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "确认" })));
-    expect(apply).toHaveBeenCalledWith("default-model");
-  });
+  it.each(["zh-CN", "en"] as const)(
+    "%s confirms three model purposes, preserves legacy retrieval and does not probe it",
+    async (locale) => {
+      const apply = vi.fn().mockResolvedValue(true);
+      const editor = store.getState().pageEditor;
+      if (!editor) throw new Error("Missing editor");
+      store.setState({
+        applyDefaultModelToAgent: apply,
+        pageEditor: newPageEditor(
+          { ...agent, memory_retrieval_model_name: "legacy-retrieval" },
+          editor.persona,
+        ),
+      });
+      selectLocale(locale);
+      await act(async () => render(<CapabilityEditor />));
+      expect(screen.queryByLabelText(/记忆读取模型|Memory reading model/)).toBeNull();
+      expect(store.getState().refreshCapacityPreview).toHaveBeenCalledWith([
+        "model-a",
+        "model-a",
+        null,
+      ]);
+      fireEvent.click(
+        screen.getByRole("button", { name: /三项文本任务使用默认模型|all three text tasks/ }),
+      );
+      const message = screen.getByRole("alertdialog").textContent;
+      expect(message).toContain("Agent A");
+      expect(message).toMatch(
+        /不修改旧独立检索模型值|legacy independent retrieval model value is unchanged/,
+      );
+      expect(apply).not.toHaveBeenCalled();
+      await act(async () =>
+        fireEvent.click(screen.getByRole("button", { name: /^(确认|Confirm)$/ })),
+      );
+      expect(apply).toHaveBeenCalledWith("default-model");
+    },
+  );
 });
 
 describe("fresh library tasks", () => {
@@ -275,6 +401,8 @@ describe("preferences and localized resources", () => {
     selectLocale("en");
     await act(async () => render(<ResourceRules />));
     expect(screen.getByText("Knowledge access")).toBeTruthy();
+    expect(screen.getByText(/Skill text cannot grant access/)).toBeTruthy();
+    expect(screen.getByText(/Global budget: 2048 UTF-8 bytes per turn/)).toBeTruthy();
     const copy = document.body.cloneNode(true) as HTMLElement;
     copy.querySelectorAll("input,textarea").forEach((node) => {
       node.remove();
