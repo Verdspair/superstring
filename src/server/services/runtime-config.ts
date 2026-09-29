@@ -118,31 +118,4 @@ export function compileSystemPrompt(runtime: RuntimeConfig): string {
   return sections.join("\n\n");
 }
 
-export interface HistoryItem {
-  role: string;
-  content: string;
-  status: string;
-  context_valid?: boolean;
-}
-
-export function buildPrompt(
-  runtime: RuntimeConfig,
-  history: HistoryItem[],
-): Array<{ role: string; content: string }> {
-  requireChat(runtime.mode);
-  const messages: Array<{ role: string; content: string }> = [];
-  const systemPrompt = compileSystemPrompt(runtime);
-  if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-  for (const item of history) {
-    if (
-      item.status === "completed" &&
-      (item.context_valid ?? true) &&
-      (item.role === "user" || item.role === "assistant" || item.role === "system")
-    ) {
-      messages.push({ role: item.role, content: item.content });
-    }
-  }
-  return messages;
-}
-
 export { PERSONA_INTENSITY_DEFAULT };

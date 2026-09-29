@@ -174,8 +174,7 @@ export function sessionRoutes(
   router.post("/chat", async (c) => {
     const body = parseBody(ChatRequestSchema, await readJsonBody(c.req.raw));
     const requestId = crypto.randomUUID();
-    // Production path: injecting `db` activates ContextBuilder. Omitting it is
-    // reserved for DirectService's explicit low-level fixture fallback.
+    // The channel, its context builder and journal share this handle.
     let sendContext:
       | ((usage: import("../../shared/contracts/context-usage").ContextUsage) => void)
       | undefined;

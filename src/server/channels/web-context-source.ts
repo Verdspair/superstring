@@ -10,7 +10,7 @@ import {
   createBuiltInActions,
   evidenceCatalogEntry,
 } from "../agent/built-in-actions";
-import { sourceAccess } from "../agent/context-access";
+import { assertContextSources } from "../agent/context-access";
 import {
   type ActionObservation,
   ContextEngine,
@@ -21,8 +21,9 @@ import {
   textMessage,
 } from "../agent/context-engine";
 import type { ContextBuilder } from "../agent/conversation-context";
+import { ReservationLedger } from "../agent/reservation-ledger";
 import { currentUser, memoryBodies, systemPrompt } from "../db/context-repository";
-import { DEFAULT_USER_ID, getChatContext, type Orm } from "../db/repositories";
+import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import {
@@ -39,7 +40,7 @@ export class WebContextSource implements ConversationContextSource {
   private material?: ContextMaterial;
   private observations: readonly ActionObservation[] = [];
   /** 同批在飞动作各自的投影增量（token→相对基线 U(observations) 的 units）。 */
-  private reservations = new Map<symbol, number>();
+  private readonly reservations = new ReservationLedger();
   private usage?: ContextUsage;
   private readonly engine = new ContextEngine();
   private readonly owner: RunOwner;
@@ -53,7 +54,7 @@ export class WebContextSource implements ConversationContextSource {
       resolveSource?: ModuleSourceResolver;
       /** 外部（MCP）动作：这一轮开始时取一次；没有登记时为空。 */
       extraActions?: readonly BuiltInAction[];
-      builder: ContextBuilder | null;
+      builder: ContextBuilder;
       runtime: RuntimeConfig;
       sessionId: string;
       turnId: string;
@@ -160,7 +161,7 @@ export class WebContextSource implements ConversationContextSource {
               ["reply"],
               "stream",
             ).units;
-            if (projected + this.reservedUnits(token) > limit) return false;
+            if (projected + this.reservations.reserved(token) > limit) return false;
             if (name.startsWith("knowledge.")) {
               const nonempty = observations.filter((observation) => {
                 const result = observation.value as { items?: unknown[] } | null;
@@ -227,22 +228,20 @@ export class WebContextSource implements ConversationContextSource {
       const reserve =
         this.engine.render(this.spec, {}, [], ["reply"], "stream").units - inputUnits(legacySystem);
       let sources: SourceRef[] = [];
-      const messages = o.builder
-        ? await o.builder.build({
-            sessionId: o.sessionId,
-            currentTurnId: o.turnId,
-            runtime: o.runtime,
-            generationToken: o.generationToken,
-            signal: input.signal,
-            reservedInputUnits: reserve,
-            onUsage: (usage) => {
-              this.usage = usage;
-            },
-            onSources: (value) => {
-              sources = value;
-            },
-          })
-        : getChatContext(o.orm, o.sessionId, { currentTurnId: o.turnId, runtime: o.runtime });
+      const messages = await o.builder.build({
+        sessionId: o.sessionId,
+        currentTurnId: o.turnId,
+        runtime: o.runtime,
+        generationToken: o.generationToken,
+        signal: input.signal,
+        reservedInputUnits: reserve,
+        onUsage: (usage) => {
+          this.usage = usage;
+        },
+        onSources: (value) => {
+          sources = value;
+        },
+      });
       const data = messages
         .filter((m) => m.role !== "system")
         .map((m) => textMessage(m.role === "assistant" ? "assistant" : "user", m.content));
@@ -274,49 +273,29 @@ export class WebContextSource implements ConversationContextSource {
       ...this.observations.flatMap((observation) => observation.sources),
     ];
   }
-  /** 在飞预留总和；`except` 用于排除 fitter 自己那笔。 */
-  private reservedUnits(except?: symbol): number {
-    let total = 0;
-    for (const [key, units] of this.reservations) if (key !== except) total += units;
-    return total;
-  }
   assertSources(sources: readonly SourceRef[]): void {
     const o = this.options;
     currentUser(o.orm, o.runtime.agent_id, o.sessionId, o.turnId, {
       generationToken: o.generationToken,
     });
-    const at = new Date().toISOString();
-    const resolved = new Map(
-      sources.map((source) => [source, o.resolveSource?.(source, this.owner, at)]),
-    );
-    const memoryRefs = sources.filter(
-      (source) => source.kind === "memory" && resolved.get(source) === undefined,
-    );
-    const memory = new Map(
-      (memoryRefs.length
-        ? memoryBodies(
-            o.orm,
-            o.runtime.agent_id,
-            o.sessionId,
-            memoryRefs.map((source) => source.id),
-          )
-        : []
-      ).map((item) => [item.id, item.revision]),
-    );
-    for (const source of sources) {
-      if (
-        source.kind === "memory" &&
-        resolved.get(source) === undefined &&
-        memory.get(source.id) !== source.revision
-      )
-        fail("CONTEXT_SOURCE_INVALID", "已选记忆正文或来源发生变化");
-      if (source.kind === "web_turn" && source.id === o.turnId) continue;
-      if (
-        (resolved.get(source) ??
-          sourceAccess(o.db, source, this.owner, { userId: DEFAULT_USER_ID }, at)) !== "available"
-      )
-        fail("CONTEXT_SOURCE_INVALID", "上下文来源已删除或授权已撤销");
-    }
+    assertContextSources({
+      db: o.db,
+      sources,
+      owner: this.owner,
+      now: new Date().toISOString(),
+      resolveSource: o.resolveSource,
+      memoryRevisions: (ids) =>
+        new Map(
+          (ids.length ? memoryBodies(o.orm, o.runtime.agent_id, o.sessionId, ids) : []).map(
+            (item) => [item.id, item.revision],
+          ),
+        ),
+      skip: (source) => source.kind === "web_turn" && source.id === o.turnId,
+      messages: {
+        memory: "已选记忆正文或来源发生变化",
+        other: "上下文来源已删除或授权已撤销",
+      },
+    });
   }
   contextUsage(context: RenderedContext): ContextUsage | undefined {
     if (!this.usage) return undefined;
@@ -387,7 +366,7 @@ export class WebContextSource implements ConversationContextSource {
         ["reply"],
         "stream",
       ).units;
-    const budget = limit - cost([]) - this.reservedUnits();
+    const budget = limit - cost([]) - this.reservations.reserved();
     if (budget < 1) fail("CONTEXT_BUDGET_EXCEEDED", "没有可用空间读取补充资料");
     const result = await read(budget);
     this.assertCurrent();

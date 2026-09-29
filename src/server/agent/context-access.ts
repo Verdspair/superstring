@@ -12,6 +12,7 @@ import type { AgentRunRepository } from "../db/agent-run-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { memoryRevision } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
+import { fail } from "../errors";
 import type { ModuleSourceResolver } from "../modules/composition";
 import { visibleConversation } from "./conversation-access";
 
@@ -265,6 +266,46 @@ export function sourceAccess(
     }
     default:
       return "revoked";
+  }
+}
+
+/**
+ * Re-validate every retained source against its own store: a resolver may claim it, memory
+ * revisions come from the caller's own scope, and everything else falls back to `sourceAccess`.
+ * `memoryRevisions` only runs for memory refs the resolver did not claim, and `skip` lets a
+ * channel leave its own in-flight source alone — both match the channels' established order.
+ */
+export function assertContextSources(options: {
+  db: Database;
+  sources: readonly SourceRef[];
+  owner: RunOwner;
+  now: string;
+  resolveSource?: ModuleSourceResolver;
+  memoryRevisions(ids: string[]): ReadonlyMap<string, string>;
+  skip?(source: SourceRef): boolean;
+  messages: { memory: string; other: string };
+}): void {
+  const { db, sources, owner, now } = options;
+  const resolved = new Map(
+    sources.map((source) => [source, options.resolveSource?.(source, owner, now)]),
+  );
+  const refs = sources.filter(
+    (source) => source.kind === "memory" && resolved.get(source) === undefined,
+  );
+  const memory = options.memoryRevisions(refs.map((ref) => ref.id));
+  for (const source of sources) {
+    if (options.skip?.(source)) continue;
+    if (
+      source.kind === "memory" &&
+      resolved.get(source) === undefined &&
+      memory.get(source.id) !== source.revision
+    )
+      fail("CONTEXT_SOURCE_INVALID", options.messages.memory);
+    if (
+      (resolved.get(source) ??
+        sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, now)) !== "available"
+    )
+      fail("CONTEXT_SOURCE_INVALID", options.messages.other);
   }
 }
 

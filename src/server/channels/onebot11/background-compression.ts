@@ -1,4 +1,3 @@
-import { z } from "zod";
 import type { RuntimeConfig } from "../../../shared/contracts";
 import type { RunOwner } from "../../../shared/contracts/agent-run";
 import type { SourceRef } from "../../../shared/contracts/evidence";
@@ -15,10 +14,10 @@ import {
   saveQqConversationSummary,
 } from "../../db/qq-summary-repository";
 import type { Orm } from "../../db/repositories";
-import { AppError } from "../../errors";
 import type { ModelGateway } from "../../llm/model-gateway";
 import { contextDumps } from "../../modules/memory-query";
 import { estimateTokens } from "../../services/token-estimate";
+import { failureCode } from "./failure-code";
 
 export interface BotCompressionJob {
   key: string;
@@ -136,18 +135,7 @@ export function createBotCompressionJob(options: {
       if (!saved) options.onFailure("CONTEXT_SUMMARY_STALE");
     },
     failed(error) {
-      const code =
-        error instanceof AppError
-          ? error.code
-          : error instanceof DOMException && error.name === "TimeoutError"
-            ? "MODEL_TIMEOUT"
-            : error instanceof SyntaxError || error instanceof z.ZodError
-              ? "MODEL_STRUCTURE_INVALID"
-              : error instanceof Error && "code" in error && typeof error.code === "string"
-                ? error.code
-                : error instanceof Error && /^[A-Z][A-Z_]+$/.test(error.message)
-                  ? error.message
-                  : "UNEXPECTED_FAILURE";
+      const code = failureCode(error, { pattern: /^[A-Z][A-Z_]+$/, allowErrorCode: true });
       options.onFailure(code);
     },
   };

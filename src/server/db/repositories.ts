@@ -43,12 +43,7 @@ import {
   SessionNotFoundError,
 } from "../errors";
 import type { AgentRow } from "../services/runtime-config";
-import {
-  buildPrompt,
-  type HistoryItem,
-  requireChat,
-  runtimeFromAgent,
-} from "../services/runtime-config";
+import { requireChat, runtimeFromAgent } from "../services/runtime-config";
 import { KnowledgeReadRepository } from "./knowledge-read-repository";
 import { readOrganizationSettings } from "./organization-repository";
 import * as schema from "./schema";
@@ -1211,60 +1206,6 @@ export function saveUserMessage(
   const user = getMessageByRequest(orm, sessionId, clientRequestId, MessageRole.User);
   if (!user) throw new IdempotencyKeyRetiredError();
   return user;
-}
-
-// Chat context assembly
-
-/**
- * assemble the prompt the model will see.
- * The `context_valid` filter is the whole point: a Turn whose context was
- * invalidated (its source message was deleted, or its summary was superseded)
- * must NOT be replayed to the model. The CURRENT turn's user message is always
- * included — it is the question being asked right now, even though its turn has
- * not yet been marked valid.
- */
-export function getChatContext(
-  orm: Orm,
-  sessionId: string,
-  options: { currentTurnId?: string | null; runtime?: RuntimeConfig } = {},
-): Array<{ role: string; content: string }> {
-  const runtime = options.runtime ?? getRuntimeConfig(orm, sessionId);
-  const currentTurnId = options.currentTurnId ?? null;
-
-  const rows = orm
-    .select({
-      role: schema.messages.role,
-      content: schema.messages.content,
-      status: schema.messages.status,
-      contextValid: schema.turns.contextValid,
-      turnId: schema.turns.id,
-    })
-    .from(schema.messages)
-    .innerJoin(schema.turns, eq(schema.turns.id, schema.messages.turnId))
-    .where(
-      and(
-        eq(schema.messages.sessionId, sessionId),
-        eq(schema.messages.status, MessageStatus.Completed),
-        currentTurnId === null
-          ? eq(schema.turns.contextValid, 1)
-          : or(
-              eq(schema.turns.contextValid, 1),
-              and(eq(schema.turns.id, currentTurnId), eq(schema.messages.role, MessageRole.User)),
-            ),
-      ),
-    )
-    .orderBy(asc(schema.messages.sequenceNo))
-    .all();
-
-  const history: HistoryItem[] = rows.map((row) => ({
-    role: row.role,
-    content: row.content,
-    status: row.status,
-    // The current turn counts as valid for its own user message.
-    context_valid: row.contextValid === 1 || row.turnId === currentTurnId,
-  }));
-
-  return buildPrompt(runtime, history);
 }
 
 // Re-exported so callers do not need a second import for the common predicates.

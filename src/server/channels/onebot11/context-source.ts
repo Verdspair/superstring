@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { z } from "zod";
 import type { RuntimeConfig } from "../../../shared/contracts";
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
 import type { Evidence, SourceRef } from "../../../shared/contracts/evidence";
@@ -18,7 +17,7 @@ import {
   type EvidenceQueryResult,
   evidenceCatalogEntry,
 } from "../../agent/built-in-actions";
-import { sourceAccess } from "../../agent/context-access";
+import { assertContextSources } from "../../agent/context-access";
 import {
   type ActionObservation,
   ContextEngine,
@@ -29,6 +28,7 @@ import {
   uniqueSources,
 } from "../../agent/context-engine";
 import type { CompressionRecord } from "../../agent/conversation-compression";
+import { ReservationLedger } from "../../agent/reservation-ledger";
 import { memoryBodiesByScopeKeys } from "../../db/context-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import type { OutboundIntentRepository } from "../../db/outbound-intent-repository";
@@ -60,7 +60,11 @@ import {
   type ModuleSourceResolver,
 } from "../../modules/composition";
 import type { KnowledgeModule, MemoryModule } from "../../modules/contracts";
-import type { BotInitialMemory, BotInitialMemoryQuery } from "../../modules/initial-evidence";
+import {
+  BOT_MEMORY_HEADER,
+  type BotInitialMemory,
+  type BotInitialMemoryQuery,
+} from "../../modules/initial-evidence";
 import { contextDumps, estimateMessages } from "../../modules/memory-query";
 import { qqMemoryScopeKeyset } from "../../services/memory-scope";
 import type { QqBinding, QqTaskSnapshot } from "../../services/qq-binding-contract";
@@ -86,6 +90,7 @@ import type { QqSpeechKind } from "../../services/qq-speaking-contract";
 import { compileSystemPrompt } from "../../services/runtime-config";
 import { estimateTokens } from "../../services/token-estimate";
 import { type BotCompressionJob, createBotCompressionJob } from "./background-compression";
+import { failureCode } from "./failure-code";
 
 /** 观测信封里"动作自己的内容"（名字/参数/返回值）的余量；sources 那部分由 envelopeFloor 实量。 */
 const ACTION_ENVELOPE_ALLOWANCE = 512;
@@ -149,7 +154,7 @@ export class BotContextSource {
   private compressionJob?: BotCompressionJob;
   private observations: readonly ActionObservation[] = [];
   /** 同批在飞动作各自的投影增量（token→相对基线 cost(observations) 的 units；按档取最大值）。 */
-  private reservations = new Map<symbol, number>();
+  private readonly reservations = new ReservationLedger();
   private sequence = 0;
   private pendingPlan?: { value: unknown; sources: SourceRef[] };
   private readSources?: SourceRef[];
@@ -190,9 +195,7 @@ export class BotContextSource {
         const sources = evidence.flatMap((entry) => entry.sources);
         this.assertSources(sources);
         return {
-          body: evidence.length
-            ? `人工纠正优先于旧来源；不把角色剧情当现实事实。\n${contextDumps(evidence)}`
-            : null,
+          body: evidence.length ? `${BOT_MEMORY_HEADER}\n${contextDumps(evidence)}` : null,
           sources,
           assertCurrent: () => this.assertSources(sources),
         };
@@ -473,37 +476,29 @@ ${intent.trim()}`,
   assertSources(sources: readonly SourceRef[], hostCheck = true): void {
     const o = this.options;
     if (hostCheck) o.assertCurrent();
-    const resolved = new Map(
-      sources.map((source) => [source, o.resolveSource?.(source, this.owner, this.now())]),
-    );
-    const refs = sources.filter(
-      (source) => source.kind === "memory" && resolved.get(source) === undefined,
-    );
-    const memory = new Map(
-      (refs.length
-        ? memoryBodiesByScopeKeys(
-            o.orm,
-            o.binding.agentId,
-            refs.map((ref) => ref.id),
-            qqMemoryScopeKeyset(o.snapshot.access).read,
-          )
-        : []
-      ).map((item) => [item.id, item.revision]),
-    );
-    for (const source of sources) {
-      if (
-        source.kind === "memory" &&
-        resolved.get(source) === undefined &&
-        memory.get(source.id) !== source.revision
-      )
-        fail("CONTEXT_SOURCE_INVALID", "已选记忆正文或作用域发生变化");
-      if (
-        (resolved.get(source) ??
-          sourceAccess(o.db, source, this.owner, { userId: DEFAULT_USER_ID }, this.now())) !==
-        "available"
-      )
-        fail("CONTEXT_SOURCE_INVALID", "上下文来源已变更、过期或撤权");
-    }
+    assertContextSources({
+      db: o.db,
+      sources,
+      owner: this.owner,
+      now: this.now(),
+      resolveSource: o.resolveSource,
+      memoryRevisions: (ids) =>
+        new Map(
+          (ids.length
+            ? memoryBodiesByScopeKeys(
+                o.orm,
+                o.binding.agentId,
+                ids,
+                qqMemoryScopeKeyset(o.snapshot.access).read,
+              )
+            : []
+          ).map((item) => [item.id, item.revision]),
+        ),
+      messages: {
+        memory: "已选记忆正文或作用域发生变化",
+        other: "上下文来源已变更、过期或撤权",
+      },
+    });
   }
   private now(): string {
     return this.options.now?.() ?? new Date().toISOString();
@@ -1045,16 +1040,7 @@ ${intent.trim()}`,
       this.assertCurrent();
       // Even a failed selector may have observed private candidates: never mask their revocation.
       this.assertSources([...parents, ...sources]);
-      const code =
-        error instanceof AppError
-          ? error.code
-          : error instanceof DOMException && error.name === "TimeoutError"
-            ? "MODEL_TIMEOUT"
-            : error instanceof SyntaxError || error instanceof z.ZodError
-              ? "MODEL_STRUCTURE_INVALID"
-              : error instanceof Error && /^MODEL_[A-Z_]+$/.test(error.message)
-                ? error.message
-                : "UNEXPECTED_FAILURE";
+      const code = failureCode(error, { pattern: /^MODEL_[A-Z_]+$/ });
       if (
         !code.startsWith("MODEL_") &&
         ![
@@ -1158,7 +1144,7 @@ ${intent.trim()}`,
           reservation,
           projected - this.cost(tier, view.material, this.observations),
         );
-        if (projected + this.reservedUnits(token) > view.limit) return false;
+        if (projected + this.reservations.reserved(token) > view.limit) return false;
         if (
           name.startsWith("knowledge.") &&
           this.knowledgeUnits(view.material, [...this.observations, observation]) >
@@ -1170,12 +1156,6 @@ ${intent.trim()}`,
       this.reservations.set(token, reservation);
       return true;
     };
-  }
-  /** 在飞预留总和；`except` 用于排除 fitter 自己那笔。 */
-  private reservedUnits(except?: symbol): number {
-    let total = 0;
-    for (const [key, units] of this.reservations) if (key !== except) total += units;
-    return total;
   }
   /**
    * 补充资料查询。返回**信封**而不是裸数组：`ok`＋空＝真的没有相关内容，`unavailable`＋`code`＝
@@ -1209,7 +1189,7 @@ ${intent.trim()}`,
       this.cost(tier, view.material, [...this.observations, observation(items)]);
     const budget =
       Math.min(...[...this.views].map(([tier, view]) => view.limit - cost(view, tier, []))) -
-      this.reservedUnits();
+      this.reservations.reserved();
     const o = this.options;
     if (budget < 1) {
       // 补充资料是**模型主动要的可选动作**——这一轮没地方就先不给（带码诊断，

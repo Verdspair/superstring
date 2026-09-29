@@ -43,7 +43,7 @@ export interface WebChannelOptions {
   agentRuntime?: AgentRuntime;
   host?: ConversationHost;
   journal?: ConversationEventRepository;
-  contextBuilder?: ContextBuilder | null;
+  contextBuilder?: ContextBuilder;
   modules?: ModuleQueryFactory;
   memory?: Pick<MemoryModule, "observe">;
   resolveSource?: ModuleSourceResolver;
@@ -115,7 +115,7 @@ export class WebChannel {
   private readonly runtime: AgentRuntime;
   private readonly host: ConversationHost;
   private readonly journal: ConversationEventRepository;
-  private readonly builder: ContextBuilder | null;
+  private readonly builder: ContextBuilder;
   constructor(private readonly options: WebChannelOptions) {
     this.db = options.db ?? (options.orm as unknown as { $client: Database }).$client;
     this.runtime =
@@ -124,19 +124,15 @@ export class WebChannel {
     this.host = options.host ?? new ConversationHost({ runtime: this.runtime });
     this.journal = options.journal ?? new ConversationEventRepository(this.db);
     this.builder =
-      options.contextBuilder === null
-        ? null
-        : (options.contextBuilder ??
-          (options.db
-            ? new ContextBuilder({
-                orm: options.orm,
-                db: this.db,
-                gateway: options.gateway,
-                agentRuntime: this.runtime,
-                modules: options.modules,
-                resolveSource: options.resolveSource,
-              })
-            : null));
+      options.contextBuilder ??
+      new ContextBuilder({
+        orm: options.orm,
+        db: this.db,
+        gateway: options.gateway,
+        agentRuntime: this.runtime,
+        modules: options.modules,
+        resolveSource: options.resolveSource,
+      });
   }
   /** Eager preparation preserves ordinary HTTP errors before SSE has started. */
   async openReply(args: WebRequest): Promise<AsyncGenerator<ChatV2Event, void, unknown>> {
