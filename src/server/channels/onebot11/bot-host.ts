@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { RunOwner } from "../../../shared/contracts/agent-run";
 import type { ConversationEvent, WakeSignal } from "../../../shared/contracts/conversation";
 import type { AgentRuntime, PreparedOutput } from "../../agent/agent-runtime";
 import type { AgentSpec, OutputDraft } from "../../agent/agent-specs";
@@ -10,6 +11,7 @@ import { observationRelevant } from "../../conversation/observation-relevance";
 import { AgentRunRepository } from "../../db/agent-run-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { KnowledgeReadRepository } from "../../db/knowledge-read-repository";
+import { readOrganizationSettings } from "../../db/organization-repository";
 import {
   idempotentIntentId,
   type OutboundIntentRepository,
@@ -19,6 +21,7 @@ import { recordQqIdleJudgement } from "../../db/qq-dispatch-repository";
 import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
 import {
   effectiveQqTriggers,
+  type QqSchemeRow,
   readQqScheme,
   schemeOutputReserve,
   schemePrompts,
@@ -37,6 +40,8 @@ import {
   QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS,
 } from "../../services/qq-dispatch";
 import { prepareQqJudgement } from "../../services/qq-judgement-preparation";
+import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
+import { createQqMediaTools } from "../../services/qq-media-tools";
 import type { QqPreparedReply } from "../../services/qq-prepared-reply";
 import {
   QQ_JUDGEMENT_RESPONSE_SCHEMA,
@@ -55,11 +60,7 @@ import {
   createQqStickerSearch,
   currentQqStickerCatalog,
 } from "../../services/qq-sticker-capability";
-import {
-  planQqPreparedReply,
-  type QqStickerStage,
-  selectQqSticker,
-} from "../../services/qq-sticker-runner";
+import { planQqPreparedReply, type QqStickerStage } from "../../services/qq-sticker-runner";
 import { compileSystemPrompt, runtimeFromAgent } from "../../services/runtime-config";
 import type { BotCompressionJob } from "./background-compression";
 import { BotContextSource, type BotContextTarget } from "./context-source";
@@ -90,6 +91,8 @@ export interface OneBotHostOptions {
   outbox: OutboundIntentRepository;
   stickers: QqStickerStage;
   stickersEnabled?: () => boolean;
+  mediaEnabled?: () => boolean;
+  mediaAdapter?: (scheme: QqSchemeRow) => QqMediaReadAdapter;
   policy: () => OneBotPolicy;
   now?: () => string;
   onDiagnostic?: (event: BotHostDiagnostic) => void | Promise<void>;
@@ -363,7 +366,9 @@ export class OneBotHost {
         compileSystemPrompt(runtime),
         schemePrompts(scheme).scene,
         QQ_MEDIA_RULE,
-        `表情能力：${stickerState.state}，当前可用 ${stickerState.assets.length} 张。inline/generate 共用 stickerIds：null/省略=自动，[]=明确不用，[id]=指定一张。先用 sticker.search 获取合法 ID（空 query 浏览），或保留 pending_plan 的已选 ID；不要编造。允许空正文仅发图；真正不发则返回 none。output_feedback 表示尚未发送的无效计划，须纠正。`,
+        "需要理解图片时先调用 media.list 获取本会话图片 ID；已有描述用 media.note.read 分页读取，未描述时显式调用 media.describe，再读取描述。media.describe 会调用视觉模型并保存缓存，不是只读工具。目录、未读图片和未返回的描述均不代表已经理解图片。",
+        `表情偏好（忽略旧编号格式，以stickerIds协议为准）：\n${schemePrompts(scheme).sticker}`,
+        `表情能力：${stickerState.state}，当前可用 ${stickerState.assets.length} 张。inline/generate 共用 stickerIds：[]=明确不用；[id]=指定一张，ID 必须来自本 run sticker.search 已返回的候选或 pending_plan 的已选 ID，不要编造或复用旧 ID。有候选而省略/null 会被要求重选（STICKER_SELECTION_REQUIRED）；未披露或已失效的 ID 会被拒绝（STICKER_SELECTION_UNAVAILABLE）。允许空正文仅发图；真正不发则返回 none。output_feedback 表示尚未发送的无效计划，须纠正。`,
         `这是 OneBot ${binding.kind === "private" ? "私聊" : "群聊"}。只向 authorizedTargets 中的目标输出；${split ? "每个目标最多一条回复，由程序添加该目标的 @，不要自行添加。" : "不按发言人拆分，整间会话最多一条逻辑回复；该回复可以由程序按换行发送多段。"}`,
         initiative
           ? `这是 ${path} 唤醒。先写清"这一轮打算说什么"（generate 的 instructions 就是意图）：程序会拿它去判定许可，通过后才会让你写正文；被拒时这一轮静默结束。没有合适回应时返回 none。`
@@ -434,8 +439,60 @@ export class OneBotHost {
         /* Observability must not affect output or delivery state. */
       }
     };
+    // 披露表：本 run 的 sticker.search 实际返回过哪些 ID（带素材修订），按 owner/run 记账。
+    // 显式 stickerIds 只认这里出现过的 ID；跨 run、猜测、已失效的一律拒绝。
+    const owner: RunOwner = {
+      kind: "conversation",
+      id: conversation.id,
+      userId: DEFAULT_USER_ID,
+      agentId: agent.id,
+    };
+    const stickerDisclosures = new Map<string, Map<string, string>>();
+    const disclosureKey = (run: string | undefined, scope: RunOwner) =>
+      JSON.stringify([
+        run ?? null,
+        scope.kind,
+        scope.id,
+        scope.userId ?? null,
+        scope.agentId ?? null,
+      ]);
+    const disclosedSticker = (id: string) => {
+      const revision = stickerDisclosures.get(disclosureKey(runId, owner))?.get(id);
+      if (revision === undefined) return undefined;
+      const asset = stickerCatalog().assets.find((entry) => entry.id === id);
+      return asset && asset.updatedAt === revision ? asset : undefined;
+    };
+    const mediaEnabled = o.mediaEnabled?.() !== false && o.mediaAdapter !== undefined;
+    const purposes = readOrganizationSettings(o.orm);
+    const mediaActions =
+      mediaEnabled && o.mediaAdapter
+        ? createQqMediaTools({
+            db,
+            orm: o.orm,
+            conversationId: conversation.id,
+            binding,
+            adapter: o.mediaAdapter(scheme),
+            modelConfig: {
+              visionModelName: purposes.vision_model_name,
+              transcriptionModelName: purposes.transcription_model_name,
+            },
+            supplementWindowMinutes: schemeRhythm(scheme).media_supplement_window_minutes,
+            assertCurrent: () => source.assertCurrent(),
+            fit: (name, arguments_, actionSignal) =>
+              source.actionResultFitter(name, arguments_, actionSignal),
+            now,
+            onDescribed: (eventKey) => {
+              const notes = db
+                .query("SELECT id FROM qq_media_notes WHERE event_key=? AND note IS NOT NULL")
+                .all(eventKey) as { id: string }[];
+              for (const note of notes) o.journal.ingestMedia(note.id, binding.id);
+              source.invalidate();
+            },
+          })
+        : [];
     const actions = [
       ...source.actions,
+      ...mediaActions,
       ...(o.tasks?.conversationActions(conversation.id) ?? o.externalActions?.() ?? []),
       ...(stickersEnabled
         ? [
@@ -445,6 +502,13 @@ export class OneBotHost {
               assertCurrent: () => source.assertCurrent(),
               fit: (arguments_, actionSignal) =>
                 source.actionResultFitter("sticker.search", arguments_, actionSignal),
+              onDisclosed: (context, refs) => {
+                const key = disclosureKey(context.runId, context.owner);
+                const ids = stickerDisclosures.get(key) ?? new Map<string, string>();
+                stickerDisclosures.set(key, ids);
+                for (const ref of refs)
+                  if (ref.kind === "qq_sticker") ids.set(ref.id, ref.revision);
+              },
             }),
           ]
         : []),
@@ -560,12 +624,7 @@ export class OneBotHost {
       conversation,
       requestId: wake.id,
       spec,
-      owner: {
-        kind: "conversation",
-        id: conversation.id,
-        userId: DEFAULT_USER_ID,
-        agentId: agent.id,
-      },
+      owner,
       context: source,
       authorizedTargets,
       actions,
@@ -575,7 +634,7 @@ export class OneBotHost {
       // 许可不通过（低于门槛）＝静默结束，不是整轮失败：见计划 §4.1 与 P0 基线里的那条待改进。
       // 许可被拒＝这一轮不开口（静默结束）；"模型犯错"类的 blocked 码不在此列，照旧失败。
       // 许可的时效由既有机制保证：相关变化会让这一轮重新观察（`refresh`），`assertCurrent` 再兜一层。
-      silentBlockCodes: ["INITIATIVE_NOT_ELIGIBLE"],
+      silentBlockCodes: ["INITIATIVE_NOT_ELIGIBLE", "MEDIA_READ_FAILED"],
       signal,
       onEvent(event) {
         if (event.type === "started") {
@@ -589,6 +648,17 @@ export class OneBotHost {
         return generation;
       },
       prepareOutput: async (draft) => {
+        if (initiative) {
+          const current = preparation();
+          if (current.kind === "blocked")
+            return {
+              blocked: true,
+              code:
+                current.reason === "media_read_failed"
+                  ? "MEDIA_READ_FAILED"
+                  : "INITIATIVE_NOT_ELIGIBLE",
+            };
+        }
         if (reserved.has(draft.targetId))
           return {
             blocked: true,
@@ -596,6 +666,14 @@ export class OneBotHost {
           };
         if (draft.stickerIds && draft.stickerIds.length > 1)
           return { blocked: true, code: "STICKER_COUNT_EXCEEDED" };
+        const stickerId = draft.stickerIds?.[0];
+        if (draft.stickerIds == null) {
+          // 有候选＝必须显式决定（[] 或 [id]）；关闭/无候选＝归一为不选，普通会话不必多答一题。
+          if (stickerCatalog().state === "available")
+            return { blocked: true, code: "STICKER_SELECTION_REQUIRED" };
+          draft.stickerIds = [];
+        } else if (stickerId && !disclosedSticker(stickerId))
+          return { blocked: true, code: "STICKER_SELECTION_UNAVAILABLE" };
         const outputId = crypto.randomUUID();
         if (initiative) {
           // §4.1 的顺序：先意图 → 程序触发许可 → 通过才写正文。`generate` 的 instructions 就是
@@ -632,15 +710,22 @@ export class OneBotHost {
         let invalidOutput = false;
         for (const output of outputs) {
           if (output.status !== "prepared") {
-            if (output.code === "STICKER_COUNT_EXCEEDED") invalidOutput = true;
+            if (
+              output.code === "STICKER_COUNT_EXCEEDED" ||
+              output.code === "STICKER_SELECTION_REQUIRED" ||
+              output.code === "STICKER_SELECTION_UNAVAILABLE"
+            )
+              invalidOutput = true;
             continue;
           }
           const raw = output.text ?? "",
             text = split ? raw.replace(/\s*\r?\n+\s*/g, " ").trim() : raw;
           const selection = source.selection;
           if (!selection) throw new Error("BOT_CONTEXT_MISSING");
-          const explicitId = output.stickerIds?.[0];
-          if (explicitId && !stickerCatalog().assets.some((asset) => asset.id === explicitId)) {
+          // 显式选图在发前再对一次当前事实：本 run 披露过、素材仍在目录里且修订未变。
+          const explicitId = output.stickerIds?.[0] ?? null;
+          const selectedAsset = explicitId ? disclosedSticker(explicitId) : undefined;
+          if (explicitId && !selectedAsset) {
             output.status = "blocked";
             output.code = "STICKER_SELECTION_UNAVAILABLE";
             invalidOutput = true;
@@ -652,54 +737,17 @@ export class OneBotHost {
             });
             continue;
           }
-          const pick = !stickersEnabled
-            ? { kind: "none" as const, reason: "module_paused" }
-            : output.stickerIds != null
-              ? output.stickerIds[0]
-                ? { kind: "chosen" as const, stickerId: output.stickerIds[0] }
-                : { kind: "none" as const, reason: "explicit_none" }
-              : await selectQqSticker(
-                  o.orm,
-                  o.gateway,
-                  {
-                    bindingId: binding.id,
-                    schemeId: scheme.id,
-                    schemeRevision: scheme.revision,
-                    agentId: agent.id,
-                    agentConfigVersion: agent.configVersion,
-                    path,
-                    text: text || null,
-                    messages: selection.messages,
-                    nowSeconds: seconds(),
-                  },
-                  o.stickers,
-                  { agentRuntime: o.agentRuntime, signal, sources: source.sources },
-                );
-          if (pick.kind === "blocked") throw new Error(pick.reason);
           diagnose({
             stage: "sticker",
-            status: pick.kind,
+            status: selectedAsset ? "selected" : "none",
             targetId: output.targetId,
-            code: pick.kind === "none" ? pick.reason : undefined,
-            details: {
-              mode: output.stickerIds == null ? "auto" : output.stickerIds.length ? "pick" : "none",
-            },
+            code: selectedAsset ? undefined : stickersEnabled ? "explicit_none" : "module_paused",
+            details: selectedAsset ? { stickerId: selectedAsset.id } : undefined,
           });
-          const selectedId = pick.kind === "chosen" ? pick.stickerId : null;
-          const selectedAsset = selectedId
-            ? stickerCatalog().assets.find((asset) => asset.id === selectedId)
-            : undefined;
           output.stickerIds = selectedAsset ? [selectedAsset.id] : [];
           output.sources = selectedAsset
             ? [{ kind: "qq_sticker", id: selectedAsset.id, revision: selectedAsset.updatedAt }]
             : [];
-          if (selectedAsset)
-            diagnose({
-              stage: "sticker",
-              status: "selected",
-              targetId: output.targetId,
-              details: { stickerId: selectedAsset.id },
-            });
           const target = targets.find((t) => t.id === output.targetId)!;
           const pending: QqPreparedReply = {
             text: text || null,
@@ -716,12 +764,7 @@ export class OneBotHost {
           staged.set(output.outputId, pending);
           if (planQqPreparedReply(o.orm, pending, o.stickers).kind !== "planned") {
             output.status = "blocked";
-            output.code =
-              pick.kind === "model_error" ||
-              pick.kind === "capacity_unavailable" ||
-              pick.kind === "capacity_exceeded"
-                ? `STICKER_${pick.kind.toUpperCase()}`
-                : "EMPTY_OUTPUT";
+            output.code = "EMPTY_OUTPUT";
             invalidOutput = true;
             diagnose({
               stage: "output",
@@ -742,6 +785,16 @@ export class OneBotHost {
         db
           .transaction(() => {
             source.assertCurrent();
+            if (initiative) {
+              const current = preparation();
+              if (current.kind === "blocked")
+                throw Object.assign(new Error(current.reason), {
+                  code:
+                    current.reason === "media_read_failed"
+                      ? "MEDIA_READ_FAILED"
+                      : "INITIATIVE_NOT_ELIGIBLE",
+                });
+            }
             if (
               o.journal
                 .eventsAfter(conversation.id, source.observedSeq, Number.MAX_SAFE_INTEGER)

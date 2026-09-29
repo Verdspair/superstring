@@ -25,22 +25,29 @@ export function createQqMediaSourceFetcher(input: {
   readonly fetchImpl?: typeof fetch;
 }): QqMediaSourceFetcher {
   const fetchImpl = input.fetchImpl ?? fetch;
-  return async ({ kind, sourceRef }) => {
+  return async ({ kind, sourceRef, signal }) => {
+    signal?.throwIfAborted();
+    // `resolveSource` 是连接层的严格请求（只有 kind/sourceRef），取消在它两侧检查：
+    // 上游 IPC 本身没有取消通道，但被取消的调用不再继续消费它的结果。
     const resolved = await input.resolveSource({ kind, sourceRef });
+    signal?.throwIfAborted();
     if (resolved.kind !== "source") {
       throw new Error(`QQ media source unavailable: ${resolved.reason}`);
     }
     const reference = resolved.reference;
     if (DataUrlSchema.safeParse(reference).success) {
+      signal?.throwIfAborted();
       const comma = reference.indexOf(",");
       return { bytes: new Uint8Array(Buffer.from(reference.slice(comma + 1), "base64")) };
     }
     if (/^https?:\/\//i.test(reference)) {
-      const response = await fetchImpl(reference);
+      const response = await fetchImpl(reference, { signal });
+      signal?.throwIfAborted();
       if (!response.ok) throw new Error(`QQ media source fetch failed: ${response.status}`);
       return { bytes: new Uint8Array(await response.arrayBuffer()) };
     }
     // Anything else is the bot side's own file: NapCat hands back a path on this machine.
+    signal?.throwIfAborted();
     return { bytes: new Uint8Array(readFileSync(reference)) };
   };
 }

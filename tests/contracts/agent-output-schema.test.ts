@@ -8,6 +8,7 @@ import {
 type JsonSchema = {
   type?: string;
   const?: string;
+  description?: string;
   required?: string[];
   oneOf?: JsonSchema[];
   anyOf?: JsonSchema[];
@@ -68,7 +69,7 @@ it("reads one complete JSON fence as a transport wrapper and still refuses prose
   expect(() => JSON.parse(readJsonBody('{"facts":[]} 好。'))).toThrow();
 });
 
-it("requests an explicit nullable sticker intent from structured-output providers while accepting legacy omission", () => {
+it("requests an explicit sticker decision from structured providers while accepting legacy omission", () => {
   const schema = AGENT_DECISION_JSON_SCHEMA as JsonSchema;
   const final = schema.oneOf?.find((variant) => variant.properties?.kind?.const === "final");
   const outputs = final?.properties?.outputs?.items?.oneOf ?? [];
@@ -78,6 +79,10 @@ it("requests an explicit nullable sticker intent from structured-output provider
     expect(variant.properties?.stickerIds?.anyOf?.some((option) => option.type === "null")).toBe(
       true,
     );
+    // 退役"自动补一张"：提示词指向显式选图的工具路径，绝不再暗示宿主会自动挑。
+    const description = variant.properties?.stickerIds?.description ?? "";
+    expect(description).toContain("sticker.search");
+    expect(description.toLowerCase()).not.toContain("auto");
   }
   for (const value of [undefined, null, [], ["disclosed-id"]]) {
     for (const draft of [

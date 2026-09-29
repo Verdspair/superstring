@@ -637,4 +637,168 @@ describe("one injected QQ media reading", () => {
       h.close();
     }
   });
+
+  it("does not reuse a description across a rebind to another assistant", async () => {
+    const h = setup("image");
+    try {
+      expect(
+        await readQqMediaOnce(
+          h.orm,
+          { capabilities: ["image"] as const, read: async () => "橘猫" },
+          base,
+        ),
+      ).toEqual({ kind: "described", attempt: 1 });
+      // 改绑到第二任助手：绑定行换人，来源引用不变。
+      h.orm
+        .insert(schema.agents)
+        .values({
+          id: "00000000-0000-0000-0000-000000000002",
+          name: "二号助手",
+          systemPrompt: "synthetic",
+          description: "",
+          additionalInstructions: "",
+          p5Config: "{}",
+          modelName: "synthetic-model",
+          temperature: 0.7,
+          memoryConsolidationModelName: null,
+          memoryConsolidationPrompt: "synthetic",
+          memoryConsolidationAdditionalInstructions: "",
+          memoryRetrievalModelName: null,
+          memoryRetrievalPrompt: "synthetic",
+          contextCompressionModelName: null,
+          personaIntensity: 60,
+          isActive: 1,
+          configVersion: 1,
+          updatedAt: nowIso(),
+          createdAt: nowIso(),
+        })
+        .run();
+      h.orm
+        .update(schema.qqBindings)
+        .set({ agentId: "00000000-0000-0000-0000-000000000002", revision: 2, authorityRevision: 2 })
+        .run();
+      h.orm
+        .insert(schema.qqEvents)
+        .values({
+          eventKey: "media-rebound",
+          accountId: "10001",
+          conversationKind: "group",
+          peerId: "30003",
+          agentId: "00000000-0000-0000-0000-000000000002",
+          messageId: "m-rebound",
+          occurredAtSeconds: Math.floor(Date.now() / 1000),
+          speakerKind: "member",
+          speakerId: "20002",
+          recordedAt: nowIso(),
+        })
+        .run();
+      recordMediaSegment(h.orm, {
+        eventKey: "media-rebound",
+        segmentIndex: 0,
+        kind: "image",
+        sourceRef: "upstream-ref",
+        occurredAtSeconds: Math.floor(Date.now() / 1000),
+        addressed: true,
+      });
+      let calls = 0;
+      const second = {
+        capabilities: ["image"] as const,
+        read: async () => {
+          calls++;
+          return "改绑后的读法";
+        },
+      };
+      expect(await readQqMediaOnce(h.orm, second, { ...base, eventKey: "media-rebound" })).toEqual({
+        kind: "described",
+        attempt: 1,
+      });
+      expect(calls).toBe(1);
+      expect(mediaNoteRow(h.orm, "media-rebound", 0)).toMatchObject({
+        note: "改绑后的读法",
+        noteModel: "vision-local",
+      });
+      // 旧助手的描述留在旧行上，不被漂移、也不被改写。
+      expect(mediaNoteRow(h.orm, base.eventKey, 0)?.note).toBe("橘猫");
+    } finally {
+      h.close();
+    }
+  });
+
+  it("refuses a cancelled read before claiming anything", async () => {
+    const h = setup();
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      let calls = 0;
+      await expect(
+        readQqMediaOnce(
+          h.orm,
+          {
+            capabilities: ["image"] as const,
+            read: async () => {
+              calls++;
+              return "不应发生";
+            },
+          },
+          base,
+          controller.signal,
+        ),
+      ).rejects.toThrow();
+      expect(calls).toBe(0);
+      expect(mediaNoteRow(h.orm, base.eventKey, 0)).toMatchObject({ attempts: 0, note: null });
+    } finally {
+      h.close();
+    }
+  });
+
+  it("rejects a late description after cancellation instead of writing it", async () => {
+    const h = setup();
+    try {
+      const controller = new AbortController();
+      const pending = readQqMediaOnce(
+        h.orm,
+        {
+          capabilities: ["image"] as const,
+          read: async (input: { signal?: AbortSignal }) => {
+            // 取消信号贯穿到适配器：取流/视觉调用必须能看见它。
+            expect(input.signal).toBe(controller.signal);
+            controller.abort();
+            return "迟到的描述";
+          },
+        },
+        base,
+        controller.signal,
+      );
+      await expect(pending).rejects.toThrow();
+      const row = mediaNoteRow(h.orm, base.eventKey, 0);
+      expect(row?.note).toBeNull();
+      // 尝试在取流前已认领：取消不写回，但这一次尝试不会被取消"复活"。
+      expect(row?.attempts).toBe(1);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("rejects a cancelled read instead of recording it as a failure", async () => {
+    const h = setup();
+    try {
+      const controller = new AbortController();
+      const pending = readQqMediaOnce(
+        h.orm,
+        {
+          capabilities: ["image"] as const,
+          read: async () => {
+            controller.abort();
+            throw new Error("cancelled upstream failure");
+          },
+        },
+        base,
+        controller.signal,
+      );
+      await expect(pending).rejects.toThrow();
+      expect(mediaNoteRow(h.orm, base.eventKey, 0)).toMatchObject({ attempts: 1, note: null });
+    } finally {
+      h.close();
+    }
+  });
 });

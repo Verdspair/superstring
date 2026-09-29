@@ -1,10 +1,9 @@
-// The inbound event path (ADR0018 P5m): classify, queue, and understand the media.
+// The inbound event path (ADR0018 P5m): classify and report; media is recorded, never read.
 //
-// The three user decisions of 2026-09-24 are what these cases pin, because each one is a rule that
-// would otherwise be invisible in the code:
-//   * "related supplement" = the SAME SPEAKER inside the scheme's window (no text matching);
-//   * the window is a scheme parameter, 10 minutes by default, and 0 turns the wait off;
-//   * non-addressed media is read ONCE too — but §7.2 still forbids retrying it.
+// ADR0019 §8.11 moved understanding out of the inbound path: these cases pin that a picture — and a
+// failed read waiting for a supplement — never spends a model call here, while classification, the
+// recorded media fact and the canonical ingress wake are unchanged. The retired cycle is still
+// callable directly, so the "waiting read" state is seeded with it rather than through this path.
 
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,20 +14,19 @@ import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { readQqDispatchCandidate } from "../../src/server/db/qq-dispatch-repository";
-import { mediaNoteRow } from "../../src/server/db/qq-media-repository";
+import { mediaNoteRow, pendingMediaSupplementFor } from "../../src/server/db/qq-media-repository";
 import {
   readQqSettings,
   updateQqSettings,
   updateQqTransportConfig,
 } from "../../src/server/db/qq-settings-repository";
-import { ensureDefaults, nowIso } from "../../src/server/db/repositories";
+import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import type { VisionClient } from "../../src/server/llm/vision-client";
 import type { OneBotSocket } from "../../src/server/services/onebot-connection";
 import type { QqObservation } from "../../src/server/services/onebot-protocol";
-import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
 import { createQqBinding } from "../../src/server/services/qq-binding-contract";
 import { handleQqRecordedMessage } from "../../src/server/services/qq-event-path";
 import {
@@ -36,6 +34,8 @@ import {
   QqIntakeRuntime,
   recordInbound,
 } from "../../src/server/services/qq-intake";
+import { readQqAddressedMediaOnce } from "../../src/server/services/qq-media-cycle";
+import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const BINDING_ID = "11111111-1111-4111-8111-111111111111";
@@ -45,9 +45,8 @@ const PEER_ID = "30003";
 const SPEAKER_ID = "20002";
 const NOW = 2_000_000_000;
 const TOKEN = "synthetic-token";
-
-const PNG = new Uint8Array(encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(0x40), 8, 8));
-const DATA_URL = `data:image/png;base64,${Buffer.from(PNG).toString("base64")}`;
+/** The three OneBot 11 source actions an automatic read would have sent. */
+const MEDIA_ACTIONS: readonly string[] = ["get_image", "get_record", "get_file"];
 
 function observation(patch: {
   eventKey?: string;
@@ -94,8 +93,8 @@ function setup(): Setup {
     enabled: true,
     expectedRevision: 1,
   });
-  // §7.1's picture purpose, on the shared settings row. Unset means "cannot understand", so every
-  // media case here would otherwise stop at `model_not_configured` before reaching the model.
+  // The vision purpose on the shared settings row: the retired cycle (seeded below) needs it to
+  // reach the model, exactly as an explicit Agent tool call will later.
   business.orm
     .update(schema.organizationSettings)
     .set({ visionModelName: "vision-local" })
@@ -103,8 +102,6 @@ function setup(): Setup {
     .run();
   // The scheme must exist before the binding: a table trigger refuses a binding that names a
   // scheme which is not there, and that refusal is one of the guarantees these tests rely on.
-  // Inserted directly under the fixed id rather than created by the contract, because the id is
-  // what the binding names and the name is what the unique index would collide on.
   business.orm
     .insert(schema.qqSchemes)
     .values({ id: SCHEME_ID, name: "方案", revision: 1, createdAt: nowIso(), updatedAt: nowIso() })
@@ -150,65 +147,61 @@ function setup(): Setup {
   };
 }
 
-/** A vision client that answers with a fixed note and counts its calls. */
-function fakeVision(notes: string[] = ["图里是一只猫"]): VisionClient & { calls: string[] } {
+/** A vision client that fails on the first call (optionally) and counts its calls. */
+function recordingVision(failFirst: boolean): VisionClient & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
     async annotate(request) {
       calls.push(request.model);
-      return notes[calls.length - 1] ?? notes[notes.length - 1] ?? "图里有一只猫";
+      if (failFirst && calls.length === 1) throw new Error("synthetic model failure");
+      return "图里是一只猫";
     },
   };
 }
 
-function fixture(patch: Parameters<typeof observation>[0], notes?: string[]) {
-  const s = setup();
-  const vision = fakeVision(notes);
-  const deps = {
-    media: {
-      // A stub adapter: these cases are about WHEN a read happens, so the bytes never travel.
-      // The end-to-end case below runs the real adapter instead.
-      adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => {
-        return {
-          capabilities: ["image"] as const,
-          async read({
-            kind,
-            sourceRef,
-            model,
-          }: {
-            kind: string;
-            sourceRef: string;
-            model: string;
-          }) {
-            void kind;
-            void sourceRef;
-            return vision.annotate({ model, prompt: mediaPrompt, images: [] });
-          },
-        };
-      },
-    },
+/** The retired cycle is still callable directly (§8.11): fixtures seed "a failed read" with it. */
+function mediaCycleAdapter(vision: VisionClient & { calls: string[] }): QqMediaReadAdapter {
+  return {
+    capabilities: ["image"],
+    read: ({ model }) => vision.annotate({ model, prompt: "看图", images: [] }),
   };
+}
+
+/** One failed first read: the row is left with a spent attempt and no note, waiting for a supplement. */
+async function seedFailedRead(
+  orm: Orm,
+  eventKey: string,
+  vision: VisionClient & { calls: string[] },
+) {
+  return readQqAddressedMediaOnce(orm, mediaCycleAdapter(vision), {
+    eventKey,
+    addressedToAssistant: true,
+    relatedSupplementArrived: false,
+    modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
+  });
+}
+
+/** One recorded message on a fresh database. */
+function fixture(patch: Parameters<typeof observation>[0]) {
+  const s = setup();
   const recorded = recordInbound(
     s.h.orm,
     { kind: "message", observation: observation(patch) },
-    {
-      accountId: ACCOUNT_ID,
-    },
+    { accountId: ACCOUNT_ID },
   );
   if (recorded.kind !== "recorded") throw new Error("expected a recorded message");
-  return { s, vision, deps };
+  return { s };
 }
 
 describe("classification and queueing", () => {
   it("turns a group message that is not addressed into an initiative candidate", async () => {
-    const { s, deps } = fixture({ eventKey: "evt-1" });
+    const { s } = fixture({ eventKey: "evt-1" });
     try {
-      const outcome = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation({ eventKey: "evt-1" }), nowSeconds: NOW },
-        deps,
-      );
+      const outcome = await handleQqRecordedMessage(s.h.orm, {
+        observation: observation({ eventKey: "evt-1" }),
+        nowSeconds: NOW,
+      });
       expect(outcome.dispatch).toMatchObject({ kind: "scheduled", path: "chiming_in" });
       expect(readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')).not.toBeNull();
     } finally {
@@ -217,13 +210,12 @@ describe("classification and queueing", () => {
   });
 
   it("leaves a direct mention out of the queue (it is the immediate path's)", async () => {
-    const { s, deps } = fixture({ eventKey: "evt-2", mentionsSelf: true });
+    const { s } = fixture({ eventKey: "evt-2", mentionsSelf: true });
     try {
-      const outcome = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation({ eventKey: "evt-2", mentionsSelf: true }), nowSeconds: NOW },
-        deps,
-      );
+      const outcome = await handleQqRecordedMessage(s.h.orm, {
+        observation: observation({ eventKey: "evt-2", mentionsSelf: true }),
+        nowSeconds: NOW,
+      });
       expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "handled_directly" });
       expect(readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')).toBeNull();
     } finally {
@@ -232,13 +224,12 @@ describe("classification and queueing", () => {
   });
 
   it("uses the conversation's own merge window for readiness", async () => {
-    const { s, deps } = fixture({ eventKey: "evt-3" });
+    const { s } = fixture({ eventKey: "evt-3" });
     try {
-      await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation({ eventKey: "evt-3" }), nowSeconds: NOW },
-        deps,
-      );
+      await handleQqRecordedMessage(s.h.orm, {
+        observation: observation({ eventKey: "evt-3" }),
+        nowSeconds: NOW,
+      });
       // The scheme's default merge window is 30s, so the candidate is not runnable yet.
       expect(
         readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')?.readyAtSeconds,
@@ -249,54 +240,12 @@ describe("classification and queueing", () => {
   });
 });
 
-describe("understanding the media of the message itself", () => {
-  it("reads an addressed picture once and stores the note", async () => {
+describe("media is recorded and never read (ADR0019 §8.11)", () => {
+  it("records an addressed picture without reading it", async () => {
     const patch = {
       eventKey: "evt-4",
       mentionsSelf: true,
       segments: [{ kind: "image", file: "upstream-4" }],
-    } as Parameters<typeof observation>[0];
-    const { s, vision, deps } = fixture(patch, ["（被@的图）一只猫"]);
-    try {
-      const outcome = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation(patch), nowSeconds: NOW },
-        deps,
-      );
-      expect(outcome.media).toMatchObject({ hasMedia: true, own: { kind: "read" } });
-      expect(vision.calls).toHaveLength(1);
-      expect(mediaNoteRow(s.h.orm, "evt-4", 0)?.note).toBe("（被@的图）一只猫");
-    } finally {
-      s.close();
-    }
-  });
-
-  it("reads a non-addressed picture once too (user decision 2026-09-24)", async () => {
-    const patch = {
-      eventKey: "evt-5",
-      segments: [{ kind: "image", file: "upstream-5" }],
-    } as Parameters<typeof observation>[0];
-    const { s, vision, deps } = fixture(patch);
-    try {
-      const outcome = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation(patch), nowSeconds: NOW },
-        deps,
-      );
-      expect(outcome.media.own?.kind).toBe("read");
-      expect(vision.calls).toHaveLength(1);
-      // …but the stored flag keeps §7.2's asymmetry: only an addressed read is ever retried.
-      expect(mediaNoteRow(s.h.orm, "evt-5", 0)).toMatchObject({ attempts: 1, addressed: 0 });
-    } finally {
-      s.close();
-    }
-  });
-
-  it("records media without reading it when no vision seam is wired", async () => {
-    const patch = {
-      eventKey: "evt-6",
-      mentionsSelf: true,
-      segments: [{ kind: "image", file: "upstream-6" }],
     } as Parameters<typeof observation>[0];
     const { s } = fixture(patch);
     try {
@@ -304,63 +253,88 @@ describe("understanding the media of the message itself", () => {
         observation: observation(patch),
         nowSeconds: NOW,
       });
+      expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "handled_directly" });
       expect(outcome.media).toEqual({ hasMedia: true, own: null, supplement: null });
-      expect(mediaNoteRow(s.h.orm, "evt-6", 0)).toMatchObject({ attempts: 0, note: null });
+      expect(mediaNoteRow(s.h.orm, "evt-4", 0)).toMatchObject({
+        segmentKind: "image",
+        attempts: 0,
+        note: null,
+        noteModel: null,
+      });
+    } finally {
+      s.close();
+    }
+  });
+
+  it("records a non-addressed picture without reading it either", async () => {
+    const patch = {
+      eventKey: "evt-5",
+      segments: [{ kind: "image", file: "upstream-5" }],
+    } as Parameters<typeof observation>[0];
+    const { s } = fixture(patch);
+    try {
+      const outcome = await handleQqRecordedMessage(s.h.orm, {
+        observation: observation(patch),
+        nowSeconds: NOW,
+      });
+      expect(outcome.dispatch).toMatchObject({ kind: "scheduled", path: "chiming_in" });
+      expect(outcome.media).toEqual({ hasMedia: true, own: null, supplement: null });
+      expect(mediaNoteRow(s.h.orm, "evt-5", 0)).toMatchObject({
+        attempts: 0,
+        note: null,
+        addressed: 0,
+      });
+    } finally {
+      s.close();
+    }
+  });
+
+  it("reports no media on a plain text message", async () => {
+    const { s } = fixture({ eventKey: "evt-6" });
+    try {
+      const outcome = await handleQqRecordedMessage(s.h.orm, {
+        observation: observation({ eventKey: "evt-6" }),
+        nowSeconds: NOW,
+      });
+      expect(outcome.media).toEqual({ hasMedia: false, own: null, supplement: null });
     } finally {
       s.close();
     }
   });
 });
 
-describe("waking a failed read on a same-speaker supplement", () => {
-  /** The first read fails, so the segment is left waiting for one more understanding. */
-  function failingThenSucceeding(notes: string[]) {
-    const s = setup();
-    let call = 0;
-    const vision: VisionClient & { calls: number } = {
-      calls: 0,
-      async annotate() {
-        call += 1;
-        vision.calls = call;
-        if (call === 1) throw new Error("synthetic model failure");
-        return notes[call - 2] ?? "补读成功";
-      },
-    };
-    return { s, vision };
-  }
-
-  it("retries the earlier failed segment when the assistant is called again inside the window", async () => {
+describe("a waiting read is not woken by a supplement", () => {
+  it("does not retry an earlier failed read when the conversation calls again", async () => {
     const patch = {
       eventKey: "evt-7",
       mentionsSelf: true,
       segments: [{ kind: "image", file: "upstream-7" }],
     } as Parameters<typeof observation>[0];
-    const { s, vision } = failingThenSucceeding(["补读成功"]);
+    const { s } = fixture(patch);
+    const vision = recordingVision(true);
     try {
-      const deps = {
-        media: {
-          adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
-            capabilities: ["image"] as const,
-            read: ({ model }: { model: string }) =>
-              vision.annotate({ model, prompt: mediaPrompt, images: [] }),
-          }),
-        },
-      };
-      recordInbound(
-        s.h.orm,
-        { kind: "message", observation: observation(patch) },
-        { accountId: ACCOUNT_ID },
-      );
-      const first = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation(patch), nowSeconds: NOW },
-        deps,
-      );
-      expect(first.media.own).toMatchObject({ kind: "read" });
+      // Seed the exact state the old supplement retry woke: one spent attempt, no note.
+      const first = await seedFailedRead(s.h.orm, "evt-7", vision);
+      expect(first).toMatchObject({
+        kind: "read",
+        result: { kind: "failed", awaitSupplement: true },
+      });
+      expect(vision.calls).toHaveLength(1);
       expect(mediaNoteRow(s.h.orm, "evt-7", 0)).toMatchObject({ attempts: 1, note: null });
+      // The row really is a supplement candidate: only this module's retirement stops the retry.
+      expect(
+        pendingMediaSupplementFor(s.h.orm, {
+          accountId: ACCOUNT_ID,
+          conversationKind: "group",
+          peerId: PEER_ID,
+          sinceSeconds: NOW - 600,
+          beforeSeconds: NOW + 300,
+          excludeEventKey: "evt-8",
+        }),
+      ).toEqual({ eventKey: "evt-7", segmentIndex: 0 });
 
-      // Five minutes later, the same speaker adds a plain text message: that is the supplement.
-      // 2026-09-25 后续：唤醒不再要求同一个说话人——是"被叫到"这一次决定要不要重试。
+      // Five minutes later the same speaker calls the assistant about it: classification runs,
+      // nothing is read, and the waiting row is untouched.
       const supplement = observation({
         eventKey: "evt-8",
         occurredAtSeconds: NOW + 300,
@@ -371,169 +345,14 @@ describe("waking a failed read on a same-speaker supplement", () => {
         { kind: "message", observation: supplement },
         { accountId: ACCOUNT_ID },
       );
-      const second = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: supplement, nowSeconds: NOW + 300 },
-        deps,
-      );
-      expect(second.media.supplement).toMatchObject({ kind: "read", segmentIndex: 0 });
-      expect(mediaNoteRow(s.h.orm, "evt-7", 0)).toMatchObject({
-        attempts: 2,
-        note: "补读成功",
+      const outcome = await handleQqRecordedMessage(s.h.orm, {
+        observation: supplement,
+        nowSeconds: NOW + 300,
       });
-      expect(vision.calls).toBe(2);
-    } finally {
-      s.close();
-    }
-  });
-
-  it("does not wake anything once the window has passed", async () => {
-    const patch = {
-      eventKey: "evt-9",
-      mentionsSelf: true,
-      segments: [{ kind: "image", file: "upstream-9" }],
-    } as Parameters<typeof observation>[0];
-    const { s, vision } = failingThenSucceeding(["补读成功"]);
-    try {
-      const deps = {
-        media: {
-          adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
-            capabilities: ["image"] as const,
-            read: ({ model }: { model: string }) =>
-              vision.annotate({ model, prompt: mediaPrompt, images: [] }),
-          }),
-        },
-      };
-      recordInbound(
-        s.h.orm,
-        { kind: "message", observation: observation(patch) },
-        { accountId: ACCOUNT_ID },
-      );
-      await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation(patch), nowSeconds: NOW },
-        deps,
-      );
-      // Eleven minutes later: outside the default ten-minute window.
-      const late = observation({ eventKey: "evt-10", occurredAtSeconds: NOW + 660 });
-      recordInbound(s.h.orm, { kind: "message", observation: late }, { accountId: ACCOUNT_ID });
-      const outcome = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: late, nowSeconds: NOW + 660 },
-        deps,
-      );
-      expect(outcome.media.supplement).toBeNull();
-      expect(mediaNoteRow(s.h.orm, "evt-9", 0)).toMatchObject({ attempts: 1, note: null });
-    } finally {
-      s.close();
-    }
-  });
-
-  it("wakes a failed read when the assistant is called, and not on unrelated chatter", async () => {
-    const patch = {
-      eventKey: "evt-11",
-      segments: [{ kind: "image", file: "upstream-11" }],
-    } as Parameters<typeof observation>[0];
-    const { s, vision } = failingThenSucceeding(["补读成功"]);
-    try {
-      const deps = {
-        media: {
-          adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
-            capabilities: ["image"] as const,
-            read: ({ model }: { model: string }) =>
-              vision.annotate({ model, prompt: mediaPrompt, images: [] }),
-          }),
-        },
-      };
-      // The first read fails, and the message was NOT addressed (a plain group picture). That is
-      // the case the user reported: somebody later replies to the assistant about exactly this.
-      recordInbound(
-        s.h.orm,
-        { kind: "message", observation: observation(patch) },
-        { accountId: ACCOUNT_ID },
-      );
-      const first = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation(patch), nowSeconds: NOW },
-        deps,
-      );
-      expect(first.media.own).toMatchObject({ kind: "read", result: { kind: "failed" } });
-      expect(mediaNoteRow(s.h.orm, "evt-11", 0)).toMatchObject({ attempts: 1, note: null });
-
-      // Unrelated chatter inside the window must NOT spend another attempt.
-      const chatter = observation({ eventKey: "evt-12", occurredAtSeconds: NOW + 120 });
-      recordInbound(s.h.orm, { kind: "message", observation: chatter }, { accountId: ACCOUNT_ID });
-      const second = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: chatter, nowSeconds: NOW + 120 },
-        deps,
-      );
-      // The candidate is found, and the reader refuses it politely — without spending an attempt.
-      expect(second.media.supplement).toMatchObject({
-        kind: "read",
-        result: { kind: "unreadable", reason: "not_addressed" },
-      });
-      expect(mediaNoteRow(s.h.orm, "evt-11", 0)).toMatchObject({ attempts: 1, note: null });
-
-      // A call inside the window wakes it, once.
-      const called = observation({
-        eventKey: "evt-13",
-        occurredAtSeconds: NOW + 240,
-        mentionsSelf: true,
-      });
-      recordInbound(s.h.orm, { kind: "message", observation: called }, { accountId: ACCOUNT_ID });
-      const third = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: called, nowSeconds: NOW + 240 },
-        deps,
-      );
-      expect(third.media.supplement).toMatchObject({ kind: "read", result: { kind: "described" } });
-      expect(mediaNoteRow(s.h.orm, "evt-11", 0)).toMatchObject({ attempts: 2, note: "补读成功" });
-    } finally {
-      s.close();
-    }
-  });
-
-  it("waits for nobody when the scheme's window is 0", async () => {
-    const patch = {
-      eventKey: "evt-13",
-      mentionsSelf: true,
-      segments: [{ kind: "image", file: "upstream-13" }],
-    } as Parameters<typeof observation>[0];
-    const { s, vision } = failingThenSucceeding(["补读成功"]);
-    try {
-      s.h.orm.update(schema.qqSchemes).set({ mediaSupplementWindowMinutes: 0 }).run();
-      const deps = {
-        media: {
-          adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
-            capabilities: ["image"] as const,
-            read: ({ model }: { model: string }) =>
-              vision.annotate({ model, prompt: mediaPrompt, images: [] }),
-          }),
-        },
-      };
-      recordInbound(
-        s.h.orm,
-        { kind: "message", observation: observation(patch) },
-        { accountId: ACCOUNT_ID },
-      );
-      await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: observation(patch), nowSeconds: NOW },
-        deps,
-      );
-      const supplement = observation({ eventKey: "evt-14", occurredAtSeconds: NOW + 60 });
-      recordInbound(
-        s.h.orm,
-        { kind: "message", observation: supplement },
-        { accountId: ACCOUNT_ID },
-      );
-      const outcome = await handleQqRecordedMessage(
-        s.h.orm,
-        { observation: supplement, nowSeconds: NOW + 60 },
-        deps,
-      );
-      expect(outcome.media.supplement).toBeNull();
+      expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "handled_directly" });
+      expect(outcome.media).toEqual({ hasMedia: false, own: null, supplement: null });
+      expect(vision.calls).toHaveLength(1);
+      expect(mediaNoteRow(s.h.orm, "evt-7", 0)).toMatchObject({ attempts: 1, note: null });
     } finally {
       s.close();
     }
@@ -605,18 +424,33 @@ describe("the transport runtime drives the event path", () => {
     socket.open();
   }
 
+  function rememberTransport(s: Setup) {
+    updateQqTransportConfig(s.h.orm, {
+      endpoint: "ws://127.0.0.1:3000/",
+      token: TOKEN,
+      expectedRevision: readQqSettings(s.h.orm).revision,
+      keyPath: s.keyPath,
+    });
+  }
+
+  async function waitForFollowUps(events: QqIntakeEvent[], count: number) {
+    for (
+      let i = 0;
+      i < 80 && events.filter((event) => event.kind === "follow_up").length < count;
+      i += 1
+    ) {
+      await Bun.sleep(5);
+    }
+  }
+
   it("queues what a real wire event produces, and leaves the pipeline silent when it cannot", async () => {
     const s = setup();
+    let runtime: QqIntakeRuntime | undefined;
     try {
-      updateQqTransportConfig(s.h.orm, {
-        endpoint: "ws://127.0.0.1:3000/",
-        token: TOKEN,
-        expectedRevision: readQqSettings(s.h.orm).revision,
-        keyPath: s.keyPath,
-      });
+      rememberTransport(s);
       const sockets: FakeSocket[] = [];
       const events: QqIntakeEvent[] = [];
-      const runtime = new QqIntakeRuntime({
+      runtime = new QqIntakeRuntime({
         orm: s.h.orm,
         transportKeyPath: s.keyPath,
         connectTimeoutMs: 500,
@@ -637,8 +471,7 @@ describe("the transport runtime drives the event path", () => {
       expect(await started).toEqual({ phase: "ready", accountId: ACCOUNT_ID });
 
       socket.deliver(wireMessage());
-      // The follow-up is asynchronous on purpose: give it a turn to finish.
-      await Bun.sleep(10);
+      await waitForFollowUps(events, 1);
       expect(events).toContainEqual({
         kind: "follow_up",
         hasMedia: false,
@@ -647,238 +480,226 @@ describe("the transport runtime drives the event path", () => {
         supplement: "none",
       });
       expect(readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')).not.toBeNull();
-      runtime.stop();
-    } finally {
-      s.close();
-    }
-  }, 15_000);
-
-  it("lets an active image read finish and pauses subsequent reads without dropping messages", async () => {
-    const s = setup();
-    let runtime: QqIntakeRuntime | undefined;
-    try {
-      updateQqTransportConfig(s.h.orm, {
-        endpoint: "ws://127.0.0.1:3000/",
-        token: TOKEN,
-        expectedRevision: readQqSettings(s.h.orm).revision,
-        keyPath: s.keyPath,
-      });
-      let enabled = true;
-      const entered = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<string>();
-      const vision = fakeVision(["图里是一只猫"]);
-      const original = vision.annotate.bind(vision);
-      vision.annotate = async (...args) => {
-        entered.resolve();
-        await release.promise;
-        return original(...args);
-      };
-      const socket = new FakeSocket();
-      const events: QqIntakeEvent[] = [];
-      runtime = new QqIntakeRuntime({
-        orm: s.h.orm,
-        transportKeyPath: s.keyPath,
-        connectTimeoutMs: 500,
-        requestTimeoutMs: 200,
-        media: { vision },
-        mediaEnabled: () => enabled,
-        nowSeconds: () => NOW,
-        socketFactory: () => socket,
-        onEvent: (event) => events.push(event),
-      });
-      const starting = runtime.start();
-      completeHandshake(socket);
-      await starting;
-      const responder = socket.onSend;
-      socket.onSend = (request) =>
-        request.action === "get_image"
-          ? socket.deliver({
-              status: "ok",
-              retcode: 0,
-              data: { file: DATA_URL },
-              echo: request.echo,
-            })
-          : responder?.(request);
-      socket.deliver(
-        wireMessage({ message_id: -91, message: [{ type: "image", data: { file: "first" } }] }),
-      );
-      await entered.promise;
-      enabled = false;
-      release.resolve("done");
-      for (let i = 0; i < 60 && !events.some((event) => event.kind === "follow_up"); i++)
-        await Bun.sleep(5);
-      expect(vision.calls).toHaveLength(1);
-      expect(
-        s.h.orm
-          .select()
-          .from(schema.qqMediaNotes)
-          .all()
-          .filter((row) => row.note),
-      ).toHaveLength(1);
-      socket.deliver(
-        wireMessage({ message_id: -92, message: [{ type: "image", data: { file: "second" } }] }),
-      );
-      for (
-        let i = 0;
-        i < 60 && events.filter((event) => event.kind === "follow_up").length < 2;
-        i++
-      )
-        await Bun.sleep(5);
-      expect(vision.calls).toHaveLength(1);
-      expect(s.h.orm.select().from(schema.qqEvents).all()).toHaveLength(2);
-      enabled = true;
-      socket.deliver(
-        wireMessage({ message_id: -93, message: [{ type: "image", data: { file: "third" } }] }),
-      );
-      for (
-        let i = 0;
-        i < 60 && events.filter((event) => event.kind === "follow_up").length < 3;
-        i++
-      )
-        await Bun.sleep(5);
-      expect(vision.calls).toHaveLength(2);
     } finally {
       runtime?.stop();
       s.close();
     }
   }, 15_000);
 
-  it.each([
-    [false, false],
-    [true, false],
-    [true, true],
-  ])(
-    "reads media with canonical ingress=%s, supplement retry=%s and one queue owner",
-    async (canonical, retry) => {
-      const s = setup();
-      try {
-        updateQqTransportConfig(s.h.orm, {
-          endpoint: "ws://127.0.0.1:3000/",
-          token: TOKEN,
-          expectedRevision: readQqSettings(s.h.orm).revision,
-          keyPath: s.keyPath,
-        });
-        // The whole chain runs for real except the two ends: NapCat is a fake socket that answers
-        // `get_image` with a data URL, and the model is a fake vision client.
-        s.h.db.exec("UPDATE qq_schemes SET trigger_direct_reply=1,trigger_chiming_in=1");
-        const vision = fakeVision(retry ? ["", "端到端：图里是一只猫"] : ["端到端：图里是一只猫"]);
-        const journal = new ConversationEventRepository(s.h.db);
-        const wakes = new WakeRepository(s.h.db);
-        const adapter = canonical
-          ? new OneBot11Adapter({ orm: s.h.orm, journal, wakes, nowSeconds: () => NOW })
-          : undefined;
-        const sockets: FakeSocket[] = [];
-        const events: QqIntakeEvent[] = [];
-        const runtime = new QqIntakeRuntime({
-          orm: s.h.orm,
-          transportKeyPath: s.keyPath,
-          connectTimeoutMs: 500,
-          requestTimeoutMs: 200,
-          cycleIntervalMs: 60_000,
-          nowSeconds: () => NOW,
-          media: { vision },
-          conversationIngress: adapter,
-          onEvent: (event) => events.push(event),
-          socketFactory: (): OneBotSocket => {
-            const socket = new FakeSocket();
-            sockets.push(socket);
-            return socket;
-          },
-        });
-        const started = runtime.start();
-        const socket = sockets[0];
-        if (!socket) throw new Error("expected a socket");
-        completeHandshake(socket);
-        await started;
-        // Now answer the source resolution the way the bot side would: a data URL of the bytes.
-        const handshakeResponder = socket.onSend;
-        socket.onSend = (request) => {
-          if (request.action === "get_image") {
-            socket.deliver({
-              status: "ok",
-              retcode: 0,
-              data: { file: DATA_URL },
-              echo: request.echo,
-            });
-            return;
-          }
-          handshakeResponder?.(request);
-        };
-        // A non-addressed group message exercises the old chiming-in enqueue as well.
-        socket.deliver(wireMessage({ message_id: -21 }));
-        socket.deliver(
-          wireMessage({
-            message_id: -22,
-            message: [
-              { type: "at", data: { qq: ACCOUNT_ID } },
-              { type: "image", data: { file: "upstream-e2e" } },
-            ],
-          }),
-        );
-        const eventKey = s.h.orm.select().from(schema.qqEvents).all().at(-1)?.eventKey;
-        if (eventKey === undefined) throw new Error("expected a recorded event");
-        // The image sits at its own ORIGINAL position in the message: the `at` segment comes first,
-        // which is exactly why the reader is given a segment index rather than "the media".
-        const readRow = () =>
-          s.h.orm
-            .select()
-            .from(schema.qqMediaNotes)
-            .where(eq(schema.qqMediaNotes.eventKey, eventKey))
-            .all()
-            .find((row) => row.note !== null);
-        if (retry) {
-          for (let attempt = 0; attempt < 60; attempt += 1) {
-            if (events.filter((event) => event.kind === "follow_up").length === 2) break;
-            await Bun.sleep(25);
-          }
-          socket.deliver(
-            wireMessage({
-              message_id: -23,
-              time: NOW + 1,
-              message: [
-                { type: "at", data: { qq: ACCOUNT_ID } },
-                { type: "text", data: { text: "再看看上面的图片" } },
-              ],
-            }),
-          );
-        }
-        for (let attempt = 0; attempt < 60; attempt += 1) {
-          if (readRow()) break;
-          await Bun.sleep(25);
-        }
-        expect(readRow()).toMatchObject({
-          segmentIndex: 1,
-          segmentKind: "image",
-          note: "端到端：图里是一只猫",
-          noteModel: "vision-local",
-          addressed: 1,
-        });
-        // The bytes really travelled through the injected transport: the bot side was asked for the
-        // source, and the answer (a data URL) is what the vision client received.
-        expect(socket.sent.some((request) => request.action === "get_image")).toBe(true);
-        expect(vision.calls).toEqual(retry ? ["vision-local", "vision-local"] : ["vision-local"]);
-        expect(s.h.orm.select().from(schema.qqDispatchCandidates).all()).toHaveLength(
-          canonical ? 0 : 1,
-        );
-        if (canonical) {
-          expect(
-            wakes.peek({ at: new Date(NOW * 1000).toISOString(), cause: "direct_reply" }),
-          ).not.toBeNull();
-          const conversation = journal.ensureOneBot(BINDING_ID)!;
-          const events = journal.eventsAfter(conversation.id, 0, 100);
-          const revision = events.items.find((event) => event.kind === "media_revision");
-          expect(revision).toBeDefined();
-          expect(
-            s.h.db
-              .query("SELECT event_key FROM qq_media_notes WHERE id=?")
-              .get(revision!.source.id),
-          ).toEqual({ event_key: eventKey });
-        }
-        runtime.stop();
-      } finally {
-        s.close();
-      }
-    },
-    15_000,
-  );
+  it("records an image message without asking the bot side for its source", async () => {
+    const s = setup();
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      rememberTransport(s);
+      const sockets: FakeSocket[] = [];
+      const events: QqIntakeEvent[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: s.h.orm,
+        transportKeyPath: s.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        cycleIntervalMs: 60_000,
+        nowSeconds: () => NOW,
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        onEvent: (event) => events.push(event),
+      });
+      const started = runtime.start();
+      const socket = sockets[0];
+      if (!socket) throw new Error("expected a socket");
+      completeHandshake(socket);
+      await started;
+
+      socket.deliver(
+        wireMessage({
+          message_id: -91,
+          message: [{ type: "image", data: { file: "upstream-91" } }],
+        }),
+      );
+      await waitForFollowUps(events, 1);
+      expect(events).toContainEqual({
+        kind: "follow_up",
+        hasMedia: true,
+        dispatch: "scheduled",
+        own: "none",
+        supplement: "none",
+      });
+      // The zero-vision proof at this level: no source action ever left the socket, and the
+      // recorded segment has spent none of its read attempts.
+      expect(socket.sent.filter((request) => MEDIA_ACTIONS.includes(request.action))).toEqual([]);
+      const eventKey = s.h.orm.select().from(schema.qqEvents).all().at(-1)?.eventKey;
+      if (eventKey === undefined) throw new Error("expected a recorded event");
+      expect(mediaNoteRow(s.h.orm, eventKey, 0)).toMatchObject({
+        segmentKind: "image",
+        attempts: 0,
+        note: null,
+        addressed: 0,
+      });
+    } finally {
+      runtime?.stop();
+      s.close();
+    }
+  }, 15_000);
+
+  it("lets the canonical ingress schedule the wake for an addressed image, with nothing read", async () => {
+    const s = setup();
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      rememberTransport(s);
+      // The canonical wake path runs on the scheme's triggers; the retired classifier did not.
+      s.h.db.exec("UPDATE qq_schemes SET trigger_direct_reply=1,trigger_chiming_in=1");
+      const journal = new ConversationEventRepository(s.h.db);
+      const wakes = new WakeRepository(s.h.db);
+      const adapter = new OneBot11Adapter({
+        orm: s.h.orm,
+        journal,
+        wakes,
+        nowSeconds: () => NOW,
+      });
+      const sockets: FakeSocket[] = [];
+      const events: QqIntakeEvent[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: s.h.orm,
+        transportKeyPath: s.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        cycleIntervalMs: 60_000,
+        nowSeconds: () => NOW,
+        conversationIngress: adapter,
+        onEvent: (event) => events.push(event),
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const started = runtime.start();
+      const socket = sockets[0];
+      if (!socket) throw new Error("expected a socket");
+      completeHandshake(socket);
+      await started;
+
+      // The `at` segment comes first, so the image sits at its own original index.
+      socket.deliver(
+        wireMessage({
+          message_id: -22,
+          message: [
+            { type: "at", data: { qq: ACCOUNT_ID } },
+            { type: "image", data: { file: "upstream-e2e" } },
+          ],
+        }),
+      );
+      await waitForFollowUps(events, 1);
+      // Qualified wake: the canonical ingress created it for the addressed message.
+      expect(
+        wakes.peek({ at: new Date(NOW * 1000).toISOString(), cause: "direct_reply" }),
+      ).not.toBeNull();
+      // The legacy queue stays empty under the canonical ingress, the media fact is recorded at
+      // its original segment index, and no source action ever left the socket.
+      expect(s.h.orm.select().from(schema.qqDispatchCandidates).all()).toHaveLength(0);
+      const eventKey = s.h.orm.select().from(schema.qqEvents).all().at(-1)?.eventKey;
+      if (eventKey === undefined) throw new Error("expected a recorded event");
+      expect(mediaNoteRow(s.h.orm, eventKey, 1)).toMatchObject({
+        segmentIndex: 1,
+        segmentKind: "image",
+        attempts: 0,
+        note: null,
+        addressed: 1,
+      });
+      expect(socket.sent.filter((request) => MEDIA_ACTIONS.includes(request.action))).toEqual([]);
+      expect(events).toContainEqual({
+        kind: "follow_up",
+        hasMedia: true,
+        dispatch: "not_scheduled",
+        own: "none",
+        supplement: "none",
+      });
+    } finally {
+      runtime?.stop();
+      s.close();
+    }
+  }, 15_000);
+
+  it("wakes for an addressed message without retrying a waiting read", async () => {
+    const s = setup();
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      rememberTransport(s);
+      s.h.db.exec("UPDATE qq_schemes SET trigger_direct_reply=1");
+      const journal = new ConversationEventRepository(s.h.db);
+      const wakes = new WakeRepository(s.h.db);
+      const adapter = new OneBot11Adapter({
+        orm: s.h.orm,
+        journal,
+        wakes,
+        nowSeconds: () => NOW,
+      });
+      // Seed a failed read directly through the retired cycle: one spent attempt, no note.
+      const seeded = observation({
+        eventKey: "evt-seed",
+        segments: [{ kind: "image", file: "upstream-seed" }],
+      });
+      recordInbound(s.h.orm, { kind: "message", observation: seeded }, { accountId: ACCOUNT_ID });
+      const vision = recordingVision(true);
+      expect(await seedFailedRead(s.h.orm, "evt-seed", vision)).toMatchObject({
+        kind: "read",
+        result: { kind: "failed" },
+      });
+      expect(mediaNoteRow(s.h.orm, "evt-seed", 0)).toMatchObject({ attempts: 1, note: null });
+
+      const sockets: FakeSocket[] = [];
+      const events: QqIntakeEvent[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: s.h.orm,
+        transportKeyPath: s.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        cycleIntervalMs: 60_000,
+        nowSeconds: () => NOW,
+        conversationIngress: adapter,
+        onEvent: (event) => events.push(event),
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const started = runtime.start();
+      const socket = sockets[0];
+      if (!socket) throw new Error("expected a socket");
+      completeHandshake(socket);
+      await started;
+
+      socket.deliver(
+        wireMessage({
+          message_id: -31,
+          message: [
+            { type: "at", data: { qq: ACCOUNT_ID } },
+            { type: "text", data: { text: "刚发的图你看到了吗" } },
+          ],
+        }),
+      );
+      await waitForFollowUps(events, 1);
+      expect(
+        wakes.peek({ at: new Date(NOW * 1000).toISOString(), cause: "direct_reply" }),
+      ).not.toBeNull();
+      expect(events).toContainEqual({
+        kind: "follow_up",
+        hasMedia: false,
+        dispatch: "not_scheduled",
+        own: "none",
+        supplement: "none",
+      });
+      // Nothing woke the waiting read: no second model call, no attempt, no source request.
+      expect(vision.calls).toHaveLength(1);
+      expect(mediaNoteRow(s.h.orm, "evt-seed", 0)).toMatchObject({ attempts: 1, note: null });
+      expect(socket.sent.filter((request) => MEDIA_ACTIONS.includes(request.action))).toEqual([]);
+    } finally {
+      runtime?.stop();
+      s.close();
+    }
+  }, 15_000);
 });

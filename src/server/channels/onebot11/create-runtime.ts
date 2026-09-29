@@ -12,13 +12,14 @@ import { OutboundIntentRepository, type OutboundTarget } from "../../db/outbound
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { readQqDispatchSettings } from "../../db/qq-dispatch-repository";
 import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
-import { effectiveQqTriggers, readQqScheme } from "../../db/qq-scheme-repository";
+import { effectiveQqTriggers, type QqSchemeRow, readQqScheme } from "../../db/qq-scheme-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import { WakeRepository } from "../../db/wake-repository";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
+import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
 import { QQ_OBSERVATION_RETENTION_DAYS } from "../../services/qq-retention";
 import { type QqSendPort, qqStickerFileReference } from "../../services/qq-send-transport";
 import { qqStickerSelectionForScheme } from "../../services/qq-sticker-candidates";
@@ -72,6 +73,8 @@ export function createOneBotConversationRuntime(options: {
   externalActions?: () => readonly BuiltInAction[];
   tasks?: AgentTaskService;
   stickersEnabled?: () => boolean;
+  mediaEnabled?: () => boolean;
+  mediaAdapter?: (scheme: QqSchemeRow) => QqMediaReadAdapter;
 }) {
   const { orm, db, journal } = options;
   const policy = (): BotConversationPolicy => ({

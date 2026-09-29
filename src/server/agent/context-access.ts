@@ -175,6 +175,51 @@ export function sourceAccess(
           ? "available"
           : "revoked";
     }
+    case "qq_media_note": {
+      const row = db
+        .query(`SELECT n.note,n.note_model,n.attempts,n.event_key,n.expires_at,
+        e.agent_id,e.account_id,e.conversation_kind,e.peer_id FROM qq_media_notes n
+        JOIN qq_events e ON e.event_key=n.event_key WHERE n.id=?`)
+        .get(source.id) as {
+        note: string | null;
+        note_model: string | null;
+        attempts: number;
+        event_key: string;
+        expires_at: string;
+        agent_id: string;
+        account_id: string;
+        conversation_kind: string;
+        peer_id: string;
+      } | null;
+      if (!row || row.note === null || row.note_model === null) return "revoked";
+      if (principal.userId !== DEFAULT_USER_ID || owner.agentId !== row.agent_id) return "revoked";
+      if (Date.parse(row.expires_at) <= Date.parse(now)) return "expired";
+      const binding =
+        owner.kind === "conversation"
+          ? db
+              .query(`SELECT b.id FROM conversations c JOIN qq_bindings b ON b.id=c.source_id
+          WHERE c.id=? AND c.channel='onebot11' AND c.closed_at IS NULL AND c.agent_id=?
+          AND b.agent_id=? AND b.account_id=? AND b.conversation_kind=? AND b.peer_id=?`)
+              .get(
+                owner.id,
+                row.agent_id,
+                row.agent_id,
+                row.account_id,
+                row.conversation_kind,
+                row.peer_id,
+              )
+          : owner.kind === "qq_binding"
+            ? db
+                .query(
+                  `SELECT id FROM qq_bindings WHERE id=? AND agent_id=? AND account_id=? AND conversation_kind=? AND peer_id=?`,
+                )
+                .get(owner.id, row.agent_id, row.account_id, row.conversation_kind, row.peer_id)
+            : null;
+      const revision = createHash("sha256")
+        .update(JSON.stringify([row.note, row.note_model, row.attempts, row.event_key]))
+        .digest("hex");
+      return binding && revision === source.revision ? "available" : "revoked";
+    }
     case "qq_media": {
       const row = db
         .query(`SELECT n.expires_at,n.attempts,e.agent_id FROM qq_media_notes n
@@ -287,7 +332,12 @@ export function assertContextSources(options: {
 }): void {
   const { db, sources, owner, now } = options;
   const resolved = new Map(
-    sources.map((source) => [source, options.resolveSource?.(source, owner, now)]),
+    sources.map((source) => [
+      source,
+      source.kind === "qq_media_note"
+        ? sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, now)
+        : options.resolveSource?.(source, owner, now),
+    ]),
   );
   const refs = sources.filter(
     (source) => source.kind === "memory" && resolved.get(source) === undefined,
@@ -326,10 +376,11 @@ export function inspectContext(
   if (!stored) return null;
   let status = stored.status;
   if (status === "exact") {
-    const states = stored.sources.map(
-      (source) =>
-        resolveSource?.(source, run.owner, now) ??
-        sourceAccess(db, source, run.owner, principal, now, "inspection"),
+    const states = stored.sources.map((source) =>
+      source.kind === "qq_media_note"
+        ? sourceAccess(db, source, run.owner, principal, now, "inspection")
+        : (resolveSource?.(source, run.owner, now) ??
+          sourceAccess(db, source, run.owner, principal, now, "inspection")),
     );
     if (states.includes("revoked")) status = "revoked";
     else if (

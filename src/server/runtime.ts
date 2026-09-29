@@ -6,6 +6,7 @@ import { executionPolicy } from "../shared/contracts/permissions";
 import { ActionExecutor } from "./agent/action-executor";
 import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
 import type { CodeRunner } from "./agent/code-runner";
+import { sourceAccess } from "./agent/context-access";
 import { ConversationHost } from "./agent/conversation-host";
 import { createQuickJsCodeRunner } from "./agent/quickjs-runner";
 import { AgentTaskService } from "./agent/task-service";
@@ -22,6 +23,7 @@ import { AgentTaskRepository } from "./db/agent-task-repository";
 import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
 import { readModelProviders, resolveModelProviderRoute } from "./db/model-provider-repository";
+import { schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
 import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import { withCapacityCache } from "./llm/capacity-cache";
 import {
@@ -47,6 +49,8 @@ import {
 import { DEFAULT_MODEL_PROVIDER_KEY_PATH } from "./secret-box";
 import { MemoryService } from "./services/memory-service";
 import { QqIntakeRuntime } from "./services/qq-intake";
+import { createQqMediaAdapter } from "./services/qq-media-adapter";
+import { createQqMediaSourceFetcher } from "./services/qq-media-source";
 import type { QqSendPort } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
 import { createSkillActions } from "./skills/actions";
@@ -153,6 +157,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   const resolveDomainSource: ModuleSourceResolver = (source, owner, at) =>
     permissions.sourceAccess(source, owner) ??
     conversationEvidenceSourceAccess(business, source, owner, at) ??
+    (source.kind === "qq_media_note"
+      ? sourceAccess(business.db, source, owner, { userId: owner.userId ?? "" }, at)
+      : undefined) ??
     skillSourceAccess(options.skillRoot, source) ??
     options.resolveSource?.(source, owner, at);
   const resolveSource: ModuleSourceResolver = (source, owner, at) =>
@@ -326,6 +333,17 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       externalActions,
       tasks,
       stickersEnabled: () => execution().modules.qqStickers,
+      mediaEnabled: () => execution().modules.qqMedia,
+      mediaAdapter: (scheme) =>
+        createQqMediaAdapter({
+          prompt: schemePrompts(scheme).media,
+          frames: schemeRhythm(scheme).media_frame_count,
+          maxDimension: schemeRhythm(scheme).media_max_dimension,
+          agentRuntime,
+          fetchSource: createQqMediaSourceFetcher({
+            resolveSource: (request) => qqIntake.resolveMediaSource(request),
+          }),
+        }),
     });
     botWorker =
       options.botWorker ??
@@ -364,10 +382,6 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         transportKeyPath: options.qqTransportKeyPath,
         connectTimeoutMs: QQ_CONNECT_TIMEOUT_MS,
         requestTimeoutMs: QQ_REQUEST_TIMEOUT_MS,
-        // The media seam. The vision client is the same one the sticker annotation uses; giving
-        // it to the intake runtime is what turns "media is recorded" into "media is understood".
-        media: { vision: visionClient, agentRuntime },
-        mediaEnabled: () => execution().modules.qqMedia,
         conversationIngress: bot.adapter,
         memory: modules.memory,
         // 「被 @ 了别等轮询」（2026-09-25）：入站路径记下一条冲着她来的消息就叫醒宿主跑一轮。

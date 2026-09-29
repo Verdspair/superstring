@@ -13,10 +13,12 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { eq } from "drizzle-orm";
 import {
   readBindingByConversation,
   saveQqBinding,
 } from "../../src/server/db/qq-binding-repository";
+import { mediaNoteRow } from "../../src/server/db/qq-media-repository";
 import { pendingObservationCount } from "../../src/server/db/qq-observation-repository";
 import {
   readQqSettings,
@@ -26,6 +28,7 @@ import {
 import { createSession, ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import type { VisionClient } from "../../src/server/llm/vision-client";
 import type { SourceEvent } from "../../src/server/modules/contracts";
 import {
   OneBotConnection,
@@ -44,6 +47,8 @@ import {
   qqIntakeCycle,
   recordInbound,
 } from "../../src/server/services/qq-intake";
+import { readQqAddressedMediaOnce } from "../../src/server/services/qq-media-cycle";
+import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const MODEL = "qwen/qwen3-4b-2507";
@@ -51,6 +56,8 @@ const BINDING_ID = "11111111-1111-4111-8111-111111111111";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
 const NOW_SECONDS = Math.floor(Date.parse("2026-09-22T12:00:00.000Z") / 1000);
 const TOKEN = "synthetic-token";
+/** The three OneBot 11 source actions an automatic read would have sent. */
+const MEDIA_ACTIONS: readonly string[] = ["get_image", "get_record", "get_file"];
 
 /** Same shape as the transport tests' fake, so both layers are exercised alike. */
 class FakeSocket extends EventTarget implements OneBotSocket {
@@ -246,6 +253,41 @@ function messageResult(
   };
 }
 
+/** A vision client that fails on the first call (optionally) and counts its calls. */
+function recordingVision(failFirst: boolean): VisionClient & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    async annotate(request) {
+      calls.push(request.model);
+      if (failFirst && calls.length === 1) throw new Error("synthetic model failure");
+      return "图里是一只猫";
+    },
+  };
+}
+
+/** The retired cycle is still callable directly (§8.11): fixtures seed "a failed read" with it. */
+function mediaCycleAdapter(vision: VisionClient & { calls: string[] }): QqMediaReadAdapter {
+  return {
+    capabilities: ["image"],
+    read: ({ model }) => vision.annotate({ model, prompt: "看图", images: [] }),
+  };
+}
+
+/** One failed first read: the row is left with a spent attempt and no note. */
+async function seedFailedRead(
+  orm: Orm,
+  eventKey: string,
+  vision: VisionClient & { calls: string[] },
+) {
+  return readQqAddressedMediaOnce(orm, mediaCycleAdapter(vision), {
+    eventKey,
+    addressedToAssistant: true,
+    relatedSupplementArrived: false,
+    modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
+  });
+}
+
 describe("the row to contract mapping", () => {
   it("turns stored integers into the contract's booleans and kind", () => {
     const h = setup();
@@ -421,6 +463,13 @@ describe("handling one inbound message", () => {
       });
       // Identity only, so nothing is offered for consolidation.
       expect(qqIntakeCycle(h.orm).due).toBe(0);
+      // The media fact is recorded for later (explicit) understanding, with nothing spent.
+      expect(mediaNoteRow(h.orm, "evt_-20", 0)).toMatchObject({
+        segmentKind: "image",
+        sourceRef: "https://example.invalid/a.png",
+        attempts: 0,
+        note: null,
+      });
     } finally {
       closeSetup(h);
     }
@@ -883,6 +932,248 @@ describe("the assembled runtime over an injected transport", () => {
       closeSetup(h);
     }
   });
+});
+
+describe("an image message is recorded and never read (ADR0019 §8.11)", () => {
+  it("records the segment and asks the bot side for nothing", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      const events: QqIntakeEvent[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        cycleIntervalMs: 60_000,
+        nowSeconds: () => NOW_SECONDS,
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        onEvent: (event) => events.push(event),
+      });
+      const started = runtime.start();
+      const socket = sockets[0];
+      if (!socket) throw new Error("expected a socket");
+      completeHandshake(socket);
+      await started;
+
+      socket.deliver(
+        wireMessage({
+          message_id: -91,
+          message: [{ type: "image", data: { file: "upstream-91" } }],
+        }),
+      );
+      for (let i = 0; i < 80 && !events.some((event) => event.kind === "follow_up"); i += 1) {
+        await Bun.sleep(5);
+      }
+      expect(events).toContainEqual({
+        kind: "follow_up",
+        hasMedia: true,
+        dispatch: "scheduled",
+        own: "none",
+        supplement: "none",
+      });
+      // Zero vision: no source action ever left the socket, and no attempt was spent.
+      expect(socket.sent.filter((request) => MEDIA_ACTIONS.includes(request.action))).toEqual([]);
+      const eventKey = h.orm.select().from(schema.qqEvents).all().at(-1)?.eventKey;
+      if (eventKey === undefined) throw new Error("expected a recorded event");
+      expect(mediaNoteRow(h.orm, eventKey, 0)).toMatchObject({
+        segmentKind: "image",
+        attempts: 0,
+        note: null,
+        addressed: 0,
+      });
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
+
+  it("does not retry a waiting read when the assistant is called again", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      h.orm
+        .update(schema.organizationSettings)
+        .set({ visionModelName: "vision-local" })
+        .where(eq(schema.organizationSettings.id, 1))
+        .run();
+      // Seed a failed read through the retired cycle: one spent attempt, no note.
+      const base = messageResult("", -20);
+      if (base.kind !== "message") throw new Error("expected a message result");
+      const withMedia: QqMessageResult = {
+        kind: "message",
+        observation: {
+          ...base.observation,
+          segments: [{ kind: "image", file: "upstream-seed" }],
+          text: "",
+        },
+      };
+      recordInbound(h.orm, withMedia, { accountId: "10001" });
+      const vision = recordingVision(true);
+      expect(await seedFailedRead(h.orm, "evt_-20", vision)).toMatchObject({
+        kind: "read",
+        result: { kind: "failed" },
+      });
+      expect(vision.calls).toHaveLength(1);
+      expect(mediaNoteRow(h.orm, "evt_-20", 0)).toMatchObject({ attempts: 1, note: null });
+
+      const sockets: FakeSocket[] = [];
+      const events: QqIntakeEvent[] = [];
+      let addressed = 0;
+      runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        cycleIntervalMs: 60_000,
+        nowSeconds: () => NOW_SECONDS,
+        onAddressedMessage: () => {
+          addressed += 1;
+        },
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        onEvent: (event) => events.push(event),
+      });
+      const started = runtime.start();
+      const socket = sockets[0];
+      if (!socket) throw new Error("expected a socket");
+      completeHandshake(socket);
+      await started;
+
+      // The same group calls the assistant about the picture, inside the old retry window.
+      socket.deliver(
+        wireMessage({
+          message_id: -32,
+          message: [
+            { type: "at", data: { qq: "10001" } },
+            { type: "text", data: { text: "刚发的图你看到了吗" } },
+          ],
+        }),
+      );
+      for (let i = 0; i < 80 && !events.some((event) => event.kind === "follow_up"); i += 1) {
+        await Bun.sleep(5);
+      }
+      // The qualified wake still fires — the message is recorded, classified and signalled…
+      expect(addressed).toBe(1);
+      expect(events).toContainEqual({
+        kind: "follow_up",
+        hasMedia: false,
+        dispatch: "not_scheduled",
+        own: "none",
+        supplement: "none",
+      });
+      // …but the waiting read is not: one model call in total, no second attempt, no source request.
+      expect(vision.calls).toHaveLength(1);
+      expect(mediaNoteRow(h.orm, "evt_-20", 0)).toMatchObject({ attempts: 1, note: null });
+      expect(socket.sent.filter((request) => MEDIA_ACTIONS.includes(request.action))).toEqual([]);
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
+});
+
+describe("the main Agent's explicit source lookup (ADR0019 §8.11)", () => {
+  it("answers not_ready while no connection is up", async () => {
+    const h = setup({ enabled: true });
+    try {
+      bind(h);
+      const runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+      });
+      expect(await runtime.resolveMediaSource({ kind: "image", sourceRef: "upstream-1" })).toEqual({
+        kind: "unavailable",
+        reason: "not_ready",
+      });
+    } finally {
+      closeSetup(h);
+    }
+  });
+
+  it("passes a live request to the bot side and returns its reference verbatim", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const started = runtime.start();
+      const socket = sockets[0];
+      if (!socket) throw new Error("expected a socket");
+      completeHandshake(socket);
+      await started;
+
+      const pending = runtime.resolveMediaSource({ kind: "image", sourceRef: "upstream-7" });
+      const asked = socket.sent.find((request) => request.action === "get_image");
+      if (!asked) throw new Error("expected a get_image request");
+      expect(asked.params).toEqual({ file: "upstream-7" });
+      socket.respond(asked, { file: "C:/napcat/cache/a.png" });
+      expect(await pending).toEqual({ kind: "source", reference: "C:/napcat/cache/a.png" });
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
+
+  it("refuses an invalid request on a live connection", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const started = runtime.start();
+      const socket = sockets[0];
+      if (!socket) throw new Error("expected a socket");
+      completeHandshake(socket);
+      await started;
+
+      expect(await runtime.resolveMediaSource({ kind: "video", sourceRef: "" })).toEqual({
+        kind: "unavailable",
+        reason: "invalid_request",
+      });
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
 });
 
 void OneBotConnection;

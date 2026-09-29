@@ -236,16 +236,19 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
     ]);
   });
 
-  it("媒体读失败按住房子的主动接话，补充读取成功后才放行", async () => {
+  it("媒体读失败按住主动接话，被 @ 的补充到来后经真工具重读并收口", async () => {
     const { status, metric, harness: h } = await mediaReadFailureThenSupplement();
 
-    // ① 第一轮被媒体闸门按住：原因写清楚，且一次模型都没调。
-    expect(metric.note).toBe("media_read_failed");
-    // ② 补充读取调了第二次视觉（第一次失败、第二次给出说明）。
+    // ① 第一轮自主接话被媒体闸门按住：发布在提交处被挡（整轮以 MEDIA_READ_FAILED 失败），零发送。
+    expect(metric.note).toBe("failed:MEDIA_READ_FAILED");
+    expect(h.outbox.list({})).toHaveLength(1); // 只有第二轮那条
+    expect(h.model?.calls.every((call) => call.phase === "next")).toBe(true);
+    // ② 视觉真的走了宿主：第一次失败、补充到来后第二次成功（重试上限 2 由真实读取器判定）。
     expect(h.visionCalls).toHaveLength(2);
-    // ③ 第三轮放行：媒体说明真的进了模型看到的上下文。
+    expect(h.visionCalls.map((call) => call.model)).toEqual(["vision-stub", "vision-stub"]);
+    // ③ 第二轮直接回应：list→describe→note.read 的说明进了模型上下文，收口一条 @。
     expect(status).toBe("completed");
-    expect(h.model?.calls.some((call) => call.text.includes("图里是一只猫"))).toBe(true);
+    expect(mainRuns(h).some((run) => fullContextText(h, run).includes("图里是一只猫"))).toBe(true);
     expect(h.sent).toEqual([
       {
         kind: "group",

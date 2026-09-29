@@ -14,6 +14,7 @@ import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { memoryRevision } from "../../src/server/db/memory-content-repository";
+import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   createSession,
   DEFAULT_AGENT_ID,
@@ -83,6 +84,98 @@ function setup() {
     return { runId, stepId };
   };
   return { business, repository, app, snapshot };
+}
+
+const NOTE_BINDING_ID = "note-binding";
+const NOTE_EVENT_KEY = "note-event";
+const NOTE_MEDIA_ID = "note-media";
+const NOTE_EXPIRY = "2099-01-01T00:00:00.000Z";
+const SECOND_AGENT_ID = "00000000-0000-0000-0000-000000000002";
+
+/** 与 context-access 的 qq_media_note 复验口径一致：note/note_model/attempts/event_key。 */
+function qqMediaNoteRevision(note: string, noteModel: string, attempts: number, eventKey: string) {
+  return createHash("sha256")
+    .update(JSON.stringify([note, noteModel, attempts, eventKey]))
+    .digest("hex");
+}
+
+function insertNoteBinding(
+  business: ReturnType<typeof openBusinessDb>,
+  input: { id: string; peerId: string; agentId: string; schemeId: string },
+) {
+  const at = new Date().toISOString();
+  business.orm
+    .insert(schema.qqBindings)
+    .values({
+      id: input.id,
+      accountId: "100",
+      conversationKind: "private",
+      peerId: input.peerId,
+      agentId: input.agentId,
+      schemeId: input.schemeId,
+      paused: 0,
+      shareWebMemory: 0,
+      memoryBatchSize: null,
+      ownerIdentityRevision: null,
+      revision: 1,
+      authorityRevision: 1,
+      createdAt: at,
+      updatedAt: at,
+    })
+    .run();
+}
+
+/** QQ 私聊绑定 + 事件/媒体 note 合成行；note 修订号按生产复验公式从四元组算出。 */
+function seedQqNoteScope(business: ReturnType<typeof openBusinessDb>) {
+  const at = new Date().toISOString();
+  const scheme = createQqScheme(business.orm, { name: "agent-run-access-note" });
+  insertNoteBinding(business, {
+    id: NOTE_BINDING_ID,
+    peerId: "200",
+    agentId: DEFAULT_AGENT_ID,
+    schemeId: scheme.id,
+  });
+  business.db
+    .query(
+      `INSERT INTO qq_events(event_key,account_id,conversation_kind,peer_id,agent_id,message_id,occurred_at_seconds,speaker_kind,speaker_id,recorded_at,addressed)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    .run(
+      NOTE_EVENT_KEY,
+      "100",
+      "private",
+      "200",
+      DEFAULT_AGENT_ID,
+      "note-message",
+      1,
+      "member",
+      "200",
+      at,
+      1,
+    );
+  business.orm
+    .insert(schema.qqMediaNotes)
+    .values({
+      id: NOTE_MEDIA_ID,
+      eventKey: NOTE_EVENT_KEY,
+      segmentIndex: 0,
+      segmentKind: "image",
+      sourceRef: "synthetic",
+      note: "original note",
+      noteModel: "fixture",
+      attempts: 1,
+      expiresAt: NOTE_EXPIRY,
+      recordedAt: at,
+      updatedAt: at,
+    })
+    .run();
+  const noteRef: SourceRef = {
+    kind: "qq_media_note",
+    id: NOTE_MEDIA_ID,
+    revision: qqMediaNoteRevision("original note", "fixture", 1, NOTE_EVENT_KEY),
+    expiresAt: NOTE_EXPIRY,
+  };
+  return { at, schemeId: scheme.id, noteRef };
 }
 
 describe("run diagnostics authorization and source lifetime", () => {
@@ -294,6 +387,260 @@ describe("run diagnostics authorization and source lifetime", () => {
     expect(refs.map((ref) => sourceAccess(business.db, ref, owner, principal, at))).toEqual(
       Array(4).fill("revoked"),
     );
+  });
+
+  it("keeps a QQ media note exact for its own binding and conversation scope without consulting the resolver", async () => {
+    const { business, repository, app, snapshot } = setup();
+    const { at, noteRef } = seedQqNoteScope(business);
+    const calls: string[] = [];
+    const resolveSource = (source: SourceRef): "available" => {
+      calls.push(source.kind);
+      return "available";
+    };
+    const owner: RunOwner = {
+      kind: "qq_binding",
+      id: NOTE_BINDING_ID,
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    };
+    const handle = snapshot([noteRef], owner);
+    const inspected = inspectContext(
+      business.db,
+      repository,
+      handle,
+      { userId: DEFAULT_USER_ID },
+      at,
+      resolveSource,
+    );
+    expect(inspected?.status).toBe("exact");
+    expect(inspected?.exactMessages?.[0].content).toContainEqual({
+      kind: "text",
+      text: "private original",
+    });
+    const conversation = new ConversationEventRepository(business.db).ensureOneBot(NOTE_BINDING_ID);
+    if (!conversation) throw new Error("Missing QQ conversation fixture");
+    const conversationHandle = snapshot([noteRef], {
+      kind: "conversation",
+      id: conversation.id,
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    });
+    const conversationInspected = inspectContext(
+      business.db,
+      repository,
+      conversationHandle,
+      { userId: DEFAULT_USER_ID },
+      at,
+      resolveSource,
+    );
+    expect(conversationInspected?.status).toBe("exact");
+    assertContextSources({
+      db: business.db,
+      sources: [noteRef],
+      owner,
+      now: at,
+      resolveSource,
+      memoryRevisions: () => new Map(),
+      messages: { memory: "memory changed", other: "note unavailable" },
+    });
+    // 内置复验优先：这个 kind 从不把裁决交给外部 resolver。
+    expect(calls).toEqual([]);
+    const response = await app.request(`/v2/runs/${handle.runId}/context/${handle.stepId}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).status).toBe("exact");
+  });
+
+  it("revokes a rewritten QQ media note on the same attempt and erases the retained input", () => {
+    const { business, repository, snapshot } = setup();
+    const { at, noteRef } = seedQqNoteScope(business);
+    const owner: RunOwner = {
+      kind: "qq_binding",
+      id: NOTE_BINDING_ID,
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    };
+    const calls: string[] = [];
+    const resolveSource = (source: SourceRef): "available" => {
+      calls.push(source.kind);
+      return "available";
+    };
+    const handle = snapshot([noteRef], owner);
+    const before = inspectContext(
+      business.db,
+      repository,
+      handle,
+      { userId: DEFAULT_USER_ID },
+      at,
+      resolveSource,
+    );
+    expect(before?.status).toBe("exact");
+    // 同一 attempt（attempts 不变）改写 note 与 note_model：旧修订号立即失配。
+    business.db
+      .query("UPDATE qq_media_notes SET note=?,note_model=? WHERE id=?")
+      .run("rewritten note", "second-model", NOTE_MEDIA_ID);
+    const after = inspectContext(
+      business.db,
+      repository,
+      handle,
+      { userId: DEFAULT_USER_ID },
+      at,
+      resolveSource,
+    );
+    expect(after?.status).toBe("revoked");
+    expect(repository.getContext(handle)?.messages).toBeNull();
+    expect(repository.getContext(handle)?.layout.length).toBeGreaterThan(0);
+    expect(calls).toEqual([]);
+    // 新内容配新修订号仍是这条 note 的合法引用：修订号确实绑定这四个字段。
+    expect(
+      sourceAccess(
+        business.db,
+        {
+          ...noteRef,
+          revision: qqMediaNoteRevision("rewritten note", "second-model", 1, NOTE_EVENT_KEY),
+        },
+        owner,
+        { userId: DEFAULT_USER_ID },
+        at,
+      ),
+    ).toBe("available");
+  });
+
+  it("rejects a QQ media note from another conversation, another agent or after expiry, and an all-available resolver cannot take over", () => {
+    const { business, repository, snapshot } = setup();
+    const { at, schemeId, noteRef } = seedQqNoteScope(business);
+    const principal = { userId: DEFAULT_USER_ID };
+    const owner: RunOwner = {
+      kind: "qq_binding",
+      id: NOTE_BINDING_ID,
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    };
+    const calls: string[] = [];
+    const resolveSource = (source: SourceRef): "available" => {
+      calls.push(source.kind);
+      return "available";
+    };
+    expect(sourceAccess(business.db, noteRef, owner, principal, at)).toBe("available");
+
+    // 另一个绑定与另一个会话：账号与类型一致但 peer 不同，不能读这条 note。
+    insertNoteBinding(business, {
+      id: "other-binding",
+      peerId: "201",
+      agentId: DEFAULT_AGENT_ID,
+      schemeId,
+    });
+    const foreignOwner: RunOwner = {
+      kind: "qq_binding",
+      id: "other-binding",
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    };
+    expect(sourceAccess(business.db, noteRef, foreignOwner, principal, at)).toBe("revoked");
+    const foreignConversation = new ConversationEventRepository(business.db).ensureOneBot(
+      "other-binding",
+    );
+    if (!foreignConversation) throw new Error("Missing QQ conversation fixture");
+    expect(
+      sourceAccess(
+        business.db,
+        noteRef,
+        {
+          kind: "conversation",
+          id: foreignConversation.id,
+          userId: DEFAULT_USER_ID,
+          agentId: DEFAULT_AGENT_ID,
+        },
+        principal,
+        at,
+      ),
+    ).toBe("revoked");
+    const foreign = snapshot([noteRef], foreignOwner);
+    const foreignInspected = inspectContext(
+      business.db,
+      repository,
+      foreign,
+      principal,
+      at,
+      resolveSource,
+    );
+    expect(foreignInspected?.status).toBe("revoked");
+    expect(repository.getContext(foreign)?.messages).toBeNull();
+    expect(() =>
+      assertContextSources({
+        db: business.db,
+        sources: [noteRef],
+        owner: foreignOwner,
+        now: at,
+        resolveSource,
+        memoryRevisions: () => new Map(),
+        messages: { memory: "memory changed", other: "note scope changed" },
+      }),
+    ).toThrow("note scope changed");
+    expect(calls).toEqual([]);
+
+    // 过期：note 和绑定都还在，但时间窗已过。
+    const expiryNow = "2099-01-02T00:00:00.000Z";
+    expect(sourceAccess(business.db, noteRef, owner, principal, expiryNow)).toBe("expired");
+    const stale = snapshot([noteRef], owner);
+    const staleInspected = inspectContext(
+      business.db,
+      repository,
+      stale,
+      principal,
+      expiryNow,
+      resolveSource,
+    );
+    expect(staleInspected?.status).toBe("expired");
+    expect(repository.getContext(stale)?.messages).toBeNull();
+    expect(calls).toEqual([]);
+
+    // 改绑到第二任助手：新助手即使持有该绑定也读不到第一位助手的 note。
+    business.orm
+      .insert(schema.agents)
+      .values({
+        id: SECOND_AGENT_ID,
+        name: "synthetic second assistant",
+        systemPrompt: "synthetic",
+        description: "",
+        additionalInstructions: "",
+        p5Config: "{}",
+        modelName: "test-model",
+        temperature: 0.7,
+        memoryConsolidationModelName: null,
+        memoryConsolidationPrompt: "synthetic",
+        memoryConsolidationAdditionalInstructions: "",
+        memoryRetrievalModelName: null,
+        memoryRetrievalPrompt: "synthetic",
+        contextCompressionModelName: null,
+        personaIntensity: 60,
+        isActive: 1,
+        configVersion: 1,
+        updatedAt: at,
+        createdAt: at,
+      })
+      .run();
+    business.db
+      .query("UPDATE qq_bindings SET agent_id=?,revision=2,authority_revision=2 WHERE id=?")
+      .run(SECOND_AGENT_ID, NOTE_BINDING_ID);
+    const reboundOwner: RunOwner = {
+      kind: "qq_binding",
+      id: NOTE_BINDING_ID,
+      userId: DEFAULT_USER_ID,
+      agentId: SECOND_AGENT_ID,
+    };
+    expect(sourceAccess(business.db, noteRef, reboundOwner, principal, at)).toBe("revoked");
+    const rebound = snapshot([noteRef], reboundOwner);
+    const reboundInspected = inspectContext(
+      business.db,
+      repository,
+      rebound,
+      principal,
+      at,
+      resolveSource,
+    );
+    expect(reboundInspected?.status).toBe("revoked");
+    expect(repository.getContext(rebound)?.messages).toBeNull();
+    expect(calls).toEqual([]);
   });
 
   it("does not authorize a retired conversation merely from the stored run user ID", () => {

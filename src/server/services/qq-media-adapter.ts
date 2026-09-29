@@ -39,6 +39,8 @@ export interface QqMediaFetchedSource {
 export type QqMediaSourceFetcher = (input: {
   readonly kind: "image" | "record" | "video";
   readonly sourceRef: string;
+  /** The run's cancellation signal: a fetch must not outlive the run that asked for it. */
+  readonly signal?: AbortSignal;
 }) => Promise<QqMediaFetchedSource>;
 
 export interface QqMediaAdapterOptions {
@@ -101,7 +103,7 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
         throw new Error("QQ media adapter does not read video");
       }
       signal?.throwIfAborted();
-      const source = await options.fetchSource({ kind, sourceRef });
+      const source = await options.fetchSource({ kind, sourceRef, signal });
       signal?.throwIfAborted();
       // The transport reference can contain a signed URL or a data URL. Only the source
       // identity and the runtime's image hashes are persisted in a ContextHandle.

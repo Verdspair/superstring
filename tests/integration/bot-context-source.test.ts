@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import { type ActionObservation, ContextEngine } from "../../src/server/agent/context-engine";
@@ -14,6 +15,11 @@ import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { updateOrganizationSettings } from "../../src/server/db/organization-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
+import {
+  recordMediaAttempt,
+  recordMediaNote,
+  recordMediaSegment,
+} from "../../src/server/db/qq-media-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
@@ -237,6 +243,32 @@ function setup(
       .run();
     return id;
   };
+  /** 一条带已存描述的入站图片：真实走过 segment→attempt→note 三步，attempts 因此是 1。 */
+  const image = (text: string, note: string, model = "vision-model") => {
+    const eventKey = seed(text);
+    recordMediaSegment(h.orm, {
+      eventKey,
+      segmentIndex: 0,
+      kind: "image",
+      sourceRef: `ref-${eventKey}`,
+      occurredAtSeconds: seconds,
+      addressed: true,
+    });
+    recordMediaAttempt(h.orm, { eventKey, segmentIndex: 0 });
+    const row = recordMediaNote(h.orm, {
+      eventKey,
+      segmentIndex: 0,
+      note,
+      noteModel: model,
+      expectedAttempts: 1,
+    });
+    return Object.freeze({
+      eventKey,
+      noteId: row.id,
+      attempts: row.attempts,
+      expiresAt: row.expiresAt,
+    });
+  };
   return {
     ...h,
     source,
@@ -248,6 +280,7 @@ function setup(
     conversation,
     memory,
     seed,
+    image,
     runs,
     diagnostics,
     agentRuntime,
@@ -1868,3 +1901,86 @@ it.each(["memory", "knowledge"] as const)(
     expect(exhausted).toBe(true);
   },
 );
+
+it("withholds a stored media note until a validated observation supplies it", async () => {
+  const h = setup();
+  const secret = "SECRET-NOTE-91c4";
+  const image = h.image("请看这张照片", secret);
+  const mediaSources = (sources: readonly { kind: string }[]) =>
+    sources.filter((source) => source.kind === "qq_media" || source.kind === "qq_media_note");
+  // 首次读取：note 正文与 qq_media 引用都不进材料，但原文与未读计数照旧。
+  const first = await h.source.read(readInput());
+  const firstJson = JSON.stringify(first);
+  expect(firstJson).toContain("请看这张照片");
+  expect(firstJson).toContain("另有 1 项媒体未读，内容未知");
+  expect(firstJson).not.toContain(secret);
+  expect(mediaSources(first.sources ?? [])).toEqual([]);
+  const evaluation = await h.source.prepareEvaluation({ ...readInput(), target: null });
+  const evaluationJson = JSON.stringify(evaluation.messages);
+  expect(evaluationJson).toContain("请看这张照片");
+  expect(evaluationJson).toContain("另有 1 项媒体未读，内容未知");
+  expect(evaluationJson).not.toContain(secret);
+  expect(mediaSources(evaluation.sources)).toEqual([]);
+  const context = new ContextEngine().render(h.spec, first, [], ["alice"]);
+  const reply = await h.source.prepareGeneration(
+    { kind: "generate", targetId: "alice", instructions: "answer" },
+    { context, outputId: "initial", signal: readInput().signal },
+  );
+  const replyJson = JSON.stringify(reply.context?.messages);
+  expect(replyJson).toContain("请看这张照片");
+  expect(replyJson).toContain("另有 1 项媒体未读，内容未知");
+  expect(replyJson).not.toContain(secret);
+  expect(mediaSources(reply.context?.sources ?? [])).toEqual([]);
+  // 只有正文行上的真实 sha 才让引用通过复验，模型渲染随后才出现正文。
+  const sha = createHash("sha256")
+    .update(JSON.stringify([secret, "vision-model", image.attempts, image.eventKey]))
+    .digest("hex");
+  const mediaRef = {
+    kind: "qq_media",
+    id: image.noteId,
+    revision: String(image.attempts),
+    expiresAt: image.expiresAt,
+  };
+  const noteRef = {
+    kind: "qq_media_note",
+    id: image.noteId,
+    revision: sha,
+    expiresAt: image.expiresAt,
+  };
+  const observation: ActionObservation = {
+    id: "note-read",
+    name: "media.note.read",
+    arguments: { id: image.noteId, limit: 4096 },
+    value: {
+      status: "ok",
+      id: image.noteId,
+      model: "vision-model",
+      text: secret,
+      offset: 0,
+      nextOffset: null,
+    },
+    sources: [mediaRef, noteRef],
+  };
+  const second = await h.source.read({ ...readInput(), observations: [observation] });
+  const scored = await h.source.prepareEvaluation({ ...readInput(), target: null });
+  expect(JSON.stringify(scored.messages)).toContain(secret);
+  expect(mediaSources(scored.sources)).toHaveLength(2);
+  const generated = new ContextEngine().render(h.spec, second, [observation], ["alice"]);
+  const drafted = await h.source.prepareGeneration(
+    { kind: "generate", targetId: "alice", instructions: "answer" },
+    { context: generated, outputId: "initial", signal: readInput().signal },
+  );
+  expect(JSON.stringify(drafted.context?.messages)).toContain(secret);
+  expect(mediaSources(drafted.context?.sources ?? [])).toHaveLength(2);
+  // 伪造 revision：sha 对不上正文行，引用被拒，正文不得进入任何渲染。
+  const forged: ActionObservation = {
+    ...observation,
+    id: "note-read-forged",
+    sources: [mediaRef, { ...noteRef, revision: "0".repeat(64) }],
+  };
+  await expect(
+    h.newSource().read({ ...readInput(), observations: [forged] }),
+  ).rejects.toMatchObject({
+    code: "CONTEXT_SOURCE_INVALID",
+  });
+});

@@ -9,7 +9,7 @@ function codedError(code: string): Error {
 }
 
 import type { SourceRef } from "../../shared/contracts/evidence";
-import type { BuiltInAction } from "../agent/built-in-actions";
+import type { ActionContext, BuiltInAction } from "../agent/built-in-actions";
 import { schemeStickerCollectionIds } from "../db/qq-scheme-repository";
 import { listQqStickerAssets } from "../db/qq-sticker-repository";
 import type { Orm } from "../db/repositories";
@@ -76,6 +76,14 @@ export function createQqStickerSearch(options: {
     arguments_: Record<string, unknown>,
     signal: AbortSignal,
   ) => Promise<(value: unknown, sources: readonly SourceRef[]) => boolean>;
+  /**
+   * The refs of every candidate a returned page disclosed, reported with the calling
+   * run so a host can bind later explicit picks to this run only.
+   */
+  onDisclosed?: (
+    context: Pick<ActionContext, "owner" | "runId">,
+    disclosed: readonly SourceRef[],
+  ) => void;
 }): BuiltInAction {
   return {
     description: {
@@ -87,7 +95,8 @@ export function createQqStickerSearch(options: {
         "Search authorized usable stickers; empty query browses. Results fit context and paginate. Use returned IDs; prefer recentlyUsed=false.",
       parameters: z.toJSONSchema(SearchSchema),
     },
-    async execute(arguments_, { signal }) {
+    async execute(arguments_, context) {
+      const { signal } = context;
       signal.throwIfAborted();
       options.assertCurrent();
       const input = SearchSchema.parse(arguments_);
@@ -147,6 +156,7 @@ export function createQqStickerSearch(options: {
       if (!fits(value, sources)) throw codedError("STICKER_SEARCH_CONTEXT_LIMIT");
       signal.throwIfAborted();
       options.assertCurrent();
+      options.onDisclosed?.(context, sources);
       return { value, sources };
     },
   };

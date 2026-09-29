@@ -208,8 +208,9 @@ export function attemptedUnreadMediaCount(orm: Orm, eventKeys: readonly string[]
 
 /**
  * 同一会话里同一个来源引用已经读出来的描述（0.4.0 P5 的"复用"）：同图重发时直接照抄，
- * 不再花一次视觉模型。范围严格限定在同一 account＋kind＋peer（也就是同一间会话）：
- * 描述不会跨会话漂移，也不改变"模型描述"的归属（`note_model` 原样带过去）。
+ * 不再花一次视觉模型。范围严格限定在同一 account＋kind＋peer（也就是同一间会话）**且同一
+ * 助手（agent）**：描述不会跨会话漂移，也不会在一次改绑之后漂移到另一任助手名下——旧描述的
+ * `note_model` 归属仍是上一任助手的读法，换绑后必须重新读，而不是换个名字照抄。
  */
 export function reusableMediaNote(
   orm: Orm,
@@ -217,6 +218,7 @@ export function reusableMediaNote(
     accountId: string;
     conversationKind: "group" | "private";
     peerId: string;
+    agentId: string;
     kind: QqMediaKind;
     sourceRef: string;
     at: string;
@@ -231,6 +233,7 @@ export function reusableMediaNote(
         eq(schema.qqEvents.accountId, input.accountId),
         eq(schema.qqEvents.conversationKind, input.conversationKind),
         eq(schema.qqEvents.peerId, input.peerId),
+        eq(schema.qqEvents.agentId, input.agentId),
         eq(schema.qqMediaNotes.segmentKind, input.kind),
         eq(schema.qqMediaNotes.sourceRef, input.sourceRef),
         gt(schema.qqMediaNotes.expiresAt, input.at),

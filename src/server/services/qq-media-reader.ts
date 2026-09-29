@@ -65,6 +65,7 @@ export async function readQqMediaOnce(
   input: unknown,
   signal?: AbortSignal,
 ): Promise<QqMediaReadResult> {
+  signal?.throwIfAborted();
   const parsed = Input.safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ media read input");
   const value = parsed.data;
@@ -115,15 +116,19 @@ export async function readQqMediaOnce(
   if (!adapter.capabilities.includes(kind))
     return { kind: "unreadable", reason: "capability_unavailable" };
   // 复用先于花钱：同一会话里同一张图已经读过，就照抄那份描述（不消耗尝试、不调模型）。
+  // 复用严格同 agent：改绑之后旧助手的描述不得漂移到新助手名下（note_model 的归属是原读法的）。
   const reused = reusableMediaNote(orm, {
     accountId: event.accountId,
     conversationKind: event.conversationKind as "group" | "private",
     peerId: event.peerId,
+    agentId: event.agentId,
     kind,
     sourceRef: row.sourceRef,
     at: new Date().toISOString(),
   });
   if (reused) {
+    // 取消在写入之前生效：取消不是"重试结论"，不能借复用的手把缓存补上。
+    signal?.throwIfAborted();
     try {
       recordMediaNote(orm, {
         eventKey: value.eventKey,
@@ -146,6 +151,8 @@ export async function readQqMediaOnce(
     relatedSupplementArrived: value.relatedSupplementArrived,
   });
   if (retry.kind !== "allowed") return { kind: "unreadable", reason: retry.reason };
+  // 取消在认领尝试之前生效：一次被取消的调用不该烧掉这张图的读取次数。
+  signal?.throwIfAborted();
   // The SQL update claims a unique attempt number even when two consumers race.
   let claimed: typeof row;
   try {
@@ -180,6 +187,8 @@ export async function readQqMediaOnce(
         expiresAt: row.expiresAt,
       },
     });
+    // 取消在写回之前生效：模型已经给出描述也不能救回一个被取消的调用。
+    signal?.throwIfAborted();
     if (typeof generated !== "string") throw new Error("invalid media description");
     const note = generated.trim();
     if (!note) throw new Error("empty media description");
@@ -209,6 +218,8 @@ export async function readQqMediaOnce(
     }
     return { kind: "described", attempt: claimed.attempts };
   } catch {
+    // 取消不是失败：先让取消穿透，绝不把它吞成 failed 之后再把描述/状态写进缓存。
+    signal?.throwIfAborted();
     // A transport/model failure after pause, account switch, or source expiry is not
     // permission to keep a waiting task alive for a later supplement.
     const current = mediaNoteRow(orm, value.eventKey, value.segmentIndex);

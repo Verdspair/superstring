@@ -1,7 +1,4 @@
-import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
-import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
-import { AgentRunRepository } from "../db/agent-run-repository";
 import * as schema from "../db/schema";
 // The intake runtime: connection events in, durable observations out.
 //
@@ -35,7 +32,6 @@ import {
 import { platformMessageWasSentByAssistant } from "../db/qq-send-repository";
 import { readQqConnectionConfig, readQqSettings } from "../db/qq-settings-repository";
 import type { Orm } from "../db/repositories";
-import type { VisionClient } from "../llm/vision-client";
 import type { OneBotMediaSourceResult } from "./onebot-connection";
 import {
   OneBotConnection,
@@ -43,9 +39,7 @@ import {
   type OneBotSocketFactory,
 } from "./onebot-connection";
 import type { QqMessageResult, QqObservation } from "./onebot-protocol";
-import { handleQqRecordedMessage, type QqEventMediaDeps } from "./qq-event-path";
-import { createQqMediaAdapter } from "./qq-media-adapter";
-import { createQqMediaSourceFetcher } from "./qq-media-source";
+import { handleQqRecordedMessage } from "./qq-event-path";
 import { type QqMemoryScheduleResult, scheduleQqMemory } from "./qq-memory-scheduler";
 
 /** A fixed, content-free description of what intake did. Never carries message text. */
@@ -217,12 +211,6 @@ export interface QqIntakeRuntimeOptions {
   /** Timer seams for the supervisor; tests drive it without waiting. */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (handle: unknown) => void;
-  /**
-   * The media reading seam (P5m). Omitted, media is still recorded and never read — the same
-   * shape P4b left behind, because a caller without a vision client must not silently read.
-   */
-  media?: { vision: VisionClient; agentRuntime?: LeafAgentRuntime };
-  mediaEnabled?: () => boolean;
   /** Seconds since epoch, the unit the dispatch rows use. Injectable so tests own the clock. */
   nowSeconds?: () => number;
   onEvent?: (event: QqIntakeEvent) => void;
@@ -252,20 +240,9 @@ export class QqIntakeRuntime {
   #timer: ReturnType<typeof setInterval> | null = null;
   #supervise: unknown = null;
   #stopped = true;
-  readonly #mediaRuntime?: LeafAgentRuntime;
 
   constructor(options: QqIntakeRuntimeOptions) {
     this.#options = options;
-    if (options.media) {
-      this.#mediaRuntime =
-        options.media.agentRuntime ??
-        createAgentRuntime({
-          vision: options.media.vision,
-          repository: new AgentRunRepository(
-            (options.orm as unknown as { $client: Database }).$client,
-          ),
-        });
-    }
   }
 
   get connection(): OneBotConnection | null {
@@ -281,6 +258,21 @@ export class QqIntakeRuntime {
     return this.#options.transportKeyPath === undefined
       ? readQqConnectionConfig(this.#options.orm)
       : readQqConnectionConfig(this.#options.orm, this.#options.transportKeyPath);
+  }
+
+  /**
+   * Resolve one upstream media reference through the live connection (ADR0019 §8.11). This is the
+   * seam the main Agent's explicit vision tool asks; nothing is read or fetched here, and no model
+   * is called. With no connection up the answer is `not_ready`.
+   */
+  resolveMediaSource(request: {
+    readonly kind: "image" | "record" | "video";
+    readonly sourceRef: string;
+  }): Promise<OneBotMediaSourceResult> {
+    return (
+      this.#connection?.resolveMediaSource(request) ??
+      Promise.resolve({ kind: "unavailable", reason: "not_ready" })
+    );
   }
 
   /**
@@ -447,13 +439,11 @@ export class QqIntakeRuntime {
   }
 
   /**
-   * The per-message follow-up (P5m): classify, queue, understand the media.
+   * The per-message follow-up (P5m): classify, and report whether media was recorded.
    *
-   * Deliberately NOT awaited by the transport consumer. A read is a model call, and holding the
-   * socket's message handler for it would stall every later message behind one picture; the
-   * work is idempotent per segment (the reader's attempt CAS and in-process single-flight), so a
-   * slow read overlapping the next message is safe. A duplicate delivery (`recorded: false`) is
-   * skipped: it is the same message, and a second turn would classify it twice.
+   * Nothing is read here anymore (ADR0019 §8.11): the main Agent understands images on demand
+   * through an explicit tool call. A duplicate delivery (`recorded: false`) is skipped: it is the
+   * same message, and a second turn would classify it twice.
    */
   #followUp(message: QqMessageResult, outcome: RecordOutcome): void {
     if (outcome.kind !== "recorded" || !outcome.recorded) return;
@@ -477,49 +467,20 @@ export class QqIntakeRuntime {
           .catch(() => this.#options.onEvent?.({ kind: "follow_up_failed" }));
       }
     }
-    const media: QqEventMediaDeps | undefined = (() => {
-      const agentRuntime = this.#mediaRuntime;
-      if (!agentRuntime || this.#options.mediaEnabled?.() === false) return undefined;
-      return {
-        adapterFor: ({ mediaPrompt, frames, maxDimension }) =>
-          createQqMediaAdapter({
-            prompt: mediaPrompt,
-            frames,
-            maxDimension,
-            agentRuntime,
-            fetchSource: createQqMediaSourceFetcher({
-              resolveSource: (request): Promise<OneBotMediaSourceResult> =>
-                this.#connection?.resolveMediaSource(request) ??
-                Promise.resolve({ kind: "unavailable", reason: "not_ready" }),
-            }),
-          }),
-      };
-    })();
     void handleQqRecordedMessage(
       this.#options.orm,
       { observation, nowSeconds: this.#now() },
-      {
-        media,
-        onMediaRead: (eventKey) => {
-          const binding = readBindingByConversation(this.#options.orm, {
-            accountId: observation.accountId,
-            kind: observation.conversation.kind,
-            peerId: observation.conversation.peerId,
-          });
-          if (binding) this.#options.conversationIngress?.afterMedia(binding.id, eventKey);
-        },
-        ...(this.#options.conversationIngress
-          ? { dispatch: () => ({ kind: "not_scheduled" as const, reason: "conversation_ingress" }) }
-          : {}),
-      },
+      this.#options.conversationIngress
+        ? { dispatch: () => ({ kind: "not_scheduled" as const, reason: "conversation_ingress" }) }
+        : {},
     )
       .then((result) => {
         this.#options.onEvent?.({
           kind: "follow_up",
           hasMedia: result.media.hasMedia,
           dispatch: result.dispatch.kind,
-          own: result.media.own?.kind ?? "none",
-          supplement: result.media.supplement?.kind ?? "none",
+          own: "none",
+          supplement: "none",
         });
       })
       .catch(() => this.#options.onEvent?.({ kind: "follow_up_failed" }));

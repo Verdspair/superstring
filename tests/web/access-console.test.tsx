@@ -532,6 +532,21 @@ describe("skills panel", () => {
             : "Controls document skill discovery and reading. Turning it off keeps skill files and existing grants.",
         ),
       ).toBeTruthy();
+      expect(
+        screen.getByText(
+          locale === "zh-CN" ? "按需理解 QQ 图片" : "Understand QQ images on demand",
+        ),
+      ).toBeTruthy();
+      expect(
+        screen.getByText(
+          locale === "zh-CN" ? /不在消息入站时自动识图/ : /without automatic analysis on arrival/,
+        ),
+      ).toBeTruthy();
+      expect(
+        screen.getByText(
+          locale === "zh-CN" ? /不再独立自动选图/ : /without a separate automatic selector/,
+        ),
+      ).toBeTruthy();
     },
   );
 });

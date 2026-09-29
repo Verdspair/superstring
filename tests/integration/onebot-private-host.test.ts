@@ -779,8 +779,6 @@ describe("private feature preservation", () => {
     const h = setup(
       {
         complete: async (request) => {
-          // 表情自动选择仍是叶子：没有决策 schema 的调用按候选编号回答。
-          if (request.responseSchema === undefined) return "1";
           decisions++;
           if (decisions === 1)
             return '{"kind":"invoke","name":"memory.query","arguments":{"query":"apples"}}';
@@ -795,7 +793,24 @@ describe("private feature preservation", () => {
               arguments: { bodyRef: item.bodyRef },
             });
           }
-          return finalGenerate;
+          if (decisions === 3)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          // 空正文仅发图：显式 stickerIds 必须来自本轮 sticker.search 实际披露的候选。
+          return JSON.stringify({
+            kind: "final",
+            outputs: [
+              {
+                kind: "generate",
+                targetId: "20002",
+                instructions: "answer",
+                stickerIds: [stickerObservation(request).items[0].id],
+              },
+            ],
+          });
         },
         async *streamText() {
           yield "";
@@ -809,41 +824,53 @@ describe("private feature preservation", () => {
     h.receive("1");
     const result = await activate(h);
     expect(result.status).toBe("completed");
-    expect(decisions).toBe(3);
+    expect(decisions).toBe(4);
     expect(h.outbox.parts(h.outbox.list({})[0]!.id).map((p) => JSON.parse(p.payload!))).toEqual([
       { stickerId: id },
     ]);
+    // 后置自动选择叶子已移除：显式选择路径下不存在 onebot.sticker.select 运行。
     expect(
-      h.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.sticker.select'").get(),
-    ).toEqual({ status: "completed" });
-    const snapshot = h.db
+      h.db
+        .query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id='onebot.sticker.select'")
+        .get(),
+    ).toEqual({ n: 0 });
+    // 主 run 保留"这一轮真正读过的来源"：观测 + 显式读入的记忆 + 检索披露的表情。
+    const snapshots = h.db
       .query(
-        "SELECT s.run_id, c.step_id, c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.sticker.select'",
+        "SELECT s.run_id AS runId, c.step_id AS stepId, c.source_refs AS refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.main'",
       )
-      .get() as { run_id: string; step_id: string; source_refs: string };
-    const refs = JSON.parse(snapshot.source_refs) as { kind: string; id: string }[];
-    // 自动表情叶子继承的是"这一轮真正读过的来源"：观测 + 显式读入的记忆 + 候选表情。
+      .all() as { runId: string; stepId: string; refs: string }[];
+    const refs = snapshots.flatMap(
+      (snapshot) => JSON.parse(snapshot.refs) as { kind: string; id: string }[],
+    );
     expect(refs.map((ref) => ref.kind)).toContain("qq_observation");
     expect(refs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
     expect(refs).toContainEqual(expect.objectContaining({ kind: "qq_sticker", id }));
     h.db.query("DELETE FROM memory_entries WHERE id=?").run(memoryId);
     // 撤权后必须经检查接口复验为 revoked，原文才不再保留（惰性脱敏）。
-    expect(
-      inspectContext(
-        h.db,
-        h.runs,
-        { runId: snapshot.run_id, stepId: snapshot.step_id },
-        { userId: DEFAULT_USER_ID },
-        stamp(),
+    const withMemory = snapshots.filter((snapshot) =>
+      (JSON.parse(snapshot.refs) as { kind: string; id: string }[]).some(
+        (ref) => ref.kind === "memory" && ref.id === memoryId,
       ),
-    ).toMatchObject({ status: "revoked" });
+    );
+    expect(withMemory.length).toBeGreaterThan(0);
+    for (const snapshot of withMemory)
+      expect(
+        inspectContext(
+          h.db,
+          h.runs,
+          { runId: snapshot.runId, stepId: snapshot.stepId },
+          { userId: DEFAULT_USER_ID },
+          stamp(),
+        ),
+      ).toMatchObject({ status: "revoked" });
     expect(
       h.db
         .query(
-          "SELECT c.protected_messages FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.sticker.select'",
+          "SELECT COUNT(*) AS n FROM context_snapshots WHERE protected_messages IS NOT NULL AND source_refs LIKE ?",
         )
-        .get(),
-    ).toEqual({ protected_messages: null });
+        .get(`%${memoryId}%`),
+    ).toEqual({ n: 0 });
   });
   it("blank reply without usable sticker is corrected by an explicit none without an orphan output id", async () => {
     let calls = 0;
@@ -1111,10 +1138,29 @@ describe("private feature preservation", () => {
     ).toEqual({ protected_messages: null });
   });
   it("delayed disabled sticker is skipped while confirmed text and CQ mention survive", async () => {
-    let count = 0;
+    let calls = 0;
     const h = setup(
       {
-        complete: async () => (++count === 1 ? finalGenerate : "1"),
+        complete: async (request) => {
+          if (++calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          // 先经本轮检索拿到 ID，再据此决定"文字 + 表情"的发送计划。
+          return JSON.stringify({
+            kind: "final",
+            outputs: [
+              {
+                kind: "generate",
+                targetId: "20002",
+                instructions: "answer",
+                stickerIds: [stickerObservation(request).items[0].id],
+              },
+            ],
+          });
+        },
         async *streamText() {
           yield "[CQ:at,qq=20002] hello";
         },
@@ -1662,26 +1708,60 @@ describe("optional Bot retrieval failure", () => {
 
 describe("model-visible sticker contract", () => {
   for (const kind of ["inline", "generate"] as const) {
-    for (const intent of ["omitted", "auto", "none"] as const) {
-      it(`${kind} preserves ${intent} sticker intent`, async () => {
+    for (const scenario of [
+      {
+        title: "re-asks an omitted choice and accepts an explicit []",
+        initial: undefined,
+        correction: "empty",
+      },
+      {
+        title: "re-asks a null choice and accepts a searched id",
+        initial: null,
+        correction: "search",
+      },
+      {
+        title: "resolves an explicit [] in a single decision",
+        initial: [] as const,
+        correction: "direct",
+      },
+    ] as const) {
+      it(`${kind} ${scenario.title}`, async () => {
         let calls = 0;
+        let generations = 0;
+        const outline = (stickerIds?: readonly string[] | null) =>
+          JSON.stringify({
+            kind: "final",
+            outputs: [
+              {
+                kind,
+                targetId: "20002",
+                ...(kind === "inline" ? { text: "你好" } : { instructions: "answer" }),
+                ...(stickerIds === undefined ? {} : { stickerIds }),
+              },
+            ],
+          });
         const h = setup(
           {
-            complete: async () => {
-              if (++calls > 1) return "1";
-              return JSON.stringify({
-                kind: "final",
-                outputs: [
-                  {
-                    kind,
-                    targetId: "20002",
-                    ...(kind === "inline" ? { text: "你好" } : { instructions: "answer" }),
-                    ...(intent === "omitted" ? {} : { stickerIds: intent === "none" ? [] : null }),
-                  },
-                ],
-              });
+            complete: async (request) => {
+              calls++;
+              if (scenario.correction === "direct") return outline(scenario.initial);
+              if (calls === 1) return outline(scenario.initial);
+              if (calls === 2) {
+                // 有候选却省略/null：先反馈 STICKER_SELECTION_REQUIRED，且不得先生成正文。
+                expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_REQUIRED");
+                expect(generations).toBe(0);
+                if (scenario.correction === "empty") return outline([]);
+                return JSON.stringify({
+                  kind: "invoke",
+                  name: "sticker.search",
+                  arguments: { query: "wave" },
+                });
+              }
+              // 显式选图只认本轮搜索实际披露的候选 ID，而不是本地常量。
+              return outline([stickerObservation(request).items[0].id]);
             },
             async *streamText() {
+              generations++;
               yield "你好";
             },
           },
@@ -1695,9 +1775,15 @@ describe("model-visible sticker contract", () => {
           .parts(h.outbox.list({})[0]!.id)
           .map((part) => JSON.parse(part.payload!));
         expect(parts).toEqual(
-          intent === "none" ? [{ text: "你好" }] : [{ text: "你好" }, { stickerId: id }],
+          scenario.correction === "search"
+            ? [{ text: "你好" }, { stickerId: id }]
+            : [{ text: "你好" }],
         );
-        expect(calls).toBe(intent === "none" ? 1 : 2);
+        expect(calls).toBe(
+          scenario.correction === "search" ? 3 : scenario.correction === "empty" ? 2 : 1,
+        );
+        // 只有走完合法计划才会真正生成一次；inline 不经过生成。
+        expect(generations).toBe(kind === "generate" ? 1 : 0);
       });
     }
   }
@@ -1765,22 +1851,33 @@ describe("model-visible sticker contract", () => {
   });
   it("retains a selected sticker and its source in the pending plan after a new message", async () => {
     let calls = 0;
+    let receive: ReturnType<typeof setup>["receive"];
     const h = setup(
       {
         complete: async (request) => {
           calls++;
-          if (calls === 1) return finalGenerate;
-          if (calls === 2) {
-            h.receive("2", "接着说");
-            return "1";
-          }
+          if (calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          if (calls === 2)
+            // 从本轮检索披露的候选里显式选图，然后再请求生成。
+            return JSON.stringify({
+              kind: "final",
+              outputs: [
+                {
+                  kind: "generate",
+                  targetId: "20002",
+                  instructions: "answer",
+                  stickerIds: [stickerObservation(request).items[0].id],
+                },
+              ],
+            });
           const output = pendingOutput(request);
-          expect(output.stickerIds).toHaveLength(1);
-          expect(output.sources).toContainEqual({
-            kind: "qq_sticker",
-            id: output.stickerIds[0],
-            revision: expect.any(String),
-          });
+          // 计划保留搜索阶段显式选中的 ID；来源快照由出站与末次上下文断言覆盖。
+          expect(output.stickerIds).toEqual([id]);
           return JSON.stringify({
             kind: "final",
             outputs: [
@@ -1794,11 +1891,13 @@ describe("model-visible sticker contract", () => {
           });
         },
         async *streamText() {
+          receive("2", "接着说");
           yield "你好";
         },
       },
       { stickersAvailable: true },
     );
+    receive = h.receive;
     const id = addSticker(h);
     h.receive("1");
     await activate(h);
@@ -1893,7 +1992,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(16000 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(17500 - 2048);
           if (++calls === 1)
             return JSON.stringify({
               kind: "invoke",
@@ -1909,7 +2008,7 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    h.gateway.loadedContextCapacity = async () => 16250;
+    h.gateway.loadedContextCapacity = async () => 17500;
     const first = addSticker(h);
     h.db
       .query("UPDATE qq_sticker_assets SET description=? WHERE id=?")
@@ -1940,7 +2039,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(16300 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(17500 - 2048);
           calls++;
           if (calls > 1) {
             const page = stickerObservation(request);
@@ -1964,9 +2063,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    // 0.4.0 P2 批调用与工具目录（query/read 动作描述）把固定协议基线抬到 ~11.8k；本用例考的是
-    // 分页，不是容量边界，容量按实测最小值同步上调（生产默认容量远大于此）。
-    h.gateway.loadedContextCapacity = async () => 16300;
+    // 显式选择协议（sticker.search 的批调用与工具目录）把固定协议基线抬到 ~12.8k；本用例考的是
+    // 分页，不是容量边界，容量取满足整段装配的最小实测值（生产默认容量远大于此）。
+    h.gateway.loadedContextCapacity = async () => 17500;
     const anchor = addSticker(h);
     const collections = [collection(h, anchor)];
     setQqStickerEnabled(h.orm, anchor, false);
@@ -1995,7 +2094,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(16300 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(17500 - 2048);
           if (++calls === 1)
             return JSON.stringify({
               kind: "invoke",
@@ -2012,9 +2111,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    // 0.4.0 P2 批调用与工具目录（query/read 动作描述）把固定协议基线抬到 ~11.8k；本用例考的是
-    // 分页，不是容量边界，容量按实测最小值同步上调（生产默认容量远大于此）。
-    h.gateway.loadedContextCapacity = async () => 16300;
+    // 显式选择协议（sticker.search 的批调用与工具目录）把固定协议基线抬到 ~12.8k；本用例考的是
+    // 分页，不是容量边界，容量取满足整段装配的最小实测值（生产默认容量远大于此）。
+    h.gateway.loadedContextCapacity = async () => 17500;
     const large = addSticker(h);
     editQqSticker(h.orm, large, { description: "详".repeat(2000) });
     h.receive("1");
@@ -2143,20 +2242,25 @@ for (const mode of ["throw", "reject"] as const) {
     >[0][] = [];
     const h = setup(
       {
-        complete: async () =>
-          ++calls === 1
-            ? JSON.stringify({
-                kind: "final",
-                outputs: [
-                  {
-                    kind: "inline",
-                    targetId: "20002",
-                    text: "private reply content",
-                    stickerIds: null,
-                  },
-                ],
-              })
-            : "1",
+        complete: async (request) => {
+          if (++calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          return JSON.stringify({
+            kind: "final",
+            outputs: [
+              {
+                kind: "inline",
+                targetId: "20002",
+                text: "private reply content",
+                stickerIds: [stickerObservation(request).items[0].id],
+              },
+            ],
+          });
+        },
       },
       {
         stickersAvailable: true,

@@ -8,6 +8,7 @@ import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 import {
   decideGenerate,
   decideGenerateMany,
+  decideInline,
   decideInvoke,
   decideNone,
   type ModelStep,
@@ -27,7 +28,7 @@ export interface ScenarioMetric {
   readonly intents: number;
   readonly intentStatuses: readonly string[];
   readonly error: string | null;
-  /** 唤醒给的"为什么没开口"（如 `media_read_failed`）：诊断要看的就是这个。 */
+  /** 没开口的诊断码（如 `MEDIA_READ_FAILED`）：静默挡下时没有唤醒原因，从运行输出里取。 */
   readonly note: string | null;
 }
 
@@ -44,18 +45,13 @@ export function statusOf(result: unknown): string {
     : "missing";
 }
 
-/** 唤醒返回的 `reason`（没开口时给的原因），没有就是 `null`。 */
-export function reasonOf(result: unknown): string | null {
-  if (result === null || typeof result !== "object" || !("reason" in result)) return null;
-  const reason = (result as { reason: unknown }).reason;
-  return typeof reason === "string" ? reason : null;
-}
-
 /** `action_observation` 的载荷：工具结果 + 只带结果自身的来源。 */
 export interface ActionObservation {
   readonly name?: string;
   readonly value?: {
     readonly status?: string;
+    /** `media.describe` 的结论序号（0＝复用缓存，1/2＝消耗的尝试）。 */
+    readonly attempt?: number;
     readonly items?: readonly {
       readonly id?: string;
       readonly bodyRef?: string;
@@ -88,7 +84,7 @@ export function lastActionObservation(messages: readonly ModelMessage[]): Action
  * 再按需补下一步（如 read 的 bodyRef 从候选观察里解析）。装好必须 `restart()`，
  * 运行时（在 `build()` 里展开端口）才会拿到新端口。
  */
-function driveToolFirst(
+export function driveToolFirst(
   harness: OneBotHarness,
   decide: (observation: ActionObservation | null) => readonly ModelStep[] | null,
 ): void {
@@ -315,27 +311,60 @@ export async function pendingIntentSurvivesRestart(): Promise<ScenarioRun> {
 }
 
 /**
- * 媒体读失败与补充读取：
- *   ① 群友发的图读一次失败 → 这一轮自主接话被"媒体闸门"按住（零模型调用）；
- *   ② 同一人接着叫她看图（仍在补充窗口内、且是叫她）→ 第二次读取成功，说明落库；
- *   ③ 她再开口 → 这一轮放行，且媒体说明真的进了模型看到的上下文。
+ * 媒体读失败与补充重读（0.4.0 §8.11，工具优先版）：
+ *   ① 群友发图（没叫她）→ 自主接话里主 Agent 走真工具：`media.list→media.describe` 失败后
+ *      想发布，被"读过却没读出"的闸门在提交处挡下——整轮以 `MEDIA_READ_FAILED` 失败结束，
+ *      零发送（发布从未到达群里）；
+ *   ② 更晚且叫她看图的补充到来 → **直接回应路径**（闸门不拦直接回应）里 `list→describe`
+ *      重读成功（第二次也是最后一次尝试）→ `note.read` 读到说明 → `final` 收口（显式 stickerIds:[]）。
+ * 视觉结果仍是合成桩；缓存复用、尝试计数、补充判定与闸门全走宿主真实代码。
  */
 export async function mediaReadFailureThenSupplement(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     vision: ["fail", "图里是一只猫"],
-    model: [decideGenerate("20002"), scoreOf(9), say("看到了，是只猫")],
+    model: [],
   });
-  harness.receive({ id: "1", speaker: "20002", text: "看这个", image: "upstream-1" });
-  await harness.understandMedia();
-  harness.advance(3);
-  const blocked = await harness.activate("chiming_in");
-  const blockedNote = reasonOf(blocked);
+  let mediaId: string | null = null;
+  driveToolFirst(harness, (observation) => {
+    if (observation?.name === "media.list" && observation.value?.status === "ok") {
+      const item = observation.value.items?.[0];
+      if (item?.id !== undefined) {
+        mediaId = item.id;
+        return [decideInvoke("media.describe", { id: item.id })];
+      }
+      return [decideNone()];
+    }
+    if (observation?.name === "media.describe") {
+      const status = observation.value?.status;
+      if (status === "described" && mediaId !== null)
+        return [decideInvoke("media.note.read", { id: mediaId })];
+      // 读失败：想发布就会被闸门在提交处挡下（这一轮以失败结束）。
+      if (status === "failed") return [decideGenerate("20002")];
+    }
+    if (observation?.name === "media.note.read" && observation.value?.status === "ok")
+      return [decideInline("20002", "看到了，是只猫", [])];
+    return null;
+  });
 
-  harness.receive({ id: "2", speaker: "20002", addressed: true, text: "就是这张，你看下" });
-  await harness.understandMedia();
-  harness.receive({ id: "3", speaker: "20002", text: "你们觉得呢" });
+  // ① 群友只发了图、没叫她：自主接话（合并窗口 2 秒）里模型先读图，失败后发布被闸。
+  harness.receive({ id: "1", speaker: "20002", text: "看这个", image: "upstream-1" });
   harness.advance(3);
-  const result = await harness.activate("chiming_in");
+  harness.model?.push([decideInvoke("media.list", {})]);
+  let blockedNote: string;
+  try {
+    blockedNote = statusOf(await harness.activate("chiming_in"));
+  } catch (error) {
+    blockedNote = `failed:${(error as { code?: string }).code ?? "unknown"}`;
+  }
+  const blockedRun = harness.runs
+    .listRuns({ ownerKind: "conversation", ownerId: harness.conversationId })
+    .find((run) => run.errorCode === "MEDIA_READ_FAILED");
+  if (blockedRun === undefined) throw new Error("缺少被媒体闸门挡下的运行");
+
+  // ② 更晚、明确叫她看这张图的补充：直接回应路径重读一次（最后一次尝试）并收口。
+  harness.receive({ id: "2", speaker: "20002", addressed: true, text: "就是这张，你看下" });
+  harness.model?.push([decideInvoke("media.list", {})]);
+  const result = await harness.activate("direct_reply");
   await harness.deliver();
   return snapshot("媒体读失败与补充读取", harness, statusOf(result), null, blockedNote);
 }

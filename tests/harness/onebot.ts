@@ -27,7 +27,12 @@ import {
 } from "../../src/server/db/memory-content-repository";
 import { entries } from "../../src/server/db/memory-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
-import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import {
+  createQqScheme,
+  type QqSchemeRow,
+  schemePrompts,
+  schemeRhythm,
+} from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
   DEFAULT_AGENT_ID,
@@ -42,17 +47,14 @@ import type {
   OneBotSendRequest,
   OneBotSendResult,
 } from "../../src/server/services/onebot-connection";
-import {
-  normalizeOneBotMessage,
-  type QqObservation,
-} from "../../src/server/services/onebot-protocol";
+import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import {
   qqConversationKey,
   qqConversationScopeOf,
   qqMemoryScopeKey,
 } from "../../src/server/services/qq-binding-contract";
-import { handleQqRecordedMessage } from "../../src/server/services/qq-event-path";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import type { QqSendPort } from "../../src/server/services/qq-send-transport";
 import type { MemoryContentResponse } from "../../src/shared/contracts";
@@ -71,7 +73,7 @@ export interface ReceiveInput {
   readonly addressed?: boolean;
   /** 引用某条消息（回复她时被认作"被叫到"）。 */
   readonly replyTo?: string;
-  /** 附一张图（上游文件引用）；媒体读取要等 `understandMedia()`。 */
+  /** 附一张图（上游文件引用）；图片只在主 Agent 显式调用 `media.describe` 时被读取。 */
   readonly image?: string;
 }
 
@@ -102,9 +104,11 @@ export interface OneBotHarnessOptions {
   readonly stickersAvailable?: boolean;
   /**
    * 视觉桩的答复，按序取、用完重复最后一项：`"fail"` 表示这次读取失败，字符串是媒体说明。
-   * 不传＝没有视觉能力（媒体只记录、不读取，和未配置视觉模型的安装一致）。
+   * 不传＝媒体工具不接线（图片只记录、没有读取工具，和未配置视觉模型的安装一致）。
    */
   readonly vision?: readonly ("fail" | string)[];
+  /** 媒体工具（media.list/describe/note.read）是否接线；默认跟随 `vision` 给没给。 */
+  readonly mediaEnabled?: boolean;
   /** 模型的容量（字节口径）。默认 65536。 */
   readonly capacity?: number;
   readonly onDiagnostic?: ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"];
@@ -136,11 +140,9 @@ export interface OneBotHarness {
   /** 跑一次冷场扫描（定时宿主做的事）；返回本次的排程与跳过原因。 */
   sweep(): { scheduled: readonly unknown[]; skipped: readonly unknown[] };
   /**
-   * 把还没读过媒体的入站消息走一遍入站媒体读取（生产里由 intake 的跟做完成，这里显式调用）。
-   * 视觉答复按 `vision` 选项给；没配视觉能力时只记录、不读取。
+   * 视觉调用的记录：模型名与随图发出的那段说明（方案「媒体」槽位）。
+   * 只有主 Agent 显式调用 `media.describe` 才会增加；入站不再自动读图（ADR0019 §8.11）。
    */
-  understandMedia(): Promise<void>;
-  /** 视觉调用的记录：模型名与随图发出的那段说明（方案「媒体」槽位）。 */
   readonly visionCalls: readonly { model: string; prompt: string }[];
   /** 这个绑定对应的 OneBot 会话 id（重排唤醒、诊断查询用）。 */
   readonly conversationId: string;
@@ -263,12 +265,13 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
     },
   };
 
-  // 媒体：读取要花一次视觉调用（生产里由 intake 的跟做触发），所以这里把"还没读的消息"排成队列，
-  // 由 `understandMedia()` 显式消费——场景因此能精确表达"读失败"与"补充读取"的先后。
+  // 媒体（ADR0019 §8.11）：入站不再自动读图，读取只在主 Agent 显式调用媒体工具时发生。
+  // 宿主拿到的是一个合成适配器：每次 `media.describe` 花一次视觉调用、结果按 `vision` 选项给；
+  // 缓存复用、尝试计数、补充重试全部走宿主与读取器的真实代码，这里只替换视觉模型本身。
   const visionOutcomes = options.vision;
   const visionCalls: { model: string; prompt: string }[] = [];
-  const pendingMedia: QqObservation[] = [];
-  if (visionOutcomes !== undefined) {
+  const mediaOn = options.mediaEnabled ?? visionOutcomes !== undefined;
+  if (mediaOn) {
     orm
       .update(schema.organizationSettings)
       .set({ visionModelName: "vision-stub" })
@@ -276,6 +279,20 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       .run();
   }
   let visionIndex = 0;
+  const adapterFor = (config: {
+    mediaPrompt: string;
+    frames: number;
+    maxDimension: number;
+  }): QqMediaReadAdapter => ({
+    capabilities: ["image"] as const,
+    async read(input): Promise<string> {
+      visionCalls.push({ model: input.model, prompt: config.mediaPrompt });
+      const outcome = visionOutcomes?.[Math.min(visionIndex, visionOutcomes.length - 1)] ?? "fail";
+      visionIndex += 1;
+      if (outcome === "fail") throw new Error("HARNESS_VISION_FAILED");
+      return outcome;
+    },
+  });
   let lastSeq = 0;
   const observedSeq = (): number => {
     const conversation = journal.ensureOneBot(bindingId);
@@ -288,22 +305,6 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
         .get(conversation.id) as { seq: number }
     ).seq;
   };
-  const mediaDeps =
-    visionOutcomes === undefined
-      ? undefined
-      : {
-          adapterFor: ({ mediaPrompt }: { mediaPrompt: string }) => ({
-            capabilities: ["image"] as const,
-            async read(input: { model: string }): Promise<string> {
-              visionCalls.push({ model: input.model, prompt: mediaPrompt });
-              const outcome =
-                visionOutcomes[Math.min(visionIndex, visionOutcomes.length - 1)] ?? "fail";
-              visionIndex += 1;
-              if (outcome === "fail") throw new Error("HARNESS_VISION_FAILED");
-              return outcome;
-            },
-          }),
-        };
 
   // 这一层是"进程内状态"：`restart()` 丢掉它、只留库——重启恢复场景就靠它把
   // "在内存里的宿主"和"已经落库的事实"分开。
@@ -332,6 +333,18 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600, retentionDays: 14 }),
       now,
       ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
+      // 与运行时同构：媒体工具按方案取提示词与帧参数；合成适配器只替换视觉模型本身。
+      ...(mediaOn
+        ? {
+            mediaEnabled: () => true,
+            mediaAdapter: (scheme: QqSchemeRow) =>
+              adapterFor({
+                mediaPrompt: schemePrompts(scheme).media,
+                frames: schemeRhythm(scheme).media_frame_count,
+                maxDimension: schemeRhythm(scheme).media_max_dimension,
+              }),
+          }
+        : {}),
     });
     const delivery = new OutboundDelivery({
       orm,
@@ -425,8 +438,6 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
         accountId,
         conversationIngress: current.adapter,
       });
-      // 每条消息都要走一次入站媒体跟做：没有图的那条也可能"叫醒"上一条读失败的媒体。
-      if (normalized.kind === "message") pendingMedia.push(normalized.observation);
       const conversation = journal.ensureOneBot(bindingId);
       if (conversation) {
         const row = db
@@ -441,19 +452,6 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       }
       return recorded;
     },
-    understandMedia: async () => {
-      for (const observation of pendingMedia.splice(0)) {
-        await handleQqRecordedMessage(
-          orm,
-          { observation, nowSeconds: clock.seconds },
-          {
-            ...(mediaDeps === undefined ? {} : { media: mediaDeps }),
-            // 入队与唤醒由 adapter 那一侧负责，这里只做"读懂媒体"，避免同一事件被排两次。
-            dispatch: () => ({ kind: "not_scheduled", reason: "harness_ingress_owns_wakes" }),
-          },
-        );
-      }
-    },
     visionCalls,
     get conversationId() {
       return journal.ensureOneBot(bindingId)!.id;
@@ -465,7 +463,20 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
     activate: async (cause) => {
       const wake = wakes.claim({ at: now(), leaseMs: 120_000, cause });
       if (!wake) return null;
-      return current.host.activate(wake, new AbortController().signal);
+      try {
+        return await current.host.activate(wake, new AbortController().signal);
+      } catch (error) {
+        // 与生产调度器同构：激活抛错后必须结清租约（并按默认策略排重试），
+        // 否则并发槽位被占死、后续唤醒领不到。错误照旧抛给调用方。
+        const code = (error as { code?: unknown }).code;
+        wakes.fail(wake.id, wake.leaseToken!, {
+          at: now(),
+          errorCode: typeof code === "string" ? code : "BOT_RUN_FAILED",
+          maxAttempts: 3,
+          retryDelayMs: 15_000,
+        });
+        throw error;
+      }
     },
     deliver: () => current.delivery.runOnce(),
     sweep: () => current.adapter.sweep(clock.seconds),

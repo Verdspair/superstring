@@ -756,6 +756,7 @@ ${intent.trim()}`,
         sinceSeconds,
         limit: fetchLimit,
         includeSources: true,
+        includeMediaNotes: false,
       }).map(({ eventKey: _key, ...message }) => message),
       ownSpeech: [
         ...ownSpeechSince(o.orm, scope, {

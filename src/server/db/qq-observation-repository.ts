@@ -3,7 +3,7 @@
 
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { and, asc, count, desc, eq, gt, inArray, isNull, lt, lte, max } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNull, lt, lte, max, sql } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { fail } from "../errors";
 import type { QqMemoryScope } from "../services/qq-binding-contract";
@@ -48,6 +48,7 @@ function mapMessageRows(
     expiresAt: string | null;
   }>,
   includeSources: boolean,
+  includeMediaNotes = true,
 ): QqConversationMessageRow[] {
   if (rows.length === 0) return [];
 
@@ -57,8 +58,8 @@ function mapMessageRows(
       expiresAt: schema.qqMediaNotes.expiresAt,
       attempts: schema.qqMediaNotes.attempts,
       eventKey: schema.qqMediaNotes.eventKey,
-      note: schema.qqMediaNotes.note,
-      noteModel: schema.qqMediaNotes.noteModel,
+      note: includeMediaNotes ? schema.qqMediaNotes.note : sql<string | null>`NULL`,
+      noteModel: includeMediaNotes ? schema.qqMediaNotes.noteModel : sql<string | null>`NULL`,
     })
     .from(schema.qqMediaNotes)
     .where(
@@ -241,7 +242,12 @@ export function conversationMessagesForBackfill(
 export function conversationMessagesSince(
   orm: Orm,
   scope: QqConversationScope,
-  input: { sinceSeconds: number; limit: number; includeSources?: boolean },
+  input: {
+    sinceSeconds: number;
+    limit: number;
+    includeSources?: boolean;
+    includeMediaNotes?: boolean;
+  },
 ): QqConversationMessageRow[] {
   if (!Number.isInteger(input.sinceSeconds) || input.sinceSeconds < 0) {
     throw new TypeError("Invalid QQ conversation query input");
@@ -276,7 +282,12 @@ export function conversationMessagesSince(
     .orderBy(desc(schema.qqEvents.occurredAtSeconds), desc(schema.qqEvents.eventKey))
     .limit(input.limit)
     .all();
-  return mapMessageRows(orm, rows, input.includeSources === true);
+  return mapMessageRows(
+    orm,
+    rows,
+    input.includeSources === true,
+    input.includeMediaNotes !== false,
+  );
 }
 
 /** Permanent event identities, including media-only messages; scoped exactly like context. */

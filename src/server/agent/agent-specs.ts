@@ -48,7 +48,7 @@ const outputBase = {
     .nullable()
     .optional()
     .describe(
-      "Both output kinds: null/omitted=auto; []=no sticker; [id]=select a disclosed sticker.search/pending_plan ID.",
+      "Both output kinds: []=no sticker; [id]=one sticker ID disclosed by this run's sticker.search (or an ID of this run's pending plan). A sticker host with candidates requires this choice; omit only where the channel has no sticker decision to make.",
     ),
 };
 export const OutputDraftSchema = z.discriminatedUnion("kind", [
@@ -169,8 +169,9 @@ export function parseAgentDecision(raw: string): AgentDecision {
   );
 }
 
-// Ask structured-output models to emit null for auto. The parser also accepts omitted
-// fields from providers using JSON-object/plain-text mode or older pending plans.
+// Ask structured-output models to emit an explicit nullable sticker intent. The parser also
+// accepts omitted fields (JSON-object/plain-text mode or older pending plans): null/omitted is
+// no longer "auto" — a sticker host either treats it as no sticker or asks for an explicit pick.
 export const AGENT_DECISION_JSON_SCHEMA = z.toJSONSchema(AgentDecisionSchema, {
   override({ zodSchema, jsonSchema }) {
     if (OutputDraftSchema.options.some((option) => option === zodSchema))
