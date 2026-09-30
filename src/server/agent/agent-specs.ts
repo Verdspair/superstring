@@ -144,7 +144,7 @@ function decisionKindOf(segment: string | null): string | null {
   }
 }
 
-/** 从开头起的紧邻顶层对象序列（只跳空白；遇到散文或未闭合对象即停）。 */
+/** 从开头起的紧邻顶层对象序列（只跳空白；遇到散文或截断的对象即停）。 */
 function topLevelObjects(text: string): string[] {
   const objects: string[] = [];
   let cursor = 0;
