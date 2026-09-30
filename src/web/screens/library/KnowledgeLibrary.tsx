@@ -1,4 +1,14 @@
-import { FileText, FolderPlus, Plus, RefreshCw, Settings2, Trash2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  FolderPlus,
+  Plus,
+  RefreshCw,
+  Settings2,
+  SlidersHorizontal,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertDialog } from "@/components/confirmation";
@@ -27,6 +37,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { latestKnowledgeSettings } from "@/features/knowledge/types";
+import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import type { KnowledgeCategory } from "../../../shared/contracts/knowledge";
 import { JobRunLink } from "../runs/RunEntry";
@@ -34,10 +45,7 @@ import { JobRunLink } from "../runs/RunEntry";
 export function KnowledgeLibrary() {
   const s = useSuperstringStore(),
     t = useTranslation().t;
-  const [search, setSearch] = useState(""),
-    [category, setCategory] = useState("all"),
-    [status, setStatus] = useState("all"),
-    [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<{
       kind: "document" | "category";
       id: string;
@@ -48,15 +56,19 @@ export function KnowledgeLibrary() {
   useEffect(() => {
     void s.loadKnowledge();
   }, [s.loadKnowledge]);
-  const docs = s.knowledgeDocuments.filter(
-    (doc) =>
-      (category === "all" || doc.category_id === category) &&
-      (status === "all" || doc.organization_status === status) &&
-      `${doc.name} ${doc.summary} ${doc.tags.join(" ")}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-  );
-  const activeCategory = s.knowledgeCategories.find((item) => item.id === category);
+  // 列表由服务端分页过滤；docs 就是当前页，不在客户端二次筛选。
+  const docs = s.knowledgeDocuments,
+    filters = s.knowledgeFilters,
+    page = s.knowledgeCursors.length,
+    paging = s.knowledgeLoading || s.knowledgeBusy || s.knowledgeDirty;
+  // 翻页、换过滤与刷新只在成功落页后清选择：失败保留原列表与既有选择，
+  // 批量快照因此只含本页显式勾选项，不会夹带已翻走页的旧 ID。
+  const changeList = (load: Promise<boolean>) => {
+    void load.then((ok) => {
+      if (ok) setSelected([]);
+    });
+  };
+  const activeCategory = s.knowledgeCategories.find((item) => item.id === filters.category);
   return (
     <section className="space-y-4" aria-label={t("library.document.library")}>
       <div className="flex flex-wrap gap-2">
@@ -64,13 +76,13 @@ export function KnowledgeLibrary() {
           className="min-w-48 flex-1"
           aria-label={t("library.search.documents")}
           placeholder={t("library.search.titles.summaries.or.tags")}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={filters.search}
+          onChange={(e) => changeList(s.loadKnowledge({ search: e.target.value }))}
         />
         <NativeSelect
           aria-label={t("library.filter.categories")}
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
+          value={filters.category}
+          onChange={(e) => changeList(s.loadKnowledge({ category: e.target.value }))}
         >
           <option value="all">{t("library.all.categories")}</option>
           {s.knowledgeCategories.map((item) => (
@@ -81,8 +93,8 @@ export function KnowledgeLibrary() {
         </NativeSelect>
         <NativeSelect
           aria-label={t("library.organization.status")}
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
+          value={filters.status}
+          onChange={(e) => changeList(s.loadKnowledge({ status: e.target.value }))}
         >
           <option value="all">{t("library.all.statuses")}</option>
           {["pending", "queued", "running", "succeeded", "failed", "cancelled", "disabled"].map(
@@ -96,7 +108,7 @@ export function KnowledgeLibrary() {
         <Button
           variant="outline"
           disabled={s.knowledgeLoading || s.knowledgeDirty || s.knowledgeBusy}
-          onClick={() => void s.loadKnowledge()}
+          onClick={() => changeList(s.loadKnowledge())}
         >
           <RefreshCw />
           {t("library.refresh")}
@@ -108,7 +120,7 @@ export function KnowledgeLibrary() {
       </div>
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <Badge variant="secondary">
-          {docs.length} {t("library.documents")}
+          {s.knowledgeTotal} {t("library.documents")}
         </Badge>
         <Button
           size="sm"
@@ -144,16 +156,16 @@ export function KnowledgeLibrary() {
         )}
         {/* Agent 的读取规则已迁到系统能力页：文档区只保留直达入口，草稿安全跳转。 */}
         <Button
-          size="sm"
-          variant="ghost"
-          className="ml-auto"
+          variant="outline"
+          className="ml-auto min-h-8 h-auto whitespace-normal"
           onClick={() => s.openSettingsRoute("knowledge-tools")}
         >
+          <SlidersHorizontal />
           {t("capabilities.resources.openKnowledgeTools")}
         </Button>
         <Button
-          size="sm"
-          variant="ghost"
+          variant="outline"
+          className="min-h-8 h-auto whitespace-normal"
           onClick={() => s.requestKnowledgeEditor({ kind: "settings" })}
         >
           <Settings2 />
@@ -172,6 +184,23 @@ export function KnowledgeLibrary() {
           <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
             {t("library.clear.selection")}
           </Button>
+        </div>
+      )}
+      {s.error && (
+        <div className="flex flex-wrap items-center gap-3">
+          <p role="alert" className="text-sm text-destructive">
+            {translateNotice(s.error)}
+          </p>
+          {/* 编辑中的保存失败由弹层自己保留草稿，不提供会误导的列表重试。 */}
+          {!s.knowledgeDirty && !s.knowledgeBusy && (
+            <Button
+              variant="outline"
+              disabled={s.knowledgeLoading}
+              onClick={() => changeList(s.loadKnowledge())}
+            >
+              {t("capabilities.retry")}
+            </Button>
+          )}
         </div>
       )}
       <div className="overflow-hidden rounded-xl border">
@@ -279,10 +308,42 @@ export function KnowledgeLibrary() {
           </TableBody>
         </Table>
       </div>
-      {!docs.length && (
-        <p className="py-12 text-center text-muted-foreground">
-          {t("library.no.matching.documents.import.text.txt.or.markdown.files")}
-        </p>
+      {!docs.length &&
+        (s.knowledgeLoading ? (
+          <p className="py-12 text-center text-muted-foreground">{t("library.loading")}</p>
+        ) : (
+          !s.error && (
+            <p className="py-12 text-center text-muted-foreground">
+              {t("library.no.matching.documents.import.text.txt.or.markdown.files")}
+            </p>
+          )
+        ))}
+      {(docs.length > 0 || page > 1) && (
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {t("library.value.entries.page.value", { "0": s.knowledgeTotal, "1": page })}
+          </span>
+          <div className="flex gap-2">
+            <Button
+              size="icon"
+              variant="outline"
+              aria-label={t("library.previous.page")}
+              disabled={page <= 1 || paging}
+              onClick={() => changeList(s.loadKnowledgePage("prev"))}
+            >
+              <ChevronLeft />
+            </Button>
+            <Button
+              size="icon"
+              variant="outline"
+              aria-label={t("library.next.page")}
+              disabled={s.knowledgeNextCursor === null || paging}
+              onClick={() => changeList(s.loadKnowledgePage("next"))}
+            >
+              <ChevronRight />
+            </Button>
+          </div>
+        </div>
       )}
       <KnowledgeEditorPanel />
       {deleting && (
@@ -330,7 +391,6 @@ export function KnowledgeLibrary() {
                     if (ok) {
                       setDeleting(null);
                       setSelected((ids) => ids.filter((id) => id !== deleting.id));
-                      if (deleting.kind === "category") setCategory("all");
                     }
                   });
               }}

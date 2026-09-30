@@ -206,7 +206,10 @@ export function setupLibrary(overrides: Partial<typeof api> = {}) {
     listKnowledgeCategories: vi
       .fn()
       .mockResolvedValue([{ id: "default", name: "General", revision: 1, document_count: 1 }]),
-    listKnowledgeDocuments: vi.fn().mockResolvedValue([document]),
+    listKnowledgeDocuments: vi
+      .fn()
+      .mockResolvedValue({ items: [document], next_cursor: null, total: 1 }),
+    batchKnowledgeGrants: vi.fn().mockResolvedValue([document]),
     getKnowledgeDocument: vi.fn().mockResolvedValue(document),
     updateKnowledgeDocument: vi.fn().mockResolvedValue(document),
     saveKnowledgeGrants: vi.fn().mockResolvedValue(document),

@@ -13,21 +13,29 @@ import type {
   QqSettingsResponse,
   QqStickerAssetResponse,
 } from "../../../shared/contracts/qq";
+import type {
+  QqStorageCleanupRequest,
+  QqStorageSettingsResponse,
+} from "../../../shared/contracts/qq-storage";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { invalidSchemeInputs, parseAttentionMembers } from "./draft-state";
 import {
+  QQ_STORAGE_PAGE_SIZE,
   type QqAccessState,
   type QqSchemeEditor,
   type QqSchemeState,
   type QqStickerState,
+  type QqStorageItemsQuery,
   type QqStorageState,
   qqSchemeChanges,
   qqSchemeDirty,
   qqSchemeEditorFrom,
   qqStickerEditorFrom,
   qqStickerEditorTags,
+  qqStorageDaysChanged,
+  qqStorageDaysValid,
 } from "./types";
 
 export function createQqStickerActions(
@@ -71,6 +79,9 @@ export function createQqStickerActions(
     const message = error instanceof Error ? error.message : String(error);
     set({ error: message, feedback: "" });
   };
+  /** 集合简介的客户端规范化：null 与空白都发 null（清除/未填），其余去掉首尾空白；上限随契约 max(2000)。 */
+  const normaliseDescription = (description: string | null) =>
+    description === null || description.trim() === "" ? null : description.trim();
   return {
     loadQqStickers: async () => {
       if (get().qqStickerLoading) return;
@@ -263,11 +274,15 @@ export function createQqStickerActions(
         set({ qqStickerSaving: false });
       }
     },
-    createQqStickerCollection: async (name) => {
+    createQqStickerCollection: async (name, description) => {
       if (get().qqStickerSaving) return false;
       set({ qqStickerSaving: true, error: null });
       try {
-        const collection = await get().apiClient.createQqStickerCollection({ name });
+        const collection = await get().apiClient.createQqStickerCollection({
+          name,
+          // 新建时留空＝没有简介：显式发 null（服务端对缺省也按 null 处理，这里只发一种写法）。
+          description: normaliseDescription(description ?? null),
+        });
         set((state) => ({
           qqStickerCollections: [...state.qqStickerCollections, collection],
           feedback: "已新建集合",
@@ -280,12 +295,14 @@ export function createQqStickerActions(
         set({ qqStickerSaving: false });
       }
     },
-    renameQqStickerCollection: async (id, name, expectedRevision) => {
+    renameQqStickerCollection: async (id, name, expectedRevision, description) => {
       if (get().qqStickerSaving) return false;
       set({ qqStickerSaving: true, error: null });
       try {
         const collection = await get().apiClient.updateQqStickerCollection(id, {
           name,
+          // 未携带简介＝本次不改动：整个字段省去，服务端保留已存值——「没改」绝不会变成清空。
+          ...(description === undefined ? {} : { description: normaliseDescription(description) }),
           expected_revision: expectedRevision,
         });
         set((state) => ({
@@ -651,46 +668,263 @@ export function createQqSchemeActions(
 }
 
 /**
- * Storage actions (§11.1's 存储与诊断, P5h).
+ * Storage management actions (§11.1's 存储与诊断, P5h).
  *
- * The page reads what exists and offers one action: remove what has expired. Nothing here decides a
- * retention window — the server's cleanup reads the expiry columns, which were written from the one
- * definition in `qq-retention.ts`.
+ * Two surfaces, one busy flag: the retention card writes through the same `qq_settings` revision
+ * chain the access page uses (so two tabs editing different fields still detect each other), and
+ * the cleanup workspace previews before it deletes. Nothing here decides a retention window — the
+ * window only applies to records written afterwards, and physical deletion is always an explicit,
+ * confirmed cleanup.
  */
 export function createQqStorageActions(
   set: StoreSet,
   get: StoreGet,
-): Pick<QqStorageState, "loadQqStorage" | "runQqStorageCleanup"> {
+): Pick<
+  QqStorageState,
+  | "loadQqStorage"
+  | "refreshQqStorage"
+  | "saveQqStorageSettings"
+  | "loadQqStorageItems"
+  | "previewQqStorageCleanup"
+  | "runQqStorageCleanupSelection"
+  | "clearQqStorageCleanup"
+> {
+  const report = (error: unknown) =>
+    set({ error: error instanceof Error ? error.message : String(error), feedback: "" });
+  // 读取的模块级令牌（与方案/接入模块同一模式）：`resetForTests` 会把 store 代次清零，
+  // 单靠代次无法区分「重置后新读取恰好拿到同一编号」；令牌不随重置回收。
+  let storageReadToken = 0;
+  const beginStorageRead = () => {
+    const state = get();
+    storageReadToken += 1;
+    const operation = {
+      api: state.apiClient,
+      id: state.qqStorageReadId + 1,
+      token: storageReadToken,
+    };
+    set({ qqStorageReadId: operation.id });
+    return operation;
+  };
+  const isCurrentStorageRead = (operation: ReturnType<typeof beginStorageRead>) =>
+    get().qqStorageReadId === operation.id && storageReadToken === operation.token;
+  const isCurrentStorageApi = (operation: ReturnType<typeof beginStorageRead>) =>
+    get().apiClient === operation.api && isCurrentStorageRead(operation);
+  /** 写入开始即作废在途读取：旧设置晚到不得盖掉刚保存的值，也不留悬空的 loading。 */
+  const invalidateStorageReads = () =>
+    set({ qqStorageReadId: get().qqStorageReadId + 1, qqStorageLoading: false });
+  /** 摘要与设置的一体读取；保存进行中不开始（与界面 busy 禁用一致）。 */
+  const readUsageAndSettings = async (): Promise<QqStorageSettingsResponse | null> => {
+    if (get().qqStorageSaving) return null;
+    const operation = beginStorageRead();
+    set({ qqStorageLoading: true, error: null });
+    try {
+      const [usage, settings] = await Promise.all([
+        operation.api.getQqStorage(),
+        operation.api.getQqStorageSettings(),
+      ]);
+      if (!isCurrentStorageApi(operation)) return null;
+      set({ qqStorageUsage: usage, qqStorageSettings: settings });
+      return settings;
+    } catch (error) {
+      if (isCurrentStorageApi(operation)) report(error);
+      return null;
+    } finally {
+      if (isCurrentStorageRead(operation)) set({ qqStorageLoading: false });
+    }
+  };
+  /** 显式刷新合并保留草稿：已改天数（含非法原文）保留，未改字段与 revision 跟随新基线。 */
+  const mergeStorageDraft = (fresh: QqStorageSettingsResponse) => {
+    const draft = get().qqInputs.storage;
+    if (!draft) return;
+    set((state) => ({
+      qqInputs: {
+        ...state.qqInputs,
+        storage: {
+          source: fresh,
+          days: qqStorageDaysChanged(draft.days, draft.source.retention_days)
+            ? draft.days
+            : String(fresh.retention_days),
+        },
+      },
+    }));
+  };
+  // 清理操作的模块级令牌：预览与执行共用一个代次，关闭/卸载后旧响应与旧错误不得落地。
+  let cleanupToken = 0;
+  const beginCleanup = () => {
+    cleanupToken += 1;
+    const operation = {
+      api: get().apiClient,
+      id: get().qqStorageCleanupOperationId + 1,
+      token: cleanupToken,
+    };
+    set({
+      qqStorageCleanupOperationId: operation.id,
+      qqStorageSaving: true,
+      qqStorageCleanupError: null,
+      error: null,
+      feedback: "",
+    });
+    return operation;
+  };
+  const isCurrentCleanup = (operation: ReturnType<typeof beginCleanup>) =>
+    get().qqStorageCleanupOperationId === operation.id && cleanupToken === operation.token;
+  const isCurrentCleanupApi = (operation: ReturnType<typeof beginCleanup>) =>
+    get().apiClient === operation.api && isCurrentCleanup(operation);
   return {
     loadQqStorage: async () => {
       if (get().qqStorageLoading) return;
-      set({ qqStorageLoading: true, error: null });
-      try {
-        const usage = await get().apiClient.getQqStorage();
-        set({ qqStorageUsage: usage });
-      } catch (error) {
-        set({ error: error instanceof Error ? error.message : String(error), feedback: "" });
-      } finally {
-        set({ qqStorageLoading: false });
-      }
+      // 隐式读取绝不推进保留草稿基线（与连接页同一纪律）。
+      await readUsageAndSettings();
     },
-    runQqStorageCleanup: async () => {
-      if (get().qqStorageSaving) return false;
+    refreshQqStorage: async () => {
+      if (get().qqStorageLoading) return;
+      const settings = await readUsageAndSettings();
+      if (settings) mergeStorageDraft(settings);
+    },
+    saveQqStorageSettings: async () => {
+      const draft = get().qqInputs.storage;
+      if (!draft || get().qqStorageSaving) return false;
+      if (!qqStorageDaysValid(draft.days)) {
+        set({ error: "请填写 1–3650 之间的整数天数，再保存。", feedback: "" });
+        return false;
+      }
       set({ qqStorageSaving: true, error: null, feedback: "" });
+      invalidateStorageReads();
       try {
-        const removed = await get().apiClient.runQqStorageCleanup();
-        set({ qqStorageRemoved: removed, feedback: "已清理过期内容" });
-        // Re-read so the numbers describe the state the cleanup produced.
-        set({ qqStorageLoading: false });
-        const usage = await get().apiClient.getQqStorage();
-        set({ qqStorageUsage: usage });
+        const saved = await get().apiClient.updateQqStorageSettings({
+          retention_days: Number(draft.days),
+          expected_revision: draft.source.revision,
+        });
+        set((state) => {
+          // 保存成功后 revision 推进到新值，数字原文保留（用户可继续改）。
+          const storageKept =
+            state.qqInputs.storage?.source.revision === draft.source.revision
+              ? { ...state.qqInputs, storage: { source: saved, days: draft.days } }
+              : state.qqInputs;
+          const connection = storageKept.connection;
+          return {
+            qqStorageSettings: saved,
+            // 摘要里的保留天数本地推进；其余统计保持原值，等下一次读取刷新。
+            qqStorageUsage: state.qqStorageUsage
+              ? {
+                  ...state.qqStorageUsage,
+                  retention: { ...state.qqStorageUsage.retention, days: saved.retention_days },
+                }
+              : state.qqStorageUsage,
+            // 共享同一条 qq_settings 修订链：本次 PUT 成功即已知的自身推进（新 revision 来自响应）。
+            // 全局快照与连接草稿只推进 revision——草稿输入与旧 source 的其余字段保留供脏比较；
+            // 基线对不上的快照不动，由下一次 CAS 如实报告冲突。
+            qqSettings:
+              state.qqSettings && state.qqSettings.revision === draft.source.revision
+                ? { ...state.qqSettings, revision: saved.revision }
+                : state.qqSettings,
+            qqInputs: {
+              ...storageKept,
+              connection:
+                connection && connection.source.revision === draft.source.revision
+                  ? { ...connection, source: { ...connection.source, revision: saved.revision } }
+                  : connection,
+            },
+            feedback: "已保存保留设置",
+          };
+        });
         return true;
       } catch (error) {
-        set({ error: error instanceof Error ? error.message : String(error), feedback: "" });
+        // 冲突（409）或失败：草稿原样保留，界面提示刷新后可重试。
+        report(error);
         return false;
       } finally {
         set({ qqStorageSaving: false });
       }
+    },
+    loadQqStorageItems: async (query: QqStorageItemsQuery, options) => {
+      const api = get().apiClient;
+      const readId = get().qqStorageItemsReadId + 1;
+      set({ qqStorageItemsReadId: readId, qqStorageItemsLoading: true, qqStorageItemsError: null });
+      try {
+        const page = await api.listQqStorageItems(
+          {
+            category: query.category,
+            status: query.status,
+            limit: QQ_STORAGE_PAGE_SIZE,
+            ...(query.kind ? { kind: query.kind } : {}),
+            ...(query.peerId.trim() ? { peer_id: query.peerId.trim() } : {}),
+            ...(query.cursor ? { cursor: query.cursor } : {}),
+          },
+          options?.signal,
+        );
+        if (get().qqStorageItemsReadId !== readId || get().apiClient !== api) return;
+        set({
+          qqStorageItems: page.items,
+          qqStorageItemsTotal: page.total,
+          qqStorageItemsNextCursor: page.next_cursor,
+        });
+      } catch (error) {
+        // 卸载时主动中止的请求不是错误：迟到结果不落地，也不显示失败。
+        if (options?.signal?.aborted) return;
+        if (get().qqStorageItemsReadId !== readId || get().apiClient !== api) return;
+        set({ qqStorageItemsError: errorText(error) });
+      } finally {
+        if (get().qqStorageItemsReadId === readId && get().apiClient === api)
+          set({ qqStorageItemsLoading: false });
+      }
+    },
+    previewQqStorageCleanup: async (request: QqStorageCleanupRequest) => {
+      if (get().qqStorageSaving) return false;
+      // 冻结请求快照：确认执行的必须是预览的这一份，而不是届时可能已变的勾选。
+      const snapshot: QqStorageCleanupRequest = {
+        category: request.category,
+        ...(request.ids ? { ids: [...request.ids] } : {}),
+      };
+      const operation = beginCleanup();
+      set({
+        qqStorageCleanupRequest: snapshot,
+        qqStorageCleanupPreview: null,
+        qqStorageCleanupResult: null,
+      });
+      try {
+        const preview = await operation.api.previewQqStorageCleanup(snapshot);
+        if (!isCurrentCleanupApi(operation)) return false;
+        set({ qqStorageCleanupPreview: preview });
+        return true;
+      } catch (error) {
+        if (isCurrentCleanupApi(operation)) set({ qqStorageCleanupError: errorText(error) });
+        return false;
+      } finally {
+        if (isCurrentCleanup(operation)) set({ qqStorageSaving: false });
+      }
+    },
+    runQqStorageCleanupSelection: async () => {
+      const request = get().qqStorageCleanupRequest;
+      const preview = get().qqStorageCleanupPreview;
+      if (!request || !preview || get().qqStorageSaving) return false;
+      const operation = beginCleanup();
+      try {
+        const result = await operation.api.runQqStorageSelectionCleanup(request);
+        if (!isCurrentCleanupApi(operation)) return false;
+        set({ qqStorageCleanupResult: result, feedback: "已清理所选内容" });
+      } catch (error) {
+        // 失败保留 request 与 preview，界面据此给出原样重试。
+        if (isCurrentCleanupApi(operation)) set({ qqStorageCleanupError: errorText(error) });
+        return false;
+      } finally {
+        if (isCurrentCleanup(operation)) set({ qqStorageSaving: false });
+      }
+      // 成功且未被取代：busy 归零后再重读摘要（删除后统计已变；读取失败由摘要自己的错误态呈现）。
+      void get().loadQqStorage();
+      return true;
+    },
+    clearQqStorageCleanup: () => {
+      cleanupToken += 1;
+      set((state) => ({
+        qqStorageCleanupOperationId: state.qqStorageCleanupOperationId + 1,
+        qqStorageCleanupRequest: null,
+        qqStorageCleanupPreview: null,
+        qqStorageCleanupResult: null,
+        qqStorageCleanupError: null,
+        // 卸载/关闭不得让 busy 卡住导航；在途保存的 finally 会再次归零。
+        qqStorageSaving: false,
+      }));
     },
   };
 }
@@ -1049,10 +1283,27 @@ export function createQqAccessActions(
       if (!settings || get().qqAccessSaving) return false;
       set({ qqAccessSaving: true, error: null, feedback: "" });
       invalidateAccessReads();
+      /**
+       * 共享同一条 qq_settings 修订链的另一个草稿（保留设置）：每个成功步都把它的基线 revision
+       * 推进到写入后的值——天数原文与旧 source 其余字段保留供脏比较；部分成功也留下有效基线。
+       * 基线对不上就不动，由下一次 CAS 如实报告冲突。
+       */
+      const advanceStorageBaseline = (from: number, to: number) =>
+        set((state) => {
+          const storage = state.qqInputs.storage;
+          if (!storage || storage.source.revision !== from) return {};
+          return {
+            qqInputs: {
+              ...state.qqInputs,
+              storage: { ...storage, source: { ...storage.source, revision: to } },
+            },
+          };
+        });
       try {
         // Two requests, one revision chain: the settings call may bump the revision, so the
         // transport call uses whatever came back rather than the revision the page started with.
         let current = { ...settings, revision: expectedRevision ?? settings.revision };
+        const baseRevision = current.revision;
         if (patch.enabled !== undefined || patch.account_id !== undefined) {
           current = await get().apiClient.updateQqSettings({
             ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
@@ -1065,19 +1316,21 @@ export function createQqAccessActions(
               ...state.qqInputs,
               connection:
                 state.qqInputs.connection &&
-                state.qqInputs.connection.source.revision ===
-                  (expectedRevision ?? settings.revision)
+                state.qqInputs.connection.source.revision === baseRevision
                   ? { ...state.qqInputs.connection, source: current }
                   : state.qqInputs.connection,
             },
           }));
+          advanceStorageBaseline(baseRevision, current.revision);
         }
         if (patch.endpoint !== undefined || patch.token !== undefined) {
+          const before = current.revision;
           current = await get().apiClient.updateQqTransport({
             ...(patch.endpoint === undefined ? {} : { endpoint: patch.endpoint }),
             ...(patch.token === undefined ? {} : { token: patch.token }),
             expected_revision: current.revision,
           });
+          advanceStorageBaseline(before, current.revision);
         }
         set({ qqSettings: current, feedback: "已保存接入设置" });
         return true;

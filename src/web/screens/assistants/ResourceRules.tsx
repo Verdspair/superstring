@@ -147,11 +147,11 @@ export function MemoryToolSettings() {
         <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
           {/* 草稿安全跳转：不隐式保存，草稿保留。 */}
           <Button
-            variant="link"
-            size="sm"
-            className="mr-auto"
+            variant="outline"
+            className="mr-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
             onClick={() => s.openSettingsRoute("long-memory")}
           >
+            <BookOpen />
             {t("connections.goToLongTermMemory")}
           </Button>
           <Button variant="outline" disabled={busy} onClick={() => void s.refreshSettingsAgent()}>
@@ -320,9 +320,8 @@ export function KnowledgeToolSettings() {
               <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
                 {/* 草稿安全跳转：不隐式保存，草稿保留。 */}
                 <Button
-                  variant="link"
-                  size="sm"
-                  className="mr-auto"
+                  variant="outline"
+                  className="mr-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
                   onClick={() => s.openSettingsRoute("knowledge-config")}
                 >
                   <FileText />

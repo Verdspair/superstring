@@ -18,6 +18,8 @@ function navigationBusy(get: () => SuperstringState) {
     state.qqAccessSaving ||
     state.qqSchemeSaving ||
     state.qqStickerSaving ||
+    // 存储管理（保留设置保存与清理预览/执行）同样持写：保存期间导航必须被拦住。
+    state.qqStorageSaving ||
     state.settingsSaving ||
     state.permissionSaving ||
     state.webAccessSaving ||
@@ -311,22 +313,7 @@ export function createNavigationActions(
       }
       if (settingsRoute === "knowledge-model" || settingsRoute === "management")
         settingsRoute = "models";
-      if (
-        get().qqAccessSaving ||
-        get().qqSchemeSaving ||
-        get().qqStickerSaving ||
-        get().settingsSaving ||
-        get().permissionSaving ||
-        get().webAccessSaving ||
-        get().editorLoading ||
-        get().knowledgeReadLoading ||
-        get().organizationLoading ||
-        get().knowledgeModelLoading ||
-        get().memoryCorrectionSaving ||
-        get().qqMemoryBatchSaving ||
-        get().knowledgeBusy
-      )
-        return;
+      if (navigationBusy(get)) return;
       if (
         !(
           get().page === "settings" &&
@@ -484,22 +471,7 @@ export function createNavigationActions(
       markLanded();
     },
     requestAgentNavigation: (id) => {
-      if (
-        get().qqAccessSaving ||
-        get().qqSchemeSaving ||
-        get().qqStickerSaving ||
-        get().settingsSaving ||
-        get().permissionSaving ||
-        get().webAccessSaving ||
-        get().editorLoading ||
-        get().knowledgeReadLoading ||
-        get().organizationLoading ||
-        get().knowledgeModelLoading ||
-        get().memoryCorrectionSaving ||
-        get().qqMemoryBatchSaving ||
-        get().knowledgeBusy
-      )
-        return;
+      if (navigationBusy(get)) return;
       // 保存会清空 pageEditor，但保留 editorDraft；既有助手须重建编辑器。
       if (
         id === get().editorAgentId &&

@@ -81,6 +81,7 @@ const permissions: PermissionsResponse = {
         qqStickers: true,
       },
       maintenance: { memoryTimeoutSeconds: 3600, knowledgeTimeoutSeconds: 3600 },
+      telemetry: { retentionDays: 14 },
       pausedTools: [],
       tasks: { concurrency: 2, retentionHours: 24, leaseSeconds: 30, pollMs: 500 },
       researchLimits: { maxPerRun: 2, maxSteps: 6, deadlineMs: 60_000, maxConclusionChars: 4_000 },

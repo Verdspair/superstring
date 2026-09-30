@@ -5,27 +5,37 @@
 // one asset's editable content — and only the content: `enabled` is not part of the editor,
 // because §9.2's "保存整理" must not be able to switch an asset on by accident.
 
-import type {
-  QqBindingResponse,
-  QqConversationListItem,
-  QqMemoryOrganiseResponse,
-  QqSchemeCompression,
-  QqSchemeContext,
-  QqSchemeOutputReserve,
-  QqSchemePrompts,
-  QqSchemeReply,
-  QqSchemeResponse,
-  QqSchemeRhythm,
-  QqSchemeStickers,
-  QqSettingsResponse,
-  QqSpeechTriggers,
-  QqStatusResponse,
-  QqStickerAssetResponse,
-  QqStickerCollectionResponse,
-  QqStickerImpactResponse,
-  QqStorageCleanupResponse,
-  QqStorageUsageResponse,
+import {
+  QQ_RETENTION_MAX_DAYS,
+  QQ_RETENTION_MIN_DAYS,
+  type QqBindingResponse,
+  type QqConversationListItem,
+  type QqMemoryOrganiseResponse,
+  type QqSchemeCompression,
+  type QqSchemeContext,
+  type QqSchemeOutputReserve,
+  type QqSchemePrompts,
+  type QqSchemeReply,
+  type QqSchemeResponse,
+  type QqSchemeRhythm,
+  type QqSchemeStickers,
+  type QqSettingsResponse,
+  type QqSpeechTriggers,
+  type QqStatusResponse,
+  type QqStickerAssetResponse,
+  type QqStickerCollectionResponse,
+  type QqStickerImpactResponse,
+  type QqStorageUsageResponse,
 } from "../../../shared/contracts/qq";
+import type {
+  QqConversationKind,
+  QqStorageCategory,
+  QqStorageCleanupRequest,
+  QqStorageCleanupSelectionResponse,
+  QqStorageItem,
+  QqStorageSettingsResponse,
+  QqStorageStatusFilter,
+} from "../../../shared/contracts/qq-storage";
 
 export interface QqStickerEditor {
   /** The row this editor was opened from; the save compares against it, not against the list. */
@@ -121,11 +131,17 @@ export interface QqStickerState {
   /** Scheme names the selected assets would reach; null until asked (§9.1's impact display). */
   qqStickerBatchImpact: string[] | null;
   loadQqStickerBatchImpact: () => Promise<void>;
-  createQqStickerCollection: (name: string) => Promise<boolean>;
+  /**
+   * `description` 是集合的可空简介（契约 `max(2000)`）。创建时缺省＝没有简介；
+   * 修改时 `undefined`＝本次不改动（服务端保留已存值，绝不把「没改」变成清空），
+   * `null` 或空白＝清除。
+   */
+  createQqStickerCollection: (name: string, description?: string | null) => Promise<boolean>;
   renameQqStickerCollection: (
     id: string,
     name: string,
     expectedRevision: number,
+    description?: string | null,
   ) => Promise<boolean>;
   clearQqStickerImportNotice: () => void;
 }
@@ -290,21 +306,105 @@ export interface QqSchemeState {
   discardQqSchemeChanges: () => void;
 }
 
+// ---- QQ 存储管理 (§11.1's 存储与诊断, P5h) ---------------------------------------------------
+//
+// 管理面由两块组成：保留设置（与 qq_settings 其余字段共用同一 revision 的比较交换）与手动清理
+// 工作区（类别/筛选/游标分页 + 预览→确认→结果）。保留窗口只影响之后写入的记录；物理删除永远
+// 只由显式确认的清理执行，所以这里没有自动策略开关。
+
+/** 保留设置草稿：`days` 是输入框的数字原文，`source` 是最近一次读取/保存的保存基线。 */
+export interface QqStorageSettingsDraft {
+  source: QqStorageSettingsResponse;
+  days: string;
+}
+
+/** 管理列表一页 50 条；与服务端默认一致，翻页只用服务端游标。 */
+export const QQ_STORAGE_PAGE_SIZE = 50;
+
+/** 保留天数输入：1..3650 的整数原文（空/小数/越界都无效）。 */
+export function qqStorageDaysValid(days: string): boolean {
+  if (!/^\d+$/.test(days)) return false;
+  const value = Number(days);
+  return value >= QQ_RETENTION_MIN_DAYS && value <= QQ_RETENTION_MAX_DAYS;
+}
+
+/** 草稿相对基线改没改；非法输入算改动（保存前必须先修正，不得当作未改而跟随基线）。 */
+export function qqStorageDaysChanged(days: string, baseline: number): boolean {
+  return !qqStorageDaysValid(days) || Number(days) !== baseline;
+}
+
+/** 清理工作区的列表查询：类别/状态/会话过滤，`cursor` 为服务端游标（null＝第一页）。 */
+export interface QqStorageItemsQuery {
+  category: QqStorageCategory;
+  status: QqStorageStatusFilter;
+  kind: QqConversationKind | null;
+  peerId: string;
+  cursor: string | null;
+}
+
+/** 可勾选清理的行：已到期且未被保全规则保护；其余行不可选。 */
+export function qqStorageItemCleanable(item: QqStorageItem): boolean {
+  return item.expired && !item.protected;
+}
+
 export interface QqStorageState {
   qqStorageUsage: QqStorageUsageResponse | null;
-  /** What the last cleanup removed, per category; null until one has run. */
-  qqStorageRemoved: QqStorageCleanupResponse | null;
+  qqStorageSettings: QqStorageSettingsResponse | null;
   qqStorageLoading: boolean;
   qqStorageSaving: boolean;
+  /** 摘要+设置读取的单调序号：旧响应或旧失败不得覆盖更新的读取。 */
+  qqStorageReadId: number;
+  /** 管理列表（当前查询）的条目与分页信息。 */
+  qqStorageItems: QqStorageItem[];
+  qqStorageItemsTotal: number;
+  qqStorageItemsNextCursor: string | null;
+  qqStorageItemsLoading: boolean;
+  qqStorageItemsError: string | null;
+  /** 管理列表读取的单调序号：旧页面晚到不得覆盖新查询。 */
+  qqStorageItemsReadId: number;
+  /** 清理工作区：预览时冻结的请求快照（确认执行的正是这一份），以及预览/结果/错误。 */
+  qqStorageCleanupRequest: QqStorageCleanupRequest | null;
+  qqStorageCleanupPreview: QqStorageCleanupSelectionResponse | null;
+  qqStorageCleanupResult: QqStorageCleanupSelectionResponse | null;
+  qqStorageCleanupError: string | null;
+  /** 清理操作的代次：卸载或换查询后，旧响应/旧错误不得落地。 */
+  qqStorageCleanupOperationId: number;
+  /** 隐式读取：只读摘要与设置，绝不自动推进保留设置草稿的保存基线。 */
   loadQqStorage: () => Promise<void>;
-  runQqStorageCleanup: () => Promise<boolean>;
+  /** 显式刷新：重读摘要与设置，并按字段合并草稿——已改天数保留原文，未改字段与 revision 跟随新基线。 */
+  refreshQqStorage: () => Promise<void>;
+  /** 独立保存保留设置：只发 storage 的 PUT，不携带方案/连接等其他草稿；409 时草稿原样保留。 */
+  saveQqStorageSettings: () => Promise<boolean>;
+  /** 管理列表读取；组件卸载时经 AbortSignal 取消，迟到响应不落地。 */
+  loadQqStorageItems: (
+    query: QqStorageItemsQuery,
+    options?: { readonly signal?: AbortSignal },
+  ) => Promise<void>;
+  /** 预览（零写入）：冻结请求快照并读 matched/expired/protected/removable。 */
+  previewQqStorageCleanup: (request: QqStorageCleanupRequest) => Promise<boolean>;
+  /** 执行：用预览时冻结的快照，恰好确认一次；成功后重读摘要，失败保留预览以便原样重试。 */
+  runQqStorageCleanupSelection: () => Promise<boolean>;
+  /** 关闭/卸载：作废在途清理操作并清空request/预览/结果/错误。 */
+  clearQqStorageCleanup: () => void;
 }
 
 export const qqStorageInitial = {
   qqStorageUsage: null as QqStorageUsageResponse | null,
-  qqStorageRemoved: null as QqStorageCleanupResponse | null,
+  qqStorageSettings: null as QqStorageSettingsResponse | null,
   qqStorageLoading: false,
   qqStorageSaving: false,
+  qqStorageReadId: 0,
+  qqStorageItems: [] as QqStorageItem[],
+  qqStorageItemsTotal: 0,
+  qqStorageItemsNextCursor: null as string | null,
+  qqStorageItemsLoading: false,
+  qqStorageItemsError: null as string | null,
+  qqStorageItemsReadId: 0,
+  qqStorageCleanupRequest: null as QqStorageCleanupRequest | null,
+  qqStorageCleanupPreview: null as QqStorageCleanupSelectionResponse | null,
+  qqStorageCleanupResult: null as QqStorageCleanupSelectionResponse | null,
+  qqStorageCleanupError: null as string | null,
+  qqStorageCleanupOperationId: 0,
 };
 
 export const qqSchemeInitial = {

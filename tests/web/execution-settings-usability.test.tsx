@@ -5,8 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { ApiError, api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
+import { i18n } from "../../src/web/i18n/runtime";
 import { ExecutionSettings } from "../../src/web/screens/runs/execution-settings";
 import { useSuperstringStore as store } from "../../src/web/store";
+
+/** 新字段文案随 JSON 落地与否都成立：组件与测试读同一实例同一键。 */
+const T = (key: string, options?: Record<string, string | number>) =>
+  i18n.t(key, options) as string;
 
 const permissions: PermissionsResponse = {
   revision: "pr-1",
@@ -28,6 +33,7 @@ const permissions: PermissionsResponse = {
       },
       pausedTools: [],
       maintenance: { memoryTimeoutSeconds: 3600, knowledgeTimeoutSeconds: 7200 },
+      telemetry: { retentionDays: 14 },
       tasks: { concurrency: 2, retentionHours: 24, leaseSeconds: 30, pollMs: 500 },
       researchLimits: { maxPerRun: 2, maxSteps: 6, deadlineMs: 60_000, maxConclusionChars: 4_000 },
       codeLimits: {
@@ -52,10 +58,11 @@ const permissions: PermissionsResponse = {
   resources: [],
 };
 
-// 24 个标签共 25 个输入框：「结论字符上限」在研究档与代码档各有一个。
+// 25 个标签共 26 个输入框：「结论字符上限」在研究档与代码档各有一个。
 const NUMERIC: [string, string[]][] = [
   ["记忆整理总时限（秒）", ["3600"]],
   ["知识整理总时限（秒）", ["7200"]],
+  [T("connections.execution.retentionDays"), ["14"]],
   ["同时执行的任务数", ["2"]],
   ["最长有效期（小时）", ["24"]],
   ["工作租约（秒）", ["30"]],
@@ -96,6 +103,7 @@ const NAV = [
   "代码沙箱（QuickJS）",
   "主循环与并发",
   "QQ 投递",
+  T("connections.execution.retention"),
 ];
 
 async function renderSettings(fake: Partial<typeof api> = {}) {
@@ -113,7 +121,7 @@ afterEach(() => {
 });
 
 describe("execution settings layout and usability", () => {
-  it("shows all 25 numeric fields and the 7 switches with their saved values", async () => {
+  it("shows all 26 numeric fields and the 7 switches with their saved values", async () => {
     await renderSettings({ getPermissions: vi.fn().mockResolvedValue(permissions) });
     let count = 0;
     for (const [label, values] of NUMERIC) {
@@ -124,13 +132,13 @@ describe("execution settings layout and usability", () => {
         count += 1;
       }
     }
-    expect(count).toBe(25);
+    expect(count).toBe(26);
     for (const [label, state] of SWITCHES) {
       expect(screen.getByRole("checkbox", { name: label }).getAttribute("data-state")).toBe(state);
     }
   });
 
-  it("anchors the seven section headings and only scrolls or focuses them", async () => {
+  it("anchors the eight section headings and only scrolls or focuses them", async () => {
     const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView");
     await renderSettings({ getPermissions: vi.fn().mockResolvedValue(permissions) });
     const nav = screen.getByRole("navigation", { name: "执行设置" });
@@ -166,8 +174,8 @@ describe("execution settings layout and usability", () => {
     );
     await act(async () => {});
     const hrefs = screen.getAllByRole("link").map((link) => link.getAttribute("href") ?? "");
-    expect(hrefs).toHaveLength(14);
-    expect(new Set(hrefs).size).toBe(14);
+    expect(hrefs).toHaveLength(16);
+    expect(new Set(hrefs).size).toBe(16);
     for (const href of hrefs) expect(document.getElementById(href.slice(1))).not.toBeNull();
     const ids = [...document.querySelectorAll("[id]")].map((node) => node.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -192,15 +200,21 @@ describe("execution settings layout and usability", () => {
     expect(top.policy.execution?.loop.maxSteps).toBe(64);
     // 只带 execution 白名单：未改字段与授权原样保留。
     expect(top.policy.execution?.maintenance.memoryTimeoutSeconds).toBe(3600);
+    expect(top.policy.execution?.telemetry?.retentionDays).toBe(14);
     expect(top.policy.grants).toEqual(permissions.policy.grants);
 
     fireEvent.change(screen.getByLabelText("最多尝试次数"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText(T("connections.execution.retentionDays")), {
+      target: { value: "30" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await act(async () => {});
     const [bottom] = save.mock.calls[1];
     expect(bottom.expectedRevision).toBe("pr-2");
     expect(bottom.policy.execution?.qq.maxAttempts).toBe(5);
     expect(bottom.policy.execution?.loop.maxSteps).toBe(64);
+    expect(bottom.policy.execution?.telemetry?.retentionDays).toBe(30);
+    expect(bottom.policy.execution?.maintenance.knowledgeTimeoutSeconds).toBe(7200);
     expect(bottom.policy.grants).toEqual(permissions.policy.grants);
     expect(screen.getByRole("status").textContent).toContain("执行设置已保存");
   });
@@ -268,10 +282,16 @@ describe("execution settings layout and usability", () => {
     const grid = switches?.parentElement;
     expect(grid?.className).toContain("xl:grid-cols-2");
     expect(switches?.className).toContain("xl:col-span-2");
+    const retentionTitle = T("connections.execution.retention");
     for (const title of NAV.slice(1)) {
       const card = screen.getByRole("heading", { name: title }).closest('[data-slot="card"]');
       expect(card?.parentElement).toBe(grid);
-      expect(card?.className).not.toContain("xl:col-span-2");
+      if (title === retentionTitle) {
+        // 「运行数据与保留」承载统计表与清单，与执行开关一样整行展开。
+        expect(card?.className).toContain("xl:col-span-2");
+      } else {
+        expect(card?.className).not.toContain("xl:col-span-2");
+      }
     }
     const timing = screen.getByText(/数值在新运行、任务或领取时生效/);
     expect(
@@ -296,6 +316,26 @@ describe("execution settings layout and usability", () => {
     expect(read.value).toBe("9");
     expect(save).not.toHaveBeenCalled();
     expect(scroll).toHaveBeenLastCalledWith({ block: "center" });
+  });
+
+  it("locates an out-of-range retention window on its own field without saving", async () => {
+    const save = vi.fn();
+    await renderSettings({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      savePermissions: save,
+    });
+    const retention = screen.getByLabelText(
+      T("connections.execution.retentionDays"),
+    ) as HTMLInputElement;
+    fireEvent.change(retention, { target: { value: "4000" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
+    expect(save).not.toHaveBeenCalled();
+    expect(retention.getAttribute("aria-invalid")).toBe("true");
+    expect(retention.value).toBe("4000");
+    expect(screen.getByLabelText("记忆整理总时限（秒）").getAttribute("aria-invalid")).toBe(
+      "false",
+    );
   });
 
   it("focuses the alert after a 409 from the bottom save and keeps the draft without a second PUT", async () => {

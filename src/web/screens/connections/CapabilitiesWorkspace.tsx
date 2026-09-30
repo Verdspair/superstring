@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Search, Wrench } from "lucide-react";
+import { ChevronLeft, ChevronRight, MessagesSquare, Search, Wrench } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { executionPolicy } from "../../../shared/contracts/permissions";
@@ -382,7 +382,13 @@ function SessionLinkDetail({ entry }: { entry: CapabilityEntry }) {
                 ))}
               </NativeSelect>
             </Field>
-            <Button disabled={!ready} onClick={() => s.openSettingsRoute("context")}>
+            <Button
+              variant="outline"
+              className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+              disabled={!ready}
+              onClick={() => s.openSettingsRoute("context")}
+            >
+              <MessagesSquare />
               {t("capabilities.session.open")}
             </Button>
           </div>

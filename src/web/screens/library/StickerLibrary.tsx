@@ -1,4 +1,4 @@
-import { FolderPlus, ImagePlus, RefreshCw, Sparkles } from "lucide-react";
+import { FolderPlus, ImagePlus, RefreshCw, SlidersHorizontal, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertDialog, ConfirmDialog } from "@/components/confirmation";
@@ -25,6 +25,7 @@ import {
   qqStickerEditorTags,
 } from "@/features/qq/types";
 import { useQqInput } from "@/features/qq/use-qq-input";
+import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 
 export function StickerLibrary() {
@@ -40,6 +41,9 @@ export function StickerLibrary() {
     [switchTo, setSwitchTo] = useState<string | null | undefined>(undefined),
     [annotation, setAnnotation] = useState("");
   const [disableSelected, setDisableSelected] = useState(false);
+  const [newCollectionDescription, setNewCollectionDescription] = useQqInput(
+    "stickerNewCollectionDescription",
+  );
   const [newCollection, setNewCollection] = useQqInput("stickerNewCollection"),
     [renaming, setRenaming] = useQqInput("stickerRenaming"),
     [batchCollection, setBatchCollection] = useQqInput("stickerBatchCollection"),
@@ -118,10 +122,11 @@ export function StickerLibrary() {
         </Button>
         {/* 表情内容的媒体能力设置直达（qq-stickers -> media-tools），草稿安全跳转。 */}
         <Button
-          variant="ghost"
-          className="ml-auto"
+          variant="outline"
+          className="ml-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
           onClick={() => s.openSettingsRoute("media-tools")}
         >
+          <SlidersHorizontal />
           {t("capabilities.resources.openMediaTools")}
         </Button>
       </div>
@@ -129,7 +134,7 @@ export function StickerLibrary() {
         <Badge variant="secondary">
           {assets.length} {t("library.stickers")}
         </Badge>
-        <Button variant="ghost" size="sm" onClick={() => setCollectionsOpen(true)}>
+        <Button variant="outline" onClick={() => setCollectionsOpen(true)}>
           <FolderPlus />
           {t("library.manage.collections")}
         </Button>
@@ -476,69 +481,119 @@ export function StickerLibrary() {
           <DialogDescription>
             {t("library.collections.can.be.reused.by.multiple.conversation.schemes")}
           </DialogDescription>
+          {s.error && (
+            <p role="alert" className="text-sm text-destructive">
+              {translateNotice(s.error)}
+            </p>
+          )}
           <form
-            className="flex gap-2"
+            className="space-y-2"
             onSubmit={(e) => {
               e.preventDefault();
-              void s.createQqStickerCollection(newCollection.trim()).then((ok) => {
-                if (ok) setNewCollection("");
-              });
+              void s
+                .createQqStickerCollection(newCollection.trim(), newCollectionDescription)
+                .then((ok) => {
+                  if (ok) {
+                    setNewCollection("");
+                    setNewCollectionDescription("");
+                  }
+                });
             }}
           >
-            <Input
-              aria-label={t("library.collection.name")}
-              value={newCollection}
-              onChange={(e) => setNewCollection(e.target.value)}
-            />
-            <Button type="submit" disabled={!newCollection.trim() || s.qqStickerSaving}>
-              {t("library.create")}
-            </Button>
+            <div className="flex gap-2">
+              <Input
+                aria-label={t("library.collection.name")}
+                value={newCollection}
+                onChange={(e) => setNewCollection(e.target.value)}
+              />
+              <Button type="submit" disabled={!newCollection.trim() || s.qqStickerSaving}>
+                {t("library.create")}
+              </Button>
+            </div>
+            <Field label="library.description">
+              <Textarea
+                rows={2}
+                maxLength={2000}
+                value={newCollectionDescription}
+                onChange={(e) => setNewCollectionDescription(e.target.value)}
+              />
+            </Field>
           </form>
           <div className="max-h-80 space-y-2 overflow-auto">
             {s.qqStickerCollections.map((item) => (
-              <div key={item.id} className="flex items-center gap-2 rounded-lg border p-3">
+              <div key={item.id} className="rounded-lg border p-3">
                 {renaming?.id === item.id ? (
-                  <>
+                  <div className="space-y-2">
                     <Input
                       aria-label={t("library.rename.collection")}
                       value={renaming.name}
                       onChange={(e) => setRenaming({ ...renaming, name: e.target.value })}
                     />
-                    <Button
-                      size="sm"
-                      disabled={s.qqStickerSaving || !renaming.name.trim()}
-                      onClick={() =>
-                        void s
-                          .renameQqStickerCollection(
-                            item.id,
-                            renaming.name.trim(),
-                            renaming.revision,
-                          )
-                          .then((ok) => {
-                            if (ok) setRenaming(null);
-                          })
-                      }
-                    >
-                      {t("library.save")}
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => setRenaming(null)}>
-                      {t("library.cancel")}
-                    </Button>
-                  </>
+                    <Textarea
+                      rows={2}
+                      maxLength={2000}
+                      aria-label={t("library.description")}
+                      value={renaming.description ?? item.description ?? ""}
+                      onChange={(e) => setRenaming({ ...renaming, description: e.target.value })}
+                    />
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setRenaming(null);
+                        }}
+                      >
+                        {t("library.cancel")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={s.qqStickerSaving || !renaming.name.trim()}
+                        onClick={() =>
+                          void s
+                            .renameQqStickerCollection(
+                              item.id,
+                              renaming.name.trim(),
+                              renaming.revision,
+                              renaming.description,
+                            )
+                            .then((ok) => {
+                              if (ok) {
+                                setRenaming(null);
+                              }
+                            })
+                        }
+                      >
+                        {t("library.save")}
+                      </Button>
+                    </div>
+                  </div>
                 ) : (
-                  <>
-                    <span className="flex-1 text-sm">{item.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm">{item.name}</span>
+                      {item.description && (
+                        <span className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                          {item.description}
+                        </span>
+                      )}
+                    </span>
                     <Badge variant="outline">{item.asset_count}</Badge>
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() =>
-                        setRenaming({ id: item.id, name: item.name, revision: item.revision })
-                      }
+                      onClick={() => {
+                        setRenaming({
+                          id: item.id,
+                          name: item.name,
+                          revision: item.revision,
+                          description: item.description ?? "",
+                        });
+                      }}
                     >
                       {t("library.rename")}
                     </Button>
-                  </>
+                  </div>
                 )}
               </div>
             ))}

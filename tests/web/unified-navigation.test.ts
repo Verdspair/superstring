@@ -91,6 +91,30 @@ describe("对话视图：默认值与守卫入口", () => {
     });
   });
 
+  it.each(["qqStorageSaving", "webAccessTesting"] as const)(
+    "%s blocks both settings routes and assistant changes",
+    (busy) => {
+      const editAgent = vi.fn().mockResolvedValue(true);
+      store.setState({
+        page: "settings",
+        settingsView: "workspace",
+        settingsRoute: "qq-storage",
+        editorAgentId: "configured",
+        [busy]: true,
+        editAgent,
+      });
+      store.getState().openSettingsRoute("qq-connection");
+      store.getState().requestAgentNavigation("other");
+      expect(store.getState()).toMatchObject({
+        settingsRoute: "qq-storage",
+        editorAgentId: "configured",
+        pendingNavigation: null,
+        navigationConfirmOpen: false,
+      });
+      expect(editAgent).not.toHaveBeenCalled();
+    },
+  );
+
   it("同页切换视图仍保护 QQ 草稿，取消不改变视图或范围", () => {
     store.setState({ page: "chat", settingsView: "hub" });
     store.setState({ qqInputs: { ...store.getState().qqInputs, manualPeer: "12345" } });

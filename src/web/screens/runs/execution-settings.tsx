@@ -17,6 +17,7 @@ import {
   NUMERIC_KEYS,
 } from "../../features/runs/execution-draft";
 import { useSuperstringStore } from "../../store";
+import { RuntimeStoragePanel } from "./runtime-storage";
 
 interface NumericField {
   key: ExecutionDraftKey;
@@ -159,6 +160,7 @@ const SECTIONS = {
   code: "connections.execution.codeGroup",
   loop: "connections.execution.loop",
   qq: "connections.execution.qq",
+  retention: "connections.execution.retention",
 } as const;
 type SectionKey = keyof typeof SECTIONS;
 const SECTION_ORDER: SectionKey[] = [
@@ -169,6 +171,7 @@ const SECTION_ORDER: SectionKey[] = [
   "code",
   "loop",
   "qq",
+  "retention",
 ];
 
 // web 与 QQ 媒体的能力开关在各自的能力专页维护；本页只保存其余模块与数值/研究/代码字段。
@@ -352,6 +355,31 @@ export function ExecutionSettings() {
         {group("code", codeFields)}
         {group("loop", loopFields)}
         {group("qq", qqFields)}
+        <Card className="xl:col-span-2">
+          <CardHeader>{sectionTitle("retention")}</CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field
+                label="connections.execution.retentionDays"
+                info="connections.execution.retentionDaysHint"
+              >
+                <Input
+                  inputMode="decimal"
+                  aria-invalid={problem === "telemetryRetentionDays"}
+                  disabled={saving || !draft}
+                  value={draft?.telemetryRetentionDays ?? ""}
+                  className={
+                    problem === "telemetryRetentionDays"
+                      ? "border-destructive focus-visible:ring-destructive"
+                      : undefined
+                  }
+                  onChange={(e) => patch("telemetryRetentionDays", e.target.value)}
+                />
+              </Field>
+            </div>
+            <RuntimeStoragePanel />
+          </CardContent>
+        </Card>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()}>

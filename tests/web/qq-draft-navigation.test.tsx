@@ -227,6 +227,92 @@ it("connection save uses the draft revision and carries forward a successful fir
   expect(store.getState().qqSettings?.account_id).toBe("101");
 });
 
+it("storage and connection share one revision chain: the first save advances the other draft's baseline", async () => {
+  const storageSave = vi.fn(
+    async (body: { retention_days: number; expected_revision: number }) => ({
+      revision: body.expected_revision + 1,
+      retention_days: body.retention_days,
+      cleanup_mode: "manual" as const,
+    }),
+  );
+  const settingsSave = vi.fn(
+    async (body: { account_id?: string | null; expected_revision: number }) => ({
+      ...settings,
+      account_id: body.account_id === undefined ? settings.account_id : body.account_id,
+      revision: body.expected_revision + 1,
+    }),
+  );
+  const transportSave = vi.fn(
+    async (body: { endpoint?: string | null; expected_revision: number }) => ({
+      ...settings,
+      transport: {
+        endpoint: body.endpoint === undefined ? settings.transport.endpoint : body.endpoint,
+        has_token: true,
+      },
+      revision: body.expected_revision + 1,
+    }),
+  );
+  store.setState({
+    apiClient: {
+      ...store.getState().apiClient,
+      updateQqStorageSettings: storageSave,
+      updateQqSettings: settingsSave,
+      updateQqTransport: transportSave,
+    },
+    qqSettings: settings,
+    qqInputs: {
+      ...store.getState().qqInputs,
+      storage: {
+        source: { revision: 3, retention_days: 14, cleanup_mode: "manual" as const },
+        days: "30",
+      },
+      connection: connection("replacement-secret"),
+    },
+  });
+  expect(await store.getState().saveQqDrafts()).toBe(true);
+  // 先写的 storage（3→4）把共享基线推进给连接草稿：连接保存从 4 出发，而不是拿旧 3 自撞 409。
+  expect(storageSave).toHaveBeenCalledWith({ retention_days: 30, expected_revision: 3 });
+  expect(settingsSave).toHaveBeenCalledWith({ account_id: "100", expected_revision: 4 });
+  expect(transportSave).toHaveBeenCalledWith({
+    endpoint: "ws://localhost:4000",
+    token: "replacement-secret",
+    expected_revision: 5,
+  });
+  expect(store.getState().qqSettings?.revision).toBe(6);
+  expect(store.getState().qqInputs.storage).toBeNull();
+  expect(store.getState().qqInputs.connection).toBeNull();
+});
+
+it("an external revision conflict still fails without advancing the other baseline or retrying", async () => {
+  const conflict = vi
+    .fn()
+    .mockRejectedValue(new Error("QQ 接入设置已在别处被修改，请刷新后重试。"));
+  const settingsSave = vi.fn();
+  store.setState({
+    apiClient: {
+      ...store.getState().apiClient,
+      updateQqStorageSettings: conflict,
+      updateQqSettings: settingsSave,
+    },
+    qqSettings: settings,
+    qqInputs: {
+      ...store.getState().qqInputs,
+      storage: {
+        source: { revision: 3, retention_days: 14, cleanup_mode: "manual" as const },
+        days: "30",
+      },
+      connection: connection("replacement-secret"),
+    },
+  });
+  expect(await store.getState().saveQqDrafts()).toBe(false);
+  // 外部 CAS 冲突不是「自己刚写过的推进」：只失败一次，不猜修订、不继续写连接、不自动重试。
+  expect(conflict).toHaveBeenCalledTimes(1);
+  expect(settingsSave).not.toHaveBeenCalled();
+  expect(store.getState().error).toBe("QQ 接入设置已在别处被修改，请刷新后重试。");
+  expect(store.getState().qqInputs.storage?.days).toBe("30");
+  expect(store.getState().qqInputs.connection?.source.revision).toBe(3);
+});
+
 it("QQ automatic organization drafts participate in the same unload decision", () => {
   expect(settingsHaveDrafts(store.getState())).toBe(false);
   store.getState().patchQqMemoryBatchDraft("binding", { value: "", revision: 2 });

@@ -6,7 +6,13 @@ import {
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
-import { type KnowledgeEditor, type KnowledgeState, latestKnowledgeSettings } from "./types";
+import {
+  type KnowledgeEditor,
+  type KnowledgeListFilters,
+  type KnowledgeState,
+  knowledgeListQuery,
+  latestKnowledgeSettings,
+} from "./types";
 
 export function createKnowledgeActions(
   set: StoreSet,
@@ -14,6 +20,7 @@ export function createKnowledgeActions(
 ): Pick<
   KnowledgeState,
   | "loadKnowledge"
+  | "loadKnowledgePage"
   | "requestKnowledgeEditor"
   | "openKnowledgeEditor"
   | "updateKnowledgeEditor"
@@ -23,30 +30,80 @@ export function createKnowledgeActions(
   | "setKnowledgeMode"
 > {
   const guard = () => get().knowledgeBusy || get().knowledgeDirty;
+  // 列表读取用独立代次与 AbortController：新搜索/翻页只作废旧列表请求，
+  // 不牵连并行的编辑器读取（编辑器读取仍走 knowledgeReadId）。
+  let listRead = 0;
+  let listAbort: AbortController | null = null;
+  const loadList = async (
+    filters: KnowledgeListFilters,
+    cursors: (string | null)[],
+  ): Promise<boolean> => {
+    if (guard()) return false;
+    const id = ++listRead;
+    listAbort?.abort();
+    const controller = new AbortController();
+    listAbort = controller;
+    // 页面身份：离开资料页（改分区/换路由）后，迟到的列表响应不得写回。
+    const view = {
+      page: get().page,
+      settingsView: get().settingsView,
+      settingsRoute: get().settingsRoute,
+    };
+    const viewChanged = () =>
+      get().page !== view.page ||
+      get().settingsView !== view.settingsView ||
+      get().settingsRoute !== view.settingsRoute;
+    set({ knowledgeLoading: true });
+    try {
+      const api = get().apiClient;
+      const [page, categories, settings] = await Promise.all([
+        api.listKnowledgeDocuments(
+          knowledgeListQuery(filters, cursors[cursors.length - 1] ?? null),
+          controller.signal,
+        ),
+        api.listKnowledgeCategories(),
+        api.getKnowledgeSettings(),
+      ]);
+      if (id !== listRead || viewChanged()) return false;
+      set({
+        knowledgeCategories: categories,
+        knowledgeSettings: settings,
+        knowledgeCursors: cursors,
+        knowledgeNextCursor: page.next_cursor,
+        knowledgeTotal: page.total,
+        knowledgeDocuments: page.items,
+        error: null,
+      });
+      return true;
+    } catch (error) {
+      if (id !== listRead || controller.signal.aborted || viewChanged()) return false;
+      set({ error: errorText(error) });
+      return false;
+    } finally {
+      if (id === listRead) set({ knowledgeLoading: false });
+      if (listAbort === controller) listAbort = null;
+    }
+  };
   return {
-    loadKnowledge: async () => {
-      if (get().knowledgeBusy || get().knowledgeDirty) return;
-      const id = get().knowledgeReadId + 1;
-      set({ knowledgeReadId: id, knowledgeLoading: true });
-      try {
-        const api = get().apiClient;
-        const [categories, documents, settings] = await Promise.all([
-          api.listKnowledgeCategories(),
-          api.listKnowledgeDocuments(),
-          api.getKnowledgeSettings(),
-        ]);
-        if (get().knowledgeReadId !== id) return;
-        set({
-          knowledgeCategories: categories,
-          knowledgeDocuments: documents,
-          knowledgeSettings: settings,
-          error: null,
-        });
-      } catch (error) {
-        if (get().knowledgeReadId === id) set({ error: errorText(error) });
-      } finally {
-        if (get().knowledgeReadId === id) set({ knowledgeLoading: false });
-      }
+    loadKnowledge: async (filters) => {
+      if (guard()) return false;
+      // 刷新保过滤；指定过滤则合并（含清空）并回第一页，光标先落位再取页。
+      const next = filters ? { ...get().knowledgeFilters, ...filters } : get().knowledgeFilters;
+      set({ knowledgeFilters: next, knowledgeCursors: [null], knowledgeNextCursor: null });
+      return loadList(next, [null]);
+    },
+    loadKnowledgePage: async (direction) => {
+      const cursors = get().knowledgeCursors;
+      const target =
+        direction === "next"
+          ? get().knowledgeNextCursor === null
+            ? null
+            : [...cursors, get().knowledgeNextCursor]
+          : cursors.length > 1
+            ? cursors.slice(0, -1)
+            : null;
+      if (!target) return false;
+      return loadList(get().knowledgeFilters, target);
     },
     requestKnowledgeEditor: (target) => {
       if (get().knowledgeBusy) return;
@@ -258,6 +315,9 @@ export function createKnowledgeActions(
       try {
         if (kind === "document") await get().apiClient.deleteKnowledgeDocument(id, revision);
         else await get().apiClient.deleteKnowledgeCategory(id, revision, moveTo);
+        // 删除的正是当前过滤的分类时，过滤回到全部，否则刷新会继续按已删分类取空页。
+        if (kind === "category" && get().knowledgeFilters.category === id)
+          set({ knowledgeFilters: { ...get().knowledgeFilters, category: "all" } });
         set({ knowledgeBusy: false, knowledgeEditor: null });
         await get().loadKnowledge();
         return true;

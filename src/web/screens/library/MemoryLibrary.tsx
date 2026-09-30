@@ -1,5 +1,13 @@
-import { ChevronLeft, ChevronRight, Combine, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Combine,
+  Cpu,
+  RefreshCw,
+  RotateCcw,
+  SlidersHorizontal,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
@@ -24,6 +32,7 @@ import { translateNotice } from "@/i18n";
 import { useLiveResource } from "@/services/use-live-resource";
 import { errorText } from "@/state/helpers";
 import { useSuperstringStore } from "@/store";
+import type { MemoryJobView } from "../../../shared/contracts";
 import { memoryScopeIdentity } from "../../../shared/memory-scope";
 import { JobRunLink } from "../runs/RunEntry";
 import { BindingMemoryControls } from "./BindingMemoryControls";
@@ -40,7 +49,10 @@ export function MemoryLibrary() {
     [selected, setSelected] = useState<string[]>([]),
     [manual, setManual] = useState(false),
     [purge, setPurge] = useState(false),
-    [shareBusy, setShareBusy] = useState(false);
+    [shareBusy, setShareBusy] = useState(false),
+    [retryJob, setRetryJob] = useState<MemoryJobView | null>(null),
+    [retryBusy, setRetryBusy] = useState(false),
+    [retryError, setRetryError] = useState("");
   const agentId = s.editorAgentId,
     agent = s.agents.find((a) => a.id === agentId),
     ready = !!agent && !s.editorLoading;
@@ -70,6 +82,22 @@ export function MemoryLibrary() {
     setSearch("");
     setQuery("");
   }, [agentId]);
+  // 切 Agent 或换设置分区时收起重试确认并作废在途重试：迟到响应不得写当前 Agent/列表/feedback。
+  const retryAttempt = useRef(0);
+  // 同步闸门：React 状态更新是异步的，连击时要靠 ref 保证同一时刻只发出一次写请求。
+  const retryBusyRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 切 Agent/分区只作触发条件，effect 体无需读取它们。
+  useEffect(() => {
+    retryAttempt.current += 1;
+    retryBusyRef.current = false;
+    setRetryJob(null);
+    setRetryError("");
+    setRetryBusy(false);
+    // 离页（卸载）同样作废在途重试，避免迟到响应写回已离开的页面。
+    return () => {
+      retryAttempt.current += 1;
+    };
+  }, [agentId, s.settingsRoute]);
   useEffect(() => {
     if (ready && agentId)
       void s.loadMemoryPage(page, {
@@ -96,6 +124,10 @@ export function MemoryLibrary() {
     s.memoryCorrectionDirty ||
     s.memoryCorrectionSaving ||
     Object.keys(s.qqMemoryBatchDrafts).length > 0;
+  // 同一 Agent 已有排队/执行中的整理任务时不允许再重试，避免与后台任务抢占来源。
+  const hasActiveJob = s.memoryJobs.some(
+    (job) => job.status === "queued" || job.status === "running",
+  );
   const editor = s.pageEditor;
   const showMaintenance = scope === "" || memoryScopeIdentity(scope, agentId).kind === "web";
   // 维护保存只拥有整理提示词与网页整理策略；读取额度属于独立的 memory-tools 草稿。
@@ -130,6 +162,57 @@ export function MemoryLibrary() {
       ...(status !== "all" ? { status } : {}),
     });
   };
+  const retryFailedJob = async () => {
+    const job = retryJob;
+    if (!job || retryBusyRef.current) return;
+    const targetAgent = agentId;
+    const client = s.apiClient;
+    const attempt = retryAttempt.current;
+    const stillCurrent = () => {
+      const state = useSuperstringStore.getState();
+      return (
+        attempt === retryAttempt.current &&
+        state.apiClient === client &&
+        state.editorAgentId === targetAgent &&
+        state.page === "settings" &&
+        state.settingsRoute === "long-memory"
+      );
+    };
+    if (!stillCurrent()) return;
+    retryBusyRef.current = true;
+    setRetryBusy(true);
+    try {
+      await client.retryMemoryJob(targetAgent, job.id);
+      if (!stillCurrent()) return;
+      setRetryJob(null);
+      setRetryError("");
+      const state = useSuperstringStore.getState();
+      if (state.memoryCorrectionDirty || state.memoryCorrectionSaving) {
+        // 草稿在场时 reloadMemory 会整体早退（任务列表不更新）；这里只替换任务列表，不触碰草稿与详情。
+        const jobs = await client.listMemoryJobs(targetAgent);
+        if (!stillCurrent()) return;
+        useSuperstringStore.setState({ memoryJobs: jobs });
+      } else {
+        // 成功后走 reloadMemory 刷新任务列表与页面基线，纠正草稿与保存中的内容不会被清空。
+        await s.reloadMemory();
+      }
+    } catch (error) {
+      if (!stillCurrent()) return;
+      // 失败保留确认框与原始任务，409 等来源变更按服务端原文提示，不伪装成功。
+      const text = errorText(error);
+      setRetryError(text);
+      s.setNotice({ error: text });
+    } finally {
+      // 过期尝试（切 Agent/离页后）不得复位，否则会清掉新一轮重试的 busy 闸门。
+      if (attempt === retryAttempt.current) {
+        retryBusyRef.current = false;
+        setRetryBusy(false);
+      }
+    }
+  };
+  const retryConfirmMessage = retryJob
+    ? t("library.memory.job.retry.confirm", { "0": retryJob.id })
+    : "";
   return (
     <section className="space-y-5" aria-label={t("library.memory.library")}>
       <div className="flex flex-wrap items-end gap-3">
@@ -156,7 +239,12 @@ export function MemoryLibrary() {
           {t("library.organize.memories.from.a.conversation")}
         </Button>
         {/* 读取额度已迁到系统能力页：内容区只保留直达入口，草稿安全跳转。 */}
-        <Button variant="ghost" onClick={() => s.openSettingsRoute("memory-tools")}>
+        <Button
+          variant="outline"
+          className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+          onClick={() => s.openSettingsRoute("memory-tools")}
+        >
+          <SlidersHorizontal />
           {t("capabilities.resources.openMemoryTools")}
         </Button>
       </div>
@@ -538,11 +626,11 @@ export function MemoryLibrary() {
                     </Field>
                     <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
                       <Button
-                        size="sm"
-                        variant="link"
-                        className="mr-auto"
+                        variant="outline"
+                        className="mr-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
                         onClick={() => s.openSettingsRoute("models")}
                       >
+                        <Cpu />
                         {t("library.open.model.services")}
                       </Button>
                       <Button
@@ -583,7 +671,21 @@ export function MemoryLibrary() {
                       {new Date(job.created_at).toLocaleString(i18n.resolvedLanguage)}
                     </span>
                     {job.error_code && <span className="text-destructive">{job.error_code}</span>}
-                    <div className="ml-auto">
+                    <div className="ml-auto flex items-center gap-2">
+                      {job.status === "failed" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={hasActiveJob || retryBusy}
+                          onClick={() => {
+                            setRetryError("");
+                            setRetryJob(job);
+                          }}
+                        >
+                          <RotateCcw />
+                          {t("capabilities.retry")}
+                        </Button>
+                      )}
                       <JobRunLink ownerKind="memory_job" ownerId={job.id} />
                     </div>
                   </div>
@@ -610,6 +712,22 @@ export function MemoryLibrary() {
               }
             });
           }}
+        />
+      )}
+      {retryJob && (
+        <ConfirmDialog
+          message={
+            retryError
+              ? `${retryConfirmMessage} ${translateNotice(retryError)}`
+              : retryConfirmMessage
+          }
+          confirmLabel={t("capabilities.retry")}
+          busy={retryBusy}
+          onCancel={() => {
+            setRetryJob(null);
+            setRetryError("");
+          }}
+          onConfirm={retryFailedJob}
         />
       )}
     </section>

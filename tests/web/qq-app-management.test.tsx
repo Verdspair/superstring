@@ -4,13 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   QqSchemeResponse,
   QqSettingsResponse,
+  QqStickerCollectionResponse,
   QqStorageUsageResponse,
 } from "../../src/shared/contracts/qq";
+import type { QqStorageSettingsResponse } from "../../src/shared/contracts/qq-storage";
 import { api } from "../../src/web/api";
+import { qqDraftChanges } from "../../src/web/features/qq/draft-state";
 import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
 import { selectLocale, translate } from "../../src/web/i18n";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { NavigationGuard } from "../../src/web/workspace/NavigationGuard";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
@@ -97,12 +101,10 @@ const usage: QqStorageUsageResponse = {
   retention: { days: 14 },
 };
 
-const removed = {
-  observation_text: 3,
-  media_notes: 0,
-  speech: 1,
-  sends: 2,
-  nicknames: 1,
+const storageSettings: QqStorageSettingsResponse = {
+  revision: 3,
+  retention_days: 14,
+  cleanup_mode: "manual",
 };
 
 function client(overrides: Partial<typeof api> = {}) {
@@ -118,7 +120,17 @@ function client(overrides: Partial<typeof api> = {}) {
     listQqSchemes: vi.fn().mockResolvedValue([scheme]),
     getQqSchemeUsage: vi.fn().mockResolvedValue({ scheme_id: SCHEME_ID, bindings: 0 }),
     getQqStorage: vi.fn().mockResolvedValue(usage),
-    runQqStorageCleanup: vi.fn().mockResolvedValue(removed),
+    getQqStorageSettings: vi.fn().mockResolvedValue(storageSettings),
+    updateQqStorageSettings: vi
+      .fn()
+      .mockImplementation(async (body: { retention_days: number; expected_revision: number }) => ({
+        ...storageSettings,
+        retention_days: body.retention_days,
+        revision: body.expected_revision + 1,
+      })),
+    listQqStorageItems: vi.fn().mockResolvedValue({ items: [], next_cursor: null, total: 0 }),
+    previewQqStorageCleanup: vi.fn(),
+    runQqStorageSelectionCleanup: vi.fn(),
     updateQqScheme: vi.fn(),
     updateQqSettings: vi.fn().mockImplementation(
       async (body: { account_id?: string | null; expected_revision: number }) =>
@@ -154,6 +166,22 @@ async function renderApp(
   store.setState({ page: "settings", settingsView, settingsRoute });
   prepare?.();
   render(<SchemesWorkspace />);
+  await act(async () => {});
+  return fake;
+}
+
+/** 数据页 + 三选导航守卫：跨 Tab 的草稿流只在带守卫的工作区外壳里发生。 */
+async function renderGuarded(overrides: Partial<typeof api> = {}, prepare?: () => void) {
+  const fake = client(overrides);
+  store.getState().resetForTests(fake);
+  store.setState({ page: "settings", settingsView: "workspace", settingsRoute: "qq-storage" });
+  prepare?.();
+  render(
+    <>
+      <SchemesWorkspace />
+      <NavigationGuard />
+    </>,
+  );
   await act(async () => {});
   return fake;
 }
@@ -379,34 +407,318 @@ describe("QQ app data & retention", () => {
     });
   });
 
-  it("cleans expired content only after a confirmation that names the target", async () => {
-    const pending = Promise.withResolvers<typeof removed>();
-    const cleanup = vi.fn(() => pending.promise);
-    const fake = await renderApp("qq-storage", "workspace", {
-      runQqStorageCleanup: cleanup as unknown as typeof api.runQqStorageCleanup,
-    });
-    // 打开页面不自动清理。
-    expect(cleanup).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: translate("connections.storage.clean") }));
+  it("keeps a dirty retention draft through the three-choice guard and saves it on continue", async () => {
+    const fake = await renderGuarded();
+    const input = screen.getByLabelText(
+      translate("connections.storage.manage.retentionDays"),
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "30" } });
+    // 切到方案 Tab：共享 revision 链上的保留草稿触发三选确认，明细如实列出改动。
+    await userEvent.click(screen.getByRole("tab", { name: translate("workspace.schemes") }));
+    await act(async () => {});
     const dialog = screen.getByRole("alertdialog");
-    expect(dialog.textContent).toContain("方案、会话绑定与表情素材不会被删除");
-    expect(dialog.textContent).toContain("过期的消息正文");
-    // 取消不调用清理。
+    expect(dialog.textContent).toContain("数据与保留");
+    expect(dialog.textContent).toContain("保留天数: 14 → 30");
+    expect(store.getState().settingsRoute).toBe("qq-storage");
+    // 取消＝留在原页，草稿原样保留、零写入。
     await userEvent.click(
-      within(dialog).getByRole("button", { name: translate("connections.cancel") }),
+      within(dialog).getByRole("button", { name: translate("workspace.stay_here") }),
     );
-    expect(cleanup).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: translate("connections.storage.clean") }));
-    const confirm = within(screen.getByRole("alertdialog")).getByRole("button", {
-      name: translate("connections.storage.clean"),
-    }) as HTMLButtonElement;
-    await userEvent.click(confirm);
-    expect(cleanup).toHaveBeenCalledTimes(1);
-    // 保存中按钮禁用，完成后对话框关闭并重读清单、保留原返回报告。
-    expect(confirm.disabled).toBe(true);
-    await act(async () => pending.resolve(removed));
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(fake.getQqStorage).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(translate("connections.storage.cleaned"))).toBeTruthy();
+    expect(store.getState().settingsRoute).toBe("qq-storage");
+    expect(input.value).toBe("30");
+    expect(fake.updateQqStorageSettings).not.toHaveBeenCalled();
+    // 保存并继续：独立 storage PUT 成功后清草稿，才切到方案 Tab。
+    await userEvent.click(screen.getByRole("tab", { name: translate("workspace.schemes") }));
+    await act(async () => {});
+    await userEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: translate("workspace.save_and_continue"),
+      }),
+    );
+    await act(async () => {});
+    expect(fake.updateQqStorageSettings).toHaveBeenCalledWith({
+      retention_days: 30,
+      expected_revision: 3,
+    });
+    expect(store.getState().settingsRoute).toBe("qq-app-schemes");
+    expect(store.getState().qqInputs.storage).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("discards the retention draft when the guard's discard branch is chosen", async () => {
+    const fake = await renderGuarded();
+    fireEvent.change(screen.getByLabelText(translate("connections.storage.manage.retentionDays")), {
+      target: { value: "25" },
+    });
+    await userEvent.click(screen.getByRole("tab", { name: translate("workspace.schemes") }));
+    await act(async () => {});
+    await userEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: translate("workspace.discard_and_continue"),
+      }),
+    );
+    await act(async () => {});
+    expect(fake.updateQqStorageSettings).not.toHaveBeenCalled();
+    expect(store.getState().qqInputs.storage).toBeNull();
+    expect(store.getState().settingsRoute).toBe("qq-app-schemes");
+  });
+
+  it("blocks app-header navigation while the storage surface is saving", async () => {
+    await renderApp("qq-storage");
+    act(() => {
+      store.setState({ qqStorageSaving: true });
+    });
+    expect(
+      (
+        screen.getByRole("button", {
+          name: translate("schemes.backToCatalog"),
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    for (const name of ["workspace.schemes", "connections.transportPage.tab"]) {
+      expect(
+        (screen.getByRole("tab", { name: translate(name) }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    }
+    // 路由请求同样被 navigationBusy 拦住，位置不变（统一判忙链路 requestPageNavigation）。
+    store.getState().requestPageNavigation("settings", "hub");
+    expect(store.getState().settingsRoute).toBe("qq-storage");
+    expect(store.getState().settingsView).toBe("workspace");
+  });
+
+  it("openSettingsRoute itself is blocked while the storage surface is saving (busy-list regression)", async () => {
+    await renderApp("qq-storage");
+    act(() => {
+      store.setState({ qqStorageSaving: true });
+    });
+    // 回归：内联判忙名单漏掉 qqStorageSaving 时，requestPageNavigation 静默拒绝后
+    // else-if 分支仍会直写 settingsRoute——存储保存中任何 openSettingsRoute 必须零导航。
+    act(() => {
+      store.getState().openSettingsRoute("qq-connection");
+    });
+    expect(store.getState().settingsRoute).toBe("qq-storage");
+    expect(store.getState().settingsView).toBe("workspace");
+    expect(store.getState().page).toBe("settings");
+    expect(store.getState().navigationConfirmOpen).toBe(false);
+    expect(store.getState().pendingNavigation).toBeNull();
+  });
+});
+
+describe("QQ collection description drafts", () => {
+  const collection: QqStickerCollectionResponse = {
+    id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    name: "旧集合",
+    description: "旧简介",
+    revision: 2,
+    asset_count: 0,
+  };
+  const otherCollection: QqStickerCollectionResponse = {
+    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    name: "另一个集合",
+    description: null,
+    revision: 5,
+    asset_count: 0,
+  };
+
+  it("keeps a description-only rename as a draft and clears it after saving", async () => {
+    const update = vi.fn().mockResolvedValue({ ...collection, description: "新简介", revision: 3 });
+    const fake = client({ updateQqStickerCollection: update });
+    store.getState().resetForTests(fake);
+    store.setState({
+      qqStickerCollections: [collection],
+      qqInputs: {
+        ...store.getState().qqInputs,
+        stickerRenaming: {
+          id: collection.id,
+          name: collection.name,
+          revision: 2,
+          description: "新简介",
+        },
+      },
+    });
+    const row = qqDraftChanges(store.getState()).find(
+      (entry) => entry.id === `collection:${collection.id}`,
+    );
+    expect(row?.changes).toEqual(["简介: 旧简介 → 新简介"]);
+    expect(await store.getState().saveQqDrafts()).toBe(true);
+    expect(update).toHaveBeenCalledWith(collection.id, {
+      name: "旧集合",
+      description: "新简介",
+      expected_revision: 2,
+    });
+    expect(store.getState().qqInputs.stickerRenaming).toBeNull();
+  });
+
+  it("omits an unchanged description and refuses a description without a name", async () => {
+    const update = vi.fn();
+    const create = vi.fn();
+    const fake = client({ updateQqStickerCollection: update, createQqStickerCollection: create });
+    store.getState().resetForTests(fake);
+    store.setState({
+      qqStickerCollections: [collection],
+      qqInputs: {
+        ...store.getState().qqInputs,
+        stickerRenaming: { id: collection.id, name: collection.name, revision: 2 },
+      },
+    });
+    // 缺省 description＝本次不改动：名称也没改就没有草稿，保存不发请求。
+    expect(
+      qqDraftChanges(store.getState()).some((entry) => entry.id.startsWith("collection:")),
+    ).toBe(false);
+    expect(await store.getState().saveQqDrafts()).toBe(true);
+    expect(update).not.toHaveBeenCalled();
+
+    // 只有简介没有名称：草稿成立，但保存被显式拒绝。
+    store.setState({
+      qqInputs: {
+        ...store.getState().qqInputs,
+        stickerNewCollection: "",
+        stickerNewCollectionDescription: "只有简介",
+      },
+    });
+    expect(qqDraftChanges(store.getState()).some((entry) => entry.id === "new-collection")).toBe(
+      true,
+    );
+    expect(await store.getState().saveQqDrafts()).toBe(false);
+    expect(store.getState().error).toBe("请填写集合名称，再保存。");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("creates a collection from the name and description draft in one request", async () => {
+    const create = vi.fn().mockResolvedValue({
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      name: "新集合",
+      description: "新简介",
+      revision: 1,
+      asset_count: 0,
+    });
+    const fake = client({ createQqStickerCollection: create });
+    store.getState().resetForTests(fake);
+    store.setState({
+      qqInputs: {
+        ...store.getState().qqInputs,
+        stickerNewCollection: "新集合",
+        stickerNewCollectionDescription: "新简介",
+      },
+    });
+    expect(qqDraftChanges(store.getState()).some((entry) => entry.id === "new-collection")).toBe(
+      true,
+    );
+    expect(await store.getState().saveQqDrafts()).toBe(true);
+    expect(create).toHaveBeenCalledWith({ name: "新集合", description: "新简介" });
+    expect(store.getState().qqInputs.stickerNewCollection).toBe("");
+    expect(store.getState().qqInputs.stickerNewCollectionDescription).toBe("");
+  });
+
+  it("clears a description through an explicit null while keeping the name", async () => {
+    const update = vi.fn().mockResolvedValue({ ...collection, description: null, revision: 3 });
+    const fake = client({ updateQqStickerCollection: update });
+    store.getState().resetForTests(fake);
+    store.setState({
+      qqStickerCollections: [collection],
+      qqInputs: {
+        ...store.getState().qqInputs,
+        stickerRenaming: { id: collection.id, name: "旧集合", revision: 2, description: null },
+      },
+    });
+    expect(
+      qqDraftChanges(store.getState()).find((entry) => entry.id === `collection:${collection.id}`)
+        ?.changes,
+    ).toEqual(["简介: 旧简介 → "]);
+    expect(await store.getState().saveQqDrafts()).toBe(true);
+    expect(update).toHaveBeenCalledWith(collection.id, {
+      name: "旧集合",
+      description: null,
+      expected_revision: 2,
+    });
+  });
+
+  it("carries a description-only rename through the unload guard and saves it when leaving", async () => {
+    const update = vi.fn().mockResolvedValue({ ...collection, description: "新简介", revision: 3 });
+    const fake = client({ updateQqStickerCollection: update });
+    store.getState().resetForTests(fake);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-app-schemes",
+      qqStickerCollections: [collection, otherCollection],
+      qqInputs: {
+        ...store.getState().qqInputs,
+        stickerRenaming: {
+          id: collection.id,
+          name: collection.name,
+          revision: 2,
+          description: "新简介",
+        },
+      },
+    });
+    render(<NavigationGuard />);
+    act(() => {
+      store.getState().openChat();
+    });
+    // 只改简介也算草稿：openChat 被三选守卫拦下，位置不动、明细如实列出简介改动。
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().page).toBe("settings");
+    expect(store.getState().settingsRoute).toBe("qq-app-schemes");
+    expect(screen.getByText("简介: 旧简介 → 新简介")).toBeTruthy();
+    // 取消＝留在原页，草稿原样保留、零写入。
+    act(() => {
+      store.getState().cancelPendingNavigation();
+    });
+    expect(store.getState().navigationConfirmOpen).toBe(false);
+    expect(store.getState().qqInputs.stickerRenaming?.description).toBe("新简介");
+    expect(update).not.toHaveBeenCalled();
+    // 保存并继续：简介随名称一次提交，落地聊天页，另一个集合不动。
+    await act(async () => {
+      store.getState().openChat();
+      await store.getState().confirmSaveAndContinue();
+    });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(collection.id, {
+      name: "旧集合",
+      description: "新简介",
+      expected_revision: 2,
+    });
+    expect(store.getState().page).toBe("chat");
+    expect(store.getState().qqInputs.stickerRenaming).toBeNull();
+    expect(store.getState().qqStickerCollections).toEqual([
+      { ...collection, description: "新简介", revision: 3 },
+      otherCollection,
+    ]);
+  });
+
+  it("keeps the collection directory server-true when the guard's discard branch drops the draft", async () => {
+    const update = vi.fn();
+    const fake = client({ updateQqStickerCollection: update });
+    store.getState().resetForTests(fake);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-app-schemes",
+      qqStickerCollections: [collection, otherCollection],
+      qqInputs: {
+        ...store.getState().qqInputs,
+        stickerRenaming: {
+          id: collection.id,
+          name: collection.name,
+          revision: 2,
+          description: "新简介",
+        },
+      },
+    });
+    render(<NavigationGuard />);
+    act(() => {
+      store.getState().openChat();
+    });
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    await act(async () => {
+      await store.getState().confirmDiscardAndContinue();
+    });
+    // 丢弃＝零写入：草稿清空、落地聊天页，目录保持服务端值（另一个集合也原样）。
+    expect(update).not.toHaveBeenCalled();
+    expect(store.getState().qqInputs.stickerRenaming).toBeNull();
+    expect(store.getState().qqStickerCollections).toEqual([collection, otherCollection]);
+    expect(store.getState().page).toBe("chat");
   });
 });

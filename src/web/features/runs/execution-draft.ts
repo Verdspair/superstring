@@ -16,6 +16,7 @@ export interface ExecutionDraft {
   pausedTools: string[];
   memoryTimeoutSeconds: string;
   knowledgeTimeoutSeconds: string;
+  telemetryRetentionDays: string;
   tasksConcurrency: string;
   tasksRetentionHours: string;
   tasksLeaseSeconds: string;
@@ -52,6 +53,7 @@ export function executionDraftOf(execution: ExecutionPolicy): ExecutionDraft {
     pausedTools: [...execution.pausedTools],
     memoryTimeoutSeconds: String(execution.maintenance.memoryTimeoutSeconds),
     knowledgeTimeoutSeconds: String(execution.maintenance.knowledgeTimeoutSeconds),
+    telemetryRetentionDays: String(execution.telemetry.retentionDays),
     tasksConcurrency: String(execution.tasks.concurrency),
     tasksRetentionHours: String(execution.tasks.retentionHours),
     tasksLeaseSeconds: String(execution.tasks.leaseSeconds),
@@ -96,6 +98,9 @@ export function executionPayload(
     maintenance: {
       memoryTimeoutSeconds: number("memoryTimeoutSeconds"),
       knowledgeTimeoutSeconds: number("knowledgeTimeoutSeconds"),
+    },
+    telemetry: {
+      retentionDays: number("telemetryRetentionDays"),
     },
     tasks: {
       concurrency: number("tasksConcurrency"),
@@ -151,6 +156,7 @@ export type ExecutionDraftKey = Exclude<
 export const NUMERIC_KEYS: readonly ExecutionDraftKey[] = [
   "memoryTimeoutSeconds",
   "knowledgeTimeoutSeconds",
+  "telemetryRetentionDays",
   "tasksConcurrency",
   "tasksRetentionHours",
   "tasksLeaseSeconds",
@@ -181,6 +187,7 @@ export function draftKeyPath(key: ExecutionDraftKey): string {
   const map: Record<ExecutionDraftKey, string> = {
     memoryTimeoutSeconds: "maintenance.memoryTimeoutSeconds",
     knowledgeTimeoutSeconds: "maintenance.knowledgeTimeoutSeconds",
+    telemetryRetentionDays: "telemetry.retentionDays",
     tasksConcurrency: "tasks.concurrency",
     tasksRetentionHours: "tasks.retentionHours",
     tasksLeaseSeconds: "tasks.leaseSeconds",

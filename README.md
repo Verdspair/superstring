@@ -39,7 +39,7 @@ QQ access has its own prerequisites:
 1. Install a QQ NT client and log in once. Take the supported QQ version from your OneBot implementation's own release notes ([NapCat releases](https://github.com/NapNeko/NapCatQQ/releases)); the combination validated here is NapCat v4.18.28 with QQ 9.9.26.44343.
 2. Install an OneBot 11 implementation such as [NapCat](https://github.com/NapNeko/NapCatQQ). On Windows its Shell package bundles its own Node.js runtime: unzip it and start `launcher.bat` (`launcher-win10.bat` on Windows 10). The console prints a WebUI address and a one-time password — use them to open the panel.
 3. In that panel, enable a forward WebSocket server and note its address, port and access token. Keep the endpoint and the token private; a connected transport is not a guarantee of delivery.
-4. In Superstring, open **Connections**, enter that address, port and token, then create a chat scheme and bind the group or private chat to an Agent and the scheme. Enable only the triggers you want; a direct response bypasses interest scoring but the Agent may still choose silence. See that implementation's own installation guide for the current packages and steps.
+4. In Superstring, open **Schemes**, open the QQ application and select **Connection**, then enter that address, port and token. Create a chat scheme and bind the group or private chat to an Agent and the scheme; binding and usage views are part of the scheme details. Enable only the triggers you want; a direct response bypasses interest scoring but the Agent may still choose silence. See that implementation's own installation guide for the current packages and steps.
 
 QQ automation can be affected by platform rules and account restrictions. Superstring does not log into QQ for you. Use an account suitable for testing and keep the OneBot endpoint and access token private.
 
@@ -55,7 +55,7 @@ Voice transcription, full-video understanding, image generation and arbitrary ex
 
 ### Workspace and diagnostics
 
-The navigation separates **Conversations**, **Agents**, **Library**, **Connections** and **Runs**, with **Model services** and **Preferences** available alongside them. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
+The navigation is organized as **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library** and **Extensions**, with **Model services** and **Preferences** as separate entrances. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
 
 ![Execution waterfall with model calls and their evidence](docs/screenshots/runs-detail.png)
 
@@ -80,7 +80,7 @@ Packaged applications include their runtime. A local model server such as LM Stu
 3. Create or select an Agent. Import and authorize any knowledge it should read.
 4. Start a web conversation.
 5. To use QQ: install the QQ NT client and an OneBot 11 implementation such as NapCat, log into QQ, and start its forward WebSocket server — the validated versions, the Windows Shell package and the panel settings are listed under [QQ groups and private chats](#qq-groups-and-private-chats).
-6. Open **Connections**, enter that WebSocket address, port and access token, then bind the group or private chat to an Agent and a chat scheme.
+6. Open **Schemes**, open the QQ application and select **Connection**, enter that WebSocket address, port and access token, then bind the group or private chat to an Agent and a chat scheme.
 
 If LM Studio requires an API token, provide `LM_STUDIO_API_KEY` before starting the application. Provider credentials configured through Model services are encrypted on disk; protect the profile and its encryption keys together.
 
@@ -142,7 +142,7 @@ QQ 接入有自己的前置条件：
 1. 安装 QQ NT 客户端并登录一次。支持的 QQ 版本以上游实现自己的版本说明为准（见 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases)）；本版验证过的组合是 NapCat v4.18.28 ＋ QQ 9.9.26.44343。
 2. 安装 OneBot 11 实现（例如 [NapCat](https://github.com/NapNeko/NapCatQQ)）。Windows 上其 Shell 包自带 Node.js 运行时：解压后运行 `launcher.bat`（Windows 10 用 `launcher-win10.bat`），控制台会打印面板（WebUI）地址与一次性密码，用它打开面板。
 3. 在面板里开启**正向 WebSocket 服务端**，记下地址、端口与访问令牌；端点和令牌都要妥善保管，连接就绪不等于消息一定送达。
-4. 回到 Superstring 的**接入**页填入该地址、端口与访问令牌，再新建聊天方案，把群或私聊绑定到 Agent 与方案；只开启需要的触发，直接回应无需兴趣评分，但 Agent 仍可选择沉默。当前版本与安装步骤以该实现自己的安装文档为准。
+4. 回到 Superstring，在**方案**页打开 QQ 应用、进入**连接** Tab，填入该地址、端口与访问令牌；再新建聊天方案，把群或私聊绑定到 Agent 与方案，绑定与使用情况在方案详情中管理；只开启需要的触发，直接回应无需兴趣评分，但 Agent 仍可选择沉默。当前版本与安装步骤以该实现自己的安装文档为准。
 
 QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代登录 QQ；建议使用适合测试的账号，并妥善保管 OneBot 端点与访问凭据。
 
@@ -158,7 +158,7 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 
 ### 工作区与诊断
 
-导航按**对话、Agent、资料、接入、运行**组织，另设**模型服务**与**偏好**入口。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
+导航按**对话、Agent、系统能力、方案、资料、扩展**组织，另设**模型服务**与**偏好**入口。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
 
 ![执行瀑布：模型调用与证据](docs/screenshots/runs-detail.png)
 
@@ -183,7 +183,7 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 3. 创建或选择 Agent，导入并授权所需知识。
 4. 新建网页对话即可开始使用。
 5. 要接入 QQ：安装 QQ NT 客户端与 OneBot 11 实现（例如 NapCat），登录 QQ，并开启其正向 WebSocket 服务端——已验证的版本组合、Windows Shell 包与面板设置见上文「QQ 群聊与私聊」。
-6. 到**接入**页填入该 WebSocket 的地址、端口与访问令牌，再把群或私聊绑定到 Agent 与聊天方案。
+6. 在**方案**页打开 QQ 应用、进入**连接** Tab，填入该 WebSocket 的地址、端口与访问令牌，再把群或私聊绑定到 Agent 与聊天方案。
 
 LM Studio 开启鉴权时，启动前设置 `LM_STUDIO_API_KEY`。通过模型服务页保存的外部凭据以加密形式落盘，备份时应将资料目录与密钥一同保管。
 

@@ -402,11 +402,28 @@ it("目录提供全局会话绑定入口，落到与详情使用会话同一绑�
   expect(store.getState().settingsRoute).toBe("scheme-bindings");
 });
 
-it("QQ 小标题可进入应用管理，连接与数据与保留是明确捷径", async () => {
+it("QQ 标题与同排连接/数据同为 outline 32px 入口，忙碌禁用与连接目标不变", async () => {
   await renderDirectory();
-  expect(screen.getByRole("button", { name: "连接" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "数据与保留" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "连接" }));
+  const title = screen.getByRole("button", { name: "QQ" });
+  const connection = screen.getByRole("button", { name: "连接" });
+  const data = screen.getByRole("button", { name: "数据与保留" });
+  // 标题入口保留打开应用管理的属性，与连接/数据同为 outline 默认尺寸（min-h-8=32px）。
+  expect(title.getAttribute("data-scheme-app-open")).toBe("qq");
+  for (const button of [title, connection, data]) {
+    expect(button.getAttribute("data-variant")).toBe("outline");
+    expect(button.getAttribute("data-size")).toBe("default");
+    expect(button.className).toContain("h-auto");
+    expect(button.className).toContain("min-h-8");
+    expect(button.className).toContain("whitespace-normal");
+    expect(button.className).not.toContain("h-7");
+  }
+  // 忙碌时三个入口与同页操作一起禁用。
+  act(() => store.setState({ qqSchemeSaving: true }));
+  for (const button of [title, connection, data]) {
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  }
+  act(() => store.setState({ qqSchemeSaving: false }));
+  fireEvent.click(connection);
   expect(store.getState().settingsRoute).toBe("qq-connection");
 });
 

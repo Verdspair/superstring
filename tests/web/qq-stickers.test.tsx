@@ -135,20 +135,267 @@ describe("fresh asset library", () => {
       rename = vi.fn().mockResolvedValue({
         id: D,
         name: "Renamed",
-        description: null,
+        description: "Everyday reactions",
         revision: 2,
         asset_count: 1,
       });
-    setupLibrary({ createQqStickerCollection: create, updateQqStickerCollection: rename });
+    setupLibrary({
+      listQqStickerCollections: vi.fn().mockResolvedValue([
+        {
+          id: D,
+          name: "Reactions",
+          description: "Everyday reactions",
+          revision: 1,
+          asset_count: 1,
+        },
+      ]),
+      createQqStickerCollection: create,
+      updateQqStickerCollection: rename,
+    });
     await page();
     fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    expect(screen.getByText("Everyday reactions")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("集合名称"), { target: { value: "New collection" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "新建" })));
-    expect(create).toHaveBeenCalledWith({ name: "New collection" });
+    expect(create).toHaveBeenCalledWith({ name: "New collection", description: null });
     fireEvent.click(screen.getAllByRole("button", { name: "重命名" })[0]);
     fireEvent.change(screen.getByLabelText("重命名集合"), { target: { value: "Renamed" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
-    expect(rename).toHaveBeenCalledWith(D, { name: "Renamed", expected_revision: 1 });
+    // 只改名字：未修改的简介按已存值原样发回，不会意外清空。
+    expect(rename).toHaveBeenCalledWith(D, {
+      name: "Renamed",
+      description: "Everyday reactions",
+      expected_revision: 1,
+    });
+  });
+  it("creates a collection with its description", async () => {
+    const create = vi.fn().mockResolvedValue({
+      id: "new",
+      name: "New collection",
+      description: "Short intro",
+      revision: 1,
+      asset_count: 0,
+    });
+    setupLibrary({ createQqStickerCollection: create });
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    fireEvent.change(screen.getByLabelText("集合名称"), { target: { value: "New collection" } });
+    fireEvent.change(screen.getByLabelText("简介"), { target: { value: "Short intro" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "新建" })));
+    expect(create).toHaveBeenCalledWith({ name: "New collection", description: "Short intro" });
+    // 成功后草稿清空，等下一次输入。
+    expect((screen.getByLabelText("简介") as HTMLTextAreaElement).value).toBe("");
+  });
+  it("a description-only rename reuses the stored name and revision", async () => {
+    const update = vi.fn().mockResolvedValue({
+      id: D,
+      name: "Reactions",
+      description: "Fresh intro",
+      revision: 2,
+      asset_count: 1,
+    });
+    setupLibrary({
+      listQqStickerCollections: vi.fn().mockResolvedValue([
+        {
+          id: D,
+          name: "Reactions",
+          description: "Everyday reactions",
+          revision: 1,
+          asset_count: 1,
+        },
+      ]),
+      updateQqStickerCollection: update,
+    });
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    fireEvent.click(screen.getByRole("button", { name: "重命名" }));
+    fireEvent.change(screen.getAllByLabelText("简介")[1], { target: { value: "Fresh intro" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
+    // 名字没动：仍按原名字与原 revision 提交，CAS 比较的是读到的值。
+    expect(update).toHaveBeenCalledWith(D, {
+      name: "Reactions",
+      description: "Fresh intro",
+      expected_revision: 1,
+    });
+  });
+  it("an emptied description clears to null", async () => {
+    const update = vi.fn().mockResolvedValue({
+      id: D,
+      name: "Reactions",
+      description: null,
+      revision: 2,
+      asset_count: 1,
+    });
+    setupLibrary({
+      listQqStickerCollections: vi.fn().mockResolvedValue([
+        {
+          id: D,
+          name: "Reactions",
+          description: "Everyday reactions",
+          revision: 1,
+          asset_count: 1,
+        },
+      ]),
+      updateQqStickerCollection: update,
+    });
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    fireEvent.click(screen.getByRole("button", { name: "重命名" }));
+    fireEvent.change(screen.getAllByLabelText("简介")[1], { target: { value: "" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
+    expect(update).toHaveBeenCalledWith(D, {
+      name: "Reactions",
+      description: null,
+      expected_revision: 1,
+    });
+  });
+  it("a description-only collection draft survives a remount and completes once named", async () => {
+    const create = vi.fn().mockResolvedValue({
+      id: "new",
+      name: "Draft collection",
+      description: "Short intro",
+      revision: 1,
+      asset_count: 0,
+    });
+    setupLibrary({ createQqStickerCollection: create });
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    // 只有说明、没有名称：说明已作为草稿进入 store，提交按钮仍因缺名禁用。
+    fireEvent.change(screen.getByLabelText("简介"), { target: { value: "Short intro" } });
+    expect(store.getState().qqInputs.stickerNewCollectionDescription).toBe("Short intro");
+    expect((screen.getByRole("button", { name: "新建" }) as HTMLButtonElement).disabled).toBe(true);
+    // 卸载重挂载：组件内不留输入，重开对话框后说明从 store 草稿恢复。
+    cleanup();
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    expect((screen.getByLabelText("简介") as HTMLTextAreaElement).value).toBe("Short intro");
+    expect((screen.getByLabelText("集合名称") as HTMLInputElement).value).toBe("");
+    // 显式补上名称后才能提交；POST 带上说明，回读的假数据落进集合列表。
+    fireEvent.change(screen.getByLabelText("集合名称"), { target: { value: "Draft collection" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "新建" })));
+    expect(create).toHaveBeenCalledWith({ name: "Draft collection", description: "Short intro" });
+    expect(screen.getByText("Short intro")).toBeTruthy();
+    // 成功后名称与说明一起清空。
+    expect((screen.getByLabelText("简介") as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByLabelText("集合名称") as HTMLInputElement).value).toBe("");
+  });
+  it("a description-only rename survives a remount and clears after saving", async () => {
+    const update = vi.fn().mockResolvedValue({
+      id: D,
+      name: "Reactions",
+      description: "Fresh intro",
+      revision: 2,
+      asset_count: 1,
+    });
+    const client = setupLibrary({
+      listQqStickerCollections: vi.fn().mockResolvedValue([
+        {
+          id: D,
+          name: "Reactions",
+          description: "Everyday reactions",
+          revision: 1,
+          asset_count: 1,
+        },
+      ]),
+      updateQqStickerCollection: update,
+    });
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    fireEvent.click(screen.getByRole("button", { name: "重命名" }));
+    // 只动说明、名字不改：整份重命名草稿存在 store.qqInputs.stickerRenaming。
+    fireEvent.change(screen.getAllByLabelText("简介")[1], { target: { value: "Fresh intro" } });
+    expect(store.getState().qqInputs.stickerRenaming).toMatchObject({
+      id: D,
+      name: "Reactions",
+      revision: 1,
+      description: "Fresh intro",
+    });
+    // 卸载重挂载后重新打开集合对话框：说明经 store 草稿恢复，名字保持读取值。
+    cleanup();
+    await page();
+    expect(store.getState().qqInputs.stickerRenaming?.description).toBe("Fresh intro");
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    expect((screen.getAllByLabelText("简介")[1] as HTMLTextAreaElement).value).toBe("Fresh intro");
+    expect((screen.getByLabelText("重命名集合") as HTMLInputElement).value).toBe("Reactions");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
+    // 提交只有说明变了：名字与 CAS 修订号沿用读取基线；不触碰素材本身或授权。
+    expect(update).toHaveBeenCalledWith(D, {
+      name: "Reactions",
+      description: "Fresh intro",
+      expected_revision: 1,
+    });
+    expect(client.updateQqStickerAsset).not.toHaveBeenCalled();
+    expect(client.setQqStickerCollections).not.toHaveBeenCalled();
+    expect(client.setQqStickerEnabled).not.toHaveBeenCalled();
+    // 成功后重命名草稿整体清空，编辑器退出。
+    expect(store.getState().qqInputs.stickerRenaming).toBeNull();
+    expect(screen.queryByLabelText("重命名集合")).toBeNull();
+  });
+  it("a conflicted save keeps the draft and an explicit refresh does not rewrite it", async () => {
+    const update = vi.fn().mockRejectedValue(new Error("集合已变化，请重新加载后保存"));
+    setupLibrary({
+      listQqStickerCollections: vi.fn().mockResolvedValue([
+        {
+          id: D,
+          name: "Reactions",
+          description: "Everyday reactions",
+          revision: 1,
+          asset_count: 1,
+        },
+      ]),
+      updateQqStickerCollection: update,
+    });
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    fireEvent.click(screen.getByRole("button", { name: "重命名" }));
+    fireEvent.change(screen.getByLabelText("重命名集合"), { target: { value: "Renamed draft" } });
+    fireEvent.change(screen.getAllByLabelText("简介")[1], { target: { value: "Draft intro" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
+    expect(screen.getByRole("alert").textContent).toContain("集合已变化");
+    expect((screen.getByLabelText("重命名集合") as HTMLInputElement).value).toBe("Renamed draft");
+    expect((screen.getAllByLabelText("简介")[1] as HTMLTextAreaElement).value).toBe("Draft intro");
+    // 显式刷新（页面「刷新」重读集合并换新基线）后草稿保留：不自动改写、也不自动重试保存。
+    await act(async () => {
+      await store.getState().loadQqStickers();
+    });
+    expect((screen.getByLabelText("重命名集合") as HTMLInputElement).value).toBe("Renamed draft");
+    expect((screen.getAllByLabelText("简介")[1] as HTMLTextAreaElement).value).toBe("Draft intro");
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+  it("collection management adds no delete affordance and touches no asset authorisation", async () => {
+    const client = setupLibrary({
+      createQqStickerCollection: vi.fn().mockResolvedValue({
+        id: "new",
+        name: "New collection",
+        description: null,
+        revision: 1,
+        asset_count: 0,
+      }),
+    });
+    await page();
+    fireEvent.click(screen.getByRole("button", { name: "管理集合" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).queryByRole("button", { name: /删除/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText("集合名称"), { target: { value: "New collection" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "新建" })));
+    expect(within(dialog).queryByRole("button", { name: /删除/ })).toBeNull();
+    // 集合的新建/重命名不触碰素材本身或素材的所属集合（授权）；U11 的删除禁令不变。
+    expect(client.setQqStickerCollections).not.toHaveBeenCalled();
+    expect(client.updateQqStickerAsset).not.toHaveBeenCalled();
+  });
+  it("the media and collection entries carry the management weight", async () => {
+    setupLibrary();
+    await page();
+    const media = screen.getByRole("button", { name: "前往媒体与表情" });
+    expect(media.getAttribute("data-variant")).toBe("outline");
+    expect(media.getAttribute("data-size")).toBe("default");
+    expect(media.className).toContain("min-h-8");
+    expect(media.className).toContain("h-auto");
+    expect(media.querySelector("svg")).toBeTruthy();
+    const manage = screen.getByRole("button", { name: "管理集合" });
+    expect(manage.getAttribute("data-variant")).toBe("outline");
+    expect(manage.getAttribute("data-size")).toBe("default");
+    expect(manage.querySelector("svg")).toBeTruthy();
   });
   it("English controls preserve user asset names", async () => {
     selectLocale("en");

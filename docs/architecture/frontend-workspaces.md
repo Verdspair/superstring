@@ -17,9 +17,9 @@ primary Runs destination.
 | --- | --- | --- |
 | Conversations | Message records, runtime observability, tasks and approvals for every Web and QQ private/group conversation; current/global scope; identity, context usage, sources and delivery evidence | `screens/conversations`, shared `screens/observability` and `screens/runs` components |
 | Agents | Agent directory; identity and expression; models and context | `screens/assistants` |
-| System capabilities | Built-in capability directory; memory and knowledge reading rules; global knowledge reading budget; web access; media switches; execution switches and limits | `screens/connections/CapabilitiesWorkspace.tsx` |
+| System capabilities | Built-in capability directory; memory and knowledge reading rules; global knowledge reading budget; web access; media switches; execution switches and limits; runtime data retention | `screens/connections/CapabilitiesWorkspace.tsx` |
 | Schemes | Application directory; QQ application tabs for Schemes, Connection, and Data and retention; scheme settings and conversations using each scheme; binding management | `screens/connections/SchemesWorkspace.tsx`, shared QQ panels and binding editor |
-| Library | Knowledge documents and organization; scoped memories and maintenance; sticker assets and collections | `screens/library` |
+| Library | Knowledge documents and organization; scoped memories and maintenance; sticker assets and collections; description-only collection changes use the same source draft and save guard | `screens/library` |
 | Extensions | External MCP, Skills and external tool grants only; no QQ connection status | `screens/connections`, internal `connections` space |
 | Model services (separate) | Provider credentials, declared models/capacities, health, shared purpose defaults | `screens/environment/ModelServices.tsx` |
 | Preferences (separate) | Language, 16 themes, appearance mode, supported desktop behavior | `screens/environment/Preferences.tsx` |
@@ -60,9 +60,14 @@ returns to the application scheme list.
 Connection contains the existing operating-mode controls, QQ global switch and
 inline connection settings, without a duplicate configuration modal. Data and
 retention covers all QQ schemes and conversations at application scope, not the
-selected scheme. The existing 14-day retention/expiry rules and expired-cleanup
-safety scope remain unchanged; cleanup does not delete schemes, bindings or sticker
-assets. Runtime traces remain in Conversation views, not duplicated in QQ management.
+selected scheme. The retention window defaults to 14 days and is configurable from
+1 to 3650; changes apply only to records written afterwards and never rewrite an
+existing expiry stamp. Expired records become unreadable; physical cleanup is
+manual-only and covers the five expiry categories (message bodies, media reading
+notes, assistant speech, send records, nicknames). Rows in use or with unknown or
+in-flight delivery are protected. Cleanup does not delete schemes, bindings or
+sticker assets; message deduplication identity and memory-source identity are
+retained. Runtime traces remain in Conversation views, not duplicated in QQ management.
 
 QQ schemes remain shared between group and private conversations. Each scheme
 detail has Scheme settings and Conversations using this scheme views. Settings
@@ -107,8 +112,11 @@ QQ 应用三 Tab「方案 / 连接 / 数据与保留」分别对应 `qq-app-sche
 `operating-mode` 规范到 `qq-connection`。方案详情的 QQ 面包屑返回应用方案列表。
 
 连接页保留运行模式控制、QQ 总开关及 inline 配置，不重复弹窗；数据与保留覆盖应用级
-全部 QQ 方案与会话，不随当前方案筛选。14 天保留/到期与过期清理安全范围不变，
-不删除方案、绑定或表情素材，不重复对话运行追踪视图。QQ 群/私聊共用方案，详情仍分
+全部 QQ 方案与会话，不随当前方案筛选。保留天数默认 14 天、可配置 1–3650，只对之后
+写入的记录生效，不回溯改写已有到期；到期即不可读，物理清理仅手动确认、覆盖五类到期
+数据（消息正文、媒体阅读记录、助手发言、发送台账、昵称）。在用行与投递未知或进行中
+的行受保护；不删除方案、绑定或表情素材，消息去重身份与记忆来源身份保留。不重复
+对话运行追踪视图。QQ 群/私聊共用方案，详情仍分
 「方案设置 / 使用会话」，保留参与、回应、上下文、媒体四参数 Tab，usage 数量直达
 使用会话；添加可选已观察未绑定会话或手工号码，默认当前方案，Agent 与 scheme 均必需，
 不增加后端没有的解绑。次级 `scheme-bindings` 复用同一编辑器，不设平级绑定 Tab。
@@ -166,10 +174,14 @@ flowchart TD
   IDs remain possible when discovery is unavailable. Four-purpose default-model
   replacement requires an explicit confirmation for the selected Agent.
 - Knowledge authorization, selected versus all modes, original versus generated
-  drafts, versions and independent model/rule saves remain separate.
+  drafts, versions and independent model/rule saves remain separate. Server-side
+  search stays paginated and keeps its case-insensitive substring matching.
 - Memory scopes, private-chat sharing, correction, governance, consolidation and
   filtered paging retain their existing semantics. Refresh loads maintenance data
   before the filtered page, so the shared request epoch cannot discard the former.
+  A failed maintenance job is retried only after an explicit confirmation carrying
+  its cost and the original snapshot; the retry re-verifies sources, and a failed
+  re-check refuses the retry without creating a new job automatically.
 - Shared OneBot schemes retain trigger/rhythm/context/media/prompt controls, usage
   checks, whole-scheme saves, copying, and per-binding overrides. Program-defined
   reply instructions remain read-only. Credentials are write-only; clearing a

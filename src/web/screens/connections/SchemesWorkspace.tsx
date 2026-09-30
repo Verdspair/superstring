@@ -194,7 +194,7 @@ export function SchemeDirectory({ appId }: { appId?: string } = {}) {
           </p>
           <Button
             variant="outline"
-            size="sm"
+            className="h-auto min-h-8 max-w-full whitespace-normal break-words"
             disabled={busy}
             onClick={() => s.openSettingsRoute("scheme-bindings")}
           >
@@ -211,16 +211,17 @@ export function SchemeDirectory({ appId }: { appId?: string } = {}) {
                   <app.icon className="size-4 text-muted-foreground" />
                   <h2 className="text-sm font-medium">
                     {app.management ? (
-                      <button
+                      <Button
                         type="button"
+                        variant="outline"
                         data-scheme-app-open={app.id}
                         disabled={busy}
                         onClick={() => goAppRoute(app.management?.schemes)}
-                        className="-mx-1 flex items-center gap-0.5 rounded-md px-1 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+                        className="h-auto min-h-8 max-w-full whitespace-normal break-words"
                       >
                         {t(app.nameKey)}
                         <ChevronRight className="size-3.5 shrink-0" />
-                      </button>
+                      </Button>
                     ) : (
                       t(app.nameKey)
                     )}
@@ -230,7 +231,7 @@ export function SchemeDirectory({ appId }: { appId?: string } = {}) {
                     <div className="ml-auto flex flex-wrap items-center gap-2">
                       <Button
                         variant="outline"
-                        size="sm"
+                        className="h-auto min-h-8 max-w-full whitespace-normal break-words"
                         disabled={busy}
                         onClick={() => goAppRoute(app.management?.connection)}
                       >
@@ -238,7 +239,7 @@ export function SchemeDirectory({ appId }: { appId?: string } = {}) {
                       </Button>
                       <Button
                         variant="outline"
-                        size="sm"
+                        className="h-auto min-h-8 max-w-full whitespace-normal break-words"
                         disabled={busy}
                         onClick={() => goAppRoute(app.management?.data)}
                       >
@@ -438,8 +439,7 @@ function SchemeDetail({ app }: { app: SchemeAppEntry }) {
         {app.management && (
           <Button
             variant="outline"
-            size="sm"
-            className="ml-auto"
+            className="ml-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
             disabled={busy}
             onClick={() => goAppRoute(app.management?.connection)}
           >

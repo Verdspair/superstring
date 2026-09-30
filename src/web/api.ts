@@ -75,6 +75,8 @@ import {
   KnowledgeCategorySchema,
   KnowledgeDocumentDetailSchema,
   KnowledgeDocumentSchema,
+  KnowledgeDocumentsPageSchema,
+  type KnowledgeDocumentsQuery,
   type KnowledgeDocumentUpdate,
   type KnowledgeImport,
   KnowledgeSettingsSchema,
@@ -120,12 +122,25 @@ import {
   type UpdateQqSettingsRequest,
   type UpdateQqStickerCollectionRequest,
   type UpdateQqStickerRequest,
+  type UpdateQqStorageSettingsRequest,
   type UpdateQqTransportRequest,
 } from "../shared/contracts/qq";
+import {
+  type QqStorageCleanupRequest,
+  QqStorageCleanupSelectionResponseSchema,
+  type QqStorageItemsQuery,
+  QqStorageItemsResponseSchema,
+  QqStorageSettingsResponseSchema,
+} from "../shared/contracts/qq-storage";
 import {
   ConversationRuntimeStatusSchema,
   type RuntimeSpanFilters,
   RuntimeSpansPageSchema,
+  type RuntimeStorageCleanupRequest,
+  RuntimeStorageCleanupResultSchema,
+  RuntimeStorageItemsPageSchema,
+  type RuntimeStorageItemsQuery,
+  RuntimeStorageSummarySchema,
   RuntimeTraceDetailSchema,
   RuntimeTracesPageSchema,
 } from "../shared/contracts/runtime-observability";
@@ -292,6 +307,32 @@ export const api = {
       { signal, cache: "no-store" },
     );
   },
+  getRuntimeStorage: (signal?: AbortSignal) =>
+    requestJson("/v2/observability/storage", RuntimeStorageSummarySchema, {
+      signal,
+      cache: "no-store",
+    }),
+  listRuntimeStorageItems: (filters: Partial<RuntimeStorageItemsQuery>, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(`/v2/observability/storage/items?${query}`, RuntimeStorageItemsPageSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  previewRuntimeStorageCleanup: (body: RuntimeStorageCleanupRequest) =>
+    requestJson(
+      "/v2/observability/storage/cleanup/preview",
+      RuntimeStorageCleanupResultSchema,
+      json("POST", body),
+    ),
+  runRuntimeStorageCleanup: (body: RuntimeStorageCleanupRequest) =>
+    requestJson(
+      "/v2/observability/storage/cleanup",
+      RuntimeStorageCleanupResultSchema,
+      json("POST", body),
+    ),
   getDelivery: (id: string, signal?: AbortSignal) =>
     requestJson(`/v2/deliveries/${encodeURIComponent(id)}`, DeliverySchema, {
       signal,
@@ -361,8 +402,18 @@ export const api = {
     );
     if (!response.ok) throw await responseError(response);
   },
-  listKnowledgeDocuments: () =>
-    requestJson("/knowledge/documents", KnowledgeDocumentSchema.array()),
+  listKnowledgeDocuments: (
+    filters: Partial<KnowledgeDocumentsQuery> = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(`/knowledge/documents?${query}`, KnowledgeDocumentsPageSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
   getKnowledgeDocument: (id: string) =>
     requestJson(`/knowledge/documents/${id}`, KnowledgeDocumentDetailSchema),
   importKnowledgeText: (body: KnowledgeImport) =>
@@ -627,6 +678,13 @@ export const api = {
   getMemoryJob(agentId: string, jobId: string): Promise<MemoryJobView> {
     return requestJson(`/agents/${agentId}/memory/jobs/${jobId}`, MemoryJobViewSchema);
   },
+  retryMemoryJob(agentId: string, jobId: string): Promise<MemoryJobView> {
+    return requestJson(
+      `/agents/${encodeURIComponent(agentId)}/memory/jobs/${encodeURIComponent(jobId)}/retry`,
+      MemoryJobViewSchema,
+      { method: "POST" },
+    );
+  },
   consolidate(agentId: string, body: unknown): Promise<MemoryJobView> {
     return requestJson(
       `/agents/${agentId}/memory/consolidate`,
@@ -715,8 +773,35 @@ export const api = {
   updateQqOwner: (body: { peer_id: string; expected_revision?: number }) =>
     requestJson("/qq/owner", QqOwnerResponseSchema, json("PUT", body)),
   getQqStorage: () => requestJson("/qq/storage", QqStorageUsageResponseSchema),
+  getQqStorageSettings: (signal?: AbortSignal) =>
+    requestJson("/qq/storage/settings", QqStorageSettingsResponseSchema, {
+      signal,
+      cache: "no-store",
+    }),
+  updateQqStorageSettings: (body: UpdateQqStorageSettingsRequest) =>
+    requestJson("/qq/storage/settings", QqStorageSettingsResponseSchema, json("PUT", body)),
+  listQqStorageItems: (filters: Partial<QqStorageItemsQuery>, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters))
+      if (value !== undefined) query.set(key, String(value));
+    return requestJson(`/qq/storage/items?${query}`, QqStorageItemsResponseSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  previewQqStorageCleanup: (body: QqStorageCleanupRequest) =>
+    requestJson(
+      "/qq/storage/cleanup/preview",
+      QqStorageCleanupSelectionResponseSchema,
+      json("POST", body),
+    ),
+  runQqStorageSelectionCleanup: (body: QqStorageCleanupRequest) =>
+    requestJson("/qq/storage/cleanup", QqStorageCleanupSelectionResponseSchema, json("POST", body)),
   runQqStorageCleanup: () =>
-    requestJson("/qq/storage/cleanup", QqStorageCleanupResponseSchema, { method: "POST" }),
+    requestJson("/qq/storage/cleanup", QqStorageCleanupResponseSchema, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    }),
   listQqSchemes: () => requestJson("/qq/schemes", QqSchemeResponseSchema.array()),
   createQqScheme: (body: CreateQqSchemeRequest) =>
     requestJson("/qq/schemes", QqSchemeResponseSchema, json("POST", body)),

@@ -2,6 +2,7 @@ import type {
   QqBindingResponse,
   QqConversationListItem,
   QqSettingsResponse,
+  QqStickerCollectionResponse,
 } from "../../../shared/contracts/qq";
 import { msg } from "../../i18n";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
@@ -9,7 +10,14 @@ import { permissionSettingsDirty } from "../access/permission-state";
 import { webAccessDraftDirty } from "../access/web-access-state";
 import { dirtyPages } from "../agents/page-drafts";
 import { knowledgeModelDirty, knowledgeReadDirty, organizationDirty } from "../knowledge/types";
-import { qqSchemeChanges, qqSchemeDirty, qqStickerEditorDirty, qqStickerEditorFrom } from "./types";
+import {
+  type QqStorageSettingsDraft,
+  qqSchemeChanges,
+  qqSchemeDirty,
+  qqStickerEditorDirty,
+  qqStickerEditorFrom,
+  qqStorageDaysChanged,
+} from "./types";
 
 export interface QqInputs {
   schemeTexts: Record<string, string>;
@@ -22,6 +30,8 @@ export interface QqInputs {
     accountId: string;
     token: string;
   } | null;
+  /** 保留设置草稿；数字以原文保存（空/非法原文也要能表示），空闲时 null。 */
+  storage: QqStorageSettingsDraft | null;
   choices: Record<string, { agentId: string; schemeId: string; source?: QqBindingResponse }>;
   attention: Record<
     string,
@@ -34,7 +44,17 @@ export interface QqInputs {
   manualAgentId: string;
   manualSchemeId: string;
   stickerNewCollection: string;
-  stickerRenaming: { id: string; name: string; revision: number } | null;
+  /** 新建集合的简介原文；与名称一起构成一份草稿。 */
+  stickerNewCollectionDescription: string;
+  /**
+   * 重命名草稿。`description` 缺省＝本次不改动（绝不把「没改」变成清空）；null 或空白＝清除。
+   */
+  stickerRenaming: {
+    id: string;
+    name: string;
+    revision: number;
+    description?: string | null;
+  } | null;
   stickerBatchCollection: string;
   stickerBatchTag: string;
 }
@@ -44,6 +64,7 @@ export const emptyQqInputs = (): QqInputs => ({
   schemeNewName: "",
   schemeCopyName: "",
   connection: null,
+  storage: null,
   choices: {},
   attention: {},
   manualKind: "group",
@@ -52,6 +73,7 @@ export const emptyQqInputs = (): QqInputs => ({
   manualAgentId: "",
   manualSchemeId: "",
   stickerNewCollection: "",
+  stickerNewCollectionDescription: "",
   stickerRenaming: null,
   stickerBatchCollection: "",
   stickerBatchTag: "",
@@ -113,6 +135,27 @@ const attentionDirty = (draft: QqInputs["attention"][string]) =>
   (draft.mode !== "off" &&
     parseAttentionMembers(draft.members).sort().join(" ") !==
       [...draft.source.attention.members].sort().join(" "));
+const storageDirty = (draft: QqInputs["storage"]) =>
+  !!draft && qqStorageDaysChanged(draft.days, draft.source.retention_days);
+
+/**
+ * 重命名草稿相对集合行的改动行；`description` 为 undefined＝本次不改，绝不把「没改」变成清空。
+ * 名称取 trim 后比较（单个空白名称会在保存前被显式拒绝）。
+ */
+export function qqStickerRenamingChanges(
+  rename: QqInputs["stickerRenaming"],
+  original: QqStickerCollectionResponse | undefined,
+): string[] {
+  if (!rename || !original) return [];
+  const changes: string[] = [];
+  if (rename.name.trim() !== original.name) changes.push(`${original.name} → ${rename.name}`);
+  if (rename.description !== undefined) {
+    const before = original.description ?? "";
+    const after = (rename.description ?? "").trim();
+    if (before !== after) changes.push(msg("简介: {0} → {1}", before, after));
+  }
+  return changes;
+}
 
 export function invalidSchemeInputs(state: SuperstringState) {
   const editor = state.qqSchemeEditor;
@@ -180,6 +223,14 @@ export function qqDraftChanges(
       ],
     });
   }
+  if (storageDirty(inputs.storage) && inputs.storage)
+    rows.push({
+      id: "storage",
+      resource: msg("数据与保留"),
+      changes: [
+        msg("保留天数: {0} → {1}", inputs.storage.source.retention_days, inputs.storage.days),
+      ],
+    });
   for (const [id, draft] of Object.entries(inputs.choices))
     if (draft.source && choiceDirty(draft))
       rows.push({
@@ -213,21 +264,28 @@ export function qqDraftChanges(
         `${msg("方案")}: ${manual.schemeId}`,
       ],
     });
-  if (inputs.stickerNewCollection.trim())
+  const newCollectionName = inputs.stickerNewCollection.trim();
+  const newCollectionDescription = inputs.stickerNewCollectionDescription.trim();
+  if (newCollectionName || newCollectionDescription)
     rows.push({
       id: "new-collection",
       resource: msg("新建集合"),
-      changes: [inputs.stickerNewCollection],
+      changes: [
+        ...(newCollectionName ? [newCollectionName] : []),
+        ...(newCollectionDescription
+          ? [msg("简介: {0} → {1}", "—", newCollectionDescription)]
+          : []),
+      ],
     });
-  if (inputs.stickerRenaming) {
-    const original = state.qqStickerCollections.find(
-      (item) => item.id === inputs.stickerRenaming?.id,
-    );
-    if (original && original.name !== inputs.stickerRenaming.name.trim())
+  const rename = inputs.stickerRenaming;
+  if (rename) {
+    const original = state.qqStickerCollections.find((item) => item.id === rename.id);
+    const changes = qqStickerRenamingChanges(rename, original);
+    if (changes.length)
       rows.push({
-        id: `collection:${inputs.stickerRenaming.id}`,
+        id: `collection:${rename.id}`,
         resource: msg("重命名集合"),
-        changes: [`${original.name} → ${inputs.stickerRenaming.name}`],
+        changes,
       });
   }
   return rows;
@@ -264,6 +322,11 @@ export function createQqDraftActions(
       if (qqSchemeDirty(get().qqSchemeEditor) && !(await get().saveQqScheme())) return false;
       if (qqStickerEditorDirty(get().qqStickerEditor) && !(await get().saveQqStickerEditor()))
         return false;
+      // 保留设置是独立 PUT：只发 storage 字段，不携带方案/连接等其他草稿。
+      if (storageDirty(get().qqInputs.storage)) {
+        if (!(await get().saveQqStorageSettings())) return false;
+        patchInputs({ storage: null });
+      }
       const connection = get().qqInputs.connection;
       if (connectionDirty(connection) && connection) {
         if (
@@ -345,22 +408,38 @@ export function createQqDraftActions(
         // 只有写成功才清掉目标草稿；失败保留，用户可原地修正或重试。
         patchInputs({ manualPeer: "", manualPicked: "", manualAgentId: "" });
       }
-      if (get().qqInputs.stickerNewCollection.trim()) {
-        if (!(await get().createQqStickerCollection(get().qqInputs.stickerNewCollection.trim())))
+      const newCollectionName = get().qqInputs.stickerNewCollection.trim();
+      const newCollectionDescription = get().qqInputs.stickerNewCollectionDescription.trim();
+      if (newCollectionName || newCollectionDescription) {
+        if (!newCollectionName) {
+          set({ error: "请填写集合名称，再保存。" });
           return false;
-        patchInputs({ stickerNewCollection: "" });
+        }
+        if (!(await get().createQqStickerCollection(newCollectionName, newCollectionDescription)))
+          return false;
+        patchInputs({ stickerNewCollection: "", stickerNewCollectionDescription: "" });
       }
       const rename = get().qqInputs.stickerRenaming;
-      if (
-        rename &&
-        rename.name.trim() !==
-          get().qqStickerCollections.find((item) => item.id === rename.id)?.name
-      ) {
-        if (
-          !(await get().renameQqStickerCollection(rename.id, rename.name.trim(), rename.revision))
-        )
-          return false;
-        patchInputs({ stickerRenaming: null });
+      if (rename) {
+        const original = get().qqStickerCollections.find((item) => item.id === rename.id);
+        if (original && qqStickerRenamingChanges(rename, original).length) {
+          const name = rename.name.trim();
+          if (!name) {
+            set({ error: "请填写集合名称，再保存。" });
+            return false;
+          }
+          // undefined＝本次不改动；null 或空白＝清除（服务端对空白同样按 null 规范化）。
+          if (
+            !(await get().renameQqStickerCollection(
+              rename.id,
+              name,
+              rename.revision,
+              rename.description === undefined ? undefined : (rename.description ?? ""),
+            ))
+          )
+            return false;
+          patchInputs({ stickerRenaming: null });
+        }
       }
       return true;
     },

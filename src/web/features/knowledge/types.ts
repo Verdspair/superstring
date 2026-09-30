@@ -5,8 +5,38 @@ import type {
   KnowledgeCategory,
   KnowledgeDocument,
   KnowledgeDocumentDetail,
+  KnowledgeDocumentsQuery,
+  KnowledgeOrganizationStatus,
   KnowledgeSettings,
 } from "../../../shared/contracts/knowledge";
+
+/** 资料列表每页条数：服务端默认同为 50（1..100），界面翻页固定按此有界取页。 */
+export const KNOWLEDGE_PAGE_SIZE = 50;
+/** 资料列表的服务端过滤；空搜索与 "all" 分类/状态都不发过滤字段。 */
+export interface KnowledgeListFilters {
+  search: string;
+  category: string;
+  status: string;
+}
+export const emptyKnowledgeListFilters: KnowledgeListFilters = {
+  search: "",
+  category: "all",
+  status: "all",
+};
+/** 列表请求只带实际生效的条件：cursor 仅翻页时出现，limit 固定有界。 */
+export function knowledgeListQuery(
+  filters: KnowledgeListFilters,
+  cursor: string | null,
+): Partial<KnowledgeDocumentsQuery> {
+  return {
+    ...(filters.search ? { search: filters.search } : {}),
+    ...(filters.category !== "all" ? { category: filters.category } : {}),
+    // 状态下拉只提供契约内的枚举值；"all" 在上面已经过滤掉。
+    ...(filters.status !== "all" ? { status: filters.status as KnowledgeOrganizationStatus } : {}),
+    ...(cursor ? { cursor } : {}),
+    limit: KNOWLEDGE_PAGE_SIZE,
+  };
+}
 
 export type KnowledgeTarget =
   | { kind: "document" | "grants"; id: string }
@@ -149,13 +179,23 @@ export interface KnowledgeState {
   discardKnowledgeModel: (scope?: "budget") => void;
   knowledgeCategories: KnowledgeCategory[];
   knowledgeDocuments: KnowledgeDocument[];
+  /** 列表过滤（搜索/分类/状态）；翻页与刷新沿用，改了过滤即回到第一页。 */
+  knowledgeFilters: KnowledgeListFilters;
+  /** 已访问页的 keyset cursor 栈：末位即当前页（null = 第一页），上一页出栈。 */
+  knowledgeCursors: (string | null)[];
+  knowledgeNextCursor: string | null;
+  /** 服务端按当前过滤返回的真实总数，不是当前页条数。 */
+  knowledgeTotal: number;
   knowledgeSettings: KnowledgeSettings | null;
   knowledgeEditor: KnowledgeEditor | null;
   knowledgeDirty: boolean;
   knowledgeBusy: boolean;
   knowledgeLoading: boolean;
   knowledgeReadId: number;
-  loadKnowledge: () => Promise<void>;
+  /** 不传过滤＝按现有过滤刷新并回第一页；传入则合并过滤、重置游标后取第一页。 */
+  loadKnowledge: (filters?: Partial<KnowledgeListFilters>) => Promise<boolean>;
+  /** 键集翻页：next 用服务端 next_cursor，prev 出栈回上一页；成功后交回 true。 */
+  loadKnowledgePage: (direction: "next" | "prev") => Promise<boolean>;
   requestKnowledgeEditor: (target: KnowledgeTarget) => void;
   openKnowledgeEditor: (target: KnowledgeTarget) => Promise<boolean>;
   updateKnowledgeEditor: (editor: KnowledgeEditor) => void;
@@ -179,6 +219,10 @@ export const knowledgeInitial = {
   knowledgeModelLoading: false,
   knowledgeCategories: [] as KnowledgeCategory[],
   knowledgeDocuments: [] as KnowledgeDocument[],
+  knowledgeFilters: { ...emptyKnowledgeListFilters },
+  knowledgeCursors: [null] as (string | null)[],
+  knowledgeNextCursor: null as string | null,
+  knowledgeTotal: 0,
   knowledgeSettings: null as KnowledgeSettings | null,
   knowledgeEditor: null as KnowledgeEditor | null,
   knowledgeDirty: false,

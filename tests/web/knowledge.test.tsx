@@ -60,7 +60,9 @@ beforeEach(() => {
   store.getState().resetForTests({
     ...api,
     listKnowledgeCategories: vi.fn().mockResolvedValue(categories),
-    listKnowledgeDocuments: vi.fn().mockResolvedValue([document]),
+    listKnowledgeDocuments: vi
+      .fn()
+      .mockResolvedValue({ items: [document], next_cursor: null, total: 1 }),
     getKnowledgeSettings: vi.fn().mockResolvedValue(settings),
     getKnowledgeDocument: vi.fn().mockResolvedValue(document),
     updateKnowledgeDocument: vi.fn().mockResolvedValue(document),
