@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { latestKnowledgeSettings } from "@/features/knowledge/types";
 import { useSuperstringStore } from "@/store";
 import type { KnowledgeCategory } from "../../../shared/contracts/knowledge";
 import { JobRunLink } from "../runs/RunEntry";
@@ -141,10 +142,18 @@ export function KnowledgeLibrary() {
             </Button>
           </>
         )}
+        {/* Agent 的读取规则已迁到系统能力页：文档区只保留直达入口，草稿安全跳转。 */}
         <Button
           size="sm"
           variant="ghost"
           className="ml-auto"
+          onClick={() => s.openSettingsRoute("knowledge-tools")}
+        >
+          {t("capabilities.resources.openKnowledgeTools")}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
           onClick={() => s.requestKnowledgeEditor({ kind: "settings" })}
         >
           <Settings2 />
@@ -589,16 +598,17 @@ function KnowledgeEditorPanel() {
                       }
                     />
                   </Field>
+                  {/* 预算归系统能力→知识查询的全局分组：这里只读展示已存上限并直达，避免双写。 */}
                   <Field label="library.workspace.knowledge.budget.tokens">
                     <Input
                       type="number"
-                      min={1}
-                      value={editor.context_budget}
-                      onChange={(e) =>
-                        s.updateKnowledgeEditor({
-                          ...editor,
-                          context_budget: Number(e.target.value),
-                        })
+                      disabled
+                      value={
+                        latestKnowledgeSettings([
+                          s.knowledgeSettings,
+                          s.knowledgeModelEditor?.source,
+                          editor.source,
+                        ])?.context_budget ?? editor.source.context_budget
                       }
                     />
                   </Field>
@@ -606,9 +616,20 @@ function KnowledgeEditorPanel() {
                     {t("library.organization.model")}:{" "}
                     {editor.source.model_name ?? t("library.unset")}
                   </p>
-                  <Button variant="outline" onClick={() => s.openSettingsRoute("knowledge-model")}>
-                    {t("library.open.model.services")}
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => s.openSettingsRoute("knowledge-tools")}
+                    >
+                      {t("capabilities.resources.openKnowledgeTools")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => s.openSettingsRoute("knowledge-model")}
+                    >
+                      {t("library.open.model.services")}
+                    </Button>
+                  </div>
                 </>
               )}
             </div>

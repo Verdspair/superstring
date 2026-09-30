@@ -1,4 +1,8 @@
-import { executionPolicy, type PermissionsResponse } from "../../../shared/contracts/permissions";
+import {
+  EXECUTION_MODULE_KEYS,
+  executionPolicy,
+  type PermissionsResponse,
+} from "../../../shared/contracts/permissions";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
 import {
@@ -9,7 +13,22 @@ import {
 } from "../runs/execution-draft";
 import { applyGrantEdits, type GrantDraft, grantDraftOf, sameGrantDraft } from "./permission-draft";
 
-export type PermissionScope = "execution" | "grants" | "all";
+/** 执行草稿里可单独成组保存的字段：除模块映射与暂停表以外的全部键。 */
+export type ExecutionFieldKey = Exclude<keyof ExecutionDraft, "modules" | "pausedTools">;
+export type ExecutionModuleKey = keyof ExecutionDraft["modules"];
+/**
+ * 对象作用域：只覆盖显式列出的字段，未列出的字段既不算 dirty，也不会被保存或放弃。
+ * 字符串 "execution"/"grants"/"all" 保持原有整域语义不变。
+ */
+export interface PermissionScopeSelection {
+  executionKeys?: ExecutionFieldKey[];
+  modules?: ExecutionModuleKey[];
+  resources?: string[];
+}
+export type PermissionScope = "execution" | "grants" | "all" | PermissionScopeSelection;
+/** 最近一次动作错误的归属面板，用于面板过滤：在修不了该错误的页面不再重复提示。 */
+export type PermissionErrorScope = "" | "execution" | "grants";
+
 export interface PermissionEditor {
   snapshot: PermissionsResponse;
   execution: ExecutionDraft;
@@ -21,6 +40,7 @@ export interface PermissionSettingsState {
   permissionLoading: boolean;
   permissionSaving: boolean;
   permissionError: string;
+  permissionErrorScope: PermissionErrorScope;
   permissionNotice: string;
   permissionProblem: ExecutionDraftKey | null;
   loadPermissionSettings: (refresh?: boolean) => Promise<void>;
@@ -35,6 +55,7 @@ export const permissionInitial = {
   permissionLoading: false,
   permissionSaving: false,
   permissionError: "",
+  permissionErrorScope: "" as PermissionErrorScope,
   permissionNotice: "",
   permissionProblem: null as ExecutionDraftKey | null,
 };
@@ -73,63 +94,148 @@ const editorOf = (snapshot: PermissionsResponse): PermissionEditor => {
   };
 };
 
+interface ResolvedScope {
+  allExecution: boolean;
+  executionKeys: ReadonlySet<ExecutionFieldKey>;
+  modules: ReadonlySet<ExecutionModuleKey>;
+  allResources: boolean;
+  resources: ReadonlySet<string>;
+}
+
+function scopeOf(scope: PermissionScope): ResolvedScope {
+  if (scope === "all")
+    return {
+      allExecution: true,
+      executionKeys: new Set(),
+      modules: new Set(),
+      allResources: true,
+      resources: new Set(),
+    };
+  if (scope === "execution")
+    return {
+      allExecution: true,
+      executionKeys: new Set(),
+      modules: new Set(),
+      allResources: false,
+      resources: new Set(),
+    };
+  if (scope === "grants")
+    return {
+      allExecution: false,
+      executionKeys: new Set(),
+      modules: new Set(),
+      allResources: true,
+      resources: new Set(),
+    };
+  return {
+    allExecution: false,
+    executionKeys: new Set(scope.executionKeys ?? []),
+    modules: new Set(scope.modules ?? []),
+    allResources: false,
+    resources: new Set(scope.resources ?? []),
+  };
+}
+
+const NO_SELECTION: ResolvedScope = scopeOf({});
+
+const fieldSelected = (scope: ResolvedScope, key: ExecutionFieldKey) =>
+  scope.allExecution || scope.executionKeys.has(key);
+const moduleSelected = (scope: ResolvedScope, module: ExecutionModuleKey) =>
+  scope.allExecution || scope.modules.has(module);
+const resourceSelected = (scope: ResolvedScope, resource: string) =>
+  scope.allResources || scope.resources.has(resource);
+const executionSelected = (scope: ResolvedScope) =>
+  scope.allExecution || scope.executionKeys.size > 0 || scope.modules.size > 0;
+const grantsSelected = (scope: ResolvedScope) => scope.allResources || scope.resources.size > 0;
+
 export function permissionSettingsDirty(
   editor: PermissionEditor | null,
   scope: PermissionScope = "all",
 ) {
   if (!editor) return false;
-  return (
-    (scope !== "grants" && JSON.stringify(editor.execution) !== JSON.stringify(editor.baseline)) ||
-    (scope !== "execution" &&
-      permissionResources(editor.snapshot).some((resource) => {
-        const draft = editor.grants[resource.resource];
-        return (
-          draft &&
-          !sameGrantDraft(
-            draft,
-            grantDraftOf(editor.snapshot.policy, resource.resource, resource.revision),
-          )
-        );
-      }))
-  );
+  const resolved = scopeOf(scope);
+  for (const key of Object.keys(editor.execution) as (keyof ExecutionDraft)[]) {
+    if (key === "pausedTools") continue;
+    if (key === "modules") {
+      for (const module of EXECUTION_MODULE_KEYS) {
+        if (!moduleSelected(resolved, module)) continue;
+        if (editor.execution.modules[module] !== editor.baseline.modules[module]) return true;
+      }
+      continue;
+    }
+    if (fieldSelected(resolved, key) && editor.execution[key] !== editor.baseline[key]) return true;
+  }
+  if (!grantsSelected(resolved)) return false;
+  return permissionResources(editor.snapshot).some((resource) => {
+    if (!resourceSelected(resolved, resource.resource)) return false;
+    const draft = editor.grants[resource.resource];
+    return (
+      draft &&
+      !sameGrantDraft(
+        draft,
+        grantDraftOf(editor.snapshot.policy, resource.resource, resource.revision),
+      )
+    );
+  });
 }
 
-function preserveDrafts(next: PermissionEditor, current: PermissionEditor, scope: PermissionScope) {
-  if (scope !== "grants") {
-    for (const key of Object.keys(current.execution) as (keyof ExecutionDraft)[]) {
-      if (key === "pausedTools") continue;
-      if (key === "modules") {
-        for (const module of Object.keys(
-          current.execution.modules,
-        ) as (keyof ExecutionDraft["modules"])[]) {
-          if (current.execution.modules[module] !== current.baseline.modules[module])
-            next.execution = {
-              ...next.execution,
-              modules: { ...next.execution.modules, [module]: current.execution.modules[module] },
-            };
-        }
-      } else if (current.execution[key] !== current.baseline[key]) {
-        next.execution = { ...next.execution, [key]: current.execution[key] };
+/** 从快照基线构造提交载荷：只覆盖作用域内字段，作用域外的草稿（含非法数字）不提交。 */
+function mergedExecutionDraft(
+  base: ExecutionDraft,
+  draft: ExecutionDraft,
+  scope: ResolvedScope,
+): ExecutionDraft {
+  const merged: ExecutionDraft = { ...base, modules: { ...base.modules } };
+  for (const key of Object.keys(draft) as (keyof ExecutionDraft)[]) {
+    if (key === "pausedTools") continue;
+    if (key === "modules") {
+      for (const module of EXECUTION_MODULE_KEYS) {
+        if (moduleSelected(scope, module)) merged.modules[module] = draft.modules[module];
       }
+      continue;
     }
+    if (fieldSelected(scope, key)) Object.assign(merged, { [key]: draft[key] });
   }
-  if (scope !== "execution") {
-    for (const resource of permissionResources(current.snapshot)) {
-      const draft = current.grants[resource.resource];
-      const baseline = grantDraftOf(current.snapshot.policy, resource.resource, resource.revision);
-      if (draft && !sameGrantDraft(draft, baseline)) {
-        const refreshed = permissionResources(next.snapshot).find(
-          (item) => item.resource === resource.resource,
-        );
-        const merged = { ...(next.grants[resource.resource] ?? baseline) };
-        for (const key of Object.keys(draft) as (keyof GrantDraft)[]) {
-          if (JSON.stringify(draft[key]) !== JSON.stringify(baseline[key]))
-            Object.assign(merged, { [key]: draft[key] });
-        }
-        if (refreshed && refreshed.revision !== resource.revision) merged.approved = false;
-        next.grants[resource.resource] = merged;
+  return merged;
+}
+
+/** 保存/刷新/放弃后：作用域外的草稿原样保留，作用域内字段回落到新基线。 */
+function preserveUnselectedDrafts(
+  next: PermissionEditor,
+  current: PermissionEditor,
+  scope: ResolvedScope,
+) {
+  for (const key of Object.keys(current.execution) as (keyof ExecutionDraft)[]) {
+    if (key === "pausedTools") continue;
+    if (key === "modules") {
+      for (const module of EXECUTION_MODULE_KEYS) {
+        if (moduleSelected(scope, module)) continue;
+        if (current.execution.modules[module] !== current.baseline.modules[module])
+          next.execution = {
+            ...next.execution,
+            modules: { ...next.execution.modules, [module]: current.execution.modules[module] },
+          };
       }
+      continue;
     }
+    if (!fieldSelected(scope, key) && current.execution[key] !== current.baseline[key])
+      next.execution = { ...next.execution, [key]: current.execution[key] };
+  }
+  for (const resource of permissionResources(current.snapshot)) {
+    if (resourceSelected(scope, resource.resource)) continue;
+    const draft = current.grants[resource.resource];
+    const baseline = grantDraftOf(current.snapshot.policy, resource.resource, resource.revision);
+    if (!draft || sameGrantDraft(draft, baseline)) continue;
+    const refreshed = permissionResources(next.snapshot).find(
+      (item) => item.resource === resource.resource,
+    );
+    const merged = { ...(next.grants[resource.resource] ?? baseline) };
+    for (const key of Object.keys(draft) as (keyof GrantDraft)[]) {
+      if (JSON.stringify(draft[key]) !== JSON.stringify(baseline[key]))
+        Object.assign(merged, { [key]: draft[key] });
+    }
+    if (refreshed && refreshed.revision !== resource.revision) merged.approved = false;
+    next.grants[resource.resource] = merged;
   }
   return next;
 }
@@ -156,13 +262,14 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
         const next = editorOf(snapshot);
         const current = get().permissionEditor;
         set({
-          permissionEditor: current ? preserveDrafts(next, current, "all") : next,
+          permissionEditor: current ? preserveUnselectedDrafts(next, current, NO_SELECTION) : next,
           permissionError: "",
+          permissionErrorScope: "",
           permissionNotice: "",
         });
       } catch (error) {
         if (token === sequence && !controller.signal.aborted && get().apiClient === api)
-          set({ permissionError: errorText(error) });
+          set({ permissionError: errorText(error), permissionErrorScope: "" });
       } finally {
         if (token === sequence && get().apiClient === api) set({ permissionLoading: false });
       }
@@ -191,17 +298,31 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
       if (get().permissionSaving || get().permissionLoading) return false;
       const editor = get().permissionEditor;
       if (!editor || !permissionSettingsDirty(editor, scope)) return true;
-      const resources = permissionResources(editor.snapshot);
-      let policy =
-        scope === "execution"
-          ? editor.snapshot.policy
-          : applyGrantEdits(editor.snapshot.policy, resources, editor.grants);
-      if (scope !== "grants") {
-        const payload = executionPayload(editor.execution);
+      const resolved = scopeOf(scope);
+      const savesExecution = executionSelected(resolved);
+      const savesGrants = grantsSelected(resolved);
+      const errorScope: PermissionErrorScope =
+        savesExecution && !savesGrants
+          ? "execution"
+          : savesGrants && !savesExecution
+            ? "grants"
+            : "";
+      let policy = editor.snapshot.policy;
+      if (savesGrants) {
+        const resources = permissionResources(editor.snapshot).filter((resource) =>
+          resourceSelected(resolved, resource.resource),
+        );
+        policy = applyGrantEdits(policy, resources, editor.grants);
+      }
+      if (savesExecution) {
+        const payload = executionPayload(
+          mergedExecutionDraft(editor.baseline, editor.execution, resolved),
+        );
         if (!payload.ok) {
           set({
             permissionProblem: payload.problem,
             permissionError: "connections.execution.invalid",
+            permissionErrorScope: "execution",
           });
           return false;
         }
@@ -213,21 +334,31 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
       read?.abort();
       ++sequence;
       const api = get().apiClient;
-      set({ permissionSaving: true, permissionError: "", permissionNotice: "" });
+      set({
+        permissionSaving: true,
+        permissionError: "",
+        permissionErrorScope: errorScope,
+        permissionNotice: "",
+      });
       try {
         const saved = await api.savePermissions({
           expectedRevision: editor.snapshot.revision,
           policy,
         });
         if (get().permissionEditor !== editor || get().apiClient !== api) return false;
-        let next = editorOf({ ...saved, resources: editor.snapshot.resources });
-        if (scope !== "all")
-          next = preserveDrafts(next, editor, scope === "execution" ? "grants" : "execution");
+        const next = preserveUnselectedDrafts(
+          editorOf({ ...saved, resources: editor.snapshot.resources }),
+          editor,
+          resolved,
+        );
         set({
           permissionEditor: next,
           permissionProblem: null,
+          permissionErrorScope: "",
           permissionNotice:
-            scope === "grants" ? "connections.grants.saved" : "connections.execution.saved",
+            savesGrants && !savesExecution
+              ? "connections.grants.saved"
+              : "connections.execution.saved",
         });
         return true;
       } catch (error) {
@@ -244,14 +375,12 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
       read?.abort();
       ++sequence;
       set({ permissionLoading: false });
-      const next = editorOf(editor.snapshot);
+      const next = preserveUnselectedDrafts(editorOf(editor.snapshot), editor, scopeOf(scope));
       set({
-        permissionEditor:
-          scope === "all"
-            ? next
-            : preserveDrafts(next, editor, scope === "execution" ? "grants" : "execution"),
+        permissionEditor: next,
         permissionProblem: null,
         permissionError: "",
+        permissionErrorScope: "",
         permissionNotice: "",
       });
     },

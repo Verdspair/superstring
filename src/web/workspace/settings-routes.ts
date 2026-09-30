@@ -36,9 +36,7 @@ export const SETTINGS_ROUTES = [
     state: "unavailable",
     note: "workspace.emotion_features_are_not_available_yet_no_configuration_is_needed",
   },
-  // §11.1's QQ 额外配置 area: the three entries live under 人设 and are QQ-global, so none of
-  // them follows the assistant being configured. Only the sticker library is implemented; the
-  // other two keep their entry and say so, rather than pretending to be configurable.
+  // QQ-wide configuration lives under 人设 and does not follow the configured assistant.
   {
     id: "qq-stickers",
     title: "workspace.sticker_library",
@@ -57,7 +55,7 @@ export const SETTINGS_ROUTES = [
     state: "transition",
     note: "workspace.what_the_qq_side_keeps_how_long_it_keeps_it_and_the_one_cleanup_entry_th",
   },
-  // 接入（P7-d）：MCP 登记、技能目录、统一工具授权与联网配置；都是应用级资源，不跟随某个助手。
+  // 接入（P7-d）：MCP 登记、技能目录与统一工具授权；都是应用级资源，不跟随某个助手。
   {
     id: "mcp-servers",
     title: "connections.mcp.title",
@@ -76,13 +74,50 @@ export const SETTINGS_ROUTES = [
     state: "transition",
     note: "connections.grants.description",
   },
+  // 系统能力（P8）：独立一级目录；内置能力在此登记，联网与执行设置从接入、运行移归此处。
+  {
+    id: "system-capabilities",
+    title: "workspace.capabilities",
+    state: "transition",
+    note: "workspace.manage_built_in_capabilities_and_execution_limits_by_function",
+  },
+  {
+    id: "memory-tools",
+    title: "capabilities.memory.name",
+    state: "transition",
+    note: "capabilities.memory.description",
+  },
+  {
+    id: "knowledge-tools",
+    title: "capabilities.knowledge.name",
+    state: "transition",
+    note: "capabilities.knowledge.description",
+  },
+  {
+    id: "media-tools",
+    title: "capabilities.media.name",
+    state: "transition",
+    note: "capabilities.media.description",
+  },
   {
     id: "web-access",
     title: "connections.web.title",
     state: "transition",
     note: "connections.web.description",
   },
-  // 运行（P7-d）：执行台账、任务与审批、执行配置。
+  {
+    id: "execution-settings",
+    title: "connections.execution.title",
+    state: "transition",
+    note: "connections.execution.description",
+  },
+  {
+    id: "session-history",
+    title: "capabilities.session.name",
+    state: "transition",
+    note: "capabilities.session.description",
+  },
+  // 运行（P7-d）：执行台账与任务与审批；执行设置已移归系统能力（P8）。
   {
     id: "execution-ledger",
     title: "connections.runs.ledger",
@@ -94,12 +129,6 @@ export const SETTINGS_ROUTES = [
     title: "connections.tasks.title",
     state: "transition",
     note: "connections.tasks.description",
-  },
-  {
-    id: "execution-settings",
-    title: "connections.execution.title",
-    state: "transition",
-    note: "connections.execution.description",
   },
   {
     id: "context",

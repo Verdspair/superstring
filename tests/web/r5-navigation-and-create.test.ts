@@ -619,11 +619,12 @@ describe("R5 同 ID 导航", () => {
     expect(state.editorDraft).not.toBeNull();
   });
 
-  it("同 ID 且已有草稿时立即返回", () => {
+  it("同 ID 且编辑会话存在时立即返回", () => {
     const getAgent = vi.fn();
     useSuperstringStore.setState({
       editorAgentId: AGENT_ID,
       editorDraft: { ...draft },
+      pageEditor: { token: {} } as never,
       apiClient: fakeClient({ getAgent }),
     });
 
@@ -631,6 +632,32 @@ describe("R5 同 ID 导航", () => {
 
     expect(getAgent).not.toHaveBeenCalled();
     expect(useSuperstringStore.getState().editorAgentId).toBe(AGENT_ID);
+  });
+
+  it("同 ID 但保存后 pageEditor=null 时重新读取，不早退", async () => {
+    const getAgent = vi
+      .fn()
+      .mockResolvedValue({ ...draft, id: AGENT_ID } as unknown as AgentResponse);
+    useSuperstringStore.setState({
+      editorAgentId: AGENT_ID,
+      editorDraft: { ...draft },
+      pageEditor: null,
+      dirty: false,
+      apiClient: fakeClient({
+        getAgent,
+        getPersona: vi.fn().mockResolvedValue({ id: AGENT_ID } as never),
+      }),
+      reloadMemory: vi.fn().mockResolvedValue(undefined),
+    });
+
+    useSuperstringStore.getState().requestAgentNavigation(AGENT_ID);
+    expect(getAgent).toHaveBeenCalledWith(AGENT_ID);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = useSuperstringStore.getState();
+    expect(state.editorAgentId).toBe(AGENT_ID);
+    expect(state.pageEditor).not.toBeNull();
+    expect(state.error).toBeNull();
   });
 });
 

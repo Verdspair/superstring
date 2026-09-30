@@ -1,7 +1,7 @@
-// 联网（web-access）面板：路由归属与双向 tab、草稿→保存的 CAS 载荷、409 冲突保留草稿、
-// 自检成功/失败渲染，以及真实 HTTP 客户端的 wire 形状。
+// 联网（web-access）面板：草稿→保存的 CAS 载荷、409 冲突保留草稿、自检成功/失败渲染，
+// 以及真实 HTTP 客户端的 wire 形状。路由归属在 capabilities-workspace.test.tsx 中验证：
+// 联网与执行设置已移归系统能力，接入工作区不再有联网 tab。
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import {
@@ -43,9 +43,9 @@ function workspaceFake() {
   } as unknown as typeof api;
 }
 
-async function renderWorkspace(route: "web-access" | "tool-grants") {
+async function renderWorkspace() {
   store.getState().resetForTests(workspaceFake());
-  store.setState({ page: "settings", settingsView: "workspace", settingsRoute: route });
+  store.setState({ page: "settings", settingsView: "workspace", settingsRoute: "tool-grants" });
   render(<ConnectionWorkspace />);
   await act(async () => {});
 }
@@ -53,6 +53,7 @@ async function renderWorkspace(route: "web-access" | "tool-grants") {
 async function renderPanel(fake: Partial<typeof api> = {}, snapshot?: WebAccessSnapshot) {
   store.getState().resetForTests({
     ...api,
+    getPermissions: vi.fn().mockResolvedValue(permissions),
     getWebAccess: vi
       .fn()
       .mockResolvedValue(snapshot ?? { revision: "wa-1", config: { version: 1 } }),
@@ -75,22 +76,14 @@ afterEach(() => {
 });
 
 describe("web access routing", () => {
-  it("belongs to the connections space and renders as a tab inside the connections workspace", async () => {
+  it("belongs to the system capabilities space and has no tab in the connections workspace", async () => {
     expect(
       activeSpace({ page: "settings", settingsView: "workspace", settingsRoute: "web-access" }),
-    ).toBe("connections");
-    await renderWorkspace("web-access");
-    expect(screen.getByRole("tab", { selected: true }).textContent).toBe("联网");
-    expect(screen.getByRole("heading", { name: "联网" })).toBeTruthy();
-    expect(screen.getByText(/联网能力/)).toBeTruthy();
-  });
-
-  it("switches the route when the web tab is chosen", async () => {
-    await renderWorkspace("tool-grants");
+    ).toBe("capabilities");
+    await renderWorkspace();
     expect(screen.getByRole("tab", { selected: true }).textContent).toBe("工具授权");
-    await userEvent.click(screen.getByRole("tab", { name: "联网" }));
-    expect(store.getState().settingsRoute).toBe("web-access");
-    expect(screen.getByRole("heading", { name: "联网" })).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "联网" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "联网" })).toBeNull();
   });
 });
 
@@ -201,6 +194,8 @@ describe("web access panel", () => {
         });
       if (url === "/v2/web-access" && method === "GET")
         return answer({ revision: "wa-1", config: { version: 1 } });
+      if (url === "/v2/permissions" && method === "GET")
+        return answer({ revision: "pr-1", policy: { version: 1, grants: [] }, resources: [] });
       if (url === "/v2/web-access" && method === "PUT") {
         const body = JSON.parse(String(init?.body)) as { config: WebAccessConfig };
         return answer({ revision: "wa-2", config: body.config });

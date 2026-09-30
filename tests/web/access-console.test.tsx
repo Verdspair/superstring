@@ -106,7 +106,7 @@ const permissions: PermissionsResponse = {
       effect: "read",
       resource: "mcp.echo.read",
       revision: "r1",
-      approvalRequired: false,
+      approvalRequired: true,
     },
     {
       name: "skill.demo.echo",
@@ -519,7 +519,7 @@ describe("skills panel", () => {
   );
 
   it.each(["zh-CN", "en"] as const)(
-    "describes the execution module as discovery and reading only (%s)",
+    "describes document skills and leaves web/QQ media modules to their capability pages (%s)",
     async (locale) => {
       selectLocale(locale);
       await renderWith(
@@ -533,21 +533,11 @@ describe("skills panel", () => {
             : "Controls document skill discovery and reading. Turning it off keeps skill files and existing grants.",
         ),
       ).toBeTruthy();
-      expect(
-        screen.getByText(
-          locale === "zh-CN" ? "按需理解 QQ 图片" : "Understand QQ images on demand",
-        ),
-      ).toBeTruthy();
-      expect(
-        screen.getByText(
-          locale === "zh-CN" ? /不在消息入站时自动识图/ : /without automatic analysis on arrival/,
-        ),
-      ).toBeTruthy();
-      expect(
-        screen.getByText(
-          locale === "zh-CN" ? /不再独立自动选图/ : /without a separate automatic selector/,
-        ),
-      ).toBeTruthy();
+      for (const label of locale === "zh-CN"
+        ? ["使用联网工具", "按需理解 QQ 图片", "QQ 表情发送"]
+        : ["Use web tools", "Understand QQ images on demand", "Send QQ stickers"]) {
+        expect(screen.queryByText(label)).toBeNull();
+      }
     },
   );
 });

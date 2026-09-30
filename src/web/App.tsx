@@ -26,6 +26,11 @@ const ConnectionWorkspace = lazy(() =>
     default: m.ConnectionWorkspace,
   })),
 );
+const CapabilitiesWorkspace = lazy(() =>
+  import("./screens/connections/CapabilitiesWorkspace").then((m) => ({
+    default: m.CapabilitiesWorkspace,
+  })),
+);
 const RunsWorkspace = lazy(() =>
   import("./screens/runs/RunsWorkspace").then((m) => ({ default: m.RunsWorkspace })),
 );
@@ -79,6 +84,7 @@ function Application() {
   const Screen = {
     conversations: ConversationWorkspace,
     assistants: AssistantWorkspace,
+    capabilities: CapabilitiesWorkspace,
     library: LibraryWorkspace,
     connections: ConnectionWorkspace,
     runs: RunsWorkspace,

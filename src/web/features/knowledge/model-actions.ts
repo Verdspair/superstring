@@ -1,4 +1,5 @@
 import { KnowledgeSettingsUpdateSchema } from "../../../shared/contracts/knowledge";
+import { ApiError } from "../../api";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
@@ -88,15 +89,18 @@ export function createKnowledgeModelActions(
         const saved = await get().apiClient.saveKnowledgeSettings(
           KnowledgeSettingsUpdateSchema.parse({
             expected_revision: editor.source.revision,
+            // 各 scope 只提交自己拥有的字段："budget"/"model" 取已存基线补齐其余字段；
+            // "rules" 保留原义：整理规则连同预算草稿一起提交。
             auto_enabled:
-              scope === "model"
+              scope === "model" || scope === "budget"
                 ? editor.source.auto_enabled
                 : (editor.autoEnabled ?? editor.source.auto_enabled),
             context_budget:
               scope === "model"
                 ? editor.source.context_budget
                 : (editor.contextBudget ?? editor.source.context_budget),
-            model_name: scope === "rules" ? editor.source.model_name : editor.modelName,
+            model_name:
+              scope === "rules" || scope === "budget" ? editor.source.model_name : editor.modelName,
           }),
         );
         if (get().knowledgeModelEditor?.token !== editor.token) return false;
@@ -105,8 +109,11 @@ export function createKnowledgeModelActions(
           knowledgeModelEditor: {
             ...editor,
             source: saved,
-            modelName: scope === "rules" ? editor.modelName : saved.model_name,
-            autoEnabled: scope === "model" ? editor.autoEnabled : saved.auto_enabled,
+            // 接受基线：只推进本次提交的字段，其他字段保留草稿。
+            modelName:
+              scope === "rules" || scope === "budget" ? editor.modelName : saved.model_name,
+            autoEnabled:
+              scope === "model" || scope === "budget" ? editor.autoEnabled : saved.auto_enabled,
             contextBudget: scope === "model" ? editor.contextBudget : saved.context_budget,
           },
           knowledgeSettings: saved,
@@ -123,19 +130,36 @@ export function createKnowledgeModelActions(
               ? "知识库整理模型已保存；整理规则草稿保持不变。"
               : scope === "rules"
                 ? "全局整理规则已保存；模型草稿保持不变。"
-                : "全局知识库设置已保存；助手读取与资料草稿保持不变。",
+                : // budget 暂与 all 共用已登记的“全局设置已保存”句；预算专属句待 locale 单写者补。
+                  "全局知识库设置已保存；助手读取与资料草稿保持不变。",
           ),
         });
         return true;
       } catch (error) {
-        if (get().knowledgeModelEditor?.token === editor.token) set({ error: errorText(error) });
+        if (get().knowledgeModelEditor?.token === editor.token)
+          set({
+            error:
+              error instanceof ApiError && error.code === "KNOWLEDGE_REVISION_CONFLICT"
+                ? msg("刷新不提交草稿；冲突后请核对最新值再保存。")
+                : errorText(error),
+          });
         return false;
       } finally {
         set({ settingsSaving: false });
       }
     },
-    discardKnowledgeModel: () => {
+    discardKnowledgeModel: (scope) => {
       if (get().settingsSaving) return;
+      const editor = get().knowledgeModelEditor;
+      if (scope === "budget") {
+        if (!editor) return;
+        read++;
+        set({
+          knowledgeModelEditor: { ...editor, contextBudget: editor.source.context_budget },
+          knowledgeModelLoading: false,
+        });
+        return;
+      }
       read++;
       set({ knowledgeModelEditor: null, knowledgeModelLoading: false });
     },

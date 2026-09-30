@@ -53,7 +53,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("task-based workspace navigation", () => {
-  it("five product spaces are distinct from environment settings and conversation index", () => {
+  it("six product spaces are distinct from environment settings and conversation index", () => {
     render(
       <DesignSystemProvider>
         <WorkspaceShell>
@@ -68,6 +68,11 @@ describe("task-based workspace navigation", () => {
     expect(screen.queryByRole("navigation", { name: "历史会话" })).toBeNull();
     fireEvent.click(primary.getByRole("button", { name: "接入" }));
     expect(store.getState().settingsView).toBe("operating-mode");
+    fireEvent.click(primary.getByRole("button", { name: "系统能力" }));
+    expect(store.getState()).toMatchObject({
+      settingsView: "workspace",
+      settingsRoute: "system-capabilities",
+    });
     fireEvent.click(primary.getByRole("button", { name: "运行" }));
     expect(store.getState().settingsView).toBe("observability");
     fireEvent.click(screen.getByRole("button", { name: "偏好" }));

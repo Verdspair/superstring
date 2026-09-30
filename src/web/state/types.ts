@@ -109,13 +109,19 @@ export interface SuperstringState
     page: import("../features/agents/page-drafts").EditablePage,
   ) => Promise<boolean>;
   saveAllSettingsPages: () => Promise<boolean>;
+  /** 显式刷新保存基线：GET 当前 Agent，只推进未修改字段与 config_version，保留已改草稿且不自动重试保存。 */
+  refreshSettingsAgent: () => Promise<boolean>;
   /**
    * 一键覆盖：把当前助手的四个**文本用途**模型（对话、记忆读取、记忆整理、
    * 上下文压缩）都设成给定的默认模型，并立即保存该助手的模型页。图片理解与语音转写不是助手的字段，
    * 因此不在覆盖范围内。没有可覆盖的助手（正在新建）时返回 false。
    */
   applyDefaultModelToAgent: (modelName: string) => Promise<boolean>;
-  discardSettingsPages: () => void;
+  /**
+   * 放弃设置页草稿：不传页时整份回到已存基线；传页时只还原该页拥有的字段，
+   * 其他页面的草稿保持不变。
+   */
+  discardSettingsPages: (page?: import("../features/agents/page-drafts").EditablePage) => void;
   status: LoadStatus;
   error: string | null;
   feedback: string;

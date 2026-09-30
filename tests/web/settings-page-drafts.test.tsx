@@ -39,11 +39,13 @@ it("旧目录与检索字段只取已存基线，工具额度与上下文白名�
   editor.draft.memory_retrieval_model_name = "ignored model";
   editor.draft.p5_config.summary_read_max_tokens = 800;
   editor.draft.p5_config.auxiliary_timeout_seconds = 360;
-  const payload = pageAgentPayload(editor, "long-memory");
-  const memory = payload.p5_config;
+  const maintenance = pageAgentPayload(editor, "long-memory");
+  const memory = pageAgentPayload(editor, "memory-tools").p5_config;
   const context = pageAgentPayload(editor, "context").p5_config;
   if (!memory || !context) throw new Error("Missing page config");
-  expect(payload).not.toHaveProperty("memory_retrieval_prompt");
+  // 维护页不再承载读取字段：不再发送 p5_config。
+  expect(maintenance).not.toHaveProperty("p5_config");
+  expect(maintenance).not.toHaveProperty("memory_retrieval_prompt");
   expect(pageAgentPayload(editor, "models")).not.toHaveProperty("memory_retrieval_model_name");
   expect(memory.max_catalog_batches).toBe(100);
   expect(memory.catalog_batch_size).toBe(30);
@@ -148,7 +150,7 @@ afterEach(() => {
 
 describe("页面草稿与白名单保存", () => {
   it.each(["full_catalog", "full_body", "off"] as const)(
-    "%s survives visits, other-page saves and reloads; only a memory save normalizes full modes",
+    "%s survives visits, other-page saves and reloads; only a memory-tools save normalizes full modes",
     async (mode) => {
       persisted = {
         ...persisted,
@@ -198,7 +200,11 @@ describe("页面草稿与白名单保存", () => {
       expect(await store.getState().saveSettingsPage("models")).toBe(true);
       await store.getState().editAgent("A");
       expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
+      // 维护页保存不再碰读取字段：旧全量档原样保留。
       expect(await store.getState().saveSettingsPage("long-memory")).toBe(true);
+      expect(persisted.p5_config.retrieval_mode).toBe(mode);
+      // 只有 memory-tools 页的保存才把旧全量档归一为 broad。
+      expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
       expect(persisted.p5_config.retrieval_mode).toBe(mode === "off" ? "off" : "broad");
       await store.getState().editAgent("A");
       expect(store.getState().pageEditor?.draft).toMatchObject({
@@ -213,16 +219,26 @@ describe("页面草稿与白名单保存", () => {
       expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
     },
   );
-  it("p5两页白名单双向隔离并保留其他页草稿", async () => {
+  it("p5三页白名单互不夹带并保留其他页草稿", async () => {
     const baseline = persisted.p5_config;
+    // long-memory 不再拥有读取字段：patch 被白名单整体丢弃，不产生草稿。
     store.getState().patchPageAgent("long-memory", {
+      p5_config: { ...baseline, retrieval_mode: "broad" },
+      model_name: "forbidden",
+    });
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(
+      baseline.retrieval_mode,
+    );
+    expect(store.getState().pageEditor?.draft.model_name).toBe("model");
+    store.getState().patchPageAgent("memory-tools", {
       p5_config: { ...baseline, retrieval_mode: "off", recent_turns: 99 },
       model_name: "forbidden",
     });
     store.getState().patchPageAgent("context", {
       p5_config: { ...baseline, recent_turns: 12, retrieval_mode: "broad" },
     });
-    expect(await store.getState().saveSettingsPage("long-memory")).toBe(true);
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools", "context"]);
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
     expect(persisted.p5_config.recent_turns).toBe(baseline.recent_turns);
     expect(persisted.p5_config.retrieval_mode).toBe("off");
     expect(persisted.model_name).toBe("model");
@@ -249,7 +265,7 @@ describe("页面草稿与白名单保存", () => {
   it("policy改回及预设深拷贝同值不会误报dirty", () => {
     store.getState().patchPagePolicy({ every_turns: 25 });
     store.getState().patchPagePolicy({ every_turns: 20 });
-    store.getState().patchPageAgent("long-memory", {
+    store.getState().patchPageAgent("memory-tools", {
       p5_config: JSON.parse(JSON.stringify(persisted.p5_config)),
     });
     expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
@@ -320,11 +336,12 @@ describe("页面草稿与白名单保存", () => {
       knowledgeDirty: true,
     });
     expect(await store.getState().saveKnowledgeEditor()).toBe(true);
+    // 设置保存只提交 auto_enabled：预算取共享最新基线（4096），编辑器副本里的陈旧 5000 不提交。
     expect(client.saveKnowledgeSettings).toHaveBeenLastCalledWith({
       expected_revision: 1,
       model_name: null,
       auto_enabled: false,
-      context_budget: 5000,
+      context_budget: 4096,
     });
     expect(store.getState().knowledgeModelEditor?.modelName).toBe("unsaved-global");
     expect(await store.getState().saveKnowledgeModel()).toBe(true);
@@ -332,7 +349,7 @@ describe("页面草稿与白名单保存", () => {
       expected_revision: 2,
       model_name: "unsaved-global",
       auto_enabled: false,
-      context_budget: 5000,
+      context_budget: 4096,
     });
   });
   it("全局模型保存锁阻止重复提交与导航", async () => {

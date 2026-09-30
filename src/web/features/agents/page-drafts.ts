@@ -8,11 +8,12 @@ export const EDITABLE_PAGES = [
   "identity",
   "expression",
   "long-memory",
+  "memory-tools",
   "context",
 ] as const;
 // Explicit ownership: no future p5 field is silently assigned to a page.
 export const PAGE_P5_FIELDS = {
-  "long-memory": ["retrieval_mode", "retrieval_presets"],
+  "memory-tools": ["retrieval_mode", "retrieval_presets"],
   context: [
     "context_window",
     "max_output_tokens",
@@ -35,7 +36,7 @@ export function policyDirty(editor: PageEditor): boolean {
   );
 }
 export function p5Fields(page: EditablePage) {
-  return page === "long-memory" || page === "context" ? PAGE_P5_FIELDS[page] : [];
+  return page === "memory-tools" || page === "context" ? PAGE_P5_FIELDS[page] : [];
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 export type EditablePage = (typeof EDITABLE_PAGES)[number];
@@ -50,6 +51,7 @@ export const PAGE_AGENT_FIELDS = {
   identity: ["additional_instructions"],
   expression: ["persona_intensity"],
   "long-memory": ["memory_consolidation_prompt", "memory_consolidation_additional_instructions"],
+  "memory-tools": [],
   context: [],
 } as const;
 export const PAGE_PERSONA_FIELDS = {
@@ -58,6 +60,7 @@ export const PAGE_PERSONA_FIELDS = {
   identity: ["core_identity", "interaction_boundaries", "advanced_instructions"],
   expression: ["communication_style", "example_dialogues"],
   "long-memory": [],
+  "memory-tools": [],
   context: [],
 } as const;
 
@@ -138,8 +141,9 @@ export function pageAgentPayload(editor: PageEditor, page: EditablePage) {
           p5_config: {
             ...editor.agent.p5_config,
             ...Object.fromEntries(p5Fields(page).map((key) => [key, p5[key]])),
-            ...(page === "long-memory"
+            ...(page === "memory-tools"
               ? {
+                  // Retired legacy modes normalize to broad only on this page's saves.
                   retrieval_mode:
                     p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body"
                       ? "broad"

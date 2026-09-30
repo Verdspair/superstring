@@ -116,6 +116,14 @@ export function StickerLibrary() {
           <ImagePlus />
           {t("library.import.a.sticker")}
         </Button>
+        {/* 表情内容的媒体能力设置直达（qq-stickers -> media-tools），草稿安全跳转。 */}
+        <Button
+          variant="ghost"
+          className="ml-auto"
+          onClick={() => s.openSettingsRoute("media-tools")}
+        >
+          {t("capabilities.resources.openMediaTools")}
+        </Button>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="secondary">

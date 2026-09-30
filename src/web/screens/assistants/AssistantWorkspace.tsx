@@ -1,4 +1,4 @@
-import { ArrowLeft, Bot, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, Bot, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/confirmation";
@@ -12,7 +12,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { dirtyPages } from "@/features/agents/page-drafts";
 import { useSuperstringStore } from "@/store";
-import { ResourceRules } from "./ResourceRules";
 import { CapabilityEditor, IdentityEditor } from "./StudioEditors";
 
 /** The directory chooses an object; the studio always edits an explicit assistant. */
@@ -237,10 +236,15 @@ export function AssistantWorkspace() {
             <Badge variant="secondary">{current.agent.model_name}</Badge>
             {dirty && <Badge>{t("library.unsaved.changes")}</Badge>}
             <div className="ml-auto flex gap-2">
+              {/* 资料规则的读取额度已迁到一级“系统能力”页：这里只保留一个明显的跳转入口。 */}
+              <Button variant="outline" onClick={() => s.openSettingsRoute("memory-tools")}>
+                <SlidersHorizontal />
+                {t("capabilities.resources.openMemoryTools")}
+              </Button>
               <Button
                 variant="outline"
                 disabled={!dirty || s.settingsSaving}
-                onClick={s.discardSettingsPages}
+                onClick={() => s.discardSettingsPages()}
               >
                 {t("library.discard.changes")}
               </Button>
@@ -271,16 +275,12 @@ export function AssistantWorkspace() {
             <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
               <TabsTrigger value="identity">{t("library.identity.expression")}</TabsTrigger>
               <TabsTrigger value="capabilities">{t("library.models.context")}</TabsTrigger>
-              <TabsTrigger value="resources">{t("library.resource.rules")}</TabsTrigger>
             </TabsList>
             <TabsContent value="identity">
               <IdentityEditor />
             </TabsContent>
             <TabsContent value="capabilities">
               <CapabilityEditor />
-            </TabsContent>
-            <TabsContent value="resources">
-              <ResourceRules />
             </TabsContent>
           </Tabs>
         </>

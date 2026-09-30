@@ -1,6 +1,22 @@
+import type { PolicyView } from "../../../shared/contracts";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import { type PageEditor, POLICY_FIELDS } from "../agents/page-drafts";
+
+// 刷新只推进未改字段，返回时的新编辑也必须保留。
+function mergePolicyIntoEditor(editor: PageEditor, policy: PolicyView): PageEditor {
+  if (!editor.policy)
+    return { ...editor, policy, policyDraft: editor.policyDraft ?? { ...policy } };
+  const baseline = editor.policy;
+  const draft = editor.policyDraft ?? { ...baseline };
+  const merged: PolicyView = { ...policy };
+  for (const key of POLICY_FIELDS) {
+    // 联合字面量键无法直接收窄赋值；写入值来自同型草稿对象，只覆盖字段值。
+    if (draft[key] !== baseline[key]) Object.assign(merged, { [key]: draft[key] });
+  }
+  return { ...editor, policy, policyDraft: merged };
+}
 
 export function createMemoryActions(
   set: StoreSet,
@@ -227,12 +243,14 @@ export function createMemoryActions(
         const editor = get().pageEditor;
         set({
           policy,
-          ...(editor && editor.agent.id === id && !editor.policy
-            ? { pageEditor: { ...editor, policy, policyDraft: { ...policy } } }
+          ...(editor && editor.agent.id === id
+            ? { pageEditor: mergePolicyIntoEditor(editor, policy) }
             : {}),
         });
-      } catch {
-        // 读不到就保持"未加载"，面板据此显示重试而不是假装已关闭。
+      } catch (error) {
+        // 读不到保留旧基线与草稿，只提示失败，不假装已关闭或已成功。
+        if (!matches() || get().editorAgentId !== id) return;
+        set({ error: errorText(error) });
       }
     },
     reloadMemory: async () => {
@@ -273,8 +291,8 @@ export function createMemoryActions(
         }
         const editor = get().pageEditor;
         set({
-          ...(editor && editor.agent.id === id && !editor.policy
-            ? { pageEditor: { ...editor, policy, policyDraft: { ...policy } } }
+          ...(editor && editor.agent.id === id
+            ? { pageEditor: mergePolicyIntoEditor(editor, policy) }
             : {}),
           policy,
           memorySessions,
@@ -288,15 +306,11 @@ export function createMemoryActions(
         });
       } catch (error) {
         if (!matches() || request !== selectionRequest || get().editorAgentId !== id) return;
+        // 读取失败保留旧基线与草稿（含已加载列表），给出错误提示，不伪装成加载成功。
+        const text = errorText(error);
         set({
-          policy: null,
-          memorySessions: [],
-          memoryTurns: [],
-          memoryEntries: [],
-          memoryEntryTotal: 0,
-          memoryEntryDetail: null,
-          memoryJobs: [],
-          feedback: msg("记忆设置未能加载：{0}", errorText(error)),
+          error: text,
+          feedback: msg("记忆设置未能加载：{0}", text),
         });
       }
     },

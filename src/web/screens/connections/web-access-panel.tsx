@@ -5,12 +5,12 @@ import type { WebAccessTestResult } from "../../api";
 import { Field } from "../../components/form-field";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { webAccessDraftDirty } from "../../features/access/web-access-state";
 import { useSuperstringStore } from "../../store";
+import { CapabilityPolicyPanel } from "./capability-policy-panel";
+import { ToolGrantsPanel } from "./tool-grants-panel";
 
-/**
- * 联网（web-access）：一处配置搜索通道（内置必应、可选 SearXNG 端点）并自检当前通道。
- * 总开关与助手授权不在本页：说明块给出路径，授权跳转走现成的 openSettingsRoute 守卫。
- */
+// 端点草稿持久在 store：跨路由保留，离开设置页时参与保存/放弃守卫。
 export function WebAccessPanel() {
   const { t } = useTranslation();
   const snapshot = useSuperstringStore((s) => s.webAccessSnapshot);
@@ -19,31 +19,38 @@ export function WebAccessPanel() {
   const testing = useSuperstringStore((s) => s.webAccessTesting);
   const error = useSuperstringStore((s) => s.webAccessError);
   const notice = useSuperstringStore((s) => s.webAccessNotice);
+  const draft = useSuperstringStore((s) => s.webAccessDraft);
   const load = useSuperstringStore((s) => s.loadWebAccess);
-  const save = useSuperstringStore((s) => s.saveWebAccess);
+  const saveDraft = useSuperstringStore((s) => s.saveWebAccessDraft);
+  const patchDraft = useSuperstringStore((s) => s.patchWebAccessDraft);
+  const discardDraft = useSuperstringStore((s) => s.discardWebAccessDraft);
   const test = useSuperstringStore((s) => s.testWebAccess);
-  const open = useSuperstringStore((s) => s.openSettingsRoute);
-  // null＝跟随基线。一旦打字，草稿就保留到保存成功为止：读取（含冲突后的重新读取）
-  // 不会丢掉它，成功后的基线（含服务端归一）才把输入收回来。
-  const [draft, setDraft] = useState<string | null>(null);
   const [verdict, setVerdict] = useState<WebAccessTestResult | null>(null);
   const alertRef = useRef<HTMLParagraphElement>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   useEffect(() => {
     void load();
   }, [load]);
+  const revision = snapshot?.revision ?? "";
+  // 自检结论只对发起时的已保存配置有效：配置换代后不呈现旧成功。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision 只作触发条件，effect 体无需读取它。
+  useEffect(() => {
+    setVerdict(null);
+  }, [revision]);
   const baseline = snapshot?.config.searxngEndpoint ?? "";
   const value = draft ?? baseline;
-  const dirty = draft !== null && draft.trim() !== baseline;
+  const dirty = webAccessDraftDirty(snapshot, draft);
+  // 自检期间冻结端点编辑/保存/丢弃，避免出现可点但被存储层拒绝的按钮。
+  const busy = saving || testing || loading || !snapshot;
   const saveEndpoint = async () => {
     setVerdict(null);
-    const trimmed = value.trim();
-    const ok = await save(
-      trimmed === "" ? { version: 1 } : { version: 1, searxngEndpoint: trimmed },
-    );
-    if (ok) {
-      setDraft(null);
-      return;
-    }
+    if (await saveDraft()) return;
     // 冲突/非法：草稿留在输入框里，焦点交给提示；显式刷新后再提交（对照执行设置的 409 处理）。
     const alert = alertRef.current;
     if (alert) {
@@ -52,7 +59,7 @@ export function WebAccessPanel() {
     }
   };
   return (
-    <div className="mx-auto max-w-6xl space-y-8 px-6 py-6 lg:px-8">
+    <div className="w-full min-w-0 space-y-8 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="font-semibold">{t("connections.web.title")}</h2>
@@ -92,21 +99,11 @@ export function WebAccessPanel() {
           {t(notice)}
         </p>
       )}
-      <section className="space-y-2 text-xs text-muted-foreground">
-        <p>{t("connections.web.switchHint")}</p>
-        <p>{t("connections.web.grantHint")}</p>
-        <p>{t("connections.web.scopeHint")}</p>
-        <Button
-          variant="link"
-          size="sm"
-          className="h-auto px-0"
-          onClick={() => open("tool-grants")}
-        >
-          {t("connections.web.grantAction")}
-        </Button>
-      </section>
+      <CapabilityPolicyPanel modules={["web"]} />
+      <ToolGrantsPanel scope={["web"]} embedded />
       <section className="space-y-4">
         <h3 className="font-semibold">{t("connections.web.channels")}</h3>
+        <p className="text-xs text-muted-foreground">{t("connections.web.scopeHint")}</p>
         <div className="divide-y rounded-lg border">
           <div className="p-4">
             <p className="font-medium">{t("connections.web.builtin")}</p>
@@ -116,31 +113,42 @@ export function WebAccessPanel() {
             <Field label="connections.web.endpointLabel" info="connections.web.endpointHint">
               <Input
                 value={value}
-                disabled={saving || loading || !snapshot}
+                disabled={busy}
                 placeholder="http://127.0.0.1:8888"
-                onChange={(e) => setDraft(e.target.value)}
+                onChange={(e) => {
+                  setVerdict(null);
+                  patchDraft(e.target.value);
+                }}
               />
             </Field>
             <div className="flex flex-wrap gap-2">
-              <Button
-                disabled={!dirty || saving || loading || !snapshot}
-                onClick={() => void saveEndpoint()}
-              >
+              <Button disabled={!dirty || busy} onClick={() => void saveEndpoint()}>
                 {t("connections.web.save")}
               </Button>
               <Button
                 variant="outline"
-                disabled={testing || saving || loading || !snapshot}
+                disabled={!dirty || busy}
+                onClick={() => {
+                  setVerdict(null);
+                  discardDraft();
+                }}
+              >
+                {t("library.discard.changes")}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={busy || dirty}
                 onClick={() => {
                   setVerdict(null);
                   void test().then((result) => {
-                    if (result) setVerdict(result);
+                    if (result && alive.current) setVerdict(result);
                   });
                 }}
               >
                 {testing ? t("connections.web.testRunning") : t("connections.web.test")}
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">{t("capabilities.policy.webTestHint")}</p>
           </div>
         </div>
       </section>

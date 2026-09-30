@@ -7,6 +7,7 @@ import {
   acceptPagePersona,
   agentPageDirty,
   dirtyPages,
+  EDITABLE_PAGES,
   type EditablePage,
   mergeRetrievalPresets,
   PAGE_AGENT_FIELDS,
@@ -32,6 +33,7 @@ export function createPageActions(
   | "saveAllSettingsPages"
   | "applyDefaultModelToAgent"
   | "discardSettingsPages"
+  | "refreshSettingsAgent"
 > {
   const publish = (editor: PageEditor) => {
     set((state) => ({
@@ -49,7 +51,7 @@ export function createPageActions(
     const id = editor.agent.id;
     const matches = () => get().pageEditor?.token === token && get().editorAgentId === id;
     const normalizeMemoryMode =
-      page === "long-memory" &&
+      page === "memory-tools" &&
       (editor.draft.p5_config.retrieval_mode === "full_catalog" ||
         editor.draft.p5_config.retrieval_mode === "full_body");
     if (page !== "expression" && (agentPageDirty(editor, page) || normalizeMemoryMode)) {
@@ -132,7 +134,7 @@ export function createPageActions(
                   .filter((key) => patch.p5_config && Object.hasOwn(patch.p5_config, key))
                   .map((key) => [key, patch.p5_config?.[key]]),
               ),
-              ...(page === "long-memory" && presets
+              ...(page === "memory-tools" && presets
                 ? {
                     retrieval_presets: mergeRetrievalPresets(
                       editor.agent.p5_config.retrieval_presets,
@@ -201,9 +203,41 @@ export function createPageActions(
       if (saved) set({ feedback: msg("已更新当前助手的三个文本用途，旧独立检索模型值不变。") });
       return saved;
     },
-    discardSettingsPages: () => {
+    // 传页：能力页只弃本页拥有的字段，其他页草稿必须保留；无参：整份回到已存基线。
+    discardSettingsPages: (page?: EditablePage) => {
       const editor = get().pageEditor;
       if (get().settingsSaving || !editor) return;
+      if (page) {
+        set({
+          pageEditor: {
+            ...editor,
+            draft: {
+              ...editor.draft,
+              ...Object.fromEntries(PAGE_AGENT_FIELDS[page].map((key) => [key, editor.agent[key]])),
+              p5_config: {
+                ...editor.draft.p5_config,
+                ...Object.fromEntries(
+                  p5Fields(page).map((key) => [key, editor.agent.p5_config[key]]),
+                ),
+              },
+            },
+            ...(PAGE_PERSONA_FIELDS[page].length
+              ? {
+                  personaDraft: {
+                    ...editor.personaDraft,
+                    ...Object.fromEntries(
+                      PAGE_PERSONA_FIELDS[page].map((key) => [key, editor.persona[key]]),
+                    ),
+                  },
+                }
+              : {}),
+            ...(page === "long-memory" && editor.policy
+              ? { policyDraft: { ...editor.policy } }
+              : {}),
+          },
+        });
+        return;
+      }
       set({
         pageEditor: {
           ...editor,
@@ -212,6 +246,51 @@ export function createPageActions(
           policyDraft: editor.policy ? { ...editor.policy } : null,
         },
       });
+    },
+    // 显式刷新保存基线：只推进未修改字段与 config_version；已改草稿（含 p5）保留，不自动重试写。
+    refreshSettingsAgent: async () => {
+      const editor = get().pageEditor;
+      if (!editor || get().settingsSaving || get().editorLoading) return false;
+      const token = editor.token;
+      const id = editor.agent.id;
+      const api = get().apiClient;
+      const matches = () =>
+        get().pageEditor?.token === token && get().editorAgentId === id && get().apiClient === api;
+      set({ editorLoading: true, error: null });
+      try {
+        const fresh = await api.getAgent(id);
+        if (!matches()) return false;
+        const current = get().pageEditor;
+        if (!current) return false;
+        const draft = { ...toDraft(fresh), p5_config: { ...fresh.p5_config } };
+        // 联合字面量键无法直接收窄赋值，写入值都来自同型草稿对象；p5 值只替换引用不原地修改。
+        const draftRecord = draft as unknown as Record<string, unknown>;
+        const p5Record = draft.p5_config as unknown as Record<string, unknown>;
+        for (const page of EDITABLE_PAGES) {
+          for (const key of PAGE_AGENT_FIELDS[page]) {
+            if (current.draft[key] !== current.agent[key]) draftRecord[key] = current.draft[key];
+          }
+          for (const key of p5Fields(page)) {
+            if (
+              JSON.stringify(current.draft.p5_config[key]) !==
+              JSON.stringify(current.agent.p5_config[key])
+            ) {
+              p5Record[key] = current.draft.p5_config[key];
+            }
+          }
+        }
+        set((state) => ({
+          pageEditor: { ...current, agent: fresh, draft },
+          agents: state.agents.map((item) => (item.id === fresh.id ? fresh : item)),
+          feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。"),
+        }));
+        return true;
+      } catch (error) {
+        if (matches()) set({ error: errorText(error) });
+        return false;
+      } finally {
+        if (matches()) set({ editorLoading: false });
+      }
     },
   };
 }

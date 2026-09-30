@@ -1,4 +1,5 @@
 import { permissionSettingsDirty } from "../features/access/permission-state";
+import { webAccessDraftDirty } from "../features/access/web-access-state";
 import { toDraft } from "../features/agents/draft";
 import { dirtyPages } from "../features/agents/page-drafts";
 import {
@@ -71,7 +72,10 @@ async function performNavigation(
     }
     get().discardMemoryCorrection();
     if (pending.page !== "settings") get().discardKnowledgeEditor();
-    if (discard && pending.page !== "settings") get().discardPermissionSettings();
+    if (discard && pending.page !== "settings") {
+      get().discardPermissionSettings();
+      get().discardWebAccessDraft();
+    }
     if (discard) get().discardQqDrafts();
     set(patch);
     if (pending.conversationId) await get().selectConversation(pending.conversationId);
@@ -180,6 +184,7 @@ export function createNavigationActions(
         get().qqStickerSaving ||
         get().settingsSaving ||
         get().permissionSaving ||
+        get().webAccessSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
         get().organizationLoading ||
@@ -271,6 +276,7 @@ export function createNavigationActions(
         get().qqStickerSaving ||
         get().settingsSaving ||
         get().permissionSaving ||
+        get().webAccessSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
         get().organizationLoading ||
@@ -308,6 +314,7 @@ export function createNavigationActions(
       }
       if (
         (permissionSettingsDirty(get().permissionEditor) ||
+          webAccessDraftDirty(get().webAccessSnapshot, get().webAccessDraft) ||
           dirtyPages(get().pageEditor).length ||
           organizationDirty(get().organizationEditor) ||
           knowledgeModelDirty(get().knowledgeModelEditor) ||
@@ -351,6 +358,7 @@ export function createNavigationActions(
         get().qqStickerSaving ||
         get().settingsSaving ||
         get().permissionSaving ||
+        get().webAccessSaving ||
         get().editorLoading ||
         get().knowledgeReadLoading ||
         get().organizationLoading ||
@@ -360,8 +368,12 @@ export function createNavigationActions(
         get().knowledgeBusy
       )
         return;
-      // 同 ID 仅当已有草稿时才直接返回；__new__ 且草稿为 null 需要（重新）初始化。
-      if (id === get().editorAgentId && get().editorDraft !== null) return;
+      // 保存会清空 pageEditor，但保留 editorDraft；既有助手须重建编辑器。
+      if (
+        id === get().editorAgentId &&
+        (id === "__new__" ? get().editorDraft !== null : get().pageEditor !== null)
+      )
+        return;
       if (
         get().dirty ||
         get().memoryCorrectionDirty ||
@@ -387,6 +399,7 @@ export function createNavigationActions(
         get().qqStickerSaving ||
         get().settingsSaving ||
         get().permissionSaving ||
+        get().webAccessSaving ||
         get().editorLoading ||
         get().knowledgeBusy ||
         get().qqMemoryBatchSaving
@@ -410,6 +423,18 @@ export function createNavigationActions(
         pending.kind === "page" &&
         pending.page !== "settings" &&
         !(await get().savePermissionSettings())
+      ) {
+        set({
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
+        });
+        return;
+      }
+      if (
+        pending.kind === "page" &&
+        pending.page !== "settings" &&
+        webAccessDraftDirty(get().webAccessSnapshot, get().webAccessDraft) &&
+        !(await get().saveWebAccessDraft())
       ) {
         set({
           navigationConfirmOpen: true,
@@ -515,6 +540,7 @@ export function createNavigationActions(
         get().qqStickerSaving ||
         get().settingsSaving ||
         get().permissionSaving ||
+        get().webAccessSaving ||
         get().editorLoading ||
         get().knowledgeBusy ||
         get().qqMemoryBatchSaving

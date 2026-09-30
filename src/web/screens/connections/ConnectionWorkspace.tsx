@@ -24,7 +24,6 @@ import { SkillsPanel } from "./skills-panel";
 import { StorageInventory } from "./storage-inventory";
 import { ToolGrantsPanel } from "./tool-grants-panel";
 import { TransportSettings } from "./transport-settings";
-import { WebAccessPanel } from "./web-access-panel";
 
 const phaseNames: Record<string, string> = {
   unavailable: "connections.thisProcessHasNoTransportRuntime",
@@ -101,15 +100,13 @@ export function ConnectionWorkspace() {
               ? "skills"
               : state.settingsRoute === "tool-grants"
                 ? "grants"
-                : state.settingsRoute === "web-access"
-                  ? "web"
-                  : "bindings";
+                : "bindings";
   return (
     <section
       className="flex h-full min-h-0 flex-col"
       aria-label={t("connections.connectionsWorkspace")}
     >
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b px-6 py-5 lg:px-8">
+      <header className="flex flex-wrap items-start justify-between gap-4 border-b px-4 py-5">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <Cable className="size-4 text-muted-foreground" />
@@ -140,12 +137,12 @@ export function ConnectionWorkspace() {
         </div>
       </header>
       {state.error && (
-        <p role="alert" className="px-6 py-2 text-sm text-destructive">
+        <p role="alert" className="px-4 py-2 text-sm text-destructive">
           {translateNotice(state.error)}
         </p>
       )}
       {state.feedback && (
-        <p role="status" className="px-6 py-2 text-sm text-muted-foreground">
+        <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
           {translateNotice(state.feedback)}
         </p>
       )}
@@ -163,14 +160,12 @@ export function ConnectionWorkspace() {
                       ? "mcp-servers"
                       : value === "skills"
                         ? "skill-catalog"
-                        : value === "grants"
-                          ? "tool-grants"
-                          : "web-access",
+                        : "tool-grants",
               )
         }
         className="flex min-h-0 flex-1 flex-col gap-0"
       >
-        <div className="border-b px-6 py-3 lg:px-8">
+        <div className="border-b px-4 py-3">
           <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
             <TabsTrigger value="bindings">{t("connections.conversationBindings")}</TabsTrigger>
             <TabsTrigger value="schemes">{t("connections.sharedSchemes")}</TabsTrigger>
@@ -178,10 +173,9 @@ export function ConnectionWorkspace() {
             <TabsTrigger value="mcp">{t("connections.mcp.title")}</TabsTrigger>
             <TabsTrigger value="skills">{t("connections.skills.title")}</TabsTrigger>
             <TabsTrigger value="grants">{t("connections.grants.title")}</TabsTrigger>
-            <TabsTrigger value="web">{t("connections.web.title")}</TabsTrigger>
           </TabsList>
         </div>
-        <TabsContent value="bindings" className="m-0 min-h-0 overflow-y-auto px-6 py-6 lg:px-8">
+        <TabsContent value="bindings" className="m-0 min-h-0 overflow-y-auto px-4 py-6">
           <div className="mb-5 flex flex-wrap items-center gap-3">
             <div className="relative min-w-52 flex-1">
               <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -297,10 +291,8 @@ export function ConnectionWorkspace() {
           <SkillsPanel />
         </TabsContent>
         <TabsContent value="grants" className="m-0 min-h-0 flex-1 overflow-y-auto">
-          <ToolGrantsPanel />
-        </TabsContent>
-        <TabsContent value="web" className="m-0 min-h-0 flex-1 overflow-y-auto">
-          <WebAccessPanel />
+          {/* 工具授权只涉及外置接入（MCP / Skills）；内置能力开关在系统能力（P8）。 */}
+          <ToolGrantsPanel scope="external" />
         </TabsContent>
       </Tabs>
       {transportOpen && <TransportSettings onClose={() => setTransportOpen(false)} />}

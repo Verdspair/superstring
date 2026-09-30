@@ -16,7 +16,7 @@ export function LibraryWorkspace() {
         ? "memory"
         : "knowledge";
   return (
-    <div className="mx-auto h-full min-h-0 w-full overflow-y-auto max-w-7xl space-y-6 p-5 md:p-8">
+    <div className="h-full min-h-0 w-full space-y-6 overflow-y-auto px-4 py-6">
       <header className="space-y-1">
         <p className="text-xs font-medium tracking-widest text-muted-foreground">
           {t("brand.workspace", { "0": t("library.materials") })}

@@ -1,23 +1,28 @@
-// 网页记忆维护面板与 Agent 检索预设的可用性回归：维护面板在正文区、空分区也能管理、
-// 草稿/保存只走原 long-memory 白名单、QQ 分区仍只对应绑定控制、三预设默认展开。
-// 另覆盖共用草稿的保存范围提示：资料规则额度草稿随保存一起提交，放弃只还原维护设置。
+// 网页记忆维护面板与记忆/知识工具设置的可用性回归：维护面板在正文区、空分区也能管理、
+// 草稿/保存只走 long-memory 白名单、QQ 分区仍只对应绑定控制、三预设默认展开。
+// 读取额度拆到独立的 memory-tools 草稿：维护保存与工具保存互不夹带，也移除误导的共享范围提示。
 // 断言只使用 i18n 文案；所有写入走替身，不触网、不建业务数据。
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { knowledgeReadDirty } from "../../src/web/features/knowledge/types";
-import { ResourceRules } from "../../src/web/screens/assistants/ResourceRules";
+import {
+  KnowledgeToolSettings,
+  MemoryToolSettings,
+} from "../../src/web/screens/assistants/ResourceRules";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, agent, B, persona, policy, setupLibrary } from "./helpers/library-fixture";
 
 /** long-memory 的 Agent 载荷白名单：顺序按字母序校验，防止多写字段。 */
-const AGENT_PAYLOAD_KEYS = [
+const LONG_MEMORY_PAYLOAD_KEYS = [
   "expected_version",
   "memory_consolidation_additional_instructions",
   "memory_consolidation_prompt",
-  "p5_config",
 ];
+
+/** memory-tools 的 Agent 载荷白名单：只拥有 p5 读取字段。 */
+const MEMORY_TOOLS_PAYLOAD_KEYS = ["expected_version", "p5_config"];
 
 /** 保存替身：返回 store 可接受的已存对象（真实 api 会走网络与解析）。 */
 function saveMocks() {
@@ -77,7 +82,8 @@ describe("library web memory maintenance", () => {
     expect(mocks.updateAgent).toHaveBeenCalledTimes(1);
     const [savedId, savedBody] = mocks.updateAgent.mock.calls[0];
     expect(savedId).toBe(A);
-    expect(Object.keys(savedBody).sort()).toEqual(AGENT_PAYLOAD_KEYS);
+    expect(Object.keys(savedBody).sort()).toEqual(LONG_MEMORY_PAYLOAD_KEYS);
+    expect(savedBody).not.toHaveProperty("p5_config");
     expect(client.updateQqBinding).not.toHaveBeenCalled();
     expect(client.organiseQqMemory).not.toHaveBeenCalled();
     expect(store.getState().qqMemoryBatchDrafts).toEqual({});
@@ -146,11 +152,11 @@ describe("library web memory maintenance", () => {
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
   });
 
-  it("states the shared save scope and keeps the allowance draft when discarding maintenance", async () => {
+  it("keeps the allowance draft independent from maintenance discard and drops the shared-scope hint", async () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
-    // 资料规则页留下工具额度草稿：只改广泛档扫描上限，草稿仍标记 long-memory。
-    await act(async () => render(<ResourceRules />));
+    // 记忆工具设置留下额度草稿：只改广泛档扫描上限，草稿标记 memory-tools。
+    await act(async () => render(<MemoryToolSettings />));
     fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
       target: { value: "150" },
     });
@@ -158,15 +164,11 @@ describe("library web memory maintenance", () => {
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.candidate_limit,
     ).toBe(150);
     cleanup();
-    // 记忆维护：保存范围说明常驻，额度草稿未保存时给出待提交提示。
+    // 记忆维护：误导性的共享保存范围提示已移除。
     await act(async () => render(<MemoryLibrary />));
-    expect(
-      screen.getByText(
-        "保存记忆规则会同时提交当前 Agent 的记忆工具额度草稿。此处放弃修改仅还原维护设置，工具额度草稿会保留。",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText("资料规则中还有未保存的工具额度修改。")).toBeTruthy();
-    // 再改维护字段后放弃：只还原 policy 与两条提示词，额度草稿保留。
+    expect(screen.queryByText(/保存记忆规则会同时提交/)).toBeNull();
+    expect(screen.queryByText(/资料规则中还有未保存的工具额度修改/)).toBeNull();
+    // 改维护字段后放弃：只还原 policy 与两条提示词，memory-tools 草稿保留。
     fireEvent.change(screen.getByLabelText("每隔多少轮整理"), { target: { value: "30" } });
     fireEvent.change(screen.getByLabelText("记忆整理提示词"), { target: { value: "保留事实" } });
     fireEvent.click(screen.getByRole("button", { name: "放弃修改" }));
@@ -174,46 +176,40 @@ describe("library web memory maintenance", () => {
     expect(editor?.policyDraft?.every_turns).toBe(policy.every_turns);
     expect(editor?.draft.memory_consolidation_prompt).toBe(agent.memory_consolidation_prompt);
     expect(editor?.draft.p5_config.retrieval_presets.broad.candidate_limit).toBe(150);
-    expect(screen.getByText("资料规则中还有未保存的工具额度修改。")).toBeTruthy();
-    expect(dirtyPages(editor)).toEqual(["long-memory"]);
+    expect(dirtyPages(editor)).toEqual(["memory-tools"]);
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
   });
 
-  it("submits allowance and maintenance together while knowledge and other drafts stay independent", async () => {
+  it("saving memory tools never submits maintenance, policy or other page drafts", async () => {
     const mocks = saveMocks();
     const client = setupLibrary({ ...mocks, saveAgentKnowledgeRead: vi.fn() });
-    // 资料规则页同时留下额度草稿与知识读取草稿。
-    await act(async () => render(<ResourceRules />));
+    // 记忆工具设置：额度草稿属于 memory-tools。
+    await act(async () => render(<MemoryToolSettings />));
     fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
     fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
       target: { value: "150" },
     });
+    cleanup();
+    // 知识工具设置：独立 knowledgeReadEditor 草稿。
+    await act(async () => render(<KnowledgeToolSettings />));
     fireEvent.click(screen.getByRole("checkbox", { name: "启用知识读取" }));
     expect(knowledgeReadDirty(store.getState().knowledgeReadEditor)).toBe(true);
     cleanup();
-    // 另留一个模型页草稿：long-memory 显式保存不夹带它。
+    // 另留维护与模型页草稿：memory-tools 显式保存不夹带它们。
+    store.getState().patchPageAgent("long-memory", { memory_consolidation_prompt: "保留事实" });
     store.getState().patchPageAgent("models", { model_name: "draft-model" });
-    await act(async () => render(<MemoryLibrary />));
-    fireEvent.change(screen.getByLabelText("每隔多少轮整理"), { target: { value: "30" } });
-    fireEvent.change(screen.getByLabelText("记忆整理提示词"), { target: { value: "保留事实" } });
+    await act(async () => render(<MemoryToolSettings />));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存记忆规则" })));
-    // 显式保存：policy 与维护提示词各走原白名单，额度改动随 p5_config 一起提交。
-    expect(mocks.updatePolicy).toHaveBeenCalledTimes(1);
-    expect(mocks.updatePolicy).toHaveBeenCalledWith(A, {
-      auto_enabled: policy.auto_enabled,
-      every_turns: 30,
-      target_chars: policy.target_chars,
-      expected_version: policy.version,
-    });
+    // 只提交 memory-tools 白名单：不发送维护提示词、不碰 policy，也不触发知识读取保存。
     expect(mocks.updateAgent).toHaveBeenCalledTimes(1);
     const [savedId, savedBody] = mocks.updateAgent.mock.calls[0];
     expect(savedId).toBe(A);
-    expect(Object.keys(savedBody).sort()).toEqual(AGENT_PAYLOAD_KEYS);
+    expect(Object.keys(savedBody).sort()).toEqual(MEMORY_TOOLS_PAYLOAD_KEYS);
+    expect(savedBody).not.toHaveProperty("memory_consolidation_prompt");
     expect(mocks.updateAgent).toHaveBeenCalledWith(
       A,
       expect.objectContaining({
-        memory_consolidation_prompt: "保留事实",
         p5_config: expect.objectContaining({
           retrieval_mode: "broad",
           retrieval_presets: expect.objectContaining({
@@ -222,13 +218,13 @@ describe("library web memory maintenance", () => {
         }),
       }),
     );
-    // 保存后额度草稿与基线一致：待提交提示消失。
-    expect(screen.queryByText("资料规则中还有未保存的工具额度修改。")).toBeNull();
-    // 知识读取与模型页草稿保持独立：未随本次保存提交，仍留在草稿里。
+    expect(mocks.updatePolicy).not.toHaveBeenCalled();
     expect(client.saveAgentKnowledgeRead).not.toHaveBeenCalled();
     expect(store.getState().knowledgeReadEditor?.draft.enabled).toBe(false);
+    // 维护与模型页草稿保持独立：未随本次保存提交，仍留在草稿里。
     expect(store.getState().pageEditor?.draft.model_name).toBe("draft-model");
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["models"]);
+    expect(store.getState().pageEditor?.draft.memory_consolidation_prompt).toBe("保留事实");
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["models", "long-memory"]);
   });
 });
 
@@ -236,7 +232,7 @@ describe("agent retrieval presets", () => {
   it("expands all three presets by default and saves edits only through the whitelist", async () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
-    await act(async () => render(<ResourceRules />));
+    await act(async () => render(<MemoryToolSettings />));
     // 三项默认展开：三个额度字段直接可见，标题只剩档名，不再内嵌裸数字。
     expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
     expect(screen.getByRole("button", { name: "保守" })).toBeTruthy();
@@ -264,17 +260,17 @@ describe("agent retrieval presets", () => {
     expect(presets?.broad.candidate_limit).toBe(150);
     expect(presets?.conservative.candidate_limit).toBe(30);
     expect(presets?.standard.candidate_limit).toBe(60);
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["long-memory"]);
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
-    // 保存只写 long-memory 的原白名单，不触碰策略。
+    // 保存只写 memory-tools 的白名单，不触碰策略。
     await act(async () => {
-      expect(await store.getState().saveSettingsPage("long-memory")).toBe(true);
+      expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
     });
     expect(mocks.updateAgent).toHaveBeenCalledTimes(1);
     const [savedId, savedBody] = mocks.updateAgent.mock.calls[0];
     expect(savedId).toBe(A);
-    expect(Object.keys(savedBody).sort()).toEqual(AGENT_PAYLOAD_KEYS);
+    expect(Object.keys(savedBody).sort()).toEqual(MEMORY_TOOLS_PAYLOAD_KEYS);
     expect(mocks.updateAgent).toHaveBeenCalledWith(
       A,
       expect.objectContaining({
@@ -293,7 +289,7 @@ describe("agent retrieval presets", () => {
   it("jumps to the memory library through the shared draft-safe navigation", async () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
-    await act(async () => render(<ResourceRules />));
+    await act(async () => render(<MemoryToolSettings />));
     fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
       target: { value: "150" },
     });
@@ -303,7 +299,7 @@ describe("agent retrieval presets", () => {
     expect(
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.candidate_limit,
     ).toBe(150);
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["long-memory"]);
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
   });

@@ -6,7 +6,7 @@ import {
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
-import type { KnowledgeEditor, KnowledgeState } from "./types";
+import { type KnowledgeEditor, type KnowledgeState, latestKnowledgeSettings } from "./types";
 
 export function createKnowledgeActions(
   set: StoreSet,
@@ -81,12 +81,12 @@ export function createKnowledgeActions(
               : { kind: "grants", source, agent_ids: [...source.agent_ids] };
         } else if (target.kind === "settings") {
           const source = await get().apiClient.getKnowledgeSettings();
+          // 资料设置只维护自动整理；预算归系统能力→知识查询的全局分组，不在此保留第二份副本。
           editor = {
             kind: "settings",
             source,
             auto_enabled: source.auto_enabled,
             model_name: source.model_name ?? "",
-            context_budget: source.context_budget,
           };
         } else if (target.kind === "category") {
           const source = get().knowledgeCategories.find((c) => c.id === target.id);
@@ -171,11 +171,20 @@ export function createKnowledgeActions(
         } else if (editor.kind === "grants")
           await api.saveKnowledgeGrants(editor.source.id, editor.source.revision, editor.agent_ids);
         else if (editor.kind === "settings") {
+          // 资料设置只提交 auto_enabled；模型与预算从共享的最新基线合并，避免用陈旧预算
+          // 覆盖另一处刚保存的新值（旧编辑器副本里的值一律不提交）。基线若仍被并发推进，
+          // CAS 冲突只报错并保留草稿，等用户刷新后重试。
+          const baseline =
+            latestKnowledgeSettings([
+              get().knowledgeSettings,
+              get().knowledgeModelEditor?.source,
+              editor.source,
+            ]) ?? editor.source;
           const parsed = KnowledgeSettingsUpdateSchema.safeParse({
-            expected_revision: editor.source.revision,
+            expected_revision: baseline.revision,
             auto_enabled: editor.auto_enabled,
-            model_name: editor.source.model_name,
-            context_budget: editor.context_budget,
+            model_name: baseline.model_name,
+            context_budget: baseline.context_budget,
           });
           if (!parsed.success) throw new Error(msg("上下文预算必须为正整数。"));
           const saved = await api.saveKnowledgeSettings(parsed.data);

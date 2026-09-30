@@ -10,10 +10,11 @@ source of truth for mutations, conversation identity, drafts, scopes and retries
 | Workspace | User tasks | Implementation |
 | --- | --- | --- |
 | Conversations | Web conversation, connected history, identity, context usage, source records, delivery and execution evidence | `screens/conversations` |
-| Agents | Agent directory; identity and expression; models and context; memory and knowledge rules | `screens/assistants` |
+| Agents | Agent directory; identity and expression; models and context | `screens/assistants` |
+| System capabilities | Built-in capability directory; memory and knowledge reading rules; global knowledge reading budget; web access; media switches; execution switches and limits | `screens/connections/CapabilitiesWorkspace.tsx` |
 | Library | Knowledge documents and organization; scoped memories and maintenance; sticker assets and collections | `screens/library` |
-| Connections | Transport, observed and manually bound conversations, overrides, attention lists, shared schemes, retention | `screens/connections` |
-| Runs | Filterable execution ledger, parent/child waterfall, model calls, protected input/output, attempts, delivery evidence | `screens/observability`, `screens/runs` |
+| Connections | Transport, observed and manually bound conversations, overrides, attention lists, shared schemes, retention, external MCP services, custom Skills and extension grants | `screens/connections` |
+| Runs | Filterable execution ledger, task approvals, parent/child waterfall, model calls, protected input/output, attempts, delivery evidence | `screens/observability`, `screens/runs` |
 | Model services | Provider credentials, declared models/capacities, health, shared purpose defaults | `screens/environment/ModelServices.tsx` |
 | Preferences | Language, 16 themes, appearance mode, supported desktop behavior | `screens/environment/Preferences.tsx` |
 

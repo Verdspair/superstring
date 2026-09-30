@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Page matrix for the current five-section navigation and settings pages.
+// Page matrix for every settings destination this version added or changed.
 //
 // What it does: opens every settings destination this version added or changed in a real browser —
 // at 1920/1440/390/320, in both languages — then applies every theme in light and dark on the
@@ -11,8 +11,11 @@
 //
 // Navigation: the shell (ADR0019) renders the primary destinations in a persistent <aside>
 // (ProductNavigation); below 768px the same component lives inside the header's Sheet. The second
-// click is a role=tab inside the screen itself. Both are matched by their localized label, so the
-// page list carries the zh and en spellings.
+// click is a role=tab inside the screen itself, or — in the 系统能力 directory — a button row
+// (`second: "row"`, not a tab). Both are matched by their localized label, so the page list carries
+// the zh and en spellings; entries marked `landmark: "region"` are accepted only once their title
+// landmark (the section aria-label) is up, so a click that never opened its destination fails
+// instead of passing as the old page.
 //
 // Why a separate tool: only a real browser can be given a viewport, so this cannot be an assertion
 // inside tests/web. This complements the in-app browser interaction checks.
@@ -25,6 +28,18 @@
 // or SUPERSTRING_VISUAL_BROWSER_EXECUTABLE for an existing isolated verification browser.
 // Reports and screenshots land in artifacts/validation unless SUPERSTRING_VISUAL_OUT names
 // another (relative to the dev tree) directory — use the latter to keep phase evidence together.
+// Each run writes into its own run-<timestamp> subdirectory of that directory, so an earlier
+// run's evidence (screenshots, report, failure files) is never overwritten. A failing run writes
+// qq-pages-failure-<timestamp>.json plus the failing page's screenshot before rethrowing, instead
+// of only closing the browser.
+//
+// Locale and appearance are seeded into the three localStorage keys the product reads at start-up
+// (superstring-locale / superstring-appearance / superstring-appearance-mode). In a plain browser
+// this is the only locale source the product has — the desktop preference bridge
+// (window.superstringPreferences, src/web/desktop-preferences.ts) is absent outside the desktop
+// shell, and the language control is never touched, so this tool never writes a backend
+// preference. Labels are always matched with the exact localized spelling from the language packs;
+// there is deliberately no either-language fallback for a page this tool failed to open.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -41,16 +56,24 @@ if (!playwrightRoot) {
   process.exit(2);
 }
 const { chromium } = createRequire(resolve(playwrightRoot, "package.json"))("playwright");
-const outputDir = resolve(root, process.env.SUPERSTRING_VISUAL_OUT ?? "artifacts/validation");
+// 每轮一个时间戳子目录：报告、截图与失败证据同放其中，不覆盖任何既有证据。
+const outputBase = resolve(root, process.env.SUPERSTRING_VISUAL_OUT ?? "artifacts/validation");
+const runStamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
+const outputDir = resolve(outputBase, `run-${runStamp}`);
 mkdirSync(outputDir, { recursive: true });
 
 /**
  * Pages this version touched, with the nav labels a click needs and one content probe each.
- * `zh`/`en` are [primary destination, secondary tab?]; the tab is optional (偏好 has none).
- * Probes are optional anchors that must exist *and* not clip their own content.
+ * `zh`/`en` are [primary destination, secondary destination?]; the secondary is a role=tab unless
+ * `second: "row"` marks it as a row in the 系统能力 directory (a button row, not tabs), whose name
+ * is the actual localized catalog label. The last label of an entry with `landmark: "region"` must
+ * name the opened page's section title — the check that rejects "the click did not open it".
+ * Probes are optional anchors that must exist *and* not clip their own content. 记忆查询与知识查询
+ * 在助手编辑基线/读取草稿到位前只会渲染加载态（区域地标那时已经存在），所以这两页用关键数字
+ * 输入框作探针：输入框出现才算详情真的加载完成，地标单独成立不再算数。
  */
 const PAGES = [
-  // 0.4.0 P7: 接入内的三个新目的地与运行内的两个，加上本版改过的模型能力与助手工具范围。
+  // 0.4.0 P7: 接入内的三个目的地与运行内的任务与审批，加上本版改过的模型能力与助手工具范围。
   { id: "mcp-servers", zh: ["接入", "MCP 服务"], en: ["Access", "MCP services"], probe: null },
   { id: "skill-catalog", zh: ["接入", "技能"], en: ["Access", "Skills"], probe: null },
   {
@@ -65,11 +88,64 @@ const PAGES = [
     en: ["Runs", "Tasks and approvals"],
     probe: null,
   },
+  // 0.4.0 P8: 系统能力一级目录与目录行打开的能力详情；执行设置、联网从运行、接入移归此处。
+  // 目录行是 button 行而不是页签，行名与详情页 section[aria-label] 共用同一 nameKey，
+  // 所以标签取实际语言包（capabilities.*.name / connections.web.title），不做宽松回退。
+  {
+    id: "system-capabilities",
+    zh: ["系统能力"],
+    en: ["System capabilities"],
+    probe: null,
+    landmark: "region",
+  },
+  {
+    id: "memory-tools",
+    zh: ["系统能力", "记忆查询"],
+    en: ["System capabilities", "Memory query"],
+    second: "row",
+    probe: 'input[type="number"]',
+    landmark: "region",
+  },
+  {
+    id: "knowledge-tools",
+    zh: ["系统能力", "知识查询"],
+    en: ["System capabilities", "Knowledge query"],
+    second: "row",
+    probe: 'input[type="number"]',
+    landmark: "region",
+  },
+  {
+    id: "media-tools",
+    zh: ["系统能力", "媒体与表情"],
+    en: ["System capabilities", "Media and stickers"],
+    second: "row",
+    probe: null,
+    landmark: "region",
+  },
+  {
+    id: "web-access",
+    zh: ["系统能力", "联网"],
+    en: ["System capabilities", "Web access"],
+    second: "row",
+    probe: null,
+    landmark: "region",
+  },
   {
     id: "execution-settings",
-    zh: ["运行", "执行设置"],
-    en: ["Runs", "Execution settings"],
+    zh: ["系统能力", "任务与执行限制"],
+    en: ["System capabilities", "Tasks and execution limits"],
+    second: "row",
     probe: null,
+    landmark: "region",
+  },
+  // 第六项能力详情：会话历史摘要（link 类型，只说明与跳转）随本版路由新增，本轮补进清单。
+  {
+    id: "session-history",
+    zh: ["系统能力", "会话历史摘要"],
+    en: ["System capabilities", "Session history summary"],
+    second: "row",
+    probe: null,
+    landmark: "region",
   },
   {
     id: "model-services",
@@ -106,6 +182,8 @@ const PAGES = [
   },
   { id: "qq-storage", zh: ["接入", "数据与保留"], en: ["Access", "Data & retention"], probe: null },
   { id: "long-memory", zh: ["资料", "记忆"], en: ["Materials", "Memory"], probe: null },
+  // 资料里的知识库分区（文档页）随 P8 归入「资料」：原清单遗漏的既有目的地，本轮补上。
+  { id: "knowledge-config", zh: ["资料", "文档"], en: ["Materials", "Documents"], probe: null },
   { id: "general", zh: ["偏好"], en: ["Preferences"], probe: null },
 ];
 const VIEWPORTS = [
@@ -130,7 +208,7 @@ function assert(condition, message) {
 }
 const slug = (value) => value.replace(/[^a-z0-9-]/gi, "-");
 
-async function openPage(page, labels, pick) {
+async function openPage(page, entry, labels) {
   // 切屏是懒加载的：点击后 main 里会先留着上一个界面，有时并排挂出 Suspense 占位。
   // 先记下点击前的文字，再把“就绪”定义成三条同时成立：
   // 占位消失、文字换成了别的内容、并且连续一段时间不再变化。
@@ -139,9 +217,17 @@ async function openPage(page, labels, pick) {
   );
   // Primary destinations live in the persistent <aside>; below 768px the same component is mounted
   // inside the header's Sheet, so the trigger is the header's first button.
-  const primary = page.locator("aside").first();
-  const compact = !(await primary.isVisible().catch(() => false));
-  if (compact) await page.locator("header button[aria-label]").first().click();
+  const compact = page.viewportSize().width < 768;
+  await page.waitForFunction(async (mobile) => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const trigger = document.querySelector('header button[aria-haspopup="dialog"]');
+    const aside = document.querySelector("aside");
+    return mobile ? !!trigger && !aside : !!aside;
+  }, compact);
+  if (compact) {
+    await page.locator('header button[aria-haspopup="dialog"]').first().click();
+    await page.getByRole("dialog").waitFor({ state: "visible" });
+  }
   await page.locator("aside").first().getByRole("button", { name: labels[0], exact: true }).click();
   // Selecting the section the screen already shows leaves the Sheet open; close it before the
   // in-page tab underneath can be clicked.
@@ -149,12 +235,29 @@ async function openPage(page, labels, pick) {
     await page.keyboard.press("Escape");
   }
   // 少数页面要先选中一条记录（例如助手的名称）才会渲染分区页签。
-  if (pick !== undefined) await page.locator(pick).first().click();
+  if (entry.pick !== undefined) await page.locator(entry.pick).first().click();
   if (labels[1] !== undefined) {
-    await page.getByRole("tab", { name: labels[1], exact: true }).click();
-    // 页签的选中态是最直接的目的地信号：它先于分区内容出现，等它落定再等界面稳定。
+    if (entry.second === "row") {
+      // 系统能力目录的行是 button 行（不是页签）：行按钮的可访问名会拼上状态徽章与描述，
+      // 整串比较不可能成立、宽松子串又可能命中别处；按“行内存在与行名完全一致的文本”
+      // 定位该行，行名来自实际语言包，点完再由 landmark 证明目的地真的打开了。
+      await page
+        .getByRole("button")
+        .filter({ has: page.getByText(labels[1], { exact: true }) })
+        .click();
+    } else {
+      await page.getByRole("tab", { name: labels[1], exact: true }).click();
+      // 页签的选中态是最直接的目的地信号：它先于分区内容出现，等它落定再等界面稳定。
+      await page
+        .getByRole("tab", { name: labels[1], exact: true, selected: true })
+        .waitFor({ timeout: 15000 });
+    }
+  }
+  if (entry.landmark === "region") {
+    // 目的地地标：目录页与各能力详情都以 section[aria-label] 等于该条最后一个本地化标签
+    // 作标题。地标不出现就不接受这次访问——停在上一页或目录页都不算“已打开目的地”。
     await page
-      .getByRole("tab", { name: labels[1], exact: true, selected: true })
+      .getByRole("region", { name: labels[labels.length - 1], exact: true })
       .waitFor({ timeout: 15000 });
   }
   await page.waitForFunction(
@@ -249,6 +352,81 @@ async function inspectFocus(page) {
   });
 }
 
+/**
+ * A failing run must leave evidence behind. The throw used to reach `finally`, close the browser
+ * and leave nothing to look at; from now on the current page's state, its screenshot and the
+ * hygiene collected so far are written next to the report (unique timestamped names, an earlier
+ * run's files are never overwritten) and only then the error is rethrown.
+ */
+async function captureFailure(error, active) {
+  const stamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
+  const detail = {
+    timestamp: new Date().toISOString(),
+    url,
+    phase: active?.name ?? "setup",
+    error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    stack: error instanceof Error ? (error.stack ?? null) : null,
+    passed: false,
+    screenshots: [],
+    page: null,
+    hygiene: null,
+  };
+  if (active?.page) {
+    const file = `qq-pages-failure-${slug(active.name ?? "unknown")}-${stamp}.png`;
+    try {
+      await active.page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+      detail.screenshots.push(file);
+    } catch (screenshotError) {
+      detail.screenshotError = String(screenshotError);
+    }
+    try {
+      detail.page = await active.page.evaluate(() => ({
+        htmlLang: document.documentElement.lang,
+        storedLocale: localStorage.getItem("superstring-locale"),
+        storedTheme: localStorage.getItem("superstring-appearance"),
+        storedMode: localStorage.getItem("superstring-appearance-mode"),
+        asideButtons: [...document.querySelectorAll("aside button")]
+          .map((button) => (button.textContent ?? "").trim())
+          .filter(Boolean),
+        tabNames: [...document.querySelectorAll("[role=tab]")].map((tab) =>
+          (tab.textContent ?? "").trim(),
+        ),
+        selectedTabs: [...document.querySelectorAll('[role=tab][aria-selected="true"]')].map(
+          (tab) => (tab.textContent ?? "").trim(),
+        ),
+        statusTexts: [...document.querySelectorAll('[role="status"]')]
+          .map((node) => (node.textContent ?? "").trim())
+          .filter(Boolean),
+        regions: [...document.querySelectorAll("section[aria-label]")].map((section) =>
+          section.getAttribute("aria-label"),
+        ),
+        mainHead: (document.querySelector("main")?.textContent ?? "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 400),
+      }));
+    } catch (pageError) {
+      detail.pageError = String(pageError);
+    }
+  }
+  if (active?.hygiene) {
+    detail.hygiene = {
+      consoleErrors: [...active.hygiene.consoleErrors],
+      failedRequests: [...active.hygiene.failedRequests],
+      externalRequests: [...active.hygiene.externalRequests],
+    };
+  }
+  try {
+    const destination = resolve(outputDir, `qq-pages-failure-${stamp}.json`);
+    writeFileSync(destination, `${JSON.stringify(detail, null, 2)}\n`, "utf8");
+    console.error(`QQ PAGES MATRIX FAILED in ${detail.phase} -> ${destination}`);
+  } catch (writeError) {
+    console.error(
+      `QQ PAGES MATRIX FAILED in ${detail.phase}; failure report could not be written: ${writeError}`,
+    );
+  }
+}
+
 const contextOptions = async (
   browser,
   { locale, theme, mode, viewport, scheme, reducedMotion },
@@ -260,7 +438,10 @@ const contextOptions = async (
     colorScheme: scheme ?? (mode === "dark" ? "dark" : "light"),
     ...(reducedMotion ? { reducedMotion } : {}),
   });
-  // Before the app boots: locale and appearance are read from storage on start-up.
+  // Before the app boots: locale and appearance are read from storage on start-up. This is the
+  // product's only locale source in a plain browser (readLocale in src/web/i18n/index.ts); the
+  // desktop bridge that could restore preferences from the host is absent here, so nothing reads
+  // a server-side value back over local storage.
   await context.addInitScript(
     ([nextLocale, nextTheme, nextMode]) => {
       localStorage.setItem("superstring-locale", nextLocale);
@@ -310,6 +491,9 @@ const browser = await chromium.launch({
 });
 const results = [];
 const screenshots = [];
+// 失败证据要指到“当时那一页”，所以每进入一次页面访问就更新 active；失败的截图与页面状态
+// 都由 captureFailure 取自它。
+let active = null;
 try {
   for (const locale of LOCALES) {
     for (const viewport of VIEWPORTS) {
@@ -325,10 +509,12 @@ try {
         const labels = locale === "zh-CN" ? entry.zh : entry.en;
         const name = `${entry.id}-${locale}-${viewport.name}`;
         hygiene.reset();
+        active = { name, page, hygiene };
         await page.goto(url, { waitUntil: "networkidle" });
         await page.waitForSelector("#superstring-shell");
-        await openPage(page, labels, entry.pick);
-        if (entry.probe !== null) await page.waitForSelector(entry.probe, { timeout: 5000 });
+        await openPage(page, entry, labels);
+        // 探针必须真的出现：给足与页面级等待相同的 15s（它仍然必须存在，不是可选装饰）。
+        if (entry.probe !== null) await page.waitForSelector(entry.probe, { timeout: 15000 });
         const metrics = await inspect(page, entry.probe);
         assert(
           metrics.scrollWidth <= viewport.width,
@@ -405,9 +591,10 @@ try {
         viewport: { width: 1440, height: 1000 },
       });
       const page = await context.newPage();
+      active = { name, page, hygiene: null };
       await page.goto(url, { waitUntil: "networkidle" });
       await page.waitForSelector("#superstring-shell");
-      await openPage(page, themePage.zh, themePage.pick);
+      await openPage(page, themePage, themePage.zh);
       const metrics = await inspect(page, themePage.probe);
       assert(metrics.theme === theme, `${name}: theme not applied (${metrics.theme})`);
       assert(metrics.mode === mode, `${name}: mode not applied (${metrics.mode})`);
@@ -443,9 +630,10 @@ try {
       viewport: { width: 1440, height: 1000 },
     });
     const page = await context.newPage();
+    active = { name, page, hygiene: null };
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForSelector("#superstring-shell");
-    await openPage(page, themePage.zh, themePage.pick);
+    await openPage(page, themePage, themePage.zh);
     const metrics = await inspect(page, themePage.probe);
     assert(metrics.theme === theme, `${name}: theme not applied (${metrics.theme})`);
     assert(metrics.mode === scheme, `${name}: system preference not honoured (${metrics.mode})`);
@@ -473,9 +661,10 @@ try {
       viewport: { width: 1440, height: 1000 },
     });
     const page = await context.newPage();
+    active = { name, page, hygiene: null };
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForSelector("#superstring-shell");
-    await openPage(page, themePage.zh, themePage.pick);
+    await openPage(page, themePage, themePage.zh);
     const metrics = await inspect(page, themePage.probe);
     assert(metrics.scrollWidth <= 1440, `${name}: horizontal overflow`);
     assert(metrics.textLength > 40, `${name}: settings content is empty`);
@@ -493,6 +682,7 @@ try {
     timestamp,
     scope: `§15 page matrix: ${PAGES.length} settings pages x ${VIEWPORTS.length} viewports x ${LOCALES.length} languages, plus ${THEMES.length} themes x 2 modes, system mode x 2 system preferences and a reduced-motion pass`,
     url,
+    runDirectory: outputDir,
     browser: {
       engine: "chromium",
       version: browser.version(),
@@ -508,8 +698,11 @@ try {
   );
   writeFileSync(destination, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   console.log(
-    `QQ PAGES MATRIX PASSED -> ${destination}\n  ${results.length} checks, ${screenshots.length} screenshots, ${THEMES.length} themes`,
+    `QQ PAGES MATRIX PASSED -> ${destination}\n  ${results.length} checks, ${screenshots.length} screenshots, ${THEMES.length} themes, run directory ${outputDir}`,
   );
+} catch (error) {
+  await captureFailure(error, active);
+  throw error;
 } finally {
   await browser.close();
 }

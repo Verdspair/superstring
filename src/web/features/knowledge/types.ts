@@ -35,7 +35,8 @@ export type KnowledgeEditor =
       source: KnowledgeSettings;
       auto_enabled: boolean;
       model_name: string;
-      context_budget: number;
+      /** 预算不再由资料设置持有（归系统能力→知识查询的全局分组）；仅为旧调用方保留读取形状。 */
+      context_budget?: number;
     }
   | { kind: "category-new"; name: string }
   | { kind: "category"; source: KnowledgeCategory; name: string }
@@ -52,17 +53,33 @@ export interface KnowledgeModelEditor {
   autoEnabled?: boolean;
   contextBudget?: number;
 }
-export type KnowledgeSaveScope = "all" | "model" | "rules";
+/** 保存范围：all 整份草稿；model 仅模型；rules 保留原义（自动整理+预算）；budget 仅预算。 */
+export type KnowledgeSaveScope = "all" | "model" | "rules" | "budget";
 export function knowledgeModelDirty(
   editor: KnowledgeModelEditor | null,
   scope: KnowledgeSaveScope = "all",
 ): boolean {
   if (!editor) return false;
   const model = editor.modelName !== editor.source.model_name;
-  const rules =
-    (editor.autoEnabled ?? editor.source.auto_enabled) !== editor.source.auto_enabled ||
+  const auto = (editor.autoEnabled ?? editor.source.auto_enabled) !== editor.source.auto_enabled;
+  const budget =
     (editor.contextBudget ?? editor.source.context_budget) !== editor.source.context_budget;
-  return scope === "model" ? model : scope === "rules" ? rules : model || rules;
+  return scope === "model"
+    ? model
+    : scope === "rules"
+      ? auto || budget
+      : scope === "budget"
+        ? budget
+        : model || auto || budget;
+}
+
+/** 全局设置可能同时被资料设置页与默认模型/预算编辑器打开：合并时取修订最新的共享基线。 */
+export function latestKnowledgeSettings(
+  candidates: (KnowledgeSettings | null | undefined)[],
+): KnowledgeSettings | null {
+  let best: KnowledgeSettings | null = null;
+  for (const item of candidates) if (item && (!best || item.revision > best.revision)) best = item;
+  return best;
 }
 export interface OrganizationEditor {
   token: object;
@@ -128,7 +145,8 @@ export interface KnowledgeState {
   patchKnowledgeModel: (modelName: string | null) => void;
   patchKnowledgeGlobal: (patch: { autoEnabled?: boolean; contextBudget?: number }) => void;
   saveKnowledgeModel: (scope?: KnowledgeSaveScope) => Promise<boolean>;
-  discardKnowledgeModel: () => void;
+  /** scope "budget" 只还原预算字段，保留模型与整理草稿；缺省清空整份编辑器。 */
+  discardKnowledgeModel: (scope?: "budget") => void;
   knowledgeCategories: KnowledgeCategory[];
   knowledgeDocuments: KnowledgeDocument[];
   knowledgeSettings: KnowledgeSettings | null;

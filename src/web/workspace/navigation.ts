@@ -6,6 +6,7 @@ import {
   Cpu,
   MessageCircle,
   SlidersHorizontal,
+  Wrench,
 } from "lucide-react";
 import type { SuperstringState } from "../state/types";
 import { useSuperstringStore } from "../store";
@@ -22,6 +23,12 @@ export const SPACES = [
     label: "workspace.assistant",
     icon: Bot,
     description: "workspace.shape_an_assistant_s_identity_capabilities_and_material_rules",
+  },
+  {
+    id: "capabilities",
+    label: "workspace.capabilities",
+    icon: Wrench,
+    description: "workspace.manage_built_in_capabilities_and_execution_limits_by_function",
   },
   {
     id: "library",
@@ -74,17 +81,23 @@ export function activeSpace(
     return "library";
   if (
     [
-      "qq-scheme-config",
-      "qq-storage",
-      "mcp-servers",
-      "skill-catalog",
-      "tool-grants",
+      "system-capabilities",
+      "memory-tools",
+      "knowledge-tools",
+      "media-tools",
       "web-access",
+      "execution-settings",
+      "session-history",
     ].includes(state.settingsRoute)
   )
+    return "capabilities";
+  if (
+    ["qq-scheme-config", "qq-storage", "mcp-servers", "skill-catalog", "tool-grants"].includes(
+      state.settingsRoute,
+    )
+  )
     return "connections";
-  if (["task-ledger", "execution-settings", "execution-ledger"].includes(state.settingsRoute))
-    return "runs";
+  if (["task-ledger", "execution-ledger"].includes(state.settingsRoute)) return "runs";
   return "assistants";
 }
 /** Every global destination uses the existing draft-aware transition, never a direct state patch. */
@@ -96,6 +109,9 @@ export function openSpace(space: SpaceId) {
       break;
     case "assistants":
       state.openAgentSettings();
+      break;
+    case "capabilities":
+      state.openSettingsRoute("system-capabilities");
       break;
     case "library":
       state.requestPageNavigation("settings", "knowledge");

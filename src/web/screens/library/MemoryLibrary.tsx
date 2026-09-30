@@ -19,7 +19,8 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { agentPageDirty, p5Fields, policyDirty } from "@/features/agents/page-drafts";
+import { agentPageDirty, policyDirty } from "@/features/agents/page-drafts";
+import { translateNotice } from "@/i18n";
 import { useLiveResource } from "@/services/use-live-resource";
 import { errorText } from "@/state/helpers";
 import { useSuperstringStore } from "@/store";
@@ -95,17 +96,11 @@ export function MemoryLibrary() {
     s.memoryCorrectionDirty ||
     s.memoryCorrectionSaving ||
     Object.keys(s.qqMemoryBatchDrafts).length > 0;
-  // 与资料规则页共用同一份 `long-memory` 草稿：保存记忆规则会一并提交工具额度改动。
   const editor = s.pageEditor;
   const showMaintenance = scope === "" || memoryScopeIdentity(scope, agentId).kind === "web";
+  // 维护保存只拥有整理提示词与网页整理策略；读取额度属于独立的 memory-tools 草稿。
   const maintenanceDirty =
     !!editor && (policyDirty(editor) || agentPageDirty(editor, "long-memory"));
-  const allowancePending =
-    !!editor &&
-    p5Fields("long-memory").some(
-      (key) =>
-        JSON.stringify(editor.draft.p5_config[key]) !== JSON.stringify(editor.agent.p5_config[key]),
-    );
   useEffect(() => {
     if (ready && !editor?.policy) void s.loadMemoryPolicy();
   }, [ready, editor?.policy, s.loadMemoryPolicy]);
@@ -160,15 +155,24 @@ export function MemoryLibrary() {
         <Button disabled={!ready || locked} onClick={() => setManual(true)}>
           {t("library.organize.memories.from.a.conversation")}
         </Button>
+        {/* 读取额度已迁到系统能力页：内容区只保留直达入口，草稿安全跳转。 */}
+        <Button variant="ghost" onClick={() => s.openSettingsRoute("memory-tools")}>
+          {t("capabilities.resources.openMemoryTools")}
+        </Button>
       </div>
       {resource.data?.connectionError && (
         <p role="status" className="text-sm text-muted-foreground">
           {t("library.connection.metadata.unavailable")}
         </p>
       )}
-      {resource.error && (
+      {(resource.error || s.error) && (
         <p role="alert" className="text-sm text-destructive">
-          {resource.error}
+          {resource.error || translateNotice(s.error ?? "")}
+        </p>
+      )}
+      {s.feedback && !resource.error && !s.error && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {translateNotice(s.feedback)}
         </p>
       )}
       {ready && (
@@ -532,14 +536,6 @@ export function MemoryLibrary() {
                         }
                       />
                     </Field>
-                    <p className="text-xs text-muted-foreground">
-                      {t("library.memory.maintenance.save.scope")}
-                    </p>
-                    {allowancePending && (
-                      <p className="text-xs text-muted-foreground">
-                        {t("library.memory.maintenance.allowance.pending")}
-                      </p>
-                    )}
                     <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
                       <Button
                         size="sm"
@@ -552,7 +548,7 @@ export function MemoryLibrary() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={!maintenanceDirty || locked}
+                        disabled={!maintenanceDirty || locked || s.settingsSaving}
                         onClick={discardMaintenance}
                       >
                         {t("library.discard.changes")}

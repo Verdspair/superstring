@@ -132,10 +132,7 @@ export function IdentityEditor() {
   );
 }
 
-/**
- * 本 Agent 的有效工具范围（P7-d）：只读投影 + 跳转到统一授权。
- * 不复制全局设置，也不在这里改授权——范围与批准的唯一编辑入口是「工具授权」。
- */
+// 此处只投影工具范围，编辑仍归系统能力与扩展授权。
 function AgentToolScope({ agentId }: { agentId: string }) {
   const t = useTranslation().t;
   const s = useSuperstringStore();
@@ -208,9 +205,12 @@ function AgentToolScope({ agentId }: { agentId: string }) {
             {t("library.tools.pending", { "0": scope.pending })}
           </p>
         )}
-        <Button variant="outline" onClick={() => open("tool-grants")}>
-          {t("library.tools.manage")}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => open("system-capabilities")}>{t("workspace.capabilities")}</Button>
+          <Button variant="outline" onClick={() => open("tool-grants")}>
+            {t("library.tools.manage")}
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

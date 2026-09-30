@@ -109,12 +109,16 @@ export function executionPolicy(policy: PermissionPolicy): ExecutionPolicy {
 export type PermissionPolicy = z.infer<typeof PermissionPolicySchema>;
 export type PermissionGrant = z.infer<typeof PermissionGrantSchema>;
 
+// 联网动作共用 web 授权资源，暂停须同时匹配资源名与动作名。
+const WEB_PERMISSION_RESOURCE = "web";
+
 export function toolExecutionEnabled(execution: ExecutionPolicy, name: string): boolean {
   return (
     !execution.pausedTools.includes(name) &&
     (!name.startsWith("mcp.") || execution.modules.mcp) &&
     (!name.startsWith("skill.") || execution.modules.skills) &&
-    (!name.startsWith("web.") || execution.modules.web)
+    (!name.startsWith("web.") ||
+      (execution.modules.web && !execution.pausedTools.includes(WEB_PERMISSION_RESOURCE)))
   );
 }
 

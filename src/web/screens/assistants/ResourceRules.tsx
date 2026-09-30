@@ -1,4 +1,4 @@
-import { BookOpen, Brain } from "lucide-react";
+import { BookOpen, Brain, FileText } from "lucide-react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Field } from "@/components/form-field";
@@ -14,7 +14,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
-import { knowledgeReadDirty } from "@/features/knowledge/types";
+import { agentPageDirty } from "@/features/agents/page-drafts";
+import { knowledgeModelDirty, knowledgeReadDirty } from "@/features/knowledge/types";
+import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 
 const MODES = {
@@ -23,122 +25,175 @@ const MODES = {
   standard: "library.standard",
   broad: "library.broad",
 } as const;
-// 三个预设默认全部展开：档名由 AccordionTrigger 显示，三个额度字段直接可见，标题不再内嵌裸数字。
+// 三个预设默认全部展开，额度字段直接可见。
 const PRESET_MODES = ["conservative", "standard", "broad"] as const;
-export function ResourceRules() {
+
+/** 记忆工具设置：只拥有 retrieval_mode / retrieval_presets，正文在资料库的记忆分区管理。 */
+export function MemoryToolSettings() {
+  const s = useSuperstringStore();
+  const t = useTranslation().t;
+  const editor = s.pageEditor;
+  if (!editor) return <p role="status">{t("library.loading")}</p>;
+  const p5 = editor.draft.p5_config;
+  const legacyFull = p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body";
+  const patch = (value: Partial<typeof p5>) =>
+    s.patchPageAgent("memory-tools", { p5_config: { ...p5, ...value } });
+  const dirty = agentPageDirty(editor, "memory-tools");
+  const busy = s.settingsSaving || s.editorLoading || s.knowledgeReadLoading;
+  return (
+    <Card className="min-w-0">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Brain className="size-4" />
+          {t("library.memory.retrieval")}
+        </CardTitle>
+        <CardDescription>
+          {t("library.these.rules.belong.to.this.agent.manage.memory.content")}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <Field label="library.memory.tools.mode">
+          <NativeSelect
+            disabled={busy}
+            value={legacyFull ? "broad" : p5.retrieval_mode}
+            onChange={(e) => patch({ retrieval_mode: e.target.value as keyof typeof MODES })}
+          >
+            {Object.entries(MODES).map(([value, name]) => (
+              <option key={value} value={value}>
+                {t(name)}
+              </option>
+            ))}
+          </NativeSelect>
+        </Field>
+        {legacyFull && (
+          <p className="text-sm text-muted-foreground">
+            {t("library.memory.tools.legacy.full", { "0": p5.retrieval_mode })}
+            <Button
+              variant="link"
+              size="sm"
+              disabled={busy}
+              onClick={() => patch({ retrieval_mode: "broad" })}
+            >
+              {t("library.memory.tools.use.broad")}
+            </Button>
+          </p>
+        )}
+        <p className="text-sm text-muted-foreground">{t("library.memory.tools.on.demand")}</p>
+        <Accordion type="multiple" defaultValue={[...PRESET_MODES]}>
+          {PRESET_MODES.map((mode) => {
+            const preset = p5.retrieval_presets[mode];
+            return (
+              <AccordionItem key={mode} value={mode}>
+                <AccordionTrigger>{t(MODES[mode])}</AccordionTrigger>
+                <AccordionContent className="space-y-4 pt-2">
+                  <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+                    {(["candidate_limit", "max_entries", "max_tokens"] as const).map((key) => (
+                      <div
+                        key={key}
+                        className={key === "max_tokens" ? "min-w-0 sm:col-span-2" : "min-w-0"}
+                      >
+                        <Field
+                          label={
+                            {
+                              candidate_limit: "library.memory.tools.scan.limit",
+                              max_entries: "library.memory.tools.page.limit",
+                              max_tokens: "library.memory.tools.turn.budget",
+                            }[key]
+                          }
+                        >
+                          <Input
+                            type="number"
+                            disabled={busy}
+                            min={1}
+                            max={
+                              key === "max_tokens"
+                                ? 1048576
+                                : key === "candidate_limit"
+                                  ? 300
+                                  : Math.min(100, preset.candidate_limit)
+                            }
+                            value={preset[key]}
+                            onChange={(e) =>
+                              patch({
+                                retrieval_presets: {
+                                  ...p5.retrieval_presets,
+                                  [mode]: { ...preset, [key]: Number(e.target.value) },
+                                },
+                              })
+                            }
+                          />
+                        </Field>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {t("library.memory.tools.limits.hint")}
+                  </p>
+                </AccordionContent>
+              </AccordionItem>
+            );
+          })}
+        </Accordion>
+        {s.error && (
+          <p role="alert" className="text-sm text-destructive">
+            {translateNotice(s.error)}
+          </p>
+        )}
+        {s.feedback && !s.error && (
+          <p role="status" className="text-sm text-muted-foreground">
+            {translateNotice(s.feedback)}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
+          {/* 草稿安全跳转：不隐式保存，草稿保留。 */}
+          <Button
+            variant="link"
+            size="sm"
+            className="mr-auto"
+            onClick={() => s.openSettingsRoute("long-memory")}
+          >
+            {t("connections.goToLongTermMemory")}
+          </Button>
+          <Button variant="outline" disabled={busy} onClick={() => void s.refreshSettingsAgent()}>
+            {t("capabilities.resources.refreshBaseline")}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!dirty || busy}
+            onClick={() => s.discardSettingsPages("memory-tools")}
+          >
+            {t("library.discard.changes")}
+          </Button>
+          <Button disabled={!dirty || busy} onClick={() => void s.saveSettingsPage("memory-tools")}>
+            {t("library.save.memory.rules")}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** 知识工具设置：只读写 knowledgeReadEditor 草稿；资料正文仍归资料库文档分区。
+ *  全局默认预算独立成组，与默认模型页共用 knowledgeModelEditor（预算只有一个真源）。 */
+export function KnowledgeToolSettings() {
   const s = useSuperstringStore();
   const t = useTranslation().t;
   useEffect(() => {
     if (s.editorAgentId !== "__new__") {
-      // 记忆整理策略仍在资料库的网页记忆分区编辑；本页只留工具读取额度与知识访问。
+      // 知识读取配置独立于助手页面草稿加载与保存；资料正文仍在资料库的文档分区管理。
       void s.loadKnowledgeRead();
+      // 全局默认预算与知识整理模型共用同一编辑器；此处只编辑预算字段。
+      void s.loadKnowledgeModel();
     }
-  }, [s.editorAgentId, s.loadKnowledgeRead]);
+  }, [s.editorAgentId, s.loadKnowledgeRead, s.loadKnowledgeModel]);
   const editor = s.pageEditor;
-  if (!editor) return null;
-  const p5 = editor.draft.p5_config;
-  const legacyFull = p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body";
-  const patch = (value: Partial<typeof p5>) =>
-    s.patchPageAgent("long-memory", { p5_config: { ...p5, ...value } });
+  if (!editor) return <p role="status">{t("library.loading")}</p>;
   const read = s.knowledgeReadEditor?.agentId === editor.agent.id ? s.knowledgeReadEditor : null;
+  const global = s.knowledgeModelEditor;
+  const busy =
+    s.settingsSaving || s.editorLoading || s.knowledgeReadLoading || s.knowledgeModelLoading;
   return (
-    <div className="grid items-start gap-6 xl:grid-cols-2">
-      <div className="min-w-0 space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Brain className="size-4" />
-              {t("library.memory.retrieval")}
-            </CardTitle>
-            <CardDescription>
-              {t("library.these.rules.belong.to.this.agent.manage.memory.content")}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            <Field label="library.memory.tools.mode">
-              <NativeSelect
-                value={legacyFull ? "broad" : p5.retrieval_mode}
-                onChange={(e) => patch({ retrieval_mode: e.target.value as keyof typeof MODES })}
-              >
-                {Object.entries(MODES).map(([value, name]) => (
-                  <option key={value} value={value}>
-                    {t(name)}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Field>
-            {legacyFull && (
-              <p className="text-sm text-muted-foreground">
-                {t("library.memory.tools.legacy.full", { "0": p5.retrieval_mode })}
-                <Button variant="link" size="sm" onClick={() => patch({ retrieval_mode: "broad" })}>
-                  {t("library.memory.tools.use.broad")}
-                </Button>
-              </p>
-            )}
-            <p className="text-sm text-muted-foreground">{t("library.memory.tools.on.demand")}</p>
-            <Accordion type="multiple" defaultValue={[...PRESET_MODES]}>
-              {PRESET_MODES.map((mode) => {
-                const preset = p5.retrieval_presets[mode];
-                return (
-                  <AccordionItem key={mode} value={mode}>
-                    <AccordionTrigger>{t(MODES[mode])}</AccordionTrigger>
-                    <AccordionContent className="space-y-4 pt-2">
-                      <div className="grid min-w-0 gap-4 sm:grid-cols-2">
-                        {(["candidate_limit", "max_entries", "max_tokens"] as const).map((key) => (
-                          <div
-                            key={key}
-                            className={key === "max_tokens" ? "min-w-0 sm:col-span-2" : "min-w-0"}
-                          >
-                            <Field
-                              label={
-                                {
-                                  candidate_limit: "library.memory.tools.scan.limit",
-                                  max_entries: "library.memory.tools.page.limit",
-                                  max_tokens: "library.memory.tools.turn.budget",
-                                }[key]
-                              }
-                            >
-                              <Input
-                                type="number"
-                                min={1}
-                                max={
-                                  key === "max_tokens"
-                                    ? 1048576
-                                    : key === "candidate_limit"
-                                      ? 300
-                                      : Math.min(100, preset.candidate_limit)
-                                }
-                                value={preset[key]}
-                                onChange={(e) =>
-                                  patch({
-                                    retrieval_presets: {
-                                      ...p5.retrieval_presets,
-                                      [mode]: { ...preset, [key]: Number(e.target.value) },
-                                    },
-                                  })
-                                }
-                              />
-                            </Field>
-                          </div>
-                        ))}
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        {t("library.memory.tools.limits.hint")}
-                      </p>
-                    </AccordionContent>
-                  </AccordionItem>
-                );
-              })}
-            </Accordion>
-            {/* 草稿安全跳转：经 openSettingsRoute 进入库内网页记忆分区维护整理提示，页面草稿保留。 */}
-            <div className="flex flex-wrap justify-end border-t pt-4">
-              <Button variant="link" size="sm" onClick={() => s.openSettingsRoute("long-memory")}>
-                {t("connections.goToLongTermMemory")}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+    <>
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -151,11 +206,25 @@ export function ResourceRules() {
         </CardHeader>
         <CardContent className="space-y-5">
           {!read ? (
-            <p role="status">{t("library.loading")}</p>
+            !s.knowledgeReadLoading && s.error ? (
+              <div className="flex justify-end">
+                {/* 首次加载失败保留一个可重试的加载入口，而不是停在加载态。 */}
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void s.loadKnowledgeRead()}
+                >
+                  {t("library.refresh.grants")}
+                </Button>
+              </div>
+            ) : (
+              <p role="status">{t("library.loading")}</p>
+            )
           ) : (
             <>
               <Field label="library.enable.knowledge.reading">
                 <Checkbox
+                  disabled={busy}
                   checked={read.draft.enabled}
                   onCheckedChange={(v) => s.patchKnowledgeRead({ enabled: v === true })}
                 />
@@ -166,6 +235,7 @@ export function ResourceRules() {
               >
                 <Input
                   type="number"
+                  disabled={busy}
                   min={1}
                   value={read.draft.context_budget ?? ""}
                   onChange={(e) =>
@@ -177,6 +247,7 @@ export function ResourceRules() {
               </Field>
               <Field label="library.reading.scope">
                 <NativeSelect
+                  disabled={busy}
                   value={read.draft.scope}
                   onChange={(e) =>
                     s.patchKnowledgeRead({
@@ -200,6 +271,7 @@ export function ResourceRules() {
                       <Checkbox
                         id={`knowledge-read-${doc.id}`}
                         aria-label={doc.name}
+                        disabled={busy}
                         checked={read.draft.document_ids.includes(doc.id)}
                         onCheckedChange={(v) =>
                           s.patchKnowledgeRead({
@@ -227,6 +299,7 @@ export function ResourceRules() {
                         <Button
                           size="sm"
                           variant="ghost"
+                          disabled={busy}
                           onClick={() =>
                             s.patchKnowledgeRead({
                               document_ids: read.draft.document_ids.filter((other) => other !== id),
@@ -244,13 +317,27 @@ export function ResourceRules() {
                   )}
                 </div>
               )}
-              <div className="flex flex-wrap justify-end gap-2 border-t pt-4">
-                <Button variant="outline" onClick={() => void s.refreshKnowledgeRead()}>
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
+                {/* 草稿安全跳转：不隐式保存，草稿保留。 */}
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="mr-auto"
+                  onClick={() => s.openSettingsRoute("knowledge-config")}
+                >
+                  <FileText />
+                  {t("capabilities.resources.openKnowledgeDocuments")}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={!knowledgeReadDirty(read) || busy}
+                  onClick={() => void s.refreshKnowledgeRead()}
+                >
                   {t("library.refresh.grants")}
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={!knowledgeReadDirty(read)}
+                  disabled={!knowledgeReadDirty(read) || busy}
                   onClick={() => {
                     s.discardKnowledgeRead();
                     void s.loadKnowledgeRead();
@@ -259,7 +346,7 @@ export function ResourceRules() {
                   {t("library.discard.changes")}
                 </Button>
                 <Button
-                  disabled={!knowledgeReadDirty(read) || s.settingsSaving}
+                  disabled={!knowledgeReadDirty(read) || busy}
                   onClick={() => void s.saveKnowledgeRead()}
                 >
                   {t("library.save.knowledge.rules")}
@@ -267,8 +354,81 @@ export function ResourceRules() {
               </div>
             </>
           )}
+          {s.error && (
+            <p role="alert" className="text-sm text-destructive">
+              {translateNotice(s.error)}
+            </p>
+          )}
+          {s.feedback && !s.error && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {translateNotice(s.feedback)}
+            </p>
+          )}
         </CardContent>
       </Card>
-    </div>
+      {/* 全局默认预算：与知识整理模型共用 knowledgeModelEditor 真源，只提交预算字段。 */}
+      <Card className="min-w-0">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BookOpen className="size-4" />
+            {t("library.knowledge.global.budget")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {!global ? (
+            !s.knowledgeModelLoading && s.error ? (
+              <div className="flex justify-end">
+                {/* 首次加载失败保留重试入口；上限未知时不渲染输入。 */}
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void s.loadKnowledgeModel(true)}
+                >
+                  {t("capabilities.resources.refreshBaseline")}
+                </Button>
+              </div>
+            ) : (
+              <p role="status">{t("library.loading")}</p>
+            )
+          ) : (
+            <>
+              <Field label="library.workspace.knowledge.budget.tokens">
+                <Input
+                  type="number"
+                  disabled={busy}
+                  min={1}
+                  value={global.contextBudget ?? ""}
+                  onChange={(e) =>
+                    s.patchKnowledgeGlobal({ contextBudget: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void s.loadKnowledgeModel(true)}
+                >
+                  {t("capabilities.resources.refreshBaseline")}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={!knowledgeModelDirty(global, "budget") || busy}
+                  onClick={() => s.discardKnowledgeModel("budget")}
+                >
+                  {t("library.discard.knowledge.budget")}
+                </Button>
+                <Button
+                  disabled={!knowledgeModelDirty(global, "budget") || busy}
+                  onClick={() => void s.saveKnowledgeModel("budget")}
+                >
+                  {t("library.save.knowledge.budget")}
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </>
   );
 }

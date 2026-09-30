@@ -7,8 +7,15 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
-import { permissionSettingsDirty } from "../../features/access/permission-state";
-import type { ExecutionDraft, ExecutionDraftKey } from "../../features/runs/execution-draft";
+import {
+  type PermissionScope,
+  permissionSettingsDirty,
+} from "../../features/access/permission-state";
+import {
+  type ExecutionDraft,
+  type ExecutionDraftKey,
+  NUMERIC_KEYS,
+} from "../../features/runs/execution-draft";
 import { useSuperstringStore } from "../../store";
 
 interface NumericField {
@@ -164,6 +171,15 @@ const SECTION_ORDER: SectionKey[] = [
   "qq",
 ];
 
+// web 与 QQ 媒体的能力开关在各自的能力专页维护；本页只保存其余模块与数值/研究/代码字段。
+const PAGE_MODULE_KEYS = EXECUTION_MODULE_KEYS.filter(
+  (module) => module !== "web" && module !== "qqMedia" && module !== "qqStickers",
+);
+const PAGE_SCOPE: PermissionScope = {
+  executionKeys: [...NUMERIC_KEYS, "research", "code"],
+  modules: [...PAGE_MODULE_KEYS],
+};
+
 export function ExecutionSettings() {
   const { t } = useTranslation();
   const uid = useId();
@@ -173,6 +189,7 @@ export function ExecutionSettings() {
   const saving = useSuperstringStore((s) => s.permissionSaving);
   const problem = useSuperstringStore((s) => s.permissionProblem);
   const error = useSuperstringStore((s) => s.permissionError);
+  const errorScope = useSuperstringStore((s) => s.permissionErrorScope);
   const notice = useSuperstringStore((s) =>
     s.permissionNotice === "connections.execution.saved" ? s.permissionNotice : "",
   );
@@ -184,7 +201,9 @@ export function ExecutionSettings() {
     void load();
   }, [load]);
   const draft = editor?.execution;
-  const dirty = permissionSettingsDirty(editor, "execution");
+  const dirty = permissionSettingsDirty(editor, PAGE_SCOPE);
+  // 数值越界（problem 非空）只在本页提示；授权面板的错误不在本页重复。
+  const showError = !!error && (problem !== null || errorScope !== "grants");
   const patch = (key: keyof ExecutionDraft, value: string | boolean) => update({ [key]: value });
   // 同一屏幕可能被渲染多份：锚点 id 用 useId 派生，实例之间不冲突。
   const panelId = (section: SectionKey) => `${uid}execution-${section}`;
@@ -196,7 +215,7 @@ export function ExecutionSettings() {
     panel.scrollIntoView({ block: "start" });
   };
   const handleSave = async () => {
-    if (await save("execution")) return;
+    if (await save(PAGE_SCOPE)) return;
     const root = rootRef.current;
     const target =
       root?.querySelector<HTMLElement>('[aria-invalid="true"]') ??
@@ -250,11 +269,7 @@ export function ExecutionSettings() {
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
-          <Button
-            variant="outline"
-            disabled={!dirty || saving}
-            onClick={() => discard("execution")}
-          >
+          <Button variant="outline" disabled={!dirty || saving} onClick={() => discard(PAGE_SCOPE)}>
             {t("library.discard.changes")}
           </Button>
           <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()}>
@@ -263,18 +278,18 @@ export function ExecutionSettings() {
           </Button>
         </div>
       </div>
-      {error && (
+      {showError && (
         <p role="alert" tabIndex={-1} className="text-sm text-destructive">
           {t(error)}
         </p>
       )}
-      {notice && (
+      {dirty && (
+        <p className="text-xs text-muted-foreground">{t("connections.execution.unsaved")}</p>
+      )}
+      {!dirty && notice && (
         <p role="status" className="text-sm text-muted-foreground">
           {t(notice)}
         </p>
-      )}
-      {dirty && !notice && (
-        <p className="text-xs text-muted-foreground">{t("connections.execution.unsaved")}</p>
       )}
       <nav aria-label={t("connections.execution.title")} className="flex flex-wrap gap-1">
         {SECTION_ORDER.map((section) => (
@@ -289,7 +304,7 @@ export function ExecutionSettings() {
         <Card className="xl:col-span-2">
           <CardHeader>{sectionTitle("switches")}</CardHeader>
           <CardContent className="grid gap-5 sm:grid-cols-2">
-            {EXECUTION_MODULE_KEYS.map((module) => (
+            {PAGE_MODULE_KEYS.map((module) => (
               <Field
                 key={module}
                 label={`connections.execution.modules.${module}`}
@@ -343,7 +358,7 @@ export function ExecutionSettings() {
           <Save />
           {t("workspace.save")}
         </Button>
-        <Button variant="outline" disabled={!dirty || saving} onClick={() => discard("execution")}>
+        <Button variant="outline" disabled={!dirty || saving} onClick={() => discard(PAGE_SCOPE)}>
           {t("library.discard.changes")}
         </Button>
       </div>

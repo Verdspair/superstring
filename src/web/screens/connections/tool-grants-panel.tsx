@@ -15,6 +15,8 @@ import {
 } from "../../components/ui/table";
 import type { GrantDraft } from "../../features/access/permission-draft";
 import {
+  type ExecutionModuleKey,
+  type PermissionScope,
   permissionResources,
   permissionSettingsDirty,
 } from "../../features/access/permission-state";
@@ -23,13 +25,30 @@ import { useSuperstringStore } from "../../store";
 const groupOf = (name: string) =>
   name.startsWith("mcp.") ? "mcp" : name.startsWith("skill.") ? "skill" : "builtin";
 
-export function ToolGrantsPanel() {
+/** 资源 → 所属执行模块（已保存状态下用于显示"所属模块已暂停"，不读草稿）。 */
+const moduleOf = (resource: string): ExecutionModuleKey | undefined => {
+  if (resource === "mcp" || resource.startsWith("mcp.")) return "mcp";
+  if (resource === "skill" || resource.startsWith("skill.")) return "skills";
+  if (resource === "web" || resource.startsWith("web.")) return "web";
+  return undefined;
+};
+
+export function ToolGrantsPanel({
+  scope,
+  embedded = false,
+}: {
+  /** 资源过滤：external＝MCP/技能，builtin＝内置动作，字符串数组按资源名前缀；缺省＝全部。 */
+  scope?: "external" | "builtin" | string[];
+  /** 嵌入其他页面时去掉自带页容器，仅保留节内间距。 */
+  embedded?: boolean;
+}) {
   const { t } = useTranslation();
   const agents = useSuperstringStore((s) => s.agents);
   const editor = useSuperstringStore((s) => s.permissionEditor);
   const loading = useSuperstringStore((s) => s.permissionLoading);
   const saving = useSuperstringStore((s) => s.permissionSaving);
   const error = useSuperstringStore((s) => s.permissionError);
+  const errorScope = useSuperstringStore((s) => s.permissionErrorScope);
   const notice = useSuperstringStore((s) =>
     s.permissionNotice === "connections.grants.saved" ? s.permissionNotice : "",
   );
@@ -44,10 +63,29 @@ export function ToolGrantsPanel() {
   const snapshot = editor?.snapshot;
   const drafts = editor?.grants ?? {};
   const resources = snapshot ? permissionResources(snapshot) : [];
-  const dirty = permissionSettingsDirty(editor, "grants");
+  const matchesScope = (resource: PermissionResource) => {
+    if (scope === undefined) return true;
+    if (scope === "external") return groupOf(resource.name) !== "builtin";
+    if (scope === "builtin") return groupOf(resource.name) === "builtin";
+    return scope.some(
+      (entry) => resource.resource === entry || resource.resource.startsWith(`${entry}.`),
+    );
+  };
+  const rows = resources.filter(matchesScope);
+  // 缺省作用域即整域 "grants"；显式过滤时只提交本次可见资源的草稿。
+  const editScope: PermissionScope =
+    scope === undefined ? "grants" : { resources: rows.map((resource) => resource.resource) };
+  const dirty = permissionSettingsDirty(editor, editScope);
   const groups: ("mcp" | "skill" | "builtin")[] = ["mcp", "skill", "builtin"];
+  // 数值越界错误由执行设置页就地提示（那里才能修正）；其余可修复错误不因去重被隐藏。
+  const showError = !!error && errorScope !== "execution";
+  const modulePaused = (resource: PermissionResource) => {
+    if (!snapshot) return false;
+    const module = moduleOf(resource.resource);
+    return module !== undefined && !executionPolicy(snapshot.policy).modules[module];
+  };
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+    <div className={embedded ? "space-y-6" : "mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8"}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="font-semibold">{t("connections.grants.title")}</h2>
@@ -61,34 +99,32 @@ export function ToolGrantsPanel() {
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
-          <Button variant="outline" disabled={!dirty || saving} onClick={() => discard("grants")}>
+          <Button variant="outline" disabled={!dirty || saving} onClick={() => discard(editScope)}>
             {t("library.discard.changes")}
           </Button>
           <Button
             disabled={!dirty || saving || loading || !snapshot}
-            onClick={() => void save("grants")}
+            onClick={() => void save(editScope)}
           >
             <Save />
             {t("connections.grants.save")}
           </Button>
         </div>
       </div>
-      {error && (
+      {showError && (
         <p role="alert" className="text-sm text-destructive">
           {t(error)}
         </p>
       )}
-      {notice && (
+      {dirty && <p className="text-xs text-muted-foreground">{t("connections.grants.unsaved")}</p>}
+      {!dirty && notice && (
         <p role="status" className="text-sm text-muted-foreground">
           {t(notice)}
         </p>
       )}
-      {dirty && !notice && (
-        <p className="text-xs text-muted-foreground">{t("connections.grants.unsaved")}</p>
-      )}
       {groups.map((group) => {
-        const rows = resources.filter((resource) => groupOf(resource.name) === group);
-        if (!rows.length) return null;
+        const groupRows = rows.filter((resource) => groupOf(resource.name) === group);
+        if (!groupRows.length) return null;
         return (
           <section key={group} className="space-y-3">
             <h3 className="flex items-center gap-2 text-sm font-medium">
@@ -108,7 +144,7 @@ export function ToolGrantsPanel() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((resource) => (
+                  {groupRows.map((resource) => (
                     <ResourceRow
                       key={resource.resource}
                       resource={resource}
@@ -123,11 +159,7 @@ export function ToolGrantsPanel() {
                             grant.revision !== resource.revision,
                         )
                       }
-                      modulePaused={
-                        !!snapshot &&
-                        ((group === "mcp" && !executionPolicy(snapshot.policy).modules.mcp) ||
-                          (group === "skill" && !executionPolicy(snapshot.policy).modules.skills))
-                      }
+                      modulePaused={modulePaused(resource)}
                       draft={drafts[resource.resource]}
                       agents={agents}
                       expanded={expanded === resource.resource}
@@ -144,7 +176,7 @@ export function ToolGrantsPanel() {
           </section>
         );
       })}
-      {!loading && !resources.length && (
+      {!loading && !rows.length && (
         <p className="text-sm text-muted-foreground">{t("connections.grants.empty")}</p>
       )}
     </div>
@@ -187,14 +219,16 @@ function ResourceRow({
       <TableRow>
         <TableCell className="align-top">
           <div className="font-mono text-sm">{resource.resource}</div>
-          <div className="text-xs text-muted-foreground">
+          <div className="text-xs whitespace-normal text-muted-foreground">
             {available ? resource.description : t("connections.grants.offline")}
           </div>
           {outdated && (
             <p className="text-xs text-destructive">{t("connections.grants.revisionChanged")}</p>
           )}
           {modulePaused && (
-            <p className="text-xs text-muted-foreground">{t("connections.grants.modulePaused")}</p>
+            <p className="text-xs whitespace-normal text-muted-foreground">
+              {t("connections.grants.modulePaused")}
+            </p>
           )}
         </TableCell>
         <TableCell className="align-top">
@@ -217,12 +251,18 @@ function ResourceRow({
           />
         </TableCell>
         <TableCell className="align-top">
-          <Checkbox
-            checked={value.approved}
-            disabled={disabled || (!value.approved && (!available || !value.enabled))}
-            aria-label={t("connections.grants.approvedFor", { "0": resource.resource })}
-            onCheckedChange={(checked) => onEdit({ approved: checked === true })}
-          />
+          {resource.approvalRequired ? (
+            <Checkbox
+              checked={value.approved}
+              disabled={disabled || (!value.approved && (!available || !value.enabled))}
+              aria-label={t("connections.grants.approvedFor", { "0": resource.resource })}
+              onCheckedChange={(checked) => onEdit({ approved: checked === true })}
+            />
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              {t("connections.grants.approvalNotRequired")}
+            </span>
+          )}
         </TableCell>
         <TableCell className="align-top text-xs text-muted-foreground">
           {value.agentIds === null

@@ -7,7 +7,10 @@ import { msg, selectLocale } from "../../src/web/i18n";
 import en from "../../src/web/i18n/locales/en/translation.json";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
-import { ResourceRules } from "../../src/web/screens/assistants/ResourceRules";
+import {
+  KnowledgeToolSettings,
+  MemoryToolSettings,
+} from "../../src/web/screens/assistants/ResourceRules";
 import { CapabilityEditor, IdentityEditor } from "../../src/web/screens/assistants/StudioEditors";
 import { Preferences } from "../../src/web/screens/environment/Preferences";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
@@ -91,8 +94,25 @@ describe("fresh assistant studio", () => {
     expect(store.getState().pageEditor?.draft.name).toBe("Draft name");
     expect(store.getState().pageEditor?.agent.name).toBe("Agent A");
   });
+  it("workspace discard resets every draft instead of reading the click event as a page", async () => {
+    await act(async () => render(<AssistantWorkspace />));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Draft name" } });
+    fireEvent.change(screen.getByLabelText("沟通风格"), { target: { value: "Draft style" } });
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["basic", "expression"]);
+    fireEvent.click(screen.getByRole("button", { name: "放弃修改" }));
+    expect(store.getState().pageEditor?.draft.name).toBe("Agent A");
+    expect(store.getState().pageEditor?.personaDraft.communication_style).toBe("");
+    expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+  });
   it("shows four tool allowance modes and independent bounded presets without retired controls", async () => {
-    await act(async () => render(<ResourceRules />));
+    await act(async () =>
+      render(
+        <>
+          <MemoryToolSettings />
+          <KnowledgeToolSettings />
+        </>,
+      ),
+    );
     expect(
       within(screen.getByLabelText("记忆工具额度模式"))
         .getAllByRole("option")
@@ -147,7 +167,7 @@ describe("fresh assistant studio", () => {
       };
       store.setState({ pageEditor: newPageEditor(legacy, editor.persona) });
       const before = store.getState().pageEditor;
-      await act(async () => render(<ResourceRules />));
+      await act(async () => render(<MemoryToolSettings />));
       expect((screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement).value).toBe("broad");
       expect(screen.getByText(/旧全量档.*保存记忆规则时/).textContent).toContain(mode);
       expect(store.getState().pageEditor).toBe(before);
@@ -155,12 +175,12 @@ describe("fresh assistant studio", () => {
       cleanup();
       act(() => store.getState().openSettingsRoute("models"));
       act(() => store.getState().openSettingsRoute("long-memory"));
-      await act(async () => render(<ResourceRules />));
+      await act(async () => render(<MemoryToolSettings />));
       expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
       expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
       fireEvent.click(screen.getByRole("button", { name: "改为广泛额度" }));
       expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe("broad");
-      expect(dirtyPages(store.getState().pageEditor)).toEqual(["long-memory"]);
+      expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
       act(() => store.getState().discardSettingsPages());
       expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
       fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "off" } });
@@ -178,7 +198,7 @@ describe("fresh assistant studio", () => {
     const client = setupLibrary({
       saveAgentKnowledgeRead: vi.fn().mockResolvedValue({ revision: 2, config }),
     });
-    await act(async () => render(<ResourceRules />));
+    await act(async () => render(<KnowledgeToolSettings />));
     fireEvent.change(screen.getByLabelText("读取范围"), { target: { value: "selected" } });
     expect(store.getState().knowledgeReadEditor?.draft.document_ids).toEqual([]);
     act(() => store.getState().patchKnowledgeRead({ document_ids: [M] }));
@@ -199,7 +219,7 @@ describe("fresh assistant studio", () => {
       config: { enabled: false, context_budget: null, scope: "all", document_ids: [] },
     });
     store.setState({ apiClient: { ...store.getState().apiClient, saveAgentKnowledgeRead: save } });
-    await act(async () => render(<ResourceRules />));
+    await act(async () => render(<KnowledgeToolSettings />));
     act(() => store.getState().patchPageAgent("basic", { name: "Unsaved agent" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "启用知识读取" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存知识规则" })));
@@ -278,6 +298,14 @@ describe("fresh library tasks", () => {
     expect(client.saveKnowledgeGrants).toHaveBeenCalledWith(D, 3, [A, B]);
     expect(client.updateKnowledgeDocument).not.toHaveBeenCalled();
   });
+  it("shows memory management failures with a visible retry entry", async () => {
+    setupLibrary();
+    await act(async () => render(<MemoryLibrary />));
+    act(() => store.setState({ error: "policy revision conflict", feedback: "" }));
+    expect(screen.getByRole("alert").textContent).toContain("policy revision conflict");
+    expect(screen.getByRole("button", { name: "刷新" })).toBeTruthy();
+  });
+
   it("memory partition/filter is passed to the server and sharing uses binding CAS", async () => {
     const client = setupLibrary();
     await act(async () => render(<MemoryLibrary />));
@@ -295,7 +323,7 @@ describe("fresh library tasks", () => {
   /**
    * 记忆维护（自动整理/轮数/目标字符/整理提示词）位于资料库→记忆的正文区：
    * 空 scope（所有分区）即可用，选中网页对话记忆分区仍可用；QQ 分区只显示绑定控制，不混入网页维护。
-   * 保存仍走 long-memory 白名单（后端与字段归属没变）。资料规则页（Agent）不再承载维护编辑器，
+   * 保存仍走 long-memory 白名单（后端与字段归属没变）。系统能力里的记忆工具设置不再承载维护编辑器，
    * 只保留跳转入口（不是第二个编辑器），这里断言没有重复维护控件。
    */
   it("keeps memory maintenance available without a selected partition and saves its own whitelist", async () => {
@@ -334,9 +362,9 @@ describe("fresh library tasks", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /QQ · 私聊 20002/ })));
     expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
     expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
-    // 资料规则页（Agent）只保留「前往长期记忆」跳转入口（不是第二个编辑器），没有重复维护控件。
+    // 记忆工具设置（系统能力）只保留「前往长期记忆」跳转入口（不是第二个编辑器），没有重复维护控件。
     cleanup();
-    await act(async () => render(<ResourceRules />));
+    await act(async () => render(<MemoryToolSettings />));
     expect(screen.getByRole("button", { name: "前往长期记忆" })).toBeTruthy();
     expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
     expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
@@ -418,7 +446,14 @@ describe("preferences and localized resources", () => {
   });
   it("English agent/resource controls do not translate user content or leak source language", async () => {
     selectLocale("en");
-    await act(async () => render(<ResourceRules />));
+    await act(async () =>
+      render(
+        <>
+          <MemoryToolSettings />
+          <KnowledgeToolSettings />
+        </>,
+      ),
+    );
     expect(screen.getByText("Knowledge access")).toBeTruthy();
     expect(screen.getByText(/Skill text cannot grant access/)).toBeTruthy();
     expect(screen.getByText(/Global budget: 2048 UTF-8 bytes per turn/)).toBeTruthy();
@@ -432,7 +467,7 @@ describe("preferences and localized resources", () => {
 
 describe("discard and re-enter object editors", () => {
   it("reloads knowledge settings after discard so editing remains available", async () => {
-    await act(async () => render(<ResourceRules />));
+    await act(async () => render(<KnowledgeToolSettings />));
     fireEvent.click(screen.getByRole("checkbox", { name: "启用知识读取" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "放弃修改" })));
     expect(screen.getByRole("checkbox", { name: "启用知识读取" }).getAttribute("data-state")).toBe(

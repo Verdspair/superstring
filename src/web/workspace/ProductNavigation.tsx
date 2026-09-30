@@ -31,7 +31,7 @@ export function ProductNavigation({ onSearch }: { onSearch: () => void }) {
             variant="ghost"
             onClick={() => openSpace(space.id)}
             aria-current={active === space.id ? "page" : undefined}
-            className="relative h-16 w-full flex-col gap-1 text-[11px] font-medium aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-primary"
+            className="relative h-auto min-h-16 w-full flex-col gap-1 whitespace-normal break-words px-1 py-2 text-center text-[11px] font-medium aria-[current=page]:bg-sidebar-accent aria-[current=page]:text-primary"
           >
             {active === space.id && (
               <motion.span
