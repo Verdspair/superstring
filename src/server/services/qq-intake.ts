@@ -23,12 +23,7 @@ import * as schema from "../db/schema";
 // is reported through a callback instead of an exception.
 
 import { readBindingByConversation } from "../db/qq-binding-repository";
-import { purgeExpiredQqMembers } from "../db/qq-member-repository";
-import {
-  type RecordedObservation,
-  recordObservation,
-  sweepObservations,
-} from "../db/qq-observation-intake";
+import { type RecordedObservation, recordObservation } from "../db/qq-observation-intake";
 import { platformMessageWasSentByAssistant } from "../db/qq-send-repository";
 import { readQqConnectionConfig, readQqSettings } from "../db/qq-settings-repository";
 import type { Orm } from "../db/repositories";
@@ -50,7 +45,7 @@ export type QqIntakeEvent =
       reason: "not_a_message" | "unbound_conversation" | "switch_off" | "not_configured";
     }
   | { kind: "discarded"; reason: "duplicate_key_conflict" | "invalid_observation" }
-  | { kind: "cycle"; purged: number; due: number; enqueued: number }
+  | { kind: "cycle"; due: number; enqueued: number }
   | { kind: "connection"; state: OneBotConnectionState["phase"] }
   /** The per-message follow-up (P5m). Counts and verdicts only; never text, ids or prompts. */
   | {
@@ -174,16 +169,17 @@ export function recordInbound(
 }
 
 /**
- * One housekeeping pass: expire text, then queue whatever has reached its count.
+ * One housekeeping pass: queue whatever has reached its count.
  *
- * Order matters: sweeping first means a batch that has already expired is not counted
- * towards a conversation's threshold, so a trigger cannot fire on unreadable messages.
+ * Scheduling only — there is deliberately no physical purge here anymore. Expiry is
+ * "unreadable" at read time (`pendingObservationCount` compares against the same clock),
+ * so correctness never depended on the sweep, while the sweep DID delete rows from a
+ * conversation merely because the process happened to be running. The user's decision is
+ * that physical deletion is always the explicit manual cleanup (storage surface), so an
+ * expired batch is skipped by the schedule gates and left in place until asked for.
  */
-export function qqIntakeCycle(orm: Orm, now?: string): QqMemoryScheduleResult & { purged: number } {
-  const purged = sweepObservations(orm, now);
-  purgeExpiredQqMembers(orm, now);
-  const scheduled = scheduleQqMemory(orm, now);
-  return { purged, due: scheduled.due, enqueued: scheduled.enqueued };
+export function qqIntakeCycle(orm: Orm, now?: string): QqMemoryScheduleResult {
+  return scheduleQqMemory(orm, now);
 }
 
 export interface QqIntakeRuntimeOptions {
@@ -487,14 +483,9 @@ export class QqIntakeRuntime {
   }
 
   /** One housekeeping pass, reporting a fixed summary through `onEvent`. */
-  tick(now?: string): QqMemoryScheduleResult & { purged: number } {
+  tick(now?: string): QqMemoryScheduleResult {
     const result = qqIntakeCycle(this.#options.orm, now);
-    this.#options.onEvent?.({
-      kind: "cycle",
-      purged: result.purged,
-      due: result.due,
-      enqueued: result.enqueued,
-    });
+    this.#options.onEvent?.({ kind: "cycle", due: result.due, enqueued: result.enqueued });
     return result;
   }
 }

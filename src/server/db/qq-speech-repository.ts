@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { and, count, desc, eq, gt, inArray, lte, max } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { fail } from "../errors";
-import { QQ_OBSERVATION_RETENTION_DAYS, speechExpiresAt } from "../services/qq-retention";
+import { speechExpiresAt } from "../services/qq-retention";
 import { QQ_RHYTHM_HOUR_SECONDS } from "../services/qq-rhythm-contract";
 import {
   parseQqSpeechKind,
@@ -17,6 +17,7 @@ import {
   type QqSpeechKind,
 } from "../services/qq-speaking-contract";
 import type { QqConversationScope } from "./qq-observation-repository";
+import { readQqRetentionDays } from "./qq-settings-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -39,7 +40,8 @@ function conditions(scope: QqConversationScope) {
  * are kept too, in a separate row: judging "should I say something now" without being able to
  * see what this assistant just said means repeating itself or dropping its own thread. Pass
  * `text: null` for a sticker-only utterance; there are no words to store, and an empty string
- * is refused rather than written as a body.
+ * is refused rather than written as a body. The window defaults to the stored setting so a
+ * caller that does not track it still stamps the window in effect now.
  */
 export function recordQqSpeech(
   orm: Orm,
@@ -49,7 +51,7 @@ export function recordQqSpeech(
     spokeAtSeconds: number;
     text?: string | null;
   },
-  retentionDays: number = QQ_OBSERVATION_RETENTION_DAYS,
+  retentionDays: number = readQqRetentionDays(orm),
 ): QqSpeechRow {
   if (!Number.isInteger(input.spokeAtSeconds) || input.spokeAtSeconds < 0) {
     throw new TypeError("Invalid QQ speech record input");
@@ -96,12 +98,14 @@ export function recordQqSpeech(
  *
  * An inner join on purpose: an utterance with no words (a sticker) has no text row, and a
  * text row may expire before its speech row does. Both cases are simply absent from the list,
- * which is the honest answer — there is nothing to show.
+ * which is the honest answer — there is nothing to show. Expiry is "unreadable", so an
+ * expired body is absent here too, whether or not the physical cleanup has run; `now` is the
+ * read instant (tests pin it, production takes the current one).
  */
 export function ownSpeechSince(
   orm: Orm,
   scope: QqConversationScope,
-  input: { sinceSeconds: number; limit: number; includeSources?: boolean },
+  input: { sinceSeconds: number; limit: number; includeSources?: boolean; now?: string },
 ): Array<{ occurredAtSeconds: number; text: string; sources?: SourceRef[] }> {
   if (!Number.isInteger(input.sinceSeconds) || input.sinceSeconds < 0) {
     throw new TypeError("Invalid QQ own-speech query input");
@@ -118,7 +122,13 @@ export function ownSpeechSince(
     })
     .from(schema.qqSpeechLog)
     .innerJoin(schema.qqSpeechText, eq(schema.qqSpeechText.speechId, schema.qqSpeechLog.id))
-    .where(and(...conditions(scope), gt(schema.qqSpeechLog.spokeAtSeconds, input.sinceSeconds)))
+    .where(
+      and(
+        ...conditions(scope),
+        gt(schema.qqSpeechLog.spokeAtSeconds, input.sinceSeconds),
+        gt(schema.qqSpeechText.expiresAt, input.now ?? nowIso()),
+      ),
+    )
     .orderBy(desc(schema.qqSpeechLog.spokeAtSeconds), desc(schema.qqSpeechLog.id))
     .limit(input.limit)
     .all()

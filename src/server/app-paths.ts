@@ -295,6 +295,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0049_qq_output_reserve_caps.sql",
     ),
+    qqRetentionDaysMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0050_qq_retention_days.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

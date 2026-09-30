@@ -339,6 +339,9 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0049_qq_output_reserve_caps.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0050_qq_retention_days.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

@@ -107,7 +107,7 @@ function setup(
     agentRuntime: runtime,
     stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
     stickersEnabled: options.stickersEnabled,
-    policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600, retentionDays: 14 }),
+    policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600 }),
     now: () => new Date(clock.seconds * 1000).toISOString(),
   });
   const receive = (id: string, text = "hello") =>

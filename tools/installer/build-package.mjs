@@ -76,7 +76,7 @@ const manifest = {
   version,
   platform: "win32-x64",
   layoutVersion: 1,
-  businessSchemaVersion: 49,
+  businessSchemaVersion: 50,
   kind: "full-package",
   files,
   launcher: fileRecord(path.join(packageDir, "superstring.exe"), "superstring.exe"),

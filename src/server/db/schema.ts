@@ -639,6 +639,9 @@ export const qqSettings = sqliteTable(
     // 0038 (§11.1's 判断开口兴趣打分): which model judges, QQ-globally. NULL = follow each bound
     // assistant's conversation model, which is what every install did before this column existed.
     judgementModelName: text("judgement_model_name"),
+    // 0050: the unified QQ retention window (1..3650 days). Only NEW body writes use it; existing
+    // rows keep the expiry computed when they were written, and expiry only ever gates reads.
+    retentionDays: integer("retention_days").notNull().default(14),
   },
   (t) => [
     check("qq_settings_id", sql`${t.id} = 1`),

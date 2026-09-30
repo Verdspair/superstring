@@ -1,23 +1,39 @@
-// QQ conversation retention policy (ADR0018 / U03, decided 2026-09-22).
+// QQ conversation retention policy (ADR0018 / U03, decided 2026-09-22; window made
+// configurable later, migration 0050).
 //
 // The user's decision: QQ group and private message text is kept for two weeks by
 // default, and the received media cache is cleaned on a time basis too, following
-// the message it belongs to.
+// the message it belongs to. The window is now a stored setting; the default and its
+// bounds live in the shared contract (`QQ_RETENTION_*`), which the settings surface
+// and the database CHECK both read, so one rule has one definition.
 //
 // Two lifecycles must never be conflated, and this module is the single place that
 // says so:
 //   * the DEDUP IDENTITY of a message (`qq_events.event_key`) is permanent, so a
 //     re-delivered event is recognised and a memory keeps its provenance; and
 //   * the message TEXT expires, after which the message is simply no longer
-//     re-readable. An expired body does not invalidate a memory: only losing a
-//     source's identity or a turn does that.
+//     re-readable (expiry = unreadable, not "deleted": reads filter it out). An
+//     expired body does not invalidate a memory: only losing a source's identity
+//     or a turn does that.
+//
+// Expiry stamps are written once, at insert time, from the retention window in
+// effect then. Changing the setting later does not rewrite them, and no lifecycle
+// hook purges on its own — every physical deletion is the explicit manual cleanup.
 //
 // Media follows the same window. When media storage is added it must derive its
 // expiry from here rather than inventing a second retention rule — a media file
 // outliving its message would keep an expired message effectively readable.
 
-/** Default retention for QQ message text, in days (user decision). */
-export const QQ_OBSERVATION_RETENTION_DAYS = 14;
+import { QQ_RETENTION_DEFAULT_DAYS } from "../../shared/contracts/qq";
+
+/**
+ * Default retention for QQ message text, in days (user decision).
+ *
+ * Callers that have the stored setting in hand pass it explicitly; this default is what
+ * a caller without one falls back to, and it must stay identical to the migration's
+ * column default.
+ */
+export const QQ_OBSERVATION_RETENTION_DAYS = QQ_RETENTION_DEFAULT_DAYS;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Same fixed-width shape as `nowIso()` in db/repositories.ts. */

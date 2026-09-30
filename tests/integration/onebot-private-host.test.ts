@@ -133,7 +133,7 @@ function setup(
     onDiagnostic: options.onDiagnostic,
     enqueueCompression: options.enqueueCompression,
     externalActions: options.externalActions,
-    policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600, retentionDays: 14 }),
+    policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600 }),
     now: () => new Date(clock.seconds * 1000).toISOString(),
   });
   const receive = (id: string, text = "hello") =>
@@ -233,7 +233,7 @@ describe("OneBot private common host", () => {
       tasks,
       resolveSource: (source, owner) => permissions.sourceAccess(source, owner),
       stickers: { counts: ["confirmed"], isAvailable: () => false },
-      policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600, retentionDays: 14 }),
+      policy: () => ({ maxSteps: 12, deliveryTtlSeconds: 600 }),
       now: () => new Date(nowSeconds * 1000).toISOString(),
     });
     const scheduler = new WakeScheduler({

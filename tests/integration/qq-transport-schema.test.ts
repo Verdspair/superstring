@@ -61,6 +61,7 @@ const v46 = sql("0046_qq_context_compression.sql");
 const v47 = sql("0047_qq_context_limit_caps.sql");
 const v48 = sql("0048_agent_tasks.sql");
 const v49 = sql("0049_qq_output_reserve_caps.sql");
+const v50 = sql("0050_qq_retention_days.sql");
 const QQ_TABLES = ["qq_settings", "qq_owner_identities", "qq_bindings", "qq_events"] as const;
 const NOW = "2026-01-01T00:00:00.000000Z";
 
@@ -103,6 +104,8 @@ const GOLDEN: Record<string, Array<{ name: string; type: string; notnull: number
     { name: "id", type: "INTEGER", notnull: 1, pk: 1 },
     // 0038的QQ全局判断模型；可空，所以"跟随绑定助手的模型"与新行的状态一致。
     { name: "judgement_model_name", type: "TEXT", notnull: 0, pk: 0 },
+    // 0050的QQ统一保留期限：新写入的正文/行按它计算 expires，历史行不动。
+    { name: "retention_days", type: "INTEGER", notnull: 1, pk: 0 },
     { name: "revision", type: "INTEGER", notnull: 1, pk: 0 },
     { name: "token_ciphertext", type: "TEXT", notnull: 0, pk: 0 },
   ],
@@ -234,6 +237,7 @@ describe("0005 QQ transport schema", () => {
           endpoint: null,
           token_ciphertext: null,
           judgement_model_name: null,
+          retention_days: 14,
           revision: 1,
         },
       ]);
@@ -298,6 +302,7 @@ describe("0005 QQ transport schema", () => {
           v47,
           v48,
           v49,
+          v50,
         ].join("\n"),
       );
       for (const [table, golden] of Object.entries(GOLDEN)) {
@@ -364,6 +369,8 @@ describe("0005 QQ transport schema", () => {
           v47,
           v48,
           v49,
+          // 0050 给 qq_settings 加了 retention_days；与 0038 同理，比较列结构需要它。
+          v50,
         ].join("\n"),
       );
       for (const table of [qqSettings, qqOwnerIdentities, qqBindings, qqEvents]) {
@@ -423,6 +430,8 @@ describe("0005 QQ transport schema", () => {
           v29,
           v30,
           v31,
+          // 0050 的 retention_days CHECK 只依赖 qq_settings（0005），单独追加即可。
+          v50,
         ].join("\n"),
       );
       seedAgent(db);
@@ -431,6 +440,11 @@ describe("0005 QQ transport schema", () => {
       rejects(() => db.exec("INSERT INTO qq_settings (id) VALUES (2)"));
       rejects(() => db.exec("UPDATE qq_settings SET enabled = 2"));
       rejects(() => db.exec("UPDATE qq_settings SET revision = 0"));
+      rejects(() => db.exec("UPDATE qq_settings SET retention_days = 0"));
+      rejects(() => db.exec("UPDATE qq_settings SET retention_days = 3651"));
+      expect(db.query("SELECT retention_days FROM qq_settings").get()).toEqual({
+        retention_days: 14,
+      });
       rejects(() =>
         db.exec("INSERT INTO qq_owner_identities (id, account_id) VALUES (2, '10001')"),
       );
@@ -559,7 +573,7 @@ describe("0005 QQ transport schema", () => {
       const legacyTables = legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all());
       const sharedRow = old.query("SELECT model_name, revision FROM organization_settings").get();
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 49 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 50 });
       expect(legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all())).toEqual(
         legacyTables,
       );
@@ -658,6 +672,7 @@ describe("0005 QQ transport schema", () => {
           v47,
           v48,
           v49,
+          v50,
         ]),
       ).toThrow();
       expect(db.query("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()).toEqual(
@@ -666,7 +681,7 @@ describe("0005 QQ transport schema", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
       expect(db.query("SELECT count(*) AS n FROM agents").get()).toEqual({ n: 1 });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 49 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 50 });
       expect(db.query("SELECT count(*) AS n FROM qq_settings").get()).toEqual({ n: 1 });
     } finally {
       db.close();

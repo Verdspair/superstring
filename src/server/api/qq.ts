@@ -13,7 +13,7 @@
 // Sharing is accepted only for the explicitly configured owner's private conversation.
 
 import type { Database } from "bun:sqlite";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import {
   CreateQqBindingRequestSchema,
   CreateQqSchemeRequestSchema,
@@ -44,8 +44,17 @@ import {
   UpdateQqSettingsRequestSchema,
   UpdateQqStickerCollectionRequestSchema,
   UpdateQqStickerRequestSchema,
+  UpdateQqStorageSettingsRequestSchema,
   UpdateQqTransportRequestSchema,
 } from "../../shared/contracts/qq";
+import {
+  QqStorageCleanupRequestSchema,
+  QqStorageCleanupSelectionResponseSchema,
+  QqStorageCursorSchema,
+  QqStorageItemsQuerySchema,
+  QqStorageItemsResponseSchema,
+  QqStorageSettingsResponseSchema,
+} from "../../shared/contracts/qq-storage";
 import { botDiagnostics } from "../db/bot-diagnostics";
 import { readOrganizationSettings } from "../db/organization-repository";
 import {
@@ -76,8 +85,10 @@ import {
 } from "../db/qq-scheme-repository";
 import {
   readQqSettings,
+  readQqStorageSettings,
   readQqTransportConfigView,
   updateQqSettings,
+  updateQqStorageSettings,
   updateQqTransportConfig,
 } from "../db/qq-settings-repository";
 import {
@@ -96,7 +107,13 @@ import {
   setQqStickerEnabled,
   updateQqStickerCollection,
 } from "../db/qq-sticker-repository";
-import { qqStorageCleanup, qqStorageUsage } from "../db/qq-storage-repository";
+import {
+  qqStorageCleanup,
+  qqStorageCleanupExecute,
+  qqStorageCleanupPreview,
+  qqStorageItemsPage,
+  qqStorageUsage,
+} from "../db/qq-storage-repository";
 import { getAgentRow, newId, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
@@ -116,6 +133,7 @@ import { organiseQqMemoryNow } from "../services/qq-memory-enqueue";
 import { annotateQqSticker, type QqStickerAnnotator } from "../services/qq-sticker-annotation";
 import { importQqStickerCopy } from "../services/qq-sticker-import";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "../services/qq-sticker-store";
+import { managementGuard } from "./management";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
 /** Wire shape of the QQ-global scheme and its confirmed editable groups. */
@@ -273,6 +291,24 @@ function bodyBytes(value: Uint8Array): ArrayBuffer {
   return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
 }
 
+/**
+ * The storage items cursor: the previous page's last `(clock, id)`. A malformed cursor is a 422
+ * — it must never silently fall back to the first page (same discipline as the runtime
+ * observability storage routes).
+ */
+function storageCursor(value: string | undefined) {
+  if (value === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw validationFailed();
+  }
+  const cursor = QqStorageCursorSchema.safeParse(parsed);
+  if (!cursor.success) throw validationFailed();
+  return cursor.data;
+}
+
 /** The storage view's wire shape: snake_case on the wire, the module's names inside. */
 function toStorageResponse(usage: ReturnType<typeof qqStorageUsage>) {
   return QqStorageUsageResponseSchema.parse({
@@ -321,27 +357,120 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
   const stickerStore = () =>
     new QqStickerStore({ directory: options.stickerDirectory ?? DEFAULT_QQ_STICKER_DIRECTORY });
 
-  // §11.1's 存储与诊断: what the QQ side keeps (counts only, no invented caches) and the one
-  // cleanup entry, which removes expired rows on the windows the rest of the side already follows.
-  router.get("/storage", (c) =>
+  // §11.1's 存储与诊断: what the QQ side keeps (counts only, no invented caches) and the manual
+  // cleanup, which removes expired rows on the windows the rest of the side already follows.
+  // This whole surface is management-only, so it carries the same guard as the runtime storage
+  // routes (`managementGuard`: same-origin/localhost only, JSON writes, no-store responses).
+  router.get("/storage", managementGuard(), (c) =>
     c.json({
       ...toStorageResponse(qqStorageUsage(orm)),
       agent_runtime: botDiagnostics((orm as Orm & { $client: Database }).$client),
     }),
   );
 
-  router.post("/storage/cleanup", (c) => {
-    const removed = qqStorageCleanup(orm);
+  // The settings half: the retention window on the row every other QQ switch also uses, so a
+  // save carries the same revision (CAS) — two pages editing different fields must notice
+  // each other. `cleanup_mode` is fixed `manual`: expiry makes rows unreadable, deletion is
+  // always this surface's explicit action.
+  router.get("/storage/settings", managementGuard(), (c) =>
+    c.json(QqStorageSettingsResponseSchema.parse(readQqStorageSettings(orm))),
+  );
+
+  router.put("/storage/settings", managementGuard(), async (c) => {
+    const payload = parseBody(UpdateQqStorageSettingsRequestSchema, await readJsonBody(c.req.raw));
+    updateQqStorageSettings(orm, {
+      retentionDays: payload.retention_days,
+      expectedRevision: payload.expected_revision,
+    });
+    return c.json(QqStorageSettingsResponseSchema.parse(readQqStorageSettings(orm)));
+  });
+
+  // The metadata-only list: one category per request, filters and a keyset cursor. No response
+  // on this surface ever carries a body, an upstream reference, a path or a token.
+  router.get("/storage/items", managementGuard(), (c) => {
+    const query = QqStorageItemsQuerySchema.safeParse(c.req.query());
+    if (!query.success) throw validationFailed();
+    const page = qqStorageItemsPage(orm, {
+      category: query.data.category,
+      status: query.data.status,
+      peerId: query.data.peer_id,
+      kind: query.data.kind,
+      cursor: storageCursor(query.data.cursor),
+      limit: query.data.limit,
+    });
     return c.json(
-      QqStorageCleanupResponseSchema.parse({
-        observation_text: removed.observationText,
-        media_notes: removed.mediaNotes,
-        speech: removed.speech,
-        sends: removed.sends,
-        nicknames: removed.nicknames,
+      QqStorageItemsResponseSchema.parse({
+        items: page.items.map((item) => ({
+          id: item.id,
+          category: item.category,
+          account_id: item.accountId,
+          kind: item.kind,
+          peer_id: item.peerId,
+          agent_id: item.agentId,
+          created_at: item.createdAt,
+          expires_at: item.expiresAt,
+          expired: item.expired,
+          protected: item.protected,
+        })),
+        next_cursor: page.nextCursor,
+        total: page.total,
       }),
     );
   });
+
+  // Preview writes nothing; execute answers the same shape with the real `removed`. An empty
+  // body on execute is the legacy whole-surface cleanup (the five counts below), which old
+  // clients still call; preview has no legacy form, so it always requires a category body.
+  router.post("/storage/cleanup/preview", managementGuard(), (c) => storageCleanup(c, true));
+  router.post("/storage/cleanup", managementGuard(), (c) => storageCleanup(c, false));
+
+  async function storageCleanup(c: Context, dryRun: boolean) {
+    const raw = await c.req.raw.text();
+    if (raw.trim() === "") {
+      if (dryRun) throw validationFailed();
+      const removed = qqStorageCleanup(orm);
+      return c.json(
+        QqStorageCleanupResponseSchema.parse({
+          observation_text: removed.observationText,
+          media_notes: removed.mediaNotes,
+          speech: removed.speech,
+          sends: removed.sends,
+          nicknames: removed.nicknames,
+        }),
+      );
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw validationFailed();
+    }
+    const body = parseBody(QqStorageCleanupRequestSchema, parsed);
+    if (dryRun) {
+      const counts = qqStorageCleanupPreview(orm, { category: body.category, ids: body.ids });
+      return c.json(
+        QqStorageCleanupSelectionResponseSchema.parse({
+          category: body.category,
+          matched: counts.matched,
+          expired: counts.expired,
+          protected: counts.protected,
+          removable: counts.removable,
+          removed: 0,
+        }),
+      );
+    }
+    const result = qqStorageCleanupExecute(orm, { category: body.category, ids: body.ids });
+    return c.json(
+      QqStorageCleanupSelectionResponseSchema.parse({
+        category: body.category,
+        matched: result.counts.matched,
+        expired: result.counts.expired,
+        protected: result.counts.protected,
+        removable: result.counts.removable,
+        removed: result.removed,
+      }),
+    );
+  }
 
   router.get("/schemes", (c) =>
     c.json(readQqSchemes(orm).map((row) => toSchemeResponse(orm, row))),

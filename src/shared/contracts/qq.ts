@@ -313,6 +313,30 @@ export const QqStorageCleanupResponseSchema = z.strictObject({
 });
 export type QqStorageCleanupResponse = z.infer<typeof QqStorageCleanupResponseSchema>;
 
+/**
+ * The retention window's bounds and default (user decision). 14 days is the shipped default,
+ * 1..3650 the accepted range; the same numbers are a CHECK on `qq_settings.retention_days`, so
+ * a value the API accepts can never be refused by the database.
+ */
+export const QQ_RETENTION_DEFAULT_DAYS = 14;
+export const QQ_RETENTION_MIN_DAYS = 1;
+export const QQ_RETENTION_MAX_DAYS = 3650;
+
+/**
+ * Changing the retention window. The value applies to records written afterwards — already
+ * written expiry stamps are never rewritten (a shortening must not silently orphan what the
+ * user could still read), and physical deletion is always an explicit manual cleanup.
+ *
+ * `expected_revision` is the same counter the enable/account and transport saves carry: the
+ * window lives on the one `qq_settings` row, so two tabs editing different fields must still
+ * detect each other's saves.
+ */
+export const UpdateQqStorageSettingsRequestSchema = z.strictObject({
+  retention_days: z.number().int().min(QQ_RETENTION_MIN_DAYS).max(QQ_RETENTION_MAX_DAYS),
+  expected_revision: z.number().int().positive(),
+});
+export type UpdateQqStorageSettingsRequest = z.infer<typeof UpdateQqStorageSettingsRequestSchema>;
+
 export const QqStickerCollectionResponseSchema = z.strictObject({
   id: UuidSchema,
   name: nonBlankString(1, 200),

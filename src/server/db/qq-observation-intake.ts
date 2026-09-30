@@ -18,6 +18,7 @@ import type { QqObservation } from "../services/onebot-protocol";
 import { recordMediaSegment } from "./qq-media-repository";
 import { rememberQqMember } from "./qq-member-repository";
 import { purgeExpiredObservationText, storeObservationText } from "./qq-observation-repository";
+import { readQqRetentionDays } from "./qq-settings-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -178,6 +179,11 @@ function writeObservation(
     return { eventKey: observation.eventKey, recorded: false, hasText: false };
   }
 
+  // 一次观察只读一次保留窗口，本次写出的三处到期戳（昵称/媒体/正文）用同一个数：
+  // 同一批行若各自读设置，保存与写入交错时会得到两个窗口，"同一句话的各个部分同时到期"
+  // 这个不变量就不再成立。改动只影响之后写出的行，不会回改任何已存在的到期戳。
+  const retentionDays = readQqRetentionDays(orm);
+
   orm
     .insert(schema.qqEvents)
     .values({
@@ -201,16 +207,20 @@ function writeObservation(
   // Display-only metadata cannot invalidate a valid message; no nickname history is kept.
   const nickname = observation.speaker.displayName?.trim();
   if (speakerId !== null && nickname && [...nickname].length <= 64) {
-    rememberQqMember(orm, {
-      scope: {
-        accountId: observation.accountId,
-        conversationKind: observation.conversation.kind,
-        peerId: observation.conversation.peerId,
+    rememberQqMember(
+      orm,
+      {
+        scope: {
+          accountId: observation.accountId,
+          conversationKind: observation.conversation.kind,
+          peerId: observation.conversation.peerId,
+        },
+        userId: speakerId,
+        nickname,
+        seenAtSeconds: observation.occurredAtSeconds,
       },
-      userId: speakerId,
-      nickname,
-      seenAtSeconds: observation.occurredAtSeconds,
-    });
+      retentionDays,
+    );
   }
   // Preserve upstream references in the same transaction as the event identity.
   // A missing reference is unreadable, not an invented description or a file fetch.
@@ -224,28 +234,36 @@ function writeObservation(
       continue;
     const sourceRef = segment.file?.trim() || segment.url?.trim();
     if (!sourceRef) continue;
-    recordMediaSegment(orm, {
-      eventKey: observation.eventKey,
-      segmentIndex,
-      kind: segment.kind,
-      sourceRef,
-      occurredAtSeconds: observation.occurredAtSeconds,
-      // §7.1/§7.2's asymmetry is a fact of the delivery, so it is recorded with the segment:
-      // a group message only counts as addressed when it mentions this account, while a private
-      // message is addressed by construction.
-      addressed: observation.mentionsSelf || observation.conversation.kind === "private",
-    });
+    recordMediaSegment(
+      orm,
+      {
+        eventKey: observation.eventKey,
+        segmentIndex,
+        kind: segment.kind,
+        sourceRef,
+        occurredAtSeconds: observation.occurredAtSeconds,
+        // §7.1/§7.2's asymmetry is a fact of the delivery, so it is recorded with the segment:
+        // a group message only counts as addressed when it mentions this account, while a private
+        // message is addressed by construction.
+        addressed: observation.mentionsSelf || observation.conversation.kind === "private",
+      },
+      retentionDays,
+    );
   }
   const body = observation.text.trim();
   if (body.length === 0) {
     // Media-only (or otherwise textless): identity yes, body no.
     return { eventKey: observation.eventKey, recorded: true, hasText: false };
   }
-  storeObservationText(orm, {
-    eventKey: observation.eventKey,
-    body: observation.text,
-    occurredAtSeconds: observation.occurredAtSeconds,
-  });
+  storeObservationText(
+    orm,
+    {
+      eventKey: observation.eventKey,
+      body: observation.text,
+      occurredAtSeconds: observation.occurredAtSeconds,
+    },
+    retentionDays,
+  );
   return { eventKey: observation.eventKey, recorded: true, hasText: true };
 }
 

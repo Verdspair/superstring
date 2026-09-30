@@ -134,19 +134,26 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
         new Date(Date.now() + 14 * 86400_000).toISOString(),
         now,
       );
-    recordQqSend(handle.orm, {
-      scope: {
-        kind: "qq",
-        accountId: "10001",
-        conversationKind: "private",
-        peerId: "20002",
-        agentId: DEFAULT_AGENT_ID,
+    // This is a v38 database: it has no retention_days column (0050 adds it), so reading the
+    // stored window is not available here. Pass the old version's constant explicitly — the
+    // window that version would have stamped — instead of asking the new schema's setting.
+    recordQqSend(
+      handle.orm,
+      {
+        scope: {
+          kind: "qq",
+          accountId: "10001",
+          conversationKind: "private",
+          peerId: "20002",
+          agentId: DEFAULT_AGENT_ID,
+        },
+        kind: "direct_reply",
+        parts: [{ kind: "text", result: "confirmed", messageId: "platform-confirmed" }],
+        text: "已确认回复",
+        sentAtSeconds: seconds,
       },
-      kind: "direct_reply",
-      parts: [{ kind: "text", result: "confirmed", messageId: "platform-confirmed" }],
-      text: "已确认回复",
-      sentAtSeconds: seconds,
-    });
+      14,
+    );
 
     if (initiallyBoundToB) {
       // A has retained history, but B is the only live binding when this old DB is upgraded.

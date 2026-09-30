@@ -8,7 +8,8 @@
 import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { fail } from "../errors";
 import { parseQqMediaKind, type QqMediaKind } from "../services/qq-media-contract";
-import { mediaCacheExpiresAt, QQ_OBSERVATION_RETENTION_DAYS } from "../services/qq-retention";
+import { mediaCacheExpiresAt } from "../services/qq-retention";
+import { readQqRetentionDays } from "./qq-settings-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -35,6 +36,7 @@ function requireWholeSegment(input: MediaSegmentRef): void {
  * not fork into two readings. A position that is re-described as a *different* kind or a
  * different reference is refused rather than merged — the identity of a segment is what a
  * note hangs off, and letting it change would attach a description to the wrong thing.
+ * The window defaults to the stored setting (read per write).
  */
 export function recordMediaSegment(
   orm: Orm,
@@ -44,7 +46,7 @@ export function recordMediaSegment(
     /** Was the carrying message addressed to the assistant? Required: §7.2 retries only these. */
     addressed: boolean;
   },
-  retentionDays: number = QQ_OBSERVATION_RETENTION_DAYS,
+  retentionDays: number = readQqRetentionDays(orm),
 ): QqMediaNoteRow {
   requireWholeSegment(input);
   const kind = parseQqMediaKind(input.kind);

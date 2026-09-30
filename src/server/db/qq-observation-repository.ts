@@ -8,11 +8,8 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import { fail } from "../errors";
 import type { QqMemoryScope } from "../services/qq-binding-contract";
 import type { QqContextMessage } from "../services/qq-context-contract";
-import {
-  isObservationExpired,
-  observationExpiresAt,
-  QQ_OBSERVATION_RETENTION_DAYS,
-} from "../services/qq-retention";
+import { isObservationExpired, observationExpiresAt } from "../services/qq-retention";
+import { readQqRetentionDays } from "./qq-settings-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -47,6 +44,7 @@ function mapMessageRows(
     body: string | null;
     expiresAt: string | null;
   }>,
+  now: string,
   includeSources: boolean,
   includeMediaNotes = true,
 ): QqConversationMessageRow[] {
@@ -71,6 +69,9 @@ function mapMessageRows(
     .all();
   const byEvent = new Map<string, { notes: string[]; unread: number }>();
   for (const note of notes) {
+    // 到期即不可读：过期的媒体描述既不列出、不计入未读，也不能作为可复核来源暴露——
+    // 读取方（reusableMediaNote 等）本就拒绝过期行，这里让返回的形状与之一致。
+    if (isObservationExpired(note.expiresAt, now)) continue;
     const entry = byEvent.get(note.eventKey) ?? { notes: [], unread: 0 };
     if (note.note === null || note.noteModel === null) entry.unread++;
     else entry.notes.push(`[${note.noteModel}] ${note.note}`);
@@ -79,12 +80,16 @@ function mapMessageRows(
 
   return rows.map((row) => {
     const media = byEvent.get(row.eventKey) ?? { notes: [], unread: 0 };
+    // 正文到期后连同来源一起消失：来源存在的意义就是"可回读复核"，过期正文的 source 会指向
+    // 一个读不到的修订，留着它等于把过期文本的存在当作可利用的证据。
+    const textReadable =
+      row.body !== null && row.expiresAt !== null && !isObservationExpired(row.expiresAt, now);
     return {
       eventKey: row.eventKey,
       ...(includeSources
         ? {
             sources: [
-              ...(row.body !== null && row.expiresAt !== null
+              ...(textReadable && row.body !== null && row.expiresAt !== null
                 ? [
                     {
                       kind: "qq_observation",
@@ -95,7 +100,12 @@ function mapMessageRows(
                   ]
                 : []),
               ...notes
-                .filter((note) => note.eventKey === row.eventKey && note.note !== null)
+                .filter(
+                  (note) =>
+                    note.eventKey === row.eventKey &&
+                    note.note !== null &&
+                    !isObservationExpired(note.expiresAt, now),
+                )
                 .map((note) => ({
                   kind: "qq_media",
                   id: note.id,
@@ -108,7 +118,7 @@ function mapMessageRows(
       occurredAtSeconds: row.occurredAtSeconds,
       speaker: row.speakerKind === "anonymous" ? ("anonymous" as const) : ("member" as const),
       speakerId: row.speakerId ?? null,
-      text: row.body ?? null,
+      text: textReadable ? row.body : null,
       mediaNotes: media.notes,
       mediaUnread: media.unread,
     };
@@ -247,6 +257,8 @@ export function conversationMessagesSince(
     limit: number;
     includeSources?: boolean;
     includeMediaNotes?: boolean;
+    /** 读取时刻；到期判断（到期即不可读）以此为界，默认当下。 */
+    now?: string;
   },
 ): QqConversationMessageRow[] {
   if (!Number.isInteger(input.sinceSeconds) || input.sinceSeconds < 0) {
@@ -285,6 +297,7 @@ export function conversationMessagesSince(
   return mapMessageRows(
     orm,
     rows,
+    input.now ?? nowIso(),
     input.includeSources === true,
     input.includeMediaNotes !== false,
   );
@@ -368,11 +381,13 @@ export function observedQqConversations(orm: Orm): QqObservedConversation[] {
  * Store a message body against an existing dedup row. The dedup row must already
  * exist (a body without an identity could never be de-duplicated), and the body is
  * stamped with the sender's time so retention cannot be extended by late storage.
+ * The window defaults to the stored setting (read per write); callers that already
+ * resolved it — the intake reads it once per observation — pass it explicitly.
  */
 export function storeObservationText(
   orm: Orm,
   input: { eventKey: string; body: string; occurredAtSeconds: number },
-  retentionDays: number = QQ_OBSERVATION_RETENTION_DAYS,
+  retentionDays: number = readQqRetentionDays(orm),
 ): QqObservationTextRow {
   const event = orm
     .select()

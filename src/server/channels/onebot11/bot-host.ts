@@ -28,7 +28,7 @@ import {
   schemeReply,
   schemeRhythm,
 } from "../../db/qq-scheme-repository";
-import { readQqSettings } from "../../db/qq-settings-repository";
+import { readQqRetentionDays, readQqSettings } from "../../db/qq-settings-repository";
 import { newestMemberMessageSeconds } from "../../db/qq-speech-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import type { WakeRepository } from "../../db/wake-repository";
@@ -67,7 +67,6 @@ import { BotContextSource, type BotContextTarget } from "./context-source";
 export interface OneBotPolicy {
   maxSteps: number;
   deliveryTtlSeconds: number;
-  retentionDays: number;
 }
 export interface BotHostDiagnostic {
   runId?: string;
@@ -811,9 +810,10 @@ export class OneBotHost {
               if (!pending) throw new Error("OUTPUT_PREPARATION_MISSING");
               const plan = planQqPreparedReply(o.orm, pending, o.stickers);
               if (plan.kind !== "planned") throw new Error("OUTPUT_CHANGED_AT_COMMIT");
+              // 每次提交都现读保留窗口：改设置只影响之后写出的到期戳，已在队列里的行保持原样。
               const expiresAt = speechExpiresAt(
                 Math.floor(Date.parse(terminal.at) / 1000),
-                policy.retentionDays,
+                readQqRetentionDays(o.orm),
               );
               const participantId =
                 binding.kind === "group" && split

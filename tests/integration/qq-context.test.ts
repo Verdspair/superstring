@@ -39,6 +39,17 @@ import { estimateTokens } from "../../src/server/services/token-estimate";
 const MODEL = "qwen/qwen3-4b-2507";
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 
+/**
+ * A read instant in the fixtures' synthetic clock. These fixtures count seconds from the epoch,
+ * so a read that used the wall clock would see every 14-day window long expired — the reads take
+ * `now` explicitly so "unexpired fixture" means the same thing here as it does in production.
+ */
+function at(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  const base = d.toISOString().slice(0, 19);
+  return `${base}.${String(d.getUTCMilliseconds()).padStart(3, "0")}000Z`;
+}
+
 function setup() {
   const business = openBusinessDb();
   ensureDefaults(business.orm, MODEL);
@@ -325,7 +336,11 @@ describe("reading a conversation out of storage", () => {
       say(h.orm, "e1", 100, "大家好");
       say(h.orm, "e2", 200, "有人入群", { speakerKind: "system" });
       say(h.orm, "e3", 300, null, { speakerKind: "anonymous" });
-      const rows = conversationMessagesSince(h.orm, scope(), { sinceSeconds: 0, limit: 10 });
+      const rows = conversationMessagesSince(h.orm, scope(), {
+        sinceSeconds: 0,
+        limit: 10,
+        now: at(400),
+      });
       expect(rows.map((row) => [row.eventKey, row.speaker, row.speakerId])).toEqual([
         ["e3", "anonymous", null],
         ["e1", "member", "30001"],
@@ -356,7 +371,11 @@ describe("reading a conversation out of storage", () => {
         occurredAtSeconds: 100,
         addressed: true,
       });
-      const [row] = conversationMessagesSince(h.orm, scope(), { sinceSeconds: 0, limit: 10 });
+      const [row] = conversationMessagesSince(h.orm, scope(), {
+        sinceSeconds: 0,
+        limit: 10,
+        now: at(200),
+      });
       expect(row?.mediaNotes).toEqual([]);
       expect(row?.mediaUnread).toBe(2);
     } finally {
@@ -382,7 +401,11 @@ describe("reading a conversation out of storage", () => {
         note: "橘猫",
         noteModel: "vision-local",
       });
-      const [row] = conversationMessagesSince(h.orm, scope(), { sinceSeconds: 0, limit: 10 });
+      const [row] = conversationMessagesSince(h.orm, scope(), {
+        sinceSeconds: 0,
+        limit: 10,
+        now: at(200),
+      });
       expect(row?.text).toBe("看图");
       expect(row?.mediaNotes).toEqual(["[vision-local] 橘猫"]);
       expect(row?.mediaUnread).toBe(0);
@@ -398,12 +421,16 @@ describe("reading a conversation out of storage", () => {
       say(h.orm, "e2", 500, "新");
       say(h.orm, "e3", 600, "别的会话", { target: scope({ peerId: "29999" }) });
       expect(
-        conversationMessagesSince(h.orm, scope(), { sinceSeconds: 400, limit: 10 }).map(
-          (r) => r.text,
-        ),
+        conversationMessagesSince(h.orm, scope(), {
+          sinceSeconds: 400,
+          limit: 10,
+          now: at(700),
+        }).map((r) => r.text),
       ).toEqual(["新"]);
       expect(
-        conversationMessagesSince(h.orm, scope(), { sinceSeconds: 0, limit: 1 }).map((r) => r.text),
+        conversationMessagesSince(h.orm, scope(), { sinceSeconds: 0, limit: 1, now: at(700) }).map(
+          (r) => r.text,
+        ),
       ).toEqual(["新"]);
       expect(() =>
         conversationMessagesSince(h.orm, scope(), { sinceSeconds: -1, limit: 5 }),
@@ -450,7 +477,7 @@ describe("reading a conversation out of storage", () => {
         spokeAtSeconds: 300,
         text: "第二句",
       });
-      const rows = ownSpeechSince(h.orm, scope(), { sinceSeconds: 0, limit: 10 });
+      const rows = ownSpeechSince(h.orm, scope(), { sinceSeconds: 0, limit: 10, now: at(400) });
       expect(rows).toEqual([
         { occurredAtSeconds: 300, text: "第二句" },
         { occurredAtSeconds: 100, text: "第一句" },
@@ -507,7 +534,7 @@ describe("reading a conversation out of storage", () => {
           },
         ],
       });
-      expect(ownSpeechSince(h.orm, scope(), { sinceSeconds: 0, limit: 10 })).toEqual([
+      expect(ownSpeechSince(h.orm, scope(), { sinceSeconds: 0, limit: 10, now: at(500) })).toEqual([
         { occurredAtSeconds: 100, text: "接一句" },
       ]);
     } finally {
@@ -573,6 +600,7 @@ describe("a whole conversation, end to end", () => {
         messages: conversationMessagesSince(h.orm, scope(), {
           sinceSeconds: now - 60 * MINUTE,
           limit: 20,
+          now: at(now),
         }).map((row) => ({
           occurredAtSeconds: row.occurredAtSeconds,
           speaker: row.speaker,
@@ -584,6 +612,7 @@ describe("a whole conversation, end to end", () => {
         ownSpeech: ownSpeechSince(h.orm, scope(), {
           sinceSeconds: now - 60 * MINUTE,
           limit: 20,
+          now: at(now),
         }).map((row) => ({ occurredAtSeconds: row.occurredAtSeconds, text: row.text })),
       });
       const selection = qqSelectContext({

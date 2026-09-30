@@ -24,9 +24,10 @@ import {
   qqSendOutcomeEffect,
   qqSendSummary,
 } from "../services/qq-output-contract";
-import { QQ_OBSERVATION_RETENTION_DAYS, speechExpiresAt } from "../services/qq-retention";
+import { speechExpiresAt } from "../services/qq-retention";
 import { parseQqSpeechKind, type QqSpeechKind } from "../services/qq-speaking-contract";
 import type { QqConversationScope } from "./qq-observation-repository";
+import { readQqRetentionDays } from "./qq-settings-repository";
 import { recordQqSpeech } from "./qq-speech-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
@@ -85,12 +86,13 @@ export interface QqSendRecord {
  * A failed or unknown attempt is written down but does NOT create a speech record: §8.2
  * states entering the rule for a successful send only, and whether a failure consumes
  * that slot is U13. The return value says "pending_decision" instead of quietly
- * answering it.
+ * answering it. The window defaults to the stored setting (read per write), so a caller
+ * that passes nothing still stamps the setting in effect now.
  */
 export function recordQqSend(
   orm: Orm,
   input: QqSendInput,
-  retentionDays: number = QQ_OBSERVATION_RETENTION_DAYS,
+  retentionDays: number = readQqRetentionDays(orm),
   transactionDb?: Database,
 ): QqSendRecord {
   const kind = parseQqSpeechKind(input.kind);

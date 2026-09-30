@@ -20,7 +20,6 @@ import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
-import { QQ_OBSERVATION_RETENTION_DAYS } from "../../services/qq-retention";
 import { type QqSendPort, qqStickerFileReference } from "../../services/qq-send-transport";
 import { qqStickerSelectionForScheme } from "../../services/qq-sticker-candidates";
 import { qqStickerUsable } from "../../services/qq-sticker-contract";
@@ -32,7 +31,6 @@ import { OneBotHost } from "./bot-host";
 export interface BotConversationPolicy {
   maxSteps: number;
   deliveryTtlSeconds: number;
-  retentionDays: number;
   retryDelayMs: number;
   maxAttempts: number;
   /** 跨会话同时最多几条唤醒（会话内始终串行，由数据库租约保证）。 */
@@ -44,7 +42,6 @@ export interface BotConversationPolicy {
 export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
   maxSteps: 16,
   deliveryTtlSeconds: 120,
-  retentionDays: QQ_OBSERVATION_RETENTION_DAYS,
   retryDelayMs: 15_000,
   maxAttempts: 3,
   // 0.4.0 起默认允许跨会话并发：一条慢请求不再堵住别的群；模型调用仍由

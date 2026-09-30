@@ -477,7 +477,7 @@ describe("handling one inbound message", () => {
 });
 
 describe("the housekeeping pass", () => {
-  it("sweeps expired text before counting, so a trigger cannot fire on unreadable messages", () => {
+  it("leaves expired text in place — deletion is manual — and does not count it", () => {
     const h = setup({ enabled: true });
     try {
       bind(h, { memoryBatchSize: 2 });
@@ -490,12 +490,44 @@ describe("the housekeeping pass", () => {
       };
       recordInbound(h.orm, expired, { accountId: "10001" });
       recordInbound(h.orm, messageResult("新消息", -31), { accountId: "10001" });
-      // Two rows exist, but only one has readable text, so the count of 2 is not met.
+      // Only one row is still readable, so the count of 2 is not met — and the cycle itself
+      // deleted nothing: every physical deletion is the explicit manual cleanup.
       const result = qqIntakeCycle(h.orm);
-      expect(result.purged).toBe(1);
-      expect(result.due).toBe(0);
-      expect(result.enqueued).toBe(0);
+      expect(result).toEqual({ due: 0, enqueued: 0 });
+      expect(pendingObservationCount(h.orm, qqScopeOf(GROUP))).toBe(1);
+      expect(h.orm.select().from(schema.qqObservationText).all()).toHaveLength(2);
       expect(h.orm.select().from(schema.memoryJobs).all()).toEqual([]);
+    } finally {
+      closeSetup(h);
+    }
+  });
+
+  it("purges nothing while the conversation is paused or the runtime is disconnected", () => {
+    const h = setup({ enabled: true });
+    try {
+      // Paused: it keeps observing (the intake rule), and its expired rows stay put.
+      bind(h, { memoryBatchSize: 2, paused: true });
+      const old = messageResult("过期消息", -30);
+      if (old.kind !== "message") throw new Error("expected a message result");
+      const expired: QqMessageResult = {
+        kind: "message",
+        observation: { ...old.observation, occurredAtSeconds: NOW_SECONDS - 20 * 24 * 3600 },
+      };
+      recordInbound(h.orm, expired, { accountId: "10001" });
+      // A runtime that never connected (no start, no socket): its tick schedules only.
+      const events: QqIntakeEvent[] = [];
+      const runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        onEvent: (event) => events.push(event),
+      });
+      expect(runtime.tick()).toEqual({ due: 0, enqueued: 0 });
+      expect(events).toEqual([{ kind: "cycle", due: 0, enqueued: 0 }]);
+      // Text AND nickname rows survive; nothing is reclaimed in the background.
+      expect(h.orm.select().from(schema.qqObservationText).all()).toHaveLength(1);
+      expect(h.orm.select().from(schema.qqMembers).all()).toHaveLength(1);
     } finally {
       closeSetup(h);
     }
@@ -508,7 +540,7 @@ describe("the housekeeping pass", () => {
       recordInbound(h.orm, messageResult("第一条", -40), { accountId: "10001" });
       recordInbound(h.orm, messageResult("第二条", -41), { accountId: "10001" });
       const result = qqIntakeCycle(h.orm);
-      expect(result).toEqual({ purged: 0, due: 1, enqueued: 1 });
+      expect(result).toEqual({ due: 1, enqueued: 1 });
       const job = h.orm.select().from(schema.memoryJobs).get();
       expect(job?.kind).toBe("manual");
       expect(
@@ -796,7 +828,7 @@ describe("the assembled runtime over an injected transport", () => {
       expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(1);
       expect(events).toContainEqual({ kind: "recorded", recorded: true, hasText: true });
 
-      expect(runtime.tick()).toEqual({ purged: 0, due: 1, enqueued: 1 });
+      expect(runtime.tick()).toEqual({ due: 1, enqueued: 1 });
       expect(events.filter((event) => event.kind === "cycle")).toHaveLength(1);
       runtime.stop();
       expect(socket.terminations).toBe(1);

@@ -215,7 +215,7 @@ describe("member labels in the observation chain", () => {
       h.close();
     }
   });
-  it("paused intake still records names; cleanup runs without scheduling a model", () => {
+  it("paused intake still records names; the cycle neither schedules nor purges", () => {
     const h = setup();
     try {
       updateQqSettings(h.orm, { enabled: true, accountId: scope.accountId, expectedRevision: 1 });
@@ -264,8 +264,11 @@ describe("member labels in the observation chain", () => {
         ],
       });
       expect(sections.find((s) => s.origin === "timeline")?.body).toContain("昵称(20002)");
+      // The paused binding schedules nothing — and the same pass deletes nothing: expiry makes
+      // the name unreadable, while physical deletion waits for the manual cleanup.
       expect(qqIntakeCycle(h.orm, memberExpiresAt(at)).enqueued).toBe(0);
-      expect(h.orm.select().from(schema.qqMembers).all()).toHaveLength(0);
+      expect(qqMemberLabels(h.orm, scope, memberExpiresAt(at)).size).toBe(0);
+      expect(h.orm.select().from(schema.qqMembers).all()).toHaveLength(1);
     } finally {
       h.close();
     }

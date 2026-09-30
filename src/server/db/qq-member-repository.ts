@@ -15,7 +15,8 @@
 
 import { and, eq, gt, lte } from "drizzle-orm";
 import { fail } from "../errors";
-import { memberExpiresAt, QQ_OBSERVATION_RETENTION_DAYS } from "../services/qq-retention";
+import { memberExpiresAt } from "../services/qq-retention";
+import { readQqRetentionDays } from "./qq-settings-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -62,12 +63,13 @@ function validate(scope: QqMemberScope, userId: string, nickname: string, at: nu
  * Record or refresh one member's display name.
  *
  * Only a strictly newer observation can update the name and expiry. Older or same-second
- * deliveries cannot establish that a rename happened and leave the row unchanged.
+ * deliveries cannot establish that a rename happened and leave the row unchanged. The
+ * window defaults to the stored setting (read per write).
  */
 export function rememberQqMember(
   orm: Orm,
   input: QqMemberInput,
-  retentionDays: number = QQ_OBSERVATION_RETENTION_DAYS,
+  retentionDays: number = readQqRetentionDays(orm),
 ): QqMemberRow {
   const nickname = validate(input.scope, input.userId, input.nickname, input.seenAtSeconds);
   const key = and(

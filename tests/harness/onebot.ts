@@ -330,7 +330,7 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       agentRuntime: runtime,
       gateway,
       stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
-      policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600, retentionDays: 14 }),
+      policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600 }),
       now,
       ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
       // 与运行时同构：媒体工具按方案取提示词与帧参数；合成适配器只替换视觉模型本身。

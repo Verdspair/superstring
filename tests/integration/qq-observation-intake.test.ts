@@ -11,17 +11,20 @@ import {
   observationText,
   pendingObservationCount,
 } from "../../src/server/db/qq-observation-repository";
-import { createSession, ensureDefaults, nowIso } from "../../src/server/db/repositories";
+import { createSession, ensureDefaults } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { QqObservation } from "../../src/server/services/onebot-protocol";
 import type { QqMemoryScope } from "../../src/server/services/qq-binding-contract";
+import { qqIntakeCycle } from "../../src/server/services/qq-intake";
 import { enqueueQqMemory } from "../../src/server/services/qq-memory-enqueue";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const MODEL = "qwen/qwen3-4b-2507";
 const NOW_MS = Date.parse("2026-09-22T12:00:00.000Z");
 const NOW_SECONDS = Math.floor(NOW_MS / 1000);
+/** The fixed instant in the fixed-width shape `nowIso()` writes, so reads simulate it. */
+const SIMULATED_NOW = `${new Date(NOW_MS).toISOString().slice(0, 19)}.000000Z`;
 
 const GROUP_A: QqMemoryScope & { kind: "qq" } = {
   kind: "qq",
@@ -65,8 +68,8 @@ describe("recording an observation", () => {
       expect(event?.agentId).toBe(AGENT_ID);
       expect(event?.speakerKind).toBe("member");
       expect(event?.speakerId).toBe("30001");
-      expect(observationText(h.orm, ["evt_1"], nowIso()).get("evt_1")).toBe("群友说喜欢猫");
-      expect(pendingObservationCount(h.orm, GROUP_A, nowIso())).toBe(1);
+      expect(observationText(h.orm, ["evt_1"], SIMULATED_NOW).get("evt_1")).toBe("群友说喜欢猫");
+      expect(pendingObservationCount(h.orm, GROUP_A, SIMULATED_NOW)).toBe(1);
     } finally {
       h.business.close();
     }
@@ -97,7 +100,7 @@ describe("recording an observation", () => {
           note: null,
         },
       ]);
-      expect(pendingObservationCount(h.orm, GROUP_A, nowIso())).toBe(0);
+      expect(pendingObservationCount(h.orm, GROUP_A, SIMULATED_NOW)).toBe(0);
       expect(
         enqueueQqMemory(h.orm, { scope: GROUP_A, requestKey: "req_media", limit: 10 }),
       ).toBeNull();
@@ -237,7 +240,7 @@ describe("recording an observation", () => {
         ["system", null],
       ]);
       // Both still carry text, so both are readable observations.
-      expect(pendingObservationCount(h.orm, GROUP_A, nowIso())).toBe(2);
+      expect(pendingObservationCount(h.orm, GROUP_A, SIMULATED_NOW)).toBe(2);
     } finally {
       h.business.close();
     }
@@ -258,8 +261,8 @@ describe("recording an observation", () => {
       expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(2);
       // Each group's memory sees only its own observation.
       const groupB = { ...GROUP_A, peerId: "20002" } as typeof GROUP_A;
-      expect(pendingObservationCount(h.orm, GROUP_A, nowIso())).toBe(1);
-      expect(pendingObservationCount(h.orm, groupB, nowIso())).toBe(1);
+      expect(pendingObservationCount(h.orm, GROUP_A, SIMULATED_NOW)).toBe(1);
+      expect(pendingObservationCount(h.orm, groupB, SIMULATED_NOW)).toBe(1);
     } finally {
       h.business.close();
     }
@@ -276,7 +279,7 @@ describe("retention sweep through the intake", () => {
         AGENT_ID,
       );
       recordObservation(h.orm, observation({ eventKey: "evt_new" }), AGENT_ID);
-      expect(sweepObservations(h.orm, nowIso())).toBe(1);
+      expect(sweepObservations(h.orm, SIMULATED_NOW)).toBe(1);
       expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(2);
       expect(
         h.orm
@@ -286,7 +289,7 @@ describe("retention sweep through the intake", () => {
           .map((row) => row.eventKey),
       ).toEqual(["evt_new"]);
       // Only the readable one is offered.
-      expect(pendingObservationCount(h.orm, GROUP_A, nowIso())).toBe(1);
+      expect(pendingObservationCount(h.orm, GROUP_A, SIMULATED_NOW)).toBe(1);
     } finally {
       h.business.close();
     }
@@ -296,8 +299,35 @@ describe("retention sweep through the intake", () => {
     const h = setup();
     try {
       recordObservation(h.orm, observation(), AGENT_ID);
-      expect(sweepObservations(h.orm, nowIso())).toBe(0);
+      expect(sweepObservations(h.orm, SIMULATED_NOW)).toBe(0);
       expect(h.orm.select().from(schema.qqObservationText).all()).toHaveLength(1);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("a manual tick schedules only, and an expired body simply reads as no body", () => {
+    const h = setup();
+    try {
+      recordObservation(
+        h.orm,
+        observation({ eventKey: "evt_expired", occurredAtSeconds: NOW_SECONDS - 15 * 24 * 3600 }),
+        AGENT_ID,
+      );
+      recordObservation(h.orm, observation({ eventKey: "evt_fresh" }), AGENT_ID);
+
+      // Scheduling only: nothing is due (no binding carries a batch count), and the expired row
+      // is physically left alone — the storage surface's manual cleanup is the only purge.
+      expect(qqIntakeCycle(h.orm, SIMULATED_NOW)).toEqual({ due: 0, enqueued: 0 });
+      expect(h.orm.select().from(schema.qqObservationText).all()).toHaveLength(2);
+      expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(2);
+
+      // Expiry is a read-time fact: the expired body is neither returned nor offered, but the
+      // row and the identity it belongs to are still there.
+      const readable = observationText(h.orm, ["evt_expired", "evt_fresh"], SIMULATED_NOW);
+      expect(readable.size).toBe(1);
+      expect(readable.get("evt_fresh")).toBe("群友说喜欢猫");
+      expect(pendingObservationCount(h.orm, GROUP_A, SIMULATED_NOW)).toBe(1);
     } finally {
       h.business.close();
     }

@@ -5,6 +5,7 @@
 // single account whose identity is kept per account rather than per session.
 
 import { eq } from "drizzle-orm";
+import { QQ_RETENTION_MAX_DAYS, QQ_RETENTION_MIN_DAYS } from "../../shared/contracts/qq";
 import { fail } from "../errors";
 import { DEFAULT_TRANSPORT_KEY_PATH, openSecret, sealSecret, transportSecret } from "../secret-box";
 import type { Orm } from "./repositories";
@@ -55,7 +56,70 @@ export function updateQqSettings(orm: Orm, input: QqSettingsUpdate): QqSettingsR
   return row;
 }
 
-/** What a settings surface is allowed to see: the token itself is never returned. */
+/** The stored retention window, in days, read on every new write so each row stamps the window in effect then. */
+export function readQqRetentionDays(orm: Orm): number {
+  return readQqSettings(orm).retentionDays;
+}
+
+/**
+ * The storage surface's view of the one settings row (shared with the transport and the
+ * enable/account switches — one row, one revision). `cleanup_mode` is fixed: expiry makes
+ * records unreadable but never deletes them, so the only physical purge is the manual
+ * cleanup, and the surface should not have to be told that out of band.
+ */
+export interface QqStorageSettings {
+  revision: number;
+  retention_days: number;
+  cleanup_mode: "manual";
+}
+
+export function readQqStorageSettings(orm: Orm): QqStorageSettings {
+  const row = readQqSettings(orm);
+  return { revision: row.revision, retention_days: row.retentionDays, cleanup_mode: "manual" };
+}
+
+export interface QqStorageSettingsUpdate {
+  /** New window in days, 1..3650, applied to records written after the save. */
+  retentionDays: number;
+  expectedRevision: number;
+}
+
+/**
+ * Compare-and-swap save of the retention window, on the same revision as every other
+ * `qq_settings` field. Rejects an out-of-range value before touching the row, so an
+ * accepted save can never be refused by the table CHECK; a save that changes nothing
+ * returns the current row without bumping the revision.
+ */
+export function updateQqStorageSettings(
+  orm: Orm,
+  input: QqStorageSettingsUpdate,
+): QqStorageSettings {
+  if (
+    !Number.isInteger(input.retentionDays) ||
+    input.retentionDays < QQ_RETENTION_MIN_DAYS ||
+    input.retentionDays > QQ_RETENTION_MAX_DAYS
+  ) {
+    fail(
+      "MEMORY_SOURCE_INVALID",
+      `保留天数必须是${QQ_RETENTION_MIN_DAYS}到${QQ_RETENTION_MAX_DAYS}之间的整数`,
+    );
+  }
+  const current = readQqSettings(orm);
+  if (current.revision !== input.expectedRevision) {
+    fail("MEMORY_STATE_CONFLICT", "设置已变化，请重新加载后保存");
+  }
+  if (current.retentionDays === input.retentionDays) {
+    return readQqStorageSettings(orm);
+  }
+  const row = orm
+    .update(schema.qqSettings)
+    .set({ retentionDays: input.retentionDays, revision: current.revision + 1 })
+    .where(eq(schema.qqSettings.id, 1))
+    .returning()
+    .get();
+  if (!row) fail("DATABASE_UNAVAILABLE", "数据服务暂不可用，请检查数据库", 503);
+  return { revision: row.revision, retention_days: row.retentionDays, cleanup_mode: "manual" };
+}
 export interface QqTransportConfigView {
   endpoint: string | null;
   /** True when a token is stored AND still decrypts with the current key. */

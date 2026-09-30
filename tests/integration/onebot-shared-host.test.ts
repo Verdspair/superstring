@@ -11,12 +11,17 @@ import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { createQqScheme, updateQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { recordQqSend } from "../../src/server/db/qq-send-repository";
-import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
+import {
+  readQqSettings,
+  updateQqSettings,
+  updateQqStorageSettings,
+} from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import { speechExpiresAt } from "../../src/server/services/qq-retention";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 
@@ -116,7 +121,7 @@ function setup(
     gateway,
     stickers: { counts: ["confirmed"], isAvailable: () => false },
     stickersEnabled: options.stickersEnabled,
-    policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600, retentionDays: 14 }),
+    policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600 }),
     now,
   });
   const receive = (
@@ -823,6 +828,19 @@ describe("Agent-directed recovery", () => {
     await expect(h.activate()).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
     expect(h.outbox.list({})).toHaveLength(0);
     expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
+  });
+  it("stamps the retention window saved at commit time into the planned intent", async () => {
+    const h = setup({ complete: async () => generate(["20002"]) });
+    // 30 days, saved before the commit: the commit point reads the setting when it runs, and
+    // the intent's expiry (the row every later read is bounded by) must carry that window.
+    updateQqStorageSettings(h.orm, {
+      retentionDays: 30,
+      expectedRevision: readQqSettings(h.orm).revision,
+    });
+    h.receive("1", "20002", true);
+    expect((await h.activate("direct_reply")).status).toBe("completed");
+    const intent = h.outbox.row(h.outbox.list({})[0]!.id)!;
+    expect(intent.expires_at).toBe(speechExpiresAt(time, 30));
   });
 });
 
