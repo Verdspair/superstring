@@ -1,4 +1,3 @@
-// P7-d 接入与运行页面的行为用例：读写形状、保真与关键操作。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpStatusResponse } from "../../src/shared/contracts/mcp";
@@ -6,6 +5,8 @@ import type { PermissionsResponse } from "../../src/shared/contracts/permissions
 import type { SkillCatalogResponse, SkillDetailResponse } from "../../src/shared/contracts/skill";
 import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
+import { i18n } from "../../src/web/i18n/runtime";
+import { ConnectionWorkspace } from "../../src/web/screens/connections/ConnectionWorkspace";
 import { McpPanel } from "../../src/web/screens/connections/mcp-panel";
 import { SkillsPanel } from "../../src/web/screens/connections/skills-panel";
 import { ToolGrantsPanel } from "../../src/web/screens/connections/tool-grants-panel";
@@ -131,6 +132,63 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+});
+
+// 接入工作区整屏渲染：面板行为在各自 describe 里按组件验证，这里只提供读取答案。
+async function renderWorkspace(
+  settingsRoute: "mcp-servers" | "skill-catalog" | "tool-grants" | "basic",
+  settingsView: "workspace" | "operating-mode" = "workspace",
+) {
+  const fake = {
+    ...api,
+    getQqSettings: vi.fn().mockResolvedValue({
+      enabled: false,
+      account_id: null,
+      judgement_model_name: null,
+      transport: { endpoint: null, has_token: false },
+      revision: 1,
+    }),
+    getQqOwner: vi
+      .fn()
+      .mockResolvedValue({ configured: false, account_id: null, peer_id: null, revision: null }),
+    getQqStatus: vi.fn().mockResolvedValue({ connection: { phase: "idle", reason: null } }),
+    listQqConversations: vi.fn().mockResolvedValue([]),
+    listQqBindings: vi.fn().mockResolvedValue([]),
+    listQqSchemes: vi.fn().mockResolvedValue([]),
+    getMcpServers: vi.fn().mockResolvedValue(mcpStatus),
+    getSkills: vi.fn().mockResolvedValue({ skills: [], problems: [] }),
+  } as unknown as typeof api;
+  store.getState().resetForTests(fake);
+  store.setState({ page: "settings", settingsView, settingsRoute });
+  render(<ConnectionWorkspace />);
+  await act(async () => {});
+  return fake;
+}
+
+describe("connection workspace entry", () => {
+  it.each([
+    ["mcp-servers", "connections.mcp.title"],
+    ["skill-catalog", "connections.skills.title"],
+    ["tool-grants", "connections.grants.title"],
+  ] as const)("renders the %s route as its own selected tab", async (route, tabKey) => {
+    await renderWorkspace(route);
+    expect(screen.getByRole("tab", { selected: true }).textContent).toBe(i18n.t(tabKey));
+  });
+
+  it("defaults to MCP services and never loads or fakes the QQ connection", async () => {
+    const fake = await renderWorkspace("basic", "operating-mode");
+    expect(screen.getByRole("tab", { selected: true }).textContent).toBe(
+      i18n.t("connections.mcp.title"),
+    );
+    // 接入只剩外置扩展：没有 QQ 连接 Tab、没有绑定列表，也不发起 QQ 读取。
+    expect(screen.queryByRole("tab", { name: i18n.t("connections.transportPage.tab") })).toBeNull();
+    expect(
+      screen.queryByRole("tab", { name: i18n.t("connections.conversationBindings") }),
+    ).toBeNull();
+    expect(fake.getQqStatus).not.toHaveBeenCalled();
+    expect(fake.getQqSettings).not.toHaveBeenCalled();
+    expect(fake.listQqBindings).not.toHaveBeenCalled();
+  });
 });
 
 describe("MCP panel", () => {
@@ -547,7 +605,7 @@ describe("tool grants", () => {
     const save = vi.fn().mockResolvedValue({ revision: "pr-2", policy: permissions.policy });
     await renderWith(
       { getPermissions: vi.fn().mockResolvedValue(permissions), savePermissions: save },
-      <ToolGrantsPanel />,
+      <ToolGrantsPanel scope="external" />,
     );
     expect(screen.getByText("MCP 工具")).toBeTruthy();
     expect(screen.getByText("技能脚本")).toBeTruthy();
@@ -572,7 +630,7 @@ describe("tool grants", () => {
     const save = vi.fn().mockRejectedValue(new Error("权限配置已变化，请重新读取后保存"));
     await renderWith(
       { getPermissions: vi.fn().mockResolvedValue(permissions), savePermissions: save },
-      <ToolGrantsPanel />,
+      <ToolGrantsPanel scope="external" />,
     );
     fireEvent.click(screen.getByLabelText("持续批准 mcp.echo.read"));
     fireEvent.click(screen.getByRole("button", { name: "保存授权" }));

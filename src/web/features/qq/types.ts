@@ -268,10 +268,18 @@ export interface QqSchemeState {
   qqSchemesLoading: boolean;
   qqSchemeSaving: boolean;
   qqSchemesReadId: number;
+  /** 变更操作的代次：旧操作晚到的响应/错误/finally 据此判定自己是否已被替换。 */
+  qqSchemeOperationId: number;
+  /** 使用量读取的单调序号：旧失败或旧结果不得覆盖更新的读取。 */
+  qqSchemeUsageReadId: number;
   qqSchemeEditor: QqSchemeEditor | null;
   /** How many conversations a delete would affect; read before the confirm, not after. */
   qqSchemeUsage: { readonly schemeId: string; readonly bindings: number } | null;
+  /** 使用量读取失败的原因；显式刷新会重读使用量，界面据此给出可重试的说明。 */
+  qqSchemeUsageError: string | null;
   loadQqSchemes: () => Promise<void>;
+  /** 显式刷新保存基线：重读目录并按字段合并草稿（含非法原值），推进未改字段与 revision，不自动重试保存。 */
+  refreshQqScheme: () => Promise<boolean>;
   createQqScheme: (name: string) => Promise<boolean>;
   selectQqScheme: (id: string) => void;
   patchQqScheme: (patch: Partial<Omit<QqSchemeEditor, "source">>) => void;
@@ -304,8 +312,11 @@ export const qqSchemeInitial = {
   qqSchemesLoading: false,
   qqSchemeSaving: false,
   qqSchemesReadId: 0,
+  qqSchemeOperationId: 0,
+  qqSchemeUsageReadId: 0,
   qqSchemeEditor: null as QqSchemeEditor | null,
   qqSchemeUsage: null as { readonly schemeId: string; readonly bindings: number } | null,
+  qqSchemeUsageError: null as string | null,
 };
 
 // 第三方App接入 (§11.1, P5q): the connection, the conversations the intake has actually seen, and
@@ -318,6 +329,12 @@ export interface QqAccessState {
   qqBindings: QqBindingResponse[];
   /** Whether the bindings list has been read at least once (the 长期记忆 hint reads it too). */
   qqBindingsLoaded: boolean;
+  /** 绑定读取的单调序号：晚到的旧读取不得覆盖更新的读取。 */
+  qqBindingsReadId: number;
+  /** 绑定读取进行中；显式刷新会把它抬起来供目录显示。 */
+  qqBindingsLoading: boolean;
+  /** 显式刷新绑定的失败原因；null＝最近一次读取成功或尚未显式刷新过。 */
+  qqBindingsError: string | null;
   qqAccessLoading: boolean;
   qqAccessSaving: boolean;
   loadQqAccess: () => Promise<void>;
@@ -325,8 +342,25 @@ export interface QqAccessState {
    * Bindings only, without the rest of the access page (2026-09-25). The 长期记忆 page needs to
    * know whether the assistant being edited is bound to any QQ conversation, and pulling the whole
    * page's four requests for one hint would be the wrong trade.
+   *
+   * No argument keeps the cache behavior: a successful read is reused (no refetch) and a failed
+   * read stays silent. `refresh = true` forces a real list request for the 目录刷新 and the usage
+   * session; on failure it records `qqBindingsError` with `qqBindingsLoaded = false`, so counts
+   * read as unknown rather than 0.
    */
-  loadQqBindings: () => Promise<void>;
+  loadQqBindings: (refresh?: boolean) => Promise<void>;
+  /**
+   * 绑定目录最小读取：设置、会话、绑定与方案一次读齐，不读连接状态。绑定管理视图（方案详情的
+   * 「使用会话」与全局会话绑定页）用这一条，而不是 loadQqAccess 的整页读取。保存进行中不开始
+   * 读取；带 API 身份、读取代次与重置令牌校验，旧响应不得落地；失败按「未知」呈现
+   * （Loaded=false + Error）以便重试，不让缓存列表继续参与操作。方案目录行经方案模块的
+   * 合并/保护路径落地，不直接覆盖正在保存的目录。
+   *
+   * `bindingId` 只在显式「刷新保存基线」（绑定编辑抽屉的按钮）时给出：读取成功后按字段合并该
+   * 绑定的编辑草稿——choices/attention/记忆整理条数的已改字段保留（含非法/空输入原文），未改
+   * 字段与 revision 跟随新基线；不传参数时绝不刷新任何草稿基线。
+   */
+  loadQqBindingDirectory: (bindingId?: string) => Promise<void>;
   /**
    * Settings only, without the rest of the access page (2026-09-25). The default-model page shows
    * the QQ judgement model, and pulling the access page's four requests for one select would be the
@@ -339,6 +373,10 @@ export interface QqAccessState {
    * saved immediately because it is a single select rather than a page of fields.
    */
   saveQqJudgementModel: (modelName: string | null) => Promise<boolean>;
+  /**
+   * 连接页的唯一刷新：重读接入设置与连接状态。草稿已改字段保留输入、未改字段跟随新基线并推进
+   * revision，冲突（409）后刷新即可重试；失败保留草稿与旧状态，页面给出可重试的失败态。
+   */
   refreshQqConnection: () => Promise<void>;
   saveQqSurface: (
     patch: {
@@ -393,6 +431,9 @@ export const qqAccessInitial = {
   qqConversations: [] as QqConversationListItem[],
   qqBindings: [] as QqBindingResponse[],
   qqBindingsLoaded: false,
+  qqBindingsReadId: 0,
+  qqBindingsLoading: false,
+  qqBindingsError: null as string | null,
   qqAccessLoading: false,
   qqAccessSaving: false,
 };

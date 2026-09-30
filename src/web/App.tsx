@@ -31,8 +31,10 @@ const CapabilitiesWorkspace = lazy(() =>
     default: m.CapabilitiesWorkspace,
   })),
 );
-const RunsWorkspace = lazy(() =>
-  import("./screens/runs/RunsWorkspace").then((m) => ({ default: m.RunsWorkspace })),
+const SchemesWorkspace = lazy(() =>
+  import("./screens/connections/SchemesWorkspace").then((m) => ({
+    default: m.SchemesWorkspace,
+  })),
 );
 const ModelServices = lazy(() =>
   import("./screens/environment/ModelServices").then((m) => ({ default: m.ModelServices })),
@@ -85,9 +87,9 @@ function Application() {
     conversations: ConversationWorkspace,
     assistants: AssistantWorkspace,
     capabilities: CapabilitiesWorkspace,
+    schemes: SchemesWorkspace,
     library: LibraryWorkspace,
     connections: ConnectionWorkspace,
-    runs: RunsWorkspace,
     models: ModelServices,
     preferences: Preferences,
   }[space];

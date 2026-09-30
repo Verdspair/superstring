@@ -19,6 +19,7 @@ import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const COLLECTION = "11111111-1111-4111-8111-111111111111";
@@ -177,15 +178,32 @@ describe("Shared scheme studio", () => {
     fireEvent.change(screen.getByLabelText("选择聊天方案"), {
       target: { value: "33333333-3333-4333-8333-333333333333" },
     });
-    expect(screen.getByRole("alertdialog")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    // 切换守卫改由 store 的三选一承担（屏幕只发起请求）：弹窗由导航守卫组件渲染。
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().pendingNavigation).toEqual({
+      kind: "scheme",
+      id: "33333333-3333-4333-8333-333333333333",
+    });
+    render(<NavigationConfirm />);
+    fireEvent.click(screen.getByRole("button", { name: "取消离开" }));
+    expect(store.getState().pendingNavigation).toBeNull();
     expect(store.getState().qqSchemeEditor?.source.id).toBe(scheme().id);
     expect(store.getState().qqSchemeEditor?.rhythm.merge_window_seconds).toBe(15);
   });
-  it("shows impact before deletion and does not send until confirmed", async () => {
+  it("keeps an in-use scheme undeletable instead of confirming the delete", async () => {
     const { fake } = await renderPage();
+    const remove = screen.getByRole("button", { name: "删除方案" }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(true);
+    fireEvent.click(remove);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(fake.deleteQqScheme).not.toHaveBeenCalled();
+  });
+  it("deletes an unused scheme only after the confirm", async () => {
+    const { fake } = await renderPage({
+      getQqSchemeUsage: vi.fn().mockResolvedValue({ scheme_id: scheme().id, bindings: 0 }),
+    });
     fireEvent.click(screen.getByRole("button", { name: "删除方案" }));
-    expect(screen.getByRole("alertdialog").textContent).toContain("2 个会话");
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
     expect(fake.deleteQqScheme).not.toHaveBeenCalled();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "确认" })));
     expect(fake.deleteQqScheme).toHaveBeenCalledWith(scheme().id);

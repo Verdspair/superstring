@@ -1,9 +1,5 @@
-// 存储与诊断 page (§11.1, ADR0018 P5h).
-//
-// Two promises are asserted: the page shows the numbers the server reports, and the parts that do
-// not exist yet are stated in words rather than rendered as a zero that would read as a fact.
-
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+// QQ 数据与保留：真实计数、调度裁决与清理确认保护。
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqStorageUsageResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
@@ -63,9 +59,9 @@ async function renderPage(reported: QqStorageUsageResponse = usage) {
   } as unknown as typeof api;
   store.getState().resetForTests(fake);
   store.setState({ page: "settings", settingsView: "workspace", settingsRoute: "qq-storage" });
-  render(<StorageInventory />);
+  const { container } = render(<StorageInventory />);
   await act(async () => {});
-  return fake;
+  return { fake, container };
 }
 
 beforeEach(() => {
@@ -78,9 +74,28 @@ afterEach(() => {
 
 describe("Connection storage inventory", () => {
   it("shows reported inventory and retention without inventing missing runtime counters", async () => {
-    await renderPage();
+    const { container } = await renderPage();
+    const inventory = container.firstElementChild;
+    expect(inventory?.classList.contains("px-4")).toBe(true);
+    expect(inventory?.className).not.toMatch(/max-w-/);
     expect(screen.getByText("12")).toBeTruthy();
+    const number = new Intl.NumberFormat("zh-CN");
+    for (const [title, counts] of [
+      ["收到的消息", usage.observations],
+      ["发言记录", usage.speech],
+      ["发送", usage.sends],
+      ["昵称缓存", usage.nicknames],
+      ["表情素材", usage.stickers],
+      ["媒体读取", usage.media],
+    ] as const) {
+      const group = screen.getByRole("heading", { name: title }).closest("section");
+      if (!group) throw new Error(`Missing inventory section: ${title}`);
+      expect(Array.from(group.querySelectorAll("dd"), (counter) => counter.textContent)).toEqual(
+        Object.values(counts).map((value) => number.format(value)),
+      );
+    }
     expect(screen.getByText(/消息正文保留 14 天/)).toBeTruthy();
+    expect(screen.getByText("旧候选队列 1 项 · 已就绪 0 项 · 空闲")).toBeTruthy();
     expect(screen.queryByText("等待唤醒")).toBeNull();
   });
   it("links each conversation to a dated scheduling verdict", async () => {
@@ -94,11 +109,34 @@ describe("Connection storage inventory", () => {
     await renderPage({ ...usage, sweep: { tracked: 0, last_swept_at_seconds: null, entries: [] } });
     expect(screen.getByText("暂时没有调度裁决")).toBeTruthy();
   });
-  it("cleans expired records once and rereads inventory", async () => {
-    const fake = await renderPage();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "清理到期内容" })));
+  it("cancels cleanup without writing, then confirms once and rereads inventory", async () => {
+    const { fake } = await renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "清理到期内容" }));
+    const cancelled = screen.getByRole("alertdialog");
+    expect(cancelled.textContent).toContain("方案、会话绑定与表情素材不会被删除");
+    expect(fake.runQqStorageCleanup).not.toHaveBeenCalled();
+    expect(fake.getQqStorage).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(cancelled).getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(fake.runQqStorageCleanup).not.toHaveBeenCalled();
+    expect(fake.getQqStorage).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("status")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "清理到期内容" }));
+    const confirmed = screen.getByRole("alertdialog");
+    expect(fake.runQqStorageCleanup).not.toHaveBeenCalled();
+    await act(async () =>
+      fireEvent.click(within(confirmed).getByRole("button", { name: "清理到期内容" })),
+    );
     expect(fake.runQqStorageCleanup).toHaveBeenCalledTimes(1);
     expect(fake.getQqStorage).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.getByText("本次清理结果")).toBeTruthy();
+    const status = screen.getByRole("status");
+    expect(status.textContent).toContain("本次清理结果");
+    expect(Array.from(status.querySelectorAll("dd"), (counter) => counter.textContent)).toEqual(
+      Object.values(removed).map(String),
+    );
+    expect(store.getState().qqStorageRemoved).toEqual(removed);
   });
 });

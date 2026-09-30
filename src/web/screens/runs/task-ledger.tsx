@@ -1,5 +1,5 @@
 import { ListChecks, RefreshCw, XCircle } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   TaskBodyPage,
@@ -64,16 +64,21 @@ const sameFilters = (left: FilterDraft, right: FilterDraft) =>
   left.conversationId === right.conversationId &&
   left.originRunId === right.originRunId;
 
-export function TaskLedger() {
+export function TaskLedger({ conversationId }: { conversationId?: string } = {}) {
   const { t, i18n } = useTranslation();
   const filterId = useId();
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const summaryById = useSuperstringStore((s) => s.summaryById);
   const directoryIds = useSuperstringStore((s) => s.directoryIds);
   const agents = useSuperstringStore((s) => s.agents);
+  // 当前会话范围：过滤条件强制带上本会话，清除筛选也保留该范围，不再重复提供会话选择。
+  const lockedFilters = useMemo<FilterDraft>(
+    () => (conversationId ? { ...emptyFilters, conversationId } : emptyFilters),
+    [conversationId],
+  );
   const [list, setList] = useState<TaskList | null>(null);
-  const [draft, setDraft] = useState<FilterDraft>(emptyFilters);
-  const [filters, setFilters] = useState<FilterDraft>(emptyFilters);
+  const [draft, setDraft] = useState<FilterDraft>(lockedFilters);
+  const [filters, setFilters] = useState<FilterDraft>(lockedFilters);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -83,9 +88,17 @@ export function TaskLedger() {
   const pending = useRef<ReadTask | null>(null);
   const pendingDetail = useRef<ReadTask | null>(null);
   const mutation = useRef(false);
+  const previousLocked = useRef(conversationId);
   const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (previousLocked.current === conversationId) return;
+    previousLocked.current = conversationId;
+    setDraft(lockedFilters);
+    setFilters(lockedFilters);
+  }, [conversationId, lockedFilters]);
   const load = useCallback(
     (cursor?: string) => {
+      const scopedConversationId = conversationId ?? filters.conversationId;
       pending.current?.cancel();
       setLoading(true);
       // A new filter generation starts from an empty first page, so pages of two filter sets
@@ -97,7 +110,7 @@ export function TaskLedger() {
             {
               ...(filters.status ? { status: filters.status } : {}),
               ...(filters.agentId ? { agentId: filters.agentId } : {}),
-              ...(filters.conversationId ? { conversationId: filters.conversationId } : {}),
+              ...(scopedConversationId ? { conversationId: scopedConversationId } : {}),
               ...(filters.originRunId ? { originRunId: filters.originRunId } : {}),
               cursor,
               limit: 50,
@@ -116,7 +129,7 @@ export function TaskLedger() {
         },
       );
     },
-    [apiClient, filters],
+    [apiClient, filters, conversationId],
   );
   useEffect(() => {
     load();
@@ -130,8 +143,8 @@ export function TaskLedger() {
   const applyFilters = () =>
     setFilters((previous) => (sameFilters(previous, draft) ? previous : { ...draft }));
   const clearFilters = () => {
-    setDraft(emptyFilters);
-    setFilters((previous) => (sameFilters(previous, emptyFilters) ? previous : emptyFilters));
+    setDraft(lockedFilters);
+    setFilters((previous) => (sameFilters(previous, lockedFilters) ? previous : lockedFilters));
   };
   const openDetail = (id: string) => {
     pendingDetail.current?.cancel();
@@ -189,7 +202,7 @@ export function TaskLedger() {
   };
   const waiting = detail?.calls.find((entry) => entry.status === "waiting_approval");
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+    <div className="space-y-6 px-4 py-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="flex items-center gap-2 font-semibold">
@@ -199,6 +212,11 @@ export function TaskLedger() {
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {t("connections.tasks.description")}
           </p>
+          {conversationId && (
+            <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
+              {t("connections.tasks.currentConversationScope")}
+            </p>
+          )}
         </div>
         <Button variant="outline" disabled={loading} onClick={() => load()}>
           <RefreshCw />
@@ -243,38 +261,42 @@ export function TaskLedger() {
             ))}
           </NativeSelect>
         </label>
-        <fieldset className="min-w-0 space-y-1.5">
-          <legend className="text-xs font-medium">
-            {t("connections.tasks.filterConversation")}
-          </legend>
-          <div className="flex flex-wrap items-start gap-2">
-            <div className="grid min-w-0 gap-1.5">
-              <NativeSelect
-                className="max-w-60"
-                aria-label={t("connections.tasks.filterConversation")}
+        {!conversationId && (
+          <fieldset className="min-w-0 space-y-1.5">
+            <legend className="text-xs font-medium">
+              {t("connections.tasks.filterConversation")}
+            </legend>
+            <div className="flex flex-wrap items-start gap-2">
+              <div className="grid min-w-0 gap-1.5">
+                <NativeSelect
+                  className="max-w-60"
+                  aria-label={t("connections.tasks.filterConversation")}
+                  value={draft.conversationId}
+                  onChange={(event) => updateDraft("conversationId", event.target.value)}
+                >
+                  <option value="">{t("connections.all")}</option>
+                  {directoryIds.map((id) => (
+                    <option key={id} value={id}>
+                      {summaryById[id]?.title ?? id}
+                    </option>
+                  ))}
+                </NativeSelect>
+                {/* The dropdown only offers loaded conversations and says so; the ID input beside it is
+                    the way to filter by a conversation that has not been loaded yet. */}
+                <p className="text-xs text-muted-foreground">
+                  {t("workspace.loaded_conversations")}
+                </p>
+              </div>
+              <Input
+                className="w-64 max-w-full"
+                aria-label={t("observability.conversationId")}
+                placeholder={t("observability.conversationId")}
                 value={draft.conversationId}
                 onChange={(event) => updateDraft("conversationId", event.target.value)}
-              >
-                <option value="">{t("connections.all")}</option>
-                {directoryIds.map((id) => (
-                  <option key={id} value={id}>
-                    {summaryById[id]?.title ?? id}
-                  </option>
-                ))}
-              </NativeSelect>
-              {/* The dropdown only offers loaded conversations and says so; the ID input beside it is
-                  the way to filter by a conversation that has not been loaded yet. */}
-              <p className="text-xs text-muted-foreground">{t("workspace.loaded_conversations")}</p>
+              />
             </div>
-            <Input
-              className="w-64 max-w-full"
-              aria-label={t("observability.conversationId")}
-              placeholder={t("observability.conversationId")}
-              value={draft.conversationId}
-              onChange={(event) => updateDraft("conversationId", event.target.value)}
-            />
-          </div>
-        </fieldset>
+          </fieldset>
+        )}
         <label className="grid min-w-0 gap-1.5 text-xs font-medium" htmlFor={`${filterId}-run`}>
           <span>{t("connections.tasks.filterOriginRun")}</span>
           <Input

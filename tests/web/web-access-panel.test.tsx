@@ -1,6 +1,4 @@
-// 联网（web-access）面板：草稿→保存的 CAS 载荷、409 冲突保留草稿、自检成功/失败渲染，
-// 以及真实 HTTP 客户端的 wire 形状。路由归属在 capabilities-workspace.test.tsx 中验证：
-// 联网与执行设置已移归系统能力，接入工作区不再有联网 tab。
+// 联网面板：CAS 保存、冲突保稿、自检与 HTTP 载荷；扩展工作区不提供联网 Tab。
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
@@ -23,7 +21,7 @@ const permissions: PermissionsResponse = {
   resources: [],
 };
 
-// 接入工作区整屏渲染需要 QQ 接入的读取全部有答案；联网读取自带一份空配置快照。
+// 保留 QQ 读取 mock，用于断言扩展工作区不会加载 QQ 配置。
 function workspaceFake() {
   return {
     ...api,
@@ -44,10 +42,12 @@ function workspaceFake() {
 }
 
 async function renderWorkspace() {
-  store.getState().resetForTests(workspaceFake());
+  const fake = workspaceFake();
+  store.getState().resetForTests(fake);
   store.setState({ page: "settings", settingsView: "workspace", settingsRoute: "tool-grants" });
   render(<ConnectionWorkspace />);
   await act(async () => {});
+  return fake;
 }
 
 async function renderPanel(fake: Partial<typeof api> = {}, snapshot?: WebAccessSnapshot) {
@@ -76,14 +76,24 @@ afterEach(() => {
 });
 
 describe("web access routing", () => {
-  it("belongs to the system capabilities space and has no tab in the connections workspace", async () => {
+  it("belongs to system capabilities while extensions only show MCP, Skills and tool grants", async () => {
     expect(
       activeSpace({ page: "settings", settingsView: "workspace", settingsRoute: "web-access" }),
     ).toBe("capabilities");
-    await renderWorkspace();
+    const fake = await renderWorkspace();
+    expect(screen.getByRole("heading", { name: "扩展" })).toBeTruthy();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "MCP 服务",
+      "技能",
+      "工具授权",
+    ]);
     expect(screen.getByRole("tab", { selected: true }).textContent).toBe("工具授权");
     expect(screen.queryByRole("tab", { name: "联网" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "联网" })).toBeNull();
+    expect(fake.getQqSettings).not.toHaveBeenCalled();
+    expect(fake.getQqStatus).not.toHaveBeenCalled();
+    expect(fake.listQqConversations).not.toHaveBeenCalled();
+    expect(fake.listQqBindings).not.toHaveBeenCalled();
   });
 });
 

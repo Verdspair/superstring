@@ -10,7 +10,7 @@ export type BeforeHistoryChange = (kind: HistoryChange, next: ConversationEventV
 export function useConversationEvents(
   id: string,
   beforeChange?: BeforeHistoryChange,
-  refreshMs = 5000,
+  { refreshMs = 5000, enabled = true }: { refreshMs?: number; enabled?: boolean } = {},
 ) {
   const api = useSuperstringStore((s) => s.apiClient);
   const [items, setItems] = useState<ConversationEventView[]>([]);
@@ -105,6 +105,11 @@ export function useConversationEvents(
       setItems([]);
       setLoading(false);
     };
+    if (!enabled) {
+      // 隐藏页签与失焦同语义：停掉读取、清空受保护正文；回到页签立即重读。
+      clear();
+      return;
+    }
     const refresh = () => {
       if (foreground && document.visibilityState !== "hidden") void load();
     };
@@ -126,6 +131,6 @@ export function useConversationEvents(
       window.removeEventListener("focus", focus);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [load, refreshMs]);
+  }, [enabled, load, refreshMs]);
   return { items, hasMore, loading, error, refresh: () => load(), loadMore: () => load(true) };
 }

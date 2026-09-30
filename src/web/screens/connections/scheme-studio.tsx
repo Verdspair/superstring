@@ -1,11 +1,17 @@
-import { Copy, FileDiff, Plus, Save, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Copy, Crosshair, FileDiff, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type QqSchemePrompts, qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import {
   Dialog,
@@ -36,11 +42,16 @@ import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { TRIGGER_LABELS } from "./binding-editor";
 import {
+  fieldBounds,
+  headroomPercentBounds,
+  imageFields,
   localClock,
-  mediaFields,
   type NumericGroup,
   numericGroups,
   participationFields,
+  type SchemeTask,
+  schemeFieldTask,
+  stickerFields,
   utcMinutes,
 } from "./scheme-fields";
 
@@ -58,7 +69,9 @@ const schemeFieldLabels: Readonly<Record<string, string>> = {
     Object.entries(TRIGGER_LABELS).map(([key, label]) => [`triggers.${key}`, label]),
   ),
   ...Object.fromEntries(participationFields.map(([name, label]) => [`rhythm.${name}`, label])),
-  ...Object.fromEntries(mediaFields.map(([group, name, label]) => [`${group}.${name}`, label])),
+  ...Object.fromEntries(
+    [...stickerFields, ...imageFields].map(([group, name, label]) => [`${group}.${name}`, label]),
+  ),
   "rhythm.active_hours_enabled": "connections.allowedHours",
   "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
   "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
@@ -84,6 +97,31 @@ const schemeFieldLabels: Readonly<Record<string, string>> = {
   "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
 };
 
+/**
+ * 页内分组：细边框 + 淡标题带，标题下写明这个组的作用范围、单位与影响；
+ * 视觉上沿用现有 Card（与设置页的 SettingsGroup 同一套层次），不新增样式系统。
+ */
+function StudioGroup({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Card size="sm" className="min-w-0 gap-0 pt-0">
+      <CardHeader className="border-b bg-muted/50">
+        <CardTitle className="text-sm">{t(title)}</CardTitle>
+        {description && <CardDescription className="text-xs">{t(description)}</CardDescription>}
+      </CardHeader>
+      <CardContent className="space-y-5 pt-3">{children}</CardContent>
+    </Card>
+  );
+}
+
 /** Collection ids read as names; an id no known collection matches stays visible instead of vanishing. */
 function schemeCollectionNames(
   joined: string,
@@ -96,6 +134,11 @@ function schemeCollectionNames(
     .join("、");
 }
 
+/**
+ * 数字输入：原文留在草稿里，只有契约 schema 认可的值才写回方案；无效原文不丢弃、保存被禁用。
+ * min/max/step 现读契约（fieldBounds），浏览器拦下的范围就是服务端会拒绝的范围；
+ * 错误用 aria-describedby 挂在同一个输入上，另有页脚的「定位」按钮把焦点送回这里。
+ */
 function SchemeNumber({
   group,
   name,
@@ -117,6 +160,9 @@ function SchemeNumber({
   const [invalid, setInvalid] = useQqInput("schemeInvalid");
   if (!editor) return null;
   const id = `${group}.${name}`;
+  const inputId = `scheme-field-${id}`;
+  const errorId = `${inputId}-error`;
+  const bounds = fieldBounds(group, name);
   const value = (editor[group] as unknown as Record<string, number>)[name] ?? 0;
   const schema = (
     numericGroups[group].shape as Record<
@@ -141,10 +187,15 @@ function SchemeNumber({
   return (
     <Field label={label} info={info}>
       <Input
+        id={inputId}
         type="number"
+        min={bounds.min}
+        max={bounds.max}
+        step={bounds.step}
         disabled={saving}
         value={texts[id] ?? String(value)}
         aria-invalid={!!invalid[id]}
+        aria-describedby={invalid[id] ? errorId : undefined}
         onChange={(e) => {
           const raw = e.target.value;
           setTexts((old) => ({ ...old, [id]: raw }));
@@ -166,12 +217,15 @@ function SchemeNumber({
           } else
             setInvalid((old) => ({
               ...old,
-              [id]: t("connections.enterAValidIntegerWithinTheAllowedRange"),
+              [id]: t("schemes.studio.integerRange", {
+                "0": String(bounds.min ?? ""),
+                "1": String(bounds.max ?? ""),
+              }),
             }));
         }}
       />
       {invalid[id] && (
-        <p className="text-xs text-destructive" role="alert">
+        <p id={errorId} className="text-xs text-destructive" role="alert">
           {invalid[id]}
         </p>
       )}
@@ -221,7 +275,7 @@ function BoundRecentTurns() {
   );
 }
 
-/** 装配冗余在界面上是整数百分比，存的是比例（5 ↔ 0.05）。 */
+/** 装配冗余在界面上是整数百分比，存的是比例（5 ↔ 0.05）；边界同样来自契约（0–50）。 */
 function SchemePercent({
   name,
   label,
@@ -241,9 +295,15 @@ function SchemePercent({
   const [invalid, setInvalid] = useQqInput("schemeInvalid");
   if (!editor) return null;
   const id = `compression.${name}`;
+  const inputId = `scheme-field-${id}`;
+  const errorId = `${inputId}-error`;
+  const bounds = headroomPercentBounds();
   const percent = Math.round(editor.compression[name] * 100);
   const valid = (raw: string) =>
-    raw.trim() !== "" && Number.isInteger(Number(raw)) && Number(raw) >= 0 && Number(raw) <= 50;
+    raw.trim() !== "" &&
+    Number.isInteger(Number(raw)) &&
+    Number(raw) >= bounds.min &&
+    Number(raw) <= bounds.max;
   const write = (raw: string) => patch("compression", { [name]: Number(raw) / 100 });
   const clear = () => {
     setTexts((old) => {
@@ -260,10 +320,15 @@ function SchemePercent({
   return (
     <Field label={label} info={info}>
       <Input
+        id={inputId}
         type="number"
+        min={bounds.min}
+        max={bounds.max}
+        step={bounds.step}
         disabled={saving}
         value={texts[id] ?? String(percent)}
         aria-invalid={!!invalid[id]}
+        aria-describedby={invalid[id] ? errorId : undefined}
         onChange={(e) => {
           const raw = e.target.value;
           setTexts((old) => ({ ...old, [id]: raw }));
@@ -285,12 +350,15 @@ function SchemePercent({
           } else
             setInvalid((old) => ({
               ...old,
-              [id]: t("connections.enterAValidIntegerWithinTheAllowedRange"),
+              [id]: t("schemes.studio.integerRange", {
+                "0": String(bounds.min),
+                "1": String(bounds.max),
+              }),
             }));
         }}
       />
       {invalid[id] && (
-        <p className="text-xs text-destructive" role="alert">
+        <p id={errorId} className="text-xs text-destructive" role="alert">
           {invalid[id]}
         </p>
       )}
@@ -298,6 +366,7 @@ function SchemePercent({
   );
 }
 
+/** 提示词槽位：值原样保存、原样使用，不在这里改写用户的文字。 */
 function PromptEditor({
   slot,
   titleKey,
@@ -305,7 +374,7 @@ function PromptEditor({
 }: {
   slot: keyof QqSchemePrompts;
   titleKey: string;
-  hint: string;
+  hint?: string;
 }) {
   const { qqSchemeEditor, qqSchemeSaving, patchQqSchemeGroup } = useSuperstringStore();
   return (
@@ -320,21 +389,43 @@ function PromptEditor({
   );
 }
 
-/** A named policy studio with a shared draft across four task-oriented tabs. */
 export function SchemeStudio() {
   const { t } = useTranslation();
   const state = useSuperstringStore();
   const { loadQqSchemes, loadQqStickers, qqSchemeEditor: editor, qqSchemeSaving: saving } = state;
-  const [task, setTask] = useState("participation");
-  const [naming, setNaming] = useState<"new" | "copy" | null>(null);
+  const [task, setTask] = useState<SchemeTask>("participation");
+  const [naming, setNaming] = useState<{ kind: "new" | "copy"; step: "name" | "draft" } | null>(
+    null,
+  );
+  const [namingBusy, setNamingBusy] = useState(false);
   const [newName, setNewName] = useQqInput("schemeNewName");
   const [copyName, setCopyName] = useQqInput("schemeCopyName");
   const [preview, setPreview] = useState(false);
-  const [pending, setPending] = useState<{ message: string; action: () => void } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [focusField, setFocusField] = useState<string | null>(null);
   useEffect(() => {
     void loadQqSchemes();
     void loadQqStickers();
   }, [loadQqSchemes, loadQqStickers]);
+  // 定位到出错字段：先切页签；Radix 面板内容下一帧才挂载，所以等一帧并做有限重试。
+  useEffect(() => {
+    if (!focusField) return;
+    const id = `scheme-field-${focusField}`;
+    let attempts = 0;
+    let raf = 0;
+    const tryFocus = () => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.focus();
+        setFocusField(null);
+        return;
+      }
+      if (++attempts < 10) raf = requestAnimationFrame(tryFocus);
+      else setFocusField(null);
+    };
+    raf = requestAnimationFrame(tryFocus);
+    return () => cancelAnimationFrame(raf);
+  }, [focusField]);
   const changes = qqSchemeChanges(editor);
   const previewValue = (field: string, raw: string) => {
     if (field === "sticker_collections.collection_ids")
@@ -355,34 +446,54 @@ export function SchemeStudio() {
       ? t(raw === "true" ? "connections.on" : "connections.off")
       : raw;
   };
-  const invalid =
-    Object.keys(state.qqInputs.schemeInvalid).length > 0 || invalidSchemeInputs(state).length > 0;
+  const invalidFields = [
+    ...new Set([
+      ...Object.keys(state.qqInputs.schemeInvalid),
+      ...invalidSchemeInputs(state).map(([field]) => field),
+    ]),
+  ];
+  const invalid = invalidFields.length > 0;
   const dirty = qqSchemeDirty(editor) || invalid;
-  const guard = (action: () => void) => {
-    if (dirty)
-      setPending({
-        message: t("connections.thisSchemeHasUnsavedChangesDiscardAndContinue"),
-        action: () => {
-          state.discardQqSchemeChanges();
-          action();
-        },
-      });
-    else action();
-  };
   const selectedUsage =
     state.qqSchemeUsage && state.qqSchemeUsage.schemeId === editor?.source.id
       ? state.qqSchemeUsage.bindings
       : null;
+  const usageText =
+    selectedUsage === null
+      ? t("connections.unknown")
+      : t("connections.usedByValueConversations", { "0": selectedUsage });
   const effectiveTab = editor ? task : "participation";
+  const namingName = naming?.kind === "copy" ? copyName : newName;
+  // 命名确认：新建且草稿已改时先问草稿去向；放弃继续会保留原草稿直到创建成功（失败不丢草稿与名称）。
+  const busy = namingBusy || saving || state.qqSchemesLoading;
+  const runNaming = async (saveFirst: boolean) => {
+    if (!naming || busy) return;
+    setNamingBusy(true);
+    try {
+      if (saveFirst && !(await state.saveQqScheme())) return;
+      const name = namingName.trim();
+      const ok =
+        naming.kind === "copy"
+          ? await state.duplicateQqScheme(name)
+          : await state.createQqScheme(name);
+      if (ok) {
+        setNaming(null);
+        setNewName("");
+        setCopyName("");
+      }
+    } finally {
+      setNamingBusy(false);
+    }
+  };
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4 lg:px-8">
+      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
         <NativeSelect
           className="min-w-48"
           aria-label={t("connections.chooseAChatScheme")}
           value={editor?.source.id ?? ""}
-          disabled={saving}
-          onChange={(e) => guard(() => state.selectQqScheme(e.target.value))}
+          disabled={busy}
+          onChange={(e) => state.requestQqSchemeNavigation(e.target.value)}
         >
           {!state.qqSchemes.length && <option value="">{t("connections.noSchemesYet")}</option>}
           {state.qqSchemes.map((scheme) => (
@@ -391,17 +502,47 @@ export function SchemeStudio() {
             </option>
           ))}
         </NativeSelect>
-        <Badge variant="outline">
-          {selectedUsage === null
-            ? t("connections.readingUsage")
-            : t("connections.usedByValueConversations", { "0": selectedUsage })}
-        </Badge>
-        <div className="ml-auto flex gap-1">
+        <Button
+          variant="outline"
+          size="sm"
+          data-scheme-usage
+          disabled={!editor || busy}
+          onClick={() => state.requestQqSchemeNavigation(editor?.source.id ?? "", "bindings")}
+        >
+          {usageText}
+        </Button>
+        {editor && selectedUsage === null && (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => void state.loadQqSchemes()}
+            >
+              {t("capabilities.retry")}
+            </Button>
+            {state.qqSchemeUsageError && (
+              <span className="text-xs text-destructive">
+                {translateNotice(state.qqSchemeUsageError)}
+              </span>
+            )}
+          </>
+        )}
+        <div className="ml-auto flex flex-wrap items-center gap-1">
           <Button
             variant="ghost"
             size="sm"
-            disabled={saving}
-            onClick={() => guard(() => setNaming("new"))}
+            disabled={!editor || busy}
+            onClick={() => void state.refreshQqScheme()}
+          >
+            <RefreshCw />
+            {t("schemes.studio.refresh")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => setNaming({ kind: "new", step: "name" })}
           >
             <Plus />
             {t("connections.create")}
@@ -409,8 +550,8 @@ export function SchemeStudio() {
           <Button
             variant="ghost"
             size="sm"
-            disabled={!editor || saving || invalid}
-            onClick={() => setNaming("copy")}
+            disabled={!editor || busy || invalid}
+            onClick={() => setNaming({ kind: "copy", step: "name" })}
           >
             <Copy />
             {t("connections.saveAs")}
@@ -419,21 +560,29 @@ export function SchemeStudio() {
             variant="ghost"
             size="icon-sm"
             aria-label={t("connections.deleteScheme")}
-            disabled={!editor || saving || selectedUsage === null}
-            onClick={() =>
-              editor &&
-              setPending({
-                message: t("connections.deleteSchemeValueItIsUsedByValueConversations", {
-                  "0": editor.name,
-                  "1": selectedUsage,
-                }),
-                action: () => void state.deleteQqScheme(editor.source.id),
-              })
-            }
+            disabled={!editor || busy || selectedUsage !== 0}
+            onClick={() => setConfirmDelete(true)}
           >
             <Trash2 />
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || invalid || !changes.length || !editor?.name.trim()}
+            onClick={() => void state.saveQqScheme()}
+          >
+            <Save />
+            {/* 与页脚「保存方案」同源同范围；页首用短标签，避免两个同名按钮让读屏与测试无法区分。 */}
+            {t("workspace.save")}
+          </Button>
         </div>
+        {editor && selectedUsage !== 0 && (
+          <p className="w-full text-xs text-muted-foreground">
+            {selectedUsage === null
+              ? t("schemes.studio.usageUnknownCannotDelete")
+              : t("schemes.studio.inUseCannotDelete", { "0": selectedUsage })}
+          </p>
+        )}
       </div>
       {!editor ? (
         <div className="grid flex-1 place-content-center gap-3 p-8 text-center">
@@ -443,15 +592,19 @@ export function SchemeStudio() {
           <p className="max-w-sm text-sm text-muted-foreground">
             {t("connections.aSchemeCanBeSharedBySeveralGroupsOr")}
           </p>
-          <Button disabled={saving} onClick={() => setNaming("new")}>
+          <Button disabled={saving} onClick={() => setNaming({ kind: "new", step: "name" })}>
             <Plus />
             {t("connections.newScheme")}
           </Button>
         </div>
       ) : (
-        <Tabs value={effectiveTab} onValueChange={setTask} className="min-h-0 flex-1 gap-0">
-          <div className="overflow-x-auto border-b px-6 py-3 lg:px-8">
-            <TabsList>
+        <Tabs
+          value={effectiveTab}
+          onValueChange={(value) => setTask(value as SchemeTask)}
+          className="min-h-0 flex-1 gap-0"
+        >
+          <div className="border-b px-4 py-3">
+            <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
               <TabsTrigger value="participation">{t("connections.whenToParticipate")}</TabsTrigger>
               <TabsTrigger value="response">{t("connections.howToRespond")}</TabsTrigger>
               <TabsTrigger value="context">{t("connections.whatToRead")}</TabsTrigger>
@@ -459,8 +612,8 @@ export function SchemeStudio() {
             </TabsList>
           </div>
           <ScrollArea className="min-h-0 flex-1">
-            <div className="mx-auto max-w-5xl px-6 py-7 lg:px-8">
-              <TabsContent value="participation" className="m-0 space-y-8">
+            <div className="min-w-0 space-y-6 px-4 py-6">
+              <TabsContent value="participation" className="m-0 space-y-6">
                 <div className="grid gap-5 sm:grid-cols-2">
                   <Field label="connections.schemeName">
                     <Input
@@ -477,8 +630,10 @@ export function SchemeStudio() {
                     />
                   </Field>
                 </div>
-                <section className="space-y-4">
-                  <h2 className="text-base font-semibold">{t("connections.speechTriggers")}</h2>
+                <StudioGroup
+                  title="connections.speechTriggers"
+                  description="schemes.studio.triggersHint"
+                >
                   <div className="grid gap-3 sm:grid-cols-2">
                     {Object.entries(TRIGGER_LABELS).map(([key, label]) => (
                       <Label key={key} className="flex items-start gap-3 rounded-lg border p-4">
@@ -502,13 +657,27 @@ export function SchemeStudio() {
                       </Label>
                     ))}
                   </div>
-                </section>
-                <div className="grid gap-x-8 gap-y-6 sm:grid-cols-2">
-                  {participationFields.map(([name, label, info]) => (
-                    <SchemeNumber key={name} group="rhythm" name={name} label={label} info={info} />
-                  ))}
-                </div>
-                <section className="space-y-5 border-t pt-6">
+                </StudioGroup>
+                <StudioGroup
+                  title="schemes.studio.rhythmTitle"
+                  description="schemes.studio.rhythmHint"
+                >
+                  <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                    {participationFields.map(([name, label, info]) => (
+                      <SchemeNumber
+                        key={name}
+                        group="rhythm"
+                        name={name}
+                        label={label}
+                        info={info}
+                      />
+                    ))}
+                  </div>
+                </StudioGroup>
+                <StudioGroup
+                  title="connections.allowedHours"
+                  description="connections.useLocalTimeEqualStartAndEndMeansAll"
+                >
                   <Label>
                     <Checkbox
                       disabled={saving}
@@ -549,17 +718,21 @@ export function SchemeStudio() {
                     })}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {t("connections.useLocalTimeEqualStartAndEndMeansAll")}
+                    {t("schemes.studio.activeHoursHint")}
                   </p>
-                </section>
-                <PromptEditor
-                  slot="judge"
-                  titleKey="connections.judgementTask"
-                  hint="connections.decideWhetherToSpeak"
-                />
+                </StudioGroup>
+                <StudioGroup
+                  title="schemes.studio.judgePrompt"
+                  description="connections.decideWhetherToSpeak"
+                >
+                  <PromptEditor slot="judge" titleKey="connections.judgementTask" />
+                </StudioGroup>
               </TabsContent>
-              <TabsContent value="response" className="m-0 space-y-8">
-                <section className="space-y-4">
+              <TabsContent value="response" className="m-0 space-y-6">
+                <StudioGroup
+                  title="schemes.studio.replyStructure"
+                  description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
+                >
                   <Label>
                     <Checkbox
                       checked={editor.reply.split_by_speaker}
@@ -570,9 +743,11 @@ export function SchemeStudio() {
                     />
                     {t("connections.answerEachSpeakerSeparately")}
                   </Label>
-                  <p className="text-sm text-muted-foreground">
-                    {t("connections.whenEnabledGenerateAReplyPerSpeakerAndAdd")}
-                  </p>
+                </StudioGroup>
+                <StudioGroup
+                  title="schemes.studio.replyTasks"
+                  description="schemes.studio.replyTasksHint"
+                >
                   {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
                       一改就写进方案的 prompt_reply，服务端取的是同一个函数的结果。 */}
                   <Field
@@ -591,33 +766,21 @@ export function SchemeStudio() {
                       }
                     />
                   </Field>
-                </section>
-                <PromptEditor
-                  slot="scene"
-                  titleKey="connections.sceneAndBehaviour"
-                  hint="connections.howTheAssistantTalksInQqAtAll"
-                />
-                <PromptEditor
-                  slot="review"
-                  titleKey="connections.reviewTask"
-                  hint="connections.newMessagesArrivedDoesThisReplyStillStand"
-                />
+                  <PromptEditor slot="scene" titleKey="connections.sceneAndBehaviour" />
+                  <PromptEditor slot="review" titleKey="connections.reviewTask" />
+                </StudioGroup>
               </TabsContent>
-              <TabsContent value="context" className="m-0 space-y-8">
+              <TabsContent value="context" className="m-0 space-y-6">
                 {(["judgement", "reply"] as const).map((part) => (
-                  <section key={part} className="space-y-5">
-                    <div className="border-b pb-3">
-                      <h2 className="text-base font-semibold">
-                        {t(
-                          part === "judgement"
-                            ? "connections.judgementContext"
-                            : "connections.replyContext",
-                        )}
-                      </h2>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {t("connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues")}
-                      </p>
-                    </div>
+                  <StudioGroup
+                    key={part}
+                    title={
+                      part === "judgement"
+                        ? "connections.judgementContext"
+                        : "connections.replyContext"
+                    }
+                    description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
+                  >
                     <div className="grid gap-5 sm:grid-cols-2">
                       {/* 回复档的条数跟随绑定助手的「保留最近轮数」，所以它是只读的。 */}
                       {part === "reply" ? (
@@ -626,11 +789,7 @@ export function SchemeStudio() {
                         <SchemeNumber
                           group="context"
                           name={`${part}_message_limit`}
-                          label={
-                            part === "judgement"
-                              ? "connections.judgementRecentMessages"
-                              : "connections.replyRecentMessages"
-                          }
+                          label="connections.judgementRecentMessages"
                         />
                       )}
                       <SchemeNumber
@@ -661,14 +820,12 @@ export function SchemeStudio() {
                         }
                       />
                     </div>
-                  </section>
+                  </StudioGroup>
                 ))}
-                <section className="space-y-5 border-t pt-6">
-                  <div className="border-b pb-3">
-                    <h2 className="text-base font-semibold">
-                      {t("connections.compressionAndAssembly")}
-                    </h2>
-                  </div>
+                <StudioGroup
+                  title="connections.compressionAndAssembly"
+                  description="schemes.studio.compressionHint"
+                >
                   <div className="grid gap-5 sm:grid-cols-2">
                     <SchemeNumber
                       group="compression"
@@ -693,7 +850,7 @@ export function SchemeStudio() {
                     titleKey="connections.watermarkCompressionTask"
                     hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
                   />
-                </section>
+                </StudioGroup>
                 <div className="rounded-lg bg-muted p-5 text-sm leading-6">
                   <h3 className="font-medium">
                     {t("connections.bindingsDetermineTheMaterialScope")}
@@ -710,14 +867,31 @@ export function SchemeStudio() {
                   </Button>
                 </div>
               </TabsContent>
-              <TabsContent value="media" className="m-0 space-y-8">
-                <div className="grid gap-5 sm:grid-cols-2">
-                  {mediaFields.map(([group, name, label]) => (
-                    <SchemeNumber key={name} group={group} name={name} label={label} />
-                  ))}
-                </div>
-                <section className="space-y-4 border-t pt-6">
-                  <h2 className="font-semibold">{t("connections.authorizedCollections")}</h2>
+              <TabsContent value="media" className="m-0 space-y-6">
+                <StudioGroup
+                  title="schemes.studio.imageParams"
+                  description="schemes.studio.imageParamsHint"
+                >
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    {imageFields.map(([group, name, label]) => (
+                      <SchemeNumber key={name} group={group} name={name} label={label} />
+                    ))}
+                  </div>
+                </StudioGroup>
+                <StudioGroup
+                  title="schemes.studio.stickerParams"
+                  description="schemes.studio.stickerParamsHint"
+                >
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    {stickerFields.map(([group, name, label]) => (
+                      <SchemeNumber key={name} group={group} name={name} label={label} />
+                    ))}
+                  </div>
+                </StudioGroup>
+                <StudioGroup
+                  title="connections.authorizedCollections"
+                  description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
+                >
                   <div className="grid gap-3 sm:grid-cols-2">
                     {state.qqStickerCollections.map((collection) => (
                       <Label key={collection.id} className="rounded-lg border p-3">
@@ -742,48 +916,77 @@ export function SchemeStudio() {
                       </Label>
                     ))}
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected")}
-                  </p>
                   <Button variant="outline" onClick={() => state.openSettingsRoute("qq-stickers")}>
                     {t("connections.manageStickers")}
                   </Button>
-                </section>
-                <PromptEditor
-                  slot="sticker"
-                  titleKey="connections.stickerTask"
-                  hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                />
-                <PromptEditor
-                  slot="media"
-                  titleKey="connections.mediaNoteTask"
-                  hint="connections.describeWhatThePictureOrVoiceActuallyContains"
-                />
+                </StudioGroup>
+                <StudioGroup
+                  title="schemes.studio.mediaPrompts"
+                  description="schemes.studio.mediaPromptsHint"
+                >
+                  <PromptEditor
+                    slot="sticker"
+                    titleKey="connections.stickerTask"
+                    hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
+                  />
+                  <PromptEditor
+                    slot="media"
+                    titleKey="connections.mediaNoteTask"
+                    hint="connections.describeWhatThePictureOrVoiceActuallyContains"
+                  />
+                </StudioGroup>
               </TabsContent>
             </div>
           </ScrollArea>
         </Tabs>
       )}
+      {editor && (state.error || state.feedback) && (
+        <div className="shrink-0 border-t px-4 py-2">
+          {state.error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {translateNotice(state.error)}
+            </p>
+          ) : (
+            <p role="status" className="text-sm text-muted-foreground">
+              {translateNotice(state.feedback)}
+            </p>
+          )}
+        </div>
+      )}
       {editor && (
-        <footer className="flex flex-wrap items-center gap-2 border-t bg-background px-6 py-3 lg:px-8">
+        <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t bg-background px-4 py-3">
           <p className="mr-auto text-xs text-muted-foreground" role="status">
             {invalid
               ? t("connections.correctInvalidNumbersFirst")
               : t("connections.valueUnsavedChanges", { "0": changes.length })}
           </p>
+          {invalid && invalidFields[0] && (
+            <Button
+              variant="link"
+              size="sm"
+              onClick={() => {
+                const field = invalidFields[0];
+                setTask(schemeFieldTask(field));
+                setFocusField(field);
+              }}
+            >
+              <Crosshair />
+              {t("schemes.studio.locateInvalid")}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => setPreview(true)}>
             <FileDiff />
             {t("connections.reviewChanges")}
           </Button>
           <Button
             variant="outline"
-            disabled={saving || !dirty}
+            disabled={busy || !dirty}
             onClick={() => state.discardQqSchemeChanges()}
           >
             {t("connections.discardChanges")}
           </Button>
           <Button
-            disabled={saving || invalid || !changes.length || !editor.name.trim()}
+            disabled={busy || invalid || !changes.length || !editor.name.trim()}
             onClick={() => void state.saveQqScheme()}
           >
             <Save />
@@ -791,71 +994,107 @@ export function SchemeStudio() {
           </Button>
         </footer>
       )}
-      {pending && (
+      {confirmDelete && editor && (
         <ConfirmDialog
-          message={pending.message}
-          onCancel={() => setPending(null)}
+          message={t(
+            dirty ? "schemes.studio.deleteDirtyConfirm" : "schemes.studio.deleteUnusedConfirm",
+            { "0": editor.name },
+          )}
+          onCancel={() => setConfirmDelete(false)}
           onConfirm={() => {
-            const action = pending.action;
-            setPending(null);
-            action();
+            const id = editor.source.id;
+            setConfirmDelete(false);
+            void state.deleteQqScheme(id);
           }}
         />
       )}
-      <Dialog
-        open={naming !== null}
-        onOpenChange={(open) => {
-          if (!open && !saving) setNaming(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {t(naming === "copy" ? "connections.saveAsANewScheme" : "connections.newScheme")}
-            </DialogTitle>
-            <DialogDescription>
-              {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
-            </DialogDescription>
-          </DialogHeader>
-          <Field label="connections.schemeName">
-            <Input
-              value={naming === "copy" ? copyName : newName}
-              disabled={saving}
-              onChange={(e) =>
-                naming === "copy" ? setCopyName(e.target.value) : setNewName(e.target.value)
-              }
-            />
-          </Field>
-          {state.error && (
-            <p role="alert" className="text-sm text-destructive">
-              {translateNotice(state.error)}
-            </p>
-          )}
-          <DialogFooter>
-            <Button variant="outline" disabled={saving} onClick={() => setNaming(null)}>
-              {t("connections.cancel")}
-            </Button>
-            <Button
-              disabled={saving || !(naming === "copy" ? copyName : newName).trim()}
-              onClick={() => {
-                const request =
-                  naming === "copy"
-                    ? state.duplicateQqScheme(copyName.trim())
-                    : state.createQqScheme(newName.trim());
-                void request.then((ok) => {
-                  if (ok) {
-                    setNaming(null);
-                    setNewName("");
-                    setCopyName("");
-                  }
-                });
-              }}
-            >
-              {t("connections.confirm")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {naming && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !busy) setNaming(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {t(
+                  naming.kind === "copy" ? "connections.saveAsANewScheme" : "connections.newScheme",
+                )}
+              </DialogTitle>
+              <DialogDescription>
+                {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
+              </DialogDescription>
+            </DialogHeader>
+            {naming.step === "draft" ? (
+              <>
+                <p className="text-sm">{t("schemes.studio.draftGuardMessage")}</p>
+                {state.error && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {translateNotice(state.error)}
+                  </p>
+                )}
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    data-dialog-cancel
+                    disabled={busy}
+                    onClick={() => setNaming(null)}
+                  >
+                    {t("connections.cancel")}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    disabled={busy}
+                    onClick={() => void runNaming(false)}
+                  >
+                    {t("workspace.discard_and_continue")}
+                  </Button>
+                  <Button disabled={busy || invalid} onClick={() => void runNaming(true)}>
+                    {t("workspace.save_and_continue")}
+                  </Button>
+                </DialogFooter>
+              </>
+            ) : (
+              <>
+                <Field label="connections.schemeName">
+                  <Input
+                    value={namingName}
+                    disabled={busy}
+                    onChange={(e) =>
+                      naming.kind === "copy"
+                        ? setCopyName(e.target.value)
+                        : setNewName(e.target.value)
+                    }
+                  />
+                </Field>
+                {naming.kind === "copy" && (
+                  <p className="text-xs text-muted-foreground">{t("schemes.studio.copyHint")}</p>
+                )}
+                {state.error && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {translateNotice(state.error)}
+                  </p>
+                )}
+                <DialogFooter>
+                  <Button variant="outline" disabled={busy} onClick={() => setNaming(null)}>
+                    {t("connections.cancel")}
+                  </Button>
+                  <Button
+                    disabled={busy || !namingName.trim()}
+                    onClick={() => {
+                      if (naming.kind === "new" && dirty) setNaming({ ...naming, step: "draft" });
+                      else void runNaming(false);
+                    }}
+                  >
+                    {t("connections.confirm")}
+                  </Button>
+                </DialogFooter>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
       <Dialog open={preview} onOpenChange={setPreview}>
         <DialogContent className="max-h-[85dvh] overflow-auto sm:max-w-3xl">
           <DialogHeader>

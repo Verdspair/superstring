@@ -1,12 +1,13 @@
-// 模型入口的真实目的地与路由 tab、原导航守卫、任务台账筛选/分页迟到、失效批准与来源运行链接。
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse } from "../../src/shared/contracts";
 import type { TaskDetail, TaskList, TaskSummary } from "../../src/shared/contracts/agent-task";
 import type { ModelProviderResponse } from "../../src/shared/contracts/models";
+import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
+import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { TaskLedger } from "../../src/web/screens/runs/task-ledger";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -61,7 +62,51 @@ const provider: ModelProviderResponse = {
   updated_at: "2026-09-25T00:00:00.000000Z",
 };
 
-async function renderLedger(fake: Partial<typeof api> = {}) {
+const permissions: PermissionsResponse = {
+  revision: "pr-1",
+  policy: {
+    version: 1,
+    grants: [],
+    execution: {
+      research: false,
+      code: false,
+      modules: {
+        mcp: false,
+        skills: false,
+        web: false,
+        tasks: true,
+        memoryJobs: true,
+        knowledgeJobs: true,
+        qqMedia: true,
+        qqStickers: true,
+      },
+      maintenance: { memoryTimeoutSeconds: 3600, knowledgeTimeoutSeconds: 3600 },
+      pausedTools: [],
+      tasks: { concurrency: 2, retentionHours: 24, leaseSeconds: 30, pollMs: 500 },
+      researchLimits: { maxPerRun: 2, maxSteps: 6, deadlineMs: 60_000, maxConclusionChars: 4_000 },
+      codeLimits: {
+        timeoutMs: 20_000,
+        maxCalls: 32,
+        concurrency: 3,
+        memoryBytes: 33_554_432,
+        maxTransferBytes: 1_048_576,
+        maxConclusionChars: 4_000,
+      },
+      loop: {
+        maxSteps: 16,
+        readBatch: 3,
+        noProgress: 3,
+        concurrency: 4,
+        modelConcurrency: 1,
+        providerConcurrency: 1,
+      },
+      qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
+    },
+  },
+  resources: [],
+};
+
+async function renderLedger(fake: Partial<typeof api> = {}, conversationId?: string) {
   store.getState().resetForTests({ ...api, ...fake } as unknown as typeof api);
   store.setState({
     agents: [
@@ -71,7 +116,7 @@ async function renderLedger(fake: Partial<typeof api> = {}) {
     summaryById: Object.fromEntries(loadedConversations.map((item) => [item.id, item] as const)),
     directoryIds: loadedConversations.map((item) => item.id),
   });
-  render(<TaskLedger />);
+  render(conversationId ? <TaskLedger conversationId={conversationId} /> : <TaskLedger />);
   await act(async () => {});
 }
 
@@ -377,5 +422,33 @@ describe("task ledger filters", () => {
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.runDetails") }));
     await act(async () => {});
     expect(getRun).toHaveBeenCalledWith(ORIGIN_RUN_ID, expect.any(AbortSignal));
+  });
+});
+
+describe("execution capability task direct link", () => {
+  // 运行一级入口已取消；能力页的直达按钮保留，但结果必须落对话「任务与审批」的全局范围，
+  // 不重建 legacy runs 页面（store 级规范化在 unified-navigation.test.ts，此处钉屏幕入口本身）。
+  it("lands on the conversation tasks view in global scope", async () => {
+    store.getState().resetForTests({
+      ...api,
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+    } as unknown as typeof api);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "execution-settings",
+    });
+    render(<CapabilitiesWorkspace />);
+    await act(async () => {});
+    fireEvent.click(
+      screen.getByRole("button", { name: i18n.t("capabilities.execution.openTasks") }),
+    );
+    expect(store.getState()).toMatchObject({
+      page: "chat",
+      settingsView: "hub",
+      conversationView: "tasks",
+      conversationScope: "global",
+      pendingNavigation: null,
+    });
   });
 });

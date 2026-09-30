@@ -6,15 +6,24 @@
 // editor as it was and reports the error, the same discipline the rest of the settings surfaces
 // follow.
 
-import type { QqSchemeResponse, QqStickerAssetResponse } from "../../../shared/contracts/qq";
-import type { StoreGet, StoreSet } from "../../state/types";
-import { invalidSchemeInputs } from "./draft-state";
+import type {
+  QqBindingResponse,
+  QqConversationListItem,
+  QqSchemeResponse,
+  QqSettingsResponse,
+  QqStickerAssetResponse,
+} from "../../../shared/contracts/qq";
+import { msg } from "../../i18n";
+import { errorText } from "../../state/helpers";
+import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import { invalidSchemeInputs, parseAttentionMembers } from "./draft-state";
 import {
   type QqAccessState,
   type QqSchemeEditor,
   type QqSchemeState,
   type QqStickerState,
   type QqStorageState,
+  qqSchemeChanges,
   qqSchemeDirty,
   qqSchemeEditorFrom,
   qqStickerEditorFrom,
@@ -298,6 +307,104 @@ export function createQqStickerActions(
 }
 
 /**
+ * 方案目录读取的唯一落地路径（方案页与绑定目录读取共用）：
+ * 目录行替换后，编辑器有草稿（含非法输入原文）时按字段合并——已改字段保留草稿、未改字段
+ * 连同 revision 跟随新基线；方案已不在目录时保留草稿供另存，不自动切走。
+ * 调用方必须先做代次/API 身份校验，保存进行中的旧读取不得走到这里。
+ */
+function createSchemeDirectorySync(set: StoreSet, get: StoreGet) {
+  const loadUsage = async (id: string) => {
+    const api = get().apiClient;
+    const readId = get().qqSchemeUsageReadId + 1;
+    set({ qqSchemeUsageReadId: readId });
+    try {
+      const usage = await api.getQqSchemeUsage(id);
+      if (get().apiClient !== api || get().qqSchemeUsageReadId !== readId) return;
+      if (get().qqSchemeEditor?.source.id !== id) return;
+      set({
+        qqSchemeUsage: { schemeId: id, bindings: usage.bindings },
+        qqSchemeUsageError: null,
+      });
+    } catch (error) {
+      // 次数只是提示：读不到时留下「未知」而不是沿用旧计数（旧值可能是 0，会误放行删除）。
+      if (get().apiClient !== api || get().qqSchemeUsageReadId !== readId) return;
+      if (get().qqSchemeEditor?.source.id !== id) return;
+      set({ qqSchemeUsage: null, qqSchemeUsageError: errorText(error) });
+    }
+  };
+  const openEditor = (scheme: QqSchemeResponse) => {
+    set({
+      qqSchemeEditor: qqSchemeEditorFrom(scheme),
+      qqInputs: { ...get().qqInputs, schemeTexts: {}, schemeInvalid: {} },
+      qqSchemeUsage: null,
+      qqSchemeUsageError: null,
+      error: null,
+      feedback: "",
+    });
+    void loadUsage(scheme.id);
+  };
+  const schemeInputsLive = () =>
+    Object.keys(get().qqInputs.schemeTexts).length > 0 ||
+    Object.keys(get().qqInputs.schemeInvalid).length > 0;
+  const mergeFreshSource = (editor: QqSchemeEditor, fresh: QqSchemeResponse): QqSchemeEditor => {
+    const changed = new Set(qqSchemeChanges(editor).map((row) => row.field));
+    const next = qqSchemeEditorFrom(fresh);
+    if (!changed.size) return next;
+    const carry = (prefix: string, draft: object, target: object) => {
+      const values = draft as Record<string, unknown>;
+      const destination = target as Record<string, unknown>;
+      for (const key of Object.keys(values))
+        if (changed.has(`${prefix}.${key}`)) destination[key] = values[key];
+    };
+    if (changed.has("name")) next.name = editor.name;
+    if (changed.has("description")) next.description = editor.description;
+    carry("triggers", editor.triggers, next.triggers);
+    carry("rhythm", editor.rhythm, next.rhythm);
+    carry("context", editor.context, next.context);
+    carry("compression", editor.compression, next.compression);
+    carry("output_reserve", editor.outputReserve, next.outputReserve);
+    carry("stickers", editor.stickers, next.stickers);
+    if (changed.has("sticker_collections.collection_ids"))
+      next.stickerCollectionIds = [...editor.stickerCollectionIds];
+    carry("prompts", editor.prompts, next.prompts);
+    if (changed.has("reply.split_by_speaker"))
+      next.reply = { ...next.reply, split_by_speaker: editor.reply.split_by_speaker };
+    return next;
+  };
+  const applyDirectoryRead = (schemes: QqSchemeResponse[], refreshEditor = true) => {
+    set({ qqSchemes: schemes });
+    const editor = get().qqSchemeEditor;
+    const fresh = editor ? schemes.find((row) => row.id === editor.source.id) : undefined;
+    if (!refreshEditor) {
+      if (editor && fresh) void loadUsage(fresh.id);
+      else if (editor) set({ qqSchemeUsage: null });
+      return;
+    }
+    if (editor && fresh && (qqSchemeDirty(editor) || schemeInputsLive())) {
+      set({
+        qqSchemeEditor: mergeFreshSource(editor, fresh),
+        feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。"),
+      });
+      void loadUsage(fresh.id);
+      return;
+    }
+    if (editor && !fresh && (qqSchemeDirty(editor) || schemeInputsLive())) {
+      // 当前方案已不在目录里（别处删除或失去可见性）：保留原草稿供核对或另存复制，不自动切到
+      // 第一个——切换会丢掉未保存内容，而保存会被服务端 404 明确拒绝，草稿仍可复制出去。
+      set({
+        qqSchemeUsage: null,
+        feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。"),
+      });
+      return;
+    }
+    if (fresh) openEditor(fresh);
+    else if (schemes[0]) openEditor(schemes[0]);
+    else set({ qqSchemeEditor: null, qqSchemeUsage: null, qqSchemeUsageError: null });
+  };
+  return { loadUsage, openEditor, applyDirectoryRead };
+}
+
+/**
  * Scheme actions (§5.2/§11.2, P5f).
  *
  * The save path is compare-and-swap on the loaded revision, and every write replaces the editor's
@@ -312,6 +419,7 @@ export function createQqSchemeActions(
 ): Pick<
   QqSchemeState,
   | "loadQqSchemes"
+  | "refreshQqScheme"
   | "createQqScheme"
   | "selectQqScheme"
   | "patchQqScheme"
@@ -325,25 +433,58 @@ export function createQqSchemeActions(
     const message = error instanceof Error ? error.message : String(error);
     set({ error: message, feedback: "" });
   };
-  const loadUsage = async (id: string) => {
-    try {
-      const usage = await get().apiClient.getQqSchemeUsage(id);
-      if (get().qqSchemeEditor?.source.id === id) {
-        set({ qqSchemeUsage: { schemeId: id, bindings: usage.bindings } });
-      }
-    } catch {
-      // The count is informational; failing to read it must not look like a failed save.
-    }
-  };
-  const openEditor = (scheme: QqSchemeResponse) => {
+  // 变更操作的模块级令牌：`resetForTests` 会把 store 里的代次清零，单靠代次无法区分
+  // 「重置后新操作恰好拿到同一编号」；令牌不随重置回收，与代次一起判定「仍是当前操作」。
+  let operationToken = 0;
+  /**
+   * 变更开始：记录 API、编辑器引用与操作代次，并作废在途的目录读取。
+   * 响应、错误与 finally 都据此判定自己是否仍属于当前操作，旧操作不得写入新状态。
+   */
+  const beginOperation = () => {
+    const state = get();
+    operationToken += 1;
+    const operation = {
+      api: state.apiClient,
+      editor: state.qqSchemeEditor,
+      id: state.qqSchemeOperationId + 1,
+      token: operationToken,
+    };
     set({
-      qqSchemeEditor: qqSchemeEditorFrom(scheme),
-      qqInputs: { ...get().qqInputs, schemeTexts: {}, schemeInvalid: {} },
-      qqSchemeUsage: null,
+      qqSchemeSaving: true,
+      qqSchemeOperationId: operation.id,
+      // 变更开始即作废在途的目录读取：旧列表晚到不得覆盖刚写入的结果，也不再占着 loading。
+      qqSchemesReadId: state.qqSchemesReadId + 1,
+      qqSchemesLoading: false,
       error: null,
       feedback: "",
     });
-    void loadUsage(scheme.id);
+    return operation;
+  };
+  const isCurrentOperation = (operation: ReturnType<typeof beginOperation>) =>
+    get().qqSchemeOperationId === operation.id && operationToken === operation.token;
+  /** 只有同一个 API 客户端上的当前操作才允许写状态（换客户端即弃。finally 只认操作代次）。 */
+  const isCurrentApi = (operation: ReturnType<typeof beginOperation>) =>
+    get().apiClient === operation.api && isCurrentOperation(operation);
+  const schemeDirectory = createSchemeDirectorySync(set, get);
+  const readDirectory = async (): Promise<boolean> => {
+    // 保存进行中：目录读取不得与写入交错（旧列表晚到会盖掉刚保存的行）；与界面 busy 禁用一致。
+    if (get().qqSchemeSaving) return false;
+    const api = get().apiClient;
+    const readId = get().qqSchemesReadId + 1;
+    set({ qqSchemesReadId: readId, qqSchemesLoading: true, error: null });
+    try {
+      const schemes = await api.listQqSchemes();
+      if (get().qqSchemesReadId !== readId || get().apiClient !== api) return false;
+      schemeDirectory.applyDirectoryRead(schemes);
+      return true;
+    } catch (error) {
+      if (get().qqSchemesReadId !== readId || get().apiClient !== api) return false;
+      report(error);
+      return false;
+    } finally {
+      if (get().qqSchemesReadId === readId && get().apiClient === api)
+        set({ qqSchemesLoading: false });
+    }
   };
   const replaceScheme = (scheme: QqSchemeResponse) =>
     set((state) => ({
@@ -352,56 +493,44 @@ export function createQqSchemeActions(
   return {
     loadQqSchemes: async () => {
       if (get().qqSchemesLoading) return;
-      const id = get().qqSchemesReadId + 1;
-      set({ qqSchemesReadId: id, qqSchemesLoading: true, error: null });
-      try {
-        const schemes = await get().apiClient.listQqSchemes();
-        if (get().qqSchemesReadId !== id) return;
-        set({ qqSchemes: schemes });
-        const current = get().qqSchemeEditor?.source.id;
-        const next = schemes.find((row) => row.id === current) ?? schemes[0];
-        if (
-          next &&
-          !qqSchemeDirty(get().qqSchemeEditor) &&
-          !Object.keys(get().qqInputs.schemeTexts).length
-        )
-          openEditor(next);
-        else if (next) void loadUsage(next.id);
-        else set({ qqSchemeEditor: null, qqSchemeUsage: null });
-      } catch (error) {
-        if (get().qqSchemesReadId !== id) return;
-        report(error);
-      } finally {
-        if (get().qqSchemesReadId === id) set({ qqSchemesLoading: false });
-      }
+      await readDirectory();
+    },
+    refreshQqScheme: async () => {
+      if (get().qqSchemesLoading) return false;
+      return readDirectory();
     },
     createQqScheme: async (name) => {
       if (get().qqSchemeSaving) return false;
-      set({ qqSchemeSaving: true, error: null, feedback: "" });
+      const operation = beginOperation();
       try {
         // A new scheme starts with the project's defaults: every trigger off (§11.1) and the
         // defaults the plan fixed. The repository owns them; this only supplies the name.
-        const scheme = await get().apiClient.createQqScheme({ name, description: null });
+        const scheme = await operation.api.createQqScheme({ name, description: null });
+        if (!isCurrentApi(operation)) return false;
         set((state) => ({ qqSchemes: [...state.qqSchemes, scheme] }));
-        openEditor(scheme);
+        // 等待期间编辑器被切走（含同 id 重选）：新方案仍在目录里可选，但不抢当前会话。
+        if (get().qqSchemeEditor === operation.editor) schemeDirectory.openEditor(scheme);
         set({ feedback: "已新建方案" });
         return true;
       } catch (error) {
-        report(error);
+        if (isCurrentApi(operation)) report(error);
         return false;
       } finally {
-        set({ qqSchemeSaving: false });
+        if (isCurrentOperation(operation)) set({ qqSchemeSaving: false });
       }
     },
     selectQqScheme: (id) => {
       const scheme = get().qqSchemes.find((row) => row.id === id);
-      if (scheme) openEditor(scheme);
+      if (scheme) schemeDirectory.openEditor(scheme);
     },
-    patchQqScheme: (patch) =>
+    patchQqScheme: (patch) => {
+      if (get().qqSchemeSaving) return;
       set((state) =>
         state.qqSchemeEditor ? { qqSchemeEditor: { ...state.qqSchemeEditor, ...patch } } : {},
-      ),
-    patchQqSchemeGroup: (group, patch) =>
+      );
+    },
+    patchQqSchemeGroup: (group, patch) => {
+      if (get().qqSchemeSaving) return;
       set((state) => {
         const editor = state.qqSchemeEditor;
         if (!editor) return {};
@@ -411,17 +540,19 @@ export function createQqSchemeActions(
             [group]: { ...editor[group], ...patch },
           } as QqSchemeEditor,
         };
-      }),
+      });
+    },
     saveQqScheme: async () => {
       const editor = get().qqSchemeEditor;
       if (!editor || get().qqSchemeSaving) return false;
       if (Object.keys(get().qqInputs.schemeInvalid).length || invalidSchemeInputs(get()).length) {
-        set({ error: "请先修正方案中的无效数字，再保存。" });
+        set({ error: msg("请先修正方案中的无效数字，再保存。") });
         return false;
       }
-      set({ qqSchemeSaving: true, error: null, feedback: "" });
+      const schemeId = editor.source.id;
+      const operation = beginOperation();
       try {
-        const saved = await get().apiClient.updateQqScheme(editor.source.id, {
+        const saved = await operation.api.updateQqScheme(schemeId, {
           name: editor.name.trim(),
           description: editor.description.trim() === "" ? null : editor.description.trim(),
           triggers: editor.triggers,
@@ -435,26 +566,35 @@ export function createQqSchemeActions(
           reply: editor.reply,
           expected_revision: editor.source.revision,
         });
+        if (!isCurrentApi(operation)) return false;
         replaceScheme(saved);
-        set({
-          qqSchemeEditor: qqSchemeEditorFrom(saved),
-          qqInputs: { ...get().qqInputs, schemeTexts: {}, schemeInvalid: {} },
-          feedback: "已保存方案",
-        });
+        // 响应晚到且编辑器已被替换（含同 id 重选）：只更新目录行，绝不覆盖新编辑器会话。
+        if (get().qqSchemeEditor === editor) {
+          set({
+            qqSchemeEditor: qqSchemeEditorFrom(saved),
+            qqInputs: { ...get().qqInputs, schemeTexts: {}, schemeInvalid: {} },
+            feedback: "已保存方案",
+          });
+        }
         return true;
       } catch (error) {
-        report(error);
+        if (isCurrentApi(operation)) report(error);
         return false;
       } finally {
-        set({ qqSchemeSaving: false });
+        if (isCurrentOperation(operation)) set({ qqSchemeSaving: false });
       }
     },
     duplicateQqScheme: async (name) => {
       const editor = get().qqSchemeEditor;
       if (!editor || get().qqSchemeSaving) return false;
-      set({ qqSchemeSaving: true, error: null, feedback: "" });
+      if (Object.keys(get().qqInputs.schemeInvalid).length || invalidSchemeInputs(get()).length) {
+        // 复制走的是 create 通道：不先校验的话会绕过界面把非法原值洗成默认值。
+        set({ error: msg("请先修正方案中的无效数字，再保存。") });
+        return false;
+      }
+      const operation = beginOperation();
       try {
-        const created = await get().apiClient.createQqScheme({
+        const created = await operation.api.createQqScheme({
           name,
           description: editor.description.trim() === "" ? null : editor.description.trim(),
           triggers: editor.triggers,
@@ -467,38 +607,45 @@ export function createQqSchemeActions(
           prompts: editor.prompts,
           reply: editor.reply,
         });
+        if (!isCurrentApi(operation)) return false;
         set((state) => ({ qqSchemes: [...state.qqSchemes, created] }));
-        openEditor(created);
+        // 与保存同一条边界：编辑器已被替换（含同 id 重选）时不抢当前会话。
+        if (get().qqSchemeEditor === editor) schemeDirectory.openEditor(created);
         set({ feedback: "已另存为新方案" });
         return true;
       } catch (error) {
-        report(error);
+        if (isCurrentApi(operation)) report(error);
         return false;
       } finally {
-        set({ qqSchemeSaving: false });
+        if (isCurrentOperation(operation)) set({ qqSchemeSaving: false });
       }
     },
     deleteQqScheme: async (id) => {
       if (get().qqSchemeSaving) return false;
-      set({ qqSchemeSaving: true, error: null, feedback: "" });
+      const operation = beginOperation();
       try {
-        await get().apiClient.deleteQqScheme(id);
+        await operation.api.deleteQqScheme(id);
+        if (!isCurrentApi(operation)) return false;
         const remaining = get().qqSchemes.filter((row) => row.id !== id);
-        set({ qqSchemes: remaining, feedback: "已删除方案" });
-        const next = remaining[0];
-        if (next) openEditor(next);
-        else set({ qqSchemeEditor: null, qqSchemeUsage: null });
+        const wasCurrent = get().qqSchemeEditor?.source.id === id;
+        set({ qqSchemes: remaining });
+        // 只有删的是当前方案才换选中：删别的方案不该把编辑器抢走；提示最后设置，免得被 openEditor 清掉。
+        if (wasCurrent) {
+          if (remaining[0]) schemeDirectory.openEditor(remaining[0]);
+          else set({ qqSchemeEditor: null, qqSchemeUsage: null, qqSchemeUsageError: null });
+        }
+        set({ feedback: "已删除方案" });
         return true;
       } catch (error) {
-        report(error);
+        if (isCurrentApi(operation)) report(error);
         return false;
       } finally {
-        set({ qqSchemeSaving: false });
+        if (isCurrentOperation(operation)) set({ qqSchemeSaving: false });
       }
     },
     discardQqSchemeChanges: () => {
       const editor = get().qqSchemeEditor;
-      if (editor) openEditor(editor.source);
+      if (editor) schemeDirectory.openEditor(editor.source);
     },
   };
 }
@@ -550,6 +697,56 @@ export function createQqStorageActions(
 
 // ---- 第三方App接入 (§11.1, P5q) ---------------------------------------------------------------
 
+/** 名单输入是自由文本：按解析后的集合判断改没改（与 attentionDirty 同一口径）。 */
+const sameAttentionMembers = (text: string, members: readonly string[]) => {
+  const parsed = parseAttentionMembers(text);
+  return (
+    parsed.length === members.length &&
+    [...parsed].sort().join(" ") === [...members].sort().join(" ")
+  );
+};
+
+/**
+ * 显式「刷新保存基线」唯一的草稿合并：只合并被点名绑定的 choices/attention/记忆整理条数草稿。
+ * 已改字段保留（含非法/空输入原文），未改字段与 revision 跟随新基线；隐式目录读取走不到这里。
+ */
+function mergeExplicitBindingDraft(
+  state: SuperstringState,
+  bindingId: string,
+  fresh: QqBindingResponse,
+): Pick<SuperstringState, "qqInputs" | "qqMemoryBatchDrafts"> | null {
+  const choice = state.qqInputs.choices[bindingId];
+  const attention = state.qqInputs.attention[bindingId];
+  const batch = state.qqMemoryBatchDrafts[bindingId];
+  if (!choice?.source && !attention && !batch) return null;
+  const choices = { ...state.qqInputs.choices };
+  if (choice?.source) {
+    choices[bindingId] = {
+      agentId: choice.agentId !== choice.source.agent_id ? choice.agentId : fresh.agent_id,
+      schemeId: choice.schemeId !== choice.source.scheme_id ? choice.schemeId : fresh.scheme_id,
+      source: fresh,
+    };
+  }
+  const attentionNext = { ...state.qqInputs.attention };
+  if (attention) {
+    const base = attention.source.attention;
+    attentionNext[bindingId] = {
+      source: fresh,
+      mode: attention.mode === base.mode ? fresh.attention.mode : attention.mode,
+      members: sameAttentionMembers(attention.members, base.members)
+        ? fresh.attention.members.join(" ")
+        : attention.members,
+    };
+  }
+  const batchNext = { ...state.qqMemoryBatchDrafts };
+  // 用户显式刷新同一个绑定范围：输入保留、revision 推进，保存重试才可能通过 CAS。
+  if (batch) batchNext[bindingId] = { value: batch.value, revision: fresh.revision };
+  return {
+    qqInputs: { ...state.qqInputs, choices, attention: attentionNext },
+    qqMemoryBatchDrafts: batchNext,
+  };
+}
+
 /**
  * The access surface: read the saved state, write the two credentials-bearing fields, and manage
  * bindings. Everything goes through compare-and-swap with the revision the page read, so two open
@@ -562,6 +759,7 @@ export function createQqAccessActions(
   QqAccessState,
   | "loadQqAccess"
   | "loadQqBindings"
+  | "loadQqBindingDirectory"
   | "loadQqSettings"
   | "saveQqJudgementModel"
   | "refreshQqConnection"
@@ -573,22 +771,98 @@ export function createQqAccessActions(
 > {
   const report = (error: unknown) =>
     set({ error: error instanceof Error ? error.message : String(error), feedback: "" });
+  const schemeDirectory = createSchemeDirectorySync(set, get);
+  // 访问侧读取的模块级令牌（与方案模块同一模式）：`resetForTests` 会把 store 里的代次清零，
+  // 单靠代次无法区分「重置后新读取恰好拿到同一编号」；令牌不随重置回收。
+  let accessReadToken = 0;
+  const beginAccessRead = () => {
+    const state = get();
+    accessReadToken += 1;
+    const operation = {
+      api: state.apiClient,
+      id: state.qqBindingsReadId + 1,
+      token: accessReadToken,
+    };
+    set({ qqBindingsReadId: operation.id });
+    return operation;
+  };
+  const isCurrentAccessRead = (operation: ReturnType<typeof beginAccessRead>) =>
+    get().qqBindingsReadId === operation.id && accessReadToken === operation.token;
+  const isCurrentAccessApi = (operation: ReturnType<typeof beginAccessRead>) =>
+    get().apiClient === operation.api && isCurrentAccessRead(operation);
+  /** 写入开始即作废在途读取：旧列表/旧设置晚到不得盖掉刚写入的结果，也不留悬空的 loading。 */
+  const invalidateAccessReads = () =>
+    set({ qqBindingsReadId: get().qqBindingsReadId + 1, qqBindingsLoading: false });
+  /** 绑定写入成功后当前方案的使用量可能已变：清为未知再真实重读，旧计数 0 不得放行删除。 */
+  const refreshSchemeUsage = () => {
+    const editor = get().qqSchemeEditor;
+    if (!editor) return;
+    set({ qqSchemeUsage: null });
+    void schemeDirectory.loadUsage(editor.source.id);
+  };
+  /** 显式刷新连接时合并连接草稿：已改字段保留输入，未改字段跟随新基线，revision 推进到刷新值。 */
+  const mergeConnectionDraft = (fresh: QqSettingsResponse) => {
+    const draft = get().qqInputs.connection;
+    if (!draft) return;
+    const endpoint =
+      draft.endpoint.trim() !== (draft.source.transport.endpoint ?? "")
+        ? draft.endpoint
+        : (fresh.transport.endpoint ?? "");
+    const accountId =
+      draft.accountId.trim() !== (draft.source.account_id ?? "")
+        ? draft.accountId
+        : (fresh.account_id ?? "");
+    set((state) => ({
+      qqInputs: {
+        ...state.qqInputs,
+        connection: { source: fresh, endpoint, accountId, token: draft.token },
+      },
+    }));
+  };
   const reload = async () => {
     // Schemes come along because a binding names one: the page's select needs the list, and
     // fetching it here keeps the row from offering an empty choice that cannot be saved.
-    const [settings, conversations, bindings, schemes] = await Promise.all([
-      get().apiClient.getQqSettings(),
-      get().apiClient.listQqConversations(),
-      get().apiClient.listQqBindings(),
-      get().apiClient.listQqSchemes(),
-    ]);
+    const operation = beginAccessRead();
+    const schemeReadId = get().qqSchemesReadId;
+    set({ qqBindingsLoading: true });
+    let rows: [
+      QqSettingsResponse,
+      QqConversationListItem[],
+      QqBindingResponse[],
+      QqSchemeResponse[],
+    ];
+    try {
+      rows = await Promise.all([
+        operation.api.getQqSettings(),
+        operation.api.listQqConversations(),
+        operation.api.listQqBindings(),
+        operation.api.listQqSchemes(),
+      ]);
+    } catch (error) {
+      if (isCurrentAccessApi(operation)) {
+        set({
+          qqBindingsLoading: false,
+          qqBindingsLoaded: false,
+          qqBindingsError: errorText(error),
+          qqSchemeUsage: null,
+          qqSchemeUsageReadId: get().qqSchemeUsageReadId + 1,
+        });
+        throw error;
+      }
+      return;
+    }
+    if (!isCurrentAccessApi(operation)) return;
+    const [settings, conversations, bindings, schemes] = rows;
     set({
       qqSettings: settings,
       qqConversations: conversations,
       qqBindings: bindings,
       qqBindingsLoaded: true,
-      qqSchemes: schemes,
+      qqBindingsError: null,
+      qqBindingsLoading: false,
     });
+    // 方案目录行经方案模块的同一合并路径落地；读取期间发生的方案保存已推进代次，旧列表直接丢弃。
+    if (get().qqSchemesReadId === schemeReadId) schemeDirectory.applyDirectoryRead(schemes, false);
   };
   // One request serves both binding entries — an observed row and a typed number — because the
   // payload is the same and only the source of the conversation identity differs.
@@ -600,6 +874,7 @@ export function createQqAccessActions(
     schemeId: string;
   }): Promise<boolean> => {
     set({ qqAccessSaving: true, error: null, feedback: "" });
+    invalidateAccessReads();
     try {
       await get().apiClient.createQqBinding({
         account_id: input.accountId,
@@ -612,6 +887,7 @@ export function createQqAccessActions(
         share_web_memory: false,
       });
       await reload();
+      refreshSchemeUsage();
       set({ feedback: "已绑定会话" });
       return true;
     } catch (error) {
@@ -635,14 +911,87 @@ export function createQqAccessActions(
       }
     },
     // One request, for the pages that only need to know which conversations exist (the 长期记忆
-    // hint). A failed read leaves the flag set, so the hint stays quiet instead of retrying on
-    // every render; the access page's own load reports the error when it is actually visited.
-    loadQqBindings: async () => {
-      if (get().qqBindingsLoaded) return;
+    // hint). 无参保持缓存语义：读成功过就不再请求，失败保持安静（提示宁可不显示，也不重试轰炸）。
+    // 显式刷新（refresh = true，目录刷新与使用量会话）绕开缓存真实重读；失败时把「未知」与原因
+    // 留下（qqBindingsLoaded = false + qqBindingsError），不写全局 error，别的页面保持安静。
+    loadQqBindings: async (refresh = false) => {
+      if (!refresh && get().qqBindingsLoaded) return;
+      const operation = beginAccessRead();
+      set({
+        qqBindingsLoading: true,
+        ...(refresh ? { qqBindingsLoaded: false, qqBindingsError: null } : {}),
+      });
       try {
-        set({ qqBindings: await get().apiClient.listQqBindings(), qqBindingsLoaded: true });
-      } catch {
-        // Silence is deliberate: this read only decides whether a hint is shown.
+        const bindings = await operation.api.listQqBindings();
+        if (!isCurrentAccessApi(operation)) return;
+        set({
+          qqBindings: bindings,
+          qqBindingsLoaded: true,
+          qqBindingsError: null,
+          qqBindingsLoading: false,
+        });
+      } catch (error) {
+        if (!isCurrentAccessApi(operation)) return;
+        if (refresh) {
+          set({
+            qqBindingsLoaded: false,
+            qqBindingsError: errorText(error),
+            qqBindingsLoading: false,
+          });
+        } else {
+          // 静默读失败：保持原样，不制造错误提示。
+          set({ qqBindingsLoading: false });
+        }
+      }
+    },
+    loadQqBindingDirectory: async (bindingId?: string) => {
+      // 保存进行中不开始读取：结果只会与刚写入的内容竞争，等保存方完成后自己重读。
+      if (get().qqSchemeSaving || get().qqAccessSaving) return;
+      const operation = beginAccessRead();
+      const schemeReadId = get().qqSchemesReadId;
+      set({
+        qqBindingsLoading: true,
+        qqBindingsLoaded: false,
+        qqBindingsError: null,
+        qqSchemeUsage: null,
+        qqSchemeUsageReadId: get().qqSchemeUsageReadId + 1,
+      });
+      try {
+        const [settings, conversations, bindings, schemes] = await Promise.all([
+          operation.api.getQqSettings(),
+          operation.api.listQqConversations(),
+          operation.api.listQqBindings(),
+          operation.api.listQqSchemes(),
+        ]);
+        if (!isCurrentAccessApi(operation)) return;
+        set({
+          qqSettings: settings,
+          qqConversations: conversations,
+          qqBindings: bindings,
+          qqBindingsLoaded: true,
+          qqBindingsError: null,
+          qqBindingsLoading: false,
+        });
+        // 方案目录行不直接落地：经方案模块同一保护/合并路径，在途方案保存或更新读取优先。
+        if (get().qqSchemesReadId === schemeReadId)
+          schemeDirectory.applyDirectoryRead(schemes, false);
+        // 只有显式点名（「刷新保存基线」）才合并该绑定草稿；隐式读取绝不自动刷新保存基线。
+        if (bindingId) {
+          const fresh = bindings.find((row) => row.id === bindingId);
+          if (fresh) {
+            const patch = mergeExplicitBindingDraft(get(), bindingId, fresh);
+            if (patch) set(patch);
+          }
+          set({ error: null, feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。") });
+        }
+      } catch (error) {
+        if (!isCurrentAccessApi(operation)) return;
+        // 失败按「未知」呈现：由视图给出可重试的失败态，不拿缓存列表继续操作。
+        set({
+          qqBindingsLoaded: false,
+          qqBindingsError: errorText(error),
+          qqBindingsLoading: false,
+        });
       }
     },
     // Settings only, for the surfaces that need nothing else from the access page (the
@@ -662,6 +1011,7 @@ export function createQqAccessActions(
       const settings = get().qqSettings;
       if (!settings || get().qqAccessSaving) return false;
       set({ qqAccessSaving: true, error: null, feedback: "" });
+      invalidateAccessReads();
       try {
         set({
           qqSettings: await get().apiClient.updateQqSettings({
@@ -679,16 +1029,26 @@ export function createQqAccessActions(
       }
     },
     refreshQqConnection: async () => {
+      // 连接页唯一刷新：重读设置与连接状态；草稿的已改字段保留、未改字段跟随新基线并推进
+      // revision，这样一次冲突（409）后直接刷新即可重试；失败保留草稿与旧状态并可重试。
+      const operation = beginAccessRead();
       try {
-        set({ qqConnection: (await get().apiClient.getQqStatus()).connection });
+        const [settings, status] = await Promise.all([
+          operation.api.getQqSettings(),
+          operation.api.getQqStatus(),
+        ]);
+        if (!isCurrentAccessApi(operation)) return;
+        set({ qqSettings: settings, qqConnection: status.connection });
+        mergeConnectionDraft(settings);
       } catch (error) {
-        report(error);
+        if (isCurrentAccessApi(operation)) report(error);
       }
     },
     saveQqSurface: async (patch, expectedRevision) => {
       const settings = get().qqSettings;
       if (!settings || get().qqAccessSaving) return false;
       set({ qqAccessSaving: true, error: null, feedback: "" });
+      invalidateAccessReads();
       try {
         // Two requests, one revision chain: the settings call may bump the revision, so the
         // transport call uses whatever came back rather than the revision the page started with.
@@ -760,12 +1120,14 @@ export function createQqAccessActions(
     updateQqBindingRow: async (binding, patch) => {
       if (get().qqAccessSaving) return false;
       set({ qqAccessSaving: true, error: null, feedback: "" });
+      invalidateAccessReads();
       try {
         await get().apiClient.updateQqBinding(binding.id, {
           ...patch,
           expected_revision: binding.revision,
         });
         await reload();
+        refreshSchemeUsage();
         set({ feedback: "已更新绑定" });
         return true;
       } catch (error) {
@@ -780,6 +1142,7 @@ export function createQqAccessActions(
     organiseQqMemoryRow: async (binding) => {
       if (get().qqAccessSaving) return null;
       set({ qqAccessSaving: true, error: null, feedback: "" });
+      invalidateAccessReads();
       try {
         const verdict = await get().apiClient.organiseQqMemory(binding.id);
         // A queued job consumes the observations the row just counted, so the list is read again

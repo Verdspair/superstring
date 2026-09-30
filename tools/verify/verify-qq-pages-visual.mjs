@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Page matrix for every settings destination this version added or changed.
+// Page matrix for every workspace destination this version added or changed.
 //
-// What it does: opens every settings destination this version added or changed in a real browser —
+// What it does: opens every workspace destination this version added or changed in a real browser —
 // at 1920/1440/390/320, in both languages — then applies every theme in light and dark on the
 // densest page, plus system mode (the OS preference decides the scheme) and a reduced-motion pass.
 // Assertions are objective (horizontal overflow, a page or group that did not render, a theme or a
@@ -10,12 +10,12 @@
 // Pixel judgement stays with the person.
 //
 // Navigation: the shell (ADR0019) renders the primary destinations in a persistent <aside>
-// (ProductNavigation); below 768px the same component lives inside the header's Sheet. The second
-// click is a role=tab inside the screen itself, or — in the 系统能力 directory — a button row
-// (`second: "row"`, not a tab). Both are matched by their localized label, so the page list carries
-// the zh and en spellings; entries marked `landmark: "region"` are accepted only once their title
-// landmark (the section aria-label) is up, so a click that never opened its destination fails
-// instead of passing as the old page.
+// (ProductNavigation); below 768px the same component lives inside the header's Sheet. A second
+// click opens an exact localized tab or catalog row; optional `pick` clicks select a real record
+// before that tab, and `scope` clicks the conversation hub's current/global buttons afterwards.
+// New destinations read explicit `labelKeys` from translation.json, rejecting missing keys without
+// a fallback. Selected tabs, scope buttons and destination content must all agree; opening an old
+// page or only rendering a loading shell is not an accepted visit.
 //
 // Why a separate tool: only a real browser can be given a viewport, so this cannot be an assertion
 // inside tests/web. This complements the in-app browser interaction checks.
@@ -24,6 +24,12 @@
 // has one; nothing is installed by this script):
 //   SUPERSTRING_PLAYWRIGHT=<dir with node_modules/playwright> \
 //   SUPERSTRING_VISUAL_URL=http://127.0.0.1:17861 node tools/verify/verify-qq-pages-visual.mjs
+// The default page list is complete; SUPERSTRING_VISUAL_PAGES accepts an exact comma-separated
+// subset (unknown IDs fail). SUPERSTRING_VISUAL_THEME_PAGE defaults to tool-grants and must be
+// selected; a focused batch can use execution-ledger or scheme-bindings without changing defaults.
+// --ui-frozen records before/after source hashes and rejects HMR or changes during the matrix.
+// Conversation coverage IDs: conversation-{web|qq}-messages and
+// conversation-{web|qq}-{activity|tasks}-{current|global}; select only seeded fixture channels.
 // Defaults to bundled Chromium; optionally set SUPERSTRING_VISUAL_BROWSER_CHANNEL=msedge
 // or SUPERSTRING_VISUAL_BROWSER_EXECUTABLE for an existing isolated verification browser.
 // Reports and screenshots land in artifacts/validation unless SUPERSTRING_VISUAL_OUT names
@@ -41,53 +47,128 @@
 // preference. Labels are always matched with the exact localized spelling from the language packs;
 // there is deliberately no either-language fallback for a page this tool failed to open.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const uiFrozen = process.argv.includes("--ui-frozen");
 const url = process.env.SUPERSTRING_VISUAL_URL ?? "http://127.0.0.1:17861";
-const playwrightRoot = process.env.SUPERSTRING_PLAYWRIGHT;
-if (!playwrightRoot) {
-  console.error(
-    "SUPERSTRING_PLAYWRIGHT must point at a directory containing node_modules/playwright",
-  );
-  process.exit(2);
+function sourceFingerprints() {
+  const result = {};
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const file = resolve(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error("Linked source refused");
+      if (entry.isDirectory()) walk(file);
+      else
+        result[relative(root, file).replaceAll("\\", "/")] = createHash("sha256")
+          .update(readFileSync(file))
+          .digest("hex");
+    }
+  };
+  for (const directory of ["src/web", "src/shared"]) walk(resolve(root, directory));
+  const probe = fileURLToPath(import.meta.url);
+  if (lstatSync(probe).isSymbolicLink()) throw new Error("Linked probe refused");
+  result[relative(root, probe).replaceAll("\\", "/")] = createHash("sha256")
+    .update(readFileSync(probe))
+    .digest("hex");
+  return result;
 }
-const { chromium } = createRequire(resolve(playwrightRoot, "package.json"))("playwright");
-// 每轮一个时间戳子目录：报告、截图与失败证据同放其中，不覆盖任何既有证据。
-const outputBase = resolve(root, process.env.SUPERSTRING_VISUAL_OUT ?? "artifacts/validation");
-const runStamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
-const outputDir = resolve(outputBase, `run-${runStamp}`);
-mkdirSync(outputDir, { recursive: true });
+const LOCALES = ["zh-CN", "en"];
+const translations = Object.fromEntries(
+  LOCALES.map((locale) => [
+    locale,
+    JSON.parse(
+      readFileSync(resolve(root, `src/web/i18n/locales/${locale}/translation.json`), "utf8"),
+    ),
+  ]),
+);
+function t(locale, key) {
+  const value = translations[locale]?.[key];
+  if (!Object.hasOwn(translations[locale] ?? {}, key) || typeof value !== "string" || !value.trim())
+    throw new Error(`Missing translation key: ${locale}:${key}`);
+  return value;
+}
+function labelsOf(entry, locale) {
+  return (
+    entry.labelKeys?.map((key) => t(locale, key)) ?? (locale === "zh-CN" ? entry.zh : entry.en)
+  );
+}
 
 /**
- * Pages this version touched, with the nav labels a click needs and one content probe each.
- * `zh`/`en` are [primary destination, secondary destination?]; the secondary is a role=tab unless
- * `second: "row"` marks it as a row in the 系统能力 directory (a button row, not tabs), whose name
- * is the actual localized catalog label. The last label of an entry with `landmark: "region"` must
- * name the opened page's section title — the check that rejects "the click did not open it".
- * Probes are optional anchors that must exist *and* not clip their own content. 记忆查询与知识查询
- * 在助手编辑基线/读取草稿到位前只会渲染加载态（区域地标那时已经存在），所以这两页用关键数字
- * 输入框作探针：输入框出现才算详情真的加载完成，地标单独成立不再算数。
+ * `zh`/`en` or strict `labelKeys` describe [primary, secondary?]. `pick` selects a record before
+ * the secondary tab; `second: "row"` opens a capability row instead. `conversation` selects a
+ * real index row after filtering by channel; `scope` explicitly clicks current/global and checks
+ * both pressed states, even when no selected conversation makes the hub default to global.
+ * `schemeView` requires the picked scheme's editor/binding board, not just its tab labels.
+ * Optional probes must exist and must not clip their content. Memory/knowledge numeric inputs
+ * prove that the editing baseline loaded; their section landmarks alone are insufficient.
  */
-const PAGES = [
-  // 0.4.0 P7: 接入内的三个目的地与运行内的任务与审批，加上本版改过的模型能力与助手工具范围。
-  { id: "mcp-servers", zh: ["接入", "MCP 服务"], en: ["Access", "MCP services"], probe: null },
-  { id: "skill-catalog", zh: ["接入", "技能"], en: ["Access", "Skills"], probe: null },
+const ALL_PAGES = [
+  // 扩展仅管理 MCP / Skills / 外部工具授权；严格读取新一级标签，绝不回退旧接入。
+  {
+    id: "mcp-servers",
+    labelKeys: ["workspace.extensions", "connections.mcp.title"],
+    extension: "mcp",
+    probe: null,
+  },
+  {
+    id: "skill-catalog",
+    labelKeys: ["workspace.extensions", "connections.skills.title"],
+    extension: "skills",
+    probe: null,
+  },
   {
     id: "tool-grants",
-    zh: ["接入", "工具授权"],
-    en: ["Access", "Tool authorisation"],
+    labelKeys: ["workspace.extensions", "connections.grants.title"],
+    extension: "grants",
     probe: null,
   },
   {
     id: "task-ledger",
-    zh: ["运行", "任务与审批"],
-    en: ["Runs", "Tasks and approvals"],
+    labelKeys: ["workspace.conversations", "connections.tasks.title"],
+    view: "tasks",
+    scope: "global",
     probe: null,
   },
+  {
+    id: "execution-ledger",
+    labelKeys: ["workspace.conversations", "workspace.runtime_observability"],
+    view: "activity",
+    scope: "global",
+    probe: null,
+  },
+  // Web 与 QQ 的三种视图、两种运行范围均从目录行真实点击进入；消息记录没有全局开关。
+  ...["web", "qq"].flatMap((channel) => [
+    {
+      id: `conversation-${channel}-messages`,
+      labelKeys: ["workspace.conversations", "workspace.message_history"],
+      conversation: channel,
+      view: "messages",
+      probe: channel === "web" ? "main textarea" : 'main [role="tabpanel"]',
+    },
+    ...["current", "global"].flatMap((scope) => [
+      {
+        id: `conversation-${channel}-activity-${scope}`,
+        labelKeys: ["workspace.conversations", "workspace.runtime_observability"],
+        conversation: channel,
+        view: "activity",
+        scope,
+        probe: null,
+      },
+      {
+        id: `conversation-${channel}-tasks-${scope}`,
+        labelKeys: ["workspace.conversations", "connections.tasks.title"],
+        conversation: channel,
+        view: "tasks",
+        scope,
+        probe: null,
+      },
+    ]),
+  ]),
   // 0.4.0 P8: 系统能力一级目录与目录行打开的能力详情；执行设置、联网从运行、接入移归此处。
   // 目录行是 button 行而不是页签，行名与详情页 section[aria-label] 共用同一 nameKey，
   // 所以标签取实际语言包（capabilities.*.name / connections.web.title），不做宽松回退。
@@ -161,38 +242,227 @@ const PAGES = [
     // 助手页先要打开一个助手，右侧才会出现分区页签。
     pick: "[data-agent-open]",
   },
-  // 既有目的地：本轮未改，留在清单里守住回归。
-  {
-    id: "operating-mode",
-    zh: ["接入", "会话绑定"],
-    en: ["Access", "Conversation bindings"],
-    probe: null,
-  },
+  // operating-mode 保留验收 ID，真实点击路径与新连接路由完全相同。
+  ...["operating-mode", "qq-connection"].map((id) => ({
+    id,
+    labelKeys: ["workspace.schemes", "connections.transportPage.tab"],
+    pick: '[data-scheme-app-open="qq"]',
+    qqAppTab: "connection",
+    probe: 'input[autocomplete="new-password"]',
+  })),
   {
     id: "qq-stickers",
     zh: ["资料", "表情素材"],
     en: ["Materials", "Sticker library"],
     probe: null,
   },
+  // 方案目录保持目录；详情先选方案，再验证方案设置/使用会话与原四参数页签。
+  {
+    id: "scheme-library",
+    labelKeys: ["workspace.schemes"],
+    probe: null,
+    landmark: "region",
+  },
+  {
+    id: "qq-app-schemes",
+    labelKeys: ["workspace.schemes", "workspace.schemes"],
+    pick: '[data-scheme-app-open="qq"]',
+    qqAppTab: "schemes",
+    probe: "[data-scheme-open]",
+  },
   {
     id: "qq-scheme-config",
-    zh: ["接入", "共享方案"],
-    en: ["Access", "Shared schemes"],
+    labelKeys: ["workspace.schemes"],
+    probe: null,
+    pick: ['[data-scheme-app-open="qq"]', "[data-scheme-open]"],
+    schemeView: "settings",
+    finalTabKeys: [
+      "connections.whenToParticipate",
+      "connections.howToRespond",
+      "connections.whatToRead",
+      "connections.mediaAndExpression",
+    ],
+  },
+  {
+    id: "scheme-bindings",
+    labelKeys: ["workspace.schemes", "schemes.bindings.viewBindings"],
+    probe: '[data-scheme-view="bindings"]',
+    pick: ['[data-scheme-app-open="qq"]', "[data-scheme-open]"],
+    schemeView: "bindings",
+    finalTabKeys: ["schemes.bindings.viewSettings", "schemes.bindings.viewBindings"],
+  },
+  {
+    id: "qq-storage",
+    labelKeys: ["workspace.schemes", "connections.dataRetention"],
+    pick: '[data-scheme-app-open="qq"]',
+    qqAppTab: "storage",
     probe: null,
   },
-  { id: "qq-storage", zh: ["接入", "数据与保留"], en: ["Access", "Data & retention"], probe: null },
   { id: "long-memory", zh: ["资料", "记忆"], en: ["Materials", "Memory"], probe: null },
   // 资料里的知识库分区（文档页）随 P8 归入「资料」：原清单遗漏的既有目的地，本轮补上。
   { id: "knowledge-config", zh: ["资料", "文档"], en: ["Materials", "Documents"], probe: null },
   { id: "general", zh: ["偏好"], en: ["Preferences"], probe: null },
 ];
+const requestedPages = process.env.SUPERSTRING_VISUAL_PAGES?.split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
+const unknownPages = requestedPages?.filter((id) => !ALL_PAGES.some((entry) => entry.id === id));
+if (unknownPages?.length)
+  throw new Error(`SUPERSTRING_VISUAL_PAGES contains unknown pages: ${unknownPages.join(", ")}`);
+const PAGES = requestedPages
+  ? ALL_PAGES.filter((entry) => requestedPages.includes(entry.id))
+  : ALL_PAGES;
+if (!PAGES.length) throw new Error("No visual pages selected");
+const requestedThemePage = process.env.SUPERSTRING_VISUAL_THEME_PAGE ?? "tool-grants";
+const THEME_PAGE = PAGES.find((entry) => entry.id === requestedThemePage);
+if (!THEME_PAGE) throw new Error("Theme page must be included in the selected visual pages");
+for (const entry of PAGES) {
+  assert(
+    entry.scope === undefined || ["current", "global"].includes(entry.scope),
+    `${entry.id}: invalid scope`,
+  );
+  assert(
+    entry.view === undefined || ["messages", "activity", "tasks"].includes(entry.view),
+    `${entry.id}: invalid view`,
+  );
+  assert(
+    entry.scope === undefined || ["activity", "tasks"].includes(entry.view),
+    `${entry.id}: scope needs an activity/tasks view`,
+  );
+  assert(
+    entry.scope !== "current" || entry.conversation !== undefined,
+    `${entry.id}: current scope needs a conversation pick`,
+  );
+  assert(
+    entry.conversation === undefined || ["web", "qq"].includes(entry.conversation),
+    `${entry.id}: invalid conversation channel`,
+  );
+  assert(
+    entry.schemeView === undefined || ["settings", "bindings"].includes(entry.schemeView),
+    `${entry.id}: invalid scheme view`,
+  );
+  assert(
+    entry.qqAppTab === undefined || ["schemes", "connection", "storage"].includes(entry.qqAppTab),
+    `${entry.id}: invalid QQ app tab`,
+  );
+  assert(
+    entry.extension === undefined || ["mcp", "skills", "grants"].includes(entry.extension),
+    `${entry.id}: invalid extension tab`,
+  );
+  for (const locale of LOCALES) {
+    const labels = labelsOf(entry, locale);
+    assert(labels?.length >= 1 && labels.length <= 2, `${entry.id}: invalid navigation labels`);
+    for (const key of entry.finalTabKeys ?? []) t(locale, key);
+    if (entry.id === "scheme-library") t(locale, "connections.transportPage.tab");
+    if (entry.qqAppTab) {
+      for (const key of [
+        "workspace.schemes",
+        "connections.transportPage.tab",
+        "connections.dataRetention",
+        "connections.enableQq",
+        "connections.assistantAccount",
+        "connections.websocketAddress",
+        "connections.accessToken",
+        "connections.saveAccessSettings",
+        "schemes.qq.appTitle",
+        "connections.storage.title",
+        "connections.storage.runtime",
+        "connections.storage.sweep",
+        "connections.common.refresh",
+      ])
+        t(locale, key);
+    }
+    if (entry.extension) {
+      for (const key of [
+        "workspace.extensions",
+        "connections.mcp.title",
+        "connections.skills.title",
+        "connections.grants.title",
+        "connections.refreshState",
+        "connections.common.refresh",
+        "connections.enableQq",
+        "connections.conversationBindings",
+        "connections.grants.group.builtin",
+      ])
+        t(locale, key);
+    }
+    if (entry.schemeView) {
+      for (const key of [
+        "connections.chooseAChatScheme",
+        "schemes.bindings.viewSettings",
+        "schemes.bindings.viewBindings",
+        "schemes.bindings.add",
+        "schemes.bindings.refresh",
+      ])
+        t(locale, key);
+    }
+    if (entry.view) {
+      t(locale, "workspace.conversation_view");
+      if (entry.view === "activity") {
+        for (const key of [
+          "observability.executionWorkspace",
+          "observability.searchRuntimeRecords",
+          "observability.loadingRuns",
+          "observability.loadingProcessingState",
+          "observability.integrated.globalTitle",
+        ])
+          t(locale, key);
+        if (entry.scope === "current") t(locale, "workspace.conversationHub.activityTitle");
+      }
+      if (entry.view === "tasks") {
+        t(locale, "connections.tasks.filterStatus");
+        t(locale, "connections.tasks.filterConversation");
+        t(locale, "connections.tasks.currentConversationScope");
+        t(locale, "connections.common.refresh");
+      }
+      if (entry.view === "messages") {
+        t(locale, "workspace.enter_a_message");
+        t(locale, "workspace.loading_conversation");
+        t(locale, "workspace.conversationHub.scope");
+      }
+    }
+    if (entry.scope) {
+      for (const key of [
+        "workspace.conversationHub.scope",
+        "workspace.conversationHub.scopeCurrent",
+        "workspace.conversationHub.scopeGlobal",
+      ])
+        t(locale, key);
+    }
+    if (entry.conversation) {
+      for (const key of [
+        "workspace.conversation_index",
+        "workspace.open_conversation_index",
+        "workspace.conversation_channels",
+        "workspace.message_history",
+        entry.conversation === "web" ? "channel.web" : "channel.onebot",
+      ])
+        t(locale, key);
+    }
+  }
+}
+const playwrightRoot = process.env.SUPERSTRING_PLAYWRIGHT;
+if (!playwrightRoot) {
+  console.error(
+    "SUPERSTRING_PLAYWRIGHT must point at a directory containing node_modules/playwright",
+  );
+  process.exit(2);
+}
+const { chromium } = createRequire(resolve(playwrightRoot, "package.json"))("playwright");
+// 每轮一个时间戳子目录：报告、截图与失败证据同放其中，不覆盖任何既有证据。
+const outputBase = resolve(root, process.env.SUPERSTRING_VISUAL_OUT ?? "artifacts/validation");
+const runStamp = new Date().toISOString().replaceAll(/[:.]/g, "-");
+const outputDir = resolve(outputBase, `run-${runStamp}`);
+mkdirSync(outputDir, { recursive: true });
+const sourceBefore = sourceFingerprints();
+const freeze = { requested: uiFrozen, sourceBefore, checked: false };
+
 const VIEWPORTS = [
   { name: "1920x1080", width: 1920, height: 1080 },
   { name: "1440x1000", width: 1440, height: 1000 },
   { name: "390x844", width: 390, height: 844 },
   { name: "320x700", width: 320, height: 700 },
 ];
-const LOCALES = ["zh-CN", "en"];
 
 // The theme list is read from its one source rather than copied, so a new theme is covered here
 // without editing this file. Only the THEMES block is read: MODES has the same `{ id, name }` shape
@@ -208,63 +478,14 @@ function assert(condition, message) {
 }
 const slug = (value) => value.replace(/[^a-z0-9-]/gi, "-");
 
-async function openPage(page, entry, labels) {
-  // 切屏是懒加载的：点击后 main 里会先留着上一个界面，有时并排挂出 Suspense 占位。
-  // 先记下点击前的文字，再把“就绪”定义成三条同时成立：
-  // 占位消失、文字换成了别的内容、并且连续一段时间不再变化。
-  const previous = await page.evaluate(() =>
-    (document.querySelector("main")?.textContent ?? "").replace(/\s+/g, " ").trim(),
-  );
-  // Primary destinations live in the persistent <aside>; below 768px the same component is mounted
-  // inside the header's Sheet, so the trigger is the header's first button.
-  const compact = page.viewportSize().width < 768;
-  await page.waitForFunction(async (mobile) => {
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const trigger = document.querySelector('header button[aria-haspopup="dialog"]');
-    const aside = document.querySelector("aside");
-    return mobile ? !!trigger && !aside : !!aside;
-  }, compact);
-  if (compact) {
-    await page.locator('header button[aria-haspopup="dialog"]').first().click();
-    await page.getByRole("dialog").waitFor({ state: "visible" });
-  }
-  await page.locator("aside").first().getByRole("button", { name: labels[0], exact: true }).click();
-  // Selecting the section the screen already shows leaves the Sheet open; close it before the
-  // in-page tab underneath can be clicked.
-  if (compact) {
-    await page.keyboard.press("Escape");
-  }
-  // 少数页面要先选中一条记录（例如助手的名称）才会渲染分区页签。
-  if (entry.pick !== undefined) await page.locator(entry.pick).first().click();
-  if (labels[1] !== undefined) {
-    if (entry.second === "row") {
-      // 系统能力目录的行是 button 行（不是页签）：行按钮的可访问名会拼上状态徽章与描述，
-      // 整串比较不可能成立、宽松子串又可能命中别处；按“行内存在与行名完全一致的文本”
-      // 定位该行，行名来自实际语言包，点完再由 landmark 证明目的地真的打开了。
-      await page
-        .getByRole("button")
-        .filter({ has: page.getByText(labels[1], { exact: true }) })
-        .click();
-    } else {
-      await page.getByRole("tab", { name: labels[1], exact: true }).click();
-      // 页签的选中态是最直接的目的地信号：它先于分区内容出现，等它落定再等界面稳定。
-      await page
-        .getByRole("tab", { name: labels[1], exact: true, selected: true })
-        .waitFor({ timeout: 15000 });
-    }
-  }
-  if (entry.landmark === "region") {
-    // 目的地地标：目录页与各能力详情都以 section[aria-label] 等于该条最后一个本地化标签
-    // 作标题。地标不出现就不接受这次访问——停在上一页或目录页都不算“已打开目的地”。
-    await page
-      .getByRole("region", { name: labels[labels.length - 1], exact: true })
-      .waitFor({ timeout: 15000 });
-  }
+async function waitSettled(page, previous = null) {
+  await page.evaluate(() => {
+    window.__settle = undefined;
+  });
   await page.waitForFunction(
     (before) => {
       const main = document.querySelector("main");
-      if (main === null) return false;
-      if (main.querySelector(':scope > [role="status"]') !== null) {
+      if (main === null || main.querySelector(':scope > [role="status"]') !== null) {
         window.__settle = undefined;
         return false;
       }
@@ -284,54 +505,738 @@ async function openPage(page, entry, labels) {
   );
 }
 
-/** What every visit must satisfy, plus the numbers worth reporting when it does not. */
-async function inspect(page, probe) {
-  return page.evaluate((selector) => {
-    const rootElement = document.documentElement;
-    const visible = (element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && getComputedStyle(element).visibility !== "hidden";
-    };
-    const clipped = [];
-    for (const element of document.querySelectorAll("body *")) {
-      if (!visible(element)) continue;
-      if (element.scrollWidth > element.clientWidth + 2 && element.clientWidth > 0) {
-        const overflowX = getComputedStyle(element).overflowX;
-        clipped.push({
-          selector: `${element.tagName.toLowerCase()}.${String(element.className).split(" ")[0] ?? ""}`,
-          overflowX,
-          by: element.scrollWidth - element.clientWidth,
-        });
-      }
+async function waitEnabled(page, locator) {
+  await locator.and(page.locator(":enabled")).waitFor({ state: "visible", timeout: 15000 });
+}
+
+async function selectConversation(page, channel, locale) {
+  const compact = page.viewportSize().width < 768;
+  if (compact) {
+    await page
+      .getByRole("button", { name: t(locale, "workspace.open_conversation_index"), exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: t(locale, "workspace.conversation_index"), exact: true })
+      .waitFor();
+  }
+  const directory = page.getByRole("region", {
+    name: t(locale, "workspace.conversation_index"),
+    exact: true,
+  });
+  const channelTab = directory
+    .getByRole("tablist", { name: t(locale, "workspace.conversation_channels"), exact: true })
+    .getByRole("tab", {
+      name: t(locale, channel === "web" ? "channel.web" : "channel.onebot"),
+      exact: true,
+    });
+  await channelTab.click();
+  await channelTab.and(page.locator('[aria-selected="true"]')).waitFor({ timeout: 15000 });
+  // 当前 IndexRecord 的真实行标识是 data-source-id，aria-label 正好是会话标题；不点击管理/头像按钮。
+  const row = directory.locator("button[data-source-id]").first();
+  await row.waitFor({ state: "visible", timeout: 15000 });
+  const sourceId = await row.getAttribute("data-source-id");
+  const title = await row.getAttribute("aria-label");
+  assert(sourceId && title, `${channel}: conversation row lacks its source ID/title`);
+  const exactRow = directory.getByRole("button", { name: title, exact: true }).and(row);
+  await exactRow.click();
+  if (compact) {
+    await page
+      .getByRole("dialog", { name: t(locale, "workspace.conversation_index"), exact: true })
+      .waitFor({ state: "hidden" });
+  } else {
+    await exactRow.and(page.locator('[aria-current="page"]')).waitFor({ timeout: 15000 });
+  }
+  await page.locator("main").getByRole("heading", { name: title, exact: true }).waitFor();
+  return { sourceId, title };
+}
+
+async function assertScope(page, scope, locale) {
+  const group = page.getByRole("group", {
+    name: t(locale, "workspace.conversationHub.scope"),
+    exact: true,
+  });
+  for (const value of ["current", "global"]) {
+    await group
+      .getByRole("button", {
+        name: t(
+          locale,
+          value === "current"
+            ? "workspace.conversationHub.scopeCurrent"
+            : "workspace.conversationHub.scopeGlobal",
+        ),
+        exact: true,
+        pressed: value === scope,
+      })
+      .waitFor({ timeout: 15000 });
+  }
+}
+
+async function waitConversationView(page, entry, locale) {
+  const main = page.locator("main");
+  if (entry.scope) await assertScope(page, entry.scope, locale);
+  if (entry.view === "activity") {
+    const region = main.getByRole("region", {
+      name: t(locale, "observability.executionWorkspace"),
+      exact: true,
+    });
+    await region.waitFor();
+    await region
+      .getByRole("textbox", { name: t(locale, "observability.searchRuntimeRecords"), exact: true })
+      .waitFor();
+    await region
+      .getByText(t(locale, "observability.loadingRuns"), { exact: true })
+      .first()
+      .waitFor({ state: "hidden", timeout: 15000 });
+    if (entry.scope === "current") {
+      await main
+        .getByRole("region", {
+          name: t(locale, "workspace.conversationHub.activityTitle"),
+          exact: true,
+        })
+        .waitFor();
+      await main
+        .getByText(t(locale, "observability.loadingProcessingState"), { exact: true })
+        .waitFor({ state: "hidden", timeout: 15000 });
+    } else {
+      await region
+        .getByRole("heading", {
+          name: t(locale, "observability.integrated.globalTitle"),
+          exact: true,
+        })
+        .waitFor();
     }
-    const content = document.querySelector("main");
-    const probeNode = selector === null ? null : document.querySelector(selector);
-    const describe = (element) =>
-      `${element.tagName.toLowerCase()}${element.className ? `.${String(element.className).split(" ").join(".")}` : ""}`;
-    let probeClipped = 0;
-    let probeClipDetail = null;
-    if (probeNode !== null) {
-      probeClipped = Math.max(0, probeNode.scrollWidth - probeNode.clientWidth);
-      if (probeClipped > 0) probeClipDetail = describe(probeNode);
-      for (const child of probeNode.querySelectorAll("*")) {
-        const by = child.scrollWidth - child.clientWidth;
-        if (by > probeClipped) {
-          probeClipped = by;
-          probeClipDetail = describe(child);
+  } else if (entry.view === "tasks") {
+    await main
+      .getByRole("heading", { name: t(locale, "connections.tasks.title"), exact: true })
+      .waitFor();
+    await main
+      .getByRole("combobox", { name: t(locale, "connections.tasks.filterStatus"), exact: true })
+      .waitFor();
+    await waitEnabled(
+      page,
+      main.getByRole("button", { name: t(locale, "connections.common.refresh"), exact: true }),
+    );
+    const conversationFilter = main.getByRole("combobox", {
+      name: t(locale, "connections.tasks.filterConversation"),
+      exact: true,
+    });
+    if (entry.scope === "global") await conversationFilter.waitFor();
+    else {
+      assert(
+        (await conversationFilter.count()) === 0,
+        `${entry.id}: current tasks expose a global conversation filter`,
+      );
+      await main
+        .getByText(t(locale, "connections.tasks.currentConversationScope"), { exact: true })
+        .waitFor();
+    }
+  } else if (entry.view === "messages") {
+    assert(
+      (await main
+        .getByRole("group", { name: t(locale, "workspace.conversationHub.scope"), exact: true })
+        .count()) === 0,
+      `${entry.id}: message history unexpectedly exposes runtime scope controls`,
+    );
+    if (entry.conversation === "web") {
+      await main
+        .getByRole("textbox", { name: t(locale, "workspace.enter_a_message"), exact: true })
+        .waitFor();
+    } else {
+      const panel = main.getByRole("tabpanel", {
+        name: t(locale, "workspace.message_history"),
+        exact: true,
+      });
+      await panel.waitFor();
+      await panel
+        .getByText(t(locale, "workspace.loading_conversation"), { exact: true })
+        .waitFor({ state: "hidden", timeout: 15000 });
+    }
+    await page.locator(entry.probe).waitFor({ state: "visible", timeout: 15000 });
+  } else throw new Error(`${entry.id}: unsupported conversation view`);
+}
+
+async function waitSchemeView(page, schemeId, view, locale) {
+  assert(schemeId, "Scheme detail has no picked scheme ID");
+  const main = page.locator("main");
+  const titleKey =
+    view === "settings" ? "schemes.bindings.viewSettings" : "schemes.bindings.viewBindings";
+  for (const key of ["schemes.bindings.viewSettings", "schemes.bindings.viewBindings"])
+    await main
+      .getByRole("tab", { name: t(locale, key), exact: true })
+      .waitFor({ state: "visible", timeout: 15000 });
+  await main
+    .getByRole("tab", { name: t(locale, titleKey), exact: true, selected: true })
+    .waitFor({ timeout: 15000 });
+  // 设置编辑器常驻隐藏：保留的 select 值仍必须属于点开的同一方案，而不是上一个编辑器。
+  await page.waitForFunction(
+    ({ label, expected }) =>
+      [...document.querySelectorAll("main select[aria-label]")].some(
+        (select) => select.getAttribute("aria-label") === label && select.value === expected,
+      ),
+    { label: t(locale, "connections.chooseAChatScheme"), expected: schemeId },
+    { timeout: 15000 },
+  );
+  if (view === "bindings") {
+    const board = main.locator('[data-scheme-view="bindings"]');
+    await board.waitFor({ state: "visible", timeout: 15000 });
+    // data-scheme-id 是已加载绑定内容的身份锚点；容器/Tab 先出现但仍在读取时不算就绪。
+    await page.waitForFunction(
+      (expected) => {
+        const board = document.querySelector('main [data-scheme-view="bindings"]');
+        return (
+          board?.getAttribute("data-scheme-id") === expected ||
+          board?.querySelector("[data-scheme-id]")?.getAttribute("data-scheme-id") === expected
+        );
+      },
+      schemeId,
+      { timeout: 15000 },
+    );
+    await waitEnabled(
+      page,
+      board.getByRole("button", { name: t(locale, "schemes.bindings.add"), exact: true }),
+    );
+    await waitEnabled(
+      page,
+      board.getByRole("button", { name: t(locale, "schemes.bindings.refresh"), exact: true }),
+    );
+  } else {
+    for (const key of [
+      "connections.whenToParticipate",
+      "connections.howToRespond",
+      "connections.whatToRead",
+      "connections.mediaAndExpression",
+    ])
+      await main
+        .getByRole("tab", { name: t(locale, key), exact: true })
+        .waitFor({ state: "visible", timeout: 15000 });
+    await main
+      .locator('[role="tabpanel"][data-state="active"]')
+      .waitFor({ state: "visible", timeout: 15000 });
+  }
+}
+
+const QQ_APP_TAB_KEYS = {
+  schemes: "workspace.schemes",
+  connection: "connections.transportPage.tab",
+  storage: "connections.dataRetention",
+};
+
+async function waitQqApp(page, target, locale) {
+  const main = page.locator("main");
+  const app = main.getByRole("region", { name: t(locale, "schemes.qq.appTitle"), exact: true });
+  await app.waitFor();
+  let tabs = app.getByRole("tablist");
+  for (const key of Object.values(QQ_APP_TAB_KEYS))
+    tabs = tabs.filter({ has: page.getByRole("tab", { name: t(locale, key), exact: true }) });
+  await tabs.waitFor({ state: "visible", timeout: 15000 });
+  assert((await tabs.count()) === 1, "QQ app must have one management tablist");
+  assert((await tabs.getByRole("tab").count()) === 3, "QQ app must have exactly three tabs");
+  await tabs
+    .getByRole("tab", { name: t(locale, QQ_APP_TAB_KEYS[target]), exact: true, selected: true })
+    .waitFor({ timeout: 15000 });
+  assert(
+    (await main
+      .getByRole("tab", { name: t(locale, "connections.conversationBindings"), exact: true })
+      .count()) === 0,
+    "QQ management must not restore a peer binding tab",
+  );
+  if (target === "connection") {
+    for (const key of ["connections.assistantAccount", "connections.websocketAddress"])
+      await main.getByRole("textbox", { name: t(locale, key), exact: true }).waitFor();
+    const token = main.getByLabel(t(locale, "connections.accessToken"), { exact: true });
+    await token.waitFor();
+    assert((await token.count()) === 1, "QQ connection must expose only one inline token form");
+    await main
+      .getByRole("checkbox", { name: t(locale, "connections.enableQq"), exact: true })
+      .waitFor();
+    await waitEnabled(
+      page,
+      main.getByRole("button", { name: t(locale, "connections.saveAccessSettings"), exact: true }),
+    );
+  } else if (target === "schemes") {
+    await waitEnabled(page, main.locator("button[data-scheme-open]").first());
+  } else {
+    await main
+      .getByRole("heading", { name: t(locale, "connections.storage.title"), exact: true })
+      .waitFor();
+    for (const group of ["observations", "speech", "sends", "nicknames", "stickers", "media"]) {
+      const section = main
+        .getByRole("heading", { name: t(locale, `connections.storage.${group}`), exact: true })
+        .locator("xpath=ancestor::section[1]");
+      await section.locator("dl dd").first().waitFor();
+    }
+    await main
+      .getByRole("heading", { name: t(locale, "connections.storage.runtime"), exact: true })
+      .waitFor();
+    await main
+      .getByRole("heading", { name: t(locale, "connections.storage.sweep"), exact: true })
+      .waitFor();
+    await waitEnabled(
+      page,
+      main.getByRole("button", { name: t(locale, "connections.common.refresh"), exact: true }),
+    );
+  }
+  return { app: "qq", tab: target };
+}
+
+async function waitExtensions(page, entry, locale) {
+  const region = page.locator("main").getByRole("region", {
+    name: t(locale, "workspace.extensions"),
+    exact: true,
+  });
+  await region.waitFor();
+  const tabs = region.getByRole("tablist");
+  await tabs.waitFor();
+  assert((await tabs.count()) === 1, "Extensions must have one tablist");
+  assert((await tabs.getByRole("tab").count()) === 3, "Extensions must have exactly three tabs");
+  for (const key of [
+    "connections.mcp.title",
+    "connections.skills.title",
+    "connections.grants.title",
+  ])
+    await tabs.getByRole("tab", { name: t(locale, key), exact: true }).waitFor();
+  for (const key of [
+    "connections.transportPage.tab",
+    "connections.dataRetention",
+    "connections.conversationBindings",
+  ])
+    assert(
+      (await tabs.getByRole("tab", { name: t(locale, key), exact: true }).count()) === 0,
+      `Extensions exposes QQ tab: ${key}`,
+    );
+  assert(
+    (await region.locator(':scope > header [data-slot="badge"]').count()) === 0,
+    "Extensions header has a QQ status badge",
+  );
+  for (const key of ["connections.refreshState", "connections.enableQq"])
+    assert(
+      (await region
+        .getByRole(key === "connections.enableQq" ? "checkbox" : "button", {
+          name: t(locale, key),
+          exact: true,
+        })
+        .count()) === 0,
+      `Extensions exposes QQ control: ${key}`,
+    );
+  assert(
+    (await region
+      .locator('input[autocomplete="new-password"], [data-scheme-view="bindings"]')
+      .count()) === 0,
+    "Extensions exposes QQ form or binding editor",
+  );
+  await region.getByRole("heading", { name: labelsOf(entry, locale)[1], exact: true }).waitFor();
+  await waitEnabled(
+    page,
+    region.getByRole("button", { name: t(locale, "connections.common.refresh"), exact: true }),
+  );
+  if (entry.extension === "grants")
+    assert(
+      (await region
+        .getByRole("heading", { name: t(locale, "connections.grants.group.builtin"), exact: true })
+        .count()) === 0,
+      "Extensions grants include built-in resources",
+    );
+  else await region.getByRole("table").waitFor();
+}
+
+async function openPage(page, entry, locale) {
+  assert(ALL_PAGES.includes(entry), `Unknown visual page: ${entry?.id}`);
+  const labels = labelsOf(entry, locale);
+  const previous = await page.evaluate(() =>
+    (document.querySelector("main")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+  );
+  const compact = page.viewportSize().width < 768;
+  await page.waitForFunction(async (mobile) => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const trigger = document.querySelector('header button[aria-haspopup="dialog"]');
+    const aside = document.querySelector("aside");
+    return mobile ? !!trigger && !aside : !!aside;
+  }, compact);
+  if (compact) {
+    await page.locator('header button[aria-haspopup="dialog"]').first().click();
+    await page.getByRole("dialog").waitFor({ state: "visible" });
+  }
+  await page.locator("aside").first().getByRole("button", { name: labels[0], exact: true }).click();
+  if (compact) {
+    await page.keyboard.press("Escape");
+    await page.locator("aside").waitFor({ state: "hidden" });
+  }
+  const navigation = { schemeId: null, conversation: null };
+  if (entry.conversation)
+    navigation.conversation = await selectConversation(page, entry.conversation, locale);
+  for (const selector of entry.pick === undefined ? [] : [entry.pick].flat()) {
+    const record = page.locator("main").locator(selector).first();
+    await record.waitFor({ state: "visible", timeout: 15000 });
+    if (entry.schemeView && selector === "[data-scheme-open]") {
+      navigation.schemeId = await record.getAttribute("data-scheme-open");
+      assert(navigation.schemeId, `${entry.id}: picked record has no scheme ID`);
+    }
+    await record.click();
+    if (selector === '[data-scheme-app-open="qq"]')
+      navigation.qqApp = await waitQqApp(page, "schemes", locale);
+  }
+  // 先证明 pick 落到真实编辑器，再切使用会话；不能只靠两个详情任务 Tab 的文字。
+  if (entry.schemeView) await waitSchemeView(page, navigation.schemeId, "settings", locale);
+  if (labels[1] !== undefined) {
+    if (entry.second === "row") {
+      await page
+        .getByRole("button")
+        .filter({ has: page.getByText(labels[1], { exact: true }) })
+        .click();
+    } else {
+      const parent = entry.view
+        ? page.getByRole("tablist", { name: t(locale, "workspace.conversation_view"), exact: true })
+        : page.locator("main");
+      await parent.getByRole("tab", { name: labels[1], exact: true }).click();
+      await parent
+        .getByRole("tab", { name: labels[1], exact: true, selected: true })
+        .waitFor({ timeout: 15000 });
+    }
+  }
+  if (entry.scope) {
+    const group = page.getByRole("group", {
+      name: t(locale, "workspace.conversationHub.scope"),
+      exact: true,
+    });
+    await group
+      .getByRole("button", {
+        name: t(
+          locale,
+          entry.scope === "current"
+            ? "workspace.conversationHub.scopeCurrent"
+            : "workspace.conversationHub.scopeGlobal",
+        ),
+        exact: true,
+      })
+      .click();
+    await assertScope(page, entry.scope, locale);
+  }
+  if (entry.view) await waitConversationView(page, entry, locale);
+  if (entry.schemeView) await waitSchemeView(page, navigation.schemeId, entry.schemeView, locale);
+  if (entry.qqAppTab) navigation.qqApp = await waitQqApp(page, entry.qqAppTab, locale);
+  if (entry.extension) await waitExtensions(page, entry, locale);
+  if (entry.id === "scheme-library") {
+    await waitEnabled(page, page.locator('main button[data-scheme-app-open="qq"]'));
+    await waitEnabled(
+      page,
+      page
+        .locator("main")
+        .getByRole("button", { name: t(locale, "connections.transportPage.tab"), exact: true }),
+    );
+  }
+  for (const key of entry.finalTabKeys ?? [])
+    await page.getByRole("tab", { name: t(locale, key), exact: true }).waitFor({ timeout: 15000 });
+  if (entry.landmark === "region")
+    await page
+      .getByRole("region", { name: labels[labels.length - 1], exact: true })
+      .waitFor({ timeout: 15000 });
+  if (entry.probe !== null) await page.waitForSelector(entry.probe, { timeout: 15000 });
+  // 对话可能一开始就是此视图，但必须已由选中态、scope 与真实内容证明，不能因字多就放行。
+  await waitSettled(
+    page,
+    entry.view || entry.schemeView || entry.qqAppTab || entry.extension ? null : previous,
+  );
+  return navigation;
+}
+
+/** Browser-only measurement, also exercised verbatim by the standalone synthetic smoke. */
+export function measureVisualPage(selector) {
+  // A one-pixel allowance is only for fractional layout/glyph rounding, not scroll extents.
+  const epsilon = 1;
+  const rootElement = document.documentElement;
+  const probeNode = selector === null ? null : document.querySelector(selector);
+  const styles = new Map();
+  const styleOf = (element) => {
+    if (!styles.has(element)) styles.set(element, getComputedStyle(element));
+    return styles.get(element);
+  };
+  const describe = (element) =>
+    `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ""}${element.getAttribute("data-slot") ? `[data-slot="${element.getAttribute("data-slot")}"]` : ""}${element.getAttribute("class") ? `.${element.getAttribute("class").split(/\s+/).slice(0, 3).join(".")}` : ""}`;
+  const rectOf = (rect) => ({
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.right - rect.left,
+    height: rect.bottom - rect.top,
+  });
+  const visible = (element) => {
+    if (!element.getClientRects().length) return false;
+    for (let node = element; node; node = node.parentElement) {
+      const style = styleOf(node);
+      if (style.display === "none" || style.visibility !== "visible" || Number(style.opacity) === 0)
+        return false;
+    }
+    return true;
+  };
+  const hasColor = (color) =>
+    color !== "transparent" &&
+    !/^(?:rgba|hsla)\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(color) &&
+    !/\/\s*0(?:\.0+)?%?\s*\)$/.test(color);
+  const paintsBox = (style) =>
+    hasColor(style.backgroundColor) ||
+    style.backgroundImage !== "none" ||
+    ["Left", "Right", "Top", "Bottom"].some(
+      (side) =>
+        parseFloat(style[`border${side}Width`]) > 0 &&
+        !["none", "hidden"].includes(style[`border${side}Style`]) &&
+        hasColor(style[`border${side}Color`]),
+    );
+  const clipBox = (element) => {
+    const rect = element.getBoundingClientRect();
+    const style = styleOf(element);
+    const scaleX = element.offsetWidth ? rect.width / element.offsetWidth : 1;
+    const scaleY = element.offsetHeight ? rect.height / element.offsetHeight : 1;
+    const left =
+      rect.left + (element.clientLeft ?? parseFloat(style.borderLeftWidth) ?? 0) * scaleX;
+    const top = rect.top + (element.clientTop ?? parseFloat(style.borderTopWidth) ?? 0) * scaleY;
+    return {
+      left,
+      top,
+      right:
+        left +
+        (element.clientWidth ||
+          rect.width - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth)) *
+          scaleX,
+      bottom:
+        top +
+        (element.clientHeight ||
+          rect.height - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth)) *
+          scaleY,
+    };
+  };
+  const issues = [];
+  const add = (element, kind, original, start = element, text = null) => {
+    if (original.width <= 0 || original.height <= 0) return;
+    const rect = rectOf(original);
+    for (let ancestor = start; ancestor; ancestor = ancestor.parentElement) {
+      const style = styleOf(ancestor);
+      const box = clipBox(ancestor);
+      const hiddenX = ["hidden", "clip"].includes(style.overflowX);
+      const hiddenY = ["hidden", "clip"].includes(style.overflowY);
+      const byX = hiddenX ? Math.max(0, box.left - rect.left, rect.right - box.right) : 0;
+      const byY = hiddenY ? Math.max(0, box.top - rect.top, rect.bottom - box.bottom) : 0;
+      if (Math.max(byX, byY) > epsilon) {
+        issues.push({
+          element,
+          selector: describe(element),
+          kind,
+          text,
+          by: Math.max(byX, byY),
+          byX,
+          byY,
+          rect: rectOf(original),
+          clippingAncestor: describe(ancestor),
+          clipRect: rectOf(box),
+          overflowX: style.overflowX,
+          overflowY: style.overflowY,
+        });
+        return;
+      }
+      // Content beyond an auto/scroll viewport is reachable, not lost. Only its currently
+      // exposed part can be clipped by an outer hidden/clip ancestor. Its OWN hidden text
+      // was checked above before reaching this scroll container.
+      if (["auto", "scroll"].includes(style.overflowX)) {
+        rect.left = Math.max(rect.left, box.left);
+        rect.right = Math.min(rect.right, box.right);
+      }
+      if (["auto", "scroll"].includes(style.overflowY)) {
+        rect.top = Math.max(rect.top, box.top);
+        rect.bottom = Math.min(rect.bottom, box.bottom);
+      }
+      if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+    }
+  };
+  const elements = [...document.querySelectorAll("body *")];
+  for (const element of elements) {
+    if (!visible(element) || element.matches("script, style, option")) continue;
+    const style = styleOf(element);
+    for (const node of element.childNodes) {
+      if (node.nodeType !== Node.TEXT_NODE || !node.textContent.trim() || !hasColor(style.color))
+        continue;
+      const range = document.createRange();
+      const start = node.textContent.search(/\S/);
+      const end = node.textContent.trimEnd().length;
+      range.setStart(node, start);
+      range.setEnd(node, end);
+      for (const rect of range.getClientRects())
+        add(element, "text-range", rect, element, node.textContent.trim().slice(0, 160));
+    }
+    if (
+      element instanceof SVGGraphicsElement &&
+      !element.matches("svg, g, defs, clipPath, mask, symbol, use")
+    ) {
+      // Measure painted SVG geometry, not the unpainted viewport or a transparent hit target.
+      const fill = style.fill !== "none" && hasColor(style.fill) && Number(style.fillOpacity) > 0;
+      const stroke =
+        style.stroke !== "none" && hasColor(style.stroke) && Number(style.strokeOpacity) > 0;
+      if (fill || stroke) {
+        const bbox = element.getBBox();
+        const matrix = element.getScreenCTM();
+        if (matrix) {
+          const pad = stroke ? parseFloat(style.strokeWidth) / 2 : 0;
+          const points = [
+            [bbox.x - pad, bbox.y - pad],
+            [bbox.x + bbox.width + pad, bbox.y - pad],
+            [bbox.x - pad, bbox.y + bbox.height + pad],
+            [bbox.x + bbox.width + pad, bbox.y + bbox.height + pad],
+          ].map(([x, y]) => new DOMPoint(x, y).matrixTransform(matrix));
+          const left = Math.min(...points.map((point) => point.x));
+          const right = Math.max(...points.map((point) => point.x));
+          const top = Math.min(...points.map((point) => point.y));
+          const bottom = Math.max(...points.map((point) => point.y));
+          add(
+            element,
+            "svg-paint",
+            { left, right, top, bottom, width: right - left, height: bottom - top },
+            element.parentElement,
+          );
+        }
+      }
+    } else if (paintsBox(style) || element.matches("img, canvas, video")) {
+      add(element, "painted-child", element.getBoundingClientRect(), element.parentElement);
+    }
+    if (
+      element instanceof HTMLInputElement &&
+      ["text", "search", "url", "email", "tel", "password", "number"].includes(element.type)
+    ) {
+      const text = element.value || element.placeholder;
+      if (text) {
+        // Native input text is not in the DOM Range tree and always has a single-line
+        // internal clipping viewport, even when computed overflow is visible/auto.
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+        context.font = style.font;
+        context.fontKerning = style.fontKerning;
+        const displayText =
+          element.type === "password" && element.value ? "•".repeat(text.length) : text;
+        const spacing = parseFloat(style.letterSpacing) || 0;
+        const width =
+          context.measureText(displayText).width + Math.max(0, displayText.length - 1) * spacing;
+        const available =
+          element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        if (width > available + epsilon) {
+          issues.push({
+            element,
+            selector: describe(element),
+            kind: "input-text",
+            text: displayText.slice(0, 160),
+            by: width - available,
+            byX: width - available,
+            byY: 0,
+            rect: rectOf(element.getBoundingClientRect()),
+            clippingAncestor: `${describe(element)} (native text viewport)`,
+            clipRect: rectOf(clipBox(element)),
+            textWidth: width,
+            availableWidth: available,
+            overflowX: style.overflowX,
+            overflowY: style.overflowY,
+          });
         }
       }
     }
-    return {
-      scrollWidth: rootElement.scrollWidth,
-      textLength: (content?.textContent ?? "").replace(/\s+/g, " ").trim().length,
-      probePresent: selector === null ? true : probeNode !== null,
-      probeClipped,
-      probeClipDetail,
-      clipped: clipped.slice(0, 5),
-      theme: rootElement.dataset.theme ?? null,
-      mode: rootElement.classList.contains("dark") ? "dark" : "light",
-    };
-  }, probe);
+    for (const pseudo of ["::before", "::after"]) {
+      const pseudoStyle = getComputedStyle(element, pseudo);
+      // Empty transparent pseudos have no visible content. This is not a button exemption:
+      // the element's indicator, SVG paint and text still pass through the same ancestor checks.
+      if (
+        ["none", "normal"].includes(pseudoStyle.content) ||
+        pseudoStyle.display === "none" ||
+        Number(pseudoStyle.opacity) === 0 ||
+        (!paintsBox(pseudoStyle) && ['""', "''"].includes(pseudoStyle.content))
+      )
+        continue;
+      if (
+        pseudoStyle.position === "absolute" &&
+        Number.isFinite(parseFloat(pseudoStyle.left)) &&
+        Number.isFinite(parseFloat(pseudoStyle.top))
+      ) {
+        const box = clipBox(element);
+        const left = box.left + parseFloat(pseudoStyle.left);
+        const top = box.top + parseFloat(pseudoStyle.top);
+        const width =
+          parseFloat(pseudoStyle.width) +
+          (pseudoStyle.boxSizing === "border-box"
+            ? 0
+            : parseFloat(pseudoStyle.paddingLeft) +
+              parseFloat(pseudoStyle.paddingRight) +
+              parseFloat(pseudoStyle.borderLeftWidth) +
+              parseFloat(pseudoStyle.borderRightWidth));
+        const height =
+          parseFloat(pseudoStyle.height) +
+          (pseudoStyle.boxSizing === "border-box"
+            ? 0
+            : parseFloat(pseudoStyle.paddingTop) +
+              parseFloat(pseudoStyle.paddingBottom) +
+              parseFloat(pseudoStyle.borderTopWidth) +
+              parseFloat(pseudoStyle.borderBottomWidth));
+        add(element, `painted-pseudo${pseudo}`, {
+          left,
+          top,
+          right: left + width,
+          bottom: top + height,
+          width,
+          height,
+        });
+      }
+    }
+  }
+  const publicIssue = ({ element, ...detail }) => detail;
+  const probeIssues = issues.filter(
+    ({ element }) => probeNode && (element === probeNode || probeNode.contains(element)),
+  );
+  const worst = probeIssues.reduce(
+    (result, issue) => (!result || issue.by > result.by ? issue : result),
+    null,
+  );
+  const checkboxHitareas = elements
+    .filter(
+      (element) =>
+        element.matches('[data-slot="checkbox"]') &&
+        visible(element) &&
+        element.scrollWidth > element.clientWidth + epsilon,
+    )
+    .map((element) => {
+      const after = getComputedStyle(element, "::after");
+      const descendants = [element, ...element.querySelectorAll("*")];
+      const contentIssues = issues.filter((issue) => descendants.includes(issue.element));
+      return {
+        selector: describe(element),
+        scrollBy: element.scrollWidth - element.clientWidth,
+        pseudo: {
+          content: after.content,
+          background: after.backgroundColor,
+          painted: paintsBox(after),
+          left: after.left,
+          right: after.right,
+        },
+        indicatorRects: [...element.querySelectorAll('[data-slot="checkbox-indicator"], svg')].map(
+          (child) => ({ selector: describe(child), rect: rectOf(child.getBoundingClientRect()) }),
+        ),
+        visibleContentClipped: contentIssues.length > 0,
+      };
+    });
+  return {
+    scrollWidth: rootElement.scrollWidth,
+    textLength: (document.querySelector("main")?.textContent ?? "").replace(/\s+/g, " ").trim()
+      .length,
+    probePresent: selector === null ? true : probeNode !== null,
+    probeClipped: worst?.by ?? 0,
+    probeClipDetail: worst
+      ? `${worst.selector} (${worst.kind}; clipped by ${worst.clippingAncestor})`
+      : null,
+    probeClipEvidence: probeIssues.slice(0, 20).map(publicIssue),
+    clipped: issues.slice(0, 20).map(publicIssue),
+    clippedCount: issues.length,
+    checkboxHitareas,
+    theme: rootElement.dataset.theme ?? null,
+    mode: rootElement.classList.contains("dark") ? "dark" : "light",
+  };
+}
+
+/** What every visit must satisfy, plus the numbers worth reporting when it does not. */
+async function inspect(page, probe) {
+  return page.evaluate(measureVisualPage, probe);
 }
 
 async function inspectFocus(page) {
@@ -369,6 +1274,12 @@ async function captureFailure(error, active) {
     passed: false,
     screenshots: [],
     page: null,
+    metrics: active?.metrics ?? null,
+    completedChecks: results.length,
+    completedScreenshots: [...screenshots],
+    sourceActivity: [...sourceActivity],
+    freeze,
+    finalFreezeClaimed: false,
     hygiene: null,
   };
   if (active?.page) {
@@ -458,12 +1369,59 @@ const contextOptions = async (
  * 取消（ERR_ABORTED）是导航与重渲染的正常副产品，不算异常；跨源请求一律算异常——
  * 本实例只应访问自己的回环地址。
  */
+const sourceActivity = [];
+function checkFreeze() {
+  freeze.sourceAfter = sourceFingerprints();
+  freeze.sourceChanges = [
+    ...new Set([...Object.keys(sourceBefore), ...Object.keys(freeze.sourceAfter)]),
+  ].filter((file) => sourceBefore[file] !== freeze.sourceAfter[file]);
+  freeze.hmr = sourceActivity.filter((item) => item.type === "hmr" || item.type === "hmr-console");
+  freeze.checked = true;
+  freeze.valid = freeze.sourceChanges.length === 0 && freeze.hmr.length === 0;
+  if (uiFrozen)
+    assert(
+      freeze.valid,
+      `Frozen visual run invalid: ${freeze.sourceChanges.length} source changes, ${freeze.hmr.length} HMR events`,
+    );
+}
 const watchPage = (page) => {
   const base = new URL(url);
   const state = { consoleErrors: [], failedRequests: [], externalRequests: [] };
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame())
+      sourceActivity.push({
+        at: new Date().toISOString(),
+        phase: active?.name,
+        type: "navigation",
+        url: frame.url(),
+      });
+  });
+  page.on("websocket", (socket) => {
+    socket.on("framereceived", ({ payload }) => {
+      try {
+        const message = JSON.parse(String(payload));
+        if (["update", "full-reload", "error"].includes(message.type))
+          sourceActivity.push({
+            at: new Date().toISOString(),
+            phase: active?.name,
+            type: "hmr",
+            message,
+          });
+      } catch {
+        /* Vite ping/non-JSON frames do not describe source changes. */
+      }
+    });
+  });
   page.on("pageerror", (error) => state.consoleErrors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") state.consoleErrors.push(`console: ${message.text()}`);
+    if (/\[vite\].*(hot updated|page reload)/i.test(message.text()))
+      sourceActivity.push({
+        at: new Date().toISOString(),
+        phase: active?.name,
+        type: "hmr-console",
+        text: message.text(),
+      });
   });
   page.on("requestfailed", (request) => {
     const reason = request.failure()?.errorText ?? "";
@@ -506,16 +1464,14 @@ try {
       const page = await context.newPage();
       const hygiene = watchPage(page);
       for (const entry of PAGES) {
-        const labels = locale === "zh-CN" ? entry.zh : entry.en;
         const name = `${entry.id}-${locale}-${viewport.name}`;
         hygiene.reset();
         active = { name, page, hygiene };
         await page.goto(url, { waitUntil: "networkidle" });
         await page.waitForSelector("#superstring-shell");
-        await openPage(page, entry, labels);
-        // 探针必须真的出现：给足与页面级等待相同的 15s（它仍然必须存在，不是可选装饰）。
-        if (entry.probe !== null) await page.waitForSelector(entry.probe, { timeout: 15000 });
+        const navigation = await openPage(page, entry, locale);
         const metrics = await inspect(page, entry.probe);
+        active.metrics = metrics;
         assert(
           metrics.scrollWidth <= viewport.width,
           `${name}: horizontal overflow (${metrics.scrollWidth} > ${viewport.width})`,
@@ -559,6 +1515,7 @@ try {
         results.push({
           name,
           passed: true,
+          navigation: { ...navigation, view: entry.view ?? null, scope: entry.scope ?? null },
           metrics,
           focus,
           hygiene: {
@@ -568,6 +1525,87 @@ try {
           },
         });
         console.log(`[PASS] ${name}`);
+        // 方案设置保留四参数 Tab；绑定详情覆盖两个任务 Tab。切换前后均校验实际内容和
+        // picked scheme ID；隐藏的旧编辑器/只有标题的读取态不能替代已加载的绑定看板。
+        if (entry.finalTabKeys !== undefined) {
+          for (const [index, tabKey] of entry.finalTabKeys.entries()) {
+            const tabName = t(locale, tabKey);
+            const tabCheck = `${name}-tab-${index + 1}`;
+            hygiene.reset();
+            active = { name: tabCheck, page, hygiene };
+            const nextView =
+              entry.schemeView === "bindings"
+                ? tabKey === "schemes.bindings.viewSettings"
+                  ? "settings"
+                  : "bindings"
+                : "settings";
+            if (entry.schemeView === "bindings") {
+              const beforeView = index === 0 ? "bindings" : "settings";
+              await waitSchemeView(page, navigation.schemeId, beforeView, locale);
+            }
+            await page.getByRole("tab", { name: tabName, exact: true }).click();
+            await page
+              .getByRole("tab", { name: tabName, exact: true, selected: true })
+              .waitFor({ timeout: 15000 });
+            await waitSchemeView(page, navigation.schemeId, nextView, locale);
+            await waitSettled(page);
+            const tabProbe =
+              nextView === "bindings" ? entry.probe : '[role="tabpanel"][data-state="active"]';
+            const tabMetrics = await inspect(page, tabProbe);
+            active.metrics = tabMetrics;
+            assert(
+              tabMetrics.scrollWidth <= viewport.width,
+              `${tabCheck}: horizontal overflow (${tabMetrics.scrollWidth} > ${viewport.width})`,
+            );
+            assert(tabMetrics.textLength > 40, `${tabCheck}: tab content is empty`);
+            assert(tabMetrics.probePresent, `${tabCheck}: missing ${tabProbe}`);
+            assert(
+              tabMetrics.probeClipped === 0,
+              `${tabCheck}: ${tabMetrics.probeClipDetail} clips its content by ${tabMetrics.probeClipped}px`,
+            );
+            assert(
+              tabMetrics.theme === "slate" && tabMetrics.mode === "light",
+              `${tabCheck}: appearance not applied`,
+            );
+            const tabFocus = await inspectFocus(page);
+            assert(
+              tabFocus.reached && tabFocus.visible,
+              `${tabCheck}: no visible keyboard focus (${JSON.stringify(tabFocus)})`,
+            );
+            assert(
+              hygiene.consoleErrors.length === 0,
+              `${tabCheck}: console error (${hygiene.consoleErrors[0]})`,
+            );
+            assert(
+              hygiene.failedRequests.length === 0,
+              `${tabCheck}: failed request (${hygiene.failedRequests[0]})`,
+            );
+            assert(
+              hygiene.externalRequests.length === 0,
+              `${tabCheck}: off-origin request (${hygiene.externalRequests[0]})`,
+            );
+            if (viewport.width === 1440 || (viewport.width < 400 && locale === "zh-CN")) {
+              const file = `qq-pages-${slug(tabCheck)}.png`;
+              await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+              screenshots.push(file);
+            }
+            results.push({
+              name: tabCheck,
+              passed: true,
+              tab: tabName,
+              schemeId: navigation.schemeId,
+              schemeView: nextView,
+              metrics: tabMetrics,
+              focus: tabFocus,
+              hygiene: {
+                consoleErrors: hygiene.consoleErrors.length,
+                failedRequests: hygiene.failedRequests.length,
+                externalRequests: hygiene.externalRequests.length,
+              },
+            });
+            console.log(`[PASS] ${tabCheck} (${tabName})`);
+          }
+        }
       }
       await context.close();
     }
@@ -578,7 +1616,7 @@ try {
   // Each combination gets its own context: appearance is read once at boot, so writing storage into
   // a live page and reloading races the app's own write-back.
   // 主题扫描挑清单里最密的一页（工具授权：分组授权 + 展开的助手范围与目录）。
-  const themePage = PAGES.find((entry) => entry.id === "tool-grants");
+  const themePage = THEME_PAGE;
   const firstTheme = THEMES[0];
   const lastTheme = THEMES[THEMES.length - 1];
   for (const theme of THEMES) {
@@ -591,11 +1629,13 @@ try {
         viewport: { width: 1440, height: 1000 },
       });
       const page = await context.newPage();
-      active = { name, page, hygiene: null };
+      const hygiene = watchPage(page);
+      active = { name, page, hygiene };
       await page.goto(url, { waitUntil: "networkidle" });
       await page.waitForSelector("#superstring-shell");
-      await openPage(page, themePage, themePage.zh);
+      await openPage(page, themePage, "zh-CN");
       const metrics = await inspect(page, themePage.probe);
+      active.metrics = metrics;
       assert(metrics.theme === theme, `${name}: theme not applied (${metrics.theme})`);
       assert(metrics.mode === mode, `${name}: mode not applied (${metrics.mode})`);
       assert(metrics.scrollWidth <= 1440, `${name}: horizontal overflow`);
@@ -630,11 +1670,13 @@ try {
       viewport: { width: 1440, height: 1000 },
     });
     const page = await context.newPage();
-    active = { name, page, hygiene: null };
+    const hygiene = watchPage(page);
+    active = { name, page, hygiene };
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForSelector("#superstring-shell");
-    await openPage(page, themePage, themePage.zh);
+    await openPage(page, themePage, "zh-CN");
     const metrics = await inspect(page, themePage.probe);
+    active.metrics = metrics;
     assert(metrics.theme === theme, `${name}: theme not applied (${metrics.theme})`);
     assert(metrics.mode === scheme, `${name}: system preference not honoured (${metrics.mode})`);
     assert(metrics.scrollWidth <= 1440, `${name}: horizontal overflow`);
@@ -661,11 +1703,13 @@ try {
       viewport: { width: 1440, height: 1000 },
     });
     const page = await context.newPage();
-    active = { name, page, hygiene: null };
+    const hygiene = watchPage(page);
+    active = { name, page, hygiene };
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForSelector("#superstring-shell");
-    await openPage(page, themePage, themePage.zh);
+    await openPage(page, themePage, "zh-CN");
     const metrics = await inspect(page, themePage.probe);
+    active.metrics = metrics;
     assert(metrics.scrollWidth <= 1440, `${name}: horizontal overflow`);
     assert(metrics.textLength > 40, `${name}: settings content is empty`);
     assert(
@@ -677,10 +1721,11 @@ try {
     await context.close();
   }
 
+  checkFreeze();
   const timestamp = new Date().toISOString();
   const report = {
     timestamp,
-    scope: `§15 page matrix: ${PAGES.length} settings pages x ${VIEWPORTS.length} viewports x ${LOCALES.length} languages, plus ${THEMES.length} themes x 2 modes, system mode x 2 system preferences and a reduced-motion pass`,
+    scope: `§15 page matrix: ${PAGES.length} workspace pages/views x ${VIEWPORTS.length} viewports x ${LOCALES.length} languages, plus ${THEMES.length} themes x 2 modes, system mode x 2 system preferences and a reduced-motion pass`,
     url,
     runDirectory: outputDir,
     browser: {
@@ -689,6 +1734,11 @@ try {
       channel: executablePath ? "custom executable" : channel,
     },
     passed: true,
+    selectedPages: PAGES.map((entry) => entry.id),
+    themePage: THEME_PAGE.id,
+    sourceActivity,
+    freeze,
+    finalFreezeClaimed: uiFrozen && freeze.valid,
     screenshots,
     results,
   };
@@ -701,6 +1751,11 @@ try {
     `QQ PAGES MATRIX PASSED -> ${destination}\n  ${results.length} checks, ${screenshots.length} screenshots, ${THEMES.length} themes, run directory ${outputDir}`,
   );
 } catch (error) {
+  try {
+    checkFreeze();
+  } catch (freezeError) {
+    freeze.error = String(freezeError);
+  }
   await captureFailure(error, active);
   throw error;
 } finally {

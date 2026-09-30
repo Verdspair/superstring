@@ -41,6 +41,9 @@ export type SettingsView =
   | "observability";
 export type SectionKey = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "knowledge";
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
+export type ConversationView = "messages" | "activity" | "tasks";
+export type ConversationScope = "current" | "global";
+export type QqSchemeView = "settings" | "bindings";
 export type PendingNavigation =
   | {
       kind: "page";
@@ -48,9 +51,13 @@ export type PendingNavigation =
       settingsView: SettingsView;
       settingsRoute?: SettingsRoute;
       conversationId?: string;
+      /** 携带到落地时才生效的对话视图/范围；取消不泄漏，保存失败保留整个载荷。 */
+      conversationView?: ConversationView;
+      conversationScope?: ConversationScope;
     }
   | { kind: "agent"; id: string | "__new__" }
   | { kind: "section"; section: SectionKey }
+  | { kind: "scheme"; id: string; view?: QqSchemeView }
   | { kind: "knowledge"; target: KnowledgeTarget };
 
 export interface ChatItem {
@@ -128,6 +135,9 @@ export interface SuperstringState
   page: Page;
   settingsView: SettingsView;
   settingsRoute: SettingsRoute;
+  conversationView: ConversationView;
+  conversationScope: ConversationScope;
+  qqSchemeView: QqSchemeView;
   openSettingsRoute: (route: SettingsRoute) => void;
   activeSection: SectionKey;
   dirty: boolean;
@@ -192,7 +202,9 @@ export interface SuperstringState
   openAgentSettings: () => void;
   closeAgentSettings: () => void;
   requestPageNavigation: (page: Page, settingsView?: SettingsView) => void;
+  requestConversationView: (view: ConversationView, scope?: ConversationScope) => void;
   requestAgentNavigation: (id: string | "__new__") => void;
+  requestQqSchemeNavigation: (id: string, view?: QqSchemeView) => void;
   confirmSaveAndContinue: () => Promise<void>;
   confirmDiscardAndContinue: () => Promise<void>;
   cancelPendingNavigation: () => void;

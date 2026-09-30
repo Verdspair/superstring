@@ -1,10 +1,10 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { QqSchemeResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
 import { qqDraftChanges, settingsHaveDrafts } from "../../src/web/features/qq/draft-state";
 import { qqSchemeDirty, qqSchemeEditorFrom } from "../../src/web/features/qq/types";
-import { ConnectionWorkspace as QqAppAccess } from "../../src/web/screens/connections/ConnectionWorkspace";
+import { QqAppManagement } from "../../src/web/screens/connections/qq-app-management";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
 
@@ -122,9 +122,9 @@ it("connection draft survives remount and server refresh while retaining its ori
   store.setState({
     qqInputs: { ...store.getState().qqInputs, connection: connection("replacement-secret") },
   });
-  const view = render(<QqAppAccess />);
+  const view = render(<QqAppManagement view="connection" />);
   await act(async () => {});
-  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
+  // 连接配置在 QQ 应用管理的「连接」任务里：字段直接可见。
   expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
   );
@@ -139,9 +139,8 @@ it("connection draft survives remount and server refresh while retaining its ori
       }),
     },
   });
-  render(<QqAppAccess />);
+  render(<QqAppManagement view="connection" />);
   await act(async () => {});
-  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
   expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
   );
@@ -159,6 +158,32 @@ it("navigation change preview never exposes the replacement token", () => {
   expect(screen.getByText("访问令牌将被替换（不显示内容）")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "取消离开" }));
   expect(store.getState().qqInputs.connection?.token).toBe("replacement-secret");
+});
+
+it("openChat 的守卫载荷携带消息/当前，保存成功后按目标视图落地", async () => {
+  const update = vi.fn(async (_id, body) => ({ ...qqSchemeFixture(), ...body, revision: 4 }));
+  store.setState({
+    apiClient: { ...store.getState().apiClient, updateQqScheme: update },
+    conversationView: "activity",
+    conversationScope: "global",
+  });
+  store.getState().patchQqScheme({ name: "新方案名" });
+  store.getState().openChat();
+  expect(store.getState().pendingNavigation).toEqual({
+    kind: "page",
+    page: "chat",
+    settingsView: "hub",
+    conversationView: "messages",
+    conversationScope: "current",
+  });
+  await store.getState().confirmSaveAndContinue();
+  expect(update).toHaveBeenCalledOnce();
+  expect(store.getState()).toMatchObject({
+    page: "chat",
+    conversationView: "messages",
+    conversationScope: "current",
+    pendingNavigation: null,
+  });
 });
 
 it("partial save preserves completed scheme changes and retains the failed connection draft", async () => {
@@ -208,22 +233,23 @@ it("QQ automatic organization drafts participate in the same unload decision", (
   expect(settingsHaveDrafts(store.getState())).toBe(true);
 });
 
-it("a failed transport save stays visible inside the active dialog and retains the draft", async () => {
+it("a failed transport save stays visible on the connection page and retains the draft", async () => {
   const save = vi.fn().mockRejectedValue(Error("TRANSPORT_TEST_FAILURE"));
   store.setState({
     apiClient: { ...store.getState().apiClient, updateQqSettings: save },
     qqInputs: { ...store.getState().qqInputs, connection: connection() },
   });
-  render(<QqAppAccess />);
+  render(<QqAppManagement view="connection" />);
   await act(async () => {});
-  fireEvent.click(screen.getByRole("button", { name: "连接设置" }));
-  const dialog = screen.getByRole("dialog");
-  await act(async () =>
-    fireEvent.click(within(dialog).getByRole("button", { name: "保存接入设置" })),
-  );
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存接入设置" })));
   expect(save).toHaveBeenCalledTimes(1);
-  expect(within(dialog).getByRole("alert").textContent).toContain("TRANSPORT_TEST_FAILURE");
+  // 页首状态提示与内联表单都会显示同一条失败原因（都在文档流里，不是浮层）。
   expect(
-    (within(dialog).getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value,
-  ).toBe("ws://localhost:4000");
+    screen
+      .getAllByRole("alert")
+      .some((node) => node.textContent?.includes("TRANSPORT_TEST_FAILURE")),
+  ).toBe(true);
+  expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
+    "ws://localhost:4000",
+  );
 });

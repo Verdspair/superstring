@@ -42,15 +42,43 @@ it("compact navigation stays open after cancelling a draft guard, and closes onl
   store.setState({ page: "settings", settingsView: "agents", dirty: true });
   setup();
   fireEvent.click(screen.getByRole("button", { name: "会话与导航" }));
-  fireEvent.click(screen.getByRole("button", { name: "接入" }));
+  fireEvent.click(screen.getByRole("button", { name: "扩展" }));
   expect(store.getState().navigationConfirmOpen).toBe(true);
   expect(store.getState().settingsView).toBe("agents");
+  expect(store.getState().pendingNavigation).toMatchObject({
+    kind: "page",
+    page: "settings",
+    settingsView: "workspace",
+    settingsRoute: "mcp-servers",
+  });
   act(() => store.getState().cancelPendingNavigation());
+  expect(store.getState().dirty).toBe(true);
+  expect(store.getState().pendingNavigation).toBeNull();
   expect(screen.getByRole("dialog", { name: "会话与导航" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "偏好" }));
   await act(async () => store.getState().confirmDiscardAndContinue());
   expect(store.getState().settingsView).toBe("general");
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+it("compact extensions navigation commits the MCP workspace and closes the drawer", () => {
+  setup();
+  fireEvent.click(screen.getByRole("button", { name: "会话与导航" }));
+  fireEvent.click(screen.getByRole("button", { name: "扩展" }));
+  expect(store.getState()).toMatchObject({
+    page: "settings",
+    settingsView: "workspace",
+    settingsRoute: "mcp-servers",
+  });
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+it("compact navigation reaches the shared scheme catalog", () => {
+  setup();
+  fireEvent.click(screen.getByRole("button", { name: "会话与导航" }));
+  fireEvent.click(screen.getByRole("button", { name: "方案" }));
+  expect(store.getState()).toMatchObject({
+    settingsView: "workspace",
+    settingsRoute: "scheme-library",
+  });
 });
 it("conversation directory is a separate modal with keyboard-reachable record actions", async () => {
   store.getState().rememberConversation({

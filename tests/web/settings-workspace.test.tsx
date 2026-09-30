@@ -53,7 +53,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("task-based workspace navigation", () => {
-  it("six product spaces are distinct from environment settings and conversation index", () => {
+  it("product spaces are distinct from environment settings and conversation index", () => {
     render(
       <DesignSystemProvider>
         <WorkspaceShell>
@@ -66,15 +66,31 @@ describe("task-based workspace navigation", () => {
       SPACES.map((space) => i18n.t(space.label)),
     );
     expect(screen.queryByRole("navigation", { name: "历史会话" })).toBeNull();
-    fireEvent.click(primary.getByRole("button", { name: "接入" }));
-    expect(store.getState().settingsView).toBe("operating-mode");
+    // 运行一级栏目已取消：台账与任务归对话的消息/观测/任务，侧栏不再有运行入口。
+    expect(primary.queryByRole("button", { name: "运行" })).toBeNull();
+    expect(SPACES.some((space) => (space.id as string) === "runs")).toBe(false);
+    fireEvent.click(primary.getByRole("button", { name: "对话" }));
+    expect(store.getState()).toMatchObject({
+      page: "chat",
+      conversationView: "messages",
+      conversationScope: "current",
+    });
+    // 接入改名为「扩展」：只留外置 MCP/技能/工具授权，默认落在 MCP 服务。
+    fireEvent.click(primary.getByRole("button", { name: "扩展" }));
+    expect(store.getState()).toMatchObject({
+      settingsView: "workspace",
+      settingsRoute: "mcp-servers",
+    });
     fireEvent.click(primary.getByRole("button", { name: "系统能力" }));
     expect(store.getState()).toMatchObject({
       settingsView: "workspace",
       settingsRoute: "system-capabilities",
     });
-    fireEvent.click(primary.getByRole("button", { name: "运行" }));
-    expect(store.getState().settingsView).toBe("observability");
+    fireEvent.click(primary.getByRole("button", { name: "方案" }));
+    expect(store.getState()).toMatchObject({
+      settingsView: "workspace",
+      settingsRoute: "scheme-library",
+    });
     fireEvent.click(screen.getByRole("button", { name: "偏好" }));
     expect(store.getState().settingsView).toBe("general");
   });
@@ -90,6 +106,47 @@ describe("task-based workspace navigation", () => {
         activeSpace({ page: "settings", settingsView: "workspace", settingsRoute: route.id }),
       ).toBeTruthy();
     }
+    // 原 qq-scheme-config 详情归方案一级；目录入口是 scheme-library，绑定首次发现入口 scheme-bindings。
+    expect(
+      activeSpace({
+        page: "settings",
+        settingsView: "workspace",
+        settingsRoute: "qq-scheme-config",
+      }),
+    ).toBe("schemes");
+    expect(
+      activeSpace({
+        page: "settings",
+        settingsView: "workspace",
+        settingsRoute: "scheme-bindings",
+      }),
+    ).toBe("schemes");
+    // QQ 应用级路由与旧 operating-mode 都归方案：连接与数据保留随 QQ 应用走。
+    for (const route of ["qq-app-schemes", "qq-connection", "qq-storage"] as const) {
+      expect(
+        activeSpace({ page: "settings", settingsView: "workspace", settingsRoute: route }),
+      ).toBe("schemes");
+    }
+    expect(
+      activeSpace({ page: "settings", settingsView: "operating-mode", settingsRoute: "basic" }),
+    ).toBe("schemes");
+    expect(
+      activeSpace({ page: "settings", settingsView: "workspace", settingsRoute: "mcp-servers" }),
+    ).toBe("connections");
+    // 运行一级栏目取消后，台账/任务路由归对话。
+    expect(
+      activeSpace({
+        page: "settings",
+        settingsView: "workspace",
+        settingsRoute: "execution-ledger",
+      }),
+    ).toBe("conversations");
+    expect(
+      activeSpace({ page: "settings", settingsView: "workspace", settingsRoute: "task-ledger" }),
+    ).toBe("conversations");
+    expect(
+      activeSpace({ page: "settings", settingsView: "observability", settingsRoute: "basic" }),
+    ).toBe("conversations");
   });
   it("changing the configuration target preserves the bound chat and next-chat identity", async () => {
     store.setState({

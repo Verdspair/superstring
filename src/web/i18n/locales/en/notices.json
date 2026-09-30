@@ -711,6 +711,7 @@
   "当前对话 · 请新建会话": "Current chat · Create a chat first",
   "当前方案": "Current scheme",
   "当前方案已保存。": "This scheme is saved.",
+  "当前方案有未保存的修改，是否保存后再继续？": "The current scheme has unsaved changes. Save them and continue?",
   "当前方案有未保存的改动，切换会丢掉它们。要继续吗？": "The current scheme has unsaved changes; switching discards them. Continue?",
   "当前无可用的 QQ 读取授权": "No current QQ read authorization",
   "当前无需设置。": "No settings required at this time.",

@@ -1,9 +1,8 @@
-import { Activity, ChevronDown, RefreshCw } from "lucide-react";
-import { useCallback, useState } from "react";
+import { Activity, Pause, Play, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { formatDate } from "../../i18n/runtime";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
@@ -19,82 +18,138 @@ const phases: Record<string, string> = {
   unavailable: "observability.connectionStatusUnavailable",
   unknown: "observability.connectionStatusUnknown",
 };
+
 export function ConversationActivity({ conversationId }: { conversationId: string }) {
-  const { t } = useTranslation(),
-    [open, setOpen] = useState(false);
+  const { t } = useTranslation();
+  const [refreshSignal, setRefreshSignal] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [tracesLoading, setTracesLoading] = useState(false);
+  const reportSummary = useCallback(
+    (state: { loading: boolean }) => setSummaryLoading(state.loading),
+    [],
+  );
+  const reportTraces = useCallback(
+    (state: { loading: boolean }) => setTracesLoading(state.loading),
+    [],
+  );
   return (
-    <section className="min-w-0 space-y-3">
-      <ConversationRuntimeSummary conversationId={conversationId} />
-      <Collapsible open={open} onOpenChange={setOpen}>
-        <CollapsibleTrigger asChild>
-          <Button variant="outline" size="sm">
-            <Activity />
-            {t("observability.investigateConversationExecutions")}
-            <ChevronDown className={open ? "rotate-180" : ""} />
+    <section
+      className="flex min-h-0 flex-1 flex-col"
+      aria-label={t("workspace.conversationHub.activityTitle")}
+    >
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+        <h1 className="text-sm font-medium">{t("workspace.conversationHub.activityTitle")}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            aria-pressed={paused}
+            onClick={() => setPaused((value) => !value)}
+          >
+            {paused ? <Play /> : <Pause />}
+            {t(paused ? "observability.resumeAutoRefresh" : "observability.pauseAutoRefresh")}
           </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          {open && (
-            <div className="mt-4 rounded-xl border p-4">
-              <ExecutionWorkspace key={conversationId} conversationId={conversationId} />
-            </div>
-          )}
-        </CollapsibleContent>
-      </Collapsible>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={summaryLoading || tracesLoading}
+            onClick={() => setRefreshSignal((value) => value + 1)}
+          >
+            <RefreshCw />
+            {t("connections.common.refresh")}
+          </Button>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4" data-workspace-scroll>
+        <div className="space-y-4">
+          <ConversationRuntimeSummary
+            conversationId={conversationId}
+            refreshSignal={refreshSignal}
+            paused={paused}
+            onState={reportSummary}
+          />
+          <ExecutionWorkspace
+            key={conversationId}
+            conversationId={conversationId}
+            header={false}
+            refreshSignal={refreshSignal}
+            paused={paused}
+            onPausedChange={setPaused}
+            onState={reportTraces}
+          />
+        </div>
+      </div>
     </section>
   );
 }
-export function ConversationRuntimeSummary({ conversationId }: { conversationId: string }) {
+
+export function ConversationRuntimeSummary({
+  conversationId,
+  refreshSignal = 0,
+  paused = false,
+  onState,
+}: {
+  conversationId: string;
+  refreshSignal?: number;
+  paused?: boolean;
+  onState?: (state: { loading: boolean }) => void;
+}) {
   const { t, i18n } = useTranslation(),
     api = useSuperstringStore((s) => s.apiClient);
   const read = useCallback(
     (signal: AbortSignal) => api.getConversationRuntimeStatus(conversationId, signal),
     [api, conversationId],
   );
-  const { data, error, loading, refresh } = useLiveResource(read);
+  const { data, error, loading, refresh } = useLiveResource(read, { paused });
+  const lastRefreshSignal = useRef(0);
+  const notify = useRef(onState);
+  notify.current = onState;
+  useEffect(() => {
+    notify.current?.({ loading });
+  }, [loading]);
+  useEffect(() => {
+    if (refreshSignal === lastRefreshSignal.current) return;
+    lastRefreshSignal.current = refreshSignal;
+    refresh();
+  }, [refreshSignal, refresh]);
   return (
     <section
       aria-label={t("observability.currentProcessingState")}
       className="space-y-3 rounded-xl border bg-muted/20 p-4"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <Activity className="size-4 text-primary" />
-          {data ? (
-            <>
-              <Badge variant="outline">
-                {t(phases[data.connectionPhase] ?? data.connectionPhase)}
-              </Badge>
-              <span className="text-sm">
-                {t("observability.valueActiveValueQueued", {
-                  "0": data.activeRuns,
-                  "1": data.pendingWakes,
+      <div className="flex flex-wrap items-center gap-3">
+        <Activity className="size-4 text-primary" />
+        {data ? (
+          <>
+            <Badge variant="outline">
+              {t(phases[data.connectionPhase] ?? data.connectionPhase)}
+            </Badge>
+            <span className="text-sm">
+              {t("observability.valueActiveValueQueued", {
+                "0": data.activeRuns,
+                "1": data.pendingWakes,
+              })}
+            </span>
+            {data.nextReadyAt && (
+              <span className="text-xs text-muted-foreground">
+                {t(
+                  new Date(data.nextReadyAt) > new Date(data.now)
+                    ? "observability.waitingWindowUntil"
+                    : "observability.earliestQueuedTime",
+                )}{" "}
+                {formatDate(data.nextReadyAt, i18n.language, {
+                  dateStyle: "medium",
+                  timeStyle: "medium",
                 })}
               </span>
-              {data.nextReadyAt && (
-                <span className="text-xs text-muted-foreground">
-                  {t(
-                    new Date(data.nextReadyAt) > new Date(data.now)
-                      ? "observability.waitingWindowUntil"
-                      : "observability.earliestQueuedTime",
-                  )}{" "}
-                  {formatDate(data.nextReadyAt, i18n.language, {
-                    dateStyle: "medium",
-                    timeStyle: "medium",
-                  })}
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="text-xs text-muted-foreground">
-              {t("observability.loadingProcessingState")}
-            </span>
-          )}
-        </div>
-        <Button variant="ghost" size="sm" disabled={loading} onClick={refresh}>
-          <RefreshCw />
-          {t("observability.refreshProcessingState")}
-        </Button>
+            )}
+          </>
+        ) : (
+          <span className="text-xs text-muted-foreground">
+            {t("observability.loadingProcessingState")}
+          </span>
+        )}
       </div>
       <ReadError error={error} />
       {data && (

@@ -1,4 +1,8 @@
-import type { QqBindingResponse, QqSettingsResponse } from "../../../shared/contracts/qq";
+import type {
+  QqBindingResponse,
+  QqConversationListItem,
+  QqSettingsResponse,
+} from "../../../shared/contracts/qq";
 import { msg } from "../../i18n";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { permissionSettingsDirty } from "../access/permission-state";
@@ -25,6 +29,8 @@ export interface QqInputs {
   >;
   manualKind: "group" | "private";
   manualPeer: string;
+  /** 观察行选中的会话键；与 manualPeer 是同一份「添加会话」草稿的两个来源。 */
+  manualPicked: string;
   manualAgentId: string;
   manualSchemeId: string;
   stickerNewCollection: string;
@@ -42,6 +48,7 @@ export const emptyQqInputs = (): QqInputs => ({
   attention: {},
   manualKind: "group",
   manualPeer: "",
+  manualPicked: "",
   manualAgentId: "",
   manualSchemeId: "",
   stickerNewCollection: "",
@@ -60,6 +67,39 @@ export const parseAttentionMembers = (text: string) =>
     .split(/[\s,，、;；]+/)
     .map((part) => part.trim())
     .filter(Boolean);
+
+/** 观察目录行与草稿里的选中值共用一种会话键。 */
+export const qqConversationKey = (
+  row: Pick<QqConversationListItem, "account_id" | "kind" | "peer_id">,
+) => `${row.account_id}:${row.kind}:${row.peer_id}`;
+
+/**
+ * 「添加会话」草稿的目标：观察行优先、其次手工号码；两者都没有就是没有草稿。
+ * 只做解析，不提供任何默认 Agent/方案——缺什么就报什么，让保存原地失败。
+ */
+export function manualBindingTarget(state: SuperstringState): {
+  kind: "group" | "private";
+  peer: string;
+  agentId: string;
+  schemeId: string;
+  conversation: QqConversationListItem | null;
+} | null {
+  const { manualPicked, manualKind, manualPeer, manualAgentId, manualSchemeId } = state.qqInputs;
+  const conversation = manualPicked
+    ? (state.qqConversations.find((row) => qqConversationKey(row) === manualPicked) ?? null)
+    : null;
+  const picked = manualPicked ? manualPicked.split(":") : null;
+  const peer = conversation?.peer_id ?? (picked ? (picked[2] ?? "") : manualPeer.trim());
+  if (!peer) return null;
+  return {
+    kind:
+      conversation?.kind ?? (picked ? (picked[1] === "private" ? "private" : "group") : manualKind),
+    peer,
+    agentId: manualAgentId,
+    schemeId: manualSchemeId,
+    conversation,
+  };
+}
 const connectionDirty = (draft: QqInputs["connection"]) =>
   !!draft &&
   (draft.endpoint.trim() !== (draft.source.transport.endpoint ?? "") ||
@@ -161,15 +201,16 @@ export function qqDraftChanges(
           `${draft.source.attention.members.join(" ")} → ${draft.members}`,
         ],
       });
-  if (inputs.manualPeer.trim())
+  const manual = manualBindingTarget(state);
+  if (manual)
     rows.push({
       id: "manual-binding",
-      resource: msg("手动绑定"),
+      resource: `${msg("手动绑定")} · ${manual.peer}`,
       changes: [
-        `${msg("手动绑定的类型")}: ${inputs.manualKind}`,
-        `${msg("号码")}: ${inputs.manualPeer}`,
-        `Agent: ${inputs.manualAgentId || state.agents[0]?.id || ""}`,
-        `${msg("方案")}: ${inputs.manualSchemeId || state.qqSchemes[0]?.id || ""}`,
+        `${msg("手动绑定的类型")}: ${manual.kind}`,
+        `${msg("号码")}: ${manual.peer}`,
+        `Agent: ${manual.agentId}`,
+        `${msg("方案")}: ${manual.schemeId}`,
       ],
     });
   if (inputs.stickerNewCollection.trim())
@@ -274,18 +315,35 @@ export function createQqDraftActions(
         const { [id]: _saved, ...attention } = get().qqInputs.attention;
         patchInputs({ attention });
       }
-      const inputs = get().qqInputs;
-      if (inputs.manualPeer.trim()) {
-        if (
-          !(await get().bindQqPeerNumber({
-            kind: inputs.manualKind,
-            peerId: inputs.manualPeer.trim(),
-            agentId: inputs.manualAgentId || get().agents[0]?.id || "",
-            schemeId: inputs.manualSchemeId || get().qqSchemes[0]?.id || "",
-          }))
-        )
+      const manual = manualBindingTarget(get());
+      if (manual) {
+        if (get().qqInputs.manualPicked && !manual.conversation) {
+          set({ error: msg("操作失败，请重试。") });
           return false;
-        patchInputs({ manualPeer: "" });
+        }
+        if (!manual.agentId) {
+          set({ error: msg("请至少选择一个 Agent。") });
+          return false;
+        }
+        if (!manual.schemeId) {
+          set({ error: msg("还没有方案：先到聊天方案页建一个，才能绑定会话。") });
+          return false;
+        }
+        const ok = manual.conversation
+          ? await get().bindQqConversation({
+              conversation: manual.conversation,
+              agentId: manual.agentId,
+              schemeId: manual.schemeId,
+            })
+          : await get().bindQqPeerNumber({
+              kind: manual.kind,
+              peerId: manual.peer,
+              agentId: manual.agentId,
+              schemeId: manual.schemeId,
+            });
+        if (!ok) return false;
+        // 只有写成功才清掉目标草稿；失败保留，用户可原地修正或重试。
+        patchInputs({ manualPeer: "", manualPicked: "", manualAgentId: "" });
       }
       if (get().qqInputs.stickerNewCollection.trim()) {
         if (!(await get().createQqStickerCollection(get().qqInputs.stickerNewCollection.trim())))

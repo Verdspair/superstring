@@ -1,6 +1,7 @@
 import { RefreshCw, Trash2 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ConfirmDialog } from "../../components/confirmation";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -23,6 +24,7 @@ export function StorageInventory() {
     loadQqStorage: load,
     runQqStorageCleanup: cleanup,
   } = useSuperstringStore();
+  const [confirming, setConfirming] = useState(false);
   useEffect(() => {
     void load();
   }, [load]);
@@ -44,7 +46,7 @@ export function StorageInventory() {
       ]
     : [];
   return (
-    <div className="mx-auto max-w-6xl space-y-8 px-6 py-6 lg:px-8">
+    <div className="space-y-8 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="font-semibold">{t("connections.storage.title")}</h2>
@@ -54,17 +56,33 @@ export function StorageInventory() {
               : t("connections.common.loading")}
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" disabled={loading} onClick={() => void load()}>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" disabled={loading || saving} onClick={() => void load()}>
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
-          <Button variant="outline" disabled={saving || !data} onClick={() => void cleanup()}>
+          <Button
+            variant="outline"
+            disabled={saving || loading || !data}
+            onClick={() => setConfirming(true)}
+          >
             <Trash2 />
             {t("connections.storage.clean")}
           </Button>
         </div>
       </div>
+      {confirming && (
+        <ConfirmDialog
+          message={t("connections.storage.cleanConfirm")}
+          confirmLabel={t("connections.storage.clean")}
+          busy={saving}
+          onCancel={() => setConfirming(false)}
+          onConfirm={async () => {
+            await cleanup();
+            setConfirming(false);
+          }}
+        />
+      )}
       {data && (
         <>
           <div className="grid gap-4 md:grid-cols-3">
@@ -111,14 +129,26 @@ export function StorageInventory() {
             </p>
           </section>
           <section className="space-y-4">
-            <div>
-              <h3 className="font-semibold">{t("connections.storage.sweep")}</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t("connections.storage.lastSweep", {
-                  "0": date(data.sweep.last_swept_at_seconds),
-                  "1": data.sweep.tracked,
-                })}
-              </p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="font-semibold">{t("connections.storage.sweep")}</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("connections.storage.lastSweep", {
+                    "0": date(data.sweep.last_swept_at_seconds),
+                    "1": data.sweep.tracked,
+                  })}
+                </p>
+              </div>
+              {/* 深链只在运行观测里，这里保留一个入口而不复制追踪详情。 */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  useSuperstringStore.getState().requestConversationView("activity", "global")
+                }
+              >
+                {t("connections.storage.viewTraces")}
+              </Button>
             </div>
             <div className="rounded-lg border">
               <Table>

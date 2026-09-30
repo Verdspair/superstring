@@ -3,14 +3,6 @@ import { useTranslation } from "react-i18next";
 import type { QqBindingResponse, QqConversationListItem } from "../../../shared/contracts/qq";
 import { Field } from "../../components/form-field";
 import { Button } from "../../components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
 import {
@@ -79,92 +71,6 @@ function Assignment({
   );
 }
 
-export function ManualBinding({ onClose }: { onClose: () => void }) {
-  const { t } = useTranslation();
-  const state = useSuperstringStore();
-  const [kind, setKind] = useQqInput("manualKind");
-  const [peer, setPeer] = useQqInput("manualPeer");
-  const [agent, setAgent] = useQqInput("manualAgentId");
-  const [scheme, setScheme] = useQqInput("manualSchemeId");
-  const agentId = agent || state.agents[0]?.id || "";
-  const schemeId = scheme || state.qqSchemes[0]?.id || "";
-  return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open && !state.qqAccessSaving) onClose();
-      }}
-    >
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{t("connections.bindConversation")}</DialogTitle>
-          <DialogDescription>
-            {t("connections.chooseTheAgentForThisConversationAndTheShared")}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="connections.typeForTheManualBinding">
-            <NativeSelect
-              value={kind}
-              disabled={state.qqAccessSaving}
-              onChange={(e) => setKind(e.target.value === "private" ? "private" : "group")}
-            >
-              <option value="group">{t("connections.group")}</option>
-              <option value="private">{t("connections.privateChat")}</option>
-            </NativeSelect>
-          </Field>
-          <Field label="connections.number">
-            <Input
-              disabled={state.qqAccessSaving}
-              inputMode="numeric"
-              value={peer}
-              onChange={(e) => setPeer(e.target.value)}
-            />
-          </Field>
-        </div>
-        <Assignment
-          agentId={agentId}
-          schemeId={schemeId}
-          onChange={(patch) => {
-            if (patch.agentId !== undefined) setAgent(patch.agentId);
-            if (patch.schemeId !== undefined) setScheme(patch.schemeId);
-          }}
-        />
-        {state.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {translateNotice(state.error)}
-          </p>
-        )}
-        {state.feedback && !state.error && (
-          <p role="status" className="text-sm text-muted-foreground">
-            {translateNotice(state.feedback)}
-          </p>
-        )}
-        <DialogFooter>
-          <Button variant="outline" disabled={state.qqAccessSaving} onClick={onClose}>
-            {t("connections.cancel")}
-          </Button>
-          <Button
-            disabled={state.qqAccessSaving || !peer.trim() || !agentId || !schemeId}
-            onClick={() =>
-              void state
-                .bindQqPeerNumber({ kind, peerId: peer.trim(), agentId, schemeId })
-                .then((ok) => {
-                  if (ok) {
-                    setPeer("");
-                    onClose();
-                  }
-                })
-            }
-          >
-            {t("connections.bindThisNumber")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function BindingEditor({
   conversation,
   binding,
@@ -224,7 +130,17 @@ export function BindingEditor({
             schemeId={choice.schemeId}
             onChange={(patch) => setChoices((old) => ({ ...old, [key]: { ...choice, ...patch } }))}
           />
-          <div className="flex gap-2">
+          {/* 直达不隐式保存改绑，未保存字段由导航守卫保护；目标是该方案的设置视图。 */}
+          <div>
+            <Button
+              variant="outline"
+              disabled={saving || state.qqSchemeSaving || !choice.schemeId}
+              onClick={() => state.requestQqSchemeNavigation(choice.schemeId, "settings")}
+            >
+              {t("schemes.studio.editScheme")}
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-2">
             <Button
               disabled={saving || !choice.agentId || !choice.schemeId}
               onClick={() => {
@@ -255,10 +171,25 @@ export function BindingEditor({
                 {t(binding.paused ? "connections.resume" : "connections.pauseSpeech")}
               </Button>
             )}
+            {/* 冲突（409）后显式刷新保存基线：合并本绑定草稿、推进 revision，不提交不改业务默认。 */}
+            {binding && (
+              <Button
+                variant="outline"
+                disabled={
+                  saving ||
+                  state.qqSchemeSaving ||
+                  state.qqMemoryBatchSaving ||
+                  state.qqBindingsLoading
+                }
+                onClick={() => void state.loadQqBindingDirectory(binding.id)}
+              >
+                {t("capabilities.resources.refreshBaseline")}
+              </Button>
+            )}
           </div>
           {binding && (
             <Tabs value={tab} onValueChange={setTab}>
-              <TabsList className="w-full">
+              <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal">
                 <TabsTrigger value="participation">{t("connections.participation")}</TabsTrigger>
                 <TabsTrigger value="attention">{t("connections.importantPeople")}</TabsTrigger>
                 <TabsTrigger value="memory">{t("connections.memoryOrganising")}</TabsTrigger>
@@ -365,7 +296,7 @@ export function BindingEditor({
                   binding={{ ...binding, enabled: state.qqSettings?.enabled === true }}
                   pending={binding.pending_observations}
                   disabled={saving}
-                  onChanged={() => void state.loadQqAccess()}
+                  onChanged={() => void state.loadQqBindingDirectory()}
                 />
                 <Button
                   variant="link"

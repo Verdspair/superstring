@@ -7,16 +7,37 @@ import {
   knowledgeReadDirty,
   organizationDirty,
 } from "../features/knowledge/types";
-import { qqDraftChanges } from "../features/qq/draft-state";
+import { qqDraftChanges, settingsHaveDrafts } from "../features/qq/draft-state";
 import { msg } from "../i18n";
 import { errorText } from "./helpers";
 import type { PendingNavigation, StoreGet, StoreSet, SuperstringState } from "./types";
+
+function navigationBusy(get: () => SuperstringState) {
+  const state = get();
+  return (
+    state.qqAccessSaving ||
+    state.qqSchemeSaving ||
+    state.qqStickerSaving ||
+    state.settingsSaving ||
+    state.permissionSaving ||
+    state.webAccessSaving ||
+    state.webAccessTesting ||
+    state.editorLoading ||
+    state.knowledgeReadLoading ||
+    state.organizationLoading ||
+    state.knowledgeModelLoading ||
+    state.memoryCorrectionSaving ||
+    state.qqMemoryBatchSaving ||
+    state.knowledgeBusy
+  );
+}
 
 async function performNavigation(
   get: () => SuperstringState,
   set: (patch: Partial<SuperstringState>) => void,
   pending: PendingNavigation,
   discard: boolean,
+  markLanded: () => void,
 ): Promise<void> {
   if (pending.kind === "knowledge") {
     const previous = {
@@ -30,9 +51,37 @@ async function performNavigation(
         navigationConfirmOpen: false,
         navigationConfirmMessage: "",
       });
+      markLanded();
     } else {
       set({ ...previous, navigationConfirmOpen: true });
     }
+    return;
+  }
+  if (pending.kind === "scheme") {
+    // 先确认目标仍存在，避免丢弃当前方案后进入空页。
+    if (!get().qqSchemes.some((row) => row.id === pending.id)) {
+      set({
+        pendingNavigation: pending,
+        navigationConfirmOpen: true,
+        error: msg("操作失败，请重试。"),
+      });
+      return;
+    }
+    if (discard) get().discardQqDrafts();
+    // 同一方案只切任务视图，重建编辑器会丢失草稿。
+    if (get().qqSchemeEditor?.source.id !== pending.id) get().selectQqScheme(pending.id);
+    set({
+      pendingNavigation: null,
+      navigationConfirmOpen: false,
+      navigationConfirmMessage: "",
+      error: null,
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-scheme-config",
+      qqSchemeView: pending.view ?? "settings",
+      feedback: "",
+    });
+    markLanded();
     return;
   }
   const dirtyBefore = get().dirty;
@@ -53,6 +102,8 @@ async function performNavigation(
       page: pending.page,
       settingsView: pending.settingsView,
       ...(pending.settingsRoute ? { settingsRoute: pending.settingsRoute } : {}),
+      ...(pending.conversationView ? { conversationView: pending.conversationView } : {}),
+      ...(pending.conversationScope ? { conversationScope: pending.conversationScope } : {}),
       feedback: "",
     };
     // 放弃修改并离开 agents 页时清除草稿，使再次进入按默认规则读取而非显示已放弃改动；
@@ -78,6 +129,7 @@ async function performNavigation(
     }
     if (discard) get().discardQqDrafts();
     set(patch);
+    markLanded();
     if (pending.conversationId) await get().selectConversation(pending.conversationId);
     return;
   }
@@ -140,6 +192,7 @@ async function performNavigation(
   if (discard) get().discardKnowledgeRead();
   if (discard) get().discardQqDrafts();
   set({ activeSection: pending.section, feedback: "", dirty: false });
+  markLanded();
 }
 export function createNavigationActions(
   set: StoreSet,
@@ -147,6 +200,7 @@ export function createNavigationActions(
 ): Pick<
   SuperstringState,
   | "requestConversationNavigation"
+  | "requestConversationView"
   | "openSettingsRoute"
   | "openChat"
   | "openSettings"
@@ -154,6 +208,7 @@ export function createNavigationActions(
   | "closeAgentSettings"
   | "requestPageNavigation"
   | "requestAgentNavigation"
+  | "requestQqSchemeNavigation"
   | "confirmSaveAndContinue"
   | "confirmDiscardAndContinue"
   | "cancelPendingNavigation"
@@ -163,19 +218,97 @@ export function createNavigationActions(
     set({
       pendingNavigation: pending,
       navigationConfirmOpen: true,
-      navigationConfirmMessage: msg("接入设置有未保存修改，是否保存后继续？"),
+      navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
     });
     return true;
   };
+  // 导航落地序号：每次有效落地递增，晚到的会话选择完成不得覆盖更新的视图/位置。
+  let navigationSequence = 0;
+  const markLanded = () => {
+    navigationSequence += 1;
+  };
   return {
     requestConversationNavigation: async (id) => {
+      if (navigationBusy(get)) return;
+      if (
+        (get().currentConversationId !== id ||
+          get().conversationView !== "messages" ||
+          get().conversationScope !== "current") &&
+        guardQqDrafts({
+          kind: "page",
+          page: "chat",
+          settingsView: "hub",
+          conversationId: id,
+          conversationView: "messages",
+          conversationScope: "current",
+        })
+      )
+        return;
       get().requestPageNavigation("chat", "hub");
       const pending = get().pendingNavigation;
-      if (pending?.kind === "page" && pending.page === "chat")
-        set({ pendingNavigation: { ...pending, conversationId: id } });
-      else if (get().page === "chat") await get().selectConversation(id);
+      if (pending?.kind === "page" && pending.page === "chat") {
+        set({
+          pendingNavigation: {
+            ...pending,
+            conversationId: id,
+            conversationView: "messages",
+            conversationScope: "current",
+          },
+        });
+        return;
+      }
+      if (pending || get().page !== "chat") return;
+      const api = get().apiClient;
+      const sequence = navigationSequence;
+      await get().selectConversation(id);
+      if (navigationSequence !== sequence || get().apiClient !== api) return;
+      if (get().currentConversationId === id) {
+        set({ conversationView: "messages", conversationScope: "current" });
+        markLanded();
+      }
+    },
+    requestConversationView: (view, scope = "current") => {
+      if (navigationBusy(get)) return;
+      // 目标真正变化时统一走草稿聚合守卫：同页视图切换不得绕过 permission/pageEditor/knowledge 草稿。
+      if (
+        (get().conversationView !== view || get().conversationScope !== scope) &&
+        settingsHaveDrafts(get())
+      ) {
+        set({
+          pendingNavigation: {
+            kind: "page",
+            page: "chat",
+            settingsView: "hub",
+            conversationView: view,
+            conversationScope: scope,
+          },
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
+        });
+        return;
+      }
+      get().requestPageNavigation("chat", "hub");
+      const pending = get().pendingNavigation;
+      if (pending?.kind === "page" && pending.page === "chat") {
+        set({
+          pendingNavigation: { ...pending, conversationView: view, conversationScope: scope },
+        });
+        return;
+      }
+      if (pending) return;
+      if (get().page === "chat") {
+        set({ conversationView: view, conversationScope: scope });
+        markLanded();
+      }
     },
     openSettingsRoute: (settingsRoute) => {
+      if (settingsRoute === "execution-ledger" || settingsRoute === "task-ledger") {
+        get().requestConversationView(
+          settingsRoute === "execution-ledger" ? "activity" : "tasks",
+          "global",
+        );
+        return;
+      }
       if (settingsRoute === "knowledge-model" || settingsRoute === "management")
         settingsRoute = "models";
       if (
@@ -217,6 +350,7 @@ export function createNavigationActions(
         Object.keys(get().qqMemoryBatchDrafts).length === 0
       ) {
         set({ settingsView: "workspace", settingsRoute, feedback: "" });
+        markLanded();
         return;
       }
       if (
@@ -243,11 +377,13 @@ export function createNavigationActions(
         set({ pendingNavigation: { ...pending, settingsRoute } });
       } else if (get().page === "settings" && get().settingsView === "workspace") {
         set({ settingsRoute, feedback: "" });
+        markLanded();
       }
     },
-    openChat: () => get().requestPageNavigation("chat", "hub"),
+    openChat: () => get().requestConversationView("messages", "current"),
     openSettings: () => get().requestPageNavigation("settings", "hub"),
     openAgentSettings: () => {
+      if (navigationBusy(get)) return;
       get().requestPageNavigation("settings", "agents");
       const state = get();
       // 仅在真正进入 agents 页（未被 dirty 确认拦截）且尚无草稿时，按默认规则载入。
@@ -270,22 +406,16 @@ export function createNavigationActions(
         get().openSettingsRoute("knowledge-config");
         return;
       }
-      if (
-        get().qqAccessSaving ||
-        get().qqSchemeSaving ||
-        get().qqStickerSaving ||
-        get().settingsSaving ||
-        get().permissionSaving ||
-        get().webAccessSaving ||
-        get().editorLoading ||
-        get().knowledgeReadLoading ||
-        get().organizationLoading ||
-        get().knowledgeModelLoading ||
-        get().memoryCorrectionSaving ||
-        get().qqMemoryBatchSaving ||
-        get().knowledgeBusy
-      )
+      if (page === "settings" && settingsView === "observability") {
+        get().requestConversationView("activity", "global");
         return;
+      }
+      // 旧的 QQ 连接别名归一到应用管理里的连接页，复用同一条 busy/三选守卫链。
+      if (page === "settings" && settingsView === "operating-mode") {
+        get().openSettingsRoute("qq-connection");
+        return;
+      }
+      if (navigationBusy(get)) return;
       if (
         !(get().page === page && get().settingsView === settingsView) &&
         guardQqDrafts({ kind: "page", page, settingsView })
@@ -303,6 +433,7 @@ export function createNavigationActions(
       if (get().dirty && get().editorAgentId === "__new__" && get().settingsView === "workspace") {
         if (page === "settings" && settingsView === "agents") {
           set({ page, settingsView, feedback: "" });
+          markLanded();
           return;
         }
         set({
@@ -350,6 +481,7 @@ export function createNavigationActions(
       }
       if (page !== "settings") get().discardKnowledgeEditor();
       set({ page, settingsView, feedback: "" });
+      markLanded();
     },
     requestAgentNavigation: (id) => {
       if (
@@ -390,21 +522,48 @@ export function createNavigationActions(
       }
       void get().editAgent(id);
     },
+    requestQqSchemeNavigation: (id, view = "settings") => {
+      if (navigationBusy(get)) return;
+      if (!get().qqSchemes.some((row) => row.id === id)) {
+        // 目标不存在（含已删的脏方案）：显式报错，不改路由也不切视图，草稿原样保留。
+        set({ error: msg("操作失败，请重试。") });
+        return;
+      }
+      const sameDetail =
+        get().qqSchemeEditor?.source.id === id &&
+        get().page === "settings" &&
+        get().settingsView === "workspace" &&
+        get().settingsRoute === "qq-scheme-config";
+      if (sameDetail) {
+        if (get().qqSchemeView !== view) set({ qqSchemeView: view });
+        return;
+      }
+      const pending: PendingNavigation =
+        view === "settings" ? { kind: "scheme", id } : { kind: "scheme", id, view };
+      if (qqDraftChanges(get()).length) {
+        set({
+          pendingNavigation: pending,
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
+        });
+        return;
+      }
+      void performNavigation(get, set, pending, false, markLanded);
+    },
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;
-      if (
-        !pending ||
-        get().qqAccessSaving ||
-        get().qqSchemeSaving ||
-        get().qqStickerSaving ||
-        get().settingsSaving ||
-        get().permissionSaving ||
-        get().webAccessSaving ||
-        get().editorLoading ||
-        get().knowledgeBusy ||
-        get().qqMemoryBatchSaving
-      )
+      if (!pending || navigationBusy(get)) return;
+      if (pending.kind === "scheme") {
+        if (!(await get().saveQqDrafts())) {
+          set({
+            navigationConfirmOpen: true,
+            navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
+          });
+          return;
+        }
+        await performNavigation(get, set, pending, false, markLanded);
         return;
+      }
       if (!(await get().saveQqDrafts())) {
         set({
           navigationConfirmOpen: true,
@@ -529,31 +688,22 @@ export function createNavigationActions(
         });
         return;
       }
-      await performNavigation(get, set, pending, false);
+      await performNavigation(get, set, pending, false, markLanded);
     },
     confirmDiscardAndContinue: async () => {
       const pending = get().pendingNavigation;
-      if (
-        !pending ||
-        get().qqAccessSaving ||
-        get().qqSchemeSaving ||
-        get().qqStickerSaving ||
-        get().settingsSaving ||
-        get().permissionSaving ||
-        get().webAccessSaving ||
-        get().editorLoading ||
-        get().knowledgeBusy ||
-        get().qqMemoryBatchSaving
-      )
-        return;
-      await performNavigation(get, set, pending, true);
-      if (!get().pendingNavigation) get().discardQqMemoryBatchDrafts();
+      if (!pending || navigationBusy(get)) return;
+      await performNavigation(get, set, pending, true, markLanded);
+      // 切换方案不能顺带丢弃其他资料草稿。
+      if (!get().pendingNavigation && pending.kind !== "scheme") get().discardQqMemoryBatchDrafts();
     },
-    cancelPendingNavigation: () =>
+    cancelPendingNavigation: () => {
+      if (!get().pendingNavigation) return;
       set({
         pendingNavigation: null,
         navigationConfirmOpen: false,
         navigationConfirmMessage: "",
-      }),
+      });
+    },
   };
 }

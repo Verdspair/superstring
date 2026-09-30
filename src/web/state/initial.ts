@@ -28,9 +28,12 @@ import { initialRunState } from "../features/runs/slice";
 import type { SettingsRoute } from "../workspace/settings-routes";
 import type {
   AgentDraft,
+  ConversationScope,
+  ConversationView,
   LoadStatus,
   Page,
   PendingNavigation,
+  QqSchemeView,
   SectionKey,
   SettingsView,
 } from "./types";
@@ -56,6 +59,9 @@ export const initial = {
   page: "chat" as Page,
   settingsView: "hub" as SettingsView,
   settingsRoute: "basic" as SettingsRoute,
+  conversationView: "messages" as ConversationView,
+  conversationScope: "current" as ConversationScope,
+  qqSchemeView: "settings" as QqSchemeView,
   activeSection: "A" as SectionKey,
   dirty: false,
   pendingNavigation: null as PendingNavigation | null,

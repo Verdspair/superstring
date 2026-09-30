@@ -8,10 +8,12 @@ import { RecordActions } from "./RecordActions";
 export function ChatTranscript({
   messages,
   session,
+  active = true,
   onDelete,
 }: {
   messages: ChatItem[];
   session: string | null;
+  active?: boolean;
   onDelete: (id: string) => void;
 }) {
   const { t } = useTranslation();
@@ -20,7 +22,7 @@ export function ChatTranscript({
   const previousSession = useRef(session);
   const [away, setAway] = useState(false);
   const last = messages.at(-1);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Message arrivals and streamed deltas are the scroll-follow signal.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 新消息、流式增量与切回页签都是跟随信号。
   useLayoutEffect(() => {
     const node = viewport.current;
     if (!node) return;
@@ -29,8 +31,10 @@ export function ChatTranscript({
       following.current = true;
       setAway(false);
     }
+    // 隐藏期间写 scrollTop 会把 display:none 下的位置清成 0；返回时再按跟随状态贴底。
+    if (!active) return;
     if (following.current) node.scrollTop = node.scrollHeight;
-  }, [session, messages.length, last?.content]);
+  }, [active, session, messages.length, last?.content]);
   const latest = () => {
     if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
     following.current = true;

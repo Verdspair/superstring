@@ -45,13 +45,26 @@ export const SETTINGS_ROUTES = [
   },
   {
     id: "qq-scheme-config",
-    title: "workspace.chat_schemes",
+    title: "schemes.qq.detailTitle",
     state: "transition",
-    note: "workspace.qq_wide_schemes_speech_and_rhythm_context_and_memory_media_and_expressio",
+    note: "schemes.qq.detailNote",
+  },
+  // QQ 应用级管理（P9）：开关、连接与保留数据都随应用，不随单个方案保存。
+  {
+    id: "qq-app-schemes",
+    title: "schemes.qq.appTitle",
+    state: "transition",
+    note: "schemes.qq.description",
+  },
+  {
+    id: "qq-connection",
+    title: "schemes.qq.connectionTitle",
+    state: "transition",
+    note: "schemes.qq.scopeNote",
   },
   {
     id: "qq-storage",
-    title: "workspace.storage_and_diagnostics",
+    title: "connections.dataRetention",
     state: "transition",
     note: "workspace.what_the_qq_side_keeps_how_long_it_keeps_it_and_the_one_cleanup_entry_th",
   },
@@ -116,6 +129,20 @@ export const SETTINGS_ROUTES = [
     title: "capabilities.session.name",
     state: "transition",
     note: "capabilities.session.description",
+  },
+  // 方案（P9）：独立一级目录；按应用登记（QQ 现在唯一实现），应用详情沿用既有 qq 路由。
+  {
+    id: "scheme-library",
+    title: "workspace.schemes",
+    state: "transition",
+    note: "schemes.catalogNote",
+  },
+  // 绑定归方案：这是绑定的首次发现入口；日常编辑走方案详情的绑定视图，不做成平级 Tab。
+  {
+    id: "scheme-bindings",
+    title: "schemes.bindings.title",
+    state: "transition",
+    note: "schemes.bindings.note",
   },
   // 运行（P7-d）：执行台账与任务与审批；执行设置已移归系统能力（P8）。
   {

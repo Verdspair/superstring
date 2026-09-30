@@ -1,6 +1,6 @@
 import { Download, GitCompareArrows, Pause, Play, RefreshCw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { RuntimeSpanFilters } from "../../../shared/contracts/runtime-observability";
@@ -12,14 +12,30 @@ import { InvestigationCanvas } from "./InvestigationCanvas";
 import { ReadError } from "./presentation";
 import { QueryToolbar } from "./QueryToolbar";
 import { TraceComparison } from "./TraceComparison";
+
 export function ObservabilityWorkspace() {
   return (
-    <div className="mx-auto w-full max-w-[1600px] p-4 lg:p-8">
+    <div className="w-full min-w-0 px-4 py-4">
       <ExecutionWorkspace />
     </div>
   );
 }
-export function ExecutionWorkspace({ conversationId }: { conversationId?: string }) {
+
+export function ExecutionWorkspace({
+  conversationId,
+  header = true,
+  refreshSignal = 0,
+  paused: pausedProp,
+  onPausedChange,
+  onState,
+}: {
+  conversationId?: string;
+  header?: boolean;
+  refreshSignal?: number;
+  paused?: boolean;
+  onPausedChange?: (paused: boolean) => void;
+  onState?: (state: { loading: boolean }) => void;
+}) {
   const { t, i18n } = useTranslation(),
     reduceMotion = useReducedMotion();
   const [filters, setFilters] = useState<RuntimeSpanFilters>(() =>
@@ -29,14 +45,27 @@ export function ExecutionWorkspace({ conversationId }: { conversationId?: string
         }
       : readFilterUrl(),
   );
-  const [paused, setPaused] = useState(false),
+  const [pausedLocal, setPausedLocal] = useState(false),
     [trace, setTrace] = useState<string | null>(null),
     [compare, setCompare] = useState(false),
     [selected, setSelected] = useState<string[]>([]);
+  const paused = pausedProp ?? pausedLocal;
   const { items, summary, loading, error, hasMore, refresh, loadMore } = useRuntimeTraces(
     filters,
     paused,
   );
+  const lastRefreshSignal = useRef(0);
+  const notify = useRef(onState);
+  notify.current = onState;
+  useEffect(() => {
+    notify.current?.({ loading });
+  }, [loading]);
+  // 页签级「刷新」同时触发运行状态摘要与本列表；首次挂载不重复请求。
+  useEffect(() => {
+    if (refreshSignal === lastRefreshSignal.current) return;
+    lastRefreshSignal.current = refreshSignal;
+    refresh();
+  }, [refreshSignal, refresh]);
   const root = useRef<HTMLElement>(null),
     previousRow = useRef<string | null>(null),
     restore = useRef(false),
@@ -134,38 +163,35 @@ export function ExecutionWorkspace({ conversationId }: { conversationId?: string
           }}
           className="space-y-6"
         >
-          <header className="flex flex-wrap items-start justify-between gap-4">
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[.18em] text-primary">
-                {t("observability.observability")}
-              </p>
-              <h1 className="text-3xl font-semibold tracking-tight">
-                {t("observability.executions")}
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                {t("observability.followAnActivityThroughEveryModelCallAndDelivery")}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setPaused((value) => !value)}
-                aria-pressed={paused}
-              >
-                {paused ? <Play /> : <Pause />}
-                {t(paused ? "observability.resumeAutoRefresh" : "observability.pauseAutoRefresh")}
-              </Button>
-              <Button variant="outline" size="sm" disabled={loading} onClick={refresh}>
-                <RefreshCw />
-                {t("observability.refreshRuns")}
-              </Button>
-              <Button variant="outline" size="sm" disabled={!items.length} onClick={exportMetadata}>
-                <Download />
-                {t("observability.exportLoadedMetadata")}
-              </Button>
-            </div>
-          </header>
+          {header && (
+            <header className="flex flex-wrap items-start justify-between gap-4">
+              <div className="space-y-2">
+                <h1 className="text-xl font-semibold tracking-tight">
+                  {t("observability.integrated.globalTitle")}
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  {t("observability.integrated.globalDescription")}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    onPausedChange ? onPausedChange(!paused) : setPausedLocal((value) => !value)
+                  }
+                  aria-pressed={paused}
+                >
+                  {paused ? <Play /> : <Pause />}
+                  {t(paused ? "observability.resumeAutoRefresh" : "observability.pauseAutoRefresh")}
+                </Button>
+                <Button variant="outline" size="sm" disabled={loading} onClick={refresh}>
+                  <RefreshCw />
+                  {t("observability.refreshRuns")}
+                </Button>
+              </div>
+            </header>
+          )}
           <QueryToolbar
             key={conversationId ?? "global"}
             filters={filters}
@@ -209,17 +235,23 @@ export function ExecutionWorkspace({ conversationId }: { conversationId?: string
                 <span>{t("observability.loadingRuns")}</span>
               )}
             </div>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={selected.length !== 2}
-              onClick={() => setCompare(true)}
-            >
-              <GitCompareArrows />
-              {t("observability.compareValueSelected", {
-                "0": selected.length,
-              })}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" disabled={!items.length} onClick={exportMetadata}>
+                <Download />
+                {t("observability.exportLoadedMetadata")}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={selected.length !== 2}
+                onClick={() => setCompare(true)}
+              >
+                <GitCompareArrows />
+                {t("observability.compareValueSelected", {
+                  "0": selected.length,
+                })}
+              </Button>
+            </div>
           </div>
           <ReadError error={error} />
           {loading && (

@@ -1,5 +1,5 @@
 import { ArrowRight, MessageCircle } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Button } from "../../components/ui/button";
@@ -17,7 +17,7 @@ import { ChatTranscript } from "./ChatTranscript";
 import { ConversationIdentity } from "./ConversationIdentity";
 import { CreateConversation } from "./CreateConversation";
 
-export function DirectConversation({ directory }: { directory?: ReactNode }) {
+export function DirectConversation({ active = true }: { active?: boolean }) {
   const { t } = useTranslation();
   const conversation = useSuperstringStore(selectedConversation);
   const session = useSuperstringStore(currentSessionId);
@@ -37,22 +37,25 @@ export function DirectConversation({ directory }: { directory?: ReactNode }) {
       className="flex h-full min-h-0 min-w-0 flex-col bg-background"
       aria-label={t("workspace.current_conversation")}
     >
-      <ConversationIdentity
-        conversation={conversation}
-        agentName={
-          chat.runtimeConfigUnavailable
-            ? t("workspace.chat_information_unavailable")
-            : chat.runtimeConfig?.name
-        }
-        model={chat.runtimeConfig?.model_name}
-        mode={chat.runtimeConfig?.mode}
-        directory={directory}
-        actions={chat.runId && <RunLink runId={chat.runId} />}
-      />
+      {/* 消息页签隐藏时身份栏不参与渲染；消息正文保持挂载以保住草稿、滚动位置与在途发送。 */}
+      {active && (
+        <ConversationIdentity
+          conversation={conversation}
+          agentName={
+            chat.runtimeConfigUnavailable
+              ? t("workspace.chat_information_unavailable")
+              : chat.runtimeConfig?.name
+          }
+          model={chat.runtimeConfig?.model_name}
+          mode={chat.runtimeConfig?.mode}
+          actions={chat.runId && <RunLink runId={chat.runId} />}
+        />
+      )}
       {chat.messages.some((item) => item.role !== "system") ? (
         <ChatTranscript
           session={session}
           messages={chat.messages}
+          active={active}
           onDelete={(message) => setDeletion({ session, message })}
         />
       ) : (
@@ -94,7 +97,8 @@ export function DirectConversation({ directory }: { directory?: ReactNode }) {
         </div>
       )}
       <ChatComposer />
-      {visibleDeletion && (
+      {/* 弹窗会挂到主文档之外，页签隐藏时先卸下，状态本身保留、返回消息页签再显示。 */}
+      {active && visibleDeletion && (
         <ConfirmDialog
           message={t("workspace.delete_this_message")}
           confirmLabel={t("workspace.delete")}
@@ -105,7 +109,7 @@ export function DirectConversation({ directory }: { directory?: ReactNode }) {
           }}
         />
       )}
-      {chat.knowledgeResend?.sessionId === session && chat.knowledgeResend && (
+      {active && chat.knowledgeResend?.sessionId === session && chat.knowledgeResend && (
         <ConfirmDialog
           message={t(
             "workspace.document_access_has_changed_the_earlier_request_cannot_be_retried_resend",

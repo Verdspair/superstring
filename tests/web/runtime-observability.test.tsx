@@ -258,6 +258,27 @@ it("shows the real connection, queue, pending window and unknown delivery status
   expect(screen.getByText("处理失败的唤醒").nextElementSibling?.textContent).toBe("4");
   expect(screen.getByText("结果待确认的投递").nextElementSibling?.textContent).toBe("5");
 });
+it("stops polling under a controlled hub pause and reports its real loading state", async () => {
+  vi.useFakeTimers();
+  try {
+    const list = vi.fn<SuperstringApi["listRuntimeSpans"]>(async () => page());
+    const states: boolean[] = [];
+    setup({ listRuntimeSpans: list });
+    render(<ExecutionWorkspace paused onState={(state) => states.push(state.loading)} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(list).toHaveBeenCalledOnce();
+    expect(states).toContain(true);
+    expect(states.at(-1)).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+    expect(list).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 it("normalizes precise local time bounds and rejects a reversed interval", async () => {
   const list = vi.fn().mockResolvedValue(page());
   setup({ listRuntimeSpans: list });
