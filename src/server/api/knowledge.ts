@@ -5,6 +5,8 @@ import {
   KnowledgeCategoryCreateSchema,
   KnowledgeCategoryDeleteSchema,
   KnowledgeCategoryUpdateSchema,
+  KnowledgeDocumentCursorSchema,
+  KnowledgeDocumentsQuerySchema,
   KnowledgeDocumentUpdateSchema,
   KnowledgeGrantUpdateSchema,
   KnowledgeImportSchema,
@@ -21,7 +23,24 @@ import {
 } from "../db/organization-repository";
 import { fail } from "../errors";
 import type { KnowledgeModule } from "../modules/contracts";
-import { parseBody, parseUuidParam, readJsonBody } from "./validation";
+import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
+
+/**
+ * The list cursor is opaque base64url; a client that hand-builds one gets the
+ * same 422 as any other malformed query value instead of a silent empty page.
+ */
+function documentCursor(raw: string | undefined) {
+  if (raw === undefined) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(raw, "base64url").toString());
+  } catch {
+    throw validationFailed();
+  }
+  const parsed = KnowledgeDocumentCursorSchema.safeParse(value);
+  if (!parsed.success) throw validationFailed();
+  return parsed.data;
+}
 
 export function knowledgeRoutes(
   business: BusinessDbHandle,
@@ -80,7 +99,18 @@ export function knowledgeRoutes(
     repository.deleteCategory(c.req.param("id"), body.expected_revision, body.move_to);
     return c.body(null, 204);
   });
-  router.get("/knowledge/documents", (c) => c.json(repository.documents()));
+  router.get("/knowledge/documents", (c) => {
+    const query = parseBody(KnowledgeDocumentsQuerySchema, c.req.query());
+    return c.json(
+      repository.documents({
+        search: query.search,
+        category: query.category === "all" ? undefined : query.category,
+        status: query.status === "all" ? undefined : query.status,
+        cursor: documentCursor(query.cursor),
+        limit: query.limit,
+      }),
+    );
+  });
   router.post("/knowledge/documents", async (c) =>
     c.json(await ingest(parseBody(KnowledgeImportSchema, await readJsonBody(c.req.raw))), 201),
   );

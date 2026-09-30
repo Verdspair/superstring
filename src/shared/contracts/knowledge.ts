@@ -65,6 +65,15 @@ export const KnowledgeCategorySchema = z.strictObject({
   revision,
   document_count: z.number().int().nonnegative(),
 });
+export const KnowledgeOrganizationStatusSchema = z.enum([
+  "pending",
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "disabled",
+]);
 export const KnowledgeDocumentSchema = z.strictObject({
   id: UuidSchema,
   category_id: categoryId,
@@ -78,15 +87,7 @@ export const KnowledgeDocumentSchema = z.strictObject({
   agent_ids: z.array(UuidSchema),
   summary: z.string(),
   tags: z.array(z.string()),
-  organization_status: z.enum([
-    "pending",
-    "queued",
-    "running",
-    "succeeded",
-    "failed",
-    "cancelled",
-    "disabled",
-  ]),
+  organization_status: KnowledgeOrganizationStatusSchema,
   error_code: z.string().nullable(),
   latest_job_id: UuidSchema.nullable().optional(),
 });
@@ -94,6 +95,25 @@ export const KnowledgeDocumentDetailSchema = KnowledgeDocumentSchema.extend({
   original_text: z.string(),
   content: ContentItemSchema,
   draft: ContentItemSchema.nullable(),
+});
+
+/** Server search preserves the page's Unicode `toLowerCase().includes()` substring semantics. */
+export const KnowledgeDocumentsQuerySchema = z.strictObject({
+  search: z.string().max(200).optional(),
+  category: z.union([z.literal("all"), categoryId]).optional(),
+  status: z.union([z.literal("all"), KnowledgeOrganizationStatusSchema]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(200).optional(),
+});
+/** Decoded keyset cursor payload; the wire form stays opaque base64url. */
+export const KnowledgeDocumentCursorSchema = z.strictObject({
+  created_at: z.string().min(1).max(64),
+  id: UuidSchema,
+});
+export const KnowledgeDocumentsPageSchema = z.strictObject({
+  items: z.array(KnowledgeDocumentSchema),
+  next_cursor: z.string().nullable(),
+  total: z.number().int().nonnegative(),
 });
 export const AgentKnowledgeSchema = KnowledgeDocumentSchema.pick({
   id: true,
@@ -146,7 +166,11 @@ export type KnowledgeDocumentUpdate = z.infer<typeof KnowledgeDocumentUpdateSche
 export type KnowledgeSettingsUpdate = z.infer<typeof KnowledgeSettingsUpdateSchema>;
 export type KnowledgeSettings = z.infer<typeof KnowledgeSettingsSchema>;
 export type KnowledgeCategory = z.infer<typeof KnowledgeCategorySchema>;
+export type KnowledgeOrganizationStatus = z.infer<typeof KnowledgeOrganizationStatusSchema>;
 export type KnowledgeDocument = z.infer<typeof KnowledgeDocumentSchema>;
 export type KnowledgeDocumentDetail = z.infer<typeof KnowledgeDocumentDetailSchema>;
+export type KnowledgeDocumentsQuery = z.infer<typeof KnowledgeDocumentsQuerySchema>;
+export type KnowledgeDocumentCursor = z.infer<typeof KnowledgeDocumentCursorSchema>;
+export type KnowledgeDocumentsPage = z.infer<typeof KnowledgeDocumentsPageSchema>;
 export type KnowledgeBatchGrant = z.infer<typeof KnowledgeBatchGrantSchema>;
 export type AgentKnowledge = z.infer<typeof AgentKnowledgeSchema>;

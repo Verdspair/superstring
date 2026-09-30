@@ -1,13 +1,16 @@
-import type { Database } from "bun:sqlite";
+import type { Database, SQLQueryBindings } from "bun:sqlite";
 import type { ContentItem } from "../../shared/contracts/content";
 import type {
   AgentKnowledge,
   KnowledgeBatchGrant,
   KnowledgeCategory,
   KnowledgeDocument,
+  KnowledgeDocumentCursor,
   KnowledgeDocumentDetail,
+  KnowledgeDocumentsPage,
   KnowledgeDocumentUpdate,
   KnowledgeImport,
+  KnowledgeOrganizationStatus,
   KnowledgeSettings,
   KnowledgeSettingsUpdate,
 } from "../../shared/contracts/knowledge";
@@ -24,6 +27,72 @@ const DOCUMENT_COLUMNS =
 type DraftRow = { id: string; summary: string; tags: string; body: string; sources: string };
 type SettingsRow = Omit<KnowledgeSettings, "auto_enabled"> & { auto_enabled: number };
 type CategoryRow = { id: string; name: string; revision: number };
+
+/**
+ * The management list reproduces the browser-side filter the page used to run
+ * over the whole library, so it must read the same values the list renders:
+ * the valid draft for this content version supplies `summary`/`tags`, and the
+ * newest job for that version supplies the derived status.
+ */
+const DOCUMENT_LIST_FROM =
+  "knowledge_documents d LEFT JOIN knowledge_drafts kd ON kd.document_id = d.id AND kd.content_version = d.content_version";
+/**
+ * Adds the newest job per document version when a status filter is present.
+ * `MAX(rowid)` with the bare `status` column yields the newest job's status —
+ * the row `view()` picks with `ORDER BY rowid DESC LIMIT 1` — while
+ * materialising the derived table once avoids re-running the lookup for every
+ * document.
+ */
+const DOCUMENT_LIST_JOB_FROM = `${DOCUMENT_LIST_FROM} LEFT JOIN (SELECT document_id, content_version, status, MAX(rowid) AS job_rowid FROM knowledge_jobs GROUP BY document_id, content_version) kj ON kj.document_id = d.id AND kj.content_version = d.content_version`;
+/**
+ * Mirrors `view()`'s derivation: a valid draft wins, then disabled settings,
+ * then the newest job's status with `succeeded` downgraded to `pending`.
+ */
+const DOCUMENT_STATUS_CASE = `CASE WHEN kd.id IS NOT NULL THEN 'succeeded' WHEN ? = 0 THEN 'disabled' ELSE COALESCE(NULLIF(kj.status, 'succeeded'), 'pending') END`;
+
+/** List columns qualified for the joined browse queries. */
+const DOCUMENT_SELECT = DOCUMENT_COLUMNS.split(", ")
+  .map((column) => `d.${column}`)
+  .join(", ");
+
+/** Browse scan row: document metadata plus the draft fields the search haystack reads. */
+type DocumentSearchRow = DocumentMetadata & { summary: string | null; tags: string | null };
+
+/**
+ * `name summary tags` joined with single spaces and folded with the JS Unicode
+ * `toLowerCase()` — the exact haystack the page used to filter client-side.
+ * SQLite's `LIKE`/`lower()` fold ASCII only, and this Bun's `bun:sqlite`
+ * exposes no custom SQL function API, so the comparison has to run in JS.
+ */
+function loweredSearchText(row: DocumentSearchRow): string {
+  const tags: string[] = row.tags === null ? [] : JSON.parse(row.tags);
+  return `${row.name} ${row.summary ?? ""} ${tags.join(" ")}`.toLowerCase();
+}
+
+/** The keyset clause `(created_at, id) > (?, ?)`, expressed over TEXT values. */
+function isAfterDocumentCursor(
+  row: { created_at: string; id: string },
+  cursor: KnowledgeDocumentCursor,
+): boolean {
+  return (
+    row.created_at > cursor.created_at ||
+    (row.created_at === cursor.created_at && row.id > cursor.id)
+  );
+}
+
+/** Opaque base64url keyset cursor pointing at the last row of a page. */
+function encodeDocumentCursor(cursor: KnowledgeDocumentCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+type DocumentsInput = {
+  search?: string;
+  /** Resolved category id; `all` never reaches the repository. */
+  category?: string;
+  status?: KnowledgeOrganizationStatus;
+  cursor?: KnowledgeDocumentCursor;
+  limit: number;
+};
 
 /** All write callbacks are synchronous and hold SQLite's immediate transaction lock. */
 export class KnowledgeRepository {
@@ -265,13 +334,102 @@ export class KnowledgeRepository {
     };
   }
 
-  documents(): KnowledgeDocument[] {
-    return this.db
-      .query<DocumentMetadata, []>(
-        `SELECT ${DOCUMENT_COLUMNS} FROM knowledge_documents ORDER BY created_at, id`,
+  /**
+   * Management browse with server-side filtering and keyset pagination.
+   * `total` counts every document matching the FILTERS, not just this page and
+   * not only the rows after the cursor. Sorting is `created_at, id`: the cursor
+   * carries the last row of the previous page, so rows inserted later never
+   * shift an already-read window. All values are bound parameters — no input
+   * reaches the SQL text. A non-empty search runs the browser-side
+   * `toLowerCase().includes()` predicate in JS; see `searchDocumentPage`.
+   */
+  documents(input: DocumentsInput): KnowledgeDocumentsPage {
+    const filters: string[] = [];
+    const filterParams: SQLQueryBindings[] = [];
+    if (input.category !== undefined) {
+      filters.push("d.category_id = ?");
+      filterParams.push(input.category);
+    }
+    if (input.status !== undefined) {
+      filters.push(`${DOCUMENT_STATUS_CASE} = ?`);
+      filterParams.push(this.settings().auto_enabled ? 1 : 0, input.status);
+    }
+    const from = input.status === undefined ? DOCUMENT_LIST_FROM : DOCUMENT_LIST_JOB_FROM;
+    const filteredWhere = filters.length === 0 ? "" : ` WHERE ${filters.join(" AND ")}`;
+    if (input.search !== undefined && input.search !== "")
+      return this.searchDocumentPage(input, input.search, from, filteredWhere, filterParams);
+    const total =
+      this.db
+        .query<{ count: number }, SQLQueryBindings[]>(
+          `SELECT COUNT(*) AS count FROM ${from}${filteredWhere}`,
+        )
+        .get(...filterParams)?.count ?? 0;
+    const conditions = [...filters];
+    const params = [...filterParams];
+    if (input.cursor !== undefined) {
+      conditions.push("(d.created_at > ? OR (d.created_at = ? AND d.id > ?))");
+      params.push(input.cursor.created_at, input.cursor.created_at, input.cursor.id);
+    }
+    const where = conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`;
+    const rows = this.db
+      .query<DocumentMetadata, SQLQueryBindings[]>(
+        `SELECT ${DOCUMENT_SELECT} FROM ${from}${where} ORDER BY d.created_at, d.id LIMIT ?`,
       )
-      .all()
-      .map((row) => this.view(row));
+      .all(...params, input.limit + 1);
+    const items = rows.slice(0, input.limit).map((row) => this.view(row));
+    const last = items.at(-1);
+    return {
+      items,
+      next_cursor:
+        rows.length > input.limit && last
+          ? encodeDocumentCursor({ created_at: last.created_at, id: last.id })
+          : null,
+      total,
+    };
+  }
+
+  /**
+   * Executes the search the page used to run client-side over the whole
+   * library: `(name summary tags).toLowerCase().includes(search.toLowerCase())`.
+   * The match runs in JS (see `loweredSearchText`); `%`, `_` and `\` stay
+   * literal because there is no LIKE pattern. SQL still applies the
+   * category/status filters and the `created_at, id` keyset order, and the
+   * matched window and `total` keep the no-search path's semantics, so the
+   * endpoint stays server-paginated.
+   */
+  private searchDocumentPage(
+    input: DocumentsInput,
+    search: string,
+    from: string,
+    filteredWhere: string,
+    filterParams: SQLQueryBindings[],
+  ): KnowledgeDocumentsPage {
+    const needle = search.toLowerCase();
+    const cursor = input.cursor;
+    const rows = this.db
+      .query<DocumentSearchRow, SQLQueryBindings[]>(
+        `SELECT ${DOCUMENT_SELECT}, kd.summary, kd.tags FROM ${from}${filteredWhere} ORDER BY d.created_at, d.id`,
+      )
+      .all(...filterParams);
+    const matched: DocumentMetadata[] = [];
+    let total = 0;
+    for (const row of rows) {
+      if (!loweredSearchText(row).includes(needle)) continue;
+      total += 1;
+      if (matched.length > input.limit) continue;
+      if (cursor !== undefined && !isAfterDocumentCursor(row, cursor)) continue;
+      matched.push(row);
+    }
+    const items = matched.slice(0, input.limit).map((row) => this.view(row));
+    const last = items.at(-1);
+    return {
+      items,
+      next_cursor:
+        matched.length > input.limit && last
+          ? encodeDocumentCursor({ created_at: last.created_at, id: last.id })
+          : null,
+      total,
+    };
   }
 
   private originalContent(row: DocumentRow): ContentItem {
