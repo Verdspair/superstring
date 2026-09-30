@@ -15,6 +15,13 @@ import {
 } from "./conversation-state";
 import { createOptimisticMessages, toChatItem } from "./message-rules";
 
+// 同一 request 重试复用原 turn：按 turn_id + assistant 对上服务器终态助手行，重试只应替换这一条。
+const failedReplyIdForTurn = (messages: MessageResponse[], turnId: string | null) =>
+  (turnId
+    ? messages.findLast((item) => item.turn_id === turnId && item.role === "assistant")
+    : undefined
+  )?.id;
+
 type Actions = Pick<
   SuperstringState,
   | "selectSession"
@@ -158,11 +165,12 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
     }));
     if (messages.status === "fulfilled" && recover) await recoverPendingTurn(id, messages.value);
   };
-  const settleMessages = async (id: string) => {
+  const settleMessages = async (id: string): Promise<MessageResponse[]> => {
     const view = get().conversationById[id];
-    if (!view) return;
+    if (!view) return [];
     const messages = await get().apiClient.listMessages(view.sessionId);
     write(id, { messages: messages.map(toChatItem) });
+    return messages;
   };
   const checking = new Set<string>();
   const reconcile = async (id: string) => {
@@ -183,14 +191,18 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         write(id, { feedback: msg("服务端仍在处理，可稍后核对结果。") });
         return;
       }
-      await settleMessages(id);
+      const settled = await settleMessages(id);
       const failed = run.status === "failed" || run.status === "cancelled";
+      const failedReplyId = failed
+        ? failedReplyIdForTurn(settled, run.owner.kind === "web_turn" ? run.owner.id : null)
+        : undefined;
       write(id, {
         phase: failed ? "failed" : "idle",
         failedChat: failed ? view.request : null,
         knowledgeResend: run.errorCode === "KNOWLEDGE_ACCESS_CHANGED" ? view.request : null,
         error: failed ? (run.errorCode ?? msg("运行已取消")) : null,
         feedback: run.status === "no_output" ? msg("本次未发言") : "",
+        ...(failedReplyId ? { outputId: failedReplyId } : {}),
       });
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 404) {
@@ -353,7 +365,18 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         await reconcile(id);
         return;
       }
-      await settleMessages(id);
+      const settled = await settleMessages(id);
+      if (knownFailure) {
+        // failed/cancelled 事件不带 messageId：按本 request 的 run owner turn 绑定服务器失败助手行，重试只替换它。
+        const failedRun = await get()
+          .apiClient.getRunByRequest(request.sessionId, request.requestId)
+          .catch(() => null);
+        const failedReplyId = failedReplyIdForTurn(
+          settled,
+          failedRun?.owner.kind === "web_turn" ? failedRun.owner.id : null,
+        );
+        if (failedReplyId) write(id, { outputId: failedReplyId });
+      }
       await syncSessions();
     } catch (reason) {
       // An eager HTTP rejection is an explicit verdict. Transport/EOF failures require read-only reconciliation.

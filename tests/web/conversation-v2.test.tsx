@@ -433,3 +433,175 @@ it("read-only recovery settles a completed message when the earlier run lookup f
   });
   expect(stream).not.toHaveBeenCalled();
 });
+
+it("a same-request retry after a failed preflight never exposes duplicate message ids", async () => {
+  const oldUser: MessageResponse = {
+    ...message("old-user", "earlier question"),
+    role: "user",
+    turn_id: "turn-0",
+    sequence_no: 1,
+  };
+  const oldReply: MessageResponse = {
+    ...message("old-reply", "earlier answer"),
+    turn_id: "turn-0",
+  };
+  const serverUser: MessageResponse = {
+    ...message("server-user", "question"),
+    role: "user",
+    sequence_no: 3,
+  };
+  const failedReply: MessageResponse = {
+    ...message("reply-failed", ""),
+    status: "failed",
+    error_code: "MODEL_SERVICE_UNAVAILABLE",
+    sequence_no: 4,
+    completed_at: null,
+  };
+  const finalReply: MessageResponse = { ...message("reply-failed", "answer"), sequence_no: 4 };
+  const listMessages = vi
+    .fn()
+    .mockResolvedValueOnce([oldUser, oldReply])
+    .mockResolvedValueOnce([oldUser, oldReply, serverUser, failedReply])
+    .mockResolvedValueOnce([oldUser, oldReply, serverUser, finalReply]);
+  const lookup = vi.fn(async () => snapshot("failed"));
+  let emitRetry!: (event: ChatV2Event) => void;
+  let finishRetry!: () => void;
+  const stream = vi.fn<RuntimeEffects["streamChatV2"]>();
+  stream
+    .mockRejectedValueOnce(new Error("preflight load failed"))
+    .mockImplementationOnce((_body, onEvent) => {
+      emitRetry = onEvent;
+      return new Promise<void>((resolve) => {
+        finishRetry = resolve;
+      });
+    });
+  setup({ listMessages, getRunByRequest: lookup }, { streamChatV2: stream });
+  const duplicates: string[][] = [];
+  const unsubscribe = store.subscribe((state) => {
+    for (const view of Object.values(state.conversationById)) {
+      const ids = view.messages.map((item) => item.id);
+      if (new Set(ids).size !== ids.length) duplicates.push(ids);
+    }
+  });
+  await compose("a", "question");
+  await store.getState().send();
+  const failedView = currentChat(store.getState());
+  expect(failedView).toMatchObject({ phase: "failed", outputId: "reply-failed" });
+  expect(failedView.failedChat?.requestId).toBe("request-1");
+  expect(failedView.messages.map((item) => item.id)).toEqual([
+    "old-user",
+    "old-reply",
+    "server-user",
+    "reply-failed",
+  ]);
+  const retrying = store.getState().retryChat();
+  await waitFor(() => expect(emitRetry).toBeTypeOf("function"));
+  expect(currentChat(store.getState()).messages.map((item) => item.id)).toEqual([
+    "old-user",
+    "old-reply",
+    "server-user",
+    "optimistic-assistant-request-1",
+  ]);
+  emitRetry({
+    type: "output_delta",
+    runId: "run-2",
+    seq: 1,
+    at: now,
+    outputId: "reply-failed",
+    text: "answer",
+  });
+  emitRetry({ ...completed, runId: "run-2", seq: 2, messageId: "reply-failed" });
+  finishRetry();
+  await retrying;
+  unsubscribe();
+  expect(duplicates).toEqual([]);
+  expect(currentChat(store.getState()).phase).toBe("idle");
+  expect(currentChat(store.getState()).messages.at(-1)).toMatchObject({
+    id: "reply-failed",
+    status: "completed",
+    content: "answer",
+  });
+  expect(stream).toHaveBeenCalledTimes(2);
+  expect(stream.mock.calls[1]?.[0]).toMatchObject({
+    session_id: "a",
+    message: "question",
+    client_request_id: "request-1",
+  });
+  expect(lookup).toHaveBeenCalledOnce();
+});
+
+it("a delta-less failed event binds the retry target to the server failed assistant", async () => {
+  const serverUser: MessageResponse = {
+    ...message("server-user", "q"),
+    role: "user",
+    sequence_no: 1,
+  };
+  const failedReply: MessageResponse = {
+    ...message("reply-failed", ""),
+    status: "failed",
+    error_code: "MODEL_SERVICE_UNAVAILABLE",
+    sequence_no: 2,
+    completed_at: null,
+  };
+  const finalReply: MessageResponse = { ...message("reply-failed", "retried"), sequence_no: 2 };
+  const listMessages = vi
+    .fn()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([serverUser, failedReply])
+    .mockResolvedValueOnce([serverUser, finalReply]);
+  const lookup = vi.fn(async () => snapshot("failed"));
+  let emitRetry!: (event: ChatV2Event) => void;
+  let finishRetry!: () => void;
+  const stream = vi.fn<RuntimeEffects["streamChatV2"]>();
+  stream
+    .mockImplementationOnce(async (_body, onEvent) => {
+      onEvent({
+        type: "failed",
+        runId: "run-1",
+        seq: 1,
+        at: now,
+        code: "MODEL_SERVICE_UNAVAILABLE",
+      });
+    })
+    .mockImplementationOnce((_body, onEvent) => {
+      emitRetry = onEvent;
+      return new Promise<void>((resolve) => {
+        finishRetry = resolve;
+      });
+    });
+  setup({ listMessages, getRunByRequest: lookup }, { streamChatV2: stream });
+  const duplicates: string[][] = [];
+  const unsubscribe = store.subscribe((state) => {
+    for (const view of Object.values(state.conversationById)) {
+      const ids = view.messages.map((item) => item.id);
+      if (new Set(ids).size !== ids.length) duplicates.push(ids);
+    }
+  });
+  await compose("a", "q");
+  await store.getState().send();
+  expect(currentChat(store.getState())).toMatchObject({
+    phase: "failed",
+    outputId: "reply-failed",
+  });
+  expect(lookup).toHaveBeenCalledWith("a", "request-1");
+  const retrying = store.getState().retryChat();
+  await waitFor(() => expect(emitRetry).toBeTypeOf("function"));
+  emitRetry({
+    type: "output_delta",
+    runId: "run-2",
+    seq: 1,
+    at: now,
+    outputId: "reply-failed",
+    text: "retried",
+  });
+  emitRetry({ ...completed, runId: "run-2", seq: 2, messageId: "reply-failed" });
+  finishRetry();
+  await retrying;
+  unsubscribe();
+  expect(duplicates).toEqual([]);
+  expect(currentChat(store.getState()).messages.map((item) => item.id)).toEqual([
+    "server-user",
+    "reply-failed",
+  ]);
+  expect(currentChat(store.getState()).messages.at(-1)?.content).toBe("retried");
+});
