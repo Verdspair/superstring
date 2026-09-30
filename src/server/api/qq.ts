@@ -18,11 +18,8 @@ import {
   CreateQqBindingRequestSchema,
   CreateQqSchemeRequestSchema,
   CreateQqStickerCollectionRequestSchema,
-  type QqBindingResponse,
   QqMemoryOrganiseResponseSchema,
   type QqOwnerResponse,
-  type QqSchemeResponse,
-  QqSchemeResponseSchema,
   type QqSettingsResponse,
   QqStatusResponseSchema,
   QqStickerAnnotationResponseSchema,
@@ -47,6 +44,7 @@ import {
   UpdateQqStorageSettingsRequestSchema,
   UpdateQqTransportRequestSchema,
 } from "../../shared/contracts/qq";
+import { UpdateQqGroupConfigRequestSchema } from "../../shared/contracts/qq-group-config";
 import {
   QqStorageCleanupRequestSchema,
   QqStorageCleanupSelectionResponseSchema,
@@ -58,29 +56,22 @@ import {
 import { botDiagnostics } from "../db/bot-diagnostics";
 import { readOrganizationSettings } from "../db/organization-repository";
 import {
+  bindingResponse,
   insertQqBinding,
   readQqBinding,
   readQqBindings,
   saveQqBinding,
 } from "../db/qq-binding-repository";
-import { observedQqConversations, pendingObservationCount } from "../db/qq-observation-repository";
+import { readQqGroupConfig, updateQqGroupConfig } from "../db/qq-group-config-repository";
+import { observedQqConversations } from "../db/qq-observation-repository";
 import { readQqOwnerIdentity, saveQqOwnerIdentity } from "../db/qq-owner-repository";
 import {
   createQqScheme,
   deleteQqScheme,
-  type QqSchemeRow,
   qqSchemeUsage,
   readQqScheme,
   readQqSchemes,
-  schemeCompression,
-  schemeContext,
-  schemeOutputReserve,
-  schemePrompts,
-  schemeReply,
-  schemeRhythm,
-  schemeStickerCollectionIds,
-  schemeStickers,
-  schemeTriggers,
+  schemeResponse,
   updateQqScheme,
 } from "../db/qq-scheme-repository";
 import {
@@ -122,9 +113,7 @@ import { sampleQqAnimationFrames } from "../services/qq-animation-frames";
 import {
   createQqBinding,
   createQqOwnerIdentity,
-  type QqBinding,
   type QqOwnerIdentity,
-  qqConversationScope,
   updateQqBinding,
   updateQqOwnerIdentity,
 } from "../services/qq-binding-contract";
@@ -135,27 +124,6 @@ import { importQqStickerCopy } from "../services/qq-sticker-import";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "../services/qq-sticker-store";
 import { managementGuard } from "./management";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
-
-/** Wire shape of the QQ-global scheme and its confirmed editable groups. */
-function toSchemeResponse(orm: Orm, row: QqSchemeRow): QqSchemeResponse {
-  return QqSchemeResponseSchema.parse({
-    id: row.id,
-    name: row.name,
-    description: row.description,
-    triggers: schemeTriggers(row),
-    rhythm: schemeRhythm(row),
-    context: schemeContext(row),
-    compression: schemeCompression(row),
-    output_reserve: schemeOutputReserve(row),
-    stickers: schemeStickers(row),
-    sticker_collections: { collection_ids: schemeStickerCollectionIds(orm, row.id) },
-    prompts: schemePrompts(row),
-    reply: schemeReply(row),
-    revision: row.revision,
-    created_at: row.createdAt,
-    updated_at: row.updatedAt,
-  });
-}
 
 function toStickerResponse(row: QqStickerAssetView) {
   return QqStickerAssetResponseSchema.parse({
@@ -187,31 +155,6 @@ function toSettingsResponse(orm: Orm, keyPath?: string): QqSettingsResponse {
     judgement_model_name: row.judgementModelName,
     transport: { endpoint: transport.endpoint, has_token: transport.hasToken },
     revision: row.revision,
-  };
-}
-
-/**
- * The wire shape of a binding, plus the one derived number the page needs to make the memory
- * entry usable: how many observations of this conversation are readable and not yet offered to
- * consolidation (— without it neither "还差几条" nor "立即整理有没有东西可整理"
- * can be answered by the page).
- */
-function toBindingResponse(orm: Orm, binding: QqBinding): QqBindingResponse {
-  return {
-    id: binding.id,
-    account_id: binding.accountId,
-    kind: binding.kind,
-    peer_id: binding.peerId,
-    agent_id: binding.agentId,
-    scheme_id: binding.schemeId,
-    paused: binding.paused,
-    share_web_memory: binding.shareWebMemory,
-    memory_batch_size: binding.memoryBatchSize,
-    pending_observations: pendingObservationCount(orm, qqConversationScope(binding)),
-    triggers: binding.triggers,
-    attention: binding.attention,
-    revision: binding.revision,
-    authority_revision: binding.authorityRevision,
   };
 }
 
@@ -472,14 +415,12 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
     );
   }
 
-  router.get("/schemes", (c) =>
-    c.json(readQqSchemes(orm).map((row) => toSchemeResponse(orm, row))),
-  );
+  router.get("/schemes", (c) => c.json(readQqSchemes(orm).map((row) => schemeResponse(orm, row))));
 
   router.post("/schemes", async (c) => {
     const body = parseBody(CreateQqSchemeRequestSchema, await readJsonBody(c.req.raw));
     return c.json(
-      toSchemeResponse(
+      schemeResponse(
         orm,
         createQqScheme(orm, {
           ...body,
@@ -497,7 +438,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
     const schemeId = parseUuidParam(c.req.param("schemeId"));
     const row = readQqScheme(orm, schemeId);
     if (row === null) fail("MEMORY_NOT_FOUND", "方案不存在", 404);
-    return c.json(toSchemeResponse(orm, row));
+    return c.json(schemeResponse(orm, row));
   });
 
   // Lets a settings surface explain why a delete is refused before it is attempted.
@@ -513,7 +454,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
     const row = readQqScheme(orm, schemeId);
     if (row === null) fail("MEMORY_NOT_FOUND", "方案不存在", 404);
     return c.json(
-      toSchemeResponse(
+      schemeResponse(
         orm,
         updateQqScheme(orm, schemeId, {
           name: body.name,
@@ -881,7 +822,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
 
   // ---- bindings ----
   router.get("/bindings", (c) =>
-    c.json(readQqBindings(orm).map((row) => toBindingResponse(orm, row))),
+    c.json(readQqBindings(orm).map((row) => bindingResponse(orm, row))),
   );
 
   router.post("/bindings", async (c) => {
@@ -906,7 +847,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
     );
     if (created.kind === "denied") failSharingDenied(created.reason);
     if (created.kind !== "saved") fail("MEMORY_SOURCE_INVALID", "该绑定请求不被接受");
-    return c.json(toBindingResponse(orm, insertQqBinding(orm, created.binding)), 201);
+    return c.json(bindingResponse(orm, insertQqBinding(orm, created.binding)), 201);
   });
 
   router.put("/bindings/:bindingId", async (c) => {
@@ -932,14 +873,27 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
     }
     if (result.kind === "denied") failSharingDenied(result.reason);
     return c.json(
-      toBindingResponse(
+      bindingResponse(
         orm,
         saveQqBinding(orm, {
           binding: result.binding,
           expectedRevision: payload.expected_revision,
+          schemeChange: payload.scheme_change,
         }),
       ),
     );
+  });
+
+  /** 本群 Agent 配置：读是原始快照，写是对绑定 / Agent / 基础方案 / 配置四处 revision 的一次比较交换。 */
+  router.get("/bindings/:bindingId/config", managementGuard(), (c) => {
+    const bindingId = parseUuidParam(c.req.param("bindingId"));
+    return c.json(readQqGroupConfig(orm, bindingId));
+  });
+
+  router.put("/bindings/:bindingId/config", managementGuard(), async (c) => {
+    const bindingId = parseUuidParam(c.req.param("bindingId"));
+    const payload = parseBody(UpdateQqGroupConfigRequestSchema, await readJsonBody(c.req.raw));
+    return c.json(updateQqGroupConfig(orm, { bindingId, payload }));
   });
 
   /**

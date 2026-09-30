@@ -83,6 +83,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0048_agent_tasks.sql",
     "versions/0049_qq_output_reserve_caps.sql",
     "versions/0050_qq_retention_days.sql",
+    "versions/0051_qq_group_agent_config.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

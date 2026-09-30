@@ -1,8 +1,8 @@
 // P3n/P3o: capacity check before QQ model calls; no model completion or sending.
 import { z } from "zod";
 import { type QqSchemeOutputReserve, QqSchemeOutputReserveSchema } from "../../shared/contracts/qq";
-import { estimateMessages } from "../agent/conversation-context";
 import type { ModelGateway } from "../llm/model-gateway";
+import { estimateMessages } from "../modules/memory-query";
 
 export function parseQqSchemeOutputReserve(input: unknown): QqSchemeOutputReserve {
   const result = QqSchemeOutputReserveSchema.safeParse(input);

@@ -209,6 +209,10 @@ const qqRetentionDaysSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0050_qq_retention_days.sql"),
   "utf8",
 );
+const qqGroupAgentConfigSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"),
+  "utf8",
+);
 const qqStickerAuthorizationSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0022_qq_sticker_authorization.sql"),
   "utf8",
@@ -264,6 +268,7 @@ const resources = [
   agentTasksSql,
   qqOutputReserveCapsSql,
   qqRetentionDaysSql,
+  qqGroupAgentConfigSql,
 ] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
@@ -326,6 +331,7 @@ describe("explicit migration resources", () => {
               agentTasksSql,
               qqOutputReserveCapsSql,
               qqRetentionDaysSql,
+              qqGroupAgentConfigSql,
             ],
           }),
         ).toThrow();
@@ -394,11 +400,12 @@ describe("explicit migration resources", () => {
             agentTasksSql,
             qqOutputReserveCapsSql,
             qqRetentionDaysSql,
+            qqGroupAgentConfigSql,
           ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 50 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -651,12 +658,16 @@ describe("explicit migration resources", () => {
         path.join(import.meta.dir, "../../migrations/versions/0050_qq_retention_days.sql"),
         path.join(versions, "0050_qq_retention_days.sql"),
       );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"),
+        path.join(versions, "0051_qq_group_agent_config.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(50);
+      expect(layout?.businessMigrationSql.length).toBe(51);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {

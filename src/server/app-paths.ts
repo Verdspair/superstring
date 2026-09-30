@@ -301,6 +301,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0050_qq_retention_days.sql",
     ),
+    qqGroupAgentConfigMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0051_qq_group_agent_config.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

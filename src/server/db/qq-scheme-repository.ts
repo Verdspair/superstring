@@ -13,6 +13,8 @@ import {
   type QqSchemePrompts,
   type QqSchemeReply,
   QqSchemeReplySchema,
+  type QqSchemeResponse,
+  QqSchemeResponseSchema,
   type QqSchemeRhythm,
   type QqSchemeStickers,
   type QqSpeechTriggers,
@@ -361,6 +363,56 @@ function samePrompts(left: QqSchemePrompts, right: QqSchemePrompts): boolean {
     left.media === right.media &&
     left.compress === right.compress
   );
+}
+
+/**
+ * 方案行的线形（原 api/qq.ts 的本地映射）：路由、本群配置响应与将来的运行装配共用一份，
+ * 两处各写一遍是漂移的温床。素材集合单列查询（方案授权表）。
+ */
+export function schemeResponse(orm: Orm, row: QqSchemeRow): QqSchemeResponse {
+  return QqSchemeResponseSchema.parse({
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    triggers: schemeTriggers(row),
+    rhythm: schemeRhythm(row),
+    context: schemeContext(row),
+    compression: schemeCompression(row),
+    output_reserve: schemeOutputReserve(row),
+    stickers: schemeStickers(row),
+    sticker_collections: { collection_ids: schemeStickerCollectionIds(orm, row.id) },
+    prompts: schemePrompts(row),
+    reply: schemeReply(row),
+    revision: row.revision,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  });
+}
+
+/**
+ * 组值 → 行上对应的列覆盖：本群生效行（基础行 + 覆盖列）唯一组装点。
+ * 列名与组的对应关系只维护在这里，调用方拿到的永远是完整组值，不做逐字段的列拼接。
+ */
+export function schemeColumnsFromGroups(groups: {
+  triggers: QqSpeechTriggers;
+  rhythm: QqSchemeRhythm;
+  context: QqSchemeContext;
+  compression: QqSchemeCompression;
+  outputReserve: QqSchemeOutputReserve;
+  stickers: QqSchemeStickers;
+  prompts: QqSchemePrompts;
+  reply: QqSchemeReply;
+}): Partial<QqSchemeRow> {
+  return {
+    ...triggerColumns(groups.triggers),
+    ...rhythmColumns(groups.rhythm),
+    ...contextColumns(groups.context),
+    ...compressionColumns(groups.compression),
+    ...outputReserveColumns(groups.outputReserve),
+    ...stickerColumns(groups.stickers),
+    ...promptColumns(groups.prompts),
+    ...replyColumns(groups.reply),
+  };
 }
 
 function normalizeName(name: string): string {

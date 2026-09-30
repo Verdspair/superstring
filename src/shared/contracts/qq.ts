@@ -880,6 +880,12 @@ export const UpdateQqBindingRequestSchema = z.strictObject({
   attention: QqBindingAttentionSchema.optional(),
   memory_batch_size: z.number().int().min(1).nullable().optional(),
   share_web_memory: z.boolean().optional(),
+  /**
+   * 群聊换基础方案时的显式决定（ADR0019 §13.2 G，0051）：`keep` 保留本群方案差异，
+   * `reset` 清空差异（能力停用不重置）。只有"同一 Agent 的绑定带着差异换方案"才要求它；
+   * 换 Agent 时按新 Agent 已保存的差异恢复，不适用本字段。
+   */
+  scheme_change: z.enum(["keep", "reset"]).optional(),
   expected_revision: z.number().int().positive(),
 });
 export type UpdateQqBindingRequest = z.infer<typeof UpdateQqBindingRequestSchema>;

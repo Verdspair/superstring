@@ -325,8 +325,33 @@ describe("S3 known migration", () => {
     "0022_qq_sticker_authorization.sql",
     "0023_qq_dispatch.sql",
     "0024_qq_media_purposes.sql",
+    "0025_desktop_settings.sql",
+    "0026_qq_media_supplement.sql",
+    "0027_qq_event_addressed.sql",
+    "0028_qq_immediate_lease.sql",
+    "0029_qq_module_switches.sql",
+    "0030_qq_sweep_verdicts.sql",
+    "0031_qq_attention.sql",
+    "0032_model_providers.sql",
+    "0033_qq_idle_judgements.sql",
+    "0034_qq_initiative_min_score.sql",
+    "0035_qq_reply_split.sql",
+    "0036_qq_judgement_reuse.sql",
+    "0037_qq_judgement_per_speaker.sql",
+    "0038_qq_judgement_model.sql",
+    "0039_agent_runs.sql",
+    "0040_conversation_wakes.sql",
+    "0041_outbound_intents.sql",
+    "0042_runtime_observability.sql",
+    "0043_protected_model_results.sql",
+    "0044_conversation_avatars.sql",
+    "0045_qq_conversation_summaries.sql",
+    "0046_qq_context_compression.sql",
+    "0047_qq_context_limit_caps.sql",
+    "0048_agent_tasks.sql",
     "0049_qq_output_reserve_caps.sql",
     "0050_qq_retention_days.sql",
+    "0051_qq_group_agent_config.sql",
   ].map((f) => readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
   it("v2 upgrade seeds existing assistants and preserves all v2 data", () => {
     const db = new Database(":memory:");
@@ -347,7 +372,7 @@ describe("S3 known migration", () => {
         document_ids: "[]",
         revision: 1,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 50 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
       ensureBusinessSchema(db);
       expect(db.query("SELECT count(*) AS n FROM agent_knowledge_read_settings").get()).toEqual({
         n: 1,
@@ -417,6 +442,7 @@ describe("S3 known migration", () => {
           sql[47] ?? "",
           sql[48] ?? "",
           sql[49] ?? "",
+          sql[50] ?? "",
         ]),
       ).toThrow();
       expect(db.query("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);

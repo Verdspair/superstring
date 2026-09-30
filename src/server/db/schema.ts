@@ -1971,6 +1971,43 @@ export const agentTaskCalls = sqliteTable(
   (t) => [primaryKey({ columns: [t.taskId, t.ordinal] })],
 );
 
+export const qqGroupAgentConfigs = sqliteTable(
+  "qq_group_agent_configs",
+  {
+    id: text("id").primaryKey(),
+    bindingId: text("binding_id")
+      .notNull()
+      .references(() => qqBindings.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    schemeOverrides: text("scheme_overrides").notNull(),
+    disabledCapabilities: text("disabled_capabilities").notNull(),
+    // 每项能力的单调修订：跟随↔停用每次翻转 +1（未登记＝隐式 0）。CHECK 只保证 JSON object，
+    // 值的语义由读取校验（qq-binding-repository 的 parseCapabilityRevisionsColumn）。
+    capabilityRevisions: text("capability_revisions").notNull().default("{}"),
+    revision: integer("revision").notNull().default(1),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    check(
+      "qq_group_agent_config_overrides",
+      sql`json_valid(${t.schemeOverrides}) AND json_type(${t.schemeOverrides}) = 'object'`,
+    ),
+    check(
+      "qq_group_agent_config_capabilities",
+      sql`json_valid(${t.disabledCapabilities}) AND json_type(${t.disabledCapabilities}) = 'array'`,
+    ),
+    check(
+      "qq_group_agent_config_capability_revisions",
+      sql`json_valid(${t.capabilityRevisions}) AND json_type(${t.capabilityRevisions}) = 'object'`,
+    ),
+    check("qq_group_agent_config_revision", sql`${t.revision} >= 1`),
+    unique("uq_qq_group_agent_config").on(t.bindingId, t.agentId),
+  ],
+);
+
 export const businessTables = {
   agentTasks,
   agentTaskCalls,
@@ -2038,6 +2075,7 @@ export const businessTables = {
   modelProviders,
   qqIdleJudgements,
   qqJudgementReadings,
+  qqGroupAgentConfigs,
 } as const;
 
 export type BusinessTables = typeof businessTables;

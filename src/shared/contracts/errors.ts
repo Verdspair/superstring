@@ -112,14 +112,21 @@ export const SKILL_ERROR_HTTP_STATUS = {
   PERMISSION_MANAGEMENT_FORBIDDEN: 403,
   PERMISSION_REVISION_CHANGED: 409,
 } as const;
+/** 本群系统能力停用（ADR0019 §13.3）：加性产品能力，不重写既有分类表（同 KNOWLEDGE 的先例）。 */
+export const QQ_GROUP_ERROR_CODES = ["QQ_GROUP_CAPABILITY_DISABLED"] as const;
+export const QQ_GROUP_ERROR_HTTP_STATUS = {
+  QQ_GROUP_CAPABILITY_DISABLED: 409,
+} satisfies Record<(typeof QQ_GROUP_ERROR_CODES)[number], number>;
 export type ErrorCode =
   | (typeof ERROR_CODES)[number]
   | (typeof KNOWLEDGE_ERROR_CODES)[number]
+  | (typeof QQ_GROUP_ERROR_CODES)[number]
   | keyof typeof SKILL_ERROR_HTTP_STATUS;
 
 export const ErrorCodeSchema = z.enum([
   ...ERROR_CODES,
   ...KNOWLEDGE_ERROR_CODES,
+  ...QQ_GROUP_ERROR_CODES,
   ...(Object.keys(SKILL_ERROR_HTTP_STATUS) as (keyof typeof SKILL_ERROR_HTTP_STATUS)[]),
 ]);
 
@@ -261,6 +268,7 @@ export function getErrorHttpStatus(code: ErrorCode): number | undefined {
       ...ERROR_HTTP_STATUS,
       ...KNOWLEDGE_ERROR_HTTP_STATUS,
       ...SKILL_ERROR_HTTP_STATUS,
+      ...QQ_GROUP_ERROR_HTTP_STATUS,
     } as Partial<Record<ErrorCode, number>>
   )[code];
 }

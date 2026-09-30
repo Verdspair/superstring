@@ -212,6 +212,10 @@ const v50 = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0050_qq_retention_days.sql"),
   "utf8",
 );
+const v51 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"),
+  "utf8",
+);
 const ddl = (db: Database) =>
   db
     .query(
@@ -310,6 +314,7 @@ describe("frozen schema defaults and product initialization", () => {
     v48,
     v49,
     v50,
+    v51,
   ] as const;
   // Independent snapshots: v1 matches published v0.2.0-alpha; v2-v4 are the
   // accepted pre-ADR0016 development schemas; v5 onwards are the additive QQ
@@ -394,6 +399,10 @@ describe("frozen schema defaults and product initialization", () => {
     // 0050：qq_settings 追加 retention_days（1..3650，默认 14）——QQ 统一保留期限。实测于
     // v1—v49 逐字节重现原值之后。
     "f622dcbea0ffc0af9e2fb64c86edd1dd753e74ed6ed7cb50841fc8f4b1c0bfc3",
+    // 0051：QQ 群 Agent 配置（qq_group_agent_configs：按 绑定×助手 保存群级方案差异、停用能力
+    // 与每项能力的单调修订）。迁移部署前补了 capability_revisions 列，故此值在 v1—v50 逐字节
+    // 重现原值之后重取；重取当日 0051 尚未部署，没有已迁移的库需要兼容。
+    "dd68b3874de96ca6d0a3c4abf7027016826968a01138f6ff1dccbf0b90c48da0",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
@@ -418,7 +427,7 @@ describe("frozen schema defaults and product initialization", () => {
           target_chars: 300,
         });
         ensureBusinessSchema(db);
-        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 50 });
+        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
         expect(db.query("SELECT target_chars FROM memory_policies").get()).toEqual({
           target_chars: 300,
         });
@@ -451,7 +460,7 @@ describe("knowledge schema v2 migration", () => {
         old.query(`SELECT * FROM ${table}`).all(),
       );
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 50 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
       expect(ddl(old)).toEqual(ddl(fresh.db));
       expect(
         BUSINESS_TABLE_NAMES.slice(0, 16).map((table) => old.query(`SELECT * FROM ${table}`).all()),
@@ -534,13 +543,14 @@ describe("knowledge schema v2 migration", () => {
           v48,
           v49,
           v50,
+          v51,
         ]),
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
       expect(db.query("SELECT body FROM memory_entries").get()).toEqual({ body: "旧记忆" });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 50 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
     } finally {
       db.close();
     }
