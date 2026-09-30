@@ -41,6 +41,7 @@ import {
 } from "./modules/composition";
 import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
 import { RuntimeTelemetry } from "./observability/runtime-telemetry";
+import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import {
   FilePermissionStore,
   PermissionService,
@@ -162,9 +163,16 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       ...injected,
     };
   };
-  const actionExecutor = new ActionExecutor(permissions, () => execution().loop.readBatch);
-  // 权限优先；会话证据在技能与外部注入解析器之前，用持久存储复验（任务执行与运行检查同理）。
+  // 本群能力停用的唯一判定面（ADR0019 §13.3）：执行、任务与来源复验共用这一个 guard。
+  const qqGroupGuard = new QqGroupCapabilityGuard(business.orm);
+  const actionExecutor = new ActionExecutor(
+    permissions,
+    () => execution().loop.readBatch,
+    qqGroupGuard,
+  );
+  // 权限优先；本群能力其次（停用即时生效）；会话证据在技能与外部注入解析器之前，用持久存储复验。
   const resolveDomainSource: ModuleSourceResolver = (source, owner, at) =>
+    qqGroupGuard.sourceAccess(source, owner) ??
     permissions.sourceAccess(source, owner) ??
     conversationEvidenceSourceAccess(business, source, owner, at) ??
     (source.kind === "qq_media_note"
@@ -271,6 +279,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       researchEnabled: () => execution().research === true,
       researchLimits: () => execution().researchLimits,
       noProgressLimit: () => execution().loop.noProgress,
+      // 叶子运行（媒体/压缩/记忆整理/召回）的中央边界：绑定与停用状态由 guard 现读现判。
+      assertLeaf: (owner, specId) => qqGroupGuard.assertLeaf(owner, specId),
       codeMode: {
         runner: options.codeRunner ?? createQuickJsCodeRunner(),
         enabled: () => execution().code === true,

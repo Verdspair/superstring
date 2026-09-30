@@ -231,6 +231,8 @@ export class AgentRuntime {
       researchLimits?: () => ResearchLimits;
       /** 无进展终止阈值：第 N 次同签名调用结束这一轮（默认 3）。 */
       noProgressLimit?: () => number;
+      /** 叶子运行的中央边界（ADR0019 §13.3 D/H）：模型调用前与调用返回后（落盘为完成之前）各查一次，不依赖 db。 */
+      assertLeaf?: (owner: RunOwner, specId: string) => void | (() => void);
       codeMode?: {
         runner: CodeRunner;
         enabled(): boolean;
@@ -339,7 +341,7 @@ export class AgentRuntime {
   private async completeLeafTask(
     active: Running,
     phase: "leaf" | "vision",
-    input: { sources?: readonly SourceRef[] },
+    input: { owner: RunOwner; sources?: readonly SourceRef[] },
     prepare: () => {
       messages: ModelMessage[];
       invoke: (
@@ -351,8 +353,20 @@ export class AgentRuntime {
     try {
       await this.emit(active, { type: "started" });
       this.repository.setStatus(active.runId, "generating", this.now());
+      // 模型调用前查一次并冻结当前纪元；返回后再查当前状态与冻结纪元，且必须夹在这一步落盘为
+      // 完成之前——飞行期间停用（哪怕随后恢复）已产出的叶子结果不得发布，该步按失败落盘，运行失败。
+      const checkpoint = this.options.assertLeaf?.(input.owner, active.spec.id);
       const { messages, invoke } = prepare();
-      const value = await this.step(active, phase, messages, input.sources ?? [], invoke);
+      const guarded = async (
+        capture: (text: string, complete?: boolean) => void,
+        onModelResolved: (model: string) => void,
+      ) => {
+        const value = await invoke(capture, onModelResolved);
+        this.options.assertLeaf?.(input.owner, active.spec.id);
+        if (typeof checkpoint === "function") checkpoint();
+        return value;
+      };
+      const value = await this.step(active, phase, messages, input.sources ?? [], guarded);
       await this.finish(active, "completed", { type: "completed", outputs: [] });
       return value;
     } catch (error) {
@@ -434,6 +448,14 @@ export class AgentRuntime {
             assertAvailable: () => {
               program.assertAvailable?.();
               if (!code.runner.available || !code.allowsModel(spec.model))
+                throw new AgentRuntimeError(
+                  "CODE_EXECUTION_UNAVAILABLE",
+                  "Code execution was disabled",
+                );
+              // 本群停用「代码」后构造时即使可用，也不能再启动 runner（执行边界，即时生效）。
+              if (
+                !this.executor.allowed(program, { owner: input.owner, signal: active.signal }, mode)
+              )
                 throw new AgentRuntimeError(
                   "CODE_EXECUTION_UNAVAILABLE",
                   "Code execution was disabled",
@@ -1351,6 +1373,8 @@ export function createAgentRuntime(options: {
   researchEnabled?: () => boolean;
   researchLimits?: () => ResearchLimits;
   noProgressLimit?: () => number;
+  /** 叶子运行的中央边界（本群能力停用）；由 Runtime 装配，测试缺省不传。 */
+  assertLeaf?: (owner: RunOwner, specId: string) => void | (() => void);
   codeMode?: {
     runner: CodeRunner;
     enabled(): boolean;

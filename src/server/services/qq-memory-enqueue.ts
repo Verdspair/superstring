@@ -11,6 +11,7 @@
 // the caller resolved, so a call can never enqueue into another conversation.
 
 import { enqueue, type MemoryJobRow } from "../db/memory-repository";
+import { readBindingByConversation } from "../db/qq-binding-repository";
 import {
   markObservationsProcessed,
   pendingObservationCount,
@@ -18,8 +19,9 @@ import {
   type QqConversationScope,
 } from "../db/qq-observation-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
-import type { Orm } from "../db/repositories";
+import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import { AppError, fail } from "../errors";
+import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import { type QqBinding, qqConversationScope, qqMemoryScopeKey } from "./qq-binding-contract";
 
 export interface QqMemoryCandidate {
@@ -50,6 +52,23 @@ export interface EnqueueQqMemoryArgs {
 }
 
 /**
+ * 入队前的本群能力复验（ADR0019 §13.3 D/H）：本群停用「记忆整理」后不再新增整理任务。
+ * 找不到绑定时不改判定——没有本群配置就没有本群停用（无绑定不属于任何群的能力域）。
+ */
+export function assertQqMemoryOrganizeAllowed(orm: Orm, scope: QqConversationScope): void {
+  const binding = readBindingByConversation(orm, {
+    accountId: scope.accountId,
+    kind: scope.conversationKind,
+    peerId: scope.peerId,
+  });
+  if (binding === null) return;
+  new QqGroupCapabilityGuard(orm).assert(
+    { kind: "qq_binding", id: binding.id, userId: DEFAULT_USER_ID, agentId: binding.agentId },
+    "memory_organize",
+  );
+}
+
+/**
  * Enqueue a consolidation job for the oldest pending observations of one conversation.
  * Returns `null` when there is nothing to organise, which is a normal outcome and not
  * an error (an empty group, or everything already processed).
@@ -64,6 +83,8 @@ export function enqueueQqMemory(orm: Orm, args: EnqueueQqMemoryArgs): MemoryJobR
   if (args.limit < candidates.length) {
     fail("MEMORY_SOURCE_INVALID", "观察批次超出请求数量");
   }
+  // 自动与手动两条入口共用这里：能力停用必须在这里被拒，观察批次因此保持未消费、可重试。
+  assertQqMemoryOrganizeAllowed(orm, args.scope);
   const eventIds = candidates.map((candidate) => candidate.eventKey);
   const job = enqueue(orm, args.scope.agentId, args.requestKey, {
     kind: "manual",
@@ -109,6 +130,9 @@ export function enqueueQqMemoryNow(
  * no new model tasks for it), the assistant is disabled, or the assistant already has an active job
  * (`MEMORY_BUSY` — the queue allows one per assistant, so "wait" is the honest answer).
  * The pending count comes back either way, so the page can show what is actually waiting.
+ *
+ * 唯一例外：本群停用「记忆整理」不是判决而是错误（`QQ_GROUP_CAPABILITY_DISABLED`，ADR0019 §13.3 D）——
+ * 状态枚举没有"能力已停用"这一档、也不该加：停用是一个决定，不是一次可重试的尝试结果。
  */
 export type QqMemoryOrganiseStatus =
   | "queued"
@@ -125,6 +149,11 @@ export interface QqMemoryOrganiseOutcome {
 }
 
 export function organiseQqMemoryNow(orm: Orm, binding: QqBinding): QqMemoryOrganiseOutcome {
+  // 先判本群能力：停用即失败（不是判决），不让它落到任何状态分支上去。
+  new QqGroupCapabilityGuard(orm).assert(
+    { kind: "qq_binding", id: binding.id, userId: DEFAULT_USER_ID, agentId: binding.agentId },
+    "memory_organize",
+  );
   const scope = qqConversationScope(binding);
   const pending = pendingObservationCount(orm, scope);
   if (readQqSettings(orm).enabled !== 1) return { status: "switch_off", jobId: null, pending };

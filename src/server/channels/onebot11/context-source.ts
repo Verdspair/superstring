@@ -71,6 +71,7 @@ import {
   createBotConversationEvidence,
 } from "../../modules/conversation-evidence";
 import { contextDumps, estimateMessages } from "../../modules/memory-query";
+import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import { qqMemoryScopeKeyset } from "../../services/memory-scope";
 import type { QqBinding, QqTaskSnapshot } from "../../services/qq-binding-contract";
 import {
@@ -129,6 +130,11 @@ export interface BotContextSourceOptions {
   /** Lease, binding/owner/config snapshots remain host responsibilities. */
   assertCurrent: () => void;
   assertBackgroundCurrent?: () => void;
+  /**
+   * 背景摘要任务的启动闸门（与 `assertBackgroundCurrent` 相对）：只拒绝尚未开始的
+   * 队列任务（暂停、普通配置变化），缺省＝不拒绝。
+   */
+  assertStartable?: () => void;
   usage?: RunUsage;
   budget?: RunBudget;
   now?: () => string;
@@ -138,6 +144,11 @@ export interface BotContextSourceOptions {
     code: string;
     name?: string;
   }) => void;
+  /**
+   * 本群能力 guard（ADR0019 §13.3）：模块安装、调用点与来源复验都按它判定。
+   * 缺省按同一张 orm 构造，测试可注入替身。
+   */
+  guard?: QqGroupCapabilityGuard;
 }
 interface View {
   material: ContextMaterial;
@@ -152,6 +163,7 @@ export class BotContextSource {
   private readonly capacities = new Map<string, number>();
   private readonly engine = new ContextEngine();
   private readonly owner: RunOwner;
+  private readonly guard: QqGroupCapabilityGuard;
   private readonly memory: MemoryModule;
   private readonly knowledge: KnowledgeModule;
   private compressionJob?: BotCompressionJob;
@@ -169,6 +181,7 @@ export class BotContextSource {
       userId: DEFAULT_USER_ID,
       agentId: o.binding.agentId,
     };
+    this.guard = o.guard ?? new QqGroupCapabilityGuard(o.orm);
     const modules = (o.modules ?? createSqliteQueryFactory(o))({
       runtime: o.runtime,
       assertSources: (sources) => this.assertSources(sources),
@@ -176,7 +189,12 @@ export class BotContextSource {
     this.memory = modules.memory;
     this.knowledge = modules.knowledge;
     const actions: Record<string, EvidenceQueryModule> = {};
-    if (o.runtime.p5_config.retrieval_mode !== "off") {
+    // 本群停用系统能力后不安装对应模块：模型可见目录里没有它，调用点也过不去
+    // （ADR0019 §13.3 D）。历史原文（history）不属能力停用面，照旧安装。
+    if (
+      o.runtime.p5_config.retrieval_mode !== "off" &&
+      this.guard.allowed(this.owner, "memory_read")
+    ) {
       const memory = this.memory;
       const read = memory.read;
       actions.memory = {
@@ -193,6 +211,9 @@ export class BotContextSource {
                   ...input.evidence.sources,
                 ]);
                 action.signal.throwIfAborted();
+                // 停用即刻生效：正文读取是硬边界——本群停用后，在途的这一轮也不能继续取正文
+                // （不是"这次没取到"的可恢复信封；中央 ActionExecutor 在调用前也有一层同样的检查）。
+                this.guard.assert(this.owner, "memory_read");
                 this.assertCurrent();
                 this.assertSources(sources);
                 const page = await read.call(memory, {
@@ -204,7 +225,9 @@ export class BotContextSource {
                   sources,
                 });
                 action.signal.throwIfAborted();
+                // 读完之后再复验一次：正文出栈的这一刻，本群能力、绑定授权与来源都还成立才交给模型。
                 this.assertCurrent();
+                this.guard.assert(this.owner, "memory_read");
                 this.assertSources(sources);
                 return page;
               },
@@ -212,7 +235,10 @@ export class BotContextSource {
           : {}),
       };
     }
-    if (o.runtime.knowledge_read?.config.enabled !== false) {
+    if (
+      o.runtime.knowledge_read?.config.enabled !== false &&
+      this.guard.allowed(this.owner, "knowledge_read")
+    ) {
       const knowledge = this.knowledge;
       const read = knowledge.read;
       actions.knowledge = {
@@ -229,6 +255,8 @@ export class BotContextSource {
                   ...input.evidence.sources,
                 ]);
                 action.signal.throwIfAborted();
+                // 同上：知识正文读取同样是硬边界，不能返回"取不到"的信封。
+                this.guard.assert(this.owner, "knowledge_read");
                 this.assertCurrent();
                 this.assertSources(sources);
                 const page = await read.call(knowledge, {
@@ -240,6 +268,7 @@ export class BotContextSource {
                 });
                 action.signal.throwIfAborted();
                 this.assertCurrent();
+                this.guard.assert(this.owner, "knowledge_read");
                 this.assertSources(sources);
                 return page;
               },
@@ -266,7 +295,8 @@ export class BotContextSource {
         peerId: o.binding.peerId,
         agentId: o.binding.agentId,
       },
-      summaryEnabled: o.decisionTier === "reply",
+      summaryEnabled:
+        o.decisionTier === "reply" && this.guard.allowed(this.owner, "history_summary"),
       assertCurrent: () => this.assertCurrent(),
       assertSources: (sources) => this.assertSources(sources),
       now: () => this.now(),
@@ -519,13 +549,18 @@ ${intent.trim()}`,
   assertSources(sources: readonly SourceRef[], hostCheck = true): void {
     const o = this.options;
     if (hostCheck) o.assertCurrent();
+    // 本群作用域的来源（QQ 观察、素材、记忆等）先按 guard 复验：停用/撤权后不能继续暴露正文，
+    // 这一层与下面的通用复验叠加，不是它的替代。
+    this.guard.assertSources(this.owner, sources);
     assertContextSources({
       db: o.db,
       sources,
       owner: this.owner,
       now: this.now(),
-      // 会话证据先本地复验（持久存储），外部注入解析器不能把已撤权的引用改判为 available。
+      // 本群能力引用先按 guard 复验（纪元与停用）；会话证据再本地复验（持久存储），
+      // 外部注入解析器不能把已撤权的引用改判为 available。
       resolveSource: (source, owner, at) =>
+        this.guard.sourceAccess(source, owner) ??
         conversationEvidenceSourceAccess(o, source, owner, at) ??
         o.resolveSource?.(source, owner, at),
       memoryRevisions: (ids) =>
@@ -858,7 +893,14 @@ ${intent.trim()}`,
     const question = qqJudgementQuestion(selection.messages.map((message) => message.text));
     // 回复档只读已提交包；新压缩在本轮提交后由后台队列执行。
     const baseline = cost(material);
-    if (tier === "reply" && o.runtime.p5_config.compression_enabled) {
+    // 本群停用历史摘要：已存包与新压缩都不再进入这一轮（原文窗口照旧）。
+    if (
+      tier === "reply" &&
+      o.runtime.p5_config.compression_enabled &&
+      this.guard.allowed(this.owner, "history_summary")
+    ) {
+      // 包装进材料才附当前纪元的能力引用：停用后旧包正文连同缓存视图一起失效。
+      const summaryRefs = this.guard.sources(this.owner, "history_summary");
       let stored: QqConversationSummary | null = null;
       try {
         stored = readQqConversationSummary(o.orm, o.conversationId, o.binding.agentId);
@@ -937,6 +979,7 @@ ${intent.trim()}`,
             task: schemePrompts(o.scheme).compress,
             usage: o.usage,
             budget: o.budget,
+            assertStartable: o.assertStartable,
             assertCurrent: o.assertBackgroundCurrent ?? o.assertCurrent,
             assertSources: (sources) => this.assertSources(sources, false),
             now: () => this.now(),
@@ -967,6 +1010,8 @@ ${intent.trim()}`,
         pending: pending(packages),
         sources: uniqueSources([
           ...(material.sources ?? []),
+          // 没有包（例如只有排队任务）时不附引用：停用不该打死这一轮。
+          ...(packages.length > 0 ? summaryRefs : []),
           ...packages.flatMap((item) => item.sources ?? []),
         ]),
       };
@@ -1064,6 +1109,9 @@ ${intent.trim()}`,
   ): Promise<EvidenceQueryPage> {
     const { signal } = action;
     signal.throwIfAborted();
+    // 本群停用后，本轮后续调用不再放行：返回不可读的信封而不是正文（不是只隐藏工具目录）。
+    if (!this.guard.allowed(this.owner, name === "memory.query" ? "memory_read" : "knowledge_read"))
+      return this.unavailable(name, "QQ_GROUP_CAPABILITY_DISABLED");
     this.assertCurrent();
     await this.view(this.options.decisionTier, signal);
     await this.view("reply", signal);

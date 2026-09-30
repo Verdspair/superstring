@@ -125,6 +125,18 @@ export class AgentTaskService {
       if (!binding || (execution && (binding.paused || !binding.enabled)))
         throw taskError("TASK_AUTHORITY_CHANGED");
     }
+    // 系统能力「任务」本群停用：领取、调用、结果提交与巡检都经此，停用即时生效（ADR0019 §13.3 D/H）。
+    // execution=false＝元数据管理读取（inspect/approve/readBody），不当模型动作对齐。
+    // 入队冻结的能力纪元引用只在执行面强制复验：queued+inflight 期间关闭恢复即硬失败（H）；
+    // 元数据读取不因此改写既有任务的台账状态（复验撤权走 sourceAccess，见下）。
+    if (execution) {
+      this.options.executor.guard?.assert(this.owner(task), "tasks");
+      this.options.executor.guard?.assertSources(this.owner(task), task.sources);
+    }
+    // guard 只认领 `qq_group_capability` kind；这类来源的复验归 guard（上面执行面已断言），
+    // 不进下面的通用来源链，避免注入解析器或兜底把能力纪元误判为不可用。
+    const guardOwned = (source: SourceRef) =>
+      this.options.executor.guard !== undefined && source.kind === "qq_group_capability";
     if (task.expiresAt <= this.now()) throw taskError("TASK_EXPIRED");
     const memories = task.sources.filter(
       (source) =>
@@ -153,7 +165,7 @@ export class AgentTaskService {
       )
         throw taskError("TASK_SOURCE_INVALID");
     }
-    for (const source of task.sources) {
+    for (const source of task.sources.filter((source) => !guardOwned(source))) {
       const access =
         this.sourceAccess(source, this.owner(task)) ??
         this.options.executor.permissions.sourceAccess(source, this.owner(task)) ??
@@ -188,7 +200,11 @@ export class AgentTaskService {
       )
         return "revoked";
     }
+    // 复验任务来源也要过「任务」能力：所在群停用后，已发出的任务来源即刻失效（不依赖执行期断言）。
+    if (!(this.options.executor.guard?.allowed(this.owner(task), "tasks") ?? true))
+      return "revoked";
     try {
+      this.options.executor.guard?.assertSources(this.owner(task), task.sources);
       this.assertCurrent(task, false);
       if (task.calls.some((call) => call.arguments === null)) return "revoked";
       return "available";
@@ -270,7 +286,11 @@ export class AgentTaskService {
         effect: action.description.effect ?? ("write" as const),
       };
     });
+    const enqueueOwner = this.owner({ conversationId, agentId: conversation.agent_id });
+    // 入队时刻冻结「任务」能力纪元：queued+inflight 期间的关闭恢复不得重用（off→on 不复活）。
+    const capSources = this.options.executor.guard?.sources(enqueueOwner, "tasks") ?? [];
     const sources = uniqueSources([
+      ...capSources,
       ...(context.sources ?? []),
       ...calls.map((call) =>
         this.options.executor.permissions.source(this.resolve(call).permission),

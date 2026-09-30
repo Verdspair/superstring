@@ -32,9 +32,10 @@ import {
   renewQqDispatchLease,
   upsertQqDispatchCandidate,
 } from "../db/qq-dispatch-repository";
+import { readEffectiveQqScheme } from "../db/qq-group-config-repository";
 import { newestMemberEventFor } from "../db/qq-observation-intake";
 import type { QqConversationScope } from "../db/qq-observation-repository";
-import { effectiveQqTriggers, readQqScheme, schemeRhythm } from "../db/qq-scheme-repository";
+import { effectiveQqTriggers, schemeRhythm } from "../db/qq-scheme-repository";
 import { readQqSends } from "../db/qq-send-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
 import {
@@ -237,7 +238,7 @@ export function peekQqImmediateReplyTask(
     // A paused conversation still observes; it simply does not answer, immediate or otherwise.
     if (binding.paused) continue;
     if (getAgentRow(orm, binding.agentId)?.isActive !== 1) continue;
-    const scheme = readQqScheme(orm, binding.schemeId);
+    const scheme = readEffectiveQqScheme(orm, binding);
     if (!scheme) continue;
     const disabled = disabledKindsFromTriggers(effectiveQqTriggers(binding, scheme));
     const scope: QqConversationScope = {
@@ -540,7 +541,7 @@ export function sweepQqIdleTopics(
       skip("conversation_paused");
       continue;
     }
-    const scheme = readQqScheme(orm, binding.schemeId);
+    const scheme = readEffectiveQqScheme(orm, binding);
     if (!scheme) {
       skip("trigger_off");
       continue;

@@ -19,6 +19,8 @@ import {
   publish,
   validateEntrySources,
 } from "../../src/server/db/memory-repository";
+import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
+import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   createSession,
   DEFAULT_USER_ID,
@@ -29,7 +31,11 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { qqMemoryScopeKeyset } from "../../src/server/services/memory-scope";
-import type { QqMemoryAccess, QqMemoryScope } from "../../src/server/services/qq-binding-contract";
+import {
+  createQqBinding,
+  type QqMemoryAccess,
+  type QqMemoryScope,
+} from "../../src/server/services/qq-binding-contract";
 import { ContentSourceSchema } from "../../src/shared/contracts/content";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
@@ -49,11 +55,31 @@ function access(peerId: string): QqMemoryAccess {
 }
 const GROUP_A = access("20001");
 
+/** 真实方案×绑定行（账号 10001 × 群 × 默认助手）：群记忆 claim 需要活跃绑定才能合成来源。 */
+function bindGroup(orm: Orm, peerId: string): void {
+  const scheme = createQqScheme(orm, { name: `群方案 ${peerId}` });
+  const created = createQqBinding({
+    id: crypto.randomUUID(),
+    accountId: "10001",
+    kind: "group",
+    peerId,
+    agentId: AGENT_ID,
+    schemeId: scheme.id,
+    paused: false,
+    shareWebMemory: false,
+  });
+  if (created.kind !== "saved") throw new Error("expected a saved binding");
+  insertQqBinding(orm, created.binding);
+}
+
 function setup() {
   const business = openBusinessDb();
   ensureDefaults(business.orm, MODEL);
   const sessionId = createSession(business.orm, "会话", { modelName: MODEL }).id;
   policy(business.orm, AGENT_ID);
+  // GROUP_A 与隔离用例的另一群都建真实绑定行：claim 的本群复验才有事实可查。
+  bindGroup(business.orm, "20001");
+  bindGroup(business.orm, "20002");
   return { business, orm: business.orm, sessionId };
 }
 

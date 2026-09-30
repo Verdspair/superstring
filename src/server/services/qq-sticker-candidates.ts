@@ -21,6 +21,11 @@
 //     be checked at a chosen instant instead of against whatever the machine thinks today is.
 
 import { z } from "zod";
+import { readBindingByConversation } from "../db/qq-binding-repository";
+import {
+  effectiveQqStickerCollectionIds,
+  readEffectiveQqScheme,
+} from "../db/qq-group-config-repository";
 import type { QqConversationScope } from "../db/qq-observation-repository";
 import {
   readQqScheme,
@@ -32,6 +37,7 @@ import { qqStickerUsageByConversation } from "../db/qq-send-repository";
 import { type QqStickerAssetView, qqStickerLibrarySnapshot } from "../db/qq-sticker-repository";
 import type { Orm } from "../db/repositories";
 import { fail } from "../errors";
+import type { QqBinding } from "./qq-binding-contract";
 import type { QqSendPartResult } from "./qq-output-contract";
 import {
   type QqStickerCandidate,
@@ -149,6 +155,12 @@ export interface QqStickerSelectionRequest {
   readonly schemeId: string;
   readonly scope: QqConversationScope;
   /**
+   * 本群作用域（可显式传入）：生效素材集合与表情参数都按它读取。
+   * 省略时按 `scope` 查绑定（老调用方与只读方案的场景）；会话查到的绑定与请求不一致
+   * （方案或助手不同）时返回空选集，绝不按基础方案兜底。
+   */
+  readonly binding?: QqBinding;
+  /**
    * Which part results mean "this conversation has seen that sticker".
    *
    * Required with no default: a failed or unknown send is U13 and is undecided, so choosing here
@@ -177,17 +189,48 @@ export interface QqStickerSelection {
  * Everything `planQqOutput` needs about stickers comes out of this one call, so a caller cannot
  * pair a scheme's authorization with another scheme's ceiling or another conversation's history.
  * It reads only: no enablement, no send, no write.
+ *
+ * The conversation scope names the binding, so the selection is the **effective** one for that
+ * group: the group's own overrides (ADR0019 §13.2/§13.3) narrow the authorized collections,
+ * the dedup policy and the ceiling, and a group that turned its capability off is refused
+ * upstream rather than silently falling back to the base scheme. A scope with no bound
+ * conversation (fixtures, or a scheme read on its own) stays the base scheme's selection.
  */
 export function qqStickerSelectionForScheme(
   orm: Orm,
   request: QqStickerSelectionRequest,
 ): QqStickerSelection {
-  const scheme = readQqScheme(orm, request.schemeId);
+  const found =
+    request.binding ??
+    readBindingByConversation(orm, {
+      accountId: request.scope.accountId,
+      kind: request.scope.conversationKind,
+      peerId: request.scope.peerId,
+    });
+  // 会话已有绑定、但请求携带的方案或助手与它不一致：不按基础方案兜底，空选集即停用。
+  if (
+    found !== null &&
+    (found.schemeId !== request.schemeId || found.agentId !== request.scope.agentId)
+  ) {
+    return Object.freeze({
+      candidates: Object.freeze([]),
+      rejected: Object.freeze([]),
+      minRepeatSeconds: null,
+      avoidRecent: false,
+      maxStickerCount: 0,
+    });
+  }
+  const bound = found;
+  const scheme =
+    bound === null ? readQqScheme(orm, request.schemeId) : readEffectiveQqScheme(orm, bound);
   if (scheme === null) fail("MEMORY_NOT_FOUND", "方案不存在", 404);
   const dedup = qqStickerDedupPolicy(schemeStickers(scheme));
   const assembled = assembleQqStickerCandidates({
     assets: qqStickerLibrarySnapshot(orm, request.isAvailable).assets,
-    authorizedCollectionIds: schemeStickerCollectionIds(orm, request.schemeId),
+    authorizedCollectionIds:
+      bound === null
+        ? schemeStickerCollectionIds(orm, request.schemeId)
+        : effectiveQqStickerCollectionIds(orm, bound),
     usage: qqStickerUsageByConversation(orm, request.scope, request.counts),
     recentAvoidCount: dedup.recentAvoidCount,
     nowSeconds: request.nowSeconds,

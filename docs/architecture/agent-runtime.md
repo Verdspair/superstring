@@ -47,6 +47,18 @@ Revocation and expiry are re-verified at execution checkpoints and at the commit
 
 撤权与过期在执行检查点和提交边界复验；已经流出的文本无法收回——中途撤权会让运行在下一个检查点停止，而不是撤回已发出的内容。
 
+## Per-group capability narrowing
+
+A QQ group binding can disable individual system capabilities for one binding × Agent pair: memory reading and organisation, knowledge reading, web access, media, stickers, tasks, research, code execution, MCP, skills and history summarisation. A disable can only narrow what other layers already allow — the QQ global switch, the Agent's own state, source permissions, resource grants and approvals remain in force, and the group page never grants access. Sticker collection overrides likewise only narrow the collections the base scheme already authorises, and application-level settings such as retention, model choice and knowledge organisation have no group override.
+
+Enforcement is central: one guard covers the advertised tool catalog, action execution, leaf and background runs, and the result commit boundary, so disabling a capability constrains calls made by an already-running task and its not-yet-committed results; work already sent to an external platform is not retracted. Each enable/disable flip advances a monotonic per-capability revision, and capability source references bind to the current revision, so disabling and re-enabling does not revive a reference captured before the flip. Ordinary scheme values saved for a group take effect on the next new round; retrying an existing request reuses its frozen turn snapshot while re-checking the current disables and source validity.
+
+## 本群能力停用
+
+一条 QQ 群绑定可为「绑定 × Agent」停用单个系统能力：记忆读取与整理、知识读取、联网、媒体、表情、任务、研究、代码执行、MCP、技能与会话历史摘要。停用只能收窄其他层已经允许的范围——QQ 总开关、Agent 自身状态、来源权限、资源授权与审批仍然有效，本页不会授予任何访问；素材集合覆盖同样只能收窄基础方案已授权的集合，数据保留、模型选择与知识整理等应用级设置没有本群覆盖。
+
+执行面统一：同一个守卫覆盖模型可见工具目录、动作执行、叶子/后台运行与结果提交边界——停用会约束已在运行任务的后续调用及其未提交结果；已经发往外部平台的动作无法保证撤回。能力每次「跟随↔停用」翻转都会推进该能力的单调修订，能力来源引用绑定当前修订，停用再恢复不会让翻转前捕获的引用复活。本群普通方案值下一新轮生效；失败/取消后重试沿用冻结的 Turn 快照，但会按当前停用状态与来源有效性复验。
+
 ## Durable tool plans and optional execution
 
 External writes are queued through `AgentTaskService`; a queued response is not a successful tool result. `AgentTaskRepository` stores bounded plans, per-call checkpoints and leases, while `ActionExecutor` remains the only execution boundary. Approval waits release the task lease and do not retain a foreground conversation lease. Single-use approvals bind to the task, call ordinal, arguments, tool revision, actor and permission fingerprint; they do not alter persistent grants. Interrupted tasks settle into a terminal status with their outcome evidence kept; an interrupted external write with an uncertain outcome remains `unknown` and is not replayed. Interrupted reads can be reclaimed after lease expiry, and completed checkpoints are skipped.

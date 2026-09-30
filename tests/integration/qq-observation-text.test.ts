@@ -15,6 +15,7 @@ import {
   publish,
   validateEntrySources,
 } from "../../src/server/db/memory-repository";
+import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import {
   markObservationsProcessed,
   observationText,
@@ -22,12 +23,14 @@ import {
   purgeExpiredObservationText,
   storeObservationText,
 } from "../../src/server/db/qq-observation-repository";
+import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { createSession, DEFAULT_USER_ID, ensureDefaults } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { MemoryService } from "../../src/server/services/memory-service";
 import {
+  createQqBinding,
   type QqMemoryScope,
   qqMemoryScopeKey,
 } from "../../src/server/services/qq-binding-contract";
@@ -87,6 +90,24 @@ function setup() {
   ensureDefaults(business.orm, MODEL);
   const sessionId = createSession(business.orm, "会话", { modelName: MODEL }).id;
   policy(business.orm, AGENT_ID);
+  // The worker's group-capability guard resolves a real binding before it may claim
+  // or generate, so the observed groups must be bound the way production binds them
+  // (one shared scheme; account/peer/agent matching the scopes used below).
+  const scheme = createQqScheme(business.orm, { name: "观察整理方案" });
+  for (const scope of [GROUP_A, GROUP_B]) {
+    const created = createQqBinding({
+      id: crypto.randomUUID(),
+      accountId: scope.accountId,
+      kind: "group",
+      peerId: scope.peerId,
+      agentId: scope.agentId,
+      schemeId: scheme.id,
+      paused: false,
+      shareWebMemory: false,
+    });
+    if (created.kind !== "saved") throw new Error("expected a saved QQ binding");
+    insertQqBinding(business.orm, created.binding);
+  }
   const gateway = new ScriptedGateway();
   const service = new MemoryService({
     orm: business.orm,

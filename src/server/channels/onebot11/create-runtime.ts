@@ -11,14 +11,16 @@ import type { ConversationEventRepository } from "../../db/conversation-event-re
 import { OutboundIntentRepository, type OutboundTarget } from "../../db/outbound-intent-repository";
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { readQqDispatchSettings } from "../../db/qq-dispatch-repository";
+import { readEffectiveQqScheme } from "../../db/qq-group-config-repository";
 import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
-import { effectiveQqTriggers, type QqSchemeRow, readQqScheme } from "../../db/qq-scheme-repository";
+import { effectiveQqTriggers, type QqSchemeRow } from "../../db/qq-scheme-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import { WakeRepository } from "../../db/wake-repository";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
+import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
 import { type QqSendPort, qqStickerFileReference } from "../../services/qq-send-transport";
 import { qqStickerSelectionForScheme } from "../../services/qq-sticker-candidates";
@@ -88,6 +90,8 @@ export function createOneBotConversationRuntime(options: {
     telemetry: options.telemetry,
   });
   const compression = new BotCompressionQueue();
+  // 本群能力停用集中由 guard 判定；投递与出站授权都按它复核，而不是各自读一遍配置。
+  const guard = new QqGroupCapabilityGuard(orm);
   const host = new OneBotHost({
     ...options,
     enqueueCompression: (job) => compression.enqueue(job),
@@ -142,15 +146,34 @@ export function createOneBotConversationRuntime(options: {
     stickerFile: qqStickerFileReference(orm, options.store),
     stickerAvailable(stickerId, target, at) {
       const binding = readQqBinding(orm, target.bindingId);
-      if (!binding) return false;
+      // 投递目标必须仍然是这条绑定本身：换绑、换群或换助手之后的旧素材不再放行。
+      if (
+        !binding ||
+        binding.accountId !== target.accountId ||
+        binding.kind !== target.conversationKind ||
+        binding.peerId !== target.peerId ||
+        binding.agentId !== target.agentId ||
+        binding.schemeId !== target.schemeId
+      )
+        return false;
+      // 本群停用「表情」后，已排队的素材发送也不得落地（停用即时生效，不只在下一轮）。
+      if (
+        !guard.allowed(
+          { kind: "qq_binding", id: binding.id, userId: DEFAULT_USER_ID, agentId: binding.agentId },
+          "stickers",
+        )
+      )
+        return false;
       const selection = qqStickerSelectionForScheme(orm, {
         schemeId: binding.schemeId,
+        // 显式带上本群绑定：生效素材集合与表情参数按本群差异读取，也不会被会话键查到的别的绑定带偏。
+        binding,
         scope: {
           kind: "qq",
-          accountId: target.accountId,
-          conversationKind: target.conversationKind,
-          peerId: target.peerId,
-          agentId: target.agentId,
+          accountId: binding.accountId,
+          conversationKind: binding.kind,
+          peerId: binding.peerId,
+          agentId: binding.agentId,
         },
         counts: ["confirmed"],
         nowSeconds: Math.floor(Date.parse(at) / 1000),
@@ -168,7 +191,8 @@ export function createOneBotConversationRuntime(options: {
       const binding = readQqBinding(orm, target.bindingId);
       const conversation = journal.get(intent.conversationId);
       const settings = readQqSettings(orm);
-      const scheme = binding ? readQqScheme(orm, binding.schemeId) : null;
+      // 投递授权按本群生效方案复核（含本群差异）：方案被本群收紧后，旧投递不得按基础方案照发。
+      const scheme = binding ? readEffectiveQqScheme(orm, binding) : null;
       const agent = getAgentRow(orm, target.agentId);
       const row = outbox.row(intent.id);
       if (!binding || !conversation || !scheme || !agent || !row) return false;
@@ -192,23 +216,41 @@ export function createOneBotConversationRuntime(options: {
         !effectiveQqTriggers(binding, scheme)[row.speech_kind]
       )
         return false;
-      const owner = {
+      const conversationOwner = {
         kind: "conversation",
         id: conversation.id,
         userId: DEFAULT_USER_ID,
         agentId: target.agentId,
       };
-      return (target.sources ?? []).every(
-        (source) =>
-          (options.resolveSource?.(source, owner, new Date().toISOString()) ??
+      // 本群作用域以绑定为准（会话所有者是另一回事）：能力停用与群内来源撤权都按它复核。
+      const bindingOwner = {
+        kind: "qq_binding",
+        id: binding.id,
+        userId: DEFAULT_USER_ID,
+        agentId: target.agentId,
+      };
+      // 本群停用能力即时生效：停用「表情」后，本次投递里的素材部件不再放行；纯文字部分照旧。
+      if (
+        intent.parts.some((part) => part.kind === "sticker") &&
+        !guard.allowed(bindingOwner, "stickers")
+      )
+        return false;
+      return (target.sources ?? []).every((source) => {
+        // 本群能力引用以 guard 为准：它判定的结果不得被任何外部解析器翻回可用（撤权不可覆盖）。
+        const access = guard.sourceAccess(source, bindingOwner);
+        if (access !== undefined) return access === "available";
+        // 其余来源种类沿用原有解析路径：外部注入的解析器优先，其次中央授权表。
+        return (
+          (options.resolveSource?.(source, conversationOwner, new Date().toISOString()) ??
             sourceAccess(
               db,
               source,
-              owner,
+              conversationOwner,
               { userId: DEFAULT_USER_ID },
               new Date().toISOString(),
-            )) === "available",
-      );
+            )) === "available"
+        );
+      });
     },
     onStale(intent) {
       const conversation = journal.get(intent.conversationId);

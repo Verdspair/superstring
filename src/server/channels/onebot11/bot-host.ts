@@ -18,6 +18,7 @@ import {
 } from "../../db/outbound-intent-repository";
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { recordQqIdleJudgement } from "../../db/qq-dispatch-repository";
+import { readEffectiveQqScheme } from "../../db/qq-group-config-repository";
 import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
 import {
   effectiveQqTriggers,
@@ -34,6 +35,7 @@ import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import type { WakeRepository } from "../../db/wake-repository";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
+import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import { captureQqTask, checkQqTask, qqConversationKey } from "../../services/qq-binding-contract";
 import {
   attentionTriggerFilter,
@@ -99,12 +101,16 @@ export interface OneBotHostOptions {
   /** 外部（MCP）动作：每次唤醒现取；没有登记时返回空表（行为与不加这个功能一致）。 */
   externalActions?: () => readonly BuiltInAction[];
   tasks?: AgentTaskService;
+  /** 本群能力 guard：缺省按开发默认构造（测试可注入同一份事实的替身）。 */
+  guard?: QqGroupCapabilityGuard;
 }
 /** One host for direct and shared conversations; topology changes targets, not the model loop. */
 export class OneBotHost {
   private readonly host: ConversationHost;
+  private readonly guard: QqGroupCapabilityGuard;
   constructor(private readonly options: OneBotHostOptions) {
     this.host = options.host ?? new ConversationHost({ runtime: options.agentRuntime });
+    this.guard = options.guard ?? new QqGroupCapabilityGuard(options.orm);
   }
   async activate(wake: WakeSignal, signal: AbortSignal) {
     const o = this.options,
@@ -116,12 +122,26 @@ export class OneBotHost {
       throw new Error("BOT_CONVERSATION_REQUIRED");
     const binding = readQqBinding(o.orm, conversation.sourceId);
     if (!binding || binding.agentId !== conversation.agentId) throw new Error("BINDING_CHANGED");
-    const scheme = readQqScheme(o.orm, binding.schemeId),
+    // 生效方案＝基础方案 + 本群差异（ADR0019 §13.2）：新轮读取当前值，未固定的项跟随基础方案。
+    const scheme = readEffectiveQqScheme(o.orm, binding),
       agent = getAgentRow(o.orm, binding.agentId);
     if (!scheme || !agent) throw new Error("BOT_CONFIGURATION_MISSING");
+    const guard = this.guard;
+    // 本群作用域的所有者：能力停用、群内来源撤权与叶子任务都按绑定 × 当前助手判定。
+    const groupOwner: RunOwner = {
+      kind: "qq_binding",
+      id: binding.id,
+      userId: DEFAULT_USER_ID,
+      agentId: agent.id,
+    };
     const captured = captureQqTask(binding, "reply", readQqOwnerIdentity(o.orm));
     if (captured.kind !== "captured") throw new Error(captured.reason);
     const snapshot = captured.snapshot,
+      // 背景摘要任务单独按组织用途捕获（ADR0019 §13.1 B）：它可以在暂停/普通配置变化后跑完，
+      // 但身份与授权一旦变化就必须终止——发布边界只认这份快照。
+      capturedBackground = captureQqTask(binding, "organization", readQqOwnerIdentity(o.orm));
+    if (capturedBackground.kind !== "captured") throw new Error(capturedBackground.reason);
+    const backgroundSnapshot = capturedBackground.snapshot,
       runtime = {
         ...runtimeFromAgent(agent),
         knowledge_read: new KnowledgeReadRepository(db).freeze(agent.id),
@@ -326,10 +346,49 @@ export class OneBotHost {
         throw new Error("WAKE_LEASE_LOST");
       assertConfiguration();
     };
+    /**
+     * 已在运行的背景任务（水位压缩）的边界（ADR0019 §13.1 B、§13.3 D/H）：
+     * 作用域、权威、全局开关与来源复验不变即可完成；**暂停与普通配置变化不杀已在跑的任务**
+     * （它们只在该任务尚未开始时拒绝，见下面的启动闸门）。「群停用后已运行的摘要整理仍可完成」是
+     * 已批准语义，旧实现用含 paused/revision 的 `assertConfiguration` 会让它在暂停瞬间失败。
+     */
+    const assertBackgroundCurrent = () => {
+      const current = readQqBinding(o.orm, binding.id);
+      const check = checkQqTask(backgroundSnapshot, current, "publish", readQqOwnerIdentity(o.orm));
+      if (check.kind === "blocked") throw new Error(check.reason.toUpperCase());
+      const settings = readQqSettings(o.orm);
+      if (settings.enabled !== 1 || settings.accountId !== binding.accountId)
+        throw new Error("BOT_ACCOUNT_CHANGED");
+      if (getAgentRow(o.orm, agent.id)?.isActive !== 1) throw new Error("BOT_ACCOUNT_CHANGED");
+      if (o.journal.row(conversation.id)?.closed_at) throw new Error("BINDING_EPOCH_CHANGED");
+      // 本群停用「会话历史摘要」后，未提交的摘要结果不得再发布（立即生效，不等下一轮）。
+      guard.assert(groupOwner, "history_summary");
+    };
+    /** 排队中的背景任务在开始前判定：暂停与普通配置变化拒绝它，而不是让它花掉模型调用再丢弃。 */
+    const assertBackgroundStart = () => {
+      const current = readQqBinding(o.orm, binding.id);
+      if (current === null) throw new Error("BINDING_CHANGED");
+      // 暂停先判：否则暂停带来的 revision 变化会被读成普通的 binding_changed。
+      if (current.paused) throw new Error("CONVERSATION_PAUSED");
+      const check = checkQqTask(backgroundSnapshot, current, "start", readQqOwnerIdentity(o.orm));
+      if (check.kind === "blocked") throw new Error(check.reason.toUpperCase());
+      if (
+        readQqScheme(o.orm, scheme.id)?.revision !== scheme.revision ||
+        getAgentRow(o.orm, agent.id)?.configVersion !== agent.configVersion
+      )
+        throw new Error("BOT_CONFIGURATION_CHANGED");
+      const settings = readQqSettings(o.orm);
+      if (settings.enabled !== 1 || settings.accountId !== binding.accountId)
+        throw new Error("BOT_ACCOUNT_CHANGED");
+      if (getAgentRow(o.orm, agent.id)?.isActive !== 1) throw new Error("BOT_ACCOUNT_CHANGED");
+      if (o.journal.row(conversation.id)?.closed_at) throw new Error("BINDING_EPOCH_CHANGED");
+    };
     const usage = { calls: 0, inputUnits: 0 };
     const budget = { maxCalls: policy.maxSteps + 8, maxInputUnits: policy.maxSteps * 200_000 };
     const stickerRequest = () => ({
       schemeId: scheme.id,
+      // 本群作用域随请求一起带上：候选要按生效素材集合裁剪，不能只看基础方案。
+      binding,
       scope: {
         kind: "qq" as const,
         accountId: binding.accountId,
@@ -341,7 +400,9 @@ export class OneBotHost {
       nowSeconds: seconds(),
       isAvailable: o.stickers.isAvailable,
     });
-    const stickersEnabled = o.stickersEnabled?.() !== false;
+    // 本群停用叠在全局开关上：停用后既不出现在工具目录，也不在执行与发送边界放行。
+    const stickersEnabled =
+      o.stickersEnabled?.() !== false && guard.allowed(groupOwner, "stickers");
     const stickerCatalog = () => {
       const catalog = currentQqStickerCatalog(o.orm, stickerRequest());
       return stickersEnabled ? catalog : { ...catalog, state: "disabled" as const, assets: [] };
@@ -416,7 +477,9 @@ export class OneBotHost {
       decisionTier,
       targets: () => targets,
       assertCurrent: assertAuthority,
-      assertBackgroundCurrent: assertConfiguration,
+      assertBackgroundCurrent,
+      assertStartable: assertBackgroundStart,
+      guard,
       usage,
       budget,
       now,
@@ -461,7 +524,10 @@ export class OneBotHost {
       const asset = stickerCatalog().assets.find((entry) => entry.id === id);
       return asset && asset.updatedAt === revision ? asset : undefined;
     };
-    const mediaEnabled = o.mediaEnabled?.() !== false && o.mediaAdapter !== undefined;
+    const mediaEnabled =
+      o.mediaEnabled?.() !== false &&
+      o.mediaAdapter !== undefined &&
+      guard.allowed(groupOwner, "media");
     const purposes = readOrganizationSettings(o.orm);
     const mediaActions =
       mediaEnabled && o.mediaAdapter
@@ -489,6 +555,8 @@ export class OneBotHost {
             },
           })
         : [];
+    // 本群停用系统能力后，模型可见工具目录里不再出现对应动作——不是只在界面隐藏
+    // （ADR0019 §13.3 D）。历史原文（history）不属能力停用面，照旧保留。
     const actions = [
       ...source.actions,
       ...mediaActions,
@@ -511,7 +579,7 @@ export class OneBotHost {
             }),
           ]
         : []),
-    ];
+    ].filter((action) => guard.actionAllowed(action, groupOwner));
     /**
      * ── 许可（0.4.0 P4 §4.1 后半）──
      *
@@ -533,6 +601,8 @@ export class OneBotHost {
       const { stateDigest } = evaluation;
       const cached = licenses.get(stateDigest);
       if (cached) return cached;
+      // 群里来源撤权后，评分素材不得再交给模型：已有来源复验之上再加本群作用域那一层。
+      guard.assertSources(groupOwner, evaluation.sources);
       const raw = await o.agentRuntime.completeLeaf(
         {
           id: "onebot.initiative.evaluate",
@@ -806,6 +876,8 @@ export class OneBotHost {
               throw new Error("CONVERSATION_CHANGED_AT_COMMIT");
             for (const [ordinal, output] of outputs.entries()) {
               if (output.status !== "prepared") continue;
+              // 本群停用「表情」后，仍带素材的提交不再放行（停用即时生效，不等下一轮）。
+              if ((output.stickerIds?.length ?? 0) > 0) guard.assert(groupOwner, "stickers");
               const pending = staged.get(output.outputId);
               if (!pending) throw new Error("OUTPUT_PREPARATION_MISSING");
               const plan = planQqPreparedReply(o.orm, pending, o.stickers);

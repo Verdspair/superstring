@@ -15,6 +15,7 @@
 import { and, asc, desc, eq, inArray, notExists, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import { AppError, fail } from "../errors";
+import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import {
   DEFAULT_SCOPE,
   type MemoryDraft,
@@ -35,6 +36,7 @@ import {
   ownedObservations,
 } from "./memory-source-repository";
 import { readOrganizationSettings } from "./organization-repository";
+import { readBindingByConversation } from "./qq-binding-repository";
 import {
   DEFAULT_USER_ID,
   getAgent,
@@ -652,7 +654,8 @@ export function govern(orm: Orm, agentId: string, ids: string[], action: string)
  * worker claim. Returns `null` for a job that is
  * not claimable (missing, already taken, or governance moved on). The
  * governance check **fails the job** as a side effect rather than silently
- * dropping it.
+ * dropping it; the same side-effect failure applies to a QQ group that is
+ * paused or has this ability switched off.
  */
 export function claim(orm: Orm, jobId: string): MemoryJobRow | null {
   const hint = orm.select().from(schema.memoryJobs).where(eq(schema.memoryJobs.id, jobId)).get();
@@ -664,6 +667,15 @@ export function claim(orm: Orm, jobId: string): MemoryJobRow | null {
     updateJobRow(orm, job.id, {
       status: "failed",
       errorCode: "MEMORY_GOVERNANCE_CHANGED",
+      finishedAt: nowIso(),
+    });
+    return null;
+  }
+  const blocked = qqJobStartBlocker(orm, job);
+  if (blocked !== null) {
+    updateJobRow(orm, job.id, {
+      status: "failed",
+      errorCode: blocked,
       finishedAt: nowIso(),
     });
     return null;
@@ -714,6 +726,70 @@ export function renewLease(orm: Orm, agentId: string, jobId: string, token: stri
 export type { MemoryDraft };
 
 /**
+ * 观察型整理任务（QQ 群）的 scope_key：`["qq",account,kind,peer,agent]` 的 JSON 文本。
+ * Web 会话的 scope_key 是裸 agent id，不匹配这个形态——两种任务因此不会被混判。
+ */
+function isQqMemoryScopeKey(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith('["qq",');
+}
+
+/**
+ * 本群能力复验（ADR0019 §13.3 D/H）：停用「记忆整理」的群不得继续消费来源或发布结果。
+ * 只在 QQ 观察型任务上调用（scope_key 是 QQ 形态）；owner 用 `memory_job`，由 guard 按任务
+ * 自己的 scope_key 找回来源绑定，因此排队中/运行中的任务都按**当下**的本群配置判定。
+ * 非 QQ 任务与没有绑定的任务不经过这里，网页整理行为不变。
+ */
+export function assertQqConsolidationPublishable(
+  orm: Orm,
+  jobId: string,
+  agentId: string,
+  scopeKey: unknown,
+): void {
+  if (!isQqMemoryScopeKey(scopeKey)) return;
+  new QqGroupCapabilityGuard(orm).assert(
+    { kind: "memory_job", id: jobId, userId: DEFAULT_USER_ID, agentId },
+    "memory_organize",
+  );
+}
+
+/**
+ * claim 前的本群复验：排队中的任务不得在「群暂停」或「本群停用·记忆整理」的当下开始。
+ * 暂停只挡开始——已开始的任务照旧走完（提交边界另查能力，不查暂停）；Web/私聊任务不经过
+ * 这里。返回 null 放行，否则返回要写入 `error_code` 的拒绝原因。
+ */
+function qqJobStartBlocker(orm: Orm, job: MemoryJobRow): string | null {
+  if (
+    !new QqGroupCapabilityGuard(orm).allowed(
+      { kind: "memory_job", id: job.id, userId: DEFAULT_USER_ID, agentId: job.agentId },
+      "memory_organize",
+    )
+  ) {
+    return "QQ_GROUP_CAPABILITY_DISABLED";
+  }
+  // 能力判定通过＝群绑定已确认且与任务助手一致；再看这一层暂停。
+  let snapshot: { scope_key?: unknown };
+  try {
+    snapshot = JSON.parse(job.configSnapshot) as { scope_key?: unknown };
+  } catch {
+    return null;
+  }
+  const scopeKey = snapshot.scope_key;
+  if (!isQqMemoryScopeKey(scopeKey)) return null;
+  let identity: unknown;
+  try {
+    identity = JSON.parse(scopeKey);
+  } catch {
+    return null; // guard 把不可解析的 scope_key 当「无群约束」，这里跟随同一判定
+  }
+  if (!Array.isArray(identity) || identity[2] !== "group") return null;
+  const accountId = identity[1];
+  const peerId = identity[3];
+  if (typeof accountId !== "string" || typeof peerId !== "string") return null;
+  const binding = readBindingByConversation(orm, { accountId, kind: "group", peerId });
+  return binding?.paused ? "CONVERSATION_PAUSED" : null;
+}
+
+/**
  * publish a worker result.
  * `draft === null` means "nothing worth remembering": the job still succeeds and
  * (for manual/auto) its turns are still marked processed, so the same turns are
@@ -738,6 +814,8 @@ export function publish(
     scope_key: string;
     source_event_ids?: string[];
   };
+  // 提交边界复验本群能力：停用后未提交的结果不得发布（与 worker 输入加载两层各自成立）。
+  assertQqConsolidationPublishable(orm, jobId, agentId, snapshot.scope_key);
 
   let sourceRows: Array<Record<string, unknown>> = [];
   let observationRows: Array<Record<string, unknown>> = [];

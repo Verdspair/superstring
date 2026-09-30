@@ -15,8 +15,9 @@
 //      a model and never retries a failed read.
 
 import { readBindingByConversation } from "../db/qq-binding-repository";
+import { readEffectiveQqScheme } from "../db/qq-group-config-repository";
 import { mediaSegmentsForEvent } from "../db/qq-media-repository";
-import { readQqScheme, schemeRhythm } from "../db/qq-scheme-repository";
+import { schemeRhythm } from "../db/qq-scheme-repository";
 import type { Orm } from "../db/repositories";
 import type { QqObservation } from "./onebot-protocol";
 import { enqueueQqDispatchFromEvent, type QqDispatchEnqueueResult } from "./qq-dispatch";
@@ -68,7 +69,8 @@ export async function handleQqRecordedMessage(
       media: NO_MEDIA,
     };
   }
-  const scheme = readQqScheme(orm, binding.schemeId);
+  // 合并窗口是本群生效方案的值（基础方案 + 本群差异），不是基础方案的值。
+  const scheme = readEffectiveQqScheme(orm, binding);
   if (!scheme) {
     return {
       dispatch: { kind: "not_scheduled", reason: "scheme_missing" },

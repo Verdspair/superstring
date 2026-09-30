@@ -16,6 +16,7 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
 import { AgentRunRepository } from "../db/agent-run-repository";
 import {
+  assertQqConsolidationPublishable,
   claim,
   enqueue,
   entries,
@@ -39,6 +40,7 @@ import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { memoryEntrySources, observationSourcesForRun, turnSources } from "../modules/provenance";
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
+import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import {
   buildConsolidationPrompt,
   type ConsolidationConfig,
@@ -348,6 +350,9 @@ export class MemoryService {
         scope_key?: string;
         source_event_ids?: string[];
       };
+      // QQ 观察任务的输入加载复验本群能力：停用后不得再把来源正文交给模型
+      // （不花这次调用；重试入队的任务同样在这里被拒）。
+      assertQqConsolidationPublishable(this.orm, jobId, agentId, snapshot.scope_key);
       // A job only ever sees the scope it writes into. Without this, a suppressed
       // memory's body from one group would be handed to the model while organising
       // another group — a cross-scope content leak, not just a governance detail.
@@ -458,6 +463,14 @@ export class MemoryService {
       blockedSources: SourceRef[][];
     },
   ): Promise<MemoryDraft | null> {
+    const guard = new QqGroupCapabilityGuard(this.orm);
+    // 飞行前冻结本群能力纪元：停用后（哪怕随后恢复）这次结果不得继续调用或发布。
+    // standalone worker 不注入中央叶子边界，业务路径按捕获的纪元自足复验。
+    const capCheckpoint = guard.assertLeaf(context.owner, "memory.consolidate");
+    const checkCapture = () => {
+      guard.assert(context.owner, "memory_organize");
+      if (typeof capCheckpoint === "function") capCheckpoint();
+    };
     const text = await this.agentRuntime.completeLeaf(
       {
         id: "memory.consolidate",
@@ -474,6 +487,8 @@ export class MemoryService {
         validate: parseResult,
       },
     );
+    // 飞行后、解析前复验：停用后不再产生后续调用，off→on 的旧纪元结果同样被拒。
+    checkCapture();
     const draft = parseResult(text);
     if (draft === null) return null;
 
@@ -486,6 +501,7 @@ export class MemoryService {
     }
 
     for (let start = 0; start < blocked.length; start += 8) {
+      checkCapture();
       const response = await this.agentRuntime.completeLeaf(
         {
           id: "memory.suppression",
@@ -502,8 +518,10 @@ export class MemoryService {
           validate: (text) => SuppressionResultSchema.parse(JSON.parse(text)),
         },
       );
+      checkCapture();
       if (SuppressionResultSchema.parse(JSON.parse(response)).blocked) return null;
     }
+    checkCapture();
     return draft;
   }
 
@@ -619,6 +637,12 @@ export class MemoryService {
     let work: Promise<void> | null = null;
 
     try {
+      // 最小冻结：输入加载前捕获本群能力纪元；generate 内部与发布提交边界都用同一 job 作用域
+      // 的纪元复核，填补 generate 返回后到 publish 之间（await 调度）的窗口。
+      const publishCheckpoint = new QqGroupCapabilityGuard(this.orm).assertLeaf(
+        { kind: "memory_job", id: jobId, userId: DEFAULT_USER_ID, agentId },
+        "memory.consolidate",
+      );
       const inputs = this.loadInputs(agentId, jobId, token);
       const refs = [...inputs.sourceRefs, ...inputs.blockedRefs.flat()];
       span?.update({
@@ -667,7 +691,10 @@ export class MemoryService {
         details: { jobId },
       });
       try {
-        immediate(this.db, () => publish(this.orm, agentId, jobId, token, draft));
+        immediate(this.db, () => {
+          if (typeof publishCheckpoint === "function") publishCheckpoint();
+          publish(this.orm, agentId, jobId, token, draft);
+        });
         publication?.end(
           draft ? "completed" : "no_output",
           draft ? "MEMORY_PUBLISHED" : "MEMORY_NO_DRAFT",

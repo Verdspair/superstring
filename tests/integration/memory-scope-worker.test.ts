@@ -9,6 +9,11 @@ import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { enqueue, entries, policy } from "../../src/server/db/memory-repository";
 import {
+  insertQqBinding,
+  writeQqGroupAgentConfigRow,
+} from "../../src/server/db/qq-binding-repository";
+import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import {
   createSession,
   DEFAULT_USER_ID,
   ensureDefaults,
@@ -22,7 +27,11 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { qqMemoryScopeKeyset } from "../../src/server/services/memory-scope";
 import { MemoryService } from "../../src/server/services/memory-service";
-import type { QqMemoryAccess, QqMemoryScope } from "../../src/server/services/qq-binding-contract";
+import {
+  createQqBinding,
+  type QqMemoryAccess,
+  type QqMemoryScope,
+} from "../../src/server/services/qq-binding-contract";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const MODEL = "qwen/qwen3-4b-2507";
@@ -169,10 +178,40 @@ function seedObservation(orm: Orm, eventKey: string, peerId = "20001") {
     .run();
 }
 
+/** 真实方案×绑定行（账号 10001 × 群 × 默认助手）：群任务 claim 时按绑定复验本群能力。 */
+function bindGroup(orm: Orm, peerId: string): string {
+  const scheme = createQqScheme(orm, { name: `群方案 ${peerId}` });
+  const created = createQqBinding({
+    id: crypto.randomUUID(),
+    accountId: "10001",
+    kind: "group",
+    peerId,
+    agentId: AGENT_ID,
+    schemeId: scheme.id,
+    paused: false,
+    shareWebMemory: false,
+  });
+  if (created.kind !== "saved") throw new Error("expected a saved binding");
+  return insertQqBinding(orm, created.binding).id;
+}
+
+/** 本群停用「记忆整理」：能力边界从 claim 起生效。 */
+function disableMemoryOrganize(orm: Orm, bindingId: string): void {
+  writeQqGroupAgentConfigRow(orm, {
+    bindingId,
+    agentId: AGENT_ID,
+    overrides: {},
+    disabledCapabilities: ["memory_organize"],
+    expectedRevision: 0,
+  });
+}
+
 describe("worker keeps the blocked list inside one scope", () => {
   it("does not leak another group's suppressed body into the prompt", () => {
     const h = setup();
     try {
+      // 另一群也建真实绑定行：隔离对象是真实存在的群而不是空名。
+      bindGroup(h.orm, "20002");
       const turnId = completedTurn(h.orm, h.sessionId, "cr_a");
       // Group B had a memory that the user suppressed; group A must never see it.
       seedMemory(h.orm, "m_b", qqMemoryScopeKeyset(GROUP_B).write, {
@@ -266,6 +305,8 @@ describe("observation-backed jobs fail closed", () => {
   it("accepts the job shape but refuses to organise without observation text", async () => {
     const h = setup();
     try {
+      // 绑定先就位：claim 的本群复验通过后，缺正文的失败才来自输入来源而不是绑定阻塞。
+      bindGroup(h.orm, "20001");
       seedObservation(h.orm, "evt_1");
       const job = enqueue(h.orm, AGENT_ID, "req_obs", {
         kind: "manual",
@@ -285,6 +326,56 @@ describe("observation-backed jobs fail closed", () => {
       expect(after?.status).toBe("failed");
       expect(after?.errorCode).toBe("MEMORY_SOURCE_INVALID");
       // Nothing was written and no model call was made.
+      expect(h.orm.select().from(schema.memoryEntries).all()).toEqual([]);
+      expect(h.gateway.prompts).toEqual([]);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("refuses a QQ job whose group has no binding, without calling the model", async () => {
+    const h = setup();
+    try {
+      seedObservation(h.orm, "evt_1");
+      const job = enqueue(h.orm, AGENT_ID, "req_no_binding", {
+        kind: "manual",
+        eventIds: ["evt_1"],
+        scope: { scope: "reality_user", scopeKey: qqMemoryScopeKeyset(GROUP_A).write },
+      });
+      await h.service.runCycle();
+      const after = h.orm
+        .select()
+        .from(schema.memoryJobs)
+        .where(eq(schema.memoryJobs.id, job.id))
+        .get();
+      expect(after?.status).toBe("failed");
+      expect(after?.errorCode).toBe("QQ_GROUP_CAPABILITY_DISABLED");
+      expect(h.orm.select().from(schema.memoryEntries).all()).toEqual([]);
+      expect(h.gateway.prompts).toEqual([]);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("refuses a QQ job after its group disabled memory organising, without calling the model", async () => {
+    const h = setup();
+    try {
+      const bindingId = bindGroup(h.orm, "20001");
+      seedObservation(h.orm, "evt_1");
+      const job = enqueue(h.orm, AGENT_ID, "req_cap_off", {
+        kind: "manual",
+        eventIds: ["evt_1"],
+        scope: { scope: "reality_user", scopeKey: qqMemoryScopeKeyset(GROUP_A).write },
+      });
+      disableMemoryOrganize(h.orm, bindingId);
+      await h.service.runCycle();
+      const after = h.orm
+        .select()
+        .from(schema.memoryJobs)
+        .where(eq(schema.memoryJobs.id, job.id))
+        .get();
+      expect(after?.status).toBe("failed");
+      expect(after?.errorCode).toBe("QQ_GROUP_CAPABILITY_DISABLED");
       expect(h.orm.select().from(schema.memoryEntries).all()).toEqual([]);
       expect(h.gateway.prompts).toEqual([]);
     } finally {

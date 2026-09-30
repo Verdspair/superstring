@@ -27,12 +27,14 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
 import { AgentRunRepository } from "../db/agent-run-repository";
 import { readQqBinding } from "../db/qq-binding-repository";
+import { readEffectiveQqScheme, readQqGroupAgentConfig } from "../db/qq-group-config-repository";
 import { qqMemberLabels } from "../db/qq-member-repository";
 import type { QqConversationScope } from "../db/qq-observation-repository";
 import { readQqScheme, schemeOutputReserve, schemePrompts } from "../db/qq-scheme-repository";
 import { listQqStickerAssets, type QqStickerAssetView } from "../db/qq-sticker-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../db/repositories";
 import type { ModelGateway } from "../llm/model-gateway";
+import type { QqBinding } from "./qq-binding-contract";
 import { checkQqModelCapacity } from "./qq-capacity-preflight";
 import { ContextMessageSchema } from "./qq-context-contract";
 import type { QqSendPartResult } from "./qq-output-contract";
@@ -79,6 +81,14 @@ export type QqStickerPick =
     };
 
 /**
+ * 本群停用「表情」后，素材不得再被使用——不是隐藏候选，而是模型调用与发送两个边界都不放行
+ * （ADR0019 §13.3 D/H）。停用即时生效，不等下一轮：读取发生在每次使用时。
+ */
+function groupStickersDisabled(orm: Orm, binding: QqBinding): boolean {
+  return readQqGroupAgentConfig(orm, binding).disabled_capabilities.includes("stickers");
+}
+
+/**
  * One model call that picks a sticker for an already written sentence, or says there is none.
  *
  * The call is skipped entirely when nothing is usable — an empty list would only invite the
@@ -106,12 +116,18 @@ export async function selectQqSticker(
   if (!binding || binding.schemeId !== value.schemeId)
     return { kind: "blocked", reason: "binding_changed" };
   if (binding.agentId !== value.agentId) return { kind: "blocked", reason: "binding_changed" };
-  const scheme = readQqScheme(orm, value.schemeId);
-  if (!scheme || scheme.revision !== value.schemeRevision)
+  // 全局方案修订号仍是硬闸（本群差异不在这里判定）；生效值（提示词、预留、素材范围）随后读。
+  const baseScheme = readQqScheme(orm, value.schemeId);
+  if (!baseScheme || baseScheme.revision !== value.schemeRevision)
     return { kind: "blocked", reason: "scheme_changed" };
+  // 生效方案读不到就不继续：基础方案不得替本群差异兜底（否则会放过本群已收紧的素材范围与参数）。
+  const scheme = readEffectiveQqScheme(orm, binding);
+  if (!scheme) return { kind: "blocked", reason: "scheme_changed" };
   const agent = getAgentRow(orm, value.agentId);
   if (agent?.isActive !== 1 || agent.configVersion !== value.agentConfigVersion)
     return { kind: "blocked", reason: "agent_changed" };
+  // 本群停用后连挑一次都不做：不花模型调用去选一张不允许使用的素材。
+  if (groupStickersDisabled(orm, binding)) return { kind: "none", reason: "capability_disabled" };
 
   const scope: QqConversationScope = {
     kind: "qq",
@@ -122,6 +138,8 @@ export async function selectQqSticker(
   };
   const selection = qqStickerSelectionForScheme(orm, {
     schemeId: value.schemeId,
+    // 显式带上本群绑定：候选按本群生效素材集合与表情参数裁剪，而不是按基础方案。
+    binding,
     scope,
     counts: stage.counts,
     nowSeconds: value.nowSeconds,
@@ -287,8 +305,12 @@ export function planQqPreparedReply(
   if (
     pick === null ||
     binding === null ||
+    // 换绑后草稿的本群作用域已经变了：不再按新绑定重新解释，降级为纯文字。
+    binding.schemeId !== prepared.snapshot.schemeId ||
     scheme === null ||
-    scheme.revision !== prepared.schemeRevision
+    scheme.revision !== prepared.schemeRevision ||
+    // 本群停用后的显式 stickerIds 与"选中的素材已经不可用"同一条语义：降级为纯文字，绝不照发。
+    groupStickersDisabled(orm, binding)
   ) {
     return planQqOutput({
       text: prepared.text,
@@ -301,6 +323,8 @@ export function planQqPreparedReply(
   }
   const selection = qqStickerSelectionForScheme(orm, {
     schemeId: scheme.id,
+    // 显式带上本群绑定：复验的那张素材按本群生效集合与参数判定，而不是按基础方案。
+    binding,
     scope: {
       kind: "qq",
       accountId: binding.accountId,

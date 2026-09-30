@@ -16,6 +16,7 @@ import {
 import type { Orm } from "../../db/repositories";
 import type { ModelGateway } from "../../llm/model-gateway";
 import { contextDumps } from "../../modules/memory-query";
+import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import { estimateTokens } from "../../services/token-estimate";
 import { failureCode } from "./failure-code";
 
@@ -46,6 +47,11 @@ export function createBotCompressionJob(options: {
   task: string;
   usage?: RunUsage;
   budget?: RunBudget;
+  /**
+   * 仅在任务**尚未开始**时判定的启动闸门（ADR0019 §13.1 B）：暂停与普通配置变化
+   * 拒绝排队中的任务，但不得在已经跑起来之后杀它。缺省＝不拒绝（测试与只读调用方）。
+   */
+  assertStartable?(): void;
   assertCurrent(): void;
   assertSources(sources: readonly SourceRef[]): void;
   now(): string;
@@ -61,10 +67,20 @@ export function createBotCompressionJob(options: {
   return {
     key: options.conversationId,
     async run(signal) {
+      // 先过启动闸门：暂停中的群不再有新的模型任务，排队任务在这里被拒；
+      // 已开始的任务只用下面的背景边界判定（暂停不杀在跑的任务）。
+      options.assertStartable?.();
+      // 飞行前冻结本群「历史摘要」纪元：停用后（哪怕随后恢复）这次压缩不得再写入。
+      // 中央叶子边界可能被省（standalone 装配），这里按捕获的纪元自足复验。
+      const capCheckpoint = new QqGroupCapabilityGuard(options.orm).assertLeaf(
+        options.owner,
+        "context.compress.events",
+      );
       const check = (refs: readonly SourceRef[]) => {
         signal.throwIfAborted();
         options.assertCurrent();
         options.assertSources(refs);
+        if (typeof capCheckpoint === "function") capCheckpoint();
       };
       check(sources);
       if (

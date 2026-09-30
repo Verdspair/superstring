@@ -11,9 +11,10 @@
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 import { pendingObservationCount } from "../db/qq-observation-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
-import { getAgent, type Orm } from "../db/repositories";
+import { DEFAULT_USER_ID, getAgent, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
 import { AppError } from "../errors";
+import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import { type QqConversationMemoryScope, qqConversationScopeOf } from "./qq-binding-contract";
 import { enqueueQqMemory } from "./qq-memory-enqueue";
 
@@ -41,7 +42,9 @@ function scopeOf(binding: typeof schema.qqBindings.$inferSelect): QqConversation
  *   * the global third-party switch must be on — a disabled feature must not spend
  *     model calls on observations that arrived before it was turned off;
  *   * the binding must have a count configured (off means off) and must not be paused;
- *   * the assistant must still exist and be active.
+ *   * the assistant must still exist and be active;
+ *   * 本群未停用「记忆整理」（ADR0019 §13.3 D/H）：停用的群在这里直接跳过，
+ *     不只靠入队处的复验兜底。
  *
  * A conversation that a gate rejects is skipped without aborting the others, and
  * `MEMORY_BUSY` is expected rather than exceptional: the queue allows one active job
@@ -62,12 +65,20 @@ export function scheduleQqMemory(orm: Orm, now?: string): QqMemoryScheduleResult
 
   let due = 0;
   let enqueued = 0;
+  const guard = new QqGroupCapabilityGuard(orm);
   for (const binding of bindings) {
     const batchSize = binding.memoryBatchSize;
     if (batchSize === null) continue;
     try {
       const agent = getAgent(orm, binding.agentId);
       if (agent.isActive !== 1) continue;
+      if (
+        !guard.allowed(
+          { kind: "qq_binding", id: binding.id, userId: DEFAULT_USER_ID, agentId: binding.agentId },
+          "memory_organize",
+        )
+      )
+        continue;
       const pending = pendingObservationCount(orm, scopeOf(binding), now);
       if (pending < batchSize) continue;
       due += 1;

@@ -1,7 +1,8 @@
 import type { ConversationAddressing } from "../../../shared/contracts/conversation";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { readQqBinding, readQqBindings } from "../../db/qq-binding-repository";
-import { effectiveQqTriggers, readQqScheme, schemeRhythm } from "../../db/qq-scheme-repository";
+import { readEffectiveQqScheme } from "../../db/qq-group-config-repository";
+import { effectiveQqTriggers, schemeRhythm } from "../../db/qq-scheme-repository";
 import { platformMessageWasSentByAssistant, readQqSends } from "../../db/qq-send-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
 import { lastQqSpeech } from "../../db/qq-speech-repository";
@@ -189,8 +190,9 @@ export class OneBot11Adapter implements ConversationIngress {
       report("SYSTEM_OBSERVATION", "skipped");
       return;
     }
+    // 本群差异随基础方案一起读：触发分类、合并窗口与冷却用生效值，不是基础值。
     const settings = readQqSettings(orm),
-      scheme = readQqScheme(orm, binding.schemeId);
+      scheme = readEffectiveQqScheme(orm, binding);
     if (settings.enabled !== 1) {
       report("FEATURE_OFF", "skipped");
       return;

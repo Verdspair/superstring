@@ -5,6 +5,7 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { readQqBinding } from "../db/qq-binding-repository";
+import { readEffectiveQqScheme } from "../db/qq-group-config-repository";
 import { attemptedUnreadMediaCount } from "../db/qq-media-repository";
 import { qqMemberLabels } from "../db/qq-member-repository";
 import {
@@ -14,7 +15,6 @@ import {
 } from "../db/qq-observation-repository";
 import {
   effectiveQqTriggers,
-  readQqScheme,
   schemeContext,
   schemePrompts,
   schemeReply,
@@ -199,7 +199,7 @@ export function prepareQqJudgement(
   const settings = readQqSettings(orm);
   if (settings.accountId !== binding.accountId)
     return { kind: "blocked", reason: "account_mismatch" };
-  const scheme = readQqScheme(orm, binding.schemeId);
+  const scheme = readEffectiveQqScheme(orm, binding);
   if (!scheme) return { kind: "blocked", reason: "scheme_missing" };
   const agent = getAgentRow(orm, binding.agentId);
   if (agent?.isActive !== 1) return { kind: "blocked", reason: "agent_unavailable" };

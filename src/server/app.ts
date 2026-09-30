@@ -35,6 +35,7 @@ import {
   type ModuleSourceResolver,
 } from "./modules/composition";
 import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
+import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import { type PermissionService, unconfiguredPermissions } from "./permissions/service";
 import {
   createQqStickerAnnotator,
@@ -92,8 +93,12 @@ export interface CreateAppOptions {
 export function createApp(opts: CreateAppOptions): Hono {
   const { business } = opts;
   const permissions = opts.permissions ?? unconfiguredPermissions;
-  // 权限与任务优先；会话证据在外部注入解析器之前，用持久存储复验（外部不能把撤权改判为可用）。
+  // 本群能力停用与生产共用同一个 guard；它是来源复验的第一层，只认 qq_group_capability，
+  // 其余 kind 返回 undefined 继续原链；外部注入解析器仍在最后，不能把内置撤权改判为可用。
+  const guard = business ? new QqGroupCapabilityGuard(business.orm) : undefined;
+  // 权限与任务优先；会话证据在外部注入解析器之前，用持久存储复验。
   const resolveSource: ModuleSourceResolver = (source, owner, at) =>
+    guard?.sourceAccess(source, owner) ??
     opts.tasks?.sourceAccess(source, owner) ??
     permissions.sourceAccess(source, owner) ??
     (business ? conversationEvidenceSourceAccess(business, source, owner, at) : undefined) ??
@@ -129,7 +134,9 @@ export function createApp(opts: CreateAppOptions): Hono {
         gateway,
         vision,
         repository: runRepository,
-        actionExecutor: new ActionExecutor(opts.permissions),
+        // 默认执行器与默认叶子边界注入同一个 guard；调用方注入的 runtime 保持原样。
+        actionExecutor: new ActionExecutor(opts.permissions, undefined, guard),
+        assertLeaf: guard ? (owner, specId) => guard.assertLeaf(owner, specId) : undefined,
       });
     const modules =
       opts.modules ??

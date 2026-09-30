@@ -28,6 +28,7 @@ import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { SqliteMemoryModule } from "../modules/memory-module";
 import { contextDumps, estimateMessages } from "../modules/memory-query";
+import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import { contentBlocks } from "./content-format";
 import { qqMemoryScopeKeyset } from "./memory-scope";
 import { checkQqTask, type QqTaskSnapshot } from "./qq-binding-contract";
@@ -61,9 +62,20 @@ export async function recallQqReplyMemory(
 ): Promise<{ material: QqPromptMaterial[]; read?: QqMemoryReadSnapshot; sources?: SourceRef[] }> {
   const { runtime, snapshot } = input;
   if (runtime.p5_config.retrieval_mode === "off") return { material: [] };
+  // 本群作用域的能力事实（与工具面同一份 guard）：停用「记忆读取」后不读，也不花模型调用；
+  // 读取途中被停用则在下方的 assertCurrent 里硬失败，已经读到的正文不得继续使用。
+  const guard = new QqGroupCapabilityGuard(orm);
+  const owner = {
+    kind: "qq_binding" as const,
+    id: snapshot.bindingId,
+    userId: DEFAULT_USER_ID,
+    agentId: runtime.agent_id,
+  };
+  if (!guard.allowed(owner, "memory_read")) return { material: [] };
   const keys = qqMemoryScopeKeyset(snapshot.access).read as readonly string[];
   const read = { keys, fingerprint: memoryFingerprintByScopeKeys(orm, runtime.agent_id, keys) };
   const assertCurrent = () => {
+    guard.assert(owner, "memory_read");
     const check = checkQqTask(
       snapshot,
       readQqBinding(orm, snapshot.bindingId),

@@ -13,6 +13,7 @@
 //   closeHarnesses();   // 或 afterEach(closeHarnesses)
 
 import { eq } from "drizzle-orm";
+import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { ModelPort } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
@@ -43,6 +44,7 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { QqGroupCapabilityGuard } from "../../src/server/permissions/qq-group-capabilities";
 import type {
   OneBotSendRequest,
   OneBotSendResult,
@@ -309,9 +311,15 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
   // 这一层是"进程内状态"：`restart()` 丢掉它、只留库——重启恢复场景就靠它把
   // "在内存里的宿主"和"已经落库的事实"分开。
   const build = () => {
+    // 与生产同构：本群 guard 既是执行边界，也是来源复验链的首项（runtime.ts 的 resolveDomainSource）。
+    // 动作结果带回来的 `qq_group_capability` 引用在下一轮读取时按同一份事实复验，不是只在投递口。
+    const guard = new QqGroupCapabilityGuard(orm);
     const runtime = new AgentRuntime({
       repository: runs,
       now,
+      // 读工具经 ActionExecutor 装配本群 guard——广告面、执行点与返回的
+      // 来源引用按同一份停用状态判定；不传权限面与并行上限＝沿用默认，行为不变。
+      actionExecutor: new ActionExecutor(undefined, undefined, guard),
       model: {
         complete: async () => '{"kind":"none"}',
         async *streamText() {
@@ -333,6 +341,8 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600 }),
       now,
       ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
+      // 与运行时同一份 guard：本群能力来源引用按当前纪元复验（停用或旧纪元一律不可用）。
+      resolveSource: (source, owner) => guard.sourceAccess(source, owner),
       // 与运行时同构：媒体工具按方案取提示词与帧参数；合成适配器只替换视觉模型本身。
       ...(mediaOn
         ? {
