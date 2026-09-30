@@ -515,6 +515,11 @@ export interface QqAccessState {
       attention?: QqBindingResponse["attention"];
       /** 记忆整理（2026-09-25）：攒够多少条观察自动整理一次；`null`＝关。 */
       memory_batch_size?: number | null;
+      /**
+       * 改绑且目标方案自带本群覆盖时的显式决定（ADR0019 §13.2 G）：`keep` 保留覆盖、`reset`
+       * 回到方案基线；缺省＝这不是一次「移动到其他方案」的保存，服务端不做方案切换处理。
+       */
+      scheme_change?: "keep" | "reset";
     },
   ) => Promise<boolean>;
   /**
@@ -537,3 +542,14 @@ export const qqAccessInitial = {
   qqAccessLoading: false,
   qqAccessSaving: false,
 };
+
+// ---- 本群配置 ------------------------------------------------------------------------------
+// 编辑态、稀疏改写的合并与动作都在 group-config-state.ts（含 initial）；这里转出类型，
+// 供单 store 装配与页面引用同一份契约。
+export type {
+  QqGroupConfigChange,
+  QqGroupConfigEditor,
+  QqGroupConfigGroupKey,
+  QqGroupConfigPatchValue,
+  QqGroupConfigState,
+} from "./group-config-state";

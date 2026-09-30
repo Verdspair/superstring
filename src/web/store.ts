@@ -20,6 +20,7 @@ import {
   createQqStorageActions,
 } from "./features/qq/actions";
 import { createQqDraftActions, emptyQqInputs } from "./features/qq/draft-state";
+import { createQqGroupConfigActions } from "./features/qq/group-config-state";
 import { createRunActions } from "./features/runs/slice";
 import { createBootstrapActions } from "./state/bootstrap";
 import { defaultEffects } from "./state/effects";
@@ -61,6 +62,7 @@ export const useSuperstringStore = create<SuperstringState>()((set, get) => ({
   ...createQqSchemeActions(set, get),
   ...createQqStorageActions(set, get),
   ...createQqAccessActions(set, get),
+  ...createQqGroupConfigActions(set, get),
   ...createQqDraftActions(set, get),
   ...createDesktopSettingsActions(set, get),
   setNotice: (patch) => set(patch),

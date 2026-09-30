@@ -1,8 +1,25 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { QqBindingResponse, QqConversationListItem } from "../../../shared/contracts/qq";
+import type {
+  QqBindingResponse,
+  QqConversationListItem,
+  QqSchemeResponse,
+  UpdateQqBindingRequest,
+} from "../../../shared/contracts/qq";
+import {
+  isEmptyQqGroupOverrides,
+  type QqGroupSchemeOverrides,
+} from "../../../shared/contracts/qq-group-config";
 import { Field } from "../../components/form-field";
 import { Button } from "../../components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
 import {
@@ -15,9 +32,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { parseAttentionMembers } from "../../features/qq/draft-state";
 import { useQqInput } from "../../features/qq/use-qq-input";
-import { translateNotice } from "../../i18n";
+import { msg, translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { BindingMemoryControls } from "../library/BindingMemoryControls";
+import { imageFields, participationFields, stickerFields } from "./scheme-fields";
 
 export const TRIGGER_LABELS = {
   direct_reply: "connections.directReplies",
@@ -25,6 +43,79 @@ export const TRIGGER_LABELS = {
   chiming_in: "connections.chimingIn",
   idle_topic: "connections.openingAQuietRoom",
 } as const;
+
+/** 换方案预览的字段名：与方案页/本群配置页同一批文案键，缺项退回契约字段名。 */
+const OVERRIDE_FIELD_LABELS: Record<string, string> = {
+  ...Object.fromEntries(
+    Object.entries(TRIGGER_LABELS).map(([key, label]) => [`triggers.${key}`, label]),
+  ),
+  ...Object.fromEntries(participationFields.map(([name, label]) => [`rhythm.${name}`, label])),
+  ...Object.fromEntries(
+    [...stickerFields, ...imageFields].map(([group, name, label]) => [`${group}.${name}`, label]),
+  ),
+  "rhythm.active_hours_enabled": "connections.allowedHours",
+  "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
+  "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
+  "context.judgement_message_limit": "connections.judgementRecentMessages",
+  "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
+  "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
+  "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
+  "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
+  "compression.watermark_trigger": "connections.watermarkTriggerMessages",
+  "compression.package_limit": "connections.watermarkPackageLimit",
+  "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
+  "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
+  "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
+  "sticker_collections.collection_ids": "connections.authorizedCollections",
+  "prompts.scene": "connections.sceneAndBehaviour",
+  "prompts.judge": "connections.judgementTask",
+  "prompts.reply": "connections.effectiveReplyTask",
+  "prompts.review": "connections.reviewTask",
+  "prompts.sticker": "connections.stickerTask",
+  "prompts.media": "connections.mediaNoteTask",
+  "prompts.compress": "connections.watermarkCompressionTask",
+  "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
+};
+
+/** 预览值的中性文本：数组按集合去序、装配冗余按百分比，其余 String()。 */
+const schemeChangeValueText = (group: string, name: string, value: unknown): string =>
+  group === "compression" && name === "headroom_ratio" && typeof value === "number"
+    ? `${Number((value * 100).toFixed(2))}%`
+    : Array.isArray(value)
+      ? value.map(String).sort().join("、")
+      : String(value);
+
+/** 换基础方案的逐字段预览：现有本群自定义值 → 目标基础方案值，全部差异都要出现。 */
+function schemeChangeRows(overrides: QqGroupSchemeOverrides, target: QqSchemeResponse) {
+  const targetBag = target as unknown as Record<string, Record<string, unknown> | undefined>;
+  const rows: SchemeChangePreview["rows"] = [];
+  for (const [group, fields] of Object.entries(overrides)) {
+    if (!fields || typeof fields !== "object") continue;
+    for (const [name, value] of Object.entries(fields)) {
+      if (value === undefined) continue;
+      const nextValue = targetBag[group]?.[name];
+      rows.push({
+        key: `${group}.${name}`,
+        label: OVERRIDE_FIELD_LABELS[`${group}.${name}`] ?? `${group}.${name}`,
+        current: schemeChangeValueText(group, name, value),
+        next: nextValue === undefined ? "—" : schemeChangeValueText(group, name, nextValue),
+      });
+    }
+  }
+  return rows;
+}
+
+type SchemeChangePatch = { agent_id: string; scheme_id: string } & Pick<
+  UpdateQqBindingRequest,
+  "scheme_change"
+>;
+
+interface SchemeChangePreview {
+  row: QqBindingResponse;
+  schemeId: string;
+  schemeName: string;
+  rows: { key: string; label: string; current: string; next: string }[];
+}
 
 function Assignment({
   agentId,
@@ -92,6 +183,87 @@ export function BindingEditor({
     source: binding ?? undefined,
   };
   const saving = state.qqAccessSaving;
+  const [preview, setPreview] = useState<SchemeChangePreview | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const clearChoice = () =>
+    setChoices((old) => {
+      const next = { ...old };
+      delete next[key];
+      return next;
+    });
+  const commitBinding = (row: QqBindingResponse, patch: SchemeChangePatch) => {
+    void state.updateQqBindingRow(row, patch).then((ok) => {
+      if (ok) clearChoice();
+    });
+  };
+  const confirmSchemeChange = (schemeChange: "keep" | "reset") => {
+    if (!preview) return;
+    commitBinding(preview.row, {
+      agent_id: preview.row.agent_id,
+      scheme_id: preview.schemeId,
+      scheme_change: schemeChange,
+    });
+    setPreview(null);
+  };
+  const save = async () => {
+    if (!choice.agentId || !choice.schemeId) return;
+    if (!binding) {
+      void state.bindQqConversation({ conversation, ...choice }).then((ok) => {
+        if (ok) clearChoice();
+      });
+      return;
+    }
+    const row = choice.source ?? binding;
+    if (
+      row.kind === "group" &&
+      row.agent_id === choice.agentId &&
+      row.scheme_id !== choice.schemeId
+    ) {
+      setPreviewBusy(true);
+      setPreviewError(null);
+      try {
+        const config = await state.apiClient.getQqGroupConfig(row.id);
+        const current = useSuperstringStore.getState();
+        const latest = current.qqBindings.find((item) => item.id === row.id);
+        // 读回的记录必须仍对应正在编辑的这行（绑定身份未变），晚到或错行的答案不进预览。
+        if (
+          config.binding.id !== row.id ||
+          config.binding.agent_id !== row.agent_id ||
+          config.binding.scheme_id !== row.scheme_id ||
+          !latest ||
+          latest.agent_id !== row.agent_id ||
+          latest.scheme_id !== row.scheme_id
+        ) {
+          setPreviewError(
+            msg("读取配置已被其他操作修改；草稿已保留。请刷新保存基线，核对后再次保存。"),
+          );
+          return;
+        }
+        if (isEmptyQqGroupOverrides(config.overrides)) {
+          commitBinding(row, { agent_id: row.agent_id, scheme_id: choice.schemeId });
+          return;
+        }
+        const target = current.qqSchemes.find((item) => item.id === choice.schemeId);
+        if (!target) {
+          setPreviewError(msg("操作失败，请重试。"));
+          return;
+        }
+        setPreview({
+          row,
+          schemeId: choice.schemeId,
+          schemeName: target.name,
+          rows: schemeChangeRows(config.overrides, target),
+        });
+      } catch (error) {
+        setPreviewError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setPreviewBusy(false);
+      }
+      return;
+    }
+    commitBinding(row, { agent_id: choice.agentId, scheme_id: choice.schemeId });
+  };
   const attentionValue = binding
     ? (attention[binding.id] ?? {
         source: binding,
@@ -130,35 +302,40 @@ export function BindingEditor({
             schemeId={choice.schemeId}
             onChange={(patch) => setChoices((old) => ({ ...old, [key]: { ...choice, ...patch } }))}
           />
-          {/* 直达不隐式保存改绑，未保存字段由导航守卫保护；目标是该方案的设置视图。 */}
-          <div>
-            <Button
-              variant="outline"
-              disabled={saving || state.qqSchemeSaving || !choice.schemeId}
-              onClick={() => state.requestQqSchemeNavigation(choice.schemeId, "settings")}
-            >
-              {t("schemes.studio.editScheme")}
-            </Button>
+          {/* 编辑方案直达的是共享方案本体：文案先说明会影响使用它的会话。 */}
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                disabled={saving || state.qqSchemeSaving || !choice.schemeId}
+                onClick={() => state.requestQqSchemeNavigation(choice.schemeId, "settings")}
+              >
+                {t("schemes.studio.editScheme")}
+              </Button>
+              {binding?.kind === "group" && (
+                <Button
+                  variant="outline"
+                  disabled={saving || state.qqGroupConfigSaving}
+                  onClick={() => state.openQqGroupConfig(binding.id)}
+                >
+                  {t("schemes.qq.groupConfig.controls.configure")}
+                </Button>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button
-              disabled={saving || !choice.agentId || !choice.schemeId}
-              onClick={() => {
-                const request = binding
-                  ? state.updateQqBindingRow(choice.source ?? binding, {
-                      agent_id: choice.agentId,
-                      scheme_id: choice.schemeId,
-                    })
-                  : state.bindQqConversation({ conversation, ...choice });
-                void request.then((ok) => {
-                  if (ok)
-                    setChoices((old) => {
-                      const next = { ...old };
-                      delete next[key];
-                      return next;
-                    });
-                });
-              }}
+              disabled={
+                saving ||
+                state.qqGroupConfigSaving ||
+                previewBusy ||
+                !choice.agentId ||
+                !choice.schemeId
+              }
+              onClick={() => void save()}
             >
               {t(binding ? "connections.saveBinding" : "connections.bind")}
             </Button>
@@ -187,6 +364,11 @@ export function BindingEditor({
               </Button>
             )}
           </div>
+          {previewError && (
+            <p role="alert" className="text-sm text-destructive">
+              {translateNotice(previewError)}
+            </p>
+          )}
           {binding && (
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal">
@@ -309,6 +491,55 @@ export function BindingEditor({
                 </Button>
               </TabsContent>
             </Tabs>
+          )}
+          {preview && (
+            <Dialog
+              open
+              onOpenChange={(open) => {
+                if (!open) setPreview(null);
+              }}
+            >
+              <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>
+                    {t("schemes.qq.groupConfig.scheme.confirmTitle", {
+                      "0": preview.schemeName,
+                    })}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {t("schemes.qq.groupConfig.scheme.confirmBody")}
+                  </DialogDescription>
+                </DialogHeader>
+                <ul className="space-y-2 text-sm">
+                  {preview.rows.map((row) => (
+                    <li
+                      key={row.key}
+                      className="flex flex-wrap items-center justify-between gap-2 border-b pb-1.5 last:border-b-0"
+                    >
+                      <span className="text-muted-foreground">{t(row.label)}</span>
+                      <span className="font-mono text-xs">
+                        {row.current} → {row.next}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setPreview(null)}>
+                    {t("connections.cancel")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={saving}
+                    onClick={() => confirmSchemeChange("reset")}
+                  >
+                    {t("schemes.qq.groupConfig.scheme.resetLabel")}
+                  </Button>
+                  <Button disabled={saving} onClick={() => confirmSchemeChange("keep")}>
+                    {t("schemes.qq.groupConfig.scheme.keepLabel")}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           )}
         </div>
       </SheetContent>

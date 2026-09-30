@@ -34,6 +34,10 @@ Connect a separately running OneBot 11 WebSocket service, such as NapCat, then b
 - Configure separate judgement and reply windows. Older messages outside the reply window accumulate before compression into bounded context packages; judgement does not consume those packages.
 - Pause a binding while continuing to observe incoming messages. Inspect why an attempt stayed silent, failed or did not reach confirmed delivery.
 
+Each bound group can also be enabled or disabled from its conversation card and from the open group conversation. A disabled group keeps receiving and storing messages, but the Agent stays silent and starts no new model work; summaries and memory organisation already running finish under the existing pause boundary. The controls show why a group cannot speak, such as the global QQ switch being off, a disconnected transport or a disabled Agent.
+
+**Group settings** opens a full settings page for one QQ account, group and Agent. Participation, response, context, media and prompt fields either follow the shared scheme or carry a group-only value; fields left on follow pick up later scheme updates, and saved values stay with that group and Agent, so rebinding does not inherit them and switching back restores them. System capabilities can only be set to "disabled in this group", which immediately constrains later calls and pending results; the page never grants access, and sticker choices can only narrow the collections the base scheme already authorises. Changing the base scheme previews the new base values and asks whether to keep the group values or follow the scheme — capability changes are not reset, and application-level settings such as data retention and model choice are not overridden here. Drafts, save/discard/cancel and conflict handling match scheme editing.
+
 QQ access has its own prerequisites:
 
 1. Install a QQ NT client and log in once. Take the supported QQ version from your OneBot implementation's own release notes ([NapCat releases](https://github.com/NapNeko/NapCatQQ/releases)); the combination validated here is NapCat v4.18.28 with QQ 9.9.26.44343.
@@ -136,6 +140,10 @@ Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号�
 - 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用方案，不会因此共享会话历史。
 - 分别配置判断和回复窗口。回复窗口外的旧消息达到水位后压成有限数量的上下文包；判断档不读取这些包。
 - 暂停绑定后继续观察新消息，并在执行记录里查看本轮为何沉默、失败或尚未确认送达。
+
+每个已绑定群还可以在会话卡片和打开的群会话顶部启用或停用。停用后群消息照常接收保存，但 Agent 不发言、不新增模型任务；已在运行的摘要与记忆整理按既有暂停边界完成。控件会如实显示群不能发言的原因，例如 QQ 总开关关闭、连接未就绪或 Agent 已停用。
+
+**本群配置**为单个 QQ 账号 × 群 × Agent 打开完整设置页。参与、回应、上下文、媒体与提示词各项要么跟随共享方案（之后的基础方案更新继续生效）、要么保存为本群值；值归属于该群与该 Agent——改绑不继承，切回时恢复。系统能力只能设为「本群停用」，停用立即约束后续调用与未提交结果；本页不会授予访问，素材集合也只能收窄基础方案已授权的集合。更换基础方案会先预览新基础值，并询问保留本群值还是全部跟随——能力停用项不随之重置，数据保留、模型选择等应用级设置不在本页覆盖。草稿、保存/放弃/取消与冲突处理与方案编辑一致。
 
 QQ 接入有自己的前置条件：
 

@@ -4,12 +4,19 @@ import type {
   QqSettingsResponse,
   QqStickerCollectionResponse,
 } from "../../../shared/contracts/qq";
-import { msg } from "../../i18n";
+import type { QqGroupCapability } from "../../../shared/contracts/qq-group-config";
+import { msg, translate } from "../../i18n";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { permissionSettingsDirty } from "../access/permission-state";
 import { webAccessDraftDirty } from "../access/web-access-state";
 import { dirtyPages } from "../agents/page-drafts";
 import { knowledgeModelDirty, knowledgeReadDirty, organizationDirty } from "../knowledge/types";
+import {
+  type QqGroupConfigEditor,
+  qqGroupConfigChanges,
+  qqGroupConfigDirty,
+  qqGroupConfigHasInvalidInputs,
+} from "./group-config-state";
 import {
   type QqStorageSettingsDraft,
   qqSchemeChanges,
@@ -170,6 +177,83 @@ export function invalidSchemeInputs(state: SuperstringState) {
   });
 }
 
+/** 字段文案键：与 group-config 页 FIELD_LABELS 同批；缺项退回契约字段名，与页面 labelOf 一致。 */
+const GROUP_FIELD_LABEL_KEYS: Record<string, string> = {
+  "triggers.direct_reply": "connections.directReplies",
+  "triggers.follow_up": "connections.ongoingConversation",
+  "triggers.chiming_in": "connections.chimingIn",
+  "triggers.idle_topic": "connections.openingAQuietRoom",
+  "rhythm.initiative_min_score": "connections.unpromptedSpeechThreshold010",
+  "rhythm.merge_window_seconds": "connections.mergeWindowSeconds",
+  "rhythm.reply_cooldown_seconds": "connections.speechCooldownSeconds",
+  "rhythm.hourly_speech_limit": "connections.hourlyCap",
+  "rhythm.idle_quiet_minutes": "connections.quietRoomThresholdMinutes",
+  "rhythm.max_recompute_count": "connections.maximumRecomputes",
+  "rhythm.max_sticker_count": "connections.stickersPerReply",
+  "rhythm.media_supplement_window_minutes":
+    "connections.waitAfterMediaFailsOnADirectMentionMinutes",
+  "rhythm.media_frame_count": "connections.animationFramesToSample",
+  "rhythm.media_max_dimension": "connections.sampledFrameLongEdgePx",
+  "rhythm.active_hours_enabled": "connections.allowedHours",
+  "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
+  "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
+  "stickers.sticker_min_repeat_minutes": "connections.shortestRepeatIntervalPerStickerMinutes",
+  "stickers.sticker_recent_avoid_count": "connections.avoidTheLastFew",
+  "context.judgement_message_limit": "connections.judgementRecentMessages",
+  "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
+  "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
+  "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
+  "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
+  "compression.watermark_trigger": "connections.watermarkTriggerMessages",
+  "compression.package_limit": "connections.watermarkPackageLimit",
+  "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
+  "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
+  "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
+  "sticker_collections.collection_ids": "connections.authorizedCollections",
+  "prompts.scene": "connections.sceneAndBehaviour",
+  "prompts.judge": "connections.judgementTask",
+  "prompts.reply": "connections.effectiveReplyTask",
+  "prompts.review": "connections.reviewTask",
+  "prompts.sticker": "connections.stickerTask",
+  "prompts.media": "connections.mediaNoteTask",
+  "prompts.compress": "connections.watermarkCompressionTask",
+  "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
+};
+
+/** 能力文案键：与 group-config 页 CAPABILITY_LABELS 同批。 */
+const GROUP_CAPABILITY_LABEL_KEYS: Record<QqGroupCapability, string> = {
+  memory_read: "schemes.qq.groupConfig.capability.memoryRead",
+  memory_organize: "schemes.qq.groupConfig.capability.memoryOrganize",
+  knowledge_read: "schemes.qq.groupConfig.capability.knowledgeRead",
+  web: "schemes.qq.groupConfig.capability.web",
+  media: "schemes.qq.groupConfig.capability.media",
+  stickers: "schemes.qq.groupConfig.capability.stickers",
+  tasks: "schemes.qq.groupConfig.capability.tasks",
+  research: "schemes.qq.groupConfig.capability.research",
+  code: "schemes.qq.groupConfig.capability.code",
+  mcp: "schemes.qq.groupConfig.capability.mcp",
+  skills: "schemes.qq.groupConfig.capability.skills",
+  history_summary: "schemes.qq.groupConfig.capability.historySummary",
+};
+
+const groupFieldLabel = (group: string, field: string): string =>
+  translate(GROUP_FIELD_LABEL_KEYS[`${group}.${field}`] ?? `${group}.${field}`);
+
+/** 布尔字段沿用页面「开/关」文案；其余原样（数字/百分比/文本/集合）。 */
+const groupValueText = (
+  editor: QqGroupConfigEditor,
+  group: string,
+  field: string,
+  raw: string,
+): string => {
+  const baseGroup = (
+    editor.source.base_scheme as unknown as Record<string, Record<string, unknown> | undefined>
+  )[group];
+  return typeof baseGroup?.[field] === "boolean"
+    ? translate(raw === "true" ? "connections.on" : "connections.off")
+    : raw;
+};
+
 export function qqDraftChanges(
   state: SuperstringState,
 ): { id: string; resource: string; changes: string[] }[] {
@@ -190,6 +274,73 @@ export function qqDraftChanges(
         ...invalidSchemeInputs(state).map(([field, raw]) => `${field}: ${raw}`),
         ...Object.entries(inputs.schemeInvalid).map(([field, error]) => `${field}: ${error}`),
       ],
+    });
+  const groupEditor = state.qqGroupConfigEditor;
+  if (groupEditor && qqGroupConfigDirty(groupEditor))
+    rows.push({
+      id: `group-config:${groupEditor.source.binding.id}`,
+      resource: `${msg("群")} · ${groupEditor.source.binding.peer_id}`,
+      changes: qqGroupConfigChanges(
+        groupEditor,
+        (id) => state.qqSchemes.find((row) => row.id === id)?.name,
+      ).map((change) => {
+        if (change.kind === "override") {
+          const label = groupFieldLabel(change.group, change.field);
+          if (change.before === change.after) {
+            // 与基线同值的钉住/取消：说「跟随↔自定义」，不渲染 X → X 这种读不出方向的等值行。
+            const pinned =
+              (
+                groupEditor.overrides as unknown as Record<
+                  string,
+                  Record<string, unknown> | undefined
+                >
+              )[change.group]?.[change.field] !== undefined;
+            return translate(
+              "schemes.qq.groupConfig.change.override",
+              label,
+              translate(
+                pinned
+                  ? "schemes.qq.groupConfig.followBadge"
+                  : "schemes.qq.groupConfig.customBadge",
+              ),
+              translate(
+                pinned
+                  ? "schemes.qq.groupConfig.customBadge"
+                  : "schemes.qq.groupConfig.followBadge",
+              ),
+            );
+          }
+          return translate(
+            "schemes.qq.groupConfig.change.override",
+            label,
+            groupValueText(groupEditor, change.group, change.field, change.before),
+            groupValueText(groupEditor, change.group, change.field, change.after),
+          );
+        }
+        if (change.kind === "raw")
+          return translate(
+            "schemes.qq.groupConfig.change.raw",
+            groupFieldLabel(change.group, change.field),
+            change.raw,
+          );
+        if (change.kind === "capability")
+          return translate(
+            change.disabled
+              ? "schemes.qq.groupConfig.change.capabilityOff"
+              : "schemes.qq.groupConfig.change.capabilityOn",
+            translate(GROUP_CAPABILITY_LABEL_KEYS[change.capability]),
+          );
+        // scheme 是 union 的最后一种：显式收束成返回，不设兜底分支。
+        return translate(
+          "schemes.qq.groupConfig.change.scheme",
+          change.schemeName,
+          translate(
+            change.reset
+              ? "schemes.qq.groupConfig.scheme.resetLabel"
+              : "schemes.qq.groupConfig.scheme.keepLabel",
+          ),
+        );
+      }),
     });
   if (state.qqStickerEditor && qqStickerEditorDirty(state.qqStickerEditor)) {
     const editor = state.qqStickerEditor;
@@ -319,7 +470,30 @@ export function createQqDraftActions(
         set({ error: msg("请先修正方案中的无效数字，再保存。") });
         return false;
       }
-      if (qqSchemeDirty(get().qqSchemeEditor) && !(await get().saveQqScheme())) return false;
+      // 本群配置的非法数字与方案同一条前置：修正前统一保存不写任何一步。
+      if (qqGroupConfigHasInvalidInputs(get().qqGroupConfigEditor)) {
+        set({ error: msg("请先修正方案中的无效数字，再保存。") });
+        return false;
+      }
+      const schemeWasDirty = qqSchemeDirty(get().qqSchemeEditor);
+      if (schemeWasDirty && !(await get().saveQqScheme())) return false;
+      if (schemeWasDirty) {
+        // 同一次保存里刚写过的方案：本群配置的基线若正是它，把已知写结果推进给它
+        // （已自定义字段保留、未改字段跟随新值），否则本群保存会拿旧 revision 自撞 409。
+        const savedScheme = get().qqSchemeEditor?.source;
+        if (savedScheme)
+          set((state) => {
+            const editor = state.qqGroupConfigEditor;
+            return editor && editor.source.base_scheme.id === savedScheme.id
+              ? {
+                  qqGroupConfigEditor: {
+                    ...editor,
+                    source: { ...editor.source, base_scheme: savedScheme },
+                  },
+                }
+              : {};
+          });
+      }
       if (qqStickerEditorDirty(get().qqStickerEditor) && !(await get().saveQqStickerEditor()))
         return false;
       // 保留设置是独立 PUT：只发 storage 字段，不携带方案/连接等其他草稿。
@@ -441,10 +615,15 @@ export function createQqDraftActions(
           patchInputs({ stickerRenaming: null });
         }
       }
+      // 本群配置是独立 PUT：只发这间群的稀疏改写与能力停用，不携带方案/模型/其他草稿；
+      // 409 时整份草稿原样保留，显式刷新后再试。
+      if (qqGroupConfigDirty(get().qqGroupConfigEditor) && !(await get().saveQqGroupConfig()))
+        return false;
       return true;
     },
     discardQqDrafts: () => {
       get().discardQqSchemeChanges();
+      get().discardQqGroupConfigChanges();
       set((state) => ({
         qqInputs: emptyQqInputs(),
         qqStickerEditor: state.qqStickerEditor

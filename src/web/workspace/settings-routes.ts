@@ -144,6 +144,14 @@ export const SETTINGS_ROUTES = [
     state: "transition",
     note: "schemes.bindings.note",
   },
+  // 本群配置：从某个群的「本群配置」入口打开；仅本群作用域，
+  // 路由登记在这里是为了归属方案空间与命令面板归属，不做成顶层目录入口。
+  {
+    id: "qq-group-config",
+    title: "schemes.qq.groupConfigTitle",
+    state: "transition",
+    note: "schemes.qq.groupConfigNote",
+  },
   // 运行（P7-d）：执行台账与任务与审批；执行设置已移归系统能力（P8）。
   {
     id: "execution-ledger",

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -318,5 +318,10 @@ it("separate group output targets show their own partial and unknown outcomes", 
   expect(screen.getByText("部分内容已送达，请查看各部分结果。")).toBeTruthy();
   expect(screen.getByText("sent-text")).toBeTruthy();
   expect(screen.getAllByText("发送结果待确认").length).toBeGreaterThan(0);
-  expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
+  for (const detail of details)
+    expect(
+      within(detail.closest("section") as HTMLElement).queryByRole("button", {
+        name: /重发|重试|Resend/,
+      }),
+    ).toBeNull();
 });

@@ -19,6 +19,7 @@ import { manualBindingTarget, qqConversationKey } from "../../features/qq/draft-
 import { translateNotice } from "../../i18n";
 import { formatDate } from "../../i18n/runtime";
 import { useSuperstringStore } from "../../store";
+import { QqGroupControls } from "../conversations/QqGroupControls";
 import { BindingEditor } from "./binding-editor";
 
 /** 绑定的会话如果还没有观察行，就用绑定本身合成一行，管理入口不因缺少观察而消失。 */
@@ -455,15 +456,20 @@ export function SchemeBindingsView({
                     {t("connections.nothingObservedYet")}
                   </span>
                 )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="ml-auto"
-                  disabled={busy}
-                  onClick={() => setEditing(binding)}
-                >
-                  {t("connections.manage")}
-                </Button>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  {/* 每行常显启停与「本群配置」：与目录卡片同一组件、同一写路径（只带 paused）。
+                      目录由本视图读取，行内不再回读整页事实——连接状态可能保持未知，启停按目录可用。 */}
+                  <QqGroupControls bindingId={binding.id} loadFacts={false} />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="min-h-8 whitespace-normal"
+                    disabled={busy}
+                    onClick={() => setEditing(binding)}
+                  >
+                    {t("connections.manage")}
+                  </Button>
+                </div>
               </li>
             );
           })}

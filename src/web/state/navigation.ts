@@ -20,6 +20,8 @@ function navigationBusy(get: () => SuperstringState) {
     state.qqStickerSaving ||
     // 存储管理（保留设置保存与清理预览/执行）同样持写：保存期间导航必须被拦住。
     state.qqStorageSaving ||
+    // 本群配置保存：同一条写保护，防止带着半份答案切走。
+    state.qqGroupConfigSaving ||
     state.settingsSaving ||
     state.permissionSaving ||
     state.webAccessSaving ||
@@ -84,6 +86,45 @@ async function performNavigation(
       feedback: "",
     });
     markLanded();
+    return;
+  }
+  if (pending.kind === "group-config") {
+    // 目标绑定已不在目录里（别处解绑/被删）：显式报错并把确认框留在原地，草稿不丢。
+    if (get().qqBindingsLoaded && !get().qqBindings.some((row) => row.id === pending.bindingId)) {
+      set({
+        pendingNavigation: pending,
+        navigationConfirmOpen: true,
+        error: msg("操作失败，请重试。"),
+      });
+      return;
+    }
+    if (discard) get().discardQqDrafts();
+    set({
+      pendingNavigation: null,
+      navigationConfirmOpen: false,
+      navigationConfirmMessage: "",
+      error: null,
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-group-config",
+      feedback: "",
+    });
+    markLanded();
+    // 同 id 但目录里的绑定已换 agent：先清指针，避免 select 的「同群短路」把旧 agent 的编辑器当已打开。
+    // 只有显式打开才发生重读；读取放在路由落地之后，失败时页面按「绑定 id + error」呈现并原位重试。
+    const landed = get();
+    const landedEditor = landed.qqGroupConfigEditor;
+    const catalogAgent = landed.qqBindingsLoaded
+      ? landed.qqBindings.find((row) => row.id === pending.bindingId)?.agent_id
+      : undefined;
+    if (
+      catalogAgent !== undefined &&
+      landedEditor !== null &&
+      landedEditor.source.binding.id === pending.bindingId &&
+      landedEditor.source.binding.agent_id !== catalogAgent
+    )
+      set({ qqGroupConfigBindingId: null });
+    await get().selectQqGroupConfig(pending.bindingId);
     return;
   }
   const dirtyBefore = get().dirty;
@@ -211,6 +252,7 @@ export function createNavigationActions(
   | "requestPageNavigation"
   | "requestAgentNavigation"
   | "requestQqSchemeNavigation"
+  | "openQqGroupConfig"
   | "confirmSaveAndContinue"
   | "confirmDiscardAndContinue"
   | "cancelPendingNavigation"
@@ -513,6 +555,42 @@ export function createNavigationActions(
       const pending: PendingNavigation =
         view === "settings" ? { kind: "scheme", id } : { kind: "scheme", id, view };
       if (qqDraftChanges(get()).length) {
+        set({
+          pendingNavigation: pending,
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
+        });
+        return;
+      }
+      void performNavigation(get, set, pending, false, markLanded);
+    },
+    openQqGroupConfig: (bindingId) => {
+      if (navigationBusy(get)) return;
+      const state = get();
+      // 目录已载入时先确认真实存在，避免丢弃草稿后进入空页；未载入则让页面读取如实报失败。
+      if (state.qqBindingsLoaded && !state.qqBindings.some((row) => row.id === bindingId)) {
+        set({ error: msg("操作失败，请重试。") });
+        return;
+      }
+      const editor = state.qqGroupConfigEditor;
+      const catalogRow = state.qqBindingsLoaded
+        ? state.qqBindings.find((row) => row.id === bindingId)
+        : undefined;
+      // 「同一目标」按稳定编辑身份判断：binding id + 目录里的 agent；同 id 换了 agent 视为新目标，
+      // 走守卫重读（只有显式打开才发生）。目录未载入时退回同 id，避免入口被挡住。
+      const sameTarget =
+        state.qqGroupConfigBindingId === bindingId &&
+        editor !== null &&
+        editor.source.binding.id === bindingId &&
+        (!state.qqBindingsLoaded || catalogRow?.agent_id === editor.source.binding.agent_id) &&
+        state.page === "settings" &&
+        state.settingsView === "workspace" &&
+        state.settingsRoute === "qq-group-config";
+      // 同一身份已打开：不重读（重读会推进脏基线），也不改路由。
+      if (sameTarget) return;
+      const pending: PendingNavigation = { kind: "group-config", bindingId };
+      // 同 route 换群同样走统一守卫：草稿未决前不换编辑器。
+      if (qqDraftChanges(state).length) {
         set({
           pendingNavigation: pending,
           navigationConfirmOpen: true,

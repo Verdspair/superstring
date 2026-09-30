@@ -15,6 +15,12 @@ import {
   type QqConversationListItem,
   type QqSchemeResponse,
 } from "../../src/shared/contracts/qq";
+import {
+  mergeQqGroupScheme,
+  type QqGroupConfigResponse,
+  QqGroupConfigResponseSchema,
+  type QqGroupSchemeOverrides,
+} from "../../src/shared/contracts/qq-group-config";
 import { api } from "../../src/web/api";
 import { qqDraftChanges } from "../../src/web/features/qq/draft-state";
 import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
@@ -142,6 +148,22 @@ const settings = {
   revision: 1,
 };
 
+/** 本群配置的真实读取形状：绑定镜像 + 基础/生效方案 + 稀疏差异 + 能力停用 + 记录 revision。 */
+const qqConfigOf = (
+  binding: QqBindingResponse,
+  overrides: QqGroupSchemeOverrides = {},
+): QqGroupConfigResponse => {
+  const base = scheme({ id: binding.scheme_id });
+  return QqGroupConfigResponseSchema.parse({
+    binding,
+    base_scheme: base,
+    effective_scheme: mergeQqGroupScheme(base, overrides),
+    overrides,
+    disabled_capabilities: [],
+    revision: 0,
+  });
+};
+
 function client(overrides: Partial<typeof api> = {}) {
   return {
     ...api,
@@ -155,6 +177,10 @@ function client(overrides: Partial<typeof api> = {}) {
     createQqBinding: vi.fn().mockResolvedValue(bindingOf(SCHEME_A, BINDING_A, "50005")),
     updateQqBinding: vi.fn().mockResolvedValue(bindingOf(SCHEME_A, BINDING_A, "30003")),
     updateQqScheme: vi.fn(),
+    // 同 Agent 换方案会先真实读取本群配置再弹预览（空差异＝直接提交）；用例按需覆盖。
+    getQqGroupConfig: vi
+      .fn()
+      .mockResolvedValue(qqConfigOf(bindingOf(SCHEME_A, BINDING_A, "30003"))),
     ...overrides,
   } as unknown as typeof api;
 }
@@ -610,10 +636,41 @@ describe("草稿的保存与放弃", () => {
     expect(qqDraftChanges(store.getState())).toEqual([]);
   });
 
+  it("私聊更换方案沿用绑定保存，不读取群聊专属配置", async () => {
+    const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+    const { fake } = await renderBoards({
+      listQqBindings: vi.fn().mockResolvedValue([row]),
+      listQqConversations: vi.fn().mockResolvedValue([conversation("30003", "private", BINDING_A)]),
+      getQqGroupConfig: vi.fn().mockRejectedValue(new Error("GROUP_ONLY")),
+    });
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    const sheet = screen.getByRole("dialog");
+    await userEvent.selectOptions(
+      within(sheet).getByLabelText(ui("connections.schemes")),
+      SCHEME_B,
+    );
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    await act(async () => {});
+    expect(fake.getQqGroupConfig).not.toHaveBeenCalled();
+    expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_A, {
+      agent_id: AGENT_A,
+      scheme_id: SCHEME_B,
+      expected_revision: 1,
+    });
+  });
+
   it("在编辑里选择另一方案改绑正常保存，且不夹带方案草稿", async () => {
     const { fake } = await renderBoards({
       listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
       listQqConversations: vi.fn().mockResolvedValue([conversation("30003", "group", BINDING_A)]),
+      // 目标方案带本群覆盖：保存先真实读取本群配置，由用户在预览里显式决定保留/重置。
+      getQqGroupConfig: vi.fn().mockResolvedValue(
+        qqConfigOf(bindingOf(SCHEME_A, BINDING_A, "30003"), {
+          context: { reply_token_budget: 8000 },
+        }),
+      ),
     });
     // 详情里另有未保存的方案草稿：绑定保存不得顺带提交它。
     const draft = qqSchemeEditorFrom(scheme());
@@ -624,14 +681,50 @@ describe("草稿的保存与放弃", () => {
     const schemeSelect = within(sheet).getByLabelText(
       ui("connections.schemes"),
     ) as HTMLSelectElement;
+    const previewTitle = ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" });
     await userEvent.selectOptions(schemeSelect, SCHEME_B);
     await userEvent.click(
       within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
     );
+    // 取消：不写任何绑定，草稿与目标都原样保留。
+    const preview = await screen.findByRole("dialog", { name: previewTitle });
+    await userEvent.click(within(preview).getByRole("button", { name: ui("connections.cancel") }));
     await act(async () => {});
-    expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_A, {
+    expect(fake.updateQqBinding).not.toHaveBeenCalled();
+    expect(fake.getQqGroupConfig).toHaveBeenCalledTimes(1);
+    // 重新保存并选择「保留本群自定义」：显式决定随同一 PUT 提交。
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    const keepPreview = await screen.findByRole("dialog", { name: previewTitle });
+    await userEvent.click(
+      within(keepPreview).getByRole("button", {
+        name: ui("schemes.qq.groupConfig.scheme.keepLabel"),
+      }),
+    );
+    await act(async () => {});
+    expect(fake.updateQqBinding).toHaveBeenNthCalledWith(1, BINDING_A, {
       agent_id: AGENT_A,
       scheme_id: SCHEME_B,
+      scheme_change: "keep",
+      expected_revision: 1,
+    });
+    // 同一入口再次选择并「全部跟随新方案」：第二个显式决定同样如实提交。
+    await userEvent.selectOptions(schemeSelect, SCHEME_B);
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    const resetPreview = await screen.findByRole("dialog", { name: previewTitle });
+    await userEvent.click(
+      within(resetPreview).getByRole("button", {
+        name: ui("schemes.qq.groupConfig.scheme.resetLabel"),
+      }),
+    );
+    await act(async () => {});
+    expect(fake.updateQqBinding).toHaveBeenNthCalledWith(2, BINDING_A, {
+      agent_id: AGENT_A,
+      scheme_id: SCHEME_B,
+      scheme_change: "reset",
       expected_revision: 1,
     });
     expect(fake.updateQqScheme).not.toHaveBeenCalled();

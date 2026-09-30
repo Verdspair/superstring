@@ -1134,6 +1134,8 @@ export function createQqAccessActions(
   return {
     loadQqAccess: async () => {
       if (get().qqAccessLoading) return;
+      // 本群配置保存进行中不开始整页读取：它的结果只会与同一条写入竞争，等保存方完成后重读。
+      if (get().qqGroupConfigSaving) return;
       set({ qqAccessLoading: true, error: null });
       try {
         await reload();
@@ -1180,7 +1182,7 @@ export function createQqAccessActions(
     },
     loadQqBindingDirectory: async (bindingId?: string) => {
       // 保存进行中不开始读取：结果只会与刚写入的内容竞争，等保存方完成后自己重读。
-      if (get().qqSchemeSaving || get().qqAccessSaving) return;
+      if (get().qqSchemeSaving || get().qqAccessSaving || get().qqGroupConfigSaving) return;
       const operation = beginAccessRead();
       const schemeReadId = get().qqSchemesReadId;
       set({
@@ -1371,14 +1373,22 @@ export function createQqAccessActions(
       });
     },
     updateQqBindingRow: async (binding, patch) => {
-      if (get().qqAccessSaving) return false;
+      // 本群配置保存进行中同样不开始：两个写会落在同一行绑定上，让保存方先落地，
+      // 冲突留给 CAS 与显式刷新如实呈现。
+      if (get().qqAccessSaving || get().qqGroupConfigSaving) return false;
       set({ qqAccessSaving: true, error: null, feedback: "" });
       invalidateAccessReads();
       try {
-        await get().apiClient.updateQqBinding(binding.id, {
+        // 方案切换的显式决定（keep/reset, ADR0019 §13.2 G）与绑定补丁走同一个 PUT；字段已是
+        // 真实 public 类型，缺省不携带＝这不是一次「移动到其他方案」的保存，不伪造决定。
+        const saved = await get().apiClient.updateQqBinding(binding.id, {
           ...patch,
+          ...(patch.scheme_change ? { scheme_change: patch.scheme_change } : {}),
           expected_revision: binding.revision,
         });
+        // 已知自身的写结果：只推进本群配置编辑器持有的 binding 基线（行/Agent/方案未变时），
+        // 不重读、不覆盖未保存的草稿；换方案/改绑由 sync 自己拒绝，留给 CAS 如实冲突后显式刷新。
+        get().syncQqGroupConfigBinding(saved);
         await reload();
         refreshSchemeUsage();
         set({ feedback: "已更新绑定" });

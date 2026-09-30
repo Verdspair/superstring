@@ -104,6 +104,8 @@ export function activeSpace(
       "qq-app-schemes",
       "qq-connection",
       "qq-storage",
+      // 本群配置是绑定详情页：归属方案空间，入口在群卡片上。
+      "qq-group-config",
     ].includes(state.settingsRoute)
   )
     return "schemes";

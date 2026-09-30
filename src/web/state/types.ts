@@ -22,6 +22,7 @@ import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/type
 import type { QqDraftState } from "../features/qq/draft-state";
 import type {
   QqAccessState,
+  QqGroupConfigState,
   QqSchemeState,
   QqStickerState,
   QqStorageState,
@@ -58,6 +59,7 @@ export type PendingNavigation =
   | { kind: "agent"; id: string | "__new__" }
   | { kind: "section"; section: SectionKey }
   | { kind: "scheme"; id: string; view?: QqSchemeView }
+  | { kind: "group-config"; bindingId: string }
   | { kind: "knowledge"; target: KnowledgeTarget };
 
 export interface ChatItem {
@@ -99,6 +101,7 @@ export interface SuperstringState
     QqSchemeState,
     QqStorageState,
     QqAccessState,
+    QqGroupConfigState,
     QqDraftState,
     DesktopSettingsState {
   pageEditor: import("../features/agents/page-drafts").PageEditor | null;
@@ -205,6 +208,8 @@ export interface SuperstringState
   requestConversationView: (view: ConversationView, scope?: ConversationScope) => void;
   requestAgentNavigation: (id: string | "__new__") => void;
   requestQqSchemeNavigation: (id: string, view?: QqSchemeView) => void;
+  /** 本群配置入口：打开某间群的完整设置页，一律走统一草稿守卫。 */
+  openQqGroupConfig: (bindingId: string) => void;
   confirmSaveAndContinue: () => Promise<void>;
   confirmDiscardAndContinue: () => Promise<void>;
   cancelPendingNavigation: () => void;

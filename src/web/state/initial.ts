@@ -18,6 +18,7 @@ import { directoryInitial } from "../features/conversations/directory-state";
 import { desktopSettingsInitial } from "../features/general/desktop-state";
 import { knowledgeInitial } from "../features/knowledge/types";
 import { emptyQqInputs } from "../features/qq/draft-state";
+import { qqGroupConfigInitial } from "../features/qq/group-config-state";
 import {
   qqAccessInitial,
   qqSchemeInitial,
@@ -49,6 +50,7 @@ export const initial = {
   ...qqSchemeInitial,
   ...qqStorageInitial,
   ...qqAccessInitial,
+  ...qqGroupConfigInitial,
   qqInputs: emptyQqInputs(),
   ...desktopSettingsInitial,
   pageEditor: null as import("../features/agents/page-drafts").PageEditor | null,

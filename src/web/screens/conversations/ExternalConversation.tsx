@@ -9,6 +9,7 @@ import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { ConversationIdentity } from "./ConversationIdentity";
 import { EventRecord } from "./EventRecord";
+import { QqGroupControls } from "./QqGroupControls";
 import { timelineRows } from "./timeline-projection";
 
 export function ExternalConversation({
@@ -35,21 +36,32 @@ export function ExternalConversation({
     <section className="flex h-full min-h-0 min-w-0 flex-col">
       {/* 消息页签隐藏时身份栏、刷新与底部说明都不参与渲染；消息时间线保持挂载。 */}
       {active && (
-        <ConversationIdentity
-          conversation={conversation}
-          agentName={agent?.name}
-          actions={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={history.loading}
-              aria-label={t("workspace.refresh_history")}
-              onClick={() => void history.refresh()}
-            >
-              <RefreshCw />
-            </Button>
-          }
-        />
+        <>
+          <ConversationIdentity
+            conversation={conversation}
+            agentName={agent?.name}
+            actions={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={history.loading}
+                aria-label={t("workspace.refresh_history")}
+                onClick={() => void history.refresh()}
+              >
+                <RefreshCw />
+              </Button>
+            }
+          />
+          {conversation.channel === "onebot11" && conversation.topology === "shared" && (
+            <div className="min-w-0 shrink-0 border-b px-4 py-2 md:px-7">
+              <QqGroupControls
+                bindingId={conversation.sourceId}
+                expectedAgentId={conversation.agentId}
+                className="w-full min-w-0"
+              />
+            </div>
+          )}
+        </>
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <section

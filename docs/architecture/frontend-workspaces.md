@@ -86,6 +86,10 @@ Scheme drafts survive refresh; saving replaces the whole scheme under
 compare-and-swap. Unknown usage is not zero and prevents deletion, as does known
 active usage.
 
+Every QQ group scheme card and open group conversation shows the group's enable/disable control and its Group settings entrance, both reading the same state. A disabled group keeps receiving and storing messages but produces no speech and starts no new model work; summaries and memory organisation already running may complete under the existing pause boundary. The group state never changes the global QQ switch, the Agent state or other groups, and blocking reasons are shown as they are.
+
+Group settings is a full page scoped to one QQ account, group and Agent. Participation, response, context, media and prompt fields either follow the base scheme — including later base updates — or hold a group-only value; sticker collection selection can only narrow the collections the base scheme already authorizes, and application-level settings such as retention and model choice have no group override. System capabilities offer only follow-higher-layers or disabled-in-this-group; disabling takes effect immediately for later calls and pending results, while ordinary parameter changes apply to the next new round and a retry of an existing turn reuses its frozen snapshot under the current disable and source checks. Choosing a different base scheme previews the change and requires an explicit keep-or-reset decision, with capability disables not reset. Saved overrides belong to the binding × Agent pair: rebinding does not inherit them and switching back restores them. Saves replace the whole group record under compare-and-swap across the binding, the current Agent, the target base scheme and the group configuration; drafts survive refresh and conflicts, and discard or cancel leaves stored values untouched.
+
 ### Extensions and layout
 
 Extensions contains only external MCP, Skills and External tool grants. It does not
@@ -121,6 +125,10 @@ QQ 应用三 Tab「方案 / 连接 / 数据与保留」分别对应 `qq-app-sche
 使用会话；添加可选已观察未绑定会话或手工号码，默认当前方案，Agent 与 scheme 均必需，
 不增加后端没有的解绑。次级 `scheme-bindings` 复用同一编辑器，不设平级绑定 Tab。
 同源草稿、所有权、保存/放弃/取消、整案 CAS、刷新保稿与未知/使用中禁删不变。
+
+每张 QQ 群方案卡片与打开的群会话顶部常显同源的「启用 / 停用」与「本群配置」入口。停用后本群消息照常接收保存，但不发言、不新增模型任务；已运行的摘要/记忆整理可按既有暂停边界完成。群启停不改变 QQ 总开关、Agent 状态与其他群，阻止原因如实展示。
+
+「本群配置」是仅作用于单个 QQ 账号 × 群 × Agent 的完整设置页：参与、回应、上下文、媒体与提示词各项跟随基础方案（含之后的基础方案更新）或保存本群值；素材集合只能收窄基础方案已授权集合，数据保留、模型选择等应用级设置没有本群覆盖。系统能力只有「跟随上层 / 本群停用」，停用立即约束后续调用与未提交结果；普通参数下一新轮生效，重试沿用冻结快照并复验当前停用与来源。更换基础方案先预览、需显式选择保留或重置，能力停用不随换方案重置。差异按绑定 × Agent 保存，改绑不继承、切回恢复；整份保存在绑定、当前 Agent、目标基础方案与群配置的比较交换（CAS）下提交；草稿刷新保留、冲突保稿，放弃/取消不改已存值。
 
 扩展仅含外置 MCP、Skills、外部工具授权，不含 QQ 连接/数据页，不显示 QQ 连接状态。
 管理正文全宽、`px-4`（左右16px），沿用原 tokens、主题、风格与组件，消息与 composer

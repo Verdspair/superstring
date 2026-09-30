@@ -32,6 +32,7 @@ import { useSuperstringStore } from "../../store";
 import { ConversationAvatar } from "./avatar";
 import { ConversationAvatarDialog } from "./avatar-control";
 import { CreateConversation } from "./CreateConversation";
+import { QqGroupControls } from "./QqGroupControls";
 import { RecordActions } from "./RecordActions";
 import { useDirectoryManagement } from "./use-directory-management";
 
@@ -362,58 +363,66 @@ function IndexRecord({
       {(trigger) => (
         <div
           className={cn(
-            "group mb-1 flex items-start rounded-xl border border-transparent p-1 transition-colors",
+            "group mb-1 rounded-xl border border-transparent p-1 transition-colors",
             selected ? "border-border bg-background shadow-xs" : "hover:bg-muted/60",
           )}
         >
-          <button
-            type="button"
-            className="min-w-0 flex-1 rounded-lg p-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            data-source-id={item.sourceId}
-            aria-current={selected ? "page" : undefined}
-            aria-label={item.title}
-            disabled={disabled}
-            onClick={onSelect}
-          >
-            <div className="flex items-center gap-2">
-              <ConversationAvatar conversation={item} value={item.avatar} className="size-9" />
-              <strong className="truncate text-sm font-medium">{item.title}</strong>
+          {/* QQ 群卡片常显启停与「本群配置」：独立一行放在标题/选择按钮上方，点控件不选中会话。 */}
+          {item.channel === "onebot11" && item.topology === "shared" && (
+            <div className="px-2 pb-0.5 pt-1.5">
+              <QqGroupControls bindingId={item.sourceId} expectedAgentId={item.agentId} />
             </div>
-            <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <Badge variant="outline" className="px-1 py-0 text-[9px]">
-                {item.channel === "web"
-                  ? "Web"
-                  : item.topology === "shared"
-                    ? t("workspace.onebot_group")
-                    : t("workspace.onebot_direct")}
-              </Badge>
-              <Bot className="size-3 shrink-0" />
-              <span className="truncate">{agentName ?? "Agent"}</span>
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-              <time dateTime={item.updatedAt}>
-                {new Date(item.updatedAt).toLocaleDateString(i18n.resolvedLanguage)}
-              </time>
-              {phase && phase !== "idle" && (
-                <span
-                  role="status"
-                  className={phase === "failed" ? "text-destructive" : "text-primary"}
-                >
-                  {t(
-                    phase === "failed"
-                      ? "workspace.run_failed"
-                      : phase === "reconciling"
-                        ? "workspace.result_unconfirmed"
-                        : "workspace.processing",
-                  )}
-                </span>
-              )}
-              {selected && (!phase || phase === "idle") && (
-                <Check className="size-3 text-primary" />
-              )}
-            </div>
-          </button>
-          {trigger}
+          )}
+          <div className="flex items-start">
+            <button
+              type="button"
+              className="min-w-0 flex-1 rounded-lg p-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-source-id={item.sourceId}
+              aria-current={selected ? "page" : undefined}
+              aria-label={item.title}
+              disabled={disabled}
+              onClick={onSelect}
+            >
+              <div className="flex items-center gap-2">
+                <ConversationAvatar conversation={item} value={item.avatar} className="size-9" />
+                <strong className="truncate text-sm font-medium">{item.title}</strong>
+              </div>
+              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Badge variant="outline" className="px-1 py-0 text-[9px]">
+                  {item.channel === "web"
+                    ? "Web"
+                    : item.topology === "shared"
+                      ? t("workspace.onebot_group")
+                      : t("workspace.onebot_direct")}
+                </Badge>
+                <Bot className="size-3 shrink-0" />
+                <span className="truncate">{agentName ?? "Agent"}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                <time dateTime={item.updatedAt}>
+                  {new Date(item.updatedAt).toLocaleDateString(i18n.resolvedLanguage)}
+                </time>
+                {phase && phase !== "idle" && (
+                  <span
+                    role="status"
+                    className={phase === "failed" ? "text-destructive" : "text-primary"}
+                  >
+                    {t(
+                      phase === "failed"
+                        ? "workspace.run_failed"
+                        : phase === "reconciling"
+                          ? "workspace.result_unconfirmed"
+                          : "workspace.processing",
+                    )}
+                  </span>
+                )}
+                {selected && (!phase || phase === "idle") && (
+                  <Check className="size-3 text-primary" />
+                )}
+              </div>
+            </button>
+            {trigger}
+          </div>
         </div>
       )}
     </RecordActions>

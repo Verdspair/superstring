@@ -126,6 +126,10 @@ import {
   type UpdateQqTransportRequest,
 } from "../shared/contracts/qq";
 import {
+  QqGroupConfigResponseSchema,
+  type UpdateQqGroupConfigRequest,
+} from "../shared/contracts/qq-group-config";
+import {
   type QqStorageCleanupRequest,
   QqStorageCleanupSelectionResponseSchema,
   type QqStorageItemsQuery,
@@ -763,6 +767,23 @@ export const api = {
     requestJson("/qq/bindings", QqBindingResponseSchema, json("POST", body)),
   updateQqBinding: (id: string, body: UpdateQqBindingRequest) =>
     requestJson(`/qq/bindings/${id}`, QqBindingResponseSchema, json("PUT", body)),
+  /**
+   * One QQ conversation's sparse scheme overrides plus its capability disables. The GET takes an
+   * optional signal so the editor can refresh explicitly; the PUT carries the whole intent —
+   * CAS revisions, sparse overrides, disabled capabilities, optional scheme switch.
+   */
+  getQqGroupConfig: (bindingId: string, signal?: AbortSignal) =>
+    requestJson(
+      `/qq/bindings/${encodeURIComponent(bindingId)}/config`,
+      QqGroupConfigResponseSchema,
+      { signal, cache: "no-store" },
+    ),
+  saveQqGroupConfig: (bindingId: string, body: UpdateQqGroupConfigRequest) =>
+    requestJson(
+      `/qq/bindings/${encodeURIComponent(bindingId)}/config`,
+      QqGroupConfigResponseSchema,
+      json("PUT", body),
+    ),
   /**
    * 「立即整理」(2026-09-25): organise this conversation's pending observations now. The answer is a
    * verdict — `nothing_to_organise`, `switch_off`, `paused`, `busy`, `agent_disabled` — not an error.
