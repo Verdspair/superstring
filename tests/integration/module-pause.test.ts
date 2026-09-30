@@ -137,7 +137,7 @@ describe("module soft pause", () => {
     expect(f.repository.get(second.id)?.status).toBe("completed");
   });
 
-  it("expires queued payloads even while task execution is paused", async () => {
+  it("interrupts expired queued tasks even while task execution is paused", async () => {
     const f = fixture();
     const task = f.enqueue();
     f.change({ modules: { tasks: false } });
@@ -145,6 +145,12 @@ describe("module soft pause", () => {
       .query("UPDATE agent_tasks SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?")
       .run(task.id);
     expect(await f.service.runOnce()).toBe(false);
+    // 到期 queued：安全 interrupt 为 failed/TASK_EXPIRED；当次仍保物理 payload，下一 pass 才清。
+    const interrupted = f.repository.get(task.id);
+    expect(interrupted?.status).toBe("failed");
+    expect(interrupted?.errorCode).toBe("TASK_EXPIRED");
+    expect(interrupted?.calls.every((call) => call.arguments !== null)).toBe(true);
+    f.repository.expire("2001-01-01T00:00:00.000Z");
     expect(f.repository.get(task.id)?.calls.every((call) => call.arguments === null)).toBe(true);
   });
 

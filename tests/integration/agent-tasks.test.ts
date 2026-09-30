@@ -364,6 +364,24 @@ describe("durable tool tasks", () => {
         ?.calls.every((call) => call.arguments === null && call.result === null),
     ).toBe(true);
   });
+  it("expires waiting approvals without letting the stale task block new ones", async () => {
+    const f = setup();
+    const task = f.enqueue();
+    await f.service.runOnce();
+    const waiting = f.repository.get(task.id) as AgentTask;
+    expect(waiting.status).toBe("waiting_approval");
+    f.h.db
+      .query("UPDATE agent_tasks SET expires_at=? WHERE id=?")
+      .run("2026-09-27T23:59:59.000Z", task.id);
+    // 过期后旧 payload 不能再用：批准 fail-closed 地终态化任务并给出 TASK_EXPIRED。
+    expect(f.service.approve(task.id, 1, waiting.calls[1].approvalRevision as string)).toBe(false);
+    expect(f.repository.get(task.id)?.status).toBe("failed");
+    expect(f.repository.get(task.id)?.errorCode).toBe("TASK_EXPIRED");
+    // 同一会话的新任务照常入队运行，不被过期任务挡住。
+    const next = f.enqueue("another-request");
+    await f.service.runOnce();
+    expect(f.repository.get(next.id)?.status).toBe("waiting_approval");
+  });
   it("cancels an in-flight write without accepting its late result or retrying", async () => {
     const f = setup();
     const entered = Promise.withResolvers<void>();

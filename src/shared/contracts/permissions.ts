@@ -75,12 +75,29 @@ export const ExecutionMaintenanceLimitsSchema = z.strictObject({
   memoryTimeoutSeconds: z.number().int().min(60).max(86_400).default(3_600),
   knowledgeTimeoutSeconds: z.number().int().min(60).max(86_400).default(3_600),
 });
+/** 追踪保留天数的契约边界：存储端点与冻结逻辑共用同一组来源。 */
+export const TELEMETRY_RETENTION_DEFAULT_DAYS = 14;
+export const TELEMETRY_RETENTION_MIN_DAYS = 1;
+export const TELEMETRY_RETENTION_MAX_DAYS = 3_650;
+export const ExecutionTelemetrySchema = z.strictObject({
+  /**
+   * 运行追踪（runtime_spans）的保留天数。新 trace 在开始时读取并冻结自己的到期帽；
+   * 已写入的 trace 不随此设置变化（继续取已写入到期与来源 TTL 的最小值）。
+   */
+  retentionDays: z
+    .number()
+    .int()
+    .min(TELEMETRY_RETENTION_MIN_DAYS)
+    .max(TELEMETRY_RETENTION_MAX_DAYS)
+    .default(TELEMETRY_RETENTION_DEFAULT_DAYS),
+});
 
 export const ExecutionPolicySchema = z.strictObject({
   research: z.boolean().default(false),
   code: z.boolean().default(false),
   modules: ExecutionModulesSchema.prefault({}),
   maintenance: ExecutionMaintenanceLimitsSchema.prefault({}),
+  telemetry: ExecutionTelemetrySchema.prefault({}),
   pausedTools: z.array(z.string().min(1).max(500)).default([]),
   tasks: ExecutionTaskLimitsSchema.prefault({}),
   researchLimits: ExecutionResearchLimitsSchema.prefault({}),

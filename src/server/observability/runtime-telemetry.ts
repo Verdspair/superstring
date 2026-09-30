@@ -7,10 +7,20 @@ import {
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import { TELEMETRY_RETENTION_DEFAULT_DAYS } from "../../shared/contracts/permissions";
 import type { RuntimeSpan } from "../../shared/contracts/runtime-observability";
 import { DEFAULT_USER_ID } from "../db/repositories";
 
 type Scalar = string | number | boolean | null;
+/** 契约缺省（permissions.ts 的 execution.telemetry.retentionDays）：没有配置源时的保留天数。 */
+export const DEFAULT_TRACE_RETENTION_DAYS = TELEMETRY_RETENTION_DEFAULT_DAYS;
+export interface RuntimeTelemetryOptions {
+  /**
+   * 有效追踪保留天数。新 trace 开始时读取一次并冻结，之后的设置变化不影响已开始的 trace；
+   * 已写入过的 trace（如重启后续写）继续取已写入到期与来源 TTL 的最小值。
+   */
+  retentionDays?: () => number;
+}
 export interface TraceMetadata {
   channel: RuntimeSpan["channel"];
   stage: RuntimeSpan["stage"];
@@ -45,12 +55,19 @@ export class RuntimeTelemetry {
   private readonly provider: BasicTracerProvider;
   private readonly meta = new Map<string, TraceMetadata>();
   // Keep the source lifetime while any span can still write, even after housekeeping deletes rows.
+  // `capAt` is this trace's frozen retention cap: written once when the trace first persists, so a
+  // later configuration change cannot shorten or extend a trace that has already started.
   private readonly activeTraces = new Map<
     string,
-    { spans: number; expiresAt?: string; expired: boolean }
+    { spans: number; expiresAt?: string; capAt?: string; expired: boolean }
   >();
+  private readonly retentionDays: () => number;
   private readonly tracer;
-  constructor(readonly db: Database) {
+  constructor(
+    readonly db: Database,
+    options: RuntimeTelemetryOptions = {},
+  ) {
+    this.retentionDays = options.retentionDays ?? (() => DEFAULT_TRACE_RETENTION_DAYS);
     const processor: SpanProcessor = {
       onStart: (span) => {
         const { traceId } = span.spanContext();
@@ -143,11 +160,24 @@ export class RuntimeTelemetry {
     });
     return parent;
   }
+  /**
+   * 物理清扫：只删完全停止且已到期的 trace。started/unknown 是管理端承诺的保全状态
+   * （cleanupScope.protectedTraceStatuses），60s 自动清扫与手动清理必须用同一判定，
+   * 否则“保护”只在按钮上成立；被删掉的 trace 记入 expired，后续写入不得复活。
+   */
   expire(now = new Date().toISOString()): void {
-    for (const lifetime of this.activeTraces.values()) {
-      if (lifetime.expiresAt && lifetime.expiresAt <= now) lifetime.expired = true;
-    }
-    this.safe(() => this.db.query("DELETE FROM runtime_spans WHERE expires_at<=?").run(now));
+    const deleted = new Set<string>();
+    this.safe(() => {
+      const rows = this.db
+        .query(
+          `DELETE FROM runtime_spans WHERE expires_at<=? AND trace_id NOT IN (
+          SELECT trace_id FROM runtime_spans WHERE status IN('started','unknown')) RETURNING trace_id`,
+        )
+        .all(now) as { trace_id: string }[];
+      for (const row of rows) deleted.add(row.trace_id);
+    });
+    for (const [traceId, lifetime] of this.activeTraces)
+      if (deleted.has(traceId)) lifetime.expired = true;
   }
   recover(): void {
     this.safe(() =>
@@ -170,21 +200,46 @@ export class RuntimeTelemetry {
       this.meta.get(ids.spanId) ?? JSON.parse(String(span.attributes.metadata));
     const started = date(span.startTime);
     const lifetime = this.activeTraces.get(ids.traceId);
-    const traceExpiry = this.db
-      .query("SELECT MIN(expires_at) AS expiry FROM runtime_spans WHERE trace_id=?")
-      .get(ids.traceId) as { expiry: string | null };
-    const expires = [
-      ...(traceExpiry.expiry ? [traceExpiry.expiry] : []),
-      ...(lifetime?.expiresAt ? [lifetime.expiresAt] : []),
-      new Date(Date.parse(started) + 14 * 86400_000).toISOString(),
-      ...(m.sources ?? []).flatMap((s) => (s.expiresAt ? [s.expiresAt] : [])),
-    ].sort()[0]!;
-    if (lifetime) {
-      lifetime.expiresAt = expires;
-      lifetime.expired ||= expires <= new Date().toISOString();
+    const traceState = this.db
+      .query(
+        `SELECT MIN(expires_at) AS expiry,COALESCE(MAX(status IN('started','unknown')),0) AS protected
+        FROM runtime_spans WHERE trace_id=?`,
+      )
+      .get(ids.traceId) as { expiry: string | null; protected: number };
+    // 保全：尚未结束、或落库状态为 started/unknown 的 span，与库里的 started/unknown 行一样
+    // 受保护——自动清扫（expire）与续写（persist）都不得清掉在跑/结果未知的证据。
+    const active = !ended || m.status === "started" || m.status === "unknown";
+    // Freeze a new trace's own retention cap the first time it persists. A trace that already has
+    // rows (resumed after a restart, or already written before this setting existed) keeps the MIN
+    // of its stored expiry and its sources instead; the current setting is only read for new
+    // traces, so it can neither shorten nor extend data written earlier.
+    if (lifetime && lifetime.capAt === undefined && traceState.expiry === null) {
+      if (span.parentSpanContext) {
+        // 父 span 的行已不存在（到期被清）：这是挂回旧 trace 的续写，不能复活成新 cap。
+        lifetime.expired = true;
+      } else {
+        lifetime.capAt =
+          lifetime.expiresAt ??
+          new Date(Date.parse(started) + this.retentionDays() * 86400_000).toISOString();
+      }
     }
-    if (lifetime?.expired || expires <= new Date().toISOString()) {
+    const expires =
+      [
+        ...(traceState.expiry ? [traceState.expiry] : []),
+        ...(lifetime?.expiresAt ? [lifetime.expiresAt] : []),
+        ...(lifetime?.capAt ? [lifetime.capAt] : []),
+        ...(m.sources ?? []).flatMap((s) => (s.expiresAt ? [s.expiresAt] : [])),
+      ].sort()[0] ??
+      // Unreachable while a lifetime exists; keeps `expires_at` non-null without consulting a
+      // setting the trace never captured.
+      new Date(Date.parse(started) + DEFAULT_TRACE_RETENTION_DAYS * 86400_000).toISOString();
+    if (lifetime) lifetime.expiresAt = expires;
+    if (
+      lifetime?.expired ||
+      (expires <= new Date().toISOString() && !active && traceState.protected === 0)
+    ) {
       this.db.query("DELETE FROM runtime_spans WHERE trace_id=?").run(ids.traceId);
+      if (lifetime) lifetime.expired = true;
       return;
     }
     const finished = ended ? date(span.endTime) : null;

@@ -308,7 +308,7 @@ describe("execution observability", () => {
       ).toBe(422);
     }
   });
-  it("does not resurrect an expired trace while its parent is still running", () => {
+  it("keeps expired active traces out of the sweep and never resurrects a swept trace", () => {
     const { telemetry, repository, h } = setup();
     const root = telemetry.start("root", { channel: "onebot11", stage: "run" });
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
@@ -320,12 +320,27 @@ describe("execution observability", () => {
       }),
     );
     telemetry.expire(expiresAt);
-    expect(h.db.query("SELECT count(*) AS n FROM runtime_spans").get()).toEqual({ n: 0 });
+    // started 的行是管理端承诺的保全对象：60s 自动清扫与续写都不能把在跑证据清掉。
+    expect(h.db.query("SELECT count(*) AS n FROM runtime_spans").get()).toEqual({ n: 2 });
     root.update({ code: "STILL_RUNNING" });
     root.within(() => telemetry.record("later", { channel: "onebot11", stage: "delivery" }));
     root.end();
-    expect(repository.page({}).summary.total).toBe(0);
+    // 运行已停止且来源已到期：行留到下一次物理清扫，不会被最后一次写入抹掉。
+    expect(h.db.query("SELECT count(*) AS n FROM runtime_spans").get()).toEqual({ n: 3 });
+    telemetry.expire(expiresAt);
     expect(h.db.query("SELECT count(*) AS n FROM runtime_spans").get()).toEqual({ n: 0 });
+    // 挂回已清理 trace 的续写不得复活它，也不得拿到新的保留 cap。
+    const continuation = telemetry.start("continuation", {
+      channel: "onebot11",
+      stage: "delivery",
+      parent: { traceId: root.traceId, spanId: root.spanId },
+    });
+    continuation.end();
+    expect(h.db.query("SELECT count(*) AS n FROM runtime_spans").get()).toEqual({ n: 0 });
+    expect(repository.page({}).summary.total).toBe(0);
+    // 没有父 span 的新 trace（“接不上”重开）不受影响。
+    telemetry.record("fresh", { channel: "onebot11", stage: "run" });
+    expect(h.db.query("SELECT count(*) AS n FROM runtime_spans").get()).toEqual({ n: 1 });
   });
   it("releases ended metadata even if diagnostic persistence fails", () => {
     const { telemetry, h } = setup();

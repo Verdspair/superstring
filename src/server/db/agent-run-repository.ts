@@ -13,6 +13,7 @@ import type {
 } from "../../shared/contracts/agent-run";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { estimateTokens } from "../services/token-estimate";
+import { DEFAULT_USER_ID } from "./repositories";
 
 type RunRow = {
   run_id: string;
@@ -49,6 +50,75 @@ type ContextRow = {
   output_recorded: number;
   status: StoredContext["status"];
 };
+
+/** 快照正文的存储统计/条目/清理（只含元数据，正文本身不进入这些结构）。 */
+export interface ContextStorageCounts {
+  live: number;
+  expired: number;
+  revoked: number;
+  withProtectedBody: number;
+  expiredProtectedBodies: number;
+}
+export interface ContextStorageItem {
+  kind: "context";
+  stepId: string;
+  runId: string;
+  at: string;
+  status: StoredContext["status"];
+  expiresAt: string | null;
+  expired: boolean;
+  sourceCount: number;
+  hasProtectedBody: boolean;
+  agentId: string | null;
+  conversationId: string | null;
+}
+export interface ContextStorageFilters {
+  status: "all" | "live" | "expired";
+  agentId?: string;
+  conversationId?: string;
+  beforeRowid?: number;
+  limit: number;
+}
+export interface ContextStoragePage {
+  items: ContextStorageItem[];
+  nextRowid: number;
+  hasMore: boolean;
+  summary: { total: number; live: number; expired: number };
+}
+export interface ContextCleanupSelection {
+  expired: number;
+  protected: number;
+  matched: number;
+  missing: number;
+  ids: string[];
+  truncated: boolean;
+}
+const CONTEXT_ROW_SELECT = `SELECT c.rowid AS cursorRowid,c.step_id AS stepId,s.run_id AS runId,
+  s.started_at AS at,c.status AS status,c.expires_at AS expiresAt,
+  (c.protected_messages IS NOT NULL OR c.protected_output IS NOT NULL) AS hasProtectedBody,
+  json_array_length(c.source_refs) AS sourceCount,r.agent_id AS agentId,
+  CASE WHEN r.owner_kind='conversation' THEN r.owner_id
+    WHEN r.owner_kind='web_turn' THEN (SELECT c2.id FROM conversations c2 JOIN turns t2 ON t2.session_id=c2.source_id
+      WHERE t2.id=r.owner_id AND c2.channel='web' LIMIT 1) END AS conversationId
+  FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id`;
+const CLEANUP_ID_LIST_LIMIT = 100;
+type ContextStorageRow = {
+  cursorRowid: number;
+  stepId: string;
+  runId: string;
+  at: string;
+  status: StoredContext["status"];
+  expiresAt: string | null;
+  hasProtectedBody: number;
+  sourceCount: number;
+  agentId: string | null;
+  conversationId: string | null;
+};
+
+/** principal 与来源相同的复验（与 canReadRun 的会话/用户边界一致，此处按行批量化）。 */
+function contextScope(userId: string): { where: string; params: string[] } {
+  return { where: "(r.user_id IS NULL OR r.user_id=?)", params: [userId] };
+}
 
 /** Synchronous writes commit before their associated inference or event publication. */
 export class AgentRunRepository {
@@ -362,5 +432,153 @@ export class AgentRunRepository {
         this.redactContext({ runId: handle.run_id, stepId: handle.step_id }, "expired");
     })();
     return handles.length;
+  }
+
+  /** 快照正文的有效/到期与物理残留清点；`expired` 按传入的服务端时间判断。 */
+  contextStorageCounts(now: string, userId = DEFAULT_USER_ID): ContextStorageCounts {
+    const scope = contextScope(userId);
+    const row = this.db
+      .query(`SELECT
+      COALESCE(SUM(c.status='exact' AND (c.expires_at IS NULL OR c.expires_at>?)),0) AS live,
+      COALESCE(SUM(c.expires_at IS NOT NULL AND c.expires_at<=?),0) AS expired,
+      COALESCE(SUM(c.status='revoked'),0) AS revoked,
+      COALESCE(SUM(c.protected_messages IS NOT NULL OR c.protected_output IS NOT NULL),0) AS withProtectedBody,
+      COALESCE(SUM((c.protected_messages IS NOT NULL OR c.protected_output IS NOT NULL)
+        AND c.expires_at IS NOT NULL AND c.expires_at<=?),0) AS expiredProtectedBodies
+      FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id
+      JOIN agent_runs r ON r.run_id=s.run_id WHERE ${scope.where}`)
+      .get(now, now, now, ...scope.params) as ContextStorageCounts;
+    return {
+      live: row.live,
+      expired: row.expired,
+      revoked: row.revoked,
+      withProtectedBody: row.withProtectedBody,
+      expiredProtectedBodies: row.expiredProtectedBodies,
+    };
+  }
+
+  /** 快照条目（只元数据）：正文是否残留、来源数量、到期与否；游标是快照行的 rowid。 */
+  contextStorageItems(
+    filters: ContextStorageFilters,
+    now: string,
+    userId = DEFAULT_USER_ID,
+  ): ContextStoragePage {
+    const scope = contextScope(userId);
+    const conditions = [scope.where];
+    const params: string[] = [...scope.params];
+    if (filters.agentId) {
+      conditions.push("r.agent_id=?");
+      params.push(filters.agentId);
+    }
+    if (filters.conversationId) {
+      conditions.push(`((r.owner_kind='conversation' AND r.owner_id=?) OR (r.owner_kind='web_turn' AND EXISTS(
+        SELECT 1 FROM conversations cf JOIN turns tf ON tf.session_id=cf.source_id
+        WHERE tf.id=r.owner_id AND cf.id=? AND cf.channel='web')))`);
+      params.push(filters.conversationId, filters.conversationId);
+    }
+    const where = conditions.join(" AND ");
+    const statusWhere =
+      filters.status === "expired"
+        ? " AND c.expires_at IS NOT NULL AND c.expires_at<=?"
+        : filters.status === "live"
+          ? " AND c.status='exact' AND (c.expires_at IS NULL OR c.expires_at>?)"
+          : "";
+    const rows = this.db
+      .query(
+        `SELECT * FROM (${CONTEXT_ROW_SELECT} WHERE ${where}${statusWhere}${
+          filters.beforeRowid !== undefined ? " AND c.rowid<?" : ""
+        }) ORDER BY cursorRowid DESC LIMIT ?`,
+      )
+      .all(
+        ...params,
+        ...(statusWhere ? [now] : []),
+        ...(filters.beforeRowid !== undefined ? [filters.beforeRowid] : []),
+        filters.limit + 1,
+      ) as ContextStorageRow[];
+    const summary = this.db
+      .query(`SELECT COUNT(*) AS total,COALESCE(SUM(live),0) AS live,COALESCE(SUM(expired),0) AS expired FROM (
+      SELECT c.step_id,(c.status='exact' AND (c.expires_at IS NULL OR c.expires_at>?)) AS live,
+      (c.expires_at IS NOT NULL AND c.expires_at<=?) AS expired
+      FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id
+      JOIN agent_runs r ON r.run_id=s.run_id WHERE ${where})`)
+      .get(now, now, ...params) as { total: number; live: number; expired: number };
+    const pageRows = rows.slice(0, filters.limit);
+    return {
+      items: pageRows.map((row) => ({
+        kind: "context" as const,
+        stepId: row.stepId,
+        runId: row.runId,
+        at: row.at,
+        status: row.status,
+        expiresAt: row.expiresAt,
+        expired: row.expiresAt !== null && row.expiresAt <= now,
+        sourceCount: row.sourceCount,
+        hasProtectedBody: row.hasProtectedBody === 1,
+        agentId: row.agentId,
+        conversationId: row.conversationId,
+      })),
+      nextRowid: pageRows.at(-1)?.cursorRowid ?? 0,
+      hasMore: rows.length > filters.limit,
+      summary,
+    };
+  }
+
+  /** 已到期且正文仍物理残留的快照＝手动清理目标；来源引用与布局身份不在清理范围。 */
+  contextCleanupSelection(
+    options: { now: string; userId?: string; ids?: readonly string[] },
+    userId = DEFAULT_USER_ID,
+  ): ContextCleanupSelection {
+    const scope = contextScope(options.userId ?? userId);
+    const conditions = [scope.where];
+    const params: string[] = [...scope.params];
+    if (options.ids) {
+      conditions.push(`c.step_id IN (${options.ids.map(() => "?").join(",")})`);
+      params.push(...options.ids);
+    }
+    const where = conditions.join(" AND ");
+    const counts = this.db
+      .query(`SELECT COUNT(*) AS total,COALESCE(SUM(c.expires_at IS NOT NULL AND c.expires_at<=?
+      AND (c.protected_messages IS NOT NULL OR c.protected_output IS NOT NULL)),0) AS expired
+      FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id
+      JOIN agent_runs r ON r.run_id=s.run_id WHERE ${where}`)
+      .get(options.now, ...params) as { total: number; expired: number };
+    const ids = this.db
+      .query(`SELECT c.step_id AS stepId FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id
+      JOIN agent_runs r ON r.run_id=s.run_id WHERE ${where}
+      AND c.expires_at IS NOT NULL AND c.expires_at<=?
+      AND (c.protected_messages IS NOT NULL OR c.protected_output IS NOT NULL)
+      ORDER BY c.rowid DESC LIMIT ?`)
+      .all(...params, options.now, CLEANUP_ID_LIST_LIMIT + 1) as { stepId: string }[];
+    return {
+      expired: counts.expired,
+      protected: 0,
+      matched: counts.total,
+      missing: options.ids ? Math.max(0, options.ids.length - counts.total) : 0,
+      ids: ids.slice(0, CLEANUP_ID_LIST_LIMIT).map((row) => row.stepId),
+      truncated: ids.length > CLEANUP_ID_LIST_LIMIT,
+    };
+  }
+
+  /** 清掉已到期快照的正文（与自动到期同一语义：status='expired'，触发器同时清 decision）。 */
+  purgeExpiredContextBodies(options: { now: string; userId?: string; ids?: readonly string[] }): {
+    contexts: number;
+  } {
+    const scope = contextScope(options.userId ?? DEFAULT_USER_ID);
+    const conditions = [scope.where];
+    const params: string[] = [...scope.params];
+    if (options.ids) {
+      conditions.push(`c.step_id IN (${options.ids.map(() => "?").join(",")})`);
+      params.push(...options.ids);
+    }
+    // RETURNING（而不是 changes()）：context_snapshots 的触发器也会改行，changes() 会把触发器
+    // 的改动一起计入；这里只数外层语句实际清理的快照。
+    const cleared = this.db
+      .query(`UPDATE context_snapshots SET protected_messages=NULL,protected_output=NULL,status='expired'
+      WHERE expires_at IS NOT NULL AND expires_at<=?
+      AND (protected_messages IS NOT NULL OR protected_output IS NOT NULL)
+      AND step_id IN (SELECT c.step_id FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id
+        JOIN agent_runs r ON r.run_id=s.run_id WHERE ${conditions.join(" AND ")}) RETURNING step_id`)
+      .all(options.now, ...params) as { step_id: string }[];
+    return { contexts: cleared.length };
   }
 }

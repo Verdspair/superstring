@@ -133,15 +133,18 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       path: options.businessDbPath ?? ":memory:",
       migrationSql: options.businessMigrationSql,
     });
-  const telemetry = new RuntimeTelemetry(business.db);
   const permissions = options.permissionConfigPath
     ? new PermissionService(new FilePermissionStore(options.permissionConfigPath))
     : unconfiguredPermissions;
+  // 有效执行配置（P7-c）：开关与数值分组都从这里读；消费方在各自的新 run/新任务/新领取时取值。
+  const execution = () => executionPolicy(permissions.snapshot().policy);
+  // 追踪保留天数在**新 trace 开始时**读取一次并冻结；已写入的 trace 不随之后的设置变化。
+  const telemetry = new RuntimeTelemetry(business.db, {
+    retentionDays: () => execution().telemetry.retentionDays,
+  });
   const webAccess = options.webAccessConfigPath
     ? new FileWebAccessConfigStore(options.webAccessConfigPath)
     : undefined;
-  // 有效执行配置（P7-c）：开关与数值分组都从这里读；消费方在各自的新 run/新任务/新领取时取值。
-  const execution = () => executionPolicy(permissions.snapshot().policy);
   /** QQ 通道的有效策略：配置给缺省，显式注入（测试与固定入口）优先。 */
   const botLimits = (): Partial<BotConversationPolicy> => {
     const effective = execution();
@@ -415,6 +418,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       externalActions,
       tasks,
       permissions: options.permissionConfigPath ? permissions : undefined,
+      telemetryRetentionDays: () => execution().telemetry.retentionDays,
       webAccess,
       mcpManagement,
       skillsRoot: options.skillRoot,

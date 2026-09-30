@@ -84,6 +84,8 @@ export interface CreateAppOptions {
   skillsRoot?: string;
   /** Web 会话的主循环步数（P7-c 执行配置）；函数形式＝每轮重新读取。 */
   webMaxSteps?: () => number;
+  /** 有效追踪保留天数（执行配置）；只影响新 trace，存储页据此显示当前值。 */
+  telemetryRetentionDays?: () => number;
 }
 
 /** Pure Hono factory: does not open databases, start workers or bind sockets. */
@@ -142,7 +144,10 @@ export function createApp(opts: CreateAppOptions): Hono {
         connectionPhase: () => opts.qqConnectionState?.().phase ?? "unavailable",
       }),
     );
-    app.route("/v2/observability", observabilityRoutes(business.db));
+    app.route(
+      "/v2/observability",
+      observabilityRoutes(business.db, { retentionDays: opts.telemetryRetentionDays }),
+    );
     app.route("/v2/deliveries", deliveryRoutes(business.db, { includeShared: true }));
     if (opts.permissions)
       app.route(
