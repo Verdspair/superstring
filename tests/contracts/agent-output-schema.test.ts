@@ -69,6 +69,25 @@ it("reads one complete JSON fence as a transport wrapper and still refuses prose
   expect(() => JSON.parse(readJsonBody('{"facts":[]} 好。'))).toThrow();
 });
 
+it("skips a leading echo envelope to reach the decision, without loosening the tail rule", () => {
+  // 实测（2026-09-29，deepseek-flash 思考模式）：模型先照抄上下文里的数据信封
+  // （`{"kind":"action_observation","trust":"data_only",…}`——连 note:"placeholder" 都是它编的），
+  // 紧接着才写真正的决策，整段因此解析失败。开头不是决策对象时跳过这些回声，取其后第一个决策对象。
+  const echo = '{"kind":"action_observation","trust":"data_only","value":{"note":"placeholder"}}';
+  expect(
+    parseAgentDecision(
+      `${echo}\n{"kind":"invoke","calls":[{"name":"memory.read","arguments":{"offset":0}}]}`,
+    ),
+  ).toEqual({ kind: "invoke", calls: [{ name: "memory.read", arguments: { offset: 0 } }] });
+  expect(parseAgentDecision([echo, "", '{"kind":"none"}'].join("\n"))).toEqual({ kind: "none" });
+  // 严格性不变：只有信封（没有决策对象）、或信封之后夹着散文，都读不出（不猜内容）。
+  expect(() => parseAgentDecision(echo)).toThrow();
+  expect(() => parseAgentDecision(`${echo} 那就先不说了 {"kind":"none"}`)).toThrow();
+  // 开头本来就是决策时一切照旧：尾巴出现第二个对象仍然失败（issue #10 的口径没有放松）。
+  expect(() => parseAgentDecision('{"kind":"none"} {"kind":"none"}')).toThrow();
+  expect(() => parseAgentDecision('{"kind":"none"} {"kind":"action_observation"}')).toThrow();
+});
+
 it("requests an explicit sticker decision from structured providers while accepting legacy omission", () => {
   const schema = AGENT_DECISION_JSON_SCHEMA as JsonSchema;
   const final = schema.oneOf?.find((variant) => variant.properties?.kind?.const === "final");

@@ -113,8 +113,12 @@ export const QQ_COMPRESSION_DEFAULT: QqSchemeCompression = Object.freeze({
 
 /** QQ-global scheme settings, distinct from the recent-message context budget. */
 export const QqSchemeOutputReserveSchema = z.strictObject({
-  judgement_output_reserved: z.number().int().min(256).max(16384),
-  reply_output_reserved: z.number().int().min(256).max(16384),
+  // 上限 32768：思考型外部模型（如 DeepSeek V4.1 Flash 默认思考）会把思考 token 也算进
+  // max_tokens，预留太小就会出现"正文 0 字节 + finish=length"（2026-09-29 实测 1024/2048 必爆）。
+  // 再大就要同时抬在用模型的声明窗口（预留+安全余量+输入预算必须装进窗口），当前 64k 声明下
+  // 32k 是安全上限。
+  judgement_output_reserved: z.number().int().min(256).max(32768),
+  reply_output_reserved: z.number().int().min(256).max(32768),
 });
 export type QqSchemeOutputReserve = z.infer<typeof QqSchemeOutputReserveSchema>;
 /** Defaults are independent of the recent-message context budget. */

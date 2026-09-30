@@ -1238,13 +1238,6 @@ export const qqSchemes = sqliteTable(
     promptReview: text("prompt_review").notNull().default(QQ_PROMPT_DEFAULTS.review),
     promptSticker: text("prompt_sticker").notNull().default(QQ_PROMPT_DEFAULTS.sticker),
     promptMedia: text("prompt_media").notNull().default(QQ_PROMPT_DEFAULTS.media),
-    // 0019: model output reserves, independent of the two recent-message budgets.
-    judgementOutputReserved: integer("judgement_output_reserved")
-      .notNull()
-      .default(QQ_MODEL_OUTPUT_RESERVE_DEFAULT.judgement_output_reserved),
-    replyOutputReserved: integer("reply_output_reserved")
-      .notNull()
-      .default(QQ_MODEL_OUTPUT_RESERVE_DEFAULT.reply_output_reserved),
     // 0020: §9.3's repetition rules. In minutes and in utterances respectively, because those
     // are the units the two rules are written in; `0` is a real setting in both ("no minimum
     // spacing" / "do not avoid recent ones"), which is why neither column is nullable.
@@ -1286,6 +1279,14 @@ export const qqSchemes = sqliteTable(
     // 声明顺序要跟表的真实顺序一致）。
     judgementMessageLimit: integer("judgement_message_limit").notNull().default(20),
     replyMessageLimit: integer("reply_message_limit").notNull().default(60),
+    // 0019 建的两档「输出预留」，0049 同样为抬高 CHECK 上限（16384 → 32768，思考型模型要用）
+    // 重建过这两列，因此也排在表尾。
+    judgementOutputReserved: integer("judgement_output_reserved")
+      .notNull()
+      .default(QQ_MODEL_OUTPUT_RESERVE_DEFAULT.judgement_output_reserved),
+    replyOutputReserved: integer("reply_output_reserved")
+      .notNull()
+      .default(QQ_MODEL_OUTPUT_RESERVE_DEFAULT.reply_output_reserved),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
@@ -1395,11 +1396,11 @@ export const qqSchemes = sqliteTable(
     ),
     check(
       "qq_scheme_judgement_output_reserved",
-      sql`${t.judgementOutputReserved} >= 256 AND ${t.judgementOutputReserved} <= 16384`,
+      sql`${t.judgementOutputReserved} >= 256 AND ${t.judgementOutputReserved} <= 32768`,
     ),
     check(
       "qq_scheme_reply_output_reserved",
-      sql`${t.replyOutputReserved} >= 256 AND ${t.replyOutputReserved} <= 16384`,
+      sql`${t.replyOutputReserved} >= 256 AND ${t.replyOutputReserved} <= 32768`,
     ),
     check(
       "qq_scheme_sticker_min_repeat",

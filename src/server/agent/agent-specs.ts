@@ -129,6 +129,34 @@ function leadingJsonObject(text: string): string | null {
   return null;
 }
 
+const DECISION_KINDS: ReadonlySet<string> = new Set(["invoke", "final", "none"]);
+
+/** 这段文本若是一个 `kind` 属于决策集合的 JSON 对象，返回它；否则 null。 */
+function decisionKindOf(segment: string | null): string | null {
+  if (segment === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(segment);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const kind = (parsed as { kind?: unknown }).kind;
+    return typeof kind === "string" && DECISION_KINDS.has(kind) ? kind : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 从开头起的紧邻顶层对象序列（只跳空白；遇到散文或未闭合对象即停）。 */
+function topLevelObjects(text: string): string[] {
+  const objects: string[] = [];
+  let cursor = 0;
+  for (;;) {
+    while (cursor < text.length && /\s/.test(text[cursor] ?? "")) cursor += 1;
+    const object = text[cursor] === "{" ? leadingJsonObject(text.slice(cursor)) : null;
+    if (object === null) return objects;
+    objects.push(object);
+    cursor += object.length;
+  }
+}
+
 /**
  * 模型正文的读取（决策与叶子解析器共用）：允许一条完整的 ``` 围栏——外部模型（实测 gemini 系）
  * 会把 JSON 包在围栏里，围栏是传输层包装、不是内容；其余照旧严格：只认开头那个完整 JSON 对象，
@@ -164,6 +192,20 @@ function normalizeInvoke(value: unknown): unknown {
 
 /** Transport wrappers are not decisions: accept one complete JSON fence, never prose extraction. */
 export function parseAgentDecision(raw: string): AgentDecision {
+  const text = stripToolCallMarkup(raw.trim());
+  const body = readJsonBody(text);
+  // 实测（2026-09-29，deepseek-flash 思考模式）：模型先照抄上下文里的数据信封
+  // （`{"kind":"action_observation","trust":"data_only",…}`，连 placeholder 都是它自己编的），
+  // 紧接着才写真正的决策——两个顶层对象连排，整段不再可解析。**只在开头不是决策对象时**，
+  // 跳过这些回声信封去找其后第一个**决策形状**的对象；散文、或其后没有决策对象 → 照旧失败
+  // （读不出 = 沉默，不猜内容）。
+  if (decisionKindOf(leadingJsonObject(body)) === null) {
+    for (const object of topLevelObjects(body).slice(1)) {
+      if (decisionKindOf(object) !== null)
+        return AgentDecisionSchema.parse(normalizeInvoke(JSON.parse(object)));
+    }
+  }
+  // 开头就是决策（或整段读不出）：尾巴规则不变——只放过空白与 `<` 起的传输层标记，第二个对象照旧失败。
   return AgentDecisionSchema.parse(
     normalizeInvoke(JSON.parse(readJsonBody(stripToolCallMarkup(raw.trim())))),
   );

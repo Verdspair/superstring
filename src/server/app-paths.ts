@@ -289,6 +289,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "0047_qq_context_limit_caps.sql",
     ),
     agentTasksMigration: path.join(resourceRoot, "migrations", "versions", "0048_agent_tasks.sql"),
+    qqOutputReserveCapsMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0049_qq_output_reserve_caps.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

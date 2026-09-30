@@ -97,7 +97,7 @@ describe("context limit caps (0047)", () => {
         "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,judgement_message_limit,reply_message_limit) VALUES ('old','旧方案',3,'then','then',137,321)",
       );
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 48 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 49 });
       expect(
         db
           .query(
@@ -158,8 +158,6 @@ describe("scheme identity", () => {
         "prompt_review",
         "prompt_sticker",
         "prompt_media",
-        "judgement_output_reserved",
-        "reply_output_reserved",
         "sticker_min_repeat_minutes",
         "sticker_recent_avoid_count",
         "media_supplement_window_minutes",
@@ -176,6 +174,9 @@ describe("scheme identity", () => {
         // 0047 为抬高上限重建过这两列，SQLite 只能追加，所以它们排在表尾。
         "judgement_message_limit",
         "reply_message_limit",
+        // 0049 为抬高上限（16384 → 32768）重建过这两列，同样排在表尾。
+        "judgement_output_reserved",
+        "reply_output_reserved",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();

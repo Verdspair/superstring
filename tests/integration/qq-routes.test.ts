@@ -204,7 +204,7 @@ describe("QQ scheme routes", () => {
       });
       for (const output_reserve of [
         { judgement_output_reserved: 255, reply_output_reserved: 2048 },
-        { judgement_output_reserved: 512, reply_output_reserved: 16385 },
+        { judgement_output_reserved: 512, reply_output_reserved: 32769 },
         { judgement_output_reserved: 512 },
       ]) {
         const response = await h.app.request(`/qq/schemes/${first.id}`, {

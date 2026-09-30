@@ -538,6 +538,10 @@ export class OneBotHost {
         {
           id: "onebot.initiative.evaluate",
           model: evaluation.model,
+          // 评分调用也要有输出预算：主决策走方案的输出预留，这里此前没给 max_tokens，
+          // 思考型模型（DeepSeek V4.1 Flash 默认思考）会吃厂商默认上限后空正文收场
+          // （2026-09-29 MODEL_OUTPUT_LIMIT）。用同一份判断预留。
+          maxTokens: reserves.judgement_output_reserved,
           limits: { inputUnits: evaluation.inputUnits },
           responseSchema: QQ_JUDGEMENT_RESPONSE_SCHEMA,
         },
