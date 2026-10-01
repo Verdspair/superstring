@@ -1,5 +1,5 @@
 import type { SourceRef } from "../../shared/contracts/evidence";
-import { loadSkillCatalog, readSkillResource, skillResourceRevision } from "./config";
+import { loadMergedSkillCatalog, readSkillEntryResource, skillResourceRevision } from "./config";
 
 /** Inspection must not throw: a missing or unreadable root, catalog or resource reads as "revoked". */
 export function skillSourceAccess(
@@ -7,11 +7,11 @@ export function skillSourceAccess(
   source: SourceRef,
 ): "available" | "revoked" | undefined {
   if (source.kind !== "skill_document" && source.kind !== "skill_resource") return undefined;
-  if (root === undefined) return "revoked";
   try {
-    const catalog = loadSkillCatalog(root);
+    const catalog = loadMergedSkillCatalog(root);
     if (source.kind === "skill_document") {
       const entry = catalog.skills.find((skill) => skill.metadata.name === source.id);
+      // 系统技能不需要外部 root；外置技能在 root 撤销（undefined）时整体失效。
       return entry && entry.revision === source.revision ? "available" : "revoked";
     }
     const slash = source.id.indexOf("/");
@@ -19,7 +19,7 @@ export function skillSourceAccess(
     const entry = catalog.skills.find((skill) => skill.metadata.name === source.id.slice(0, slash));
     if (!entry) return "revoked";
     const relative = source.id.slice(slash + 1);
-    const resource = readSkillResource(entry.dir, relative);
+    const resource = readSkillEntryResource(entry, relative);
     return skillResourceRevision(entry.revision, relative, resource.sha256) === source.revision
       ? "available"
       : "revoked";

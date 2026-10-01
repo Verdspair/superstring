@@ -4,6 +4,7 @@ import path from "node:path";
 import { Hono } from "hono";
 import { handleError } from "../../src/server/api/error-handler";
 import { skillsRoutes } from "../../src/server/api/skills";
+import { SYSTEM_SKILL_NAMES } from "../../src/server/skills/config";
 import {
   SkillCatalogResponseSchema,
   SkillDetailResponseSchema,
@@ -44,8 +45,18 @@ describe("standard skills management", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     const catalog = SkillCatalogResponseSchema.parse(await response.json());
-    expect(catalog.skills.map((entry) => entry.name)).toEqual(["demo", "plain"]);
-    expect(Object.keys(catalog.skills[0]).sort()).toEqual(["description", "name", "revision"]);
+    expect(catalog.skills.map((entry) => entry.name)).toEqual([
+      "demo",
+      "plain",
+      ...SYSTEM_SKILL_NAMES,
+    ]);
+    expect(Object.keys(catalog.skills[0]).sort()).toEqual([
+      "description",
+      "globalEnabled",
+      "name",
+      "origin",
+      "revision",
+    ]);
     expect(catalog.skills[0].revision).toMatch(/^[a-f0-9]{64}$/);
     expect(catalog.problems).toEqual([
       { skill: "invalid", code: "SKILL_METADATA_INVALID" },
@@ -103,7 +114,13 @@ describe("standard skills management", () => {
     const detail = await (await f.app.request("/v2/skills/demo")).json();
     expect(JSON.stringify(catalog)).not.toContain("RESOURCE-BODY-MARKER");
     expect(JSON.stringify(detail)).not.toContain("RESOURCE-BODY-MARKER");
-    expect(Object.keys(catalog.skills[0]).sort()).toEqual(["description", "name", "revision"]);
+    expect(Object.keys(catalog.skills[0]).sort()).toEqual([
+      "description",
+      "globalEnabled",
+      "name",
+      "origin",
+      "revision",
+    ]);
     expect(detail).not.toHaveProperty("resources");
     expect(detail).not.toHaveProperty("resource");
   });
@@ -117,10 +134,15 @@ describe("standard skills management", () => {
     expect(second.instructions).toBe(replacement);
     expect(second.revision).not.toBe(first.revision);
     skill(f.dir, "new-skill");
-    expect((await (await f.app.request("/v2/skills")).json()).skills).toHaveLength(2);
+    expect((await (await f.app.request("/v2/skills")).json()).skills).toHaveLength(
+      2 + SYSTEM_SKILL_NAMES.length,
+    );
     writeFileSync(path.join(f.dir, "demo", "SKILL.md"), "missing frontmatter");
     const catalog = await (await f.app.request("/v2/skills")).json();
-    expect(catalog.skills.map((entry: { name: string }) => entry.name)).toEqual(["new-skill"]);
+    expect(catalog.skills.map((entry: { name: string }) => entry.name)).toEqual([
+      "new-skill",
+      ...SYSTEM_SKILL_NAMES,
+    ]);
     expect(catalog.problems).toContainEqual({ skill: "demo", code: "SKILL_DOCUMENT_INVALID" });
     const invalid = await f.app.request("/v2/skills/demo");
     expect(invalid.status).toBe(409);
@@ -159,10 +181,8 @@ describe("standard skills management", () => {
     const f = workspace();
     skill(f.dir, "huge", "", "x".repeat(1_048_576));
     const catalog = await (await f.app.request("/v2/skills")).json();
-    expect(catalog).toEqual({
-      skills: [],
-      problems: [{ skill: "huge", code: "SKILL_FILE_TOO_LARGE" }],
-    });
+    expect(catalog.problems).toEqual([{ skill: "huge", code: "SKILL_FILE_TOO_LARGE" }]);
+    expect(catalog.skills.map((entry: { name: string }) => entry.name)).toEqual(SYSTEM_SKILL_NAMES);
     const response = await f.app.request("/v2/skills/huge");
     expect(response.status).toBe(409);
     const error = (await response.json()).error;
@@ -199,7 +219,9 @@ describe("standard skills management", () => {
   it("reports a missing catalog as empty and a non-directory catalog as unavailable", async () => {
     const f = workspace();
     rmSync(f.dir, { recursive: true });
-    expect(await (await f.app.request("/v2/skills")).json()).toEqual({ skills: [], problems: [] });
+    const absent = await (await f.app.request("/v2/skills")).json();
+    expect(absent.skills.map((entry: { name: string }) => entry.name)).toEqual(SYSTEM_SKILL_NAMES);
+    expect(absent.problems).toEqual([]);
     writeFileSync(f.dir, "synthetic non-directory");
     const response = await f.app.request("/v2/skills");
     expect(response.status).toBe(503);

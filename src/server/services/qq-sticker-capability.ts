@@ -1,13 +1,7 @@
-import { z } from "zod";
-
-/**
- * 带码抛出：运行记录与 span 只发布抛出点自己设的 `.code`（读不出码的失败
- * 会塌成 AGENT_FAILED，找不到是哪一个）。码写进消息不会生效——那不是码，是文本。
- */
-function codedError(code: string): Error {
-  return Object.assign(new Error(code), { code });
-}
-
+import {
+  STICKER_SEARCH_DESCRIPTION,
+  StickerSearchSchema,
+} from "../../shared/contracts/agent-action-descriptions";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ActionContext, BuiltInAction } from "../agent/built-in-actions";
 import { schemeStickerCollectionIds } from "../db/qq-scheme-repository";
@@ -18,6 +12,14 @@ import {
   qqStickerSelectionForScheme,
 } from "./qq-sticker-candidates";
 import { qqStickerUsable } from "./qq-sticker-contract";
+
+/**
+ * 带码抛出：运行记录与 span 只发布抛出点自己设的 `.code`（读不出码的失败
+ * 会塌成 AGENT_FAILED，找不到是哪一个）。码写进消息不会生效——那不是码，是文本。
+ */
+function codedError(code: string): Error {
+  return Object.assign(new Error(code), { code });
+}
 
 export function currentQqStickerCatalog(orm: Orm, request: QqStickerSelectionRequest) {
   const selection = qqStickerSelectionForScheme(orm, request);
@@ -47,26 +49,6 @@ export function currentQqStickerCatalog(orm: Orm, request: QqStickerSelectionReq
   };
 }
 
-const SearchSchema = z.strictObject({
-  query: z
-    .string()
-    .optional()
-    .describe(
-      "Keywords in name, description or tags; empty browses all authorized available assets.",
-    ),
-  limit: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe("Requested page size; actual results also fit the model context budget."),
-  cursor: z
-    .string()
-    .nullable()
-    .optional()
-    .describe("nextCursor from the previous page with the same query."),
-});
-
 /** Scoped discovery is read-only. The model never supplies an account, scheme or permission. */
 export function createQqStickerSearch(options: {
   orm: Orm;
@@ -86,20 +68,12 @@ export function createQqStickerSearch(options: {
   ) => void;
 }): BuiltInAction {
   return {
-    description: {
-      name: "sticker.search",
-      capability: "sticker.read",
-      // 只读检索：声明 effect 才进只读并行批与沙箱可绑定目录（否则按 write 保守分类）。
-      effect: "read",
-      description:
-        "Search authorized usable stickers; empty query browses. Results fit context and paginate. Use returned IDs; prefer recentlyUsed=false.",
-      parameters: z.toJSONSchema(SearchSchema),
-    },
+    description: STICKER_SEARCH_DESCRIPTION,
     async execute(arguments_, context) {
       const { signal } = context;
       signal.throwIfAborted();
       options.assertCurrent();
-      const input = SearchSchema.parse(arguments_);
+      const input = StickerSearchSchema.parse(arguments_);
       const catalog = currentQqStickerCatalog(options.orm, options.request());
       const terms = (input.query ?? "").toLocaleLowerCase().split(/\s+/).filter(Boolean);
       const matches = catalog.assets.filter((asset) => {

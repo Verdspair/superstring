@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import type { BrowserStateConfig } from "../shared/contracts";
+import { executionPolicy, toolExecutionEnabled } from "../shared/contracts/permissions";
+import type { ToolDirectoryEntry } from "../shared/contracts/tool-directory";
 import { ActionExecutor } from "./agent/action-executor";
 import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
 import type { BuiltInAction } from "./agent/built-in-actions";
@@ -22,6 +24,7 @@ import { qqRoutes } from "./api/qq";
 import { runRoutes } from "./api/runs";
 import { sessionRoutes } from "./api/sessions";
 import { skillsRoutes } from "./api/skills";
+import { toolDirectoryRoutes } from "./api/tools";
 import { webAccessRoutes } from "./api/web-access";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
@@ -35,12 +38,17 @@ import {
   type ModuleSourceResolver,
 } from "./modules/composition";
 import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
+import { systemToolDefinitions } from "./modules/tool-definitions";
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import { type PermissionService, unconfiguredPermissions } from "./permissions/service";
+import { projectToolDirectory } from "./permissions/tool-directory";
 import {
   createQqStickerAnnotator,
   type QqStickerAnnotator,
 } from "./services/qq-sticker-annotation";
+import { createSkillActions } from "./skills/actions";
+import { skillSourceAccess } from "./skills/sources";
+import { createWebActions } from "./web-access/actions";
 import type { WebAccessConfigStore } from "./web-access/config";
 
 export interface CreateAppOptions {
@@ -75,6 +83,7 @@ export interface CreateAppOptions {
   qqConnectionState?: () => { readonly phase: string; readonly reason?: string };
   /** 外部（MCP）动作：每轮现取；没有登记时返回空表。 */
   externalActions?: () => readonly BuiltInAction[];
+  toolDirectory?: () => readonly ToolDirectoryEntry[];
   permissions?: PermissionService;
   tasks?: AgentTaskService;
   /** 联网配置存储（web-access 单元）：给了就挂 `/v2/web-access` 的读取、保存与自检。 */
@@ -83,6 +92,7 @@ export interface CreateAppOptions {
   mcpManagement?: McpManagement;
   /** 技能目录根（P7-b）：给了就挂 `/v2/skills` 的目录与详情读取。 */
   skillsRoot?: string;
+  skillsEnabled?: () => boolean;
   /** Web 会话的主循环步数（P7-c 执行配置）；函数形式＝每轮重新读取。 */
   webMaxSteps?: () => number;
   /** 有效追踪保留天数（执行配置）；只影响新 trace，存储页据此显示当前值。 */
@@ -102,7 +112,23 @@ export function createApp(opts: CreateAppOptions): Hono {
     opts.tasks?.sourceAccess(source, owner) ??
     permissions.sourceAccess(source, owner) ??
     (business ? conversationEvidenceSourceAccess(business, source, owner, at) : undefined) ??
+    skillSourceAccess(opts.skillsRoot, source) ??
     opts.resolveSource?.(source, owner, at);
+  const webAccess = opts.webAccess;
+  const externalActions =
+    opts.externalActions ??
+    (() => [
+      ...createSkillActions(opts.skillsRoot),
+      ...createWebActions(webAccess ? { config: () => webAccess.read().config } : {}),
+    ]);
+  const conversationActions = () => {
+    const execution = executionPolicy(permissions.snapshot().policy);
+    return externalActions().filter(
+      (action) =>
+        toolExecutionEnabled(execution, action.description.name) &&
+        (!action.description.name.startsWith("skill.") || opts.skillsEnabled?.() !== false),
+    );
+  };
   const app = new Hono();
   app.onError(handleError);
 
@@ -157,13 +183,30 @@ export function createApp(opts: CreateAppOptions): Hono {
     );
     app.route("/v2/deliveries", deliveryRoutes(business.db, { includeShared: true }));
     if (opts.permissions)
-      app.route(
-        "/v2/permissions",
-        permissionRoutes(opts.permissions, opts.externalActions ?? (() => []), opts.tasks),
-      );
+      app.route("/v2/permissions", permissionRoutes(opts.permissions, externalActions, opts.tasks));
+    app.route(
+      "/v2/tools",
+      toolDirectoryRoutes(
+        opts.toolDirectory ??
+          (() => {
+            const execution = executionPolicy(permissions.snapshot().policy);
+            return projectToolDirectory(
+              systemToolDefinitions(execution),
+              externalActions(),
+              execution,
+            );
+          }),
+      ),
+    );
     if (opts.webAccess) app.route("/v2/web-access", webAccessRoutes(opts.webAccess));
     if (opts.mcpManagement) app.route("/v2/mcp", mcpRoutes(opts.mcpManagement));
-    if (opts.skillsRoot) app.route("/v2/skills", skillsRoutes(opts.skillsRoot));
+    app.route(
+      "/v2/skills",
+      skillsRoutes(
+        opts.skillsRoot,
+        opts.skillsEnabled ?? (() => executionPolicy(permissions.snapshot().policy).modules.skills),
+      ),
+    );
     app.route(
       "/",
       chatV2Routes({
@@ -176,7 +219,7 @@ export function createApp(opts: CreateAppOptions): Hono {
         modules: modules.bind,
         memory: modules.memory,
         resolveSource,
-        externalActions: opts.externalActions,
+        externalActions: conversationActions,
         tasks: opts.tasks,
         maxSteps: opts.webMaxSteps,
       }),
@@ -203,7 +246,7 @@ export function createApp(opts: CreateAppOptions): Hono {
         modules: modules.bind,
         memory: modules.memory,
         resolveSource,
-        externalActions: opts.externalActions,
+        externalActions: conversationActions,
         tasks: opts.tasks,
       }),
     );

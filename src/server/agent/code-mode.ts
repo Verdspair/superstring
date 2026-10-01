@@ -1,4 +1,7 @@
-import { z } from "zod";
+import {
+  CODE_RUN_SCHEMA,
+  codeRunDescription,
+} from "../../shared/contracts/agent-action-descriptions";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import {
   resolveAgentTraceScope,
@@ -31,7 +34,6 @@ export interface CodeMode {
   readonly action: BuiltInAction | null;
   readonly catalog: ToolCatalog;
 }
-const RunSchema = z.strictObject({ script: z.string().min(1).max(20_000) });
 
 function recoverToolError(error: unknown): CodeToolError {
   const code =
@@ -59,22 +61,14 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
     assertAvailable: () => {
       for (const target of consumed) target.assertAvailable?.();
     },
-    description: {
-      name: "code.run",
-      capability: "code.execute",
-      effect: "write",
-      description: `Run an async JavaScript function body in an isolated sandbox. Call await tools["name"]({arguments}) using only: ${catalog
-        .sandboxable()
-        .map((tool) => tool.name)
-        .join(
-          ", ",
-        )}. Independent calls may use Promise.all, bounded to ${limits.concurrency} concurrent calls. Ordinary tool exceptions reject with an error.code and may be caught or retried within the same limits; permission, source, cancellation and resource failures terminate execution. Unavailable result envelopes remain data to inspect. Return {conclusion: "short factual conclusion", refs?: []}; do not return raw tool data. No filesystem, network, imports, process or timers are available.`,
+    description: codeRunDescription(
+      catalog.sandboxable().map((tool) => tool.name),
+      limits.concurrency,
+    ),
 
-      parameters: z.toJSONSchema(RunSchema),
-    },
     async execute(arguments_, context) {
       context.signal.throwIfAborted();
-      const input = RunSchema.parse(arguments_);
+      const input = CODE_RUN_SCHEMA.parse(arguments_);
       const timeout = AbortSignal.timeout(limits.timeoutMs);
       const lifetime = new AbortController();
       const signal = AbortSignal.any([context.signal, timeout, lifetime.signal]);

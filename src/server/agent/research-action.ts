@@ -1,12 +1,13 @@
-import { z } from "zod";
+import {
+  RESEARCH_ACTION_DESCRIPTION,
+  ResearchSchema,
+} from "../../shared/contracts/agent-action-descriptions";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ActionExecutor } from "./action-executor";
 import type { AgentRuntime, ConversationInput } from "./agent-runtime";
 import type { AgentSpec } from "./agent-specs";
 import type { BuiltInAction } from "./built-in-actions";
 import { textMessage, uniqueSources } from "./context-engine";
-
-const ResearchSchema = z.strictObject({ question: z.string().min(1).max(8000) });
 
 /** 研究子任务的有效限额（P7-c 起由统一执行配置给出；这里是缺省值）。 */
 export interface ResearchLimits {
@@ -37,14 +38,7 @@ export function createResearchAction(options: {
   let started = 0;
   return {
     sandboxCallable: false,
-    description: {
-      name: "research.run",
-      capability: "research.read",
-      effect: "read",
-      description:
-        "Run one bounded read-only research subtask and return a short conclusion. At most two per parent run, no nesting, no external writes or messages. Its cost shares the parent budget.",
-      parameters: z.toJSONSchema(ResearchSchema),
-    },
+    description: RESEARCH_ACTION_DESCRIPTION,
     async execute(args, context) {
       const { question } = ResearchSchema.parse(args);
       // 一个动作实例只服务一个父 run，所以计数就在实例上。

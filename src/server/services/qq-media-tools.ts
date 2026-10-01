@@ -6,7 +6,10 @@
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, gt, lte, sql } from "drizzle-orm";
-import { z } from "zod";
+import {
+  QQ_MEDIA_TOOL_DESCRIPTIONS,
+  QQ_MEDIA_TOOL_SCHEMAS,
+} from "../../shared/contracts/agent-action-descriptions";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ActionContext, BuiltInAction, EvidenceResultFitter } from "../agent/built-in-actions";
 import type { ActionObservation } from "../agent/context-engine";
@@ -54,24 +57,6 @@ interface DescribeOutcome {
   readonly value: DescribeValue;
   readonly sources: SourceRef[];
 }
-
-const ListSchema = z.strictObject({
-  limit: z.number().int().min(1).max(50).optional().describe("Page size, at most 50."),
-  cursor: z
-    .string()
-    .min(1)
-    .max(4096)
-    .optional()
-    .describe("nextCursor from the previous page with the same limit."),
-});
-const NoteReadSchema = z.strictObject({
-  id: z.string().min(1).max(4096).describe("An id returned by media.list in this run."),
-  offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-  limit: z.number().int().min(1).max(4096).optional().describe("Page size in Unicode characters."),
-});
-const DescribeSchema = z.strictObject({
-  id: z.string().min(1).max(4096).describe("An image id returned by media.list in this run."),
-});
 
 const DEFAULT_LIST_LIMIT = 20;
 const DEFAULT_READ_LIMIT = 2048;
@@ -440,19 +425,12 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
   }
 
   const list: BuiltInAction = {
-    description: {
-      name: "media.list",
-      capability: "media.read",
-      effect: "read",
-      description:
-        "List images recorded in this conversation's journal, newest first. Returns {status, items:[{id,eventKey,index,kind,described,attempts}], nextCursor}; the fetch reference and note text are never returned. Pass nextCursor back for older pages; ids are usable only in this run by media.note.read and media.describe. ok with empty items and no nextCursor means there is nothing.",
-      parameters: z.toJSONSchema(ListSchema),
-    },
+    description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.list"],
     release: releaseRun,
     execute: async (arguments_, context) => {
       context.signal.throwIfAborted();
       assertWired(context);
-      const input = ListSchema.parse(arguments_);
+      const input = QQ_MEDIA_TOOL_SCHEMAS["media.list"].parse(arguments_);
       // 续页不建表：游标必须还活在本 run 的运行态里，跨 run 或伪造一律拒绝。
       const state = runState(context, input.cursor === undefined);
       const fits = captureFit(context, "media.list", arguments_);
@@ -582,19 +560,12 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
   };
 
   const noteRead: BuiltInAction = {
-    description: {
-      name: "media.note.read",
-      capability: "media.read",
-      effect: "read",
-      description:
-        "Read the stored description of an id returned by media.list in this run. {status:'ok', model, text, offset, nextOffset}: model names the model that wrote it; offset/limit count Unicode characters (limit <= 4096), follow nextOffset until null. {status:'undescribed', attempts} means no description exists yet — nothing is known about the picture. Read-only: never calls a model and never writes.",
-      parameters: z.toJSONSchema(NoteReadSchema),
-    },
+    description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.note.read"],
     release: releaseRun,
     execute: async (arguments_, context) => {
       context.signal.throwIfAborted();
       assertWired(context);
-      const input = NoteReadSchema.parse(arguments_);
+      const input = QQ_MEDIA_TOOL_SCHEMAS["media.note.read"].parse(arguments_);
       const state = runState(context, false);
       const fits = captureFit(context, "media.note.read", arguments_);
       boundary(state, context);
@@ -656,21 +627,14 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
   };
 
   const describe: BuiltInAction = {
-    description: {
-      name: "media.describe",
-      capability: "media.describe",
-      effect: "write",
-      description:
-        "Ask the configured vision model to read one listed image id (only images; only ids from media.list in this run; single-flight, reused from cache, at most two attempts ever). Returns {status,attempt,described} metadata only — read the text with media.note.read. A failed read is recorded but never announced in the conversation; a second attempt waits for a later addressed supplement. Cancels with the run.",
-      parameters: z.toJSONSchema(DescribeSchema),
-    },
+    description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.describe"],
     // 有副作用的工具不进沙箱绑定目录；串行执行，绝不与只读批并行。
     sandboxCallable: false,
     release: releaseRun,
     execute: async (arguments_, context) => {
       context.signal.throwIfAborted();
       assertWired(context);
-      const input = DescribeSchema.parse(arguments_);
+      const input = QQ_MEDIA_TOOL_SCHEMAS["media.describe"].parse(arguments_);
       const state = runState(context, false);
       const fits = captureFit(context, "media.describe", arguments_);
       boundary(state, context);

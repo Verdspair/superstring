@@ -35,10 +35,17 @@ export const SkillMetadataSchema = z.object({
 });
 export type SkillMetadata = z.infer<typeof SkillMetadataSchema>;
 
+/** 目录条目来源：`system` = 随包系统组件（不可删除、定义不可改），`external` = 用户技能目录。 */
+export const SkillOriginSchema = z.enum(["system", "external"]);
+export type SkillOrigin = z.infer<typeof SkillOriginSchema>;
+
 export const SkillCatalogEntrySchema = z.strictObject({
   name: NameSchema,
   description: descriptionSchema,
   revision: z.string(),
+  origin: SkillOriginSchema,
+  /** 全局 skills 模块停用时整目录灰显（只灰，不假 enabled）；系统组件仍保持在列。 */
+  globalEnabled: z.boolean(),
 });
 export type SkillCatalogEntry = z.infer<typeof SkillCatalogEntrySchema>;
 

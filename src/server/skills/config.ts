@@ -16,6 +16,7 @@ import {
   type SkillDetailResponse,
   type SkillMetadata,
   SkillMetadataSchema,
+  type SkillOrigin,
 } from "../../shared/contracts/skill";
 import { containsPath, PermissionError } from "../permissions/service";
 
@@ -24,8 +25,18 @@ const FRONTMATTER_MAX_BYTES = 65_536;
 const YAML_MAX_DEPTH = 32;
 const YAML_CORE_TAG = /^tag:yaml\.org,2002:(?:str|map|seq|null|bool|int|float)$/;
 
+// 随包系统技能：真实 SKILL.md 文件用 Bun 文本导入嵌进产物（构建时内联，无运行时文件依赖）。
+import systemEvidenceReading from "./builtin/system-evidence-reading/SKILL.md" with {
+  type: "text",
+};
+import systemMediaReading from "./builtin/system-media-reading/SKILL.md" with { type: "text" };
+import systemTaskExecution from "./builtin/system-task-execution/SKILL.md" with { type: "text" };
+import systemWebResearch from "./builtin/system-web-research/SKILL.md" with { type: "text" };
+
 export interface SkillEntry {
-  readonly dir: string;
+  /** 外置技能的目录；系统技能没有目录（文本来自随包文档），该字段不存在而不是假路径。 */
+  readonly dir?: string;
+  readonly origin: SkillOrigin;
   readonly metadata: SkillMetadata;
   readonly revision: string;
 }
@@ -218,11 +229,25 @@ export function loadSkill(dir: string): SkillEntry {
   const metadata = parseMetadata(document.instructions);
   if (metadata.name !== path.basename(document.dir))
     throw new PermissionError("SKILL_NAME_MISMATCH");
-  return { dir: document.dir, metadata, revision: document.revision };
+  return { origin: "external", dir: document.dir, metadata, revision: document.revision };
 }
 
-export function readSkillDocument(skill: SkillEntry): SkillDetailResponse {
-  const document = documentFile(skill.dir);
+/** 系统技能的文档以固定 revision 内嵌；读取只比对 revision，不需要也不制造目录。 */
+export function readSkillDocument(
+  skill: SkillEntry,
+): Omit<SkillDetailResponse, "origin" | "globalEnabled"> {
+  const instructions = skill.origin === "system" ? systemDocument(skill.metadata.name) : undefined;
+  if (instructions !== undefined) {
+    if (createHash("sha256").update(instructions).digest("hex") !== skill.revision)
+      throw new PermissionError("PERMISSION_REVISION_CHANGED");
+    return {
+      ...skill.metadata,
+      revision: skill.revision,
+      instructions,
+      bodyChars: [...instructions].length,
+    };
+  }
+  const document = documentFile(requireDir(skill));
   if (document.revision !== skill.revision)
     throw new PermissionError("PERMISSION_REVISION_CHANGED");
   return {
@@ -231,6 +256,30 @@ export function readSkillDocument(skill: SkillEntry): SkillDetailResponse {
     instructions: document.instructions,
     bodyChars: [...document.instructions].length,
   };
+}
+
+function requireDir(skill: SkillEntry): string {
+  if (skill.dir === undefined) throw new PermissionError("SKILL_FILE_INVALID");
+  return skill.dir;
+}
+
+const SYSTEM_DOCUMENTS: Record<string, string> = {
+  "system-evidence-reading": systemEvidenceReading,
+  "system-media-reading": systemMediaReading,
+  "system-task-execution": systemTaskExecution,
+  "system-web-research": systemWebResearch,
+};
+
+function systemDocument(name: string): string {
+  const instructions = SYSTEM_DOCUMENTS[name];
+  if (instructions === undefined) throw new PermissionError("SKILL_FILE_INVALID");
+  return instructions;
+}
+
+/** 随包系统技能目录：只提供 SKILL.md，没有附加文件，任何资源读取都是 SKILL_FILE_INVALID。 */
+export function readSkillEntryResource(entry: SkillEntry, relative: string): SkillResourceFile {
+  if (entry.origin === "system") throw new PermissionError("SKILL_FILE_INVALID");
+  return readSkillResource(requireDir(entry), relative);
 }
 
 export function loadSkillCatalog(root: string): SkillCatalog {
@@ -260,5 +309,42 @@ export function loadSkillCatalog(root: string): SkillCatalog {
       });
     }
   }
+  return { skills, problems };
+}
+
+/**
+ * 系统组件名被外置技能占用时不替换：系统条目保持在列，外置冒名者进 problems
+ * （SKILL_NAME_RESERVED），目录不会出现同名外部可读条目。
+ */
+export const SYSTEM_SKILL_NAMES: readonly string[] = Object.keys(SYSTEM_DOCUMENTS).sort();
+
+const systemEntries = (): SkillEntry[] =>
+  SYSTEM_SKILL_NAMES.map((name) => {
+    const instructions = systemDocument(name);
+    const metadata = parseMetadata(instructions);
+    if (metadata.name !== name) throw new PermissionError("SKILL_DOCUMENT_INVALID");
+    return {
+      origin: "system" as const,
+      metadata,
+      revision: createHash("sha256").update(instructions).digest("hex"),
+    };
+  }).sort((a, b) => a.metadata.name.localeCompare(b.metadata.name));
+
+export function loadMergedSkillCatalog(root?: string): SkillCatalog {
+  const skills = systemEntries();
+  const problems: { skill: string; code: string }[] = [];
+  const reserved = new Set<string>(SYSTEM_SKILL_NAMES);
+  if (root !== undefined) {
+    const external = loadSkillCatalog(root);
+    for (const entry of external.skills) {
+      if (reserved.has(entry.metadata.name)) {
+        problems.push({ skill: entry.metadata.name, code: "SKILL_NAME_RESERVED" });
+        continue;
+      }
+      skills.push(entry);
+    }
+    problems.push(...external.problems);
+  }
+  skills.sort((a, b) => a.metadata.name.localeCompare(b.metadata.name));
   return { skills, problems };
 }

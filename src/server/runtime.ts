@@ -206,7 +206,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   // 任务服务与 /v2/permissions 资源投影共用这份清单；模块开关与授权在各自消费点过滤。
   const externalActions = () => [
     ...(mcpHost?.current() ?? []),
-    ...(options.skillRoot ? createSkillActions(options.skillRoot) : []),
+    ...createSkillActions(options.skillRoot),
     ...createWebActions(webAccess ? { config: () => webAccess.read().config } : {}),
   ];
   const tasks = new AgentTaskService({
@@ -432,6 +432,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       webAccess,
       mcpManagement,
       skillsRoot: options.skillRoot,
+      skillsEnabled: () => execution().modules.skills,
       webMaxSteps: () => execution().loop.maxSteps,
       browserStateSecret:
         options.browserStateSecret ?? browserStateSecret(options.browserStateSecretPath),

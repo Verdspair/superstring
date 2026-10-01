@@ -4,27 +4,34 @@ import {
   SkillMetadataSchema,
 } from "../../shared/contracts/skill";
 import { PermissionError } from "../permissions/service";
-import { loadSkillCatalog, readSkillDocument } from "./config";
+import { loadMergedSkillCatalog, readSkillDocument } from "./config";
 
-export function skillCatalogView(root: string): SkillCatalogResponse {
-  const catalog = loadSkillCatalog(root);
+/** 目录带 flags：origin 区分系统/外置；globalEnabled=false 表示全局 skills 模块停用（灰显，不隐藏）。 */
+export function skillCatalogView(root?: string, globalEnabled = true): SkillCatalogResponse {
+  const catalog = loadMergedSkillCatalog(root);
   return {
     skills: catalog.skills
       .map((entry) => ({
         name: entry.metadata.name,
         description: entry.metadata.description,
         revision: entry.revision,
+        origin: entry.origin,
+        globalEnabled,
       }))
       .sort((a, b) => a.name.localeCompare(b.name)),
     problems: catalog.problems.map((problem) => ({ skill: problem.skill, code: problem.code })),
   };
 }
 
-export function skillDetail(root: string, name: string): SkillDetailResponse | null {
+export function skillDetail(
+  root: string | undefined,
+  name: string,
+  globalEnabled = true,
+): SkillDetailResponse | null {
   if (!SkillMetadataSchema.shape.name.safeParse(name).success) return null;
-  const catalog = loadSkillCatalog(root);
+  const catalog = loadMergedSkillCatalog(root);
   const entry = catalog.skills.find((candidate) => candidate.metadata.name === name);
-  if (entry) return readSkillDocument(entry);
+  if (entry) return { ...readSkillDocument(entry), origin: entry.origin, globalEnabled };
   const problem = catalog.problems.find((candidate) => candidate.skill === name);
   if (problem) throw new PermissionError(problem.code);
   return null;

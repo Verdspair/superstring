@@ -3,9 +3,9 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import type { BuiltInAction } from "../agent/built-in-actions";
 import { PermissionError } from "../permissions/service";
 import {
-  loadSkillCatalog,
+  loadMergedSkillCatalog,
   readSkillDocument,
-  readSkillResource,
+  readSkillEntryResource,
   type SkillCatalog,
   type SkillEntry,
   skillResourceRevision,
@@ -21,10 +21,11 @@ const ResourceSchema = z.strictObject({
 const EmptySchema = z.strictObject({});
 const RESOURCE_PAGE_DEFAULT = 2048;
 const catalogRevision = (catalog: SkillCatalog) =>
-  JSON.stringify(catalog.skills.map((skill) => [skill.dir, skill.metadata.name, skill.revision]));
+  JSON.stringify(catalog.skills.map((skill) => [skill.metadata.name, skill.revision]));
 
-export function createSkillActions(root: string): BuiltInAction[] {
-  const catalog = loadSkillCatalog(root);
+/** 统一目录（系统 + 外置）：root 可缺省；全局模块开关由 runtime 的动作过滤负责，这里不读权限。 */
+export function createSkillActions(root?: string): BuiltInAction[] {
+  const catalog = loadMergedSkillCatalog(root);
   if (!catalog.skills.length) return [];
   const revision = catalogRevision(catalog);
   const consumed = new Set<SkillEntry>();
@@ -40,7 +41,7 @@ export function createSkillActions(root: string): BuiltInAction[] {
     revision: documentRevision,
   });
   const assertCatalog = () => {
-    if (catalogRevision(loadSkillCatalog(root)) !== revision)
+    if (catalogRevision(loadMergedSkillCatalog(root)) !== revision)
       throw new PermissionError("PERMISSION_REVISION_CHANGED");
   };
   const assertAvailable = () => {
@@ -48,7 +49,7 @@ export function createSkillActions(root: string): BuiltInAction[] {
     else for (const skill of consumed) readSkillDocument(skill);
     for (const record of consumedResources.values()) {
       const document = readSkillDocument(record.skill);
-      const resource = readSkillResource(record.skill.dir, record.path);
+      const resource = readSkillEntryResource(record.skill, record.path);
       if (
         skillResourceRevision(document.revision, record.path, resource.sha256) !== record.revision
       )
@@ -123,7 +124,7 @@ export function createSkillActions(root: string): BuiltInAction[] {
         if (!skill) throw new PermissionError("SKILL_NOT_FOUND");
         assertAvailable();
         const document = readSkillDocument(skill);
-        const resource = readSkillResource(skill.dir, input.path);
+        const resource = readSkillEntryResource(skill, input.path);
         const text = [...resource.text];
         const offset = input.offset ?? 0;
         if (offset > text.length) throw new PermissionError("CONTEXT_INVALID_SELECTION");

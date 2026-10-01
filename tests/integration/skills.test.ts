@@ -81,6 +81,7 @@ describe("standard SKILL.md metadata", () => {
     const h = setup(text);
     const entry = loadSkill(h.dir);
     expect(entry).toEqual({
+      origin: "external",
       dir: h.dir,
       metadata: { name: "demo", description: "Test skill" },
       revision: createHash("sha256").update(text).digest("hex"),
@@ -390,7 +391,11 @@ describe("document-only skill actions", () => {
       expect(action.permission).toBeUndefined();
     }
     const listing = await h.executor.execute(actions[0], {}, context);
-    expect(listing.value).toMatchObject({ items: [{ name: "demo", description: "Test skill" }] });
+    expect(listing.value).toMatchObject({
+      items: expect.arrayContaining([
+        { name: "demo", description: "Test skill", revision: loadSkill(h.dir).revision },
+      ]),
+    });
     expect(JSON.stringify(listing)).not.toContain("private-skill-instructions");
     expect(Object.keys(loadSkill(h.dir).metadata).sort()).toEqual([
       "allowed-tools",
@@ -842,7 +847,10 @@ describe("skill source references", () => {
     const actions = createSkillActions(h.root);
     const revision = loadSkill(h.dir).revision;
     const catalog = await h.executor.execute(actionNamed(actions, "skill.catalog"), {}, context);
-    expect(catalog.sources).toEqual([{ kind: "skill_document", id: "demo", revision }]);
+    expect(catalog.sources.filter((source) => source.id === "demo")).toEqual([
+      { kind: "skill_document", id: "demo", revision },
+    ]);
+    expect(catalog.sources).toHaveLength(5);
     const read = await h.executor.execute(
       actionNamed(actions, "skill.read"),
       { name: "demo" },
