@@ -201,9 +201,11 @@ flowchart TD
   its cost and the original snapshot; the retry re-verifies sources, and a failed
   re-check refuses the retry without creating a new job automatically.
 - Shared OneBot schemes retain trigger/rhythm/context/media/prompt controls, usage
-  checks, whole-scheme saves, copying, and per-binding overrides. Program-defined
-  reply instructions remain read-only. Credentials are write-only; clearing a
-  credential remains an explicit operation.
+  checks, whole-scheme saves, copying, and per-binding overrides. Reply task
+  instructions are editable per scheme: while the stored text equals the default,
+  it derives from the per-speaker setting, and a saved custom task takes
+  precedence. Credentials are write-only; clearing a credential remains an
+  explicit operation.
 - Execution evidence preserves explicit read permission, source expiry, actual
   requested/resolved model, attempts and unknown delivery status. Filters change
   the displayed evidence, not the running Agent.
