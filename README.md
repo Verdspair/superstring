@@ -61,6 +61,8 @@ Voice transcription, full-video understanding, image generation and arbitrary ex
 
 The navigation is organized as **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library** and **Extensions**, with **Model services** and **Preferences** as separate entrances. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
 
+**Extensions** shows one Tools page listing every registered tool — the built-in system tools and any MCP tools — with its origin, read/write effect, global state and authorisation, and the Skills page lists both your installed skill documents and the guidance bundled with the application. Built-in components are shipped with the application and cannot be deleted or redefined; they grey out only when their global switch is off, never because one assistant lacks a grant. Tools that share a single authorisation resource edit that one grant. System capability pages keep their own functional settings and link to the concrete components they use.
+
 ![Execution waterfall with model calls and their evidence](docs/screenshots/runs-detail.png)
 
 English and Simplified Chinese, 16 themes, light/dark/system appearance, keyboard navigation and narrow layouts are supported. The original Superstring logo follows the selected theme throughout the workspace.
@@ -167,6 +169,8 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 ### 工作区与诊断
 
 导航按**对话、Agent、系统能力、方案、资料、扩展**组织，另设**模型服务**与**偏好**入口。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
+
+**扩展**中的「工具」页统一列出全部已注册工具——内置系统工具与 MCP 工具——逐项标注来源、读写、全局状态与授权；「技能」页同时列出你安装的技能文档与随应用提供的使用指南。内置组件随应用提供，不能删除或修改定义；只有全局开关关闭时才会灰显，不会因为某个助手缺少授权而变灰。共用同一授权资源的工具只编辑那一份授权。系统能力页保留各自的功能配置，并提供到具体所用组件的跳转。
 
 ![执行瀑布：模型调用与证据](docs/screenshots/runs-detail.png)
 

@@ -92,10 +92,16 @@ Group settings is a full page scoped to one QQ account, group and Agent. Partici
 
 ### Extensions and layout
 
-Extensions contains only external MCP, Skills and External tool grants. It does not
-contain QQ connection/data management or display QQ connection status. The display
-name and Puzzle icon do not rename the internal `connections` space or component
-directories, or change their business behavior.
+Extensions contains only external MCP, Skills and the unified Tools page. The Tools page lists
+every registered tool — built-in system tools and MCP tools — with its origin, effect, global
+state and authorisation summary; multiple tools that share one authorisation resource edit that
+single grant. Built-in definitions are shipped with the application: they cannot be deleted or
+redefined, and only their global switch greys them out, never a missing per-Agent grant. Bundled
+system document skills (standard `SKILL.md` guidance) appear in the Skills catalog as system
+components with the same rule. System capability pages keep their functional configuration and
+link to the concrete components they use. Extensions does not contain QQ connection/data
+management or display QQ connection status. The display name and Puzzle icon do not rename the
+internal `connections` space or component directories, or change their business behavior.
 
 Management views use the full available width with `px-4` (16px horizontal padding)
 and the existing tokens, themes, style and components. Message and composer widths
@@ -130,8 +136,12 @@ QQ 应用三 Tab「方案 / 连接 / 数据与保留」分别对应 `qq-app-sche
 
 「本群配置」是仅作用于单个 QQ 账号 × 群 × Agent 的完整设置页：参与、回应、上下文、媒体与提示词各项跟随基础方案（含之后的基础方案更新）或保存本群值；素材集合只能收窄基础方案已授权集合，数据保留、模型选择等应用级设置没有本群覆盖。系统能力只有「跟随上层 / 本群停用」，停用立即约束后续调用与未提交结果；普通参数下一新轮生效，重试沿用冻结快照并复验当前停用与来源。更换基础方案先预览、需显式选择保留或重置，能力停用不随换方案重置。差异按绑定 × Agent 保存，改绑不继承、切回恢复；整份保存在绑定、当前 Agent、目标基础方案与群配置的比较交换（CAS）下提交；草稿刷新保留、冲突保稿，放弃/取消不改已存值。
 
-扩展仅含外置 MCP、Skills、外部工具授权，不含 QQ 连接/数据页，不显示 QQ 连接状态。
-管理正文全宽、`px-4`（左右16px），沿用原 tokens、主题、风格与组件，消息与 composer
+扩展仅含外置 MCP、Skills 与统一「工具」页：工具页列出全部已注册工具（内置系统工具与外置
+MCP 工具），逐行标注来源、读写、全局状态与授权摘要；共用同一授权资源的多个工具只编辑那一份
+授权。内置定义随应用提供，不能删除或改定义，只有全局开关会使其灰显，缺某个助手的授权不会
+灰显。随包系统文档技能（标准 `SKILL.md` 指南）以「系统组件」身份出现在技能目录，规则相同。
+系统能力页保留各自的功能配置，并提供到具体组件的跳转。扩展不含 QQ 连接/数据页，不显示 QQ
+连接状态。管理正文全宽、`px-4`（左右16px），沿用原 tokens、主题、风格与组件，消息与 composer
 宽度不变；复用面板、刷新机制与运行追踪视图，各视图保留自己的真实刷新。
 入口迁移不改变后端契约、默认值、权限或业务。
 
