@@ -83,9 +83,9 @@ export const SETTINGS_ROUTES = [
   },
   {
     id: "tool-grants",
-    title: "connections.grants.title",
+    title: "connections.tools.title",
     state: "transition",
-    note: "connections.grants.description",
+    note: "connections.tools.description",
   },
   // 系统能力（P8）：独立一级目录；内置能力在此登记，联网与执行设置从接入、运行移归此处。
   {

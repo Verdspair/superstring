@@ -170,7 +170,7 @@ describe("connection workspace entry", () => {
   it.each([
     ["mcp-servers", "connections.mcp.title"],
     ["skill-catalog", "connections.skills.title"],
-    ["tool-grants", "connections.grants.title"],
+    ["tool-grants", "connections.tools.title"],
   ] as const)("renders the %s route as its own selected tab", async (route, tabKey) => {
     await renderWorkspace(route);
     expect(screen.getByRole("tab", { selected: true }).textContent).toBe(i18n.t(tabKey));
@@ -278,7 +278,13 @@ describe("skills panel", () => {
     }
   });
 
-  const entry = { name: "demo", description: "Demo skill", revision: "rev" };
+  const entry = {
+    name: "demo",
+    description: "Demo skill",
+    revision: "rev",
+    origin: "external" as const,
+    globalEnabled: true,
+  };
   const body = "# Demo\n\nBody text\n\n[Reference](references/guide.md)";
   const detail: SkillDetailResponse = {
     ...entry,
@@ -609,7 +615,7 @@ describe("tool grants", () => {
       <ToolGrantsPanel scope="external" />,
     );
     expect(screen.getByText("MCP 工具")).toBeTruthy();
-    expect(screen.getByText("技能脚本")).toBeTruthy();
+    expect(screen.getByText("已存技能授权")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("持续批准 mcp.echo.read"));
     fireEvent.click(screen.getByRole("button", { name: "保存授权" }));
     await act(async () => {});

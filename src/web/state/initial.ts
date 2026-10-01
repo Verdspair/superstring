@@ -10,6 +10,7 @@ import type {
   PersonaResponse,
   PolicyView,
 } from "../../shared/contracts";
+import type { SystemComponentTarget } from "../../shared/contracts/tool-directory";
 import type { BrowserStateStorage } from "../browser-state";
 import { permissionInitial } from "../features/access/permission-state";
 import { webAccessInitial } from "../features/access/web-access-state";
@@ -61,6 +62,7 @@ export const initial = {
   page: "chat" as Page,
   settingsView: "hub" as SettingsView,
   settingsRoute: "basic" as SettingsRoute,
+  componentTarget: null as SystemComponentTarget | null,
   conversationView: "messages" as ConversationView,
   conversationScope: "current" as ConversationScope,
   qqSchemeView: "settings" as QqSchemeView,

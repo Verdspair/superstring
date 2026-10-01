@@ -85,9 +85,9 @@ describe("web access routing", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "MCP 服务",
       "技能",
-      "工具授权",
+      "工具",
     ]);
-    expect(screen.getByRole("tab", { selected: true }).textContent).toBe("工具授权");
+    expect(screen.getByRole("tab", { selected: true }).textContent).toBe("工具");
     expect(screen.queryByRole("tab", { name: "联网" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "联网" })).toBeNull();
     expect(fake.getQqSettings).not.toHaveBeenCalled();

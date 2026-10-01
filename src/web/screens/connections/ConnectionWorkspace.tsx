@@ -4,7 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/ta
 import { useSuperstringStore } from "../../store";
 import { McpPanel } from "./mcp-panel";
 import { SkillsPanel } from "./skills-panel";
-import { ToolGrantsPanel } from "./tool-grants-panel";
+import { ToolDirectoryPanel } from "./tool-directory-panel";
 
 export function ConnectionWorkspace() {
   const { t } = useTranslation();
@@ -34,7 +34,7 @@ export function ConnectionWorkspace() {
           <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
             <TabsTrigger value="mcp">{t("connections.mcp.title")}</TabsTrigger>
             <TabsTrigger value="skills">{t("connections.skills.title")}</TabsTrigger>
-            <TabsTrigger value="grants">{t("connections.grants.title")}</TabsTrigger>
+            <TabsTrigger value="grants">{t("connections.tools.title")}</TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="mcp" className="m-0 min-h-0 flex-1 overflow-y-auto">
@@ -44,8 +44,7 @@ export function ConnectionWorkspace() {
           <SkillsPanel />
         </TabsContent>
         <TabsContent value="grants" className="m-0 min-h-0 flex-1 overflow-y-auto">
-          {/* 工具授权只涉及外置接入（MCP / Skills）；内置能力开关在系统能力（P8）。 */}
-          <ToolGrantsPanel scope="external" />
+          <ToolDirectoryPanel />
         </TabsContent>
       </Tabs>
     </section>

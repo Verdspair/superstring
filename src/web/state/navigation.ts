@@ -145,6 +145,7 @@ async function performNavigation(
       page: pending.page,
       settingsView: pending.settingsView,
       ...(pending.settingsRoute ? { settingsRoute: pending.settingsRoute } : {}),
+      componentTarget: pending.componentTarget ?? null,
       ...(pending.conversationView ? { conversationView: pending.conversationView } : {}),
       ...(pending.conversationScope ? { conversationScope: pending.conversationScope } : {}),
       feedback: "",
@@ -245,6 +246,7 @@ export function createNavigationActions(
   | "requestConversationNavigation"
   | "requestConversationView"
   | "openSettingsRoute"
+  | "openSystemComponent"
   | "openChat"
   | "openSettings"
   | "openAgentSettings"
@@ -405,8 +407,29 @@ export function createNavigationActions(
       if (pending?.kind === "page" && pending.settingsView === "workspace") {
         set({ pendingNavigation: { ...pending, settingsRoute } });
       } else if (get().page === "settings" && get().settingsView === "workspace") {
-        set({ settingsRoute, feedback: "" });
+        set({ settingsRoute, componentTarget: null, feedback: "" });
         markLanded();
+      }
+    },
+    openSystemComponent: (target) => {
+      if (navigationBusy(get)) return;
+      const route =
+        target.kind === "tool"
+          ? "tool-grants"
+          : target.kind === "skill"
+            ? "skill-catalog"
+            : "mcp-servers";
+      get().openSettingsRoute(route);
+      const pending = get().pendingNavigation;
+      if (pending?.kind === "page" && pending.settingsRoute === route) {
+        set({ pendingNavigation: { ...pending, componentTarget: target } });
+      } else if (
+        !pending &&
+        get().page === "settings" &&
+        get().settingsView === "workspace" &&
+        get().settingsRoute === route
+      ) {
+        set({ componentTarget: target });
       }
     },
     openChat: () => get().requestConversationView("messages", "current"),

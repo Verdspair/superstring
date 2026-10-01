@@ -11,6 +11,7 @@ import type {
   PersonaResponse,
   PolicyView,
 } from "../../shared/contracts";
+import type { SystemComponentTarget } from "../../shared/contracts/tool-directory";
 import type { SuperstringApi, streamChatV2 } from "../api";
 import type { BrowserStateStorage } from "../browser-state";
 import type { PermissionSettingsState } from "../features/access/permission-state";
@@ -51,6 +52,7 @@ export type PendingNavigation =
       page: Page;
       settingsView: SettingsView;
       settingsRoute?: SettingsRoute;
+      componentTarget?: SystemComponentTarget;
       conversationId?: string;
       /** 携带到落地时才生效的对话视图/范围；取消不泄漏，保存失败保留整个载荷。 */
       conversationView?: ConversationView;
@@ -138,10 +140,12 @@ export interface SuperstringState
   page: Page;
   settingsView: SettingsView;
   settingsRoute: SettingsRoute;
+  componentTarget: SystemComponentTarget | null;
   conversationView: ConversationView;
   conversationScope: ConversationScope;
   qqSchemeView: QqSchemeView;
   openSettingsRoute: (route: SettingsRoute) => void;
+  openSystemComponent: (target: SystemComponentTarget) => void;
   activeSection: SectionKey;
   dirty: boolean;
   pendingNavigation: PendingNavigation | null;

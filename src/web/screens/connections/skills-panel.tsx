@@ -26,6 +26,7 @@ import { useSuperstringStore } from "../../store";
 export function SkillsPanel() {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
+  const target = useSuperstringStore((s) => s.componentTarget);
   const [catalog, setCatalog] = useState<SkillCatalogResponse | null>(null);
   const [detail, setDetail] = useState<SkillDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -51,17 +52,23 @@ export function SkillsPanel() {
       pendingDetail.current?.cancel();
     };
   }, [load]);
-  const open = (name: string) => {
-    pendingDetail.current?.cancel();
-    setError("");
-    pendingDetail.current = startRead((signal) => apiClient.getSkill(name, signal), {
-      success: setDetail,
-      failure: (caught) => setError(errorText(caught)),
-    });
-  };
+  const open = useCallback(
+    (name: string) => {
+      pendingDetail.current?.cancel();
+      setError("");
+      pendingDetail.current = startRead((signal) => apiClient.getSkill(name, signal), {
+        success: setDetail,
+        failure: (caught) => setError(errorText(caught)),
+      });
+    },
+    [apiClient],
+  );
+  useEffect(() => {
+    if (target?.kind === "skill") open(target.id);
+  }, [target, open]);
   const metadata = Object.entries(detail?.metadata ?? {});
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+    <div className="w-full space-y-6 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="font-semibold">{t("connections.skills.title")}</h2>
@@ -91,11 +98,33 @@ export function SkillsPanel() {
           </TableHeader>
           <TableBody>
             {(catalog?.skills ?? []).map((skill) => (
-              <TableRow key={skill.name}>
+              <TableRow
+                key={skill.name}
+                data-skill-name={skill.name}
+                data-global-enabled={skill.globalEnabled}
+                className={skill.globalEnabled ? undefined : "bg-muted/30 text-muted-foreground"}
+              >
                 <TableCell className="font-mono text-sm">{skill.name}</TableCell>
-                <TableCell className="text-sm text-muted-foreground">{skill.description}</TableCell>
+                <TableCell className="max-w-xl whitespace-normal break-words text-sm leading-relaxed text-muted-foreground">
+                  {skill.origin === "system"
+                    ? t(`connections.components.skillSummary.${skill.name}`, {
+                        defaultValue: skill.description,
+                      })
+                    : skill.description}
+                </TableCell>
                 <TableCell>
-                  <Badge variant="outline">{t("connections.skills.documentSkill")}</Badge>
+                  <div className="space-y-1">
+                    <Badge variant="outline">
+                      {t(
+                        skill.origin === "system"
+                          ? "connections.components.system"
+                          : "connections.skills.documentSkill",
+                      )}
+                    </Badge>
+                    {!skill.globalEnabled && (
+                      <p className="text-xs">{t("connections.components.globalOff")}</p>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="sm" onClick={() => open(skill.name)}>
@@ -142,6 +171,8 @@ export function SkillsPanel() {
           if (!open) {
             pendingDetail.current?.cancel();
             setDetail(null);
+            if (useSuperstringStore.getState().componentTarget?.kind === "skill")
+              useSuperstringStore.setState({ componentTarget: null });
           }
         }}
       >
@@ -152,6 +183,11 @@ export function SkillsPanel() {
           </SheetHeader>
           {detail && (
             <div className="space-y-6 p-6">
+              {detail.origin === "system" && (
+                <p className="text-xs text-muted-foreground">
+                  {t("connections.components.definitionLocked")}
+                </p>
+              )}
               <p className="text-sm text-muted-foreground">{detail.description}</p>
               <section className="space-y-2">
                 <h3 className="text-sm font-medium">{t("connections.skills.instructions")}</h3>

@@ -20,6 +20,7 @@ import {
 import { KnowledgeToolSettings, MemoryToolSettings } from "../assistants/ResourceRules";
 import { ExecutionSettings } from "../runs/execution-settings";
 import { CapabilityPolicyPanel } from "./capability-policy-panel";
+import { SystemComponents } from "./system-components";
 import { WebAccessPanel } from "./web-access-panel";
 
 type CapabilityFact =
@@ -132,6 +133,9 @@ function CapabilityDirectory() {
                     </span>
                     <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
                   </button>
+                  <div className="px-4 pb-3">
+                    <SystemComponents entry={entry} />
+                  </div>
                 </li>
               );
             })}
@@ -178,6 +182,9 @@ function CapabilityDetailShell({
         </nav>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
+        <div className="px-4 pt-5">
+          <SystemComponents entry={entry} />
+        </div>
         {children}
       </div>
     </section>

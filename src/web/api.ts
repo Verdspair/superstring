@@ -149,6 +149,7 @@ import {
   RuntimeTracesPageSchema,
 } from "../shared/contracts/runtime-observability";
 import { SkillCatalogResponseSchema, SkillDetailResponseSchema } from "../shared/contracts/skill";
+import { ToolDirectoryResponseSchema } from "../shared/contracts/tool-directory";
 import { msg } from "./i18n";
 
 export class ApiError extends Error {
@@ -557,6 +558,9 @@ export const api = {
       signal,
       cache: "no-store",
     });
+  },
+  getToolDirectory(signal?: AbortSignal) {
+    return requestJson("/v2/tools", ToolDirectoryResponseSchema, { signal, cache: "no-store" });
   },
   getPermissions(signal?: AbortSignal) {
     return requestJson("/v2/permissions", PermissionsResponseSchema, {

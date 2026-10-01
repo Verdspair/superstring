@@ -1,7 +1,13 @@
 import { PlugZap, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { McpServerConfig, McpStatusResponse } from "../../../shared/contracts/mcp";
+import type {
+  McpServerConfig,
+  McpServerStatus,
+  McpStatusResponse,
+} from "../../../shared/contracts/mcp";
+import { executionPolicy } from "../../../shared/contracts/permissions";
+import type { ToolDirectoryEntry } from "../../../shared/contracts/tool-directory";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
@@ -60,6 +66,13 @@ const problemKeys: Record<McpDraftProblem, string> = {
 export function McpPanel() {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
+  const target = useSuperstringStore((s) => s.componentTarget);
+  const policy = useSuperstringStore((s) => s.permissionEditor?.snapshot.policy);
+  const loadPermissions = useSuperstringStore((s) => s.loadPermissionSettings);
+  const openComponent = useSuperstringStore((s) => s.openSystemComponent);
+  const [detail, setDetail] = useState<McpServerStatus | null>(null);
+  const [detailTools, setDetailTools] = useState<ToolDirectoryEntry[]>([]);
+  const toolRead = useRef<ReadTask | null>(null);
   const [status, setStatus] = useState<McpStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"" | "save" | "reload">("");
@@ -99,8 +112,31 @@ export function McpPanel() {
   }, [apiClient]);
   useEffect(() => {
     load();
-    return () => pending.current?.cancel();
-  }, [load]);
+    void loadPermissions();
+    return () => {
+      pending.current?.cancel();
+      toolRead.current?.cancel();
+    };
+  }, [load, loadPermissions]);
+  useEffect(() => {
+    if (target?.kind === "mcp" && status) {
+      const server = status.servers.find((row) => row.config.id === target.id);
+      if (server) setDetail(server);
+    }
+  }, [target, status]);
+  useEffect(() => {
+    toolRead.current?.cancel();
+    setDetailTools([]);
+    if (!detail) return;
+    toolRead.current = startRead((signal) => apiClient.getToolDirectory(signal), {
+      success: (response) =>
+        setDetailTools(
+          response.tools.filter((tool) => tool.name.startsWith(`mcp.${detail.config.id}.`)),
+        ),
+      failure: (caught) => setError(errorText(caught)),
+    });
+    return () => toolRead.current?.cancel();
+  }, [detail, apiClient]);
 
   const servers = (status?.servers ?? []).map((row) => row.config);
   const save = async (next: McpServerConfig[]) => {
@@ -127,7 +163,7 @@ export function McpPanel() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8">
+    <div className="w-full space-y-6 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="font-semibold">{t("connections.mcp.title")}</h2>
@@ -209,7 +245,14 @@ export function McpPanel() {
             {(status?.servers ?? []).map((row) => {
               const badge = stateBadge[row.state] ?? stateBadge.pending;
               return (
-                <TableRow key={row.config.id}>
+                <TableRow
+                  key={row.config.id}
+                  className={
+                    !row.config.enabled || (policy && !executionPolicy(policy).modules.mcp)
+                      ? "bg-muted/30 text-muted-foreground"
+                      : undefined
+                  }
+                >
                   <TableCell className="font-medium">
                     {row.config.name}
                     <span className="ml-2 font-mono text-xs text-muted-foreground">
@@ -231,6 +274,9 @@ export function McpPanel() {
                       : t("connections.mcp.noTools")}
                   </TableCell>
                   <TableCell className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => setDetail(row)}>
+                      {t("connections.tools.details")}
+                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -265,6 +311,42 @@ export function McpPanel() {
         </Table>
       </div>
 
+      <Sheet
+        open={detail !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDetail(null);
+            if (useSuperstringStore.getState().componentTarget?.kind === "mcp")
+              useSuperstringStore.setState({ componentTarget: null });
+          }
+        }}
+      >
+        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle>{detail?.config.name}</SheetTitle>
+            <SheetDescription>{t("connections.mcp.description")}</SheetDescription>
+          </SheetHeader>
+          {detail && (
+            <div className="space-y-5 p-5">
+              <p className="font-mono text-sm">{detail.config.id}</p>
+              <p className="text-sm">{detail.config.transport}</p>
+              <h3 className="font-medium">{t("connections.components.tools")}</h3>
+              <div className="space-y-2">
+                {detailTools.map((tool) => (
+                  <Button
+                    key={tool.name}
+                    variant="outline"
+                    className="w-full justify-start"
+                    onClick={() => openComponent({ kind: "tool", id: tool.name })}
+                  >
+                    {tool.name}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
       <Sheet
         open={editor !== null}
         onOpenChange={(open) => {
