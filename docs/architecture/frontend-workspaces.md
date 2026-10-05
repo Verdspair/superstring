@@ -17,7 +17,7 @@ primary Runs destination.
 | --- | --- | --- |
 | Conversations | Message records, runtime observability, tasks and approvals for every Web and QQ private/group conversation; current/global scope; identity, context usage, sources and delivery evidence | `screens/conversations`, shared `screens/observability` and `screens/runs` components |
 | Agents | Agent directory; identity and expression; models and context | `screens/assistants` |
-| System capabilities | Built-in capability directory; memory and knowledge reading rules; global knowledge reading budget; web access; media switches; execution switches and limits; runtime data retention | `screens/connections/CapabilitiesWorkspace.tsx` |
+| System capabilities | Built-in capability directory: memory query, knowledge query, web access, media and stickers, tasks and execution limits, session history summary; global knowledge reading budget and runtime data retention remain under their owning pages | `screens/connections/CapabilitiesWorkspace.tsx` |
 | Schemes | Application directory; QQ application tabs for Schemes, Connection, and Data and retention; scheme settings and conversations using each scheme; binding management | `screens/connections/SchemesWorkspace.tsx`, shared QQ panels and binding editor |
 | Library | Knowledge documents and organization; scoped memories and maintenance; sticker assets and collections; description-only collection changes use the same source draft and save guard | `screens/library` |
 | Extensions | External MCP, Skills and external tool grants only; no QQ connection status | `screens/connections`, internal `connections` space |
@@ -85,6 +85,12 @@ All entrances use the same draft source, ownership and save/discard/cancel guard
 Scheme drafts survive refresh; saving replaces the whole scheme under
 compare-and-swap. Unknown usage is not zero and prevents deletion, as does known
 active usage.
+
+QQ scheme field metadata (field labels, enum option labels, capability and
+trigger copy) has a single owner in `src/web/features/qq/scheme-field-metadata.ts`;
+scheme pages and the binding editor consume it instead of keeping local copies.
+Unsaved-draft leave guards aggregate in `state/unsaved-changes.ts`, and server
+sent-event reading runs through the single `readEventStream` loop in `api.ts`.
 
 Every QQ group scheme card and open group conversation shows the group's enable/disable control and its Group settings entrance, both reading the same state. A disabled group keeps receiving and storing messages but produces no speech and starts no new model work; summaries and memory organisation already running may complete under the existing pause boundary. The group state never changes the global QQ switch, the Agent state or other groups, and blocking reasons are shown as they are.
 

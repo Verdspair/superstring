@@ -8,6 +8,7 @@ import {
   QqSchemeRhythmSchema,
   QqSchemeStickersSchema,
 } from "../../../shared/contracts/qq";
+import { imageFields, stickerFields } from "../../features/qq/scheme-field-metadata";
 
 export const numericGroups = {
   rhythm: QqSchemeRhythmSchema,
@@ -29,55 +30,6 @@ export type NumberEditorGroup = keyof typeof numberEditorGroups;
 
 /** The four editing tasks of the studio; a field's task is also the tab its error is fixed on. */
 export type SchemeTask = "participation" | "response" | "context" | "media";
-
-export const participationFields = [
-  [
-    "initiative_min_score",
-    "connections.unpromptedSpeechThreshold010",
-    "connections.theJudgementScoreMustReachThisThresholdBeforeSpeaking",
-  ],
-  [
-    "merge_window_seconds",
-    "connections.mergeWindowSeconds",
-    "connections.messagesAreMergedBySpeakerMeasuredFromTheirLast",
-  ],
-  [
-    "reply_cooldown_seconds",
-    "connections.speechCooldownSeconds",
-    "connections.minimumGapBetweenTwoUnpromptedUtterancesUnpromptedSpeechOnly",
-  ],
-  [
-    "hourly_speech_limit",
-    "connections.hourlyCap",
-    "connections.unpromptedUtterancesInARollingHourUnpromptedSpeechOnly",
-  ],
-  [
-    "idle_quiet_minutes",
-    "connections.quietRoomThresholdMinutes",
-    "connections.theConversationCountsAsQuietOnlyAfterThisLong",
-  ],
-  [
-    "max_recompute_count",
-    "connections.maximumRecomputes",
-    "connections.howOftenAKeyAdditionMayForceARewrite",
-  ],
-] as const;
-/** 表情参数（含「每条回复最多几张」——它存在 rhythm 组，但说的事情是表情）。 */
-export const stickerFields = [
-  ["rhythm", "max_sticker_count", "connections.stickersPerReply"],
-  ["stickers", "sticker_min_repeat_minutes", "connections.shortestRepeatIntervalPerStickerMinutes"],
-  ["stickers", "sticker_recent_avoid_count", "connections.avoidTheLastFew"],
-] as const;
-/** 图片/动图参数（读取媒体时采样与等待用的三个值）。 */
-export const imageFields = [
-  [
-    "rhythm",
-    "media_supplement_window_minutes",
-    "connections.waitAfterMediaFailsOnADirectMentionMinutes",
-  ],
-  ["rhythm", "media_frame_count", "connections.animationFramesToSample"],
-  ["rhythm", "media_max_dimension", "connections.sampledFrameLongEdgePx"],
-] as const;
 
 /**
  * 每个数字输入框的 min/max/step 都从契约 schema 现读，不在这里另抄一份边界：
@@ -169,4 +121,28 @@ export function utcMinutes(clock: string): number | null {
   const minute = Number(match[2]);
   if (hour > 23 || minute > 59) return null;
   return (hour * 60 + minute + new Date().getTimezoneOffset() + 1440) % 1440;
+}
+
+/** 0052 枚举选项的人话标签（载荷原样存契约值，只改显示）；canonical 键与字段映射同批。 */
+/** 时区输入的快捷建议（真实 IANA 名称，输入自由不限于这份列表）。 */
+export const TIMEZONE_SUGGESTIONS: readonly string[] = [
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "Asia/Hong_Kong",
+  "Asia/Singapore",
+  "Europe/London",
+  "America/New_York",
+  "UTC",
+];
+
+/** 真实 IANA 名称判定：用运行环境自带 ICU，不维护时区表；空串与非法都判否。 */
+export function isValidTimezone(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: trimmed });
+    return true;
+  } catch {
+    return false;
+  }
 }

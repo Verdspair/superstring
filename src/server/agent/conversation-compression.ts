@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { RuntimeConfig } from "../../shared/contracts";
+import { readJsonBody } from "../../shared/contracts/agent-output";
 import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
+import { contextDumps } from "../db/json-text";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
-import { contextDumps, estimateMessages, validateContextIds } from "../modules/memory-query";
+import { estimateMessages, validateContextIds } from "../modules/memory-query";
 import { estimateTokens } from "../services/token-estimate";
 import type { LeafAgentRuntime, RunBudget, RunUsage } from "./agent-runtime";
-import { readJsonBody } from "./agent-specs";
 import { uniqueSources } from "./context-engine";
 import { SUMMARY_RESULT_JSON_SCHEMA } from "./summary-contract";
 

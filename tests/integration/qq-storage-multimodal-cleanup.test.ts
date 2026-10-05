@@ -1,6 +1,6 @@
 // T14：五类别 manual 清理的 0052 多模态私有数据完整接线（多面列表 + 多面选择闭包）。
 //
-// 主控 ruling 的可验证不变式：
+// 可验证不变式（裁决口径）：
 //  1. 每个可独立选择删除的私有记录都是管理主行：members+入站 facts、send log+出站 facts、
 //     media note+asset+source+read task 各自进元数据列表（新 id 固定前缀防冲突），也各自
 //     能被 selected 命中；

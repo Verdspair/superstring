@@ -9,7 +9,7 @@ import { useSuperstringStore as store } from "../../src/web/store";
 import { A, document as base, D, setupLibrary } from "./helpers/library-fixture";
 
 const zhText = zh as Record<string, string>;
-/** 本地键可能晚于 locales 单写者落地：缺失时 i18next 原样返回 key。 */
+/** 本地键可能晚于 locales 文件落地：缺失时 i18next 原样返回 key。 */
 const label = (key: string) => zhText[key] ?? key;
 const phrase = (key: string, ...args: string[]) =>
   args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), label(key));

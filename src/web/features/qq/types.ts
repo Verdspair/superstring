@@ -523,7 +523,7 @@ export interface QqAccessState {
   qqAccessSaving: boolean;
   loadQqAccess: () => Promise<void>;
   /**
-   * Bindings only, without the rest of the access page (2026-09-25). The 长期记忆 page needs to
+   * Bindings only, without the rest of the access page. The 长期记忆 page needs to
    * know whether the assistant being edited is bound to any QQ conversation, and pulling the whole
    * page's four requests for one hint would be the wrong trade.
    *
@@ -546,7 +546,7 @@ export interface QqAccessState {
    */
   loadQqBindingDirectory: (bindingId?: string) => Promise<void>;
   /**
-   * Settings only, without the rest of the access page (2026-09-25). The default-model page shows
+   * Settings only, without the rest of the access page. The default-model page shows
    * the QQ judgement model, and pulling the access page's four requests for one select would be the
    * wrong trade. Unlike the bindings read this one always refetches: it is a surface the user can
    * save from, so a stale revision is a real failure mode rather than a quiet hint.
@@ -577,7 +577,7 @@ export interface QqAccessState {
     schemeId: string;
   }) => Promise<boolean>;
   /**
-   * The manual binding entry (2026-09-25): bind a group or private chat by its number, without an
+   * The manual binding entry: bind a group or private chat by its number, without an
    * observation. It exists because an unbound conversation's messages are not recorded, so the
    * observed list can never offer the first binding of a conversation nobody has spoken in yet.
    */
@@ -597,7 +597,7 @@ export interface QqAccessState {
       triggers?: QqBindingResponse["triggers"];
       /** 「重要的人」(0031): the whole list travels; `off` clears mode and members together. */
       attention?: QqBindingResponse["attention"];
-      /** 记忆整理（2026-09-25）：攒够多少条观察自动整理一次；`null`＝关。 */
+      /** 记忆整理：攒够多少条观察自动整理一次；`null`＝关。 */
       memory_batch_size?: number | null;
       /**
        * 改绑且目标方案自带本群覆盖时的显式决定（ADR0019 §13.2 G）：`keep` 保留覆盖、`reset`
@@ -607,7 +607,7 @@ export interface QqAccessState {
     },
   ) => Promise<boolean>;
   /**
-   * 「立即整理」(2026-09-25): ask the server to organise this conversation's pending observations
+   * 「立即整理」: ask the server to organise this conversation's pending observations
    * now, and say what actually happened (the verdict is not an error). Returns the verdict so the
    * row can show its own line instead of a global toast.
    */

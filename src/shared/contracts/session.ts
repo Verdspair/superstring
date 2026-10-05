@@ -9,8 +9,6 @@ import {
 
 /**
  * Session request & response contracts. Pure `zod` only.
- *
- * 36.
  */
 
 export const CreateSessionRequestSchema = z.strictObject({

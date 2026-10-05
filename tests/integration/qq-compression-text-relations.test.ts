@@ -13,6 +13,7 @@ import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
+import { contextDumps } from "../../src/server/db/json-text";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { rememberQqMemberNames } from "../../src/server/db/qq-member-repository";
@@ -23,7 +24,6 @@ import { DEFAULT_AGENT_ID, ensureDefaults, getAgentRow } from "../../src/server/
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
-import { contextDumps } from "../../src/server/modules/memory-query";
 import { captureQqTask, createQqBinding } from "../../src/server/services/qq-binding-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import { QQ_COMPRESSION_DEFAULT } from "../../src/shared/contracts/qq";

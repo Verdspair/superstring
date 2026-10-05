@@ -1,4 +1,4 @@
-// T11 D2：QQ 事实/引用/时间/媒体上下文整合强测试（独立新文件，主控唯一写者 t11-d2-tests）。
+// T11 D2：QQ 事实/引用/时间/媒体上下文整合强测试。
 //
 // 上位依据：specs/2026-10-02-qq-message-context-multimodal-design.md §3–§5/§7.1/§4.3/§4.4、
 // plans/…-plan.md T11 Step2–Step4、briefs/prime-t11-integration-plan.md §3/§4。

@@ -7,13 +7,13 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { AGENT_DECISION_JSON_SCHEMA } from "../../src/server/agent/agent-specs";
 import {
   createModelProvider,
   updateModelProvider,
 } from "../../src/server/db/model-provider-repository";
 import type { ChatMessage } from "../../src/server/llm/chat-content";
 import { createRuntime } from "../../src/server/runtime";
+import { AGENT_DECISION_JSON_SCHEMA } from "../../src/shared/contracts/agent-output";
 
 const PNG_1PX = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",

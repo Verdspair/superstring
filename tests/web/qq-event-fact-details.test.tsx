@@ -1,4 +1,4 @@
-// T13 Step6：EventRecord 的 QQ 消息详情组前端渲染。
+// EventRecord 的 QQ 消息详情组前端渲染。
 //
 // fixture：合法 `ConversationEventView` 合成形状（与 shared 契约同步的字面量；非真实
 // HTTP fixture——HTTP 侧正/负语义由 tests/integration/qq-event-fact-details.test.ts

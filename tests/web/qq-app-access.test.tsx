@@ -108,12 +108,12 @@ function client(
     bound?: boolean;
     enabled?: boolean;
     silentBinding?: boolean;
-    /** 记忆整理（2026-09-25 语义保留）：绑定会话的批大小与等待观察数。 */
+    /** 记忆整理（语义保留）：绑定会话的批大小与等待观察数。 */
     memory?: { batchSize: number | null; pending: number };
   } = {},
   overrides: Partial<typeof api> = {},
 ) {
-  // 从未发言过的绑定：没有观察行可显示，绑定板必须从绑定本身列出它（2026-09-25）。
+  // 从未发言过的绑定：没有观察行可显示，绑定板必须从绑定本身列出它。
   const silentBinding: QqBindingResponse = {
     ...binding,
     id: SILENT_BINDING_ID,

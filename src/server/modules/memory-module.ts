@@ -14,6 +14,7 @@ import {
   readMemoryCandidate,
   scanMemoryCandidates,
 } from "../db/context-repository";
+import { contextDumps } from "../db/json-text";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
@@ -29,7 +30,6 @@ import type {
 } from "./contracts";
 import {
   boundedRecallIds,
-  contextDumps,
   contextKeywords,
   estimateMessages,
   parseRecallIds,

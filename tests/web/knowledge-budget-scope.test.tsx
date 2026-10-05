@@ -15,7 +15,7 @@ import { useSuperstringStore as store } from "../../src/web/store";
 import { B, setupLibrary } from "./helpers/library-fixture";
 
 const zhText = zh as Record<string, string>;
-/** 本地键可能晚于 locales 单写者落地：缺失时 i18next 原样返回 key。 */
+/** 本地键可能晚于 locales 文件落地：缺失时 i18next 原样返回 key。 */
 const label = (key: string) => zhText[key] ?? key;
 
 /** 服务端替身：接受提交字段并推进修订，模拟共享基线前进。 */

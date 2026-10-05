@@ -11,9 +11,9 @@
 // 失败方向：任何读不出、越界、伪造的输入都直接抛错（fail-closed）。分类缺省**不是**本体
 // 放松的理由——decision/score/text 本体照旧按各自原契约严格验证。
 import { z } from "zod";
+import { type AgentDecision, AgentDecisionSchema } from "../../shared/contracts/agent-output";
 import { type QqImageCategory, QqImageCategorySchema } from "../../shared/contracts/qq-media-input";
 import { qqJudgeOutcome } from "../services/qq-prompt-contract";
-import { type AgentDecision, AgentDecisionSchema } from "./agent-specs";
 
 export interface ModelMediaClassification {
   mediaId: string;

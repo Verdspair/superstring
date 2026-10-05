@@ -19,6 +19,7 @@
 // editable fields would be a worse surface than one field plus a program-owned line.
 
 import { z } from "zod";
+import { readJsonBody } from "../../shared/contracts/agent-output";
 import type { ModelMessage } from "../../shared/contracts/agent-run";
 import {
   QQ_PROMPT_COMPRESS_DEFAULT,
@@ -26,7 +27,6 @@ import {
   type QqSchemePrompts,
   QqSchemePromptsSchema,
 } from "../../shared/contracts/qq";
-import { readJsonBody } from "../agent/agent-specs";
 import { ContextMessageSchema, type QqContextMessage } from "./qq-context-contract";
 
 /**

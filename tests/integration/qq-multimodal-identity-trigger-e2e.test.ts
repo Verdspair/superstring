@@ -1,4 +1,4 @@
-// T15 P1 slice（resume-t15-identity-trigger，唯一写者）：身份与触发面补块。
+// T15 P1 slice：身份与触发面补块。
 //
 // 覆盖矩阵 id 1,2,6,7,9,10,11,12（原计划 §T15 Step1 逐字；判定三态口径见
 // artifacts/.../resume-t15-matrix-review.md，panel-A 的逐条补块要求见其 §P1 分区）。
@@ -25,7 +25,7 @@
 //   * 逐行断言（按 platformMessageId 索引）而不是整串 toContain，避免同名两条互相顶替；
 //   * 不 import artifacts/（本文件自包含）；不改产品代码与 harness。
 //
-// 夹具接口（tests/harness/onebot.ts 唯一写者 resume-t11-replies 落盘，本文件只读消费）：
+// 夹具接口（tests/harness/onebot.ts，本文件只读消费）：
 //   ReceiveInput.anonymous?: boolean（group 时 wire sub_type="anonymous"）
 //   ReceiveInput.omitPersonalNickname?: boolean（wire 完全省略 sender.nickname 键）
 

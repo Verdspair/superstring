@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { RuntimeConfig } from "../../../shared/contracts";
+import type { OutputDraft } from "../../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
 import { MODEL_LAYER_ERROR_CODES } from "../../../shared/contracts/errors";
 import type { Evidence, SourceRef } from "../../../shared/contracts/evidence";
@@ -21,7 +22,7 @@ import type {
   RunBudget,
   RunUsage,
 } from "../../agent/agent-runtime";
-import type { AgentSpec, OutputDraft } from "../../agent/agent-specs";
+import type { AgentSpec } from "../../agent/agent-specs";
 import {
   type ActionContext,
   type BuiltInAction,
@@ -42,6 +43,7 @@ import type { CompressionRecord } from "../../agent/conversation-compression";
 import { ReservationLedger } from "../../agent/reservation-ledger";
 import { readMemoryCandidate } from "../../db/context-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
+import { contextDumps } from "../../db/json-text";
 import type { OutboundIntentRepository } from "../../db/outbound-intent-repository";
 import { qqMemberLabels } from "../../db/qq-member-repository";
 import {
@@ -81,10 +83,10 @@ import {
   conversationEvidenceSourceAccess,
   createBotConversationEvidence,
 } from "../../modules/conversation-evidence";
-import { contextDumps } from "../../modules/memory-query";
 import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import { qqMemoryScopeKeyset } from "../../services/memory-scope";
 import type { QqBinding, QqTaskSnapshot } from "../../services/qq-binding-contract";
+import { qqConversationScopeOfBinding } from "../../services/qq-binding-contract";
 import {
   type QqContextLimits,
   type QqContextMessage,
@@ -92,6 +94,7 @@ import {
   type QqContextTier,
   qqBuildTimeline,
   qqContextLimits,
+  qqPhaseTier,
   qqSelectContext,
 } from "../../services/qq-context-contract";
 import { qqJudgementQuestion } from "../../services/qq-judgement-material";
@@ -848,10 +851,6 @@ ${intent.trim()}`,
     this.compressionJob = undefined;
     this.reservations.clear();
   }
-  /** 本相是否已请求 §9 description fallback（宿主观测读回用）。 */
-  mediaFallbackReason(phase: QqImagePhase): string | undefined {
-    return this.phaseFallback.get(phase);
-  }
   /**
    * 相模型调用的档位上限（宿主在准备钩子里做最终预算复验用）：decision=决策档视图上限，
    * generation=回复档视图上限。视图未建＝undefined（宿主按无上限处理）。
@@ -872,12 +871,7 @@ ${intent.trim()}`,
   ): Promise<QqMediaProjection | undefined> {
     this.assertCurrent();
     // 相档视图先重建（fallback 清空过视图）：facts/selection 是 describe 选取的真实输入。
-    const tier =
-      phase === "evaluation"
-        ? "judgement"
-        : phase === "decision"
-          ? this.options.decisionTier
-          : "reply";
+    const tier = qqPhaseTier(phase, this.options.decisionTier);
     await this.view(tier, signal);
     const result = await this.preparePhaseMedia(phase, signal);
     return result === null ? undefined : this.phaseMedia.get(phase);
@@ -895,12 +889,7 @@ ${intent.trim()}`,
   ): Promise<QqMediaProjection | undefined> {
     this.assertCurrent();
     // 相档视图先重建（fallback 清空过视图）：facts/selection 是 describe 选取的真实输入。
-    const tier =
-      phase === "evaluation"
-        ? "judgement"
-        : phase === "decision"
-          ? this.options.decisionTier
-          : "reply";
+    const tier = qqPhaseTier(phase, this.options.decisionTier);
     await this.view(tier, signal);
     const result = await this.preparePhaseMedia(phase, signal, model);
     return result === null ? undefined : this.phaseMedia.get(phase);
@@ -927,22 +916,15 @@ ${intent.trim()}`,
     const binding = this.options.binding;
     const conversationRow = this.options.journal.get(this.options.conversationId);
     if (!conversationRow) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
-    const scope: QqConversationScope = {
+    const scope = qqConversationScopeOfBinding({
       conversationId: this.options.conversationId,
-      accountId: binding.accountId,
-      conversationKind: binding.kind,
-      peerId: binding.peerId,
-      agentId: binding.agentId,
-      bindingId: binding.id,
+      binding,
       bindingEpoch: conversationRow.bindingEpoch,
-      authorityRevision: binding.authorityRevision,
-    };
+    });
     // D2 S4b：本相窗口事实投影与回复展开已在对应档 view() 构建时算好并缓存
     // （真实 load/register/fits 只发生一次，同一 registry/refs≤512/2MiB/预算计量）；
     // 这里只复用，不重复登记。自动范围仍由 selector 按 focus/direct 判定。
-    const tier = phase === "evaluation" ? "judgement" : "reply";
-    const phaseView =
-      phase === "decision" ? this.views.get(this.options.decisionTier) : this.views.get(tier);
+    const phaseView = this.views.get(qqPhaseTier(phase, this.options.decisionTier));
     const facts = phaseView?.replyFacts ?? [];
     const replies = phaseView?.replyExpansion ?? { roots: [], sources: [] };
     const baseInput = {
@@ -1335,16 +1317,11 @@ ${intent.trim()}`,
     // timeline 对这些消息不再重复正文文本。
     const conversationForFacts = o.journal.get(o.conversationId);
     const factsScope = conversationForFacts
-      ? {
+      ? qqConversationScopeOfBinding({
           conversationId: o.conversationId,
-          accountId: o.binding.accountId,
-          conversationKind: o.binding.kind,
-          peerId: o.binding.peerId,
-          agentId: o.binding.agentId,
-          bindingId: o.binding.id,
+          binding: o.binding,
           bindingEpoch: conversationForFacts.bindingEpoch,
-          authorityRevision: o.binding.authorityRevision,
-        }
+        })
       : null;
     /**
      * 每一档窗口选择对应**一整份**投影 bundle：入站事实 keys、出站候选投影、事实 keys、
@@ -1821,16 +1798,11 @@ ${intent.trim()}`,
     const conversationRowForReply = o.journal.get(o.conversationId);
     const replyScope =
       this.runId !== undefined && conversationRowForReply
-        ? {
+        ? qqConversationScopeOfBinding({
             conversationId: o.conversationId,
-            accountId: o.binding.accountId,
-            conversationKind: o.binding.kind,
-            peerId: o.binding.peerId,
-            agentId: o.binding.agentId,
-            bindingId: o.binding.id,
+            binding: o.binding,
             bindingEpoch: conversationRowForReply.bindingEpoch,
-            authorityRevision: o.binding.authorityRevision,
-          }
+          })
         : null;
     const replyEventKeys = (material.sources ?? [])
       .filter((source) => source.kind === "qq_observation")

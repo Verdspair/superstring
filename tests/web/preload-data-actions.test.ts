@@ -1,5 +1,4 @@
-// P1 启动数据预热：纯读动作的预热语义与真实竞态回归（真实 store + 替身 API）。
-// 契约真源：startup-preload-implementation-20261005T074750Z/frontend-successor-gemini/P1-INTERFACE.md。
+// 启动数据预热：纯读动作的预热语义与真实竞态回归（真实 store + 替身 API）。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";

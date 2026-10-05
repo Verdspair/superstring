@@ -20,7 +20,7 @@ import { useSuperstringStore as store } from "../../src/web/store";
 import { A, agent, B, persona, policy, setupLibrary } from "./helpers/library-fixture";
 
 const zhText = zh as Record<string, string>;
-/** 本地键可能晚于 locales 单写者落地：缺失时 i18next 原样返回 key。 */
+/** 本地键可能晚于 locales 文件落地：缺失时 i18next 原样返回 key。 */
 const label = (key: string) => zhText[key] ?? key;
 
 const LONG_MEMORY_KEYS = [
@@ -67,7 +67,7 @@ afterEach(() => {
 });
 
 describe("memory-tools 与 long-memory 的字段所有权", () => {
-  it("legacy 全量模式只在 memory-tools 载荷里归一为 broad 并保留相关性指令", () => {
+  it("legacy 全量模式未改档时保留 full，显式切换才归一为 broad，并保留相关性指令", () => {
     const editor = newPageEditor(
       {
         ...agent,
@@ -82,8 +82,17 @@ describe("memory-tools 与 long-memory 的字段所有权", () => {
     };
     const payload = pageAgentPayload(editor, "memory-tools").p5_config;
     if (!payload) throw new Error("Missing memory-tools payload");
-    expect(payload.retrieval_mode).toBe("broad");
+    // 未主动改档：存量 full 原样保留（此前会归一为 broad，现只随显式切换归一）。
+    expect(payload.retrieval_mode).toBe("full_body");
     expect(payload.retrieval_presets.broad.candidate_limit).toBe(150);
+    // 主动切到普通档：此时才按用户选择写 broad。
+    const switched = newPageEditor(
+      { ...agent, p5_config: { ...agent.p5_config, retrieval_mode: "full_body" } },
+      persona,
+      policy,
+    );
+    switched.draft.p5_config = { ...switched.draft.p5_config, retrieval_mode: "broad" };
+    expect(pageAgentPayload(switched, "memory-tools").p5_config?.retrieval_mode).toBe("broad");
     expect(payload.retrieval_presets.broad.relevance_instruction).toBe(
       agent.p5_config.retrieval_presets.broad.relevance_instruction,
     );
@@ -513,6 +522,84 @@ describe("保存基线显式刷新", () => {
     });
     expect(getAgent).not.toHaveBeenCalled();
     store.setState({ settingsSaving: false });
+  });
+
+  it("目录批次输入生命周期：null→ready、跨 Agent、刷新基线、放弃清错、非法不拦普通档保存", async () => {
+    const fullAgent = {
+      ...agent,
+      p5_config: {
+        ...agent.p5_config,
+        retrieval_mode: "full_catalog" as const,
+        max_catalog_batches: 17,
+        catalog_batch_size: 23,
+      },
+    };
+    let persisted = structuredClone(fullAgent);
+    const updateAgent = vi.fn(async (_id: string, body: Record<string, unknown>) => {
+      const patch = { ...body };
+      delete patch.expected_version;
+      persisted = { ...persisted, ...patch, config_version: persisted.config_version + 1 };
+      return { ...persisted, id: _id };
+    });
+    setupLibrary({
+      getAgent: vi.fn(async (id: string) => ({ ...persisted, id })),
+      listAgents: vi.fn(async () => [fullAgent, { ...fullAgent, id: B, name: "Agent B" }]),
+      updateAgent,
+    } as never);
+    // null→ready：编辑器未就绪时只有加载态，就绪后输入按存量值出现。
+    store.setState({ pageEditor: null });
+    await act(async () => render(<MemoryToolSettings />));
+    expect(screen.getByText("正在加载…")).toBeTruthy();
+    await act(async () => store.getState().editAgent(A));
+    expect((screen.getByLabelText("最多目录批次") as HTMLInputElement).value).toBe("17");
+    expect((screen.getByLabelText("每批目录条数") as HTMLInputElement).value).toBe("23");
+
+    // 非法原文：alert + 拦保存 + 不写草稿。
+    const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
+    const save = () => screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
+    fireEvent.change(batches, { target: { value: "" } });
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(save().disabled).toBe(true);
+    expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+
+    // invalid-only 也能放弃清错：放弃按钮在非 dirty 但 invalid 时可用，点击后错误消失。
+    const discard = () => screen.getByRole("button", { name: "放弃修改" }) as HTMLButtonElement;
+    expect(discard().disabled).toBe(false);
+    await act(async () => fireEvent.click(discard()));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(save().disabled).toBe(true);
+
+    // 跨 Agent：切到 B（同 full 配置，值不同）→ 输入按 B 的存量值显示。
+    await act(async () => store.getState().editAgent(B));
+    const bBatches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
+    expect(bBatches.value).toBe("17");
+
+    // 刷新基线：未改字段跟随新基线、已改草稿保留（既有合并语义）。这里无草稿，刷新后原文仍是基线值。
+    await act(async () => void store.getState().refreshSettingsAgent());
+    const afterRefresh = screen.getByLabelText("最多目录批次") as HTMLInputElement;
+    expect(afterRefresh.value).toBe("17");
+    expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+    // 已改草稿（40）时刷新：草稿保留（不丢用户输入），原文与草稿一致不回跳。
+    fireEvent.change(afterRefresh, { target: { value: "40" } });
+    await act(async () => void store.getState().refreshSettingsAgent());
+    const kept = screen.getByLabelText("最多目录批次") as HTMLInputElement;
+    expect(kept.value).toBe("40");
+    expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(40);
+
+    // full 非法 → 主动切普通档：输入消失，invalid 不拦普通档保存；批次数保留不丢。
+    fireEvent.change(kept, { target: { value: "" } });
+    expect(save().disabled).toBe(true);
+    const mode = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
+    fireEvent.change(mode, { target: { value: "standard" } });
+    expect(screen.queryByLabelText("最多目录批次")).toBeNull();
+    expect(save().disabled).toBe(false);
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    const savedCall = updateAgent.mock.calls.at(-1);
+    if (!savedCall) throw new Error("Missing save call");
+    expect(
+      (savedCall[1] as { p5_config: { retrieval_mode: string; max_catalog_batches: number } })
+        .p5_config,
+    ).toMatchObject({ retrieval_mode: "standard", max_catalog_batches: 40 });
   });
 
   it("记忆面板提供刷新保存基线按钮；忙碌时输入、选项与保存按钮禁用", async () => {

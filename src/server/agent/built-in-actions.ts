@@ -10,7 +10,6 @@ import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { PermissionRequirement } from "../../shared/contracts/permissions";
 import { AppError, fail } from "../errors";
 import {
-  type EvidenceQueryPage,
   type EvidenceQueryResponse,
   type EvidenceTextPage,
   evidenceQueryPage,
@@ -43,7 +42,6 @@ export interface BuiltInAction {
     context: ActionContext,
   ): Promise<Omit<ActionObservation, "id" | "name">>;
 }
-export type EvidenceQueryResult = EvidenceQueryPage;
 export interface EvidenceQueryModule {
   query(
     input: { query: string; limit?: number; cursor?: string },

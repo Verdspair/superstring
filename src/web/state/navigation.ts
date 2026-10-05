@@ -7,34 +7,11 @@ import {
   knowledgeReadDirty,
   organizationDirty,
 } from "../features/knowledge/types";
-import { qqDraftChanges, settingsHaveDrafts } from "../features/qq/draft-state";
+import { qqDraftChanges } from "../features/qq/draft-state";
 import { msg } from "../i18n";
 import { errorText } from "./helpers";
 import type { PendingNavigation, StoreGet, StoreSet, SuperstringState } from "./types";
-
-function navigationBusy(get: () => SuperstringState) {
-  const state = get();
-  return (
-    state.qqAccessSaving ||
-    state.qqSchemeSaving ||
-    state.qqStickerSaving ||
-    // 存储管理（保留设置保存与清理预览/执行）同样持写：保存期间导航必须被拦住。
-    state.qqStorageSaving ||
-    // 本群配置保存：同一条写保护，防止带着半份答案切走。
-    state.qqGroupConfigSaving ||
-    state.settingsSaving ||
-    state.permissionSaving ||
-    state.webAccessSaving ||
-    state.webAccessTesting ||
-    state.editorLoading ||
-    state.knowledgeReadLoading ||
-    state.organizationLoading ||
-    state.knowledgeModelLoading ||
-    state.memoryCorrectionSaving ||
-    state.qqMemoryBatchSaving ||
-    state.knowledgeBusy
-  );
-}
+import { hasUnsavedDrafts, navigationBusy } from "./unsaved-changes";
 
 async function performNavigation(
   get: () => SuperstringState,
@@ -275,7 +252,7 @@ export function createNavigationActions(
   };
   return {
     requestConversationNavigation: async (id) => {
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       if (
         (get().currentConversationId !== id ||
           get().conversationView !== "messages" ||
@@ -314,11 +291,11 @@ export function createNavigationActions(
       }
     },
     requestConversationView: (view, scope = "current") => {
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       // 目标真正变化时统一走草稿聚合守卫：同页视图切换不得绕过 permission/pageEditor/knowledge 草稿。
       if (
         (get().conversationView !== view || get().conversationScope !== scope) &&
-        settingsHaveDrafts(get())
+        hasUnsavedDrafts(get())
       ) {
         set({
           pendingNavigation: {
@@ -357,7 +334,7 @@ export function createNavigationActions(
       }
       if (settingsRoute === "knowledge-model" || settingsRoute === "management")
         settingsRoute = "models";
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       if (
         !(
           get().page === "settings" &&
@@ -412,7 +389,7 @@ export function createNavigationActions(
       }
     },
     openSystemComponent: (target) => {
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       const route =
         target.kind === "tool"
           ? "tool-grants"
@@ -435,7 +412,7 @@ export function createNavigationActions(
     openChat: () => get().requestConversationView("messages", "current"),
     openSettings: () => get().requestPageNavigation("settings", "hub"),
     openAgentSettings: () => {
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       get().requestPageNavigation("settings", "agents");
       const state = get();
       // 仅在真正进入 agents 页（未被 dirty 确认拦截）且尚无草稿时，按默认规则载入。
@@ -467,7 +444,7 @@ export function createNavigationActions(
         get().openSettingsRoute("qq-connection");
         return;
       }
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       if (
         !(get().page === page && get().settingsView === settingsView) &&
         guardQqDrafts({ kind: "page", page, settingsView })
@@ -536,7 +513,7 @@ export function createNavigationActions(
       markLanded();
     },
     requestAgentNavigation: (id) => {
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       // 保存会清空 pageEditor，但保留 editorDraft；既有助手须重建编辑器。
       if (
         id === get().editorAgentId &&
@@ -560,7 +537,7 @@ export function createNavigationActions(
       void get().editAgent(id);
     },
     requestQqSchemeNavigation: (id, view = "settings") => {
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       if (!get().qqSchemes.some((row) => row.id === id)) {
         // 目标不存在（含已删的脏方案）：显式报错，不改路由也不切视图，草稿原样保留。
         set({ error: msg("操作失败，请重试。") });
@@ -588,7 +565,7 @@ export function createNavigationActions(
       void performNavigation(get, set, pending, false, markLanded);
     },
     openQqGroupConfig: (bindingId) => {
-      if (navigationBusy(get)) return;
+      if (navigationBusy(get())) return;
       const state = get();
       // 目录已载入时先确认真实存在，避免丢弃草稿后进入空页；未载入则让页面读取如实报失败。
       if (state.qqBindingsLoaded && !state.qqBindings.some((row) => row.id === bindingId)) {
@@ -625,7 +602,7 @@ export function createNavigationActions(
     },
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;
-      if (!pending || navigationBusy(get)) return;
+      if (!pending || navigationBusy(get())) return;
       if (pending.kind === "scheme") {
         if (!(await get().saveQqDrafts())) {
           set({
@@ -765,7 +742,7 @@ export function createNavigationActions(
     },
     confirmDiscardAndContinue: async () => {
       const pending = get().pendingNavigation;
-      if (!pending || navigationBusy(get)) return;
+      if (!pending || navigationBusy(get())) return;
       await performNavigation(get, set, pending, true, markLanded);
       // 切换方案不能顺带丢弃其他资料草稿。
       if (!get().pendingNavigation && pending.kind !== "scheme") get().discardQqMemoryBatchDrafts();

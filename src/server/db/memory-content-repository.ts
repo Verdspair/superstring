@@ -12,6 +12,9 @@ import {
 import { entries, govern, type MemoryEntryRow, validateEntrySources } from "./memory-repository";
 import {
   acceptsObservationSources,
+  loadMessageIntegrity,
+  loadSessionIntegrity,
+  loadTurnIntegrity,
   observationContentSources,
   observationSources,
 } from "./memory-source-repository";
@@ -37,6 +40,48 @@ export function memoryRevision(
       ]),
     )
     .digest("hex");
+}
+
+/**
+ * The chat-source validity rule shared by the per-memory reader and the batched
+ * correction scan: pure predicate over the integrity rows, no I/O.
+ */
+interface ChatSourceValidity {
+  turn:
+    | {
+        id: string;
+        sessionId: string;
+        sourceValid: number;
+        generationStatus: string;
+      }
+    | undefined;
+  session: { id: string; agentId: string; userId: string; title: string } | undefined;
+  user: { id: string; turnId: string; sessionId: string; role: string; status: string } | undefined;
+  assistant:
+    | { id: string; turnId: string; sessionId: string; role: string; status: string }
+    | undefined;
+}
+
+function chatSourceValid(agentId: string, state: ChatSourceValidity): boolean {
+  const { turn, session, user, assistant } = state;
+  return Boolean(
+    turn &&
+      session &&
+      session.agentId === agentId &&
+      session.userId === DEFAULT_USER_ID &&
+      turn.sourceValid === 1 &&
+      turn.generationStatus === "completed" &&
+      user &&
+      user.turnId === turn.id &&
+      user.sessionId === session.id &&
+      user.role === "user" &&
+      user.status === "completed" &&
+      assistant &&
+      assistant.turnId === turn.id &&
+      assistant.sessionId === session.id &&
+      assistant.role === "assistant" &&
+      assistant.status === "completed",
+  );
 }
 
 /** Never expose a message from another agent, even if a damaged source points to it. */
@@ -83,13 +128,7 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
           )
           .get()
       : undefined;
-    const valid = Boolean(
-      owned &&
-        turn?.sourceValid === 1 &&
-        turn.generationStatus === "completed" &&
-        user?.status === "completed" &&
-        assistant?.status === "completed",
-    );
+    const valid = chatSourceValid(agentId, { turn, session, user, assistant });
     sourceMessages.push({
       turn_id: link.turnId,
       session_title: owned ? session.title : null,
@@ -251,17 +290,104 @@ export function correctMemory(
 }
 
 /** Corrections constrain regeneration; historical messages themselves remain intact. */
-export function correctionsForTurns(orm: Orm, agentId: string, turnIds: string[]) {
-  const allowed = new Set(turnIds);
-  return entries(orm, agentId, undefined, { status: "active" })
-    .filter((entry) => correctionMetadata(entry.configSnapshot) !== null)
-    .flatMap((entry) => {
-      const detail = memoryContent(orm, agentId, entry.id);
-      const ids = detail.content.sources
-        .filter((source) => source.type === "chat" && allowed.has(source.turn_id))
-        .map((source) => (source.type === "chat" ? source.turn_id : ""));
-      return detail.content.validity === "valid" && ids.length > 0
-        ? [{ id: entry.id, body: entry.body, revision: detail.content.revision, source_ids: ids }]
-        : [];
+export interface CorrectionScan {
+  id: string;
+  body: string;
+  revision: string;
+  /** All chat turn ids of this entry, in the entry's source order. */
+  source_ids: string[];
+  validity: "valid" | "invalid";
+}
+
+/**
+ * One active-correction scan for a call site. Per-entry validity is computed with
+ * the same projections and predicates as `memoryContent` on same-call batched
+ * maps; the result is a plain value (never persisted, never reused across calls).
+ */
+export function activeCorrections(orm: Orm, agentId: string): CorrectionScan[] {
+  const correctionEntries = entries(orm, agentId, undefined, { status: "active" }).filter(
+    (entry) => correctionMetadata(entry.configSnapshot) !== null,
+  );
+  if (correctionEntries.length === 0) return [];
+  const ids = correctionEntries.map((entry) => entry.id);
+  const linksByMemory = loadMemorySourcesOrdered(orm, ids);
+  const allLinks = [...linksByMemory.values()].flat();
+  const turnRows = loadTurnIntegrity(
+    orm,
+    allLinks.map((link) => link.turnId),
+  );
+  const sessionRows = loadSessionIntegrity(
+    orm,
+    [...turnRows.values()].map((turn) => turn.sessionId),
+  );
+  const messageRows = loadMessageIntegrity(
+    orm,
+    allLinks.flatMap((link) => [link.userMessageId, link.assistantMessageId]),
+  );
+  const observations = observationSources(orm, ids);
+  return correctionEntries.map((entry) => {
+    const links = linksByMemory.get(entry.id) ?? [];
+    const obs = observations.get(entry.id) ?? [];
+    const chatSources = links.map((link) => {
+      const turn = turnRows.get(link.turnId);
+      const session = turn ? sessionRows.get(turn.sessionId) : undefined;
+      const user = session ? messageRows.get(link.userMessageId) : undefined;
+      const assistant = session ? messageRows.get(link.assistantMessageId) : undefined;
+      const valid = chatSourceValid(agentId, { turn, session, user, assistant });
+      return { turn_id: link.turnId, valid };
     });
+    return {
+      id: entry.id,
+      body: entry.body,
+      revision: memoryRevision(entry),
+      source_ids: chatSources.map((source) => source.turn_id),
+      validity:
+        chatSources.length + obs.length > 0 &&
+        chatSources.every((source) => source.valid) &&
+        entry.status !== "invalid" &&
+        (acceptsObservationSources(entry.scopeKey, agentId) || obs.length === 0)
+          ? "valid"
+          : "invalid",
+    };
+  });
+}
+
+/** Apply a prepared scan to one allowed turn set; same rule as the per-call reader. */
+export function correctionsForTurnsFrom(scan: CorrectionScan[], turnIds: string[]) {
+  const allowed = new Set(turnIds);
+  return scan.flatMap((entry) => {
+    const ids = entry.source_ids.filter((id) => allowed.has(id));
+    return entry.validity === "valid" && ids.length > 0
+      ? [{ id: entry.id, body: entry.body, revision: entry.revision, source_ids: ids }]
+      : [];
+  });
+}
+
+export function correctionsForTurns(orm: Orm, agentId: string, turnIds: string[]) {
+  return correctionsForTurnsFrom(activeCorrections(orm, agentId), turnIds);
+}
+
+/**
+ * Every turn source of the given memories, grouped by memory id, in PK-index
+ * (memory_id, turn_id) order — the same order the former per-memory query
+ * returned, so `source_ids` order is unchanged.
+ */
+function loadMemorySourcesOrdered(
+  orm: Orm,
+  memoryIds: string[],
+): Map<string, Array<typeof schema.memorySources.$inferSelect>> {
+  const grouped = new Map<string, Array<typeof schema.memorySources.$inferSelect>>();
+  if (memoryIds.length === 0) return grouped;
+  const rows = orm
+    .select()
+    .from(schema.memorySources)
+    .where(inArray(schema.memorySources.memoryId, memoryIds))
+    .orderBy(schema.memorySources.memoryId, schema.memorySources.turnId)
+    .all();
+  for (const row of rows) {
+    const list = grouped.get(row.memoryId);
+    if (list) list.push(row);
+    else grouped.set(row.memoryId, [row]);
+  }
+  return grouped;
 }

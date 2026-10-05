@@ -64,7 +64,6 @@ export { fail };
 // Policy
 
 /**
- * 41.
  * The contract passes `lock=True` to take `SELECT … FOR UPDATE` on the Agent row
  * twice (once for the read, again before creating the policy) so a concurrent
  * first-touch cannot create two policies. SQLite has no row locks: the route
@@ -403,7 +402,6 @@ export interface EnqueueArgs {
 }
 
 /**
- * 184.
  * Three guard rails, in this order:
  * 1. `request_key` replay — same key + same payload returns the SAME job
  * (idempotent), same key + different payload is `MEMORY_REQUEST_CONFLICT`.
@@ -575,7 +573,6 @@ export function jobOwned(orm: Orm, agentId: string, jobId: string): MemoryJobRow
 }
 
 /**
- * 221.
  * Order matters: the contract guard ("can this memory be re-enabled?") runs
  * BEFORE `governance_epoch` is bumped, so a rejected `enable` leaves the epoch
  * untouched. Queued/in-flight jobs are failed *before* the facts they read are

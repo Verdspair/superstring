@@ -1,4 +1,4 @@
-// T11 resume2: failure-gate purpose contract for the initiative media gate
+// T11: failure-gate purpose contract for the initiative media gate
 // (src/server/db/qq-media-repository.ts, attemptedUnreadMedia*).
 //
 // Contract under test:

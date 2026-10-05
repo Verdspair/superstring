@@ -1,17 +1,11 @@
 import { Copy, Crosshair, FileDiff, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { type QqSchemePrompts, qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import {
   Dialog,
@@ -36,23 +30,31 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
 import { invalidSchemeInputs, invalidSchemeTimezone } from "../../features/qq/draft-state";
+import {
+  imageFields,
+  participationFields,
+  QQ_SCHEME_ENUM_OPTION_LABELS,
+  QQ_SCHEME_FIELD_LABELS,
+  stickerFields,
+  TRIGGER_LABELS,
+} from "../../features/qq/scheme-field-metadata";
 import { qqSchemeChanges, qqSchemeDirty } from "../../features/qq/types";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { translateNotice } from "../../i18n";
+import type { SuperstringState } from "../../state/types";
 import { useSuperstringStore } from "../../store";
-import { TRIGGER_LABELS } from "./binding-editor";
 import { QqMessagePreview } from "./qq-message-preview";
+import { SchemeFieldCard } from "./scheme-field-shared";
 import {
   fieldBounds,
   headroomPercentBounds,
-  imageFields,
+  isValidTimezone,
   localClock,
   type NumberEditorGroup,
   numberEditorGroups,
-  participationFields,
   type SchemeTask,
   schemeFieldTask,
-  stickerFields,
+  TIMEZONE_SUGGESTIONS,
   utcMinutes,
 } from "./scheme-fields";
 
@@ -67,79 +69,12 @@ const schemeBooleanFields: ReadonlySet<string> = new Set([
   "media_input.stages.generation",
 ]);
 
+/** 文案键唯一来源在 features/qq/scheme-field-metadata（含触发器与 0052 两组）；这里只补方案名/描述两项页面专属键。 */
 const schemeFieldLabels: Readonly<Record<string, string>> = {
   name: "connections.schemeName",
   description: "connections.description",
-  ...Object.fromEntries(
-    Object.entries(TRIGGER_LABELS).map(([key, label]) => [`triggers.${key}`, label]),
-  ),
-  ...Object.fromEntries(participationFields.map(([name, label]) => [`rhythm.${name}`, label])),
-  ...Object.fromEntries(
-    [...stickerFields, ...imageFields].map(([group, name, label]) => [`${group}.${name}`, label]),
-  ),
-  "rhythm.active_hours_enabled": "connections.allowedHours",
-  "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
-  "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
-  "context.judgement_message_limit": "connections.judgementRecentMessages",
-  "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
-  "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
-  "context.reply_message_limit": "connections.replyRecentMessages",
-  "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
-  "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
-  "compression.watermark_trigger": "connections.watermarkTriggerMessages",
-  "compression.package_limit": "connections.watermarkPackageLimit",
-  "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
-  "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
-  "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
-  "sticker_collections.collection_ids": "connections.authorizedCollections",
-  "prompts.scene": "connections.sceneAndBehaviour",
-  "prompts.judge": "connections.judgementTask",
-  "prompts.reply": "connections.effectiveReplyTask",
-  "prompts.review": "connections.reviewTask",
-  "prompts.sticker": "connections.stickerTask",
-  "prompts.media": "connections.mediaNoteTask",
-  "prompts.compress": "connections.watermarkCompressionTask",
-  "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
-  // 0052 两组（与 draft-state 的全局标签映射同批；值行仍按 previewValue 特判）。
-  "message_settings.reply_mode": "connections.quoteReplyMode",
-  "message_settings.reply_depth": "connections.quoteDepth",
-  "message_settings.time_display": "connections.timeDisplayMode",
-  "message_settings.timezone": "connections.timezone",
-  "media_input.mode": "connections.imageInputMode",
-  "media_input.stages.decision": "schemes.studio.stageDecision",
-  "media_input.stages.evaluation": "schemes.studio.stageEvaluation",
-  "media_input.stages.generation": "schemes.studio.stageGeneration",
-  "media_input.max_images": "connections.maxAutoImages",
-  "media_input.ordinary_still_max_dimension": "connections.ordinaryStillMaxDimension",
-  "media_input.expression_max_dimension": "connections.expressionStillMaxDimension",
-  "media_input.expression_frame_count": "connections.expressionFrameCount",
-  "media_input.expression_frame_max_dimension": "connections.expressionFrameMaxDimension",
+  ...QQ_SCHEME_FIELD_LABELS,
 };
-
-/**
- * 页内分组：细边框 + 淡标题带，标题下写明这个组的作用范围、单位与影响；
- * 视觉上沿用现有 Card（与设置页的 SettingsGroup 同一套层次），不新增样式系统。
- */
-function StudioGroup({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  const { t } = useTranslation();
-  return (
-    <Card size="sm" className="min-w-0 gap-0 pt-0">
-      <CardHeader className="border-b bg-muted/50">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        {description && <CardDescription className="text-xs">{t(description)}</CardDescription>}
-      </CardHeader>
-      <CardContent className="space-y-5 pt-3">{children}</CardContent>
-    </Card>
-  );
-}
 
 /** Collection ids read as names; an id no known collection matches stays visible instead of vanishing. */
 function schemeCollectionNames(
@@ -154,21 +89,7 @@ function schemeCollectionNames(
 }
 
 /** 枚举选项的中话标签（值原样进入载荷，不在这里改写契约值）。 */
-const schemeEnumLabels: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "message_settings.reply_mode": {
-    one_then_on_demand: "connections.quoteMode.one_then_on_demand",
-    configured_depth: "connections.quoteMode.configured_depth",
-  },
-  "message_settings.time_display": {
-    full: "connections.timeDisplay.full",
-    full_relative: "connections.timeDisplay.full_relative",
-    hybrid: "connections.timeDisplay.hybrid",
-  },
-  "media_input.mode": {
-    native: "connections.imageMode.native",
-    description: "connections.imageMode.description",
-  },
-};
+const schemeEnumLabels = QQ_SCHEME_ENUM_OPTION_LABELS;
 
 /**
  * 数字输入：原文留在草稿里，只有契约 schema 认可的值才写回方案；无效原文不丢弃、保存被禁用。
@@ -191,11 +112,9 @@ function SchemeNumber({
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
-  const {
-    qqSchemeEditor: editor,
-    qqSchemeSaving: saving,
-    patchQqSchemeGroup: patch,
-  } = useSuperstringStore();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
   const [texts, setTexts] = useQqInput("schemeTexts");
   const [invalid, setInvalid] = useQqInput("schemeInvalid");
   if (!editor) return null;
@@ -286,11 +205,9 @@ function SchemeEnum({
   info?: string;
 }) {
   const { t } = useTranslation();
-  const {
-    qqSchemeEditor: editor,
-    qqSchemeSaving: saving,
-    patchQqSchemeGroup: patch,
-  } = useSuperstringStore();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
   if (!editor) return null;
   const value = (editor[group] as unknown as Record<string, string>)[name];
   // 选项标签按 canonical 持久键查（message_settings/media_input），与预览的 field 键一致。
@@ -321,11 +238,9 @@ function SchemeEnum({
  */
 function SchemeTimezone({ label }: { label: string }) {
   const { t } = useTranslation();
-  const {
-    qqSchemeEditor: editor,
-    qqSchemeSaving: saving,
-    patchQqSchemeGroup: patch,
-  } = useSuperstringStore();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
   const [texts, setTexts] = useQqInput("schemeTexts");
   const [invalid, setInvalid] = useQqInput("schemeInvalid");
   if (!editor) return null;
@@ -333,23 +248,7 @@ function SchemeTimezone({ label }: { label: string }) {
   const inputId = `scheme-field-${id}`;
   const errorId = `${inputId}-error`;
   const raw = texts[id];
-  const valid = (value: string) => {
-    try {
-      new Intl.DateTimeFormat("en-US", { timeZone: value.trim() });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const suggestions = [
-    "Asia/Shanghai",
-    "Asia/Tokyo",
-    "Asia/Hong_Kong",
-    "Asia/Singapore",
-    "Europe/London",
-    "America/New_York",
-    "UTC",
-  ];
+  const valid = isValidTimezone;
   return (
     <Field label={label} info="connections.timezoneHint">
       <Input
@@ -374,7 +273,7 @@ function SchemeTimezone({ label }: { label: string }) {
         }}
       />
       <datalist id="scheme-timezone-suggestions">
-        {suggestions.map((zone) => (
+        {TIMEZONE_SUGGESTIONS.map((zone) => (
           <option key={zone} value={zone} />
         ))}
       </datalist>
@@ -390,7 +289,9 @@ function SchemeTimezone({ label }: { label: string }) {
 /** 图片输入的阶段开关：独立三开关，全关合法（图片能力开着但不自动发画面，仅按需）。 */
 function StageSwitch({ phase }: { phase: "decision" | "evaluation" | "generation" }) {
   const { t } = useTranslation();
-  const { qqSchemeEditor: editor, qqSchemeSaving: saving, patchQqScheme } = useSuperstringStore();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patchQqScheme = useSuperstringStore((s) => s.patchQqScheme);
   if (!editor) return null;
   const labelKey = `schemes.studio.stage${phase[0].toUpperCase()}${phase.slice(1)}`;
   const label = t(labelKey);
@@ -425,11 +326,9 @@ function StageSwitch({ phase }: { phase: "decision" | "evaluation" | "generation
  */
 function OrdinaryStillSpec() {
   const { t } = useTranslation();
-  const {
-    qqSchemeEditor: editor,
-    qqSchemeSaving: saving,
-    patchQqSchemeGroup: patch,
-  } = useSuperstringStore();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
   const [texts, setTexts] = useQqInput("schemeTexts");
   const [invalid, setInvalid] = useQqInput("schemeInvalid");
   if (!editor) return null;
@@ -542,7 +441,10 @@ function OrdinaryStillSpec() {
  */
 function BoundRecentTurns() {
   const { t } = useTranslation();
-  const { qqSchemeEditor: editor, qqBindings, agents, loadQqBindings } = useSuperstringStore();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const qqBindings = useSuperstringStore((s) => s.qqBindings);
+  const agents = useSuperstringStore((s) => s.agents);
+  const loadQqBindings = useSuperstringStore((s) => s.loadQqBindings);
   useEffect(() => {
     void loadQqBindings();
   }, [loadQqBindings]);
@@ -589,11 +491,9 @@ function SchemePercent({
   info: string;
 }) {
   const { t } = useTranslation();
-  const {
-    qqSchemeEditor: editor,
-    qqSchemeSaving: saving,
-    patchQqSchemeGroup: patch,
-  } = useSuperstringStore();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
   const [texts, setTexts] = useQqInput("schemeTexts");
   const [invalid, setInvalid] = useQqInput("schemeInvalid");
   if (!editor) return null;
@@ -679,7 +579,9 @@ function PromptEditor({
   titleKey: string;
   hint?: string;
 }) {
-  const { qqSchemeEditor, qqSchemeSaving, patchQqSchemeGroup } = useSuperstringStore();
+  const qqSchemeEditor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const qqSchemeSaving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patchQqSchemeGroup = useSuperstringStore((s) => s.patchQqSchemeGroup);
   return (
     <Field label={titleKey} info={hint}>
       <Textarea
@@ -694,7 +596,34 @@ function PromptEditor({
 
 export function SchemeStudio() {
   const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const state = useSuperstringStore(
+    useShallow((s) => ({
+      // 数据字段：按实际读取面窄订阅；无关 store 更新不再重渲染本页。
+      error: s.error,
+      feedback: s.feedback,
+      qqInputs: s.qqInputs,
+      qqSchemeEditor: s.qqSchemeEditor,
+      qqSchemeSaving: s.qqSchemeSaving,
+      qqSchemes: s.qqSchemes,
+      qqSchemesLoading: s.qqSchemesLoading,
+      qqSchemeUsage: s.qqSchemeUsage,
+      qqSchemeUsageError: s.qqSchemeUsageError,
+      qqStickerCollections: s.qqStickerCollections,
+      // 动作引用稳定（zustand store 动作不随 set 重建）。
+      createQqScheme: s.createQqScheme,
+      deleteQqScheme: s.deleteQqScheme,
+      discardQqSchemeChanges: s.discardQqSchemeChanges,
+      duplicateQqScheme: s.duplicateQqScheme,
+      loadQqSchemes: s.loadQqSchemes,
+      loadQqStickers: s.loadQqStickers,
+      openSettingsRoute: s.openSettingsRoute,
+      patchQqScheme: s.patchQqScheme,
+      patchQqSchemeGroup: s.patchQqSchemeGroup,
+      refreshQqScheme: s.refreshQqScheme,
+      requestQqSchemeNavigation: s.requestQqSchemeNavigation,
+      saveQqScheme: s.saveQqScheme,
+    })),
+  );
   const { loadQqSchemes, loadQqStickers, qqSchemeEditor: editor, qqSchemeSaving: saving } = state;
   const [task, setTask] = useState<SchemeTask>("participation");
   const [naming, setNaming] = useState<{ kind: "new" | "copy"; step: "name" | "draft" } | null>(
@@ -757,7 +686,11 @@ export function SchemeStudio() {
   const invalidFields = [
     ...new Set([
       ...Object.keys(state.qqInputs.schemeInvalid),
-      ...invalidSchemeInputs(state).map(([field]) => field),
+      // invalidSchemeInputs 只读 qqSchemeEditor 与 qqInputs；本页已窄订阅这两个字段。
+      ...invalidSchemeInputs({
+        qqSchemeEditor: state.qqSchemeEditor,
+        qqInputs: state.qqInputs,
+      } as SuperstringState).map(([field]) => field),
     ]),
   ];
   const invalid = invalidFields.length > 0;
@@ -938,7 +871,7 @@ export function SchemeStudio() {
                     />
                   </Field>
                 </div>
-                <StudioGroup
+                <SchemeFieldCard
                   title={t("connections.speechTriggers")}
                   description="schemes.studio.triggersHint"
                 >
@@ -965,8 +898,8 @@ export function SchemeStudio() {
                       </Label>
                     ))}
                   </div>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.rhythmTitle")}
                   description="schemes.studio.rhythmHint"
                 >
@@ -981,8 +914,8 @@ export function SchemeStudio() {
                       />
                     ))}
                   </div>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("connections.allowedHours")}
                   description="connections.useLocalTimeEqualStartAndEndMeansAll"
                 >
@@ -1028,16 +961,16 @@ export function SchemeStudio() {
                   <p className="text-xs text-muted-foreground">
                     {t("schemes.studio.activeHoursHint")}
                   </p>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.judgePrompt")}
                   description="connections.decideWhetherToSpeak"
                 >
                   <PromptEditor slot="judge" titleKey="connections.judgementTask" />
-                </StudioGroup>
+                </SchemeFieldCard>
               </TabsContent>
               <TabsContent value="response" className="m-0 space-y-6">
-                <StudioGroup
+                <SchemeFieldCard
                   title={t("schemes.studio.replyStructure")}
                   description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
                 >
@@ -1051,8 +984,8 @@ export function SchemeStudio() {
                     />
                     {t("connections.answerEachSpeakerSeparately")}
                   </Label>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.replyTasks")}
                   description="schemes.studio.replyTasksHint"
                 >
@@ -1076,12 +1009,12 @@ export function SchemeStudio() {
                   </Field>
                   <PromptEditor slot="scene" titleKey="connections.sceneAndBehaviour" />
                   <PromptEditor slot="review" titleKey="connections.reviewTask" />
-                </StudioGroup>
+                </SchemeFieldCard>
               </TabsContent>
               <TabsContent value="context" className="m-0 space-y-6">
                 {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
                     不参与运行（禁用但配置保留），切回按层数即恢复。 */}
-                <StudioGroup
+                <SchemeFieldCard
                   title={t("schemes.studio.messageRelations")}
                   description="schemes.studio.messageRelationsHint"
                 >
@@ -1113,9 +1046,9 @@ export function SchemeStudio() {
                         : null
                     }
                   />
-                </StudioGroup>
+                </SchemeFieldCard>
                 {(["judgement", "reply"] as const).map((part) => (
-                  <StudioGroup
+                  <SchemeFieldCard
                     key={part}
                     title={
                       part === "judgement"
@@ -1163,9 +1096,9 @@ export function SchemeStudio() {
                         }
                       />
                     </div>
-                  </StudioGroup>
+                  </SchemeFieldCard>
                 ))}
-                <StudioGroup
+                <SchemeFieldCard
                   title={t("connections.compressionAndAssembly")}
                   description="schemes.studio.compressionHint"
                 >
@@ -1193,7 +1126,7 @@ export function SchemeStudio() {
                     titleKey="connections.watermarkCompressionTask"
                     hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
                   />
-                </StudioGroup>
+                </SchemeFieldCard>
                 <div className="rounded-lg bg-muted p-5 text-sm leading-6">
                   <h3 className="font-medium">
                     {t("connections.bindingsDetermineTheMaterialScope")}
@@ -1212,7 +1145,7 @@ export function SchemeStudio() {
               </TabsContent>
               <TabsContent value="media" className="m-0 space-y-6">
                 {/* 0052 图片输入：模式/阶段/图数/规格；普通动图沿用下方既有 rhythm 真源不重复存储。 */}
-                <StudioGroup
+                <SchemeFieldCard
                   title={t("schemes.studio.imageInput")}
                   description="schemes.studio.imageInputHint"
                 >
@@ -1254,8 +1187,8 @@ export function SchemeStudio() {
                     <StageSwitch phase="evaluation" />
                     <StageSwitch phase="generation" />
                   </div>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.imageParams")}
                   description="schemes.studio.imageParamsHint"
                 >
@@ -1264,8 +1197,8 @@ export function SchemeStudio() {
                       <SchemeNumber key={name} group={group} name={name} label={label} />
                     ))}
                   </div>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.stickerParams")}
                   description="schemes.studio.stickerParamsHint"
                 >
@@ -1274,8 +1207,8 @@ export function SchemeStudio() {
                       <SchemeNumber key={name} group={group} name={name} label={label} />
                     ))}
                   </div>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("connections.authorizedCollections")}
                   description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
                 >
@@ -1306,8 +1239,8 @@ export function SchemeStudio() {
                   <Button variant="outline" onClick={() => state.openSettingsRoute("qq-stickers")}>
                     {t("connections.manageStickers")}
                   </Button>
-                </StudioGroup>
-                <StudioGroup
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.mediaPrompts")}
                   description="schemes.studio.mediaPromptsHint"
                 >
@@ -1321,7 +1254,7 @@ export function SchemeStudio() {
                     titleKey="connections.mediaNoteTask"
                     hint="connections.describeWhatThePictureOrVoiceActuallyContains"
                   />
-                </StudioGroup>
+                </SchemeFieldCard>
               </TabsContent>
             </div>
           </ScrollArea>

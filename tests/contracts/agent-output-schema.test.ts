@@ -3,7 +3,7 @@ import {
   AGENT_DECISION_JSON_SCHEMA,
   parseAgentDecision,
   readJsonBody,
-} from "../../src/server/agent/agent-specs";
+} from "../../src/shared/contracts/agent-output";
 
 type JsonSchema = {
   type?: string;

@@ -963,3 +963,29 @@ describe("连接页", () => {
     ).toBe("ws://localhost:4000");
   });
 });
+
+describe("性能阶段补测：窄订阅行为保持（FE-P1）", () => {
+  it("与本页无关的 store 更新不重渲染绑定视图；本页读取字段更新仍正常刷新", async () => {
+    await renderBoards({
+      listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
+      listQqConversations: vi.fn().mockResolvedValue([]),
+    });
+    expect(screen.getByText("30003")).toBeTruthy();
+    // 无关更新：notice 不是本页读取字段 → 窄订阅不得引发重渲染。
+    const textBefore = document.querySelector("ul")?.textContent ?? "";
+    await act(async () => {
+      store.setState({ memoryCorrectionSaving: true });
+    });
+    expect(document.querySelector("ul")?.textContent ?? "").toBe(textBefore);
+    // 本页读取字段更新：绑定目录变化 → 行列表必须反映新值（不能因窄订阅漏刷新）。
+    const refreshed = [
+      bindingOf(SCHEME_A, BINDING_A, "30003"),
+      bindingOf(SCHEME_A, BINDING_B, "30004"),
+    ];
+    await act(async () => {
+      store.setState({ qqBindings: refreshed });
+    });
+    expect(screen.getByText("30003")).toBeTruthy();
+    expect(screen.getByText("30004")).toBeTruthy();
+  });
+});

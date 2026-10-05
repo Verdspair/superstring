@@ -396,7 +396,7 @@ describe("media candidate selection (pure, T10 Step1/2)", () => {
     const directExpr = factOf({ id: "m4", parts: [img("imgDirectExpr", "expression")] });
     const directUnknown = factOf({ id: "m5", parts: [img("imgDirectUnk", "unknown")] });
     const focusUnknown = factOf({ id: "m6", parts: [img("imgFocusUnk", "unknown")] });
-    // explicit 主控细问关键图只对已在允许范围内的图生效（m7/m8 是本轮目标）。
+    // explicit 细问关键图只对已在允许范围内的图生效（m7/m8）。
     const explicitOne = factOf({ id: "m7", parts: [img("imgExplicit", "expression")] });
     const explicitTwo = factOf({ id: "m8", parts: [img("imgExplicit2", "ordinary")] });
     // 伪造 detail id 指向范围外事实：不扩权，仅普通窗口图 not_selected。
@@ -459,7 +459,7 @@ describe("media candidate selection (pure, T10 Step1/2)", () => {
     // 表情未被细问 → 最后优先级，超限即 not_supplied 省略标记。
     const exprOmission = result.omissions.find((o) => o.mediaId === "imgDirectExpr");
     expect(exprOmission).toMatchObject({ reason: "not_supplied" });
-    // detail 标记只属于 explicit 主控细问的两张。
+    // detail 标记只属于 explicit 细问的两张。
     const byId = new Map(result.selected.map((c) => [c.mediaId, c]));
     expect(byId.get("imgExplicit")?.detail).toBe(true);
     expect(byId.get("imgExplicit2")?.detail).toBe(true);

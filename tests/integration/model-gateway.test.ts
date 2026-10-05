@@ -3,11 +3,14 @@ import type { Server } from "node:http";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { AGENT_DECISION_JSON_SCHEMA, INVOKE_BATCH_LIMIT } from "../../src/server/agent/agent-specs";
 import { createModelProvider } from "../../src/server/db/model-provider-repository";
 import { createLmStudioClient, resolveLmStudioConfig } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 import { QQ_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
+import {
+  AGENT_DECISION_JSON_SCHEMA,
+  INVOKE_BATCH_LIMIT,
+} from "../../src/shared/contracts/agent-output";
 
 // Regression test for the loopback-proxy bug: on machines where HTTP_PROXY is
 // set and NO_PROXY is unset, Bun's global `fetch` routes even 127.0.0.1 traffic

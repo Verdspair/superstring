@@ -1,5 +1,5 @@
 // Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
-import { cleanup } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentResponse,
@@ -15,6 +15,7 @@ import {
   pageAgentPayload,
 } from "../../src/web/features/agents/page-drafts";
 import { selectLocale } from "../../src/web/i18n";
+import { MemoryToolSettings } from "../../src/web/screens/assistants/ResourceRules";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 function agent(id = "A") {
@@ -47,8 +48,9 @@ it("旧目录与检索字段只取已存基线，工具额度与上下文白名�
   expect(maintenance).not.toHaveProperty("p5_config");
   expect(maintenance).not.toHaveProperty("memory_retrieval_prompt");
   expect(pageAgentPayload(editor, "models")).not.toHaveProperty("memory_retrieval_model_name");
-  expect(memory.max_catalog_batches).toBe(100);
-  expect(memory.catalog_batch_size).toBe(30);
+  // 目录批次两项已并入 memory-tools 白名单：草稿改动随本页保存。
+  expect(memory.max_catalog_batches).toBe(7);
+  expect(memory.catalog_batch_size).toBe(9);
   expect(memory.retrieval_presets.broad).toEqual({
     ...editor.agent.p5_config.retrieval_presets.broad,
     candidate_limit: 200,
@@ -60,6 +62,112 @@ it("旧目录与检索字段只取已存基线，工具额度与上下文白名�
   expect(context.retrieval_presets).toEqual(editor.agent.p5_config.retrieval_presets);
   expect(context.summary_read_max_tokens).toBe(800);
   expect(context.auxiliary_timeout_seconds).toBe(360);
+});
+
+it("非全量档不显示目录批次输入，payload 不夹带给 context 页", async () => {
+  const editor = newPageEditor(agent(), persona());
+  editor.draft.p5_config = structuredClone(editor.draft.p5_config);
+  editor.draft.p5_config.retrieval_mode = "broad";
+  editor.draft.p5_config.max_catalog_batches = 55;
+  const memory = pageAgentPayload(editor, "memory-tools").p5_config;
+  if (!memory) throw new Error("Missing memory config");
+  expect(memory.max_catalog_batches).toBe(55);
+  // 上下文页白名单不含这两项，不得夹带。
+  const context = pageAgentPayload(editor, "context").p5_config;
+  if (!context) throw new Error("Missing context config");
+  expect(context.max_catalog_batches).toBe(100);
+  expect(context.catalog_batch_size).toBe(30);
+});
+
+it("存量 full 档：两输入按真实模式显示，改批次保存仍 full；未改点保存不发 PUT；主动切普通档则持久化该档", async () => {
+  persisted = {
+    ...persisted,
+    p5_config: {
+      ...persisted.p5_config,
+      retrieval_mode: "full_catalog",
+      max_catalog_batches: 17,
+      catalog_batch_size: 23,
+    },
+  };
+  await store.getState().editAgent("A");
+  store.getState().openSettingsRoute("memory-tools");
+  await act(async () => render(<MemoryToolSettings />));
+  // 模式选择按真实值显示 full_catalog，不伪装成 broad。
+  const modeSelect = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
+  expect(modeSelect.value).toBe("full_catalog");
+  // 两输入按存量值显示。
+  const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
+  const batch = screen.getByLabelText("每批目录条数") as HTMLInputElement;
+  expect(batches.value).toBe("17");
+  expect(batch.value).toBe("23");
+
+  // 负例 1：未改任何东西时保存按钮禁用（不因 full 而进页即保存）。
+  expect((screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+
+  // 正例：改批次 → dirty → 保存 → PUT 载荷 mode 保持 full_catalog，两字段落地。
+  fireEvent.change(batches, { target: { value: "40" } });
+  fireEvent.change(batch, { target: { value: "9" } });
+  expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
+  expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+  expect(persisted.p5_config.retrieval_mode).toBe("full_catalog");
+  expect(persisted.p5_config.max_catalog_batches).toBe(40);
+  expect(persisted.p5_config.catalog_batch_size).toBe(9);
+
+  // 负例 2：重新进入后未改点保存不发 PUT（updateAgent 调用数不变）。
+  const callsBefore = (client.updateAgent as ReturnType<typeof vi.fn>).mock.calls.length;
+  await store.getState().editAgent("A");
+  store.getState().openSettingsRoute("memory-tools");
+  expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+  expect((client.updateAgent as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore);
+
+  // 正例 3：主动切换到 ordinary 档（standard）→ 保存持久化该档；两输入随之隐藏，旧批次数不丢。
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "standard" } });
+  });
+  expect(screen.queryByLabelText("最多目录批次")).toBeNull();
+  expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+  expect(persisted.p5_config.retrieval_mode).toBe("standard");
+  expect(persisted.p5_config.max_catalog_batches).toBe(40);
+  expect(persisted.p5_config.catalog_batch_size).toBe(9);
+});
+
+it("目录批次非法原文：空/0/越界显示错误且拦保存，不误写草稿其它字段", async () => {
+  persisted = {
+    ...persisted,
+    p5_config: {
+      ...persisted.p5_config,
+      retrieval_mode: "full_body",
+      max_catalog_batches: 17,
+      catalog_batch_size: 23,
+    },
+  };
+  await store.getState().editAgent("A");
+  store.getState().openSettingsRoute("memory-tools");
+  await act(async () => render(<MemoryToolSettings />));
+  const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
+  const save = screen.getByRole("button", { name: "保存记忆规则" });
+
+  // 空：非法、无错误写草稿、拦保存。
+  fireEvent.change(batches, { target: { value: "" } });
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+
+  // 0 与越界：同样拦。
+  fireEvent.change(batches, { target: { value: "0" } });
+  expect((save as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(batches, { target: { value: "10001" } });
+  expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+
+  // 改成合法值：错误消失、保存恢复可用，且另一字段草稿未被动过。
+  fireEvent.change(batches, { target: { value: "55" } });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((save as HTMLButtonElement).disabled).toBe(false);
+  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(55);
+  expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
 });
 
 function persona(id = "A") {
@@ -203,9 +311,9 @@ describe("页面草稿与白名单保存", () => {
       // 维护页保存不再碰读取字段：旧全量档原样保留。
       expect(await store.getState().saveSettingsPage("long-memory")).toBe(true);
       expect(persisted.p5_config.retrieval_mode).toBe(mode);
-      // 只有 memory-tools 页的保存才把旧全量档归一为 broad。
+      // 未主动改档的存量 full 档：memory-tools 保存原样保留 full（仅显式切换才归一为 broad）。
       expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
-      expect(persisted.p5_config.retrieval_mode).toBe(mode === "off" ? "off" : "broad");
+      expect(persisted.p5_config.retrieval_mode).toBe(mode);
       await store.getState().editAgent("A");
       expect(store.getState().pageEditor?.draft).toMatchObject({
         memory_retrieval_model_name: "legacy-model",

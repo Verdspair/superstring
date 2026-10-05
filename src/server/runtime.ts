@@ -25,7 +25,7 @@ import { BotWorker } from "./conversation/bot-worker";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import { AgentTaskRepository } from "./db/agent-task-repository";
 import type { BusinessDbHandle } from "./db/connection";
-import { bodyRevision, ConversationEventRepository } from "./db/conversation-event-repository";
+import { ConversationEventRepository } from "./db/conversation-event-repository";
 import { readModelProviders, resolveModelProviderRoute } from "./db/model-provider-repository";
 import { readOrganizationSettings } from "./db/organization-repository";
 import { schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
@@ -56,6 +56,7 @@ import { DEFAULT_MODEL_PROVIDER_KEY_PATH } from "./secret-box";
 import { MemoryService } from "./services/memory-service";
 import { QqIntakeRuntime } from "./services/qq-intake";
 import { createQqMediaAdapter } from "./services/qq-media-adapter";
+import { qqMediaPolicyRevision } from "./services/qq-media-contract";
 import { createQqMediaSourceFetcher } from "./services/qq-media-source";
 import type { QqSendPort } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
@@ -378,17 +379,15 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         }),
       // T11 B 同源注入：媒体准备服务与 mediaAdapter 同侧同源——同一 agentRuntime、同一受控
       // fetchSource、同一方案 prompt；baselinePolicy 与宿主 createQqMediaTools 的
-      // policyRevision 用同一 bodyRevision(JSON.stringify({prompt,frames,maxDimension}))
-      // 组合串（唯一真源），本层不自算第二套策略键。
+      // policyRevision 走 services/qq-media-contract.ts 的 qqMediaPolicyRevision 单一真源，
+      // 本层不自算第二套策略键。
       mediaInputService: (scheme): QqMediaInputService => {
         const prompt = schemePrompts(scheme).media;
-        const policyRevision = bodyRevision(
-          JSON.stringify({
-            prompt,
-            frames: schemeRhythm(scheme).media_frame_count,
-            maxDimension: schemeRhythm(scheme).media_max_dimension,
-          }),
-        );
+        const policyRevision = qqMediaPolicyRevision({
+          prompt,
+          frames: schemeRhythm(scheme).media_frame_count,
+          maxDimension: schemeRhythm(scheme).media_max_dimension,
+        });
         const purposes = readOrganizationSettings(business.orm);
         const sourceFetcher = createQqMediaSourceFetcher({
           resolveSource: (request) => qqIntake.resolveMediaSource(request),

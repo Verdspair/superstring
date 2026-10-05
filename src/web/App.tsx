@@ -2,11 +2,12 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BrandLogo } from "./design-system/BrandLogo";
 import { DesignSystemProvider } from "./design-system/Providers";
-import { settingsHaveDrafts } from "./features/qq/draft-state";
+
 import { useLocale } from "./i18n";
 import { startConversationChanges } from "./services/conversation-changes";
 import { startChunkPreload } from "./state/preload-orchestrator";
 import { WORKSPACE_LOADERS } from "./state/preload-registry";
+import { hasUnsavedDrafts } from "./state/unsaved-changes";
 import { useSuperstringStore } from "./store";
 import { activeSpace, type SpaceId } from "./workspace/navigation";
 import { WorkspaceShell } from "./workspace/WorkspaceShell";
@@ -42,7 +43,7 @@ function Application() {
   const directoryIds = useSuperstringStore((s) => s.directoryIds);
   const currentConversationId = useSuperstringStore((s) => s.currentConversationId);
   const bootstrap = useSuperstringStore((s) => s.bootstrap);
-  const unsaved = useSuperstringStore(settingsHaveDrafts);
+  const unsaved = useSuperstringStore(hasUnsavedDrafts);
   const space = useSuperstringStore(activeSpace);
   const [visitedSpaces, setVisitedSpaces] = useState<Set<SpaceId>>(() => new Set([space]));
   const isConversations = space === "conversations";

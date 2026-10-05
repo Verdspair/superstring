@@ -4,21 +4,17 @@ import type {
   QqSettingsResponse,
   QqStickerCollectionResponse,
 } from "../../../shared/contracts/qq";
-import type { QqGroupCapability } from "../../../shared/contracts/qq-group-config";
 import { QqMediaInputSettingsSchema } from "../../../shared/contracts/qq-media-input";
 import { QqMessageSettingsSchema } from "../../../shared/contracts/qq-message";
 import { msg, translate } from "../../i18n";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
-import { permissionSettingsDirty } from "../access/permission-state";
-import { webAccessDraftDirty } from "../access/web-access-state";
-import { dirtyPages } from "../agents/page-drafts";
-import { knowledgeModelDirty, knowledgeReadDirty, organizationDirty } from "../knowledge/types";
 import {
   type QqGroupConfigEditor,
   qqGroupConfigChanges,
   qqGroupConfigDirty,
   qqGroupConfigHasInvalidInputs,
 } from "./group-config-state";
+import { QQ_GROUP_CAPABILITY_LABELS, QQ_SCHEME_FIELD_LABELS } from "./scheme-field-metadata";
 import {
   type QqStorageSettingsDraft,
   qqSchemeChanges,
@@ -276,81 +272,8 @@ export function invalidSchemeTimezone(state: SuperstringState): string | null {
     : "message_settings.timezone";
 }
 
-/** 字段文案键：与 group-config 页 FIELD_LABELS 同批；缺项退回契约字段名，与页面 labelOf 一致。 */
-const GROUP_FIELD_LABEL_KEYS: Record<string, string> = {
-  "triggers.direct_reply": "connections.directReplies",
-  "triggers.follow_up": "connections.ongoingConversation",
-  "triggers.chiming_in": "connections.chimingIn",
-  "triggers.idle_topic": "connections.openingAQuietRoom",
-  "rhythm.initiative_min_score": "connections.unpromptedSpeechThreshold010",
-  "rhythm.merge_window_seconds": "connections.mergeWindowSeconds",
-  "rhythm.reply_cooldown_seconds": "connections.speechCooldownSeconds",
-  "rhythm.hourly_speech_limit": "connections.hourlyCap",
-  "rhythm.idle_quiet_minutes": "connections.quietRoomThresholdMinutes",
-  "rhythm.max_recompute_count": "connections.maximumRecomputes",
-  "rhythm.max_sticker_count": "connections.stickersPerReply",
-  "rhythm.media_supplement_window_minutes":
-    "connections.waitAfterMediaFailsOnADirectMentionMinutes",
-  "rhythm.media_frame_count": "connections.animationFramesToSample",
-  "rhythm.media_max_dimension": "connections.sampledFrameLongEdgePx",
-  "rhythm.active_hours_enabled": "connections.allowedHours",
-  "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
-  "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
-  "stickers.sticker_min_repeat_minutes": "connections.shortestRepeatIntervalPerStickerMinutes",
-  "stickers.sticker_recent_avoid_count": "connections.avoidTheLastFew",
-  "context.judgement_message_limit": "connections.judgementRecentMessages",
-  "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
-  "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
-  "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
-  "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
-  "compression.watermark_trigger": "connections.watermarkTriggerMessages",
-  "compression.package_limit": "connections.watermarkPackageLimit",
-  "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
-  "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
-  "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
-  "sticker_collections.collection_ids": "connections.authorizedCollections",
-  "prompts.scene": "connections.sceneAndBehaviour",
-  "prompts.judge": "connections.judgementTask",
-  "prompts.reply": "connections.effectiveReplyTask",
-  "prompts.review": "connections.reviewTask",
-  "prompts.sticker": "connections.stickerTask",
-  "prompts.media": "connections.mediaNoteTask",
-  "prompts.compress": "connections.watermarkCompressionTask",
-  "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
-  // 0052 两组（与 scheme-studio / group-config 页面标签同批）。
-  "message_settings.reply_mode": "connections.quoteReplyMode",
-  "message_settings.reply_depth": "connections.quoteDepth",
-  "message_settings.time_display": "connections.timeDisplayMode",
-  "message_settings.timezone": "connections.timezone",
-  "media_input.mode": "connections.imageInputMode",
-  "media_input.stages.decision": "schemes.studio.stageDecision",
-  "media_input.stages.evaluation": "schemes.studio.stageEvaluation",
-  "media_input.stages.generation": "schemes.studio.stageGeneration",
-  "media_input.max_images": "connections.maxAutoImages",
-  "media_input.ordinary_still_max_dimension": "connections.ordinaryStillMaxDimension",
-  "media_input.expression_max_dimension": "connections.expressionStillMaxDimension",
-  "media_input.expression_frame_count": "connections.expressionFrameCount",
-  "media_input.expression_frame_max_dimension": "connections.expressionFrameMaxDimension",
-};
-
-/** 能力文案键：与 group-config 页 CAPABILITY_LABELS 同批。 */
-const GROUP_CAPABILITY_LABEL_KEYS: Record<QqGroupCapability, string> = {
-  memory_read: "schemes.qq.groupConfig.capability.memoryRead",
-  memory_organize: "schemes.qq.groupConfig.capability.memoryOrganize",
-  knowledge_read: "schemes.qq.groupConfig.capability.knowledgeRead",
-  web: "schemes.qq.groupConfig.capability.web",
-  media: "schemes.qq.groupConfig.capability.media",
-  stickers: "schemes.qq.groupConfig.capability.stickers",
-  tasks: "schemes.qq.groupConfig.capability.tasks",
-  research: "schemes.qq.groupConfig.capability.research",
-  code: "schemes.qq.groupConfig.capability.code",
-  mcp: "schemes.qq.groupConfig.capability.mcp",
-  skills: "schemes.qq.groupConfig.capability.skills",
-  history_summary: "schemes.qq.groupConfig.capability.historySummary",
-};
-
 const groupFieldLabel = (group: string, field: string): string =>
-  translate(GROUP_FIELD_LABEL_KEYS[`${group}.${field}`] ?? `${group}.${field}`);
+  translate(QQ_SCHEME_FIELD_LABELS[`${group}.${field}`] ?? `${group}.${field}`);
 
 /**
  * 0052 嵌套 stages：字段名是点路径（`stages.evaluation`）时，overrides/基线里的真实位置是
@@ -472,7 +395,7 @@ export function qqDraftChanges(
             change.disabled
               ? "schemes.qq.groupConfig.change.capabilityOff"
               : "schemes.qq.groupConfig.change.capabilityOn",
-            translate(GROUP_CAPABILITY_LABEL_KEYS[change.capability]),
+            translate(QQ_GROUP_CAPABILITY_LABELS[change.capability]),
           );
         // scheme 是 union 的最后一种：显式收束成返回，不设兜底分支。
         return translate(
@@ -584,22 +507,6 @@ export function qqDraftChanges(
       });
   }
   return rows;
-}
-
-export function settingsHaveDrafts(state: SuperstringState) {
-  return (
-    state.dirty ||
-    state.memoryCorrectionDirty ||
-    state.knowledgeDirty ||
-    permissionSettingsDirty(state.permissionEditor) ||
-    webAccessDraftDirty(state.webAccessSnapshot, state.webAccessDraft) ||
-    dirtyPages(state.pageEditor).length > 0 ||
-    organizationDirty(state.organizationEditor) ||
-    knowledgeModelDirty(state.knowledgeModelEditor) ||
-    knowledgeReadDirty(state.knowledgeReadEditor) ||
-    Object.keys(state.qqMemoryBatchDrafts).length > 0 ||
-    qqDraftChanges(state).length > 0
-  );
 }
 
 export function createQqDraftActions(

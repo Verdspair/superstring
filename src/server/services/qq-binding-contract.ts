@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { UuidSchema } from "../../shared/contracts/common";
 import { QQ_ATTENTION_MEMBER_LIMIT } from "../../shared/contracts/qq";
+import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import { normalizeOneBotAccountId, type QqObservation } from "./onebot-protocol";
 
 // Server-owned binding state. These are not public HTTP contracts or access tokens.
@@ -264,6 +265,32 @@ export function qqConversationScopeOf(fields: {
   readonly agentId: string;
 }): QqConversationMemoryScope {
   return Object.freeze({ kind: "qq", ...fields });
+}
+
+/**
+ * 完整会话作用域（八字段，含 bindingId/bindingEpoch/authorityRevision）的唯一构造点：由
+ * 绑定 + 会话行的真实字段拼出。`bindingEpoch` 与 `authorityRevision` 的来源由调用方按各自
+ * 真实读取传入——本函数只做字段搬运，不推导、不改变任何授权/纪元守卫顺序。
+ */
+export function qqConversationScopeOfBinding(input: {
+  readonly conversationId: string;
+  readonly binding: Pick<
+    QqBinding,
+    "accountId" | "kind" | "peerId" | "agentId" | "id" | "authorityRevision"
+  >;
+  readonly bindingEpoch: number;
+}): QqConversationScope {
+  const { binding } = input;
+  return {
+    conversationId: input.conversationId,
+    accountId: binding.accountId,
+    conversationKind: binding.kind,
+    peerId: binding.peerId,
+    agentId: binding.agentId,
+    bindingId: binding.id,
+    bindingEpoch: input.bindingEpoch,
+    authorityRevision: binding.authorityRevision,
+  };
 }
 
 /**

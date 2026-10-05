@@ -1,7 +1,7 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { RunOwner } from "../../shared/contracts/agent-run";
-import type { SourceRef } from "../../shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
 import { mediaReadTaskIdentityKey } from "../db/qq-media-task-repository";
@@ -10,8 +10,6 @@ import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
 import { inTimeline } from "../modules/conversation-evidence-store";
 import { ownerScope } from "./qq-media-sources";
-
-type SourceAccess = "available" | "expired" | "revoked";
 
 function isDate(value: string): boolean {
   return !Number.isNaN(Date.parse(value));

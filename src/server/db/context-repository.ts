@@ -12,13 +12,26 @@ import type { MemoryScopeKeys } from "../services/memory-scope";
 import { qqConversationKey, qqMemoryScopeKey } from "../services/qq-binding-contract";
 import { compileSystemPrompt } from "../services/runtime-config";
 import { fullCasefold } from "../services/text";
-import { correctionsForTurns, memoryRevision } from "./memory-content-repository";
+import {
+  activeCorrections,
+  type CorrectionScan,
+  correctionsForTurns,
+  correctionsForTurnsFrom,
+  memoryRevision,
+} from "./memory-content-repository";
 import { entries, ownedSession, sessionScope, turns } from "./memory-repository";
 import {
   acceptsObservationSources,
+  loadMessageIntegrity,
+  loadQqEvents,
+  loadSessionIntegrity,
+  loadTurnIntegrity,
+  type MessageIntegrityRow,
   observationContentSources,
   observationSources,
   observationSourcesIntact,
+  type SessionIntegrityRow,
+  type TurnIntegrityRow,
 } from "./memory-source-repository";
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
@@ -219,15 +232,47 @@ function validMemoryRows(
     orm,
     rows.map((row) => row.id),
   );
+  // Same-call batched reads: identical projections/predicates to the former
+  // per-source SELECTs; maps never leave this call.
+  const sourcesByMemory = loadMemorySourcesRaw(
+    orm,
+    rows.map((row) => row.id),
+  );
+  const allSources = rows.flatMap((row) => sourcesByMemory.get(row.id) ?? []);
+  const turnRows = loadTurnIntegrity(
+    orm,
+    allSources.map((source) => source.turnId),
+  );
+  const sessionRows = loadSessionIntegrity(
+    orm,
+    [...turnRows.values()].map((turn) => turn.sessionId),
+  );
+  const messageRows = loadMessageIntegrity(
+    orm,
+    allSources.flatMap((source) => [source.userMessageId, source.assistantMessageId]),
+  );
+  const observationEvents =
+    boundedRows === undefined
+      ? undefined
+      : loadQqEvents(
+          orm,
+          [...observations.values()].flat().map((source) => source.eventKey),
+        );
   return rows.filter((entry) => {
     if (isCorrectionRetired(entry.configSnapshot)) return false;
-    const sources = orm
-      .select()
-      .from(schema.memorySources)
-      .where(eq(schema.memorySources.memoryId, entry.id))
-      .all();
-    if (sources.length > 0 && sources.every((source) => turnSourceIntact(orm, agentId, source))) {
-      return true;
+    const sources = sourcesByMemory.get(entry.id) ?? [];
+    if (sources.length > 0) {
+      const intact = sources.map((source) => {
+        const turn = turnRows.get(source.turnId);
+        return turnSourceIntactOn(
+          agentId,
+          turn,
+          turn === undefined ? undefined : sessionRows.get(turn.sessionId),
+          messageRows.get(source.userMessageId),
+          messageRows.get(source.assistantMessageId),
+        );
+      });
+      if (intact.every(Boolean)) return true;
     }
     // A QQ memory may be backed by observations instead; web memory may not.
     return (
@@ -235,11 +280,7 @@ function validMemoryRows(
       observationSourcesIntact(orm, observations.get(entry.id) ?? []) &&
       (boundedRows === undefined ||
         (observations.get(entry.id) ?? []).every((source) => {
-          const event = orm
-            .select()
-            .from(schema.qqEvents)
-            .where(eq(schema.qqEvents.eventKey, source.eventKey))
-            .get();
+          const event = observationEvents?.get(source.eventKey);
           if (
             !event ||
             event.agentId !== agentId ||
@@ -268,50 +309,101 @@ function validMemoryRows(
   });
 }
 
-/** The turn, its session and both messages must still be complete and owned. */
-function turnSourceIntact(
+/**
+ * Every source row of the given summaries, grouped by summary id, each group in
+ * the same (sequenceNo asc) order the former per-summary query returned.
+ */
+function loadSummarySources(
   orm: Orm,
+  summaryIds: string[],
+): Map<string, Array<typeof schema.summarySources.$inferSelect>> {
+  const grouped = new Map<string, Array<typeof schema.summarySources.$inferSelect>>();
+  if (summaryIds.length === 0) return grouped;
+  const rows = orm
+    .select()
+    .from(schema.summarySources)
+    .where(inArray(schema.summarySources.summaryId, summaryIds))
+    .orderBy(schema.summarySources.summaryId, schema.summarySources.sequenceNo)
+    .all();
+  for (const row of rows) {
+    const list = grouped.get(row.summaryId);
+    if (list) list.push(row);
+    else grouped.set(row.summaryId, [row]);
+  }
+  return grouped;
+}
+
+/**
+ * Every turn source of the given memories, grouped by memory id, in the same order
+ * the previous per-memory query returned (memory_id, turn_id PK-index order).
+ */
+/**
+ * ALL rows of the given memories' turn sources, no join — the validity read must
+ * keep every recorded source, so a source whose turn row is missing still makes
+ * the memory invalid instead of disappearing from the comparison.
+ */
+function loadMemorySourcesRaw(
+  orm: Orm,
+  memoryIds: string[],
+): Map<string, Array<typeof schema.memorySources.$inferSelect>> {
+  return groupMemorySourcesByMemory(memoryIds, (chunk) =>
+    orm
+      .select()
+      .from(schema.memorySources)
+      .where(inArray(schema.memorySources.memoryId, chunk))
+      .orderBy(schema.memorySources.memoryId, schema.memorySources.turnId)
+      .all(),
+  );
+}
+
+function groupMemorySourcesByMemory(
+  memoryIds: string[],
+  load: (chunk: string[]) => Array<typeof schema.memorySources.$inferSelect>,
+): Map<string, Array<typeof schema.memorySources.$inferSelect>> {
+  const grouped = new Map<string, Array<typeof schema.memorySources.$inferSelect>>();
+  const unique = [...new Set(memoryIds)];
+  for (let index = 0; index < unique.length; index += 500) {
+    for (const row of load(unique.slice(index, index + 500))) {
+      const list = grouped.get(row.memoryId);
+      if (list) list.push(row);
+      else grouped.set(row.memoryId, [row]);
+    }
+  }
+  return grouped;
+}
+
+function loadMemorySources(
+  orm: Orm,
+  memoryIds: string[],
+): Map<string, Array<{ source: typeof schema.memorySources.$inferSelect; sessionId: string }>> {
+  const grouped = new Map<
+    string,
+    Array<{ source: typeof schema.memorySources.$inferSelect; sessionId: string }>
+  >();
+  if (memoryIds.length === 0) return grouped;
+  const rows = orm
+    .select()
+    .from(schema.memorySources)
+    .innerJoin(schema.turns, eq(schema.turns.id, schema.memorySources.turnId))
+    .where(inArray(schema.memorySources.memoryId, memoryIds))
+    .orderBy(schema.memorySources.memoryId, schema.memorySources.turnId)
+    .all();
+  for (const { memory_sources: source, turns: turn } of rows) {
+    const list = grouped.get(source.memoryId);
+    if (list) list.push({ source, sessionId: turn.sessionId });
+    else grouped.set(source.memoryId, [{ source, sessionId: turn.sessionId }]);
+  }
+  return grouped;
+}
+
+/** Same predicate as the former per-source turnSourceIntact, evaluated on batched maps. */
+function turnSourceIntactOn(
   agentId: string,
-  source: typeof schema.memorySources.$inferSelect,
+  turn: TurnIntegrityRow | undefined,
+  session: SessionIntegrityRow | undefined,
+  user: MessageIntegrityRow | undefined,
+  assistant: MessageIntegrityRow | undefined,
 ): boolean {
-  const turn = orm
-    .select({
-      id: schema.turns.id,
-      sessionId: schema.turns.sessionId,
-      sourceValid: schema.turns.sourceValid,
-      contextValid: schema.turns.contextValid,
-      generationStatus: schema.turns.generationStatus,
-    })
-    .from(schema.turns)
-    .where(eq(schema.turns.id, source.turnId))
-    .get();
-  const session = turn
-    ? orm
-        .select({
-          id: schema.sessions.id,
-          agentId: schema.sessions.agentId,
-          userId: schema.sessions.userId,
-        })
-        .from(schema.sessions)
-        .where(eq(schema.sessions.id, turn.sessionId))
-        .get()
-    : undefined;
-  const messageFields = {
-    turnId: schema.messages.turnId,
-    sessionId: schema.messages.sessionId,
-    role: schema.messages.role,
-    status: schema.messages.status,
-  };
-  const user = orm
-    .select(messageFields)
-    .from(schema.messages)
-    .where(eq(schema.messages.id, source.userMessageId))
-    .get();
-  const assistant = orm
-    .select(messageFields)
-    .from(schema.messages)
-    .where(eq(schema.messages.id, source.assistantMessageId))
-    .get();
   return (
     turn !== undefined &&
     session !== undefined &&
@@ -338,19 +430,55 @@ function parseStringArray(text: string): string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+/** One same-call batch read for the memory items a caller is about to project. */
+function loadMemoryItems(
+  orm: Orm,
+  rows: Array<ReturnType<typeof entries>[number]>,
+): Map<
+  string,
+  {
+    sources: Array<{ source: typeof schema.memorySources.$inferSelect; sessionId: string }>;
+    observations: ReturnType<typeof observationSources> extends Map<string, infer R> ? R : never;
+  }
+> {
+  const byMemory = loadMemorySources(
+    orm,
+    rows.map((row) => row.id),
+  );
+  const observations = observationSources(
+    orm,
+    rows.map((row) => row.id),
+  );
+  const loaded = new Map<
+    string,
+    {
+      sources: Array<{ source: typeof schema.memorySources.$inferSelect; sessionId: string }>;
+      observations: ReturnType<typeof observationSources> extends Map<string, infer R> ? R : never;
+    }
+  >();
+  for (const row of rows) {
+    loaded.set(row.id, {
+      sources: byMemory.get(row.id) ?? [],
+      observations: observations.get(row.id) ?? [],
+    });
+  }
+  return loaded;
+}
+
 function asMemoryItem(
   orm: Orm,
   row: ReturnType<typeof entries>[number],
   withBody = false,
+  loaded?: {
+    sources: Array<{ source: typeof schema.memorySources.$inferSelect; sessionId: string }>;
+    observations: ReturnType<typeof observationSources> extends Map<string, infer R> ? R : never;
+  },
 ): MemoryItem {
-  // Called only for validMemoryRows; do not load original chat bodies for catalog formatting.
-  const sources = orm
-    .select()
-    .from(schema.memorySources)
-    .innerJoin(schema.turns, eq(schema.turns.id, schema.memorySources.turnId))
-    .where(eq(schema.memorySources.memoryId, row.id))
-    .all();
-  const observations = observationSources(orm, [row.id]).get(row.id) ?? [];
+  // Called only for validMemoryRows; do not load original chat bodies for catalog
+  // formatting. A missing batch entry is a caller contract violation, not an
+  // empty result — read the single row exactly like the pre-change code did.
+  const batch = loaded ?? loadMemoryItems(orm, [row]).get(row.id);
+  if (!batch) throw new Error("asMemoryItem called for a row outside its own batch");
   return {
     id: row.id,
     source_type: "memory",
@@ -362,16 +490,16 @@ function asMemoryItem(
     validity: "valid",
     createdAt: row.createdAt,
     sources: [
-      ...sources.map(({ memory_sources: source, turns: turn }) => ({
+      ...batch.sources.map(({ source, sessionId }) => ({
         type: "chat" as const,
         turn_id: source.turnId,
-        session_id: turn.sessionId,
+        session_id: sessionId,
         user_message_id: source.userMessageId,
         assistant_message_id: source.assistantMessageId,
         sequence_no: source.sequenceNo,
         valid: true,
       })),
-      ...observationContentSources(observations),
+      ...observationContentSources(batch.observations),
     ],
     ...(withBody ? { body: row.body } : {}),
   };
@@ -430,9 +558,10 @@ export function scanMemoryCandidates(
     scopeKeys,
     rows.filter((row) => row.bodyBytes <= 64000 && row.body.length <= 16000),
   );
+  const itemBatch = loadMemoryItems(orm, valid);
   return {
     items: valid.map((row) => ({
-      item: asMemoryItem(orm, row, options.id !== undefined),
+      item: asMemoryItem(orm, row, options.id !== undefined, itemBatch.get(row.id)),
       searchText: [...row.body].slice(0, 4096).join(""),
     })),
     scannedIds: rows.map((row) => row.id),
@@ -512,7 +641,11 @@ export function catalogByScopeKeys(
   } else {
     rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
   }
-  return rows.slice(0, limit).map((row) => asMemoryItem(orm, row, options.withBody ?? true));
+  const selected = rows.slice(0, limit);
+  const itemBatch = loadMemoryItems(orm, selected);
+  return selected.map((row) =>
+    asMemoryItem(orm, row, options.withBody ?? true, itemBatch.get(row.id)),
+  );
 }
 
 /**
@@ -576,7 +709,10 @@ export function memoryBodiesByScopeKeys(
   if (new Set(rows.map((row) => row.id)).size !== new Set(ids).size) {
     contextFail("已选记忆的权限、状态或来源已变化");
   }
-  const indexed = new Map(rows.map((row) => [row.id, asMemoryItem(orm, row, true)]));
+  const itemBatch = loadMemoryItems(orm, rows);
+  const indexed = new Map(
+    rows.map((row) => [row.id, asMemoryItem(orm, row, true, itemBatch.get(row.id))]),
+  );
   return ids.map((id) => {
     const item = indexed.get(id);
     if (!item) contextFail("已选记忆的权限、状态或来源已变化");
@@ -611,14 +747,23 @@ export function summaries(
       asc(schema.sessionSummaries.id),
     )
     .all();
+  // Same-call batched summary-source read; per-row order (sequenceNo asc) preserved.
+  const sourcesBySummary = loadSummarySources(
+    orm,
+    rows.map((row) => row.id),
+  );
+  // Lazy, first-use-only correction scan: exactly the rows the pre-change loop
+  // reached — an empty or all-invalid row set performs no correction read, and
+  // `retrievalEnabled === false` never scans. No cross-call reuse.
+  let correctionScan: CorrectionScan[] | null = null;
+  const correctionsFor = (turnIds: string[]) => {
+    if (!retrievalEnabled) return [];
+    correctionScan ??= activeCorrections(orm, agentId);
+    return correctionsForTurnsFrom(correctionScan, turnIds);
+  };
   const result: SummaryItem[] = [];
   for (const row of rows) {
-    const sources = orm
-      .select()
-      .from(schema.summarySources)
-      .where(eq(schema.summarySources.summaryId, row.id))
-      .orderBy(asc(schema.summarySources.sequenceNo))
-      .all();
+    const sources = sourcesBySummary.get(row.id) ?? [];
     if (sources.length === 0 || sources.length !== row.sourceCount) continue;
     const valid = sources.every((source) => {
       const turn = byTurn.get(source.turnId);
@@ -630,13 +775,7 @@ export function summaries(
     });
     if (!valid) continue;
     const snapshot = JSON.parse(row.configSnapshot) as { memory_corrections?: unknown[] };
-    const corrections = retrievalEnabled
-      ? correctionsForTurns(
-          orm,
-          agentId,
-          sources.map((source) => source.turnId),
-        )
-      : [];
+    const corrections = correctionsFor(sources.map((source) => source.turnId));
     if (JSON.stringify(snapshot.memory_corrections ?? []) !== JSON.stringify(corrections)) continue;
     result.push({
       id: row.id,

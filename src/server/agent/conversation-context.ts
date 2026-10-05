@@ -5,6 +5,7 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import type { P5Config, RuntimeConfig } from "../../shared/contracts";
+import { readJsonBody } from "../../shared/contracts/agent-output";
 import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { AgentRunRepository } from "../db/agent-run-repository";
@@ -21,23 +22,22 @@ import {
   summaries,
   systemPrompt,
 } from "../db/context-repository";
+import { contextDumps } from "../db/json-text";
 import { correctionsForTurns } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID, immediate, type Orm } from "../db/repositories";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import type { ModuleSourceResolver } from "../modules/composition";
-import { contextDumps, estimateMessages, validateContextIds } from "../modules/memory-query";
+import { estimateMessages, validateContextIds } from "../modules/memory-query";
 import { turnSources } from "../modules/provenance";
 import { requireChat } from "../services/runtime-config";
 import { estimateTokens } from "../services/token-estimate";
 import { createAgentRuntime, type LeafAgentRuntime } from "./agent-runtime";
-import { readJsonBody } from "./agent-specs";
 import { sourceAccess } from "./context-access";
 import { SUMMARY_RESULT_JSON_SCHEMA, SummaryResultSchema } from "./summary-contract";
 
 export {
   boundedRecallIds,
-  contextDumps,
   contextKeywords,
   estimateMessages,
   recallMemoryItems,

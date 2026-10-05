@@ -168,8 +168,9 @@ describe("fresh assistant studio", () => {
       store.setState({ pageEditor: newPageEditor(legacy, editor.persona) });
       const before = store.getState().pageEditor;
       await act(async () => render(<MemoryToolSettings />));
-      expect((screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement).value).toBe("broad");
-      expect(screen.getByText(/旧全量档.*保存记忆规则时/).textContent).toContain(mode);
+      // 选择框按真实存量档显示（不再伪装成 broad），并有旧档提示说明保存语义。
+      expect((screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement).value).toBe(mode);
+      expect(screen.getByText(/全量读取设置.*广泛额度/).textContent).toContain(mode);
       expect(store.getState().pageEditor).toBe(before);
       expect(dirtyPages(before)).toEqual([]);
       cleanup();
@@ -185,7 +186,7 @@ describe("fresh assistant studio", () => {
       expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
       fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "off" } });
       expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe("off");
-      expect(screen.queryByText(/旧全量档.*保存记忆规则时/)).toBeNull();
+      expect(screen.queryByText(/全量读取设置.*广泛额度/)).toBeNull();
     },
   );
   it("selected-empty knowledge scope never broadens access across CAS save and refresh", async () => {

@@ -27,8 +27,8 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
+import { INVOKE_BATCH_LIMIT } from "../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
-import { INVOKE_BATCH_LIMIT } from "../agent/agent-specs";
 import type { ModelResolvedPrepareInput, ModelResolvedPrepareOutput } from "../agent/model-port";
 import { ModelUnavailableError } from "../errors";
 import { type ChatContentResolver, type ChatMessage, toGatewayMessages } from "./chat-content";

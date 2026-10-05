@@ -14,6 +14,9 @@ Compatibility with old workflows is transitional. The architecture permits bette
 | modules/ | Memory and knowledge query contracts and default SQLite implementations. Backend-specific storage and maintenance stay in their modules. |
 | services/memory-service.ts, knowledge-organizer.ts | Business job leases, versions, retry policy and publication transactions. A model attempt does not own the maintenance transaction. |
 | db/agent-run-repository.ts | Run/step/context persistence. These records do not replace business ownership tokens. |
+| shared/contracts/agent-output.ts | Model output protocol: output drafts, invoke and decision schemas, parsing helpers and the decision JSON-schema constant. Single owner; server modules and tests import it directly. |
+| agent/agent-specs.ts | Action descriptions, leaf-agent specs and orchestration types only; it no longer re-exports the output protocol. |
+| db/json-text.ts | Pure JSON text parse/stringify with no I/O, shared by capacity parsing and repositories so the db layer does not import gateway modules. |
 
 A leaf receives explicit messages and source references and calls ModelPort once. It does not recursively build conversation context. A maintenance retry creates another attempt under the same business job; Runtime does not independently retry the job's writes.
 

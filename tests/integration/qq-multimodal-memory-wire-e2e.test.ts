@@ -1,4 +1,4 @@
-// T15 P7 补块（resume-t15-memory-water-wire，独占新文件写者）。
+// T15 P7 补块：水位压缩与记忆链路。
 //
 // 覆盖矩阵 id54/55/56/57/58 中原 qq-message-multimodal-e2e.test.ts 未真实执行到的子面
 // （依据 resume-t15-matrix-review.md Panel E 与 §4 P7 分区），全部走真实链路：

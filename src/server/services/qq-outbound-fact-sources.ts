@@ -13,15 +13,13 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { RunOwner } from "../../shared/contracts/agent-run";
-import type { SourceRef } from "../../shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { evidenceScopeExists } from "../modules/conversation-evidence";
 import { ownerScope } from "./qq-media-sources";
 import { isObservationExpired } from "./qq-retention";
-
-type SourceAccess = "available" | "expired" | "revoked";
 
 /** One confirmed outbound part together with every value the revision hash freezes. */
 export interface QqOutboundFactPartState {

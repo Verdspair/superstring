@@ -8,15 +8,21 @@ const IdSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z0-9][a-z0-9-]*$/, "服务器 id 只能用小写字母、数字与连字符");
+
+/**
+ * 单次请求（含 tools/call）的墙钟上限（ms）；单次调用结果进入模型上下文前的字符上限
+ * （超了判失败，不截断）。管理草稿 UI 与这里共用同一默认值，避免两处数字漂移。
+ */
+export const MCP_TIMEOUT_MS_DEFAULT = 15_000;
+export const MCP_MAX_RESULT_CHARS_DEFAULT = 8_000;
+
 const serverCommon = {
   id: IdSchema,
   name: z.string().min(1).max(100),
   enabled: z.boolean().default(false),
   trustToolAnnotations: z.boolean().optional(),
-  /** 单次请求（含 tools/call）的墙钟上限。 */
-  timeoutMs: z.number().int().min(100).max(120_000).default(15_000),
-  /** 单次调用结果进入模型上下文前的字符上限；超了判失败，不截断。 */
-  maxResultChars: z.number().int().min(1).max(200_000).default(8_000),
+  timeoutMs: z.number().int().min(100).max(120_000).default(MCP_TIMEOUT_MS_DEFAULT),
+  maxResultChars: z.number().int().min(1).max(200_000).default(MCP_MAX_RESULT_CHARS_DEFAULT),
 };
 
 export const McpServerSchema = z.discriminatedUnion("transport", [

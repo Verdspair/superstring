@@ -50,8 +50,11 @@ export function createPageActions(
     if (!editor || editor.token !== token) return false;
     const id = editor.agent.id;
     const matches = () => get().pageEditor?.token === token && get().editorAgentId === id;
+    // 只有用户本会话主动把存量 full 档改走时才由归一化触发保存；未改动的 full 档
+    // 不再「进页即保存」，批量字段改动照常经 agentPageDirty 保存且 mode 保持 full。
     const normalizeMemoryMode =
       page === "memory-tools" &&
+      editor.draft.p5_config.retrieval_mode !== editor.agent.p5_config.retrieval_mode &&
       (editor.draft.p5_config.retrieval_mode === "full_catalog" ||
         editor.draft.p5_config.retrieval_mode === "full_body");
     if (page !== "expression" && (agentPageDirty(editor, page) || normalizeMemoryMode)) {

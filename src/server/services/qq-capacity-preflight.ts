@@ -1,14 +1,7 @@
 // P3n/P3o: capacity check before QQ model calls; no model completion or sending.
 import { z } from "zod";
-import { type QqSchemeOutputReserve, QqSchemeOutputReserveSchema } from "../../shared/contracts/qq";
 import type { ModelGateway } from "../llm/model-gateway";
 import { estimateMessages } from "../modules/memory-query";
-
-export function parseQqSchemeOutputReserve(input: unknown): QqSchemeOutputReserve {
-  const result = QqSchemeOutputReserveSchema.safeParse(input);
-  if (!result.success) throw new TypeError("Invalid QQ output reserve input");
-  return Object.freeze(result.data);
-}
 
 const Input = z.strictObject({
   model: z.string().min(1),

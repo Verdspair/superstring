@@ -31,51 +31,11 @@ import {
 } from "../../components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { parseAttentionMembers } from "../../features/qq/draft-state";
+import { QQ_SCHEME_FIELD_LABELS, TRIGGER_LABELS } from "../../features/qq/scheme-field-metadata";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { msg, translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { BindingMemoryControls } from "../library/BindingMemoryControls";
-import { imageFields, participationFields, stickerFields } from "./scheme-fields";
-
-export const TRIGGER_LABELS = {
-  direct_reply: "connections.directReplies",
-  follow_up: "connections.ongoingConversation",
-  chiming_in: "connections.chimingIn",
-  idle_topic: "connections.openingAQuietRoom",
-} as const;
-
-/** 换方案预览的字段名：与方案页/本群配置页同一批文案键，缺项退回契约字段名。 */
-const OVERRIDE_FIELD_LABELS: Record<string, string> = {
-  ...Object.fromEntries(
-    Object.entries(TRIGGER_LABELS).map(([key, label]) => [`triggers.${key}`, label]),
-  ),
-  ...Object.fromEntries(participationFields.map(([name, label]) => [`rhythm.${name}`, label])),
-  ...Object.fromEntries(
-    [...stickerFields, ...imageFields].map(([group, name, label]) => [`${group}.${name}`, label]),
-  ),
-  "rhythm.active_hours_enabled": "connections.allowedHours",
-  "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
-  "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
-  "context.judgement_message_limit": "connections.judgementRecentMessages",
-  "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
-  "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
-  "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
-  "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
-  "compression.watermark_trigger": "connections.watermarkTriggerMessages",
-  "compression.package_limit": "connections.watermarkPackageLimit",
-  "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
-  "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
-  "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
-  "sticker_collections.collection_ids": "connections.authorizedCollections",
-  "prompts.scene": "connections.sceneAndBehaviour",
-  "prompts.judge": "connections.judgementTask",
-  "prompts.reply": "connections.effectiveReplyTask",
-  "prompts.review": "connections.reviewTask",
-  "prompts.sticker": "connections.stickerTask",
-  "prompts.media": "connections.mediaNoteTask",
-  "prompts.compress": "connections.watermarkCompressionTask",
-  "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
-};
 
 /** 预览值的中性文本：数组按集合去序、装配冗余按百分比，其余 String()。 */
 const schemeChangeValueText = (group: string, name: string, value: unknown): string =>
@@ -96,7 +56,7 @@ function schemeChangeRows(overrides: QqGroupSchemeOverrides, target: QqSchemeRes
       const nextValue = targetBag[group]?.[name];
       rows.push({
         key: `${group}.${name}`,
-        label: OVERRIDE_FIELD_LABELS[`${group}.${name}`] ?? `${group}.${name}`,
+        label: QQ_SCHEME_FIELD_LABELS[`${group}.${name}`] ?? `${group}.${name}`,
         current: schemeChangeValueText(group, name, value),
         next: nextValue === undefined ? "—" : schemeChangeValueText(group, name, nextValue),
       });

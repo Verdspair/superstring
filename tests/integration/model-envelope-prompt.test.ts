@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
-import {
-  AGENT_DECISION_JSON_SCHEMA,
-  type AgentSpec,
-  type parseAgentDecision,
-} from "../../src/server/agent/agent-specs";
+import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import { textMessage } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
@@ -20,6 +16,10 @@ import {
   qqReplaceOutputRuleInText,
   TIER_OUTPUT_RULES,
 } from "../../src/server/services/qq-prompt-contract";
+import {
+  AGENT_DECISION_JSON_SCHEMA,
+  type parseAgentDecision,
+} from "../../src/shared/contracts/agent-output";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];

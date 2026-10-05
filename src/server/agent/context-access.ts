@@ -8,7 +8,7 @@ import type {
   RunOwner,
   RunSnapshot,
 } from "../../shared/contracts/agent-run";
-import type { SourceRef } from "../../shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { AgentRunRepository } from "../db/agent-run-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { memoryRevision } from "../db/memory-content-repository";
@@ -28,7 +28,23 @@ export interface ContextPrincipal {
   userId: string;
 }
 
-type SourceAccess = "available" | "expired" | "revoked";
+/**
+ * 走 `sourceAccess` 直接复验的七类来源（其余交给 resolveSource 或 inspection 回退）。
+ * assertContextSources 与 inspectContext 共用这一份判定，新增直连 kind 只改这里。
+ */
+const DIRECT_SOURCE_KINDS: ReadonlySet<string> = new Set([
+  "qq_media_note",
+  "qq_message_fact",
+  "qq_member_name",
+  "qq_outbound_message_fact",
+  "qq_media_read_task",
+  "qq_observation",
+  "qq_media_source",
+]);
+
+function isDirectSourceKind(kind: string): boolean {
+  return DIRECT_SOURCE_KINDS.has(kind);
+}
 
 /**
  * 固定 buildConsolidationPrompt 的 user 前缀（memory-contract.ts 的同字面量）：只按它定位
@@ -470,13 +486,7 @@ export function assertContextSources(options: {
   const resolved = new Map(
     sources.map((source) => [
       source,
-      source.kind === "qq_media_note" ||
-      source.kind === "qq_message_fact" ||
-      source.kind === "qq_member_name" ||
-      source.kind === "qq_outbound_message_fact" ||
-      source.kind === "qq_media_read_task" ||
-      source.kind === "qq_observation" ||
-      source.kind === "qq_media_source"
+      isDirectSourceKind(source.kind)
         ? sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, now)
         : options.resolveSource?.(source, owner, now),
     ]),
@@ -520,13 +530,7 @@ export function inspectContext(
   let trimmedMessages: ModelMessage[] | null = null;
   if (status === "exact") {
     const states = stored.sources.map((source) =>
-      source.kind === "qq_media_note" ||
-      source.kind === "qq_message_fact" ||
-      source.kind === "qq_member_name" ||
-      source.kind === "qq_outbound_message_fact" ||
-      source.kind === "qq_media_read_task" ||
-      source.kind === "qq_observation" ||
-      source.kind === "qq_media_source"
+      isDirectSourceKind(source.kind)
         ? sourceAccess(db, source, run.owner, principal, now, "inspection")
         : (resolveSource?.(source, run.owner, now) ??
           sourceAccess(db, source, run.owner, principal, now, "inspection")),

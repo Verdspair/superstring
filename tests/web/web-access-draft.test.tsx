@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { api, type WebAccessConfig } from "../../src/web/api";
 import { webAccessDraftDirty } from "../../src/web/features/access/web-access-state";
-import { settingsHaveDrafts } from "../../src/web/features/qq/draft-state";
 import { selectLocale } from "../../src/web/i18n";
 import { WebAccessPanel } from "../../src/web/screens/connections/web-access-panel";
+import { hasUnsavedDrafts } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const permissions: PermissionsResponse = {
@@ -58,7 +58,7 @@ describe("web access draft store", () => {
     store.getState().resetForTests(f.client);
     await store.getState().loadWebAccess();
     store.getState().patchWebAccessDraft(" http://127.0.0.1:9999 ");
-    expect(settingsHaveDrafts(store.getState())).toBe(true);
+    expect(hasUnsavedDrafts(store.getState())).toBe(true);
     expect(await store.getState().saveWebAccessDraft()).toBe(true);
     expect(f.save).toHaveBeenCalledWith({
       expectedRevision: "wa-1",
@@ -68,7 +68,7 @@ describe("web access draft store", () => {
     expect(store.getState().webAccessSnapshot?.config.searxngEndpoint).toBe(
       "http://127.0.0.1:9999",
     );
-    expect(settingsHaveDrafts(store.getState())).toBe(false);
+    expect(hasUnsavedDrafts(store.getState())).toBe(false);
   });
 
   it("treats a blank draft as built-in Bing only and keeps the draft on failure", async () => {

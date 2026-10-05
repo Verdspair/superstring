@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { RunOwner } from "../../shared/contracts/agent-run";
-import type { SourceRef } from "../../shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope, QqMessagePart } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
 import { bodyRevision } from "../db/conversation-event-repository";
@@ -10,8 +10,6 @@ import { evidenceScopeExists } from "../modules/conversation-evidence";
 import { inTimeline } from "../modules/conversation-evidence-store";
 import { ownerScope } from "./qq-media-sources";
 import { isObservationExpired } from "./qq-retention";
-
-type SourceAccess = "available" | "expired" | "revoked";
 
 export interface QqMessageFactVisibleState {
   fact: QqMessageFactRow;

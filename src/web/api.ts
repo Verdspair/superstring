@@ -1,4 +1,4 @@
-import { createParser } from "eventsource-parser";
+import { createParser, type EventSourceMessage } from "eventsource-parser";
 import { z } from "zod";
 import {
   type AgentResponse,
@@ -36,8 +36,6 @@ import {
   RuntimeConfigSchema,
   type SessionResponse,
   SessionResponseSchema,
-  type SseEvent,
-  SseEventSchema,
   type TurnsList,
   TurnsListSchema,
   type UpdateModelProviderRequest,
@@ -805,7 +803,7 @@ export const api = {
       json("PUT", body),
     ),
   /**
-   * 「立即整理」(2026-09-25): organise this conversation's pending observations now. The answer is a
+   * 「立即整理」: organise this conversation's pending observations now. The answer is a
    * verdict — `nothing_to_organise`, `switch_off`, `paused`, `busy`, `agent_disabled` — not an error.
    */
   organiseQqMemory: (id: string): Promise<QqMemoryOrganiseResponse> =>
@@ -856,67 +854,18 @@ export const api = {
     requestJson(`/qq/schemes/${id}/usage`, QqSchemeUsageResponseSchema),
 };
 
-function parseFrame(frame: string): SseEvent | null {
-  let event = "";
-  let data = "";
-  for (const line of frame.split("\n")) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    if (line.startsWith("data:")) data += line.slice(5).trimStart();
-  }
-  if (!event || !data) return null;
-  return SseEventSchema.parse({ event, ...JSON.parse(data) });
-}
-
-export async function streamChat(
-  body: { session_id: string; message: string; client_request_id: string },
-  onEvent: (event: SseEvent) => void,
-  signal?: AbortSignal,
+/**
+ * SSE 读循环的唯一实现：把响应体按帧喂给 eventsource-parser。
+ * 正常 EOF 走 parser.reset 收尾；任何异常（含取消）都 cancel 并释放 reader 锁，
+ * 不吞错误；AbortSignal 的所有权在调用方的 fetch 上，这里不重复中止。
+ */
+async function readEventStream(
+  body: ReadableStream<Uint8Array>,
+  onFrame: (frame: EventSourceMessage) => void,
 ): Promise<void> {
-  const response = await fetch("/chat", {
-    ...json("POST", body),
-    headers: {
-      "content-type": "application/json",
-      "X-Superstring-Context-Usage": "1",
-    },
-    signal,
-  });
-  if (!response.ok) throw await responseError(response);
-  if (!response.body) throw new ApiError(502, "MODEL_STREAM_INTERRUPTED", msg("模型流中断"));
-
-  const reader = response.body.getReader();
+  const reader = body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      const parsed = parseFrame(frame);
-      if (parsed) onEvent(parsed);
-    }
-    if (done) break;
-  }
-  if (buffer.trim()) {
-    const parsed = parseFrame(buffer);
-    if (parsed) onEvent(parsed);
-  }
-}
-
-/** Framing is delegated to eventsource-parser; request ownership/recovery stays in chat actions. */
-export async function streamChatV2(
-  body: { session_id: string; message: string; client_request_id: string },
-  onEvent: (event: ChatV2Event) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const response = await fetch("/v2/chat", { ...json("POST", body), signal });
-  if (!response.ok) throw await responseError(response);
-  if (!response.body) throw new ApiError(502, "MODEL_STREAM_INTERRUPTED", msg("模型流中断"));
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  const parser = createParser({
-    onEvent: (frame) => onEvent(ChatV2EventSchema.parse(JSON.parse(frame.data))),
-  });
+  const parser = createParser({ onEvent: (frame) => onFrame(frame) });
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -929,6 +878,20 @@ export async function streamChatV2(
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+/** Framing is delegated to eventsource-parser; request ownership/recovery stays in chat actions. */
+export async function streamChatV2(
+  body: { session_id: string; message: string; client_request_id: string },
+  onEvent: (event: ChatV2Event) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch("/v2/chat", { ...json("POST", body), signal });
+  if (!response.ok) throw await responseError(response);
+  if (!response.body) throw new ApiError(502, "MODEL_STREAM_INTERRUPTED", msg("模型流中断"));
+  await readEventStream(response.body, (frame) =>
+    onEvent(ChatV2EventSchema.parse(JSON.parse(frame.data))),
+  );
 }
 
 export const ConversationChangeEventSchema = z.discriminatedUnion("event", [
@@ -959,46 +922,30 @@ export async function subscribeConversationChanges(
   if (!response.ok) throw await responseError(response);
   if (!response.body)
     throw new ApiError(502, "STREAM_INTERRUPTED", msg("连接中断，正在核对服务端结果…"));
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  const parser = createParser({
-    onEvent: (frame) => {
-      if (frame.event === "ready") {
-        let readyData = {};
-        try {
-          readyData = JSON.parse(frame.data);
-        } catch {
-          // ignore malformed data on ready frame
-        }
-        onEvent(
-          ConversationChangeEventSchema.parse({
-            event: "ready",
-            ...readyData,
-          }),
-        );
-      } else if (frame.event === "conversation_changed") {
-        const data = JSON.parse(frame.data);
-        onEvent(
-          ConversationChangeEventSchema.parse({
-            event: "conversation_changed",
-            ...data,
-          }),
-        );
+  await readEventStream(response.body, (frame) => {
+    if (frame.event === "ready") {
+      let readyData = {};
+      try {
+        readyData = JSON.parse(frame.data);
+      } catch {
+        // ignore malformed data on ready frame
       }
-    },
-  });
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      const text = decoder.decode(value, { stream: !done });
-      if (text) parser.feed(text);
-      if (done) break;
+      onEvent(
+        ConversationChangeEventSchema.parse({
+          event: "ready",
+          ...readyData,
+        }),
+      );
+    } else if (frame.event === "conversation_changed") {
+      const data = JSON.parse(frame.data);
+      onEvent(
+        ConversationChangeEventSchema.parse({
+          event: "conversation_changed",
+          ...data,
+        }),
+      );
     }
-    parser.reset({ consume: true });
-  } finally {
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
-  }
+  });
 }
 
 export type SuperstringApi = typeof api;

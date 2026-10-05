@@ -78,6 +78,135 @@ export function observationSourceRows(
   }));
 }
 
+/**
+ * Batched source-integrity reads for the same-call validation loops in
+ * context-repository.ts and memory-content-repository.ts.
+ *
+ * These maps replace the previous per-source single-row SELECTs with the SAME
+ * projections, evaluated by the caller with the SAME predicates. They are
+ * call-scoped: never persisted, never carried across requests. Rows are loaded
+ * in variable-boundary chunks (SQLite host-parameter limit) without changing
+ * results — a chunked IN returns the same row set as one unbounded IN.
+ */
+export interface TurnIntegrityRow {
+  id: string;
+  sessionId: string;
+  sourceValid: number;
+  contextValid: number;
+  generationStatus: string;
+}
+
+export interface SessionIntegrityRow {
+  id: string;
+  agentId: string;
+  userId: string;
+  title: string;
+}
+
+export interface MessageIntegrityRow {
+  id: string;
+  turnId: string;
+  sessionId: string;
+  role: string;
+  status: string;
+  content: string;
+}
+
+/** SQLite host-parameter boundary; results are chunk-independent. */
+function chunked<T>(items: T[], batch: (chunk: T[]) => void): void {
+  for (let index = 0; index < items.length; index += 500) {
+    batch(items.slice(index, index + 500));
+  }
+}
+
+export function loadTurnIntegrity(orm: Orm, turnIds: string[]): Map<string, TurnIntegrityRow> {
+  const map = new Map<string, TurnIntegrityRow>();
+  const unique = [...new Set(turnIds)];
+  chunked(unique, (chunk) => {
+    for (const row of orm
+      .select({
+        id: schema.turns.id,
+        sessionId: schema.turns.sessionId,
+        sourceValid: schema.turns.sourceValid,
+        contextValid: schema.turns.contextValid,
+        generationStatus: schema.turns.generationStatus,
+      })
+      .from(schema.turns)
+      .where(inArray(schema.turns.id, chunk))
+      .all()) {
+      map.set(row.id, row);
+    }
+  });
+  return map;
+}
+
+export function loadSessionIntegrity(
+  orm: Orm,
+  sessionIds: string[],
+): Map<string, SessionIntegrityRow> {
+  const map = new Map<string, SessionIntegrityRow>();
+  const unique = [...new Set(sessionIds)];
+  chunked(unique, (chunk) => {
+    for (const row of orm
+      .select({
+        id: schema.sessions.id,
+        agentId: schema.sessions.agentId,
+        userId: schema.sessions.userId,
+        title: schema.sessions.title,
+      })
+      .from(schema.sessions)
+      .where(inArray(schema.sessions.id, chunk))
+      .all()) {
+      map.set(row.id, row);
+    }
+  });
+  return map;
+}
+
+export function loadMessageIntegrity(
+  orm: Orm,
+  messageIds: string[],
+): Map<string, MessageIntegrityRow> {
+  const map = new Map<string, MessageIntegrityRow>();
+  const unique = [...new Set(messageIds)];
+  chunked(unique, (chunk) => {
+    for (const row of orm
+      .select({
+        id: schema.messages.id,
+        turnId: schema.messages.turnId,
+        sessionId: schema.messages.sessionId,
+        role: schema.messages.role,
+        status: schema.messages.status,
+        content: schema.messages.content,
+      })
+      .from(schema.messages)
+      .where(inArray(schema.messages.id, chunk))
+      .all()) {
+      map.set(row.id, row);
+    }
+  });
+  return map;
+}
+
+/** Every observation dedup row named by the given event keys, keyed by eventKey. */
+export function loadQqEvents(
+  orm: Orm,
+  eventKeys: string[],
+): Map<string, typeof schema.qqEvents.$inferSelect> {
+  const map = new Map<string, typeof schema.qqEvents.$inferSelect>();
+  const unique = [...new Set(eventKeys)];
+  chunked(unique, (chunk) => {
+    for (const row of orm
+      .select()
+      .from(schema.qqEvents)
+      .where(inArray(schema.qqEvents.eventKey, chunk))
+      .all()) {
+      map.set(row.eventKey, row);
+    }
+  });
+  return map;
+}
+
 /** Every observation source of the given memories, grouped by memory id. */
 export function observationSources(
   orm: Orm,

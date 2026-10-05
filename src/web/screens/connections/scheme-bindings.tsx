@@ -1,6 +1,7 @@
 import { ChevronLeft, Plus, RefreshCw, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import type { QqBindingResponse, QqConversationListItem } from "../../../shared/contracts/qq";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
@@ -18,6 +19,7 @@ import { NativeSelect } from "../../components/ui/native-select";
 import { manualBindingTarget, qqConversationKey } from "../../features/qq/draft-state";
 import { translateNotice } from "../../i18n";
 import { formatDate } from "../../i18n/runtime";
+import type { SuperstringState } from "../../state/types";
 import { useSuperstringStore } from "../../store";
 import { QqGroupControls } from "../conversations/QqGroupControls";
 import { BindingEditor } from "./binding-editor";
@@ -51,7 +53,23 @@ function AddConversationDialog({
   onManage: (binding: QqBindingResponse) => void;
 }) {
   const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const state = useSuperstringStore(
+    useShallow((s) => ({
+      // 数据字段按实际读取面窄订阅；无关 store 更新不再重渲染本对话框。
+      agents: s.agents,
+      error: s.error,
+      feedback: s.feedback,
+      qqAccessSaving: s.qqAccessSaving,
+      qqBindings: s.qqBindings,
+      qqConversations: s.qqConversations,
+      qqInputs: s.qqInputs,
+      qqSchemes: s.qqSchemes,
+      qqSettings: s.qqSettings,
+      // 动作引用稳定。
+      bindQqConversation: s.bindQqConversation,
+      bindQqPeerNumber: s.bindQqPeerNumber,
+    })),
+  );
   const saving = state.qqAccessSaving;
   const inputs = state.qqInputs;
   const patch = (next: Partial<typeof inputs>) =>
@@ -65,7 +83,11 @@ function AddConversationDialog({
         qqInputs: { ...storeState.qqInputs, manualSchemeId: schemeId },
       }));
   }, [schemeId]);
-  const target = manualBindingTarget(state);
+  // manualBindingTarget 只读 qqInputs 与 qqConversations；本视图已窄订阅这两个字段。
+  const target = manualBindingTarget({
+    qqInputs: state.qqInputs,
+    qqConversations: state.qqConversations,
+  } as SuperstringState);
   const observed = target?.conversation ?? null;
   const kind = target?.kind ?? inputs.manualKind;
   const peer = target?.peer ?? "";
@@ -276,7 +298,22 @@ export function SchemeBindingsView({
   picker?: boolean;
 }) {
   const { t, i18n } = useTranslation();
-  const state = useSuperstringStore();
+  const state = useSuperstringStore(
+    useShallow((s) => ({
+      // 数据字段按实际读取面窄订阅；无关 store 更新不再重渲染看板。
+      agents: s.agents,
+      qqAccessSaving: s.qqAccessSaving,
+      qqBindings: s.qqBindings,
+      qqBindingsError: s.qqBindingsError,
+      qqBindingsLoaded: s.qqBindingsLoaded,
+      qqBindingsLoading: s.qqBindingsLoading,
+      qqConversations: s.qqConversations,
+      qqSchemes: s.qqSchemes,
+      // 动作引用稳定。
+      loadQqBindingDirectory: s.loadQqBindingDirectory,
+      openSettingsRoute: s.openSettingsRoute,
+    })),
+  );
   const { loadQqBindingDirectory, qqBindingsLoaded, qqBindingsLoading, qqBindingsError } = state;
   const [pickedScheme, setPickedScheme] = useState<string | null>(null);
   const [editing, setEditing] = useState<QqBindingResponse | null>(null);
@@ -505,7 +542,7 @@ export function SchemeBindingsView({
 /** 全局「会话绑定」页：从方案目录进入的次级入口，先选方案，再落到同一绑定视图。 */
 export function SchemeBindingsPage() {
   const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const openSettingsRoute = useSuperstringStore((s) => s.openSettingsRoute);
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label={t("schemes.bindings.title")}>
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
@@ -513,7 +550,7 @@ export function SchemeBindingsPage() {
           variant="ghost"
           size="icon-sm"
           aria-label={t("schemes.bindings.backToLibrary")}
-          onClick={() => state.openSettingsRoute("scheme-library")}
+          onClick={() => openSettingsRoute("scheme-library")}
         >
           <ChevronLeft />
         </Button>

@@ -219,7 +219,7 @@ const ALL_PAGES = [
     probe: null,
     landmark: "region",
   },
-  // 第六项能力详情：会话历史摘要（link 类型，只说明与跳转）随本版路由新增，本轮补进清单。
+  // 会话历史摘要页（系统能力下以 link 类型入口打开，只负责展示与跳转说明）。
   {
     id: "session-history",
     zh: ["系统能力", "会话历史摘要"],
@@ -299,7 +299,7 @@ const ALL_PAGES = [
     probe: null,
   },
   { id: "long-memory", zh: ["资料", "记忆"], en: ["Materials", "Memory"], probe: null },
-  // 资料里的知识库分区（文档页）随 P8 归入「资料」：原清单遗漏的既有目的地，本轮补上。
+  // 资料里的知识库配置页（文档页），挂在「资料」分区下。
   { id: "knowledge-config", zh: ["资料", "文档"], en: ["Materials", "Documents"], probe: null },
   { id: "general", zh: ["偏好"], en: ["Preferences"], probe: null },
 ];

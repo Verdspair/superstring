@@ -694,9 +694,9 @@ it("[DU_3] a real capability close after the tool call fails the same run with t
     refusal: refusal === null ? null : String(refusal.code),
     variants: variantRows(h),
   });
-  // blocked（主控已记，不在本文件伪造）：①问题正文 revision 中途真实变更——可用真实当前
+  // blocked（已记，不在本文件伪造）：①问题正文 revision 中途真实变更——可用真实当前
   // scope 的 DB 修改原 body rev，但仅限合法 fixture 的 action-pending 窗口、不产 mutant；
-  // 待前例建立 caller 接口后按主控 GO 补例；②native 相 stage-off 独立场景需另 case/参数，
+  // 待前例建立 caller 接口后补例；②native 相 stage-off 独立场景需另 case/参数，
   // 不在本文件伪称覆盖。
   expect(pendingSteps()).toBeGreaterThan(0);
 });

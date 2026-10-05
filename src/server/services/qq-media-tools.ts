@@ -284,7 +284,7 @@ export interface QqMediaToolsOptions {
    * typed 读取任务落成（成功或失败结清）后的通知：宿主用 `actualTaskId` 诊断，不读事件
    * 细节本身；必须幂等（同一 run 会重复触发）。
    *
-   * 语义边界（主控核定）：它通知的是「本 carrier 在本 run 刚拿到／结清了一份可服务读
+   * 语义边界：它通知的是「本 carrier 在本 run 刚拿到／结清了一份可服务读
    * 结果」这一**状态**，不是「新建了一个预算任务」。因此跨 carrier 复用成功（预算行
    * 仍是账本上那唯一一行、未新建也未 claim）同样按本条规则通知，报主账本行的 taskId；
    * 未交付（失败／未授权／签不出证据）一律不通知。`media.note.read` 不发本通知——

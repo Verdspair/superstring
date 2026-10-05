@@ -3,6 +3,7 @@
 
 import { asc, eq } from "drizzle-orm";
 import {
+  parseQqSchemeOutputReserve,
   QQ_COMPRESSION_DEFAULT,
   QQ_MEDIA_INPUT_SCHEME_DEFAULT,
   QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
@@ -27,7 +28,6 @@ import {
 } from "../../shared/contracts/qq";
 import { fail } from "../errors";
 import type { QqBinding } from "../services/qq-binding-contract";
-import { parseQqSchemeOutputReserve } from "../services/qq-capacity-preflight";
 import {
   parseQqSchemeCompression,
   parseQqSchemeContext,

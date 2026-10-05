@@ -1,4 +1,4 @@
-// T08 稳定任务身份与过期（spec §8.1，resume-t08-identity）。强负测（主控三条不变量收敛版）：
+// T08 稳定任务身份与过期（spec §8.1）。强负测（三条不变量收敛版）：
 //  * 生产读取必须有可用字节派生 identity：live asset 命中零 fetch；无 asset 走 adapter
 //    受控 fetchBytes（同一下载链）；两者皆缺 → 明确拒（identity_unavailable），绝不静默
 //    退回行级身份；NULL identity 只允许历史真正不可识别行。

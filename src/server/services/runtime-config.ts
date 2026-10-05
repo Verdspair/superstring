@@ -39,7 +39,6 @@ function clampIntensity(value: number): number {
 }
 
 /**
- * 280.
  * `p5Config` arrives as the JSON TEXT stored in `agents.p5_config`; it is parsed
  * and validated by `RuntimeConfigSchema` so a corrupt row surfaces as a config
  * error rather than silently producing a wrong snapshot.

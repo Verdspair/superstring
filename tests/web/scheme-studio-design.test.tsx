@@ -862,3 +862,26 @@ describe("Scheme handoff from a conversation binding", () => {
     expect(fake.createQqBinding).not.toHaveBeenCalled();
   });
 });
+
+describe("性能阶段补测：窄订阅行为保持（FE-P1, studio）", () => {
+  it("与本页无关的 store 更新不重渲染 studio；本页读取字段更新仍正常刷新", async () => {
+    await renderStudio();
+    const nameInput = screen.getByLabelText("方案名称") as HTMLInputElement;
+    // 无关更新：memoryCorrectionSaving 不是本页读取字段 → 窄订阅不得重渲染。
+    const htmlBefore = document.body.innerHTML;
+    await act(async () => {
+      store.setState({ memoryCorrectionSaving: true });
+    });
+    expect(document.body.innerHTML).toBe(htmlBefore);
+    // 本页读取字段更新：qqSchemes 目录变化 → 方案选择器必须反映新方案。
+    const extra = scheme({ id: "77777777-7777-4777-8777-777777777777", name: "新到方案" });
+    await act(async () => {
+      store.setState({ qqSchemes: [scheme(), extra] });
+    });
+    const combo = screen.getByRole("combobox", { name: "选择聊天方案" }) as HTMLSelectElement;
+    expect([...combo.options].some((o) => o.textContent === "新到方案")).toBe(true);
+    // 击键仍即时反映：名称输入直接写编辑器。
+    fireEvent.change(nameInput, { target: { value: "改名方案" } });
+    expect(store.getState().qqSchemeEditor?.name).toBe("改名方案");
+  });
+});

@@ -9,6 +9,13 @@ export const SourceRefSchema = z.strictObject({
 });
 export type SourceRef = z.infer<typeof SourceRefSchema>;
 
+/**
+ * 一次来源复验的三态结论：available＝当前可读；expired＝按保留期到期不可读；
+ * revoked＝授权撤销/范围移动不可读。各来源 keeper（services/*-sources）与 agent 的
+ * 来源复验共用同一份，三值字面量不得各自另拼。
+ */
+export type SourceAccess = "available" | "expired" | "revoked";
+
 export const EvidenceSchema = z.strictObject({
   id: z.string(),
   text: z.string(),

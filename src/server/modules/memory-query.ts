@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { RuntimeConfig } from "../../shared/contracts";
-import { readJsonBody } from "../agent/agent-specs";
+import { readJsonBody } from "../../shared/contracts/agent-output";
 import type { ContextMessage, MemoryItem } from "../db/context-repository";
+import { contextDumps } from "../db/json-text";
 import { fail } from "../errors";
 import { contentCandidate } from "../services/content-format";
 import { fullCasefold } from "../services/text";
@@ -26,23 +27,6 @@ export function estimateMessages(messages: ContextMessage[]): number {
       0,
     )
   );
-}
-
-/** Recursive key sort, arrays preserved; compact UTF-8 JSON. */
-export function contextDumps(value: unknown): string {
-  const sorted = (item: unknown): unknown => {
-    if (Array.isArray(item)) return item.map(sorted);
-    if (item !== null && typeof item === "object") {
-      const source = item as Record<string, unknown>;
-      return Object.fromEntries(
-        Object.keys(source)
-          .sort()
-          .map((key) => [key, sorted(source[key])]),
-      );
-    }
-    return item;
-  };
-  return JSON.stringify(sorted(value));
 }
 
 export function contextKeywords(text: string): string[] {

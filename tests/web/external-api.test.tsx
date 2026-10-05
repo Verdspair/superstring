@@ -182,7 +182,7 @@ describe("Model services workspace", () => {
     });
     expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("Draft name");
   });
-  // 0052/T12：vision 是三态——false 与「未声明」是不同的持久状态，往返都不许被压成另一端。
+  // 0052：vision 是三态——false 与「未声明」是不同的持久状态，往返都不许被压成另一端。
   it("preserves vision:false through a save round-trip", async () => {
     const declared = {
       ...provider,
@@ -244,7 +244,7 @@ describe("Model services workspace", () => {
       }),
     );
   });
-  // 0052/T13b：vision 三态下拉——unknown 是「未声明」不是 false；清除只删 vision 键，
+  // 0052：vision 三态下拉——unknown 是「未声明」不是 false；清除只删 vision 键，
   // 保留其余能力（含合法的未知现有键，payload 沿真实 spread 保留）。
   it("writes vision:true through the tri-state select without touching other declarations", async () => {
     const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: true };

@@ -57,7 +57,10 @@ describe("dev API proxy coverage (#101)", () => {
     // would pass vacuously and stop protecting anything.
     const paths = clientApiPaths();
     expect(paths.length).toBeGreaterThanOrEqual(18);
-    expect(paths).toContain("/chat");
+    // The web client streams chats through /v2/chat; /chat itself stays in the
+    // static whitelist as a legacy backend route (see API_EXACT_PATHS below).
+    expect(paths).toContain("/v2/chat");
+    expect(paths).not.toContain("/chat");
     expect(paths).toContain("/sessions");
     expect(paths).toContain("/agents");
   });

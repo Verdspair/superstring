@@ -11,7 +11,7 @@ import {
   UpdateQqGroupConfigRequestSchema,
 } from "../../src/shared/contracts/qq-group-config";
 import { api, type SuperstringApi } from "../../src/web/api";
-import { qqDraftChanges, settingsHaveDrafts } from "../../src/web/features/qq/draft-state";
+import { qqDraftChanges } from "../../src/web/features/qq/draft-state";
 import {
   mergeQqGroupConfigEditor,
   qqGroupConfigChanges,
@@ -19,6 +19,7 @@ import {
   qqGroupConfigEditorFrom,
   qqGroupConfigEffectiveScheme,
 } from "../../src/web/features/qq/group-config-state";
+import { hasUnsavedDrafts } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const NOW = "2026-09-30T00:00:00.000Z";
@@ -653,7 +654,7 @@ it("409 与非法输入都保住整份草稿；非法输入还会拦住统一保
   expect(conflict).toHaveBeenCalledOnce();
   expect(store.getState().error).toBe("本群配置已在别处修改，请刷新后重试。");
   expect(qqGroupConfigDirty(store.getState().qqGroupConfigEditor)).toBe(true);
-  expect(settingsHaveDrafts(store.getState())).toBe(true);
+  expect(hasUnsavedDrafts(store.getState())).toBe(true);
 
   // 非法原文：本群保存与统一保存都先要求修正，且不先写别的草稿。
   store.getState().patchQqGroupOverride("rhythm", "hourly_speech_limit", "-");
@@ -742,12 +743,12 @@ it("统一草稿：行预览列出 group/field 的 base→本群值与能力停�
     "「回复：预算（估算字节）」：6000 → 9000",
     "停用「任务与执行限制」",
   ]);
-  expect(settingsHaveDrafts(store.getState())).toBe(true);
+  expect(hasUnsavedDrafts(store.getState())).toBe(true);
 
   expect(await store.getState().saveQqDrafts()).toBe(true);
   expect(save).toHaveBeenCalledOnce();
   expect(qqDraftChanges(store.getState())).toEqual([]);
-  expect(settingsHaveDrafts(store.getState())).toBe(false);
+  expect(hasUnsavedDrafts(store.getState())).toBe(false);
 
   store.getState().patchQqGroupOverride("output_reserve", "reply_output_reserved", "4096");
   store.getState().discardQqDrafts();
@@ -756,7 +757,7 @@ it("统一草稿：行预览列出 group/field 的 base→本群值与能力停�
   expect(store.getState().qqGroupConfigEditor?.overrides).toEqual({
     context: { reply_token_budget: 9000 },
   });
-  expect(settingsHaveDrafts(store.getState())).toBe(false);
+  expect(hasUnsavedDrafts(store.getState())).toBe(false);
 });
 
 it("换基础方案 keep：带目标方案 revision、方案 id 与处置；保存后编辑器采用新基线", async () => {
@@ -1053,7 +1054,7 @@ it("素材集合整体提交（契约严格形状）；选回基线集合仍是�
   expect(qqGroupConfigDirty(store.getState().qqGroupConfigEditor)).toBe(false);
 });
 
-// ---- 0052/T12：两组设置进本群草稿 ------------------------------------------------------------
+// ---- 0052：两组设置进本群草稿 ------------------------------------------------------------
 
 describe("0052 两组进本群稀疏覆盖（T12）", () => {
   it("stages 逐字段钉住：钉 evaluation:false 不丢 decision/generation 的跟随；阶段整组可同钉", async () => {
@@ -1252,10 +1253,10 @@ describe("0052 两组进本群稀疏覆盖（T12）", () => {
     });
   });
 
-  // T12 fix1：draft-state 的钉住判定/取值要能解析 `stages.<phase>` 点路径到 overrides 的嵌套
+  // draft-state 的钉住判定/取值要能解析 `stages.<phase>` 点路径到 overrides 的嵌套
   // 位置（overrides.media_input.stages.<phase>），否则同值钉住的方向文案会反。
-  // T13：draft-state 的 GROUP_FIELD_LABEL_KEYS 已补两组人话标签——stage 行标签从回退键
-  // `media_input.stages.evaluation` 变为本地化文案「评估阶段」（T13b 控件用同一标签）（T12 fix1 报告预告的连带调整）。
+  // draft-state 的字段标签映射已含两组人话标签——stage 行标签从回退键
+  // `media_input.stages.evaluation` 变为本地化文案「评估阶段」（页面控件用同一标签）。
   it("stage 点路径的同值钉住/取消在全局预览里同样用「跟随↔自定义」文案（不读错键）", async () => {
     ready(fakeClient({ getQqGroupConfig: async () => qqConfig() }));
     await store.getState().selectQqGroupConfig(BINDING_ID);

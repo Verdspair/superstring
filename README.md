@@ -53,7 +53,7 @@ QQ automation can be affected by platform rules and account restrictions. Supers
 
 ### Memory, knowledge and media
 
-- Manage long-term memories by Agent and source partition, inspect their sources, and correct or block inaccurate content. QQ memory is isolated by conversation and binding; sharing with your own private chat requires explicit configuration.
+- Manage long-term memories by Agent and source partition, inspect their sources, and correct or block inaccurate content. QQ memory is isolated by conversation and binding; sharing with your own private chat requires explicit configuration. If a store already uses full-read retrieval, its two full-read parameters stay editable on the same page; ordinary configurations do not add a full-read option.
 - Import UTF-8 text or Markdown into the knowledge library, organize documents into categories, and grant access per Agent. Imported documents are not automatically authorized.
 - Select local or registered OpenAI-compatible models for conversation, judgement, vision, memory and organization tasks. External providers have their own endpoint, credential and declared context window.
 - Describe supported images and sampled animated-image frames with a configured vision model. Import sticker assets, edit their descriptions and tags, review and enable them, then authorize collections for chat schemes.
@@ -65,7 +65,7 @@ Voice transcription, full-video understanding, image generation and arbitrary ex
 
 The navigation is organized as **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library** and **Extensions**, with **Model services** and **Preferences** as separate entrances.
 
-The application warms the data behind its main spaces while it starts, so opening Agents, the knowledge library, memories, Model services or Extensions usually shows content straight away instead of an empty first load. A space you leave open for a moment updates quietly in the background rather than blocking you, and any draft you are editing is kept as you typed it. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
+The application warms the data behind its main spaces while it starts, so opening Agents, the knowledge library, memories or Extensions usually shows content straight away instead of an empty first load; the Model services page reuses provider data fetched during startup for its first render, and its existing foreground refresh and connection checks remain. Scheme configuration pages skip needless redraws when unrelated state changes, and memory and summary reading perform fewer duplicate internal queries. A space you leave open for a moment updates quietly in the background rather than blocking you, and any draft you are editing is kept as you typed it. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
 
 **Extensions** shows one Tools page listing every registered tool — the built-in system tools and any MCP tools — with its origin, read/write effect, global state and authorisation, and the Skills page lists both your installed skill documents and the guidance bundled with the application. Built-in components are shipped with the application and cannot be deleted or redefined; they grey out only when their global switch is off, never because one assistant lacks a grant. Tools that share a single authorisation resource edit that one grant. System capability pages keep their own functional settings and link to the concrete components they use.
 
@@ -168,7 +168,7 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 
 ### 记忆、知识与媒体
 
-- 按 Agent 和来源分区管理长期记忆，查看出处，纠正或屏蔽错误内容。QQ 记忆按会话与绑定隔离；与本人私聊共享需要显式配置。
+- 按 Agent 和来源分区管理长期记忆，查看出处，纠正或屏蔽错误内容。QQ 记忆按会话与绑定隔离；与本人私聊共享需要显式配置。已使用全量读取的存量配置仍可在同一页面编辑两个全量读取参数；普通配置不会新增全量读取选项。
 - 导入 UTF-8 文本或 Markdown 到知识库，分类管理并逐个授权 Agent；导入不等于授权。
 - 为对话、判断、视觉、记忆和整理等用途选择本地模型或登记的 OpenAI 兼容模型。外部服务分别保存端点、凭据和声明的上下文容量。
 - 使用已配置的视觉模型描述受支持的图片与动图抽帧。导入表情素材、编辑说明和标签，经检查启用后，将集合授权给聊天方案。
@@ -180,7 +180,7 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 
 导航按**对话、Agent、系统能力、方案、资料、扩展**组织，另设**模型服务**与**偏好**入口。
 
-启动过程中会顺便预热主要页面所需的数据，因此打开 Agent、知识库、记忆、模型服务或扩展时通常直接看到内容，而不是先空一下再加载。页面停留一会儿会在后台安静更新，不会打断你；正在编辑的草稿按你输入的样子保留。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
+启动过程中会顺便预热主要工作区所需的数据，因此打开 Agent、知识库、记忆或扩展时通常直接看到内容，而不是先空一下再加载；模型服务页首屏复用启动时已取得的模型服务清单，并保留原有前台刷新与连接检查。方案配置页面在无关状态变化时避免多余重绘；记忆与摘要读取减少重复内部查询。页面停留一会儿会在后台安静更新，不会打断你；正在编辑的草稿按你输入的样子保留。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
 
 **扩展**中的「工具」页统一列出全部已注册工具——内置系统工具与 MCP 工具——逐项标注来源、读写、全局状态与授权；「技能」页同时列出你安装的技能文档与随应用提供的使用指南。内置组件随应用提供，不能删除或修改定义；只有全局开关关闭时才会灰显，不会因为某个助手缺少授权而变灰。共用同一授权资源的工具只编辑那一份授权。系统能力页保留各自的功能配置，并提供到具体所用组件的跳转。
 

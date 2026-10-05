@@ -23,6 +23,7 @@
 //     claiming to have seen the picture is a type error, not a judgement call.
 
 import { z } from "zod";
+import { bodyRevision } from "../db/conversation-event-repository";
 
 const MediaKindSchema = z.enum(["image", "record", "video", "file"]);
 export type QqMediaKind = z.output<typeof MediaKindSchema>;
@@ -223,4 +224,22 @@ export function qqMediaModelFor(kind: unknown, config: unknown): QqMediaModelCho
   const model = wanted === null ? "" : wanted.trim();
   if (model.length === 0) return Object.freeze({ kind: "not_configured" });
   return Object.freeze({ kind: "configured", model });
+}
+
+/**
+ * 生效媒体输入形状的稳定修订串——分类缓存槽与 typed 结果缓存共用的唯一策略键真源。
+ * 键序固定 prompt→frames→maxDimension：键序变了缓存键就变，既有分类缓存全部失效。
+ */
+export function qqMediaPolicyRevision(input: {
+  readonly prompt: string;
+  readonly frames: number;
+  readonly maxDimension: number;
+}): string {
+  return bodyRevision(
+    JSON.stringify({
+      prompt: input.prompt,
+      frames: input.frames,
+      maxDimension: input.maxDimension,
+    }),
+  );
 }

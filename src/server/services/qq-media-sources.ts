@@ -17,15 +17,13 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { RunOwner } from "../../shared/contracts/agent-run";
-import type { SourceRef } from "../../shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
 import { inTimeline } from "../modules/conversation-evidence-store";
-
-type SourceAccess = "available" | "expired" | "revoked";
 
 /** The actual media/asset/link values the revision hash freezes. The projection is an
  * INNER JOIN against the real DDL (0052: link/asset expires_at NOT NULL, one live link

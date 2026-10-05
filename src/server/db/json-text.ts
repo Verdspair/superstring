@@ -13,12 +13,31 @@
 // - Timestamp / microsecond precision is the caller's responsibility; this
 // module only (de)serializes plain JSON values.
 
-import { contextDumps } from "../modules/memory-query";
-
 /**
- * Serialize a value to a canonical JSON string: object keys sorted recursively
- * arrays left in their original order.
+ * Canonical JSON serializer: object keys sorted recursively, arrays left in their
+ * original order. This is the single implementation — `contextDumps` (the name the
+ * context/observability callers use) and `stableStringify` (the storage-contract name)
+ * are the same function, so a stored row and a context dump can never disagree about
+ * key order. Pure JSON handling only; no SQLite I/O here.
  */
-export function stableStringify(value: unknown): string {
-  return contextDumps(value);
+function canonicalJson(value: unknown): string {
+  const sorted = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(sorted);
+    if (item !== null && typeof item === "object") {
+      const source = item as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.keys(source)
+          .sort()
+          .map((key) => [key, sorted(source[key])]),
+      );
+    }
+    return item;
+  };
+  return JSON.stringify(sorted(value));
 }
+
+/** Storage-contract name (SQLite TEXT columns). */
+export const stableStringify = canonicalJson;
+
+/** Context/observability name (context dumps, omissions, notes). */
+export const contextDumps = canonicalJson;

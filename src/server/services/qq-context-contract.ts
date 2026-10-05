@@ -73,6 +73,18 @@ export type QqContextMessage = z.output<typeof ContextMessageSchema>;
 export type QqContextTier = "judgement" | "reply";
 
 /**
+ * 图片相 → 上下文档位的唯一映射（§6.1：评分相固定 judgement 档；决策相走方案选定的
+ * decisionTier；生成相固定 reply 档）。context-source 与宿主的诊断面共用这一份，新增
+ * 相或档位时只改这里。
+ */
+export function qqPhaseTier(
+  phase: "decision" | "evaluation" | "generation",
+  decisionTier: QqContextTier,
+): QqContextTier {
+  return phase === "evaluation" ? "judgement" : phase === "decision" ? decisionTier : "reply";
+}
+
+/**
  * The values the user fixed on 2026-09-23, matching the DDL defaults. The window ceiling is
  * 14 days on purpose: observation text is deleted after that, so a longer window could only
  * select messages whose bodies are gone.

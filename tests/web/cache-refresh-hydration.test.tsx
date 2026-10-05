@@ -1106,7 +1106,7 @@ describe("cache-refresh-hydration integration tests", () => {
     await store.getState().bootstrap();
 
     // Verify: bootstrap() ITSELF must have persisted the directory cache into sessionStorage!
-    // Without this fix, loadDirectoryCache returns null and P2 key check fails in static acceptance!
+    // Without this, loadDirectoryCache would return null and the cached preview could never render.
     await vi.waitFor(async () => {
       const persistedDir = await loadDirectoryCache(storage);
       expect(persistedDir).not.toBeNull();

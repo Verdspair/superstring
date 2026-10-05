@@ -10,7 +10,6 @@ import { ContextEngine } from "../../src/server/agent/context-engine";
 import {
   ContextBuilder,
   type ContextDiagnostic,
-  contextDumps,
   contextKeywords,
   estimateMessages,
   estimateTokens,
@@ -30,6 +29,7 @@ import {
   summaries,
   systemPrompt,
 } from "../../src/server/db/context-repository";
+import { contextDumps } from "../../src/server/db/json-text";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
 import {
@@ -53,6 +53,10 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { SqliteKnowledgeModule } from "../../src/server/modules/knowledge-module";
 import { SqliteMemoryModule } from "../../src/server/modules/memory-module";
 import { unicodeStrip } from "../../src/server/services/text";
+import {
+  DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
+  DEFAULT_MEMORY_RETRIEVAL_PROMPT,
+} from "../../src/shared/contracts";
 import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
 
 const MODEL = "qwen/qwen3-4b-2507";
@@ -856,6 +860,127 @@ describe("R4 context repository authorization", () => {
       .where(eq(schema.memoryEntries.id, id))
       .run();
     expect(catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId)).not.toBe(before);
+  });
+
+  it("batched source integrity fails closed on context-valid loss, message deletion and retirement", () => {
+    const { orm } = setup();
+    const sessionId = newSession(orm);
+    const keepTurn = completedTurn(orm, sessionId, "k1");
+    const keepId = seedMemory(orm, keepTurn.id, 2);
+    const sourceValidTurn = completedTurn(orm, sessionId, "s1");
+    const sourceValidId = seedMemory(orm, sourceValidTurn.id, 3);
+    const contextValidTurn = completedTurn(orm, sessionId, "c1");
+    const contextValidId = seedMemory(orm, contextValidTurn.id, 4);
+    const messageTurn = completedTurn(orm, sessionId, "m1");
+    const messageId = seedMemory(orm, messageTurn.id, 5);
+    const retireTurn = completedTurn(orm, sessionId, "r1");
+    const retireId = seedMemory(orm, retireTurn.id, 6);
+    expect(new Set(catalog(orm, DEFAULT_AGENT_ID, sessionId).map((item) => item.id))).toEqual(
+      new Set([keepId, sourceValidId, contextValidId, messageId, retireId]),
+    );
+    orm
+      .update(schema.turns)
+      .set({ sourceValid: 0 })
+      .where(eq(schema.turns.id, sourceValidTurn.id))
+      .run();
+    orm
+      .update(schema.turns)
+      .set({ contextValid: 0 })
+      .where(eq(schema.turns.id, contextValidTurn.id))
+      .run();
+    const assistant = orm
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.turnId, messageTurn.id))
+      .all()
+      .find((message) => message.role === "assistant");
+    if (!assistant) throw new Error("assistant message missing");
+    deleteMessage(orm, sessionId, assistant.id);
+    orm
+      .update(schema.memoryEntries)
+      .set({ configSnapshot: JSON.stringify({ correction_retired: true }) })
+      .where(eq(schema.memoryEntries.id, retireId))
+      .run();
+    expect(new Set(catalog(orm, DEFAULT_AGENT_ID, sessionId).map((item) => item.id))).toEqual(
+      new Set([keepId]),
+    );
+    const fingerprint = catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId);
+    orm
+      .update(schema.turns)
+      .set({ contextValid: 1 })
+      .where(eq(schema.turns.id, contextValidTurn.id))
+      .run();
+    expect(catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId)).not.toBe(fingerprint);
+  });
+
+  it("does not leak another agent's session identity through a cross-agent chat source", () => {
+    const { orm } = setup();
+    const sessionId = newSession(orm);
+    const turn = completedTurn(orm, sessionId, "x1", "跨Agent机密", "跨Agent回复");
+    const memoryId = seedMemory(orm, turn.id, 7);
+    const other = crypto.randomUUID();
+    orm
+      .insert(schema.agents)
+      .values({
+        id: other,
+        name: "other",
+        systemPrompt: "",
+        description: "",
+        additionalInstructions: "",
+        p5Config: "{}",
+        modelName: MODEL,
+        temperature: 0.7,
+        memoryConsolidationModelName: null,
+        memoryConsolidationPrompt: DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
+        memoryConsolidationAdditionalInstructions: "",
+        memoryRetrievalModelName: null,
+        memoryRetrievalPrompt: DEFAULT_MEMORY_RETRIEVAL_PROMPT,
+        contextCompressionModelName: null,
+        personaIntensity: 60,
+        isActive: 1,
+        configVersion: 1,
+        updatedAt: nowIso(),
+        createdAt: nowIso(),
+      })
+      .run();
+    orm.insert(schema.agentKnowledgeReadSettings).values({ agentId: other }).run();
+    orm
+      .insert(schema.agentPersonas)
+      .values({
+        id: crypto.randomUUID(),
+        agentId: other,
+        coreIdentity: "",
+        communicationStyle: "",
+        interactionBoundaries: "",
+        exampleDialogues: "",
+        advancedInstructions: "",
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      })
+      .run();
+    const foreignSessionId = createSession(orm, "foreign", {
+      agentId: other,
+      modelName: MODEL,
+    }).id;
+    const foreignTurn = completedTurn(
+      orm,
+      foreignSessionId,
+      "f1",
+      "private-secret",
+      "foreign-reply",
+    );
+    orm
+      .update(schema.memorySources)
+      .set({ turnId: foreignTurn.id })
+      .where(eq(schema.memorySources.memoryId, memoryId))
+      .run();
+    const detail = memoryContent(orm, DEFAULT_AGENT_ID, memoryId);
+    const chat = detail.content.sources.find((source) => source.type === "chat");
+    if (!chat || chat.type !== "chat") throw new Error("chat source missing");
+    expect(chat.session_id).toBeNull();
+    expect(detail.source_messages[0]?.session_title).toBeNull();
+    expect(JSON.stringify(detail)).not.toContain("private-secret");
+    expect(detail.content.validity).toBe("invalid");
   });
 
   it("compiles only non-empty system prompt sections", () => {

@@ -1,8 +1,7 @@
 // T08 Step5/8 e2e 准备（B 联调）：主动开口媒体闸 × 本 run 原生读证明（§8.1 native consumed proof）。
 //
-// 本文件按 parent GO「write only」落盘：落盘时**不执行**（不进当轮验证），等宿主与共享源稳定后的
-// 统一短 window GO 一次运行。拒收稿 70d30432 的四处错误在本稿逐一改正（2026-10-04 parent 移交，
-// 本文件唯一写者 resume2-native-proof-e2e，旧 owner 已冻结不再写）：
+// 本文件落盘时不执行（等宿主与共享源稳定后统一运行）。历史稿 70d30432 的四处错误在此版改正：
+//
 //   1) 测试函数非 async、未 await activate/deliver、finally 过早 close —— 本稿全部 async/await，
 //      自有合成 provider 在 finally 里等激活全部完成后再关闭；
 //   2) 手写 ModelPort 假 gateway（自拼 JSON wire 冒充 HTTP）—— 本稿用产品真实 createLmStudioClient
@@ -31,7 +30,7 @@
 //   B1（留后续，不在本轮 4 例 scope）：生成相 native 流式成功消费观察进 proof —— 等 runtime 的
 //   stream-consumed 回调（phase generate）合流后另派补例，本稿不实现、不占位。
 //
-// 2026-10-04 resume2-np-provider-fix（joint2 四例真实失败后的唯一修复，父 GO 限定在
+// 2026-10-04 provider 修复（joint2 四例真实失败后的修复，限定在
 // tests/integration/qq-native-consumed-judgement-e2e.test.ts 本文件）：只改本文件自有的合成
 // provider 响应形状与捕获面的图字节度量，不动产品网关、不加 gateway fallback 兼容、不新增协议、
 // 不改宿主/reader/harness、不改本轮强用例的 gate（all-fail 预期仍 expected fail，不是 pass）。
@@ -951,7 +950,7 @@ it("[NP4] with the group media capability currently off the failed read still bl
 
 // ---------------------------------------------------------------------------
 // B1（留后续，不在本轮 4 例 scope）：生成相 native 流式成功消费观察进 proof。
-// runtime 的 stream-consumed 回调（phase generate）由 resume2-stream-consumed 在 agent-runtime.ts
+// runtime 的 stream-consumed 回调（phase generate）在 agent-runtime.ts
 // 合流后另派补例：同 run 生成相 native（已知 category／无 envelope）成功流式 HTTP 输出也应进入
 // proof——strict permit 在生成相之前，可能仅 decision proof，不在 commit 前伪造资格消费。
 // 本稿不实现、不占位。

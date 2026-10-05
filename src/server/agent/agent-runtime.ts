@@ -1,6 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import {
+  AGENT_DECISION_JSON_SCHEMA,
+  AgentDecisionSchema,
+  type OutputDraft,
+  parseAgentDecision,
+} from "../../shared/contracts/agent-output";
 import type {
   AgentStepSnapshot,
   ModelMessage,
@@ -29,15 +35,7 @@ import type {
 } from "../observability/runtime-telemetry";
 import { unicodeStrip } from "../services/text";
 import { ActionExecutor } from "./action-executor";
-import {
-  AGENT_DECISION_JSON_SCHEMA,
-  AgentDecisionSchema,
-  type AgentGenerationConfig,
-  type AgentSpec,
-  type LeafAgentSpec,
-  type OutputDraft,
-  parseAgentDecision,
-} from "./agent-specs";
+import type { AgentGenerationConfig, AgentSpec, LeafAgentSpec } from "./agent-specs";
 import type { ActionContext, BuiltInAction } from "./built-in-actions";
 import { createCodeMode } from "./code-mode";
 import type { CodeRunner, CodeRunnerLimits } from "./code-runner";

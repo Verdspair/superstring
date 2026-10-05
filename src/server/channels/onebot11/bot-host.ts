@@ -1,12 +1,12 @@
 import type { Database } from "bun:sqlite";
+import type { OutputDraft } from "../../../shared/contracts/agent-output";
+import { AGENT_DECISION_JSON_SCHEMA } from "../../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
 import type { ConversationEvent, WakeSignal } from "../../../shared/contracts/conversation";
 import type { SourceRef } from "../../../shared/contracts/evidence";
 import type { QqEffectiveMediaPolicy } from "../../../shared/contracts/qq-media-input";
-import type { QqConversationScope } from "../../../shared/contracts/qq-message";
 import type { AgentRuntime, PreparedOutput } from "../../agent/agent-runtime";
-import type { AgentSpec, OutputDraft } from "../../agent/agent-specs";
-import { AGENT_DECISION_JSON_SCHEMA } from "../../agent/agent-specs";
+import type { AgentSpec } from "../../agent/agent-specs";
 import type { ActionContext, BuiltInAction } from "../../agent/built-in-actions";
 import { inputUnits, textMessage, uniqueSources } from "../../agent/context-engine";
 import { ConversationHost } from "../../agent/conversation-host";
@@ -22,6 +22,7 @@ import { observationRelevant } from "../../conversation/observation-relevance";
 import { AgentRunRepository } from "../../db/agent-run-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { bodyRevision } from "../../db/conversation-event-repository";
+import { contextDumps } from "../../db/json-text";
 import { KnowledgeReadRepository } from "../../db/knowledge-read-repository";
 import { readOrganizationSettings } from "../../db/organization-repository";
 import {
@@ -57,14 +58,20 @@ import type { WakeRepository } from "../../db/wake-repository";
 import { fail } from "../../errors";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
-import { contextDumps } from "../../modules/memory-query";
 import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
-import { captureQqTask, checkQqTask, qqConversationKey } from "../../services/qq-binding-contract";
+import {
+  captureQqTask,
+  checkQqTask,
+  qqConversationKey,
+  qqConversationScopeOfBinding,
+} from "../../services/qq-binding-contract";
+import { qqPhaseTier } from "../../services/qq-context-contract";
 import {
   attentionTriggerFilter,
   QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS,
 } from "../../services/qq-dispatch";
 import { prepareQqJudgement } from "../../services/qq-judgement-preparation";
+import { qqMediaPolicyRevision } from "../../services/qq-media-contract";
 import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
 import type {
   QqMediaQuestionAnchorResolver,
@@ -98,7 +105,11 @@ import { planQqPreparedReply, type QqStickerStage } from "../../services/qq-stic
 import { compileSystemPrompt, runtimeFromAgent } from "../../services/runtime-config";
 import type { BotCompressionJob } from "./background-compression";
 import { BotContextSource, type BotContextTarget } from "./context-source";
-import type { QqMediaInputService, QqMediaProjection } from "./media-input-service";
+import type {
+  QqMediaInputService,
+  QqMediaProjection,
+  QqPreparedMediaImage,
+} from "./media-input-service";
 import { consumeModelMediaData, isModelImageUnsupportedError } from "./media-input-service";
 import { loadQqMessageFact, projectQqMessageFacts } from "./message-projection";
 export interface OneBotPolicy {
@@ -182,6 +193,10 @@ export interface OneBotHostOptions {
   /** 本群能力 guard：缺省按开发默认构造（测试可注入同一份事实的替身）。 */
   guard?: QqGroupCapabilityGuard;
 }
+/** 运行时 hook 相名 → QQ 相名（映射唯一实现；宿主内多处使用同一份）。非 next 一律 generation。 */
+const qqPhaseOf = (phase: "next" | "generate" | "leaf"): "decision" | "generation" =>
+  phase === "next" ? "decision" : "generation";
+
 /** One host for direct and shared conversations; topology changes targets, not the model loop. */
 export class OneBotHost {
   private readonly host: ConversationHost;
@@ -564,25 +579,19 @@ export class OneBotHost {
     // 分类缓存槽/typed 结果缓存的共同真源修订：宿主从生效方案的实际媒体输入形状规范化
     // （prompt、帧数、最大边）。classificationPolicy 与 createQqMediaTools 的 policyRevision
     // 同值同源，不在消费/回读两侧各自组合。
-    const mediaPolicyRevision = bodyRevision(
-      JSON.stringify({
-        prompt: schemePrompts(scheme).media,
-        frames: schemeRhythm(scheme).media_frame_count,
-        maxDimension: schemeRhythm(scheme).media_max_dimension,
-      }),
-    );
+    const mediaPolicyRevision = qqMediaPolicyRevision({
+      prompt: schemePrompts(scheme).media,
+      frames: schemeRhythm(scheme).media_frame_count,
+      maxDimension: schemeRhythm(scheme).media_max_dimension,
+    });
     // 同次分类消费（规格 §10）：sentMediaIds/sentSources 取自对应相投影的真实发送集；
     // consume 在宿主（可信侧）执行，白名单/重复/伪造 mediaId 一律 fail closed。
-    const mediaScope = () => ({
-      conversationId: conversation.id,
-      accountId: binding.accountId,
-      conversationKind: binding.kind,
-      peerId: binding.peerId,
-      agentId: binding.agentId,
-      bindingId: binding.id,
-      bindingEpoch: conversation.bindingEpoch,
-      authorityRevision: binding.authorityRevision,
-    });
+    const mediaScope = () =>
+      qqConversationScopeOfBinding({
+        conversationId: conversation.id,
+        binding,
+        bindingEpoch: conversation.bindingEpoch,
+      });
     let prepared = preparation(true);
     if (prepared.kind !== "prepared") {
       settleOpportunity(prepared.readyAtSeconds);
@@ -858,21 +867,25 @@ export class OneBotHost {
     // 主 run 的发送边界 resolver：三相已验证投影的字节都登记在本 run（conversation owner）
     // 下；评分叶子另行按 Step5a 重登记（不跨 run 借用）。运行结束在 activate 外层 release。
     const runResolver = mediaService ? createImageByteResolver() : null;
-    const registerProjection = (phase: "decision" | "generation") => {
-      const projection = source.mediaProjection(phase);
-      if (!runResolver || !projection || projection.images.length === 0) return;
-      source.assertSources(projection.sources);
-      guard.assertSources(groupOwner, projection.sources);
-      for (const image of projection.images) {
+    // 本 run 的图片字节登记：variant 复验（SQL 比对 asset/policy）→ run 绑定复验 →
+    // resolver 登记，一条规则服务三相投影与细问读取；错误码前缀由调用点传入。
+    const verifyAndRegisterImages = (
+      images: readonly QqPreparedMediaImage[],
+      errorPrefix: "MEDIA_IMAGE" | "SCORE_IMAGE",
+      register: (
+        entry: Parameters<ReturnType<typeof createImageByteResolver>["register"]>[0],
+      ) => void,
+    ) => {
+      for (const image of images) {
         const row = db
           .query("SELECT asset_id, policy, bytes FROM qq_media_variants WHERE id=?")
           .get(image.variantId) as
           | { asset_id: string; policy: string; bytes: Uint8Array }
           | undefined;
         if (!row || row.asset_id !== image.assetId || row.policy !== image.variantPolicy)
-          throw new Error("MEDIA_IMAGE_VARIANT_MISMATCH");
-        if (runId === undefined || owner === undefined) throw new Error("MEDIA_IMAGE_RUN_MISSING");
-        runResolver.register({
+          throw new Error(`${errorPrefix}_VARIANT_MISMATCH`);
+        if (runId === undefined) throw new Error(`${errorPrefix}_RUN_MISSING`);
+        register({
           runId,
           owner,
           part: image.content,
@@ -881,6 +894,38 @@ export class OneBotHost {
           assertCurrent: () => source.assertCurrent(),
         });
       }
+    };
+    const registerProjection = (phase: "decision" | "generation") => {
+      const projection = source.mediaProjection(phase);
+      if (!runResolver || !projection || projection.images.length === 0) return;
+      source.assertSources(projection.sources);
+      guard.assertSources(groupOwner, projection.sources);
+      verifyAndRegisterImages(projection.images, "MEDIA_IMAGE", (entry) =>
+        runResolver.register(entry),
+      );
+    };
+    // §9 fallback 的消息重写：剥掉原生 image part（剥空的消息丢弃），有 notes 时追加一条
+    // data_only 的 user 资料消息。preparePhaseForModel 与 onPhaseMediaUnsupported 两处共用
+    // 同一实现（预算复验仍只由 preparePhaseForModel 侧保留，不并入本函数）。
+    const strippedMediaFallbackMessages = (
+      messages: readonly ModelMessage[],
+      notes: readonly { mediaId: string; text: string; taskId: string }[],
+    ): ModelMessage[] => {
+      const stripped = messages
+        .map((message) => ({
+          ...message,
+          content: message.content.filter((part) => part.kind !== "image"),
+        }))
+        .filter((message) => message.content.length > 0);
+      return notes.length > 0
+        ? [
+            ...stripped,
+            textMessage(
+              "user",
+              contextDumps({ kind: "qq_media_notes", trust: "data_only", notes }),
+            ),
+          ]
+        : stripped;
     };
     const source = new BotContextSource({
       modules: o.modules,
@@ -1056,7 +1101,7 @@ export class OneBotHost {
       readonly messages: readonly ModelMessage[];
       readonly signal?: AbortSignal;
     }): Promise<ModelResolvedPrepareOutput> => {
-      const qqPhase: "decision" | "generation" = input.phase === "next" ? "decision" : "generation";
+      const qqPhase = qqPhaseOf(input.phase);
       source.assertCurrent();
       if (input.imagesAllowed) {
         // resolved 已冻结：以真实 used 重备本相媒体，分类回读门控按真实 resolved 放行
@@ -1072,23 +1117,9 @@ export class OneBotHost {
           if (runId === undefined) throw new Error("MEDIA_IMAGE_RUN_MISSING");
           source.assertSources(freshProjection.sources);
           guard.assertSources(groupOwner, freshProjection.sources);
-          for (const image of freshProjection.images) {
-            const row = db
-              .query("SELECT asset_id, policy, bytes FROM qq_media_variants WHERE id=?")
-              .get(image.variantId) as
-              | { asset_id: string; policy: string; bytes: Uint8Array }
-              | undefined;
-            if (!row || row.asset_id !== image.assetId || row.policy !== image.variantPolicy)
-              throw new Error("MEDIA_IMAGE_VARIANT_MISMATCH");
-            runResolver?.register({
-              runId,
-              owner,
-              part: image.content,
-              bytes: new Uint8Array(row.bytes),
-              sources: image.sources,
-              assertCurrent: () => source.assertCurrent(),
-            });
-          }
+          verifyAndRegisterImages(freshProjection.images, "MEDIA_IMAGE", (entry) =>
+            runResolver?.register(entry),
+          );
         }
         emitMediaMode(qqPhase, { why: null, resolvedModel: input.model });
         return {};
@@ -1107,23 +1138,10 @@ export class OneBotHost {
         },
         fallbackProjection,
       );
-      const notes = fallbackProjection?.notes ?? [];
-      const stripped = input.messages
-        .map((message) => ({
-          ...message,
-          content: message.content.filter((part) => part.kind !== "image"),
-        }))
-        .filter((message) => message.content.length > 0);
-      const messages: ModelMessage[] =
-        notes.length > 0
-          ? [
-              ...stripped,
-              textMessage(
-                "user",
-                contextDumps({ kind: "qq_media_notes", trust: "data_only", notes }),
-              ),
-            ]
-          : stripped;
+      const messages = strippedMediaFallbackMessages(
+        input.messages,
+        fallbackProjection?.notes ?? [],
+      );
       // 最终 materials 预算复验（当前真源）：超上限＝该次尝试不发出（fail closed）。
       const ceiling = source.phaseUnitsCeiling(qqPhase);
       const units = inputUnits(messages);
@@ -1136,7 +1154,7 @@ export class OneBotHost {
           code: "CONTEXT_BUDGET_EXCEEDED",
           details: {
             stage: "media_fallback",
-            tier: qqPhase === "generation" ? "reply" : decisionTier,
+            tier: qqPhaseTier(qqPhase, decisionTier),
             model: input.model,
             capacity: source.cachedCapacity(input.model) ?? null,
             ceiling,
@@ -1179,16 +1197,11 @@ export class OneBotHost {
     const resolveQuestion: QqMediaQuestionAnchorResolver = (input) => {
       if (!focusKey) return null;
       source.assertCurrent();
-      const readScope: QqConversationScope = {
+      const readScope = qqConversationScopeOfBinding({
         conversationId: conversation.id,
-        accountId: binding.accountId,
-        conversationKind: binding.kind,
-        peerId: binding.peerId,
-        agentId: binding.agentId,
-        bindingId: binding.id,
+        binding,
         bindingEpoch: conversation.bindingEpoch,
-        authorityRevision: binding.authorityRevision,
-      };
+      });
       // 统一 fact 加载 + 验证函数：question + focus + direct target 三个 fact 都加载，
       // 然后用统一规则匹配 mediaNote（event_key + segment_index + mediaId）。
       // 返回 null = 无合法关联（供 initial 与 assertQuestionCurrent 共用）。
@@ -1347,24 +1360,9 @@ export class OneBotHost {
       });
       // variant scoped 复验 + 当前 run resolver 登记（bytes 只进 resolver，不进工具结果）。
       if (runResolver) {
-        for (const image of result.images) {
-          const row = db
-            .query("SELECT asset_id, policy, bytes FROM qq_media_variants WHERE id=?")
-            .get(image.variantId) as
-            | { asset_id: string; policy: string; bytes: Uint8Array }
-            | undefined;
-          if (!row || row.asset_id !== image.assetId || row.policy !== image.variantPolicy)
-            throw new Error("MEDIA_IMAGE_VARIANT_MISMATCH");
-          if (runId === undefined) throw new Error("MEDIA_IMAGE_RUN_MISSING");
-          runResolver.register({
-            runId,
-            owner,
-            part: image.content,
-            bytes: new Uint8Array(row.bytes),
-            sources: image.sources,
-            assertCurrent: () => source.assertCurrent(),
-          });
-        }
+        verifyAndRegisterImages(result.images, "MEDIA_IMAGE", (entry) =>
+          runResolver.register(entry),
+        );
       }
       // 只有问题锚定的**细问**读取才登记进 detail 集合：ordinary read（无 question 锚）
       // 刻意不入，因此不得升普通规格、不得进 explicit 桶。
@@ -1734,16 +1732,13 @@ export class OneBotHost {
         // §8.1 current_run_consumed 记账：runtime 在相模型调用成功返回后通知；
         // 宿主按当相真实发送的 mediaId+sourceRefs 记录 native proof。
         onModelCallConsumed: (consumed) => {
-          const phase: "decision" | "generation" =
-            consumed.phase === "next" ? "decision" : "generation";
-          recordNativeConsumed(phase);
+          recordNativeConsumed(qqPhaseOf(consumed.phase));
         },
         // §9 真实 HTTP unsupported 重试边界：runtime 在相调用被精确拒绝后调用恰一次；
         // 宿主标该相 fallback、重备 description 材料并返回剥离原生图＋notes 的最终消息
         // （null＝无可降路径，原样抛）。非 unsupported 永不进入这里。
         onPhaseMediaUnsupported: async (input) => {
-          const qqPhase: "decision" | "generation" =
-            input.phase === "next" ? "decision" : "generation";
+          const qqPhase = qqPhaseOf(input.phase);
           const nativeImages = source.mediaProjection(qqPhase)?.images.length ?? 0;
           if (nativeImages === 0) return null;
           source.requestMediaFallback(qqPhase, "model_image_unsupported");
@@ -1760,23 +1755,10 @@ export class OneBotHost {
             },
             fallbackProjection,
           );
-          const notes = fallbackProjection?.notes ?? [];
-          const stripped = input.messages
-            .map((message) => ({
-              ...message,
-              content: message.content.filter((part) => part.kind !== "image"),
-            }))
-            .filter((message) => message.content.length > 0);
-          const messages: ModelMessage[] =
-            notes.length > 0
-              ? [
-                  ...stripped,
-                  textMessage(
-                    "user",
-                    contextDumps({ kind: "qq_media_notes", trust: "data_only", notes }),
-                  ),
-                ]
-              : stripped;
+          const messages = strippedMediaFallbackMessages(
+            input.messages,
+            fallbackProjection?.notes ?? [],
+          );
           return { messages };
         },
         ...(runResolver

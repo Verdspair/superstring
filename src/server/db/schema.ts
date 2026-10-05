@@ -1,5 +1,5 @@
-// Drizzle ORM schema: 16 business tables plus the additive knowledge and QQ
-// transport tables.
+// Drizzle ORM schema: the initial core tables plus the additive knowledge, QQ
+// transport and feature tables (count lives in schema-gate's table list, not here).
 // The business tables are mapped 1:1 onto Drizzle + SQLite.
 // Source of truth: docs/reference/data-model.md (golden). Every column name
 // type, NOT NULL, default, primary key, composite unique key, foreign key (with

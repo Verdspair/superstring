@@ -2,7 +2,12 @@
 //
 // 凭据只以变量引用出现（`$VAR` 或变量名），这里不解析也不展开环境变量值。
 
-import { type McpServerConfig, McpServerSchema } from "../../../shared/contracts/mcp";
+import {
+  MCP_MAX_RESULT_CHARS_DEFAULT,
+  MCP_TIMEOUT_MS_DEFAULT,
+  type McpServerConfig,
+  McpServerSchema,
+} from "../../../shared/contracts/mcp";
 
 export interface McpServerDraft {
   id: string;
@@ -57,8 +62,8 @@ export function emptyDraft(): McpServerDraft {
     env: "",
     url: "",
     authorizationEnv: "",
-    timeoutMs: "15000",
-    maxResultChars: "8000",
+    timeoutMs: String(MCP_TIMEOUT_MS_DEFAULT),
+    maxResultChars: String(MCP_MAX_RESULT_CHARS_DEFAULT),
   };
 }
 

@@ -7,6 +7,7 @@ import {
   type CompressionRecord,
   ConversationCompressor,
 } from "../../agent/conversation-compression";
+import { contextDumps } from "../../db/json-text";
 import { readOrganizationSettings } from "../../db/organization-repository";
 import {
   type QqConversationSummary,
@@ -15,7 +16,6 @@ import {
 } from "../../db/qq-summary-repository";
 import type { Orm } from "../../db/repositories";
 import type { ModelGateway } from "../../llm/model-gateway";
-import { contextDumps } from "../../modules/memory-query";
 import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import { estimateTokens } from "../../services/token-estimate";
 import { failureCode } from "./failure-code";

@@ -1,5 +1,4 @@
-// P1 启动数据预热：工作区前台消费集成（真实 store + 替身 API + 真实组件挂载）。
-// 契约真源：startup-preload-implementation-20261005T074750Z/frontend-successor-gemini/P1-INTERFACE.md。
+// 启动数据预热：工作区前台消费集成（真实 store + 替身 API + 真实组件挂载）。
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";

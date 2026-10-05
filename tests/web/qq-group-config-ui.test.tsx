@@ -4,7 +4,7 @@
 
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse } from "../../src/shared/contracts/agent";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { AgentKnowledgeReadSettings } from "../../src/shared/contracts/knowledge";
@@ -931,4 +931,29 @@ it("返回会话只认同一绑定、同一助手的摘要；页脚保存按钮�
   const save = saveButtonOf(view);
   expect(save.className).toContain("min-h-8");
   expect(save.className).toContain("whitespace-normal");
+});
+
+describe("性能阶段补测：窄订阅行为保持（FE-P1, group-config）", () => {
+  it("与本页无关的 store 更新不重渲染本群配置页；本页读取字段更新仍正常刷新", async () => {
+    const view = await renderPage();
+    // 无关更新：memoryCorrectionSaving 不是本页读取字段 → 窄订阅不得重渲染。
+    const htmlBefore = document.body.innerHTML;
+    await act(async () => {
+      store.setState({ memoryCorrectionSaving: true });
+    });
+    expect(document.body.innerHTML).toBe(htmlBefore);
+    // 本页读取字段更新：qqSchemes 变化 → 换方案预览下拉必须反映新方案。
+    const extra = qqScheme({ id: "88888888-8888-4888-8888-888888888888", name: "新到基线方案" });
+    await act(async () => {
+      store.setState({ qqSchemes: [qqScheme(), extra] });
+    });
+    const options = [...document.querySelectorAll("select option")].map((o) => o.textContent);
+    expect(options).toContain("新到基线方案");
+    // 覆盖输入仍即时生效（必要 UI 更新保持）。
+    const mergeInput = view.container.querySelector(
+      'input[data-field="rhythm.merge_window_seconds"]',
+    ) as HTMLInputElement;
+    fireEvent.change(mergeInput, { target: { value: "33" } });
+    expect(editorOf()?.overrides).toEqual({ rhythm: { merge_window_seconds: 33 } });
+  });
 });

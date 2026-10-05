@@ -25,7 +25,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { RunOwner } from "../../shared/contracts/agent-run";
-import type { SourceRef } from "../../shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import { bodyRevision } from "../db/conversation-event-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
@@ -38,8 +38,6 @@ import { projectQqMessageFacts } from "./qq-message-fact-projection";
 import { qqMessageFactSourceAccess } from "./qq-message-fact-sources";
 import { isObservationExpired } from "./qq-retention";
 import { projectQqTextRelations } from "./qq-text-relations";
-
-type SourceAccess = "available" | "expired" | "revoked";
 
 /** 完整 8 字段 QQ 会话作用域（与 QqConversationScope 同形，本地声明避免反向依赖）。 */
 export interface QqMemoryFactScope {

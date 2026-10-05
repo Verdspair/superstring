@@ -2,8 +2,9 @@
 // 原文先进 store（合法性由契约判定，非法留 rawTexts 并拦保存），blur 后才提示错误；换基础方案先预览 keep/reset。
 
 import { ChevronLeft } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import type { AgentKnowledgeReadSettings } from "../../../shared/contracts/knowledge";
 import {
   type ExecutionModules,
@@ -22,13 +23,6 @@ import { AlertDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import {
   Dialog,
@@ -52,20 +46,28 @@ import {
   qqGroupConfigEffectiveScheme,
   qqGroupConfigHasInvalidInputs,
 } from "../../features/qq/group-config-state";
+import {
+  imageFields,
+  participationFields,
+  QQ_GROUP_CAPABILITY_LABELS,
+  QQ_SCHEME_ENUM_OPTION_LABELS,
+  QQ_SCHEME_FIELD_LABELS,
+  stickerFields,
+  TRIGGER_LABELS,
+} from "../../features/qq/scheme-field-metadata";
 import { translateNotice } from "../../i18n";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
-import { TRIGGER_LABELS } from "./binding-editor";
 import { QqMessagePreview } from "./qq-message-preview";
+import { SchemeFieldCard } from "./scheme-field-shared";
 import {
   fieldBounds,
   headroomPercentBounds,
-  imageFields,
+  isValidTimezone,
   localClock,
   type NumberEditorGroup,
   numberEditorGroups,
-  participationFields,
-  stickerFields,
+  TIMEZONE_SUGGESTIONS,
   utcMinutes,
 } from "./scheme-fields";
 
@@ -172,70 +174,13 @@ const valueTextOf = (
   return String(value);
 };
 
-const FIELD_LABELS: Record<string, string> = {
-  ...Object.fromEntries(
-    Object.entries(TRIGGER_LABELS).map(([key, label]) => [`triggers.${key}`, label]),
-  ),
-  ...Object.fromEntries(participationFields.map(([name, label]) => [`rhythm.${name}`, label])),
-  ...Object.fromEntries(
-    [...stickerFields, ...imageFields].map(([group, name, label]) => [`${group}.${name}`, label]),
-  ),
-  "rhythm.active_hours_enabled": "connections.allowedHours",
-  "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
-  "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
-  "context.judgement_message_limit": "connections.judgementRecentMessages",
-  "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
-  "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
-  "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
-  "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
-  "compression.watermark_trigger": "connections.watermarkTriggerMessages",
-  "compression.package_limit": "connections.watermarkPackageLimit",
-  "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
-  "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
-  "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
-  "sticker_collections.collection_ids": "connections.authorizedCollections",
-  "prompts.scene": "connections.sceneAndBehaviour",
-  "prompts.judge": "connections.judgementTask",
-  "prompts.reply": "connections.effectiveReplyTask",
-  "prompts.review": "connections.reviewTask",
-  "prompts.sticker": "connections.stickerTask",
-  "prompts.media": "connections.mediaNoteTask",
-  "prompts.compress": "connections.watermarkCompressionTask",
-  "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
-  // 0052 两组：与 draft-state 的 GROUP_FIELD_LABEL_KEYS 同一批键。
-  "message_settings.reply_mode": "connections.quoteReplyMode",
-  "message_settings.reply_depth": "connections.quoteDepth",
-  "message_settings.time_display": "connections.timeDisplayMode",
-  "message_settings.timezone": "connections.timezone",
-  "media_input.mode": "connections.imageInputMode",
-  "media_input.stages.decision": "schemes.studio.stageDecision",
-  "media_input.stages.evaluation": "schemes.studio.stageEvaluation",
-  "media_input.stages.generation": "schemes.studio.stageGeneration",
-  "media_input.max_images": "connections.maxAutoImages",
-  "media_input.ordinary_still_max_dimension": "connections.ordinaryStillMaxDimension",
-  "media_input.expression_max_dimension": "connections.expressionStillMaxDimension",
-  "media_input.expression_frame_count": "connections.expressionFrameCount",
-  "media_input.expression_frame_max_dimension": "connections.expressionFrameMaxDimension",
-};
+/** 文案键唯一来源在 features/qq/scheme-field-metadata（含触发器与 0052 两组）。 */
+const FIELD_LABELS: Record<string, string> = QQ_SCHEME_FIELD_LABELS;
 const labelOf = (group: string, field: string) =>
   FIELD_LABELS[`${group}.${field}`] ?? `${group}.${field}`;
 
 /** 0052 枚举选项的人话标签（载荷原样存契约值，只改显示）。 */
-const ENUM_OPTION_LABELS: Record<string, Record<string, string>> = {
-  "message_settings.reply_mode": {
-    one_then_on_demand: "connections.quoteMode.one_then_on_demand",
-    configured_depth: "connections.quoteMode.configured_depth",
-  },
-  "message_settings.time_display": {
-    full: "connections.timeDisplay.full",
-    full_relative: "connections.timeDisplay.full_relative",
-    hybrid: "connections.timeDisplay.hybrid",
-  },
-  "media_input.mode": {
-    native: "connections.imageMode.native",
-    description: "connections.imageMode.description",
-  },
-};
+const ENUM_OPTION_LABELS = QQ_SCHEME_ENUM_OPTION_LABELS;
 
 /** 上层事实：on/off 是真实开关，unread 是还没读到，后三项来自授权与审批现状。 */
 type UpperFact =
@@ -258,20 +203,7 @@ interface CapabilityRow {
     | { kind: "grants"; prefix: "mcp" | "skill" }
     | { kind: "followsSession" };
 }
-const CAPABILITY_LABELS: Record<QqGroupCapability, string> = {
-  memory_read: "schemes.qq.groupConfig.capability.memoryRead",
-  memory_organize: "schemes.qq.groupConfig.capability.memoryOrganize",
-  knowledge_read: "schemes.qq.groupConfig.capability.knowledgeRead",
-  web: "schemes.qq.groupConfig.capability.web",
-  media: "schemes.qq.groupConfig.capability.media",
-  stickers: "schemes.qq.groupConfig.capability.stickers",
-  tasks: "schemes.qq.groupConfig.capability.tasks",
-  research: "schemes.qq.groupConfig.capability.research",
-  code: "schemes.qq.groupConfig.capability.code",
-  mcp: "schemes.qq.groupConfig.capability.mcp",
-  skills: "schemes.qq.groupConfig.capability.skills",
-  history_summary: "schemes.qq.groupConfig.capability.historySummary",
-};
+const CAPABILITY_LABELS = QQ_GROUP_CAPABILITY_LABELS;
 const CAPABILITIES: readonly CapabilityRow[] = (
   [
     ["memory_read", { kind: "read", read: "memory" }],
@@ -309,28 +241,6 @@ interface KnowledgeReadProjection {
   loading: boolean;
   error: string;
   refresh: () => void;
-}
-
-/** 页内分组：与方案页同一套层次（细边框 + 淡标题带），不新增样式系统。 */
-function GroupCard({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  const { t } = useTranslation();
-  return (
-    <Card size="sm" className="min-w-0 gap-0 pt-0">
-      <CardHeader className="border-b bg-muted/50">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        {description && <CardDescription className="text-xs">{t(description)}</CardDescription>}
-      </CardHeader>
-      <CardContent className="space-y-5 pt-3">{children}</CardContent>
-    </Card>
-  );
 }
 
 /**
@@ -604,23 +514,7 @@ function TimezoneField({
   const { custom, value } = overrideOf(editor, group, name);
   const baseValue = typeof base?.[name] === "string" ? (base[name] as string) : null;
   const raw = editor.rawTexts[`${group}.${name}`];
-  const valid = (text: string) => {
-    try {
-      new Intl.DateTimeFormat("en-US", { timeZone: text.trim() });
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const suggestions = [
-    "Asia/Shanghai",
-    "Asia/Tokyo",
-    "Asia/Hong_Kong",
-    "Asia/Singapore",
-    "Europe/London",
-    "America/New_York",
-    "UTC",
-  ];
+  const valid = isValidTimezone;
   const display = raw ?? (custom ? String(value) : (baseValue ?? ""));
   const invalid = raw !== undefined && !valid(raw);
   const showInvalid = showError && invalid;
@@ -644,7 +538,7 @@ function TimezoneField({
           }}
         />
         <datalist id="group-config-timezone-suggestions">
-          {suggestions.map((zone) => (
+          {TIMEZONE_SUGGESTIONS.map((zone) => (
             <option key={zone} value={zone} />
           ))}
         </datalist>
@@ -1437,7 +1331,7 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
   const schemeNameOf = (id: string) => schemes.find((row) => row.id === id)?.name ?? id;
   const choiceTarget = choice ? (schemes.find((row) => row.id === choice) ?? null) : null;
   return (
-    <GroupCard
+    <SchemeFieldCard
       title={t("schemes.qq.groupConfig.scheme.title")}
       description="schemes.qq.groupConfig.scheme.description"
     >
@@ -1527,13 +1421,35 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
           </DialogContent>
         </Dialog>
       )}
-    </GroupCard>
+    </SchemeFieldCard>
   );
 }
 
 export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const state = useSuperstringStore(
+    useShallow((s) => ({
+      // 数据字段：按实际读取面窄订阅；无关 store 更新不再重渲染本页。
+      agents: s.agents,
+      error: s.error,
+      feedback: s.feedback,
+      qqGroupConfigBindingId: s.qqGroupConfigBindingId,
+      qqGroupConfigEditor: s.qqGroupConfigEditor,
+      qqGroupConfigLoading: s.qqGroupConfigLoading,
+      qqGroupConfigSaving: s.qqGroupConfigSaving,
+      qqSchemes: s.qqSchemes,
+      summaryById: s.summaryById,
+      // 动作引用稳定。
+      apiClient: s.apiClient,
+      discardQqGroupConfigChanges: s.discardQqGroupConfigChanges,
+      openChat: s.openChat,
+      openQqGroupConfig: s.openQqGroupConfig,
+      patchQqGroupConfigScheme: s.patchQqGroupConfigScheme,
+      refreshQqGroupConfig: s.refreshQqGroupConfig,
+      requestConversationNavigation: s.requestConversationNavigation,
+      saveQqGroupConfig: s.saveQqGroupConfig,
+    })),
+  );
   const editor = state.qqGroupConfigEditor;
   const bindingId = state.qqGroupConfigBindingId;
   // 编辑器可能属于上一个打开的群：绑定身份不等就整页不显示它的任何内容。
@@ -1735,7 +1651,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="participation" className="m-0 space-y-6">
-                <GroupCard
+                <SchemeFieldCard
                   title={t("connections.speechTriggers")}
                   description="schemes.studio.triggersHint"
                 >
@@ -1753,8 +1669,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                         />
                       ))}
                   </div>
-                </GroupCard>
-                <GroupCard
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.rhythmTitle")}
                   description="schemes.studio.rhythmHint"
                 >
@@ -1773,8 +1689,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                         />
                       ))}
                   </div>
-                </GroupCard>
-                <GroupCard
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("connections.allowedHours")}
                   description="connections.useLocalTimeEqualStartAndEndMeansAll"
                 >
@@ -1807,9 +1723,9 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       />
                     )}
                   </div>
-                </GroupCard>
+                </SchemeFieldCard>
                 {visible("prompts", "judge") && (
-                  <GroupCard
+                  <SchemeFieldCard
                     title={t("schemes.studio.judgePrompt")}
                     description="connections.decideWhetherToSpeak"
                   >
@@ -1820,12 +1736,12 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       slot="judge"
                       labelKey="connections.judgementTask"
                     />
-                  </GroupCard>
+                  </SchemeFieldCard>
                 )}
               </TabsContent>
               <TabsContent value="response" className="m-0 space-y-6">
                 {visible("reply", "split_by_speaker") && (
-                  <GroupCard
+                  <SchemeFieldCard
                     title={t("schemes.studio.replyStructure")}
                     description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
                   >
@@ -1836,9 +1752,9 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       name="split_by_speaker"
                       labelKey="connections.answerEachSpeakerSeparately"
                     />
-                  </GroupCard>
+                  </SchemeFieldCard>
                 )}
-                <GroupCard
+                <SchemeFieldCard
                   title={t("schemes.studio.replyTasks")}
                   description="schemes.studio.replyTasksHint"
                 >
@@ -1870,12 +1786,12 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       labelKey="connections.reviewTask"
                     />
                   )}
-                </GroupCard>
+                </SchemeFieldCard>
               </TabsContent>
               <TabsContent value="context" className="m-0 space-y-6">
                 {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下
                     层数不参与运行（禁用但配置保留），切回按层数即恢复可编辑。 */}
-                <GroupCard
+                <SchemeFieldCard
                   title={t("schemes.studio.messageRelations")}
                   description="schemes.studio.messageRelationsHint"
                 >
@@ -1914,8 +1830,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                     )}
                   </div>
                   {effective !== null && <QqMessagePreview settings={effective.message_settings} />}
-                </GroupCard>
-                <GroupCard
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("connections.judgementContext")}
                   description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                 >
@@ -1957,8 +1873,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       />
                     )}
                   </div>
-                </GroupCard>
-                <GroupCard
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("connections.replyContext")}
                   description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                 >
@@ -1993,8 +1909,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       />
                     )}
                   </div>
-                </GroupCard>
-                <GroupCard
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("connections.compressionAndAssembly")}
                   description="schemes.studio.compressionHint"
                 >
@@ -2041,7 +1957,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       hintKey="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
                     />
                   )}
-                </GroupCard>
+                </SchemeFieldCard>
                 <div className="rounded-lg bg-muted p-5 text-sm leading-6">
                   <h3 className="font-medium">
                     {t("connections.bindingsDetermineTheMaterialScope")}
@@ -2054,7 +1970,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
               <TabsContent value="media" className="m-0 space-y-6">
                 {/* 0052 图片输入：模式/逐阶段开关/图数/普通静图规格；普通动图沿用既有
                     rhythm 帧数与尺寸（下方的 imageFields），不重复存储。 */}
-                <GroupCard
+                <SchemeFieldCard
                   title={t("schemes.studio.imageInput")}
                   description="schemes.studio.imageInputHint"
                 >
@@ -2127,8 +2043,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                         />
                       ))}
                   </div>
-                </GroupCard>
-                <GroupCard
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.imageParams")}
                   description="schemes.studio.imageParamsHint"
                 >
@@ -2146,8 +2062,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                         />
                       ))}
                   </div>
-                </GroupCard>
-                <GroupCard
+                </SchemeFieldCard>
+                <SchemeFieldCard
                   title={t("schemes.studio.stickerParams")}
                   description="schemes.studio.stickerParamsHint"
                 >
@@ -2165,9 +2081,9 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                         />
                       ))}
                   </div>
-                </GroupCard>
+                </SchemeFieldCard>
                 {visible("sticker_collections", "collection_ids") && (
-                  <GroupCard
+                  <SchemeFieldCard
                     title={t("connections.authorizedCollections")}
                     description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
                   >
@@ -2175,9 +2091,9 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       editor={visibleEditor}
                       base={baseBag("sticker_collections")}
                     />
-                  </GroupCard>
+                  </SchemeFieldCard>
                 )}
-                <GroupCard
+                <SchemeFieldCard
                   title={t("schemes.studio.mediaPrompts")}
                   description="schemes.studio.mediaPromptsHint"
                 >
@@ -2201,15 +2117,15 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       hintKey="connections.describeWhatThePictureOrVoiceActuallyContains"
                     />
                   )}
-                </GroupCard>
+                </SchemeFieldCard>
               </TabsContent>
               <TabsContent value="capabilities" className="m-0 space-y-6">
-                <GroupCard
+                <SchemeFieldCard
                   title={t("schemes.qq.groupConfig.capabilities")}
                   description="schemes.qq.groupConfig.capability.description"
                 >
                   <CapabilityList editor={visibleEditor} knowledge={knowledgeRead} />
-                </GroupCard>
+                </SchemeFieldCard>
               </TabsContent>
             </Tabs>
           </div>

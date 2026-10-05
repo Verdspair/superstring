@@ -6,7 +6,6 @@
 // optional ones nullable. These cases pin the rewrite and the fact that it is a pure function —
 // the local route's schema is never touched.
 import { describe, expect, it } from "bun:test";
-import { AGENT_DECISION_JSON_SCHEMA } from "../../src/server/agent/agent-specs";
 import {
   rememberStructuredOutput,
   strictSchemaAccepted,
@@ -15,6 +14,7 @@ import {
   toStrictRequiredSchema,
 } from "../../src/server/llm/strict-json-schema";
 import { QQ_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
+import { AGENT_DECISION_JSON_SCHEMA } from "../../src/shared/contracts/agent-output";
 
 describe("外部 provider 的严格 JSON schema 适配", () => {
   it("把可选属性改成必填且可空，其他一字不动", () => {

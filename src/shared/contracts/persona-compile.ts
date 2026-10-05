@@ -70,7 +70,6 @@ export function scaleCharacterText(text: string, intensity: number): string {
 }
 
 /**
- * 167.
  * `intensity` is clamped to [0, 100]; when omitted the default (60) applies
  * which is exactly what `validate_compiled_length` relies on.
  */

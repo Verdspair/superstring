@@ -1,10 +1,11 @@
+import type { OutputDraft } from "../../shared/contracts/agent-output";
+import { AGENT_DECISION_JSON_SCHEMA } from "../../shared/contracts/agent-output";
 import type { ModelMessage } from "../../shared/contracts/agent-run";
 import type { VisionCost } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import { uniqueSources } from "../services/source-refs";
 import { estimateTokens } from "../services/token-estimate";
-import type { AgentSpec, OutputDraft } from "./agent-specs";
-import { AGENT_DECISION_JSON_SCHEMA } from "./agent-specs";
+import type { AgentSpec } from "./agent-specs";
 import type { ActionContext } from "./built-in-actions";
 
 export interface ActionObservation {

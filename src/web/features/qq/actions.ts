@@ -1470,7 +1470,7 @@ export function createQqAccessActions(
         schemeId,
       });
     },
-    // The manual entry (2026-09-25): a conversation nobody has spoken in yet has no observation
+    // The manual entry: a conversation nobody has spoken in yet has no observation
     // row, and an unbound conversation's messages are not recorded at all — so the list alone can
     // never offer the first binding. The account comes from the saved settings, because there is
     // no observation to take it from.

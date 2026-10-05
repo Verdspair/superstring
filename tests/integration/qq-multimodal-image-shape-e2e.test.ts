@@ -11,10 +11,9 @@
 //     在文件头逐条注明，报告侧按同一编号对账。
 //
 // 与既有 slice 的分工（不重复、不抢写）：
-//   * tests/integration/qq-message-multimodal-e2e.test.ts 由 resume-t15-e2e 协调写者独占
+//   * tests/integration/qq-message-multimodal-e2e.test.ts（独立文件，本文件只读其结果口径）
 //     （含既有 [S25]/[S27]/[S34] 块），本文件不改它；
-//   * tests/integration/qq-multimodal-initiative-delivery-e2e.test.ts 由 resume-t15-initiative-
-//     delivery 独占（id 48–53），本文件不改它；
+//   * tests/integration/qq-multimodal-initiative-delivery-e2e.test.ts（id 48–53），本文件不改它；
 //   * tests/harness/* 与 qq-media-projection/media-input-service 等既有测试本文件一律不改；
 //   * 产品代码本文件零改动——未落地处如实 RED 或 not_executed，不靠改生产代码让测试变绿。
 //
@@ -26,7 +25,7 @@
 //   * 模型可见的 image part 只有来源元数据（sourceId/revision/mimeType/sha256/尺寸/frameIndex），
 //     每个整链块都断 wire 里**没有** bytes/base64/data/url（规格 §10 红线）。
 //
-// 各块与矩阵编号的对应（标题统一 S<id>_<序号>；命名与 2026-10-04 主控口径一致）：
+// 各块与矩阵编号的对应（标题统一 S<id>_<序号>）：
 //   [S25_1] native ordinary image 三相整链：三阶段各一次、同一 mediaId/sha、原图字节、
 //           asset sha、call=3、无第 4 次分类调用
 //   [S25_2] native ordinary image **真实 HTTP wire**（createLmStudioClient + createModelPort +
@@ -300,7 +299,7 @@ it("[S25_1] a native ordinary image flows the real platform wire through all thr
 });
 
 it("[S25_2] the native decision/score/generation calls reach real HTTP with the image's bytes on the wire", async () => {
-  // S25 的**真实 wire**半边（主控 2026-10-04 口径）：metadata 快照不能证明 wire 上真有画面。
+  // S25 的**真实 wire**半边：metadata 快照不能证明 wire 上真有画面。
   // 这里用产品真实网关（createLmStudioClient）+ 产品真实端口（createModelPort）打到 owned
   // loopback（127.0.0.1 port 0，finally close），捕获三相 HTTP body。合法请求必须真的发图；
   // 非法来源的强负独立成 [S25_3]，不与本块共用 if/else（合法路径不许"失败也 green"）。
@@ -411,7 +410,7 @@ it("[S25_2] the native decision/score/generation calls reach real HTTP with the 
 });
 
 it("[S25_3] an illegal image source is refused with the real code, as its own negative", async () => {
-  // 强负独立成例（主控 2026-10-04 口径）：不是"合法供应失败也 pass"的 if/else，而是直接对
+  // 强负独立成例：不是"合法供应失败也 pass"的 if/else，而是直接对
   // wire 转换边界（toGatewayMessages，completion 与 stream 共用的唯一转换）喂**非法输入**：
   //   1) 图片 part 缺可信 resolver/runId/owner 三件套 → 真实 CONTEXT_SOURCE_INVALID；
   //   2) resolver 有、句柄未登记（伪造/跨 run 的 part）→ 真实 CONTEXT_SOURCE_INVALID。
@@ -1566,7 +1565,7 @@ it("[S28_1] (auxiliary) a detail question prepares the expression image at the o
   // 两跳缺口如实登记：① 自动投影链的 detailMediaIds 在宿主没有生产 caller；② 真实 host 工具
   // media.read(questionMessageId) 的锚解析当前必然拒绝（bot-host resolveQuestion 的 focusKey
   // 是事件键，而 loadQqMessageFact 按平台消息 ID 查找，二者不可同时成立；探针
-  // logs/probe-question-anchor.ts 实证 CONTEXT_INVALID_SELECTION）——缺口报 T11 唯一写者，
+  // logs/probe-question-anchor.ts 实证 CONTEXT_INVALID_SELECTION）——缺口在 T11 范围内处理，
   // 本文件不改产品。规格 §7.4：明确细问的表情本次按普通图片规格，但不改图片原分类
   // （分类仍是 expression，来源仍是 platform）。
   const bytes = pngOf(120, 1024, 512);
@@ -1646,7 +1645,7 @@ it("[S28_1] (auxiliary) a detail question prepares the expression image at the o
 });
 
 it("[S28_2] a real host media.read with questionMessageId prepares the native detail at the ordinary spec", async () => {
-  // 真实 host 工具链（T11 writer 修复题锚 internal/platform 域后按主控授权补块）：
+  // 真实 host 工具链（题锚 internal/platform 域比对修复后补块）：
   // 模型走 media.list → media.read（questionMessageId 指回本轮 focus 消息的平台 ID）→
   // 宿主 resolveQuestion 锚解析（internal eventKey ↔ platform ID 正确域比对）→ media 服务
   // 真实 detail 准备（ordinary 规格）→ 模型下一步的 action_observation 里就是 ordinary 规格元数据。
@@ -1876,7 +1875,7 @@ const authorizedTargetsOf = (h: OneBotHarness): string[] | null => {
 };
 
 /**
- * S28 断言前的 raw capture 落点：只由 `SUPERSTRING_S28_TRACE_DIR` 指定（主控指定的 A 目录），
+ * S28 断言前的 raw capture 落点：只由 `SUPERSTRING_S28_TRACE_DIR` 指定，
  * 用 Bun 自带 fs；不 import artifacts、也不从 artifacts 读任何东西。未设该变量＝完全不写盘。
  * 只新建、不覆盖（文件名带 Date.now()+pid，末尾序号去重）；写盘自身抛出会覆盖原错误（不掩盖失败）。
  */
@@ -1937,7 +1936,7 @@ it("[S28_4] a legal focus question reads the directly-referenced original image 
   // 已知上游（T11 producer 侧静态 Important）：当前 assertQuestionCurrent 复验只在 question fact
   // 自己的 parts 里找 image —— direct 原图场景会被误拒。本块按**规格语义**写正 expected，
   // 不迁就现实现改 expected 为拒。2026-10-04 joint2 首轮真实运行：读取面已按规格语义走通，
-  // 失败在 caller 的 generate 目标（见下方修复注）；本块已获主控 GO 运行。
+  // 失败在 caller 的 generate 目标（见下方修复注）；本块已实运行。
   const bytes = pngOf(120, 1024, 512);
   const fetches = fetchCounter();
   const h = createOneBotHarness({
@@ -1995,7 +1994,7 @@ it("[S28_4] a legal focus question reads the directly-referenced original image 
   }
   // ---- raw capture（任何 assert 之前）---- actual requests（receivedMessages 全量，不截断）/
   // run steps/errors/authorizedTargets/variants。落点只由 SUPERSTRING_S28_TRACE_DIR 指定
-  // （主控指定的 A 目录）；未设该变量＝完全不写盘。再次红时有完整现场底，不需要重跑猜。
+  // （证据目录）；未设该变量＝完全不写盘。再次红时有完整现场底，不需要重跑猜。
   writeS28RawCapture(h, {
     case: "S28_4",
     activateError: activateError === null ? null : String(activateError),
@@ -2045,7 +2044,7 @@ it("[S28_4] a legal focus question reads the directly-referenced original image 
 });
 
 it("[S28_5] a legal focus question cannot read an out-of-scope image from the same scope's list", async () => {
-  // 强负（主控指定）：问题本身合法（focus 消息、有正文、有自己的图），但 media.read 的目标图是
+  // 强负：问题本身合法（focus 消息、有正文、有自己的图），但 media.read 的目标图是
   // **同 scope 其他 list 图**——它不属于该问题的 focus/direct 图范围。宿主必须拒：锚解析不因
   // "问题合法"而放行跨范围图；零 detail 副本、零额外 fetch、零发送。
   const scopeImage = pngOf(200); // 同 scope 旧图（不在本轮 focus/direct 范围）

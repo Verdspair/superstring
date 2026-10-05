@@ -131,6 +131,13 @@ export const QqSchemeOutputReserveSchema = z.strictObject({
   reply_output_reserved: z.number().int().min(256).max(32768),
 });
 export type QqSchemeOutputReserve = z.infer<typeof QqSchemeOutputReserveSchema>;
+/** Pure parse for the output-reserve group: caller-facing errors stay TypeErrors (same message
+ * as before). Co-located with the schema so DB rows and capacity checks share one parser. */
+export function parseQqSchemeOutputReserve(input: unknown): QqSchemeOutputReserve {
+  const result = QqSchemeOutputReserveSchema.safeParse(input);
+  if (!result.success) throw new TypeError("Invalid QQ output reserve input");
+  return Object.freeze(result.data);
+}
 /** Defaults are independent of the recent-message context budget. */
 export const QQ_MODEL_OUTPUT_RESERVE_DEFAULT: QqSchemeOutputReserve = Object.freeze({
   judgement_output_reserved: 512,

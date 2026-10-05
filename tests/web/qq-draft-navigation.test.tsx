@@ -2,9 +2,10 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { QqSchemeResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
-import { qqDraftChanges, settingsHaveDrafts } from "../../src/web/features/qq/draft-state";
+import { qqDraftChanges } from "../../src/web/features/qq/draft-state";
 import { qqSchemeDirty, qqSchemeEditorFrom } from "../../src/web/features/qq/types";
 import { QqAppManagement } from "../../src/web/screens/connections/qq-app-management";
+import { hasUnsavedDrafts } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
 
@@ -161,7 +162,7 @@ it("connection draft survives remount and server refresh while retaining its ori
     "ws://localhost:4000",
   );
   expect(store.getState().qqInputs.connection?.source.revision).toBe(3);
-  expect(settingsHaveDrafts(store.getState())).toBe(true);
+  expect(hasUnsavedDrafts(store.getState())).toBe(true);
 });
 
 it("navigation change preview never exposes the replacement token", () => {
@@ -330,9 +331,9 @@ it("an external revision conflict still fails without advancing the other baseli
 });
 
 it("QQ automatic organization drafts participate in the same unload decision", () => {
-  expect(settingsHaveDrafts(store.getState())).toBe(false);
+  expect(hasUnsavedDrafts(store.getState())).toBe(false);
   store.getState().patchQqMemoryBatchDraft("binding", { value: "", revision: 2 });
-  expect(settingsHaveDrafts(store.getState())).toBe(true);
+  expect(hasUnsavedDrafts(store.getState())).toBe(true);
 });
 
 it("a failed transport save stays visible on the connection page and retains the draft", async () => {

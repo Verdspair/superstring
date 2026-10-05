@@ -130,8 +130,7 @@ export function createKnowledgeModelActions(
               ? "知识库整理模型已保存；整理规则草稿保持不变。"
               : scope === "rules"
                 ? "全局整理规则已保存；模型草稿保持不变。"
-                : // budget 暂与 all 共用已登记的“全局设置已保存”句；预算专属句待 locale 单写者补。
-                  "全局知识库设置已保存；助手读取与资料草稿保持不变。",
+                : "全局知识库设置已保存；助手读取与资料草稿保持不变。",
           ),
         });
         return true;

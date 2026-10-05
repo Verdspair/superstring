@@ -5,7 +5,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { RunOwner } from "../../shared/contracts/agent-run";
-import type { SourceRef } from "../../shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type {
   QqConversationScope,
   QqIdentity,
@@ -19,8 +19,6 @@ import { inTimeline } from "../modules/conversation-evidence-store";
 import { normalizeOneBotAccountId } from "./onebot-protocol";
 import { ownerScope } from "./qq-media-sources";
 import { isObservationExpired } from "./qq-retention";
-
-type SourceAccess = "available" | "expired" | "revoked";
 
 /** One member's verified current-name value plus the ref that proves it. */
 export interface QqMemberNameCandidate {
