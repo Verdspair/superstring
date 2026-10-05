@@ -1,5 +1,4 @@
 // 助手首屏预热：纯人设 + 选中记忆 100 条摘要的预热语义与消费接线（真实 store + 替身 API）。
-// 契约真源：parallel-completion-20261005T093149Z/agent-gemini/INTERFACE.md（实际差异以 preload-agent-impl-gf 接口消息为准）。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EntriesList, PersonaResponse } from "../../src/shared/contracts";
 import { AgentResponseSchema, PersonaResponseSchema } from "../../src/shared/contracts/agent";

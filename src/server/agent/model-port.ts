@@ -56,7 +56,7 @@ export interface ModelRequest {
    */
   prepareWithResolved?: (input: ModelResolvedPrepareInput) => Promise<ModelResolvedPrepareOutput>;
   /**
-   * 每次真正发送前的可信宿主复验（fix1）：每次 HTTP 尝试（schema/tools 受控重试各算一次）
+   * 每次真正发送前的可信宿主复验：每次 HTTP 尝试（schema/tools 受控重试各算一次）
    * 与 stream 发送前各调用一次；抛错=该次尝试不发出（零追加 HTTP）。来源纪元/provider 配置
    * 当前性由 Runtime 宿主闭包读真值；缺省=原行为。
    */
@@ -244,7 +244,7 @@ export function createModelPort(options: {
       if (!gateway) throw new Error("Text model gateway is not configured");
       // 准备钩子路径（T10）：原始 ModelMessage[] 走 preparedFrom，钩子输出最终 messages 后
       // 在网关内完成 wire 转换（used 冻结后）；无钩子路径保持先转换的旧行为逐字不变。
-      // fix2：messages 槽恢复必填——hook 路径显式传 `[]` 占位（仅 port 受控路径合法；
+      // messages 必填：hook 路径显式传 `[]` 占位（仅 port 受控路径合法；
       // 占位被钩子输出替换，永不落 wire），preparedFrom 携带真实原始 readonly 数组。
       if (request.prepareWithResolved !== undefined) {
         return guarded(
@@ -283,7 +283,7 @@ export function createModelPort(options: {
       try {
         request.signal?.throwIfAborted();
         // 准备钩子路径（T10）：同 complete——原始消息走 preparedFrom，转换在钩子后按最终值完成。
-        // fix2：messages 槽传 `[]` 占位（仅 port 受控路径合法），成对契约同 complete。
+        // messages 槽传 `[]` 占位（仅 port 受控路径合法），成对契约同 complete。
         if (request.prepareWithResolved !== undefined) {
           yield* options.gateway.streamChat({
             ...request,

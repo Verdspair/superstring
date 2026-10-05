@@ -7,7 +7,8 @@ import { describe, expect, it } from "bun:test";
 import { inflateSync } from "node:zlib";
 import upstream from "omggif";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
-import { prepareQqImage, QqImagePrepareError } from "../../src/server/services/qq-image-codec";
+import { prepareQqImage } from "../../src/server/services/qq-image-codec";
+import { QqImagePrepareError } from "../../src/server/services/qq-image-error";
 
 const RED = 0;
 const GREEN = 1;

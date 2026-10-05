@@ -1,5 +1,5 @@
-// T07/T14: preparing QQ images for a vision endpoint — scaling, original preservation,
-// GIF sampling (spec §7.4/§11, plan T07, T14 Step4).
+// Preparing QQ images for a vision endpoint — scaling, original preservation, GIF sampling
+// (spec §7.4/§11).
 //
 // The input spec table (§7.4) decides what a caller gets back:
 //
@@ -8,12 +8,12 @@
 //   * a still with an explicit max dimension (expression, or an ordinary still with a set
 //     value) is scaled DOWN only, aspect ratio and alpha preserved, re-encoded as PNG;
 //   * a GIF is sampled through the same disposal-aware compositor the media path has used
-//     since P4d — frames are whole pictures, not partial patches. The composition runs on
-//     the worker (T14), so a slow or hostile GIF cannot stall the main thread;
+//     already uses — frames are whole pictures, not partial patches. The composition runs on
+//     the worker, so a slow or hostile GIF cannot stall the main thread;
 //   * an animated WebP or APNG is refused as `unsupported animation`. The decoder behind
 //     `@napi-rs/image` decodes stills only; handing a model its first frame while reporting
 //     three frames would be exactly the fake reading §7.4 forbids ("不能把某静态帧冒充已按
-//     3帧理解"), and adding a second animation decoder is not authorized.
+//     3帧理解"), and a second animation decoder is out of scope.
 //
 // The decode work itself runs on the worker in `qq-image-worker.ts`; this module owns the
 // input contract, the format verdicts and the byte-level decisions. The AbortSignal is
@@ -25,6 +25,7 @@
 // `QqSchemeRhythmSchema`); a still max dimension may additionally be `null` (original).
 
 import type { QqImageCategory } from "../../shared/contracts/qq-media-input";
+import { QqImagePrepareError } from "./qq-image-error";
 import { QQ_STICKER_CONTENT_TYPES, readQqImageHeader } from "./qq-image-header";
 import { type QqImagePreparationRequest, runQqImagePreparation } from "./qq-image-worker";
 
@@ -118,17 +119,6 @@ function isAnimatedWebp(bytes: Uint8Array): boolean {
     return false;
   }
   return ((bytes[20] ?? 0) & 0x02) !== 0;
-}
-
-/** Why an image could not be prepared, as an error the caller can show or log. */
-export class QqImagePrepareError extends Error {
-  readonly reason: "unreadable_image" | "unsupported_animation" | "cancelled" | "decode_failed";
-
-  constructor(reason: QqImagePrepareError["reason"], detail?: string) {
-    super(detail ?? reason);
-    this.name = "QqImagePrepareError";
-    this.reason = reason;
-  }
 }
 
 function failUnreadable(reason: "invalid_animation" | "empty_animation"): never {

@@ -34,7 +34,7 @@ run(bun, [
   "./src/server/agent/quickjs-worker.ts",
   // The QQ image worker must be its own compile entry: qq-image-worker.ts resolves the
   // entry file relative to import.meta.url, and a missing entry would break the scaling
-  // and GIF-sampling paths in compiled products (T14 Step5).
+  // and GIF-sampling paths in compiled products.
   "./src/server/services/qq-image-worker-entry.ts",
   "--outfile",
   path.join(app, "superstring-server.exe"),

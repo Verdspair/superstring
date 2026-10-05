@@ -42,7 +42,7 @@
 import { describe, expect, it } from "bun:test";
 import { Worker } from "node:worker_threads";
 import upstream from "omggif";
-import { QqImagePrepareError } from "../../src/server/services/qq-image-codec";
+import { QqImagePrepareError } from "../../src/server/services/qq-image-error";
 import { runQqImagePreparation } from "../../src/server/services/qq-image-worker";
 
 const CANVAS = 64;

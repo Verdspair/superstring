@@ -1,4 +1,4 @@
-// T07/T14: the worker host for QQ image preparation (spec §11, plan T07 Step7, T14 Step4).
+// The worker host for QQ image preparation (spec §11).
 //
 // Why a worker: native decode and GIF composition are CPU-bound native/JS loops the event
 // loop cannot slice. Running them off-thread keeps a slow or hostile image from stalling
@@ -20,7 +20,7 @@
 
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
-import { QqImagePrepareError } from "./qq-image-codec";
+import { QqImagePrepareError } from "./qq-image-error";
 import { readQqImageHeader } from "./qq-image-header";
 
 declare const SUPERSTRING_COMPILED: boolean;

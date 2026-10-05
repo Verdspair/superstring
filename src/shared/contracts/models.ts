@@ -89,11 +89,10 @@ export const P5ConfigSchema = z
       .number()
       .refine((v) => v > 0 && v <= 1, "必须 0 < x <= 1")
       .default(0.8),
-    // 10 turns kept verbatim. One turn is a user/assistant pair in the Web
-    // builder; the QQ reply window reuses this number as a message count.
-    // The default is generous because the oldest turns are what the user
-    // notices missing; the builder drops them oldest-first when the budget
-    // runs out, so a larger default degrades gracefully instead of overflowing.
+    // 10 turns kept verbatim. The Web limit counts user/assistant pairs; QQ
+    // counts individual messages. The default is generous because the oldest
+    // turns are what the user notices missing; the builder drops them
+    // oldest-first when the budget runs out.
     recent_turns: z.number().int().min(1).max(10000).default(10),
     summary_target_tokens: z.number().int().min(1).max(1048576).default(2048),
     summary_max_tokens: z.number().int().min(1).max(1048576).default(4096),
@@ -101,9 +100,7 @@ export const P5ConfigSchema = z
     summary_read_max_tokens: z.number().int().min(1).max(1048576).nullable().optional(),
     retrieval_mode: RetrievalModeSchema.default("standard"),
     retrieval_presets: RetrievalPresetsSchema.default(DEFAULT_RETRIEVAL_PRESETS),
-    // 15 minutes, not 5: this budget covers capacity probes plus every
-    // compression / summary / retrieval auxiliary call, and those run on the
-    // same local model as the chat turn.
+    // Budget includes capacity probes and auxiliary model calls.
     auxiliary_timeout_seconds: z
       .number()
       .refine((v) => v > 0 && v <= 3600, "必须 0 < x <= 3600")

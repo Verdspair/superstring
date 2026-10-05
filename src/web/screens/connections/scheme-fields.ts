@@ -17,7 +17,6 @@ export const numericGroups = {
   outputReserve: QqSchemeOutputReserveSchema,
   stickers: QqSchemeStickersSchema,
 };
-export type NumericGroup = keyof typeof numericGroups;
 
 /** 0052 两个数字组：编辑器组名（camelCase）→ 数字栏的契约 schema。 */
 export const numberEditorGroups = {

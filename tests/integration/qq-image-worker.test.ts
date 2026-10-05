@@ -15,7 +15,8 @@
 
 import { describe, expect, it } from "bun:test";
 import upstream from "omggif";
-import { prepareQqImage, QqImagePrepareError } from "../../src/server/services/qq-image-codec";
+import { prepareQqImage } from "../../src/server/services/qq-image-codec";
+import { QqImagePrepareError } from "../../src/server/services/qq-image-error";
 
 const RED = 0;
 const PALETTE = [0xff0000, 0x00ff00];

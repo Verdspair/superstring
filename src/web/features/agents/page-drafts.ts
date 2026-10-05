@@ -95,9 +95,6 @@ export function newPageEditor(
     policyDraft: policy ? { ...policy } : null,
   };
 }
-export function isEditablePage(page: string): page is EditablePage {
-  return EDITABLE_PAGES.some((item) => item === page);
-}
 export function agentPageDirty(editor: PageEditor, page: EditablePage): boolean {
   return (
     PAGE_AGENT_FIELDS[page].some((key) => editor.draft[key] !== editor.agent[key]) ||

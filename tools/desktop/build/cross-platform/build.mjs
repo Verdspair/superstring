@@ -123,7 +123,7 @@ run(bun, [
   "src/server/agent/quickjs-worker.ts",
   // The QQ image worker must be its own compile entry: qq-image-worker.ts resolves the
   // entry file relative to import.meta.url, and a missing entry would break the scaling
-  // and GIF-sampling paths in compiled products (T14 Step5). These args are shared by
+  // and GIF-sampling paths in compiled products. These args are shared by
   // every target, so each compiled product carries the worker entry too.
   "src/server/services/qq-image-worker-entry.ts",
   "--outfile",

@@ -7,7 +7,7 @@
  * child_process.spawnSync with an explicit cwd and utf-8 capture so logs are
  * reliable even when the interactive shell is constrained.
  *
- * Isolation policy (per review feedback):
+ * Isolation policy:
  *   - The server is NEVER launched against the real project root. Each server
  *     run uses a synthetic cwd (a temp dir) with a junction to the real
  *     dist/web, so the cwd-relative artifacts/state browser-state key and the

@@ -18,7 +18,7 @@ import { ensureDefaults, nowIso } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
-import { QqImagePrepareError } from "../../src/server/services/qq-image-codec";
+import { QqImagePrepareError } from "../../src/server/services/qq-image-error";
 import { createQqMediaAdapter } from "../../src/server/services/qq-media-adapter";
 import { readQqAddressedMediaOnce } from "../../src/server/services/qq-media-cycle";
 import { createQqMediaSourceFetcher } from "../../src/server/services/qq-media-source";

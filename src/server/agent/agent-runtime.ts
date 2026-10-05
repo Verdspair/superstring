@@ -90,7 +90,7 @@ export interface MessageLeafInput extends Omit<LeafInput, "messages"> {
   bindRun?(context: ActionContext): void;
   /** T10 准备钩子（评分叶子等 message leaf）：actualModel 冻结后由网关调用一次。 */
   prepareWithResolved?: (input: ModelResolvedPrepareInput) => Promise<ModelResolvedPrepareOutput>;
-  /** 每次实际发送前的宿主复验（fix1）；抛错＝该次尝试不发出。 */
+  /** 每次实际发送前的宿主复验；抛错＝该次尝试不发出。 */
   assertPreparedCurrent?: (input: { readonly model: string }) => void;
 }
 export interface PreparedOutput extends OutputSummary {
@@ -189,7 +189,7 @@ export interface ConversationInput {
     signal?: AbortSignal;
   }) => Promise<ModelResolvedPrepareOutput | undefined>;
   /**
-   * 每次真正发送前的可信宿主复验（T10 fix1）：schema/tools 受控重试各算一次实际发送，
+   * 每次真正发送前的可信宿主复验：schema/tools 受控重试各算一次实际发送，
    * stream 发送前各调用一次。宿主闭包沿当前真源复验来源纪元/授权/provider 配置；
    * 抛错＝该次尝试不发出（零追加 HTTP）。网关不代任何判定。
    */

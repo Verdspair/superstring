@@ -161,7 +161,7 @@ export class DesktopBackend {
       this.ready = true;
       return origin;
     } catch (error) {
-      // EOF is also understood during startup, including a migration failure.
+      // Startup errors, including failed migrations, also shut down the child process.
       void this.stop();
       throw error;
     }

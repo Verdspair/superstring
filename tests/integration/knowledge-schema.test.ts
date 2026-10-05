@@ -415,14 +415,12 @@ describe("frozen schema defaults and product initialization", () => {
     "dd68b3874de96ca6d0a3c4abf7027016826968a01138f6ff1dccbf0b90c48da0",
     // 0052：QQ 消息事实/出站事实/媒体资产与读取任务（纯新增表 + qq_members/qq_schemes 追加列 +
     // 两条 scheme JSON 组回填 + 旧媒体 note 的 legacy 任务导入）。在 v1—v51 逐字节重现原值之后
-    // 量取；不含任何数据行，指纹只由 DDL 决定，legacy 导入不影响它。T02 fix1：读任务唯一约束
-    // 从表内 UNIQUE（对 NULL 互异，baseline 形同虚设）改为两个 partial unique index，指纹随之
-    // 重取——0052 是本批次在制品、从未应用到真实库。F4：qq_message_facts 追加逐字段姓名来源
+    // 量取；不含任何数据行，指纹只由 DDL 决定，legacy 导入不影响它。读任务唯一约束用两个
+    // partial unique index：表内 UNIQUE 对 NULL 互异，挡不住重复任务行。F4：qq_message_facts 追加逐字段姓名来源
     // 两列（group_card_source/personal_nickname_source，CHECK 'wire'/'local'/NULL），指纹再取。
     "6ba8b8640f063ce20002d5bf16b4431ae554d8f0c51e7479d2455eb748971420",
     // 0053：QQ 群显示名称（qq_group_names：按 QQ 账号×群号存一行，qq_name/custom_name 各自可空，
-    // updated_at NOT NULL，无外键无索引）。纯新增表，不改任何既有表；0053 与 0052 一样是本批次
-    // 在制品、从未应用到真实库，所以在 v1—v52 逐字节重现原值之后量取。
+    // updated_at NOT NULL，无外键无索引）。纯新增表，不改任何既有表；指纹在 v1—v52 逐字节重现原值之后量取。
     "343622955df51a51453b9610d1c19131cd4e9a4cfe8b8c80b4e0887b58430049",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were

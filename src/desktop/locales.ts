@@ -1,4 +1,4 @@
-/** Native labels use the same mature i18next engine as the web product. */
+/** Labels for the native desktop UI. */
 export const nativeLocales = {
   en: {
     translation: {
@@ -14,7 +14,6 @@ export const nativeLocales = {
       releases: "Download updates",
       about: "About Superstring",
       retry: "Retry",
-      cancel: "Cancel",
       close: "Close window",
       failed: "Superstring could not continue",
       failedDetail:
@@ -24,7 +23,6 @@ export const nativeLocales = {
         "The service is finishing active work and closing its database. Superstring will exit when this completes. You can open the logs to see its progress.",
       wait: "Keep waiting",
       errorCode: "Diagnostic: {{code}}",
-      starting: "Superstring — starting",
     },
   },
   "zh-CN": {
@@ -41,7 +39,6 @@ export const nativeLocales = {
       releases: "下载更新",
       about: "关于 Superstring",
       retry: "重试",
-      cancel: "取消",
       close: "关闭窗口",
       failed: "Superstring 无法继续运行",
       failedDetail:
@@ -51,7 +48,6 @@ export const nativeLocales = {
         "服务正在结束进行中的任务并关闭数据库，完成后会自动退出。你可以打开日志查看进度。",
       wait: "继续等待",
       errorCode: "诊断：{{code}}",
-      starting: "Superstring — 正在启动",
     },
   },
 };

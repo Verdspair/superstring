@@ -169,7 +169,7 @@ const ALL_PAGES = [
       },
     ]),
   ]),
-  // 0.4.0 P8: 系统能力一级目录与目录行打开的能力详情；执行设置、联网从运行、接入移归此处。
+  // 系统能力一级目录与目录行打开的能力详情；执行设置、联网从运行、接入移归此处。
   // 目录行是 button 行而不是页签，行名与详情页 section[aria-label] 共用同一 nameKey，
   // 所以标签取实际语言包（capabilities.*.name / connections.web.title），不做宽松回退。
   {
@@ -242,7 +242,7 @@ const ALL_PAGES = [
     // 助手页先要打开一个助手，右侧才会出现分区页签。
     pick: "[data-agent-open]",
   },
-  // operating-mode 保留验收 ID，真实点击路径与新连接路由完全相同。
+  // operating-mode 保留旧页面 ID；真实点击路径与新连接路由相同。
   ...["operating-mode", "qq-connection"].map((id) => ({
     id,
     labelKeys: ["workspace.schemes", "connections.transportPage.tab"],

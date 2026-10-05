@@ -1,5 +1,4 @@
 import { useSyncExternalStore } from "react";
-import { useTranslation } from "react-i18next";
 import { persistDesktopPreference } from "../desktop-preferences";
 import { english } from "./en";
 import { translateError } from "./errors";
@@ -95,9 +94,4 @@ export function translate(key: string, ...values: unknown[]): string {
     });
   if (Object.hasOwn(english, key)) return formatMessage(current, key as MessageKey, ...values);
   return key;
-}
-export function useI18n(): typeof translate {
-  useTranslation(undefined, { i18n, useSuspense: false });
-  useLocale();
-  return translate;
 }

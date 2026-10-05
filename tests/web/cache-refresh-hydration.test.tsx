@@ -847,7 +847,7 @@ describe("cache-refresh-hydration integration tests", () => {
 
     await new Promise((r) => setTimeout(r, 30));
 
-    // Store MUST NOT resurrect the deleted directory!
+    // The deleted directory must stay deleted; nothing may resurrect it.
     expect(store.getState().directoryIds).toHaveLength(0);
 
     // Settle providers
@@ -955,12 +955,12 @@ describe("cache-refresh-hydration integration tests", () => {
       });
     });
 
-    // Authoritative replacement: items must contain ONLY B and C, deleted A MUST NOT be retained!
+    // The authoritative response replaces the preview: deleted A is gone, only B and C remain.
     await vi.waitFor(() => {
       expect(result.current.items.map((t) => t.traceId)).toEqual(["tr-C", "tr-B"]);
     });
 
-    // Verify re-saved cache in storage: must also contain ONLY B and C!
+    // The re-saved cache in storage must contain only B and C.
     const reloadedCache = await loadTracesCache(storage, filterK);
     expect(reloadedCache?.items.map((t) => t.traceId)).toEqual(["tr-C", "tr-B"]);
   });
@@ -1085,7 +1085,7 @@ describe("cache-refresh-hydration integration tests", () => {
     await saveQqEventsCache(storage, "conv-qq-bootstrap", "agent-1", 1, fiveCachedEvents);
     await localStorageInstance.write("superstring-conversation", "conv-qq-bootstrap");
 
-    // Phase 1: Initial full bootstrap with all network fulfilled
+    // First run: full bootstrap with the network fulfilled.
     store.getState().resetForTests({
       ...api,
       getBrowserStateConfig: async () => mockConfig,
@@ -1114,7 +1114,7 @@ describe("cache-refresh-hydration integration tests", () => {
       expect(persistedDir?.items[0]?.id).toBe("conv-qq-bootstrap");
     });
 
-    // Phase 2: Simulate subsequent F5 refresh where network is deferred
+    // Second run: F5 refresh while the network response is deferred.
     let resolveConvs!: (val: unknown) => void;
     let resolveEvents!: (val: unknown) => void;
 
@@ -1141,8 +1141,8 @@ describe("cache-refresh-hydration integration tests", () => {
     const { default: App } = await import("../../src/web/App");
     const { getByText } = render(<App />);
 
-    // Because bootstrap() persisted the directory cache in Phase 1,
-    // the F5 refresh prehydrates directory AND renders the 5 cached QQ message bodies while network is pending!
+    // The directory cache persisted by the first bootstrap prehydrates the
+    // directory and renders the 5 cached QQ message bodies while the network is pending.
     await vi.waitFor(() => {
       expect(store.getState().currentConversationId).toBe("conv-qq-bootstrap");
       expect(getByText("Bootstrap Roundtrip Event 1")).toBeDefined();

@@ -30,9 +30,9 @@ import { AppError, fail } from "../../errors";
 import type { EvidenceStore } from "../../modules/conversation-evidence-store";
 import {
   prepareQqImage,
-  QqImagePrepareError,
   type QqPreparedImage as QqPreparedFrame,
 } from "../../services/qq-image-codec";
+import { QqImagePrepareError } from "../../services/qq-image-error";
 import {
   QQ_STICKER_CONTENT_TYPES,
   type QqImageHeader,

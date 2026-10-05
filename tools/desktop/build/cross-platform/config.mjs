@@ -21,8 +21,8 @@ export function normalizeMacSigningEnvironment(env) {
   if (env.CSC_LINK !== undefined && !env.CSC_LINK.trim()) delete env.CSC_LINK;
 }
 
-// 签名是"有凭据就签、没有就出未签名包"：缺凭据不再中止发布，但结果必须如实记录，
-// 由构建结果与冒烟报告把 signed/unsigned 一路带到发布说明与用户文档。
+// Sign when credentials are available; otherwise produce an unsigned package.
+// Record signing status in the build and smoke results.
 export function macSigningPlan(env) {
   const hasIdentity = Boolean(env.CSC_LINK?.trim() || env.CSC_NAME?.trim());
   const groups = [
