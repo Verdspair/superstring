@@ -82,7 +82,7 @@ export function runtimeStorageItemEligible(item: RuntimeStorageItem): boolean {
   }
 }
 
-export function RuntimeStoragePanel() {
+export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language;
   const api = useSuperstringStore((s) => s.apiClient);
@@ -114,6 +114,7 @@ export function RuntimeStoragePanel() {
 
   const summary = useLiveResource(
     useCallback((signal: AbortSignal) => api.getRuntimeStorage(signal), [api]),
+    { paused: !active },
   );
 
   const load = useCallback(() => {
@@ -121,7 +122,7 @@ export function RuntimeStoragePanel() {
     const cursor = trail.current[position] ?? undefined;
     setListLoading(true);
     setListError("");
-    pending.current = startRead(
+    const task = startRead(
       (signal) =>
         api.listRuntimeStorageItems(
           {
@@ -135,27 +136,39 @@ export function RuntimeStoragePanel() {
           signal,
         ),
       {
-        success: setPage,
+        success: (result) => {
+          if (pending.current !== task) return;
+          setPage(result);
+        },
         failure: (cause) => {
+          if (pending.current !== task) return;
           setPage(null);
           setListError(errorText(cause));
         },
         settled: () => {
+          if (pending.current !== task) return;
           pending.current = null;
           setListLoading(false);
         },
       },
     );
+    pending.current = task;
   }, [api, appliedIds, category, position, status]);
 
-  const clear = useCallback(() => {
+  const cancel = useCallback(() => {
     pending.current?.cancel();
     pending.current = null;
-    setPage(null);
-    setListError("");
     setListLoading(false);
   }, []);
-  useForegroundRead(load, clear);
+
+  const clear = useCallback(() => {
+    cancel();
+    setPage(null);
+    setListError("");
+  }, [cancel]);
+  // 作用域（类别/页位/筛选）变化时 load 依赖更新，由 useForegroundRead onSuspend 统一取消在途读取，
+  // 再执行新的 load()；task identity 守卫配合 startRead 同步 abort 阻断迟到响应。
+  useForegroundRead(load, clear, { paused: !active, onSuspend: cancel });
 
   // 迟到响应不允许落在别的类别页：离开面板后作废仍未完成的手动清理。
   useEffect(

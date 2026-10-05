@@ -341,4 +341,73 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
     await waitFor(() => expect(store.getState().pageEditor).not.toBeNull());
     expect(screen.getByText("记忆读取")).toBeTruthy();
   });
+
+  it("passes active prop to execution detail and pauses polling when active is false", async () => {
+    vi.useFakeTimers();
+    const summary = vi.fn().mockResolvedValue({
+      now: "2026-09-30T12:00:00.000Z",
+      retention: {
+        traceRetentionDays: 14,
+        traceRetentionDefaultDays: 14,
+        traceRetentionMinDays: 1,
+        traceRetentionMaxDays: 3650,
+      },
+      cleanupScope: {
+        categories: ["traces", "contexts", "task_payloads"],
+        protectedTraceStatuses: ["started", "unknown"],
+        protectedTaskStatuses: ["queued", "running", "waiting_tool", "waiting_approval", "unknown"],
+        protectedCallStatuses: ["running", "waiting_approval", "unknown"],
+        contextClearedFields: ["protected_messages", "protected_output"],
+        taskClearedFields: ["arguments", "result"],
+      },
+      traces: { live: 3, expired: 2, started: 1, unknown: 0 },
+      spans: { live: 5, expired: 4 },
+      contexts: {
+        live: 1,
+        expired: 2,
+        revoked: 1,
+        withProtectedBody: 2,
+        expiredProtectedBodies: 1,
+      },
+      taskPayloads: { live: 2, expired: 3, protected: 1, removable: 2 },
+    });
+    const list = vi.fn().mockResolvedValue({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+      summary: { total: 0, live: 0, expired: 0 },
+    });
+    store.getState().resetForTests({
+      ...api,
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      getRuntimeStorage: summary,
+      listRuntimeStorageItems: list,
+    } as unknown as typeof api);
+
+    store.setState({ settingsRoute: "execution-settings" });
+    const { rerender } = render(<CapabilitiesWorkspace active={true} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    // Switch space: active becomes false
+    rerender(<CapabilitiesWorkspace active={false} />);
+    await act(async () => {});
+
+    // Polling while active is false should not trigger new requests
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    // Return to space: active becomes true
+    rerender(<CapabilitiesWorkspace active={true} />);
+    await act(async () => {});
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
 });

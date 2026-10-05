@@ -488,12 +488,12 @@ function qqAppView(route: string, settingsView: string): QqAppView | null {
   return settingsView === "operating-mode" ? "connection" : null;
 }
 
-export function SchemesWorkspace() {
+export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute);
   const settingsView = useSuperstringStore((s) => s.settingsView);
   if (route === "scheme-bindings") return <SchemeBindingsPage />;
   // 本群配置：仅本群作用域（不是基础方案/全局编辑），打开的绑定 id 由导航守卫带入。
-  if (route === "qq-group-config") return <QqGroupConfigPage />;
+  if (route === "qq-group-config") return <QqGroupConfigPage active={active} />;
   const appView = qqAppView(route, settingsView);
   if (appView)
     return (

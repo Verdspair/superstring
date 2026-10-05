@@ -332,7 +332,8 @@ it("retains investigation identity across foreground clearing without preserving
   await pointer(await screen.findByRole("button", { name: /Model generation/ }));
   await screen.findByRole("button", { name: /下一个命中/ });
   fireEvent.blur(window);
-  expect(screen.queryByRole("button", { name: /下一个命中/ })).toBeNull();
+  // 失焦保留已打开的调查视图，不再强制收起。
+  expect(screen.getByRole("button", { name: /下一个命中/ })).toBeTruthy();
   expect(screen.getByRole("region", { name: "追踪链路" })).toBeTruthy();
   fireEvent.focus(window);
   await screen.findByRole("button", { name: /下一个命中/ });
@@ -375,5 +376,6 @@ it("shows confirmed and unknown parts independently and aborts delivery inspecti
   expect(screen.getByText("已送达")).toBeTruthy();
   expect(screen.getAllByText("发送结果待确认").length).toBe(2);
   fireEvent.blur(window);
-  expect(screen.queryByText("receipt")).toBeNull();
+  // 失焦保留已展开的送达详情，不再强制收起。
+  expect(screen.getByText("receipt")).toBeTruthy();
 });

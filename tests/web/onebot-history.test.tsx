@@ -199,7 +199,7 @@ it("preserves a visible blurred timeline and revalidates its source anchor after
   expect(events).toHaveBeenCalledOnce();
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   fireEvent(document, new Event("visibilitychange"));
-  expect(screen.queryByText("message-201")).toBeNull();
+  expect(screen.getByText("message-201")).toBeTruthy();
   viewport.scrollTop = 0;
   fireEvent.scroll(viewport);
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });

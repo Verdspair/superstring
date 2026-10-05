@@ -9,7 +9,7 @@ export function useLiveResource<A>(
   {
     enabled = true,
     paused = false,
-    retainOnBlur = false,
+    retainOnBlur = true,
   }: { enabled?: boolean; paused?: boolean; retainOnBlur?: boolean } = {},
 ) {
   const [data, setData] = useState<A | null>(null);

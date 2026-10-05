@@ -191,8 +191,8 @@ it("stops reading and clears the QQ timeline while the messages tab is hidden", 
       key("workspace.messages_arrive_through_the_connected_bot_continue_the_conversation_in_t"),
     ),
   ).toBeNull();
-  // 隐藏即停读并清空受保护正文；滚动容器真实 hidden，供时间线判断要不要记录快照。
-  expect(screen.queryByText("来自 QQ 的消息")).toBeNull();
+  // 隐藏即停读，但已加载正文保留可见；滚动容器真实 hidden，供时间线判断要不要记录快照。
+  expect(screen.getByText("来自 QQ 的消息")).toBeTruthy();
   // 隐藏节点算不出可访问名，按角色取全部再核对 aria-label。
   const tabpanels = screen.getAllByRole("tabpanel", { hidden: true });
   expect(tabpanels.map((node) => node.getAttribute("aria-label"))).toEqual([

@@ -16,7 +16,7 @@ export function useForegroundRead(
     paused = false,
     enabled = true,
     intervalMs = 5000,
-    retainOnBlur = false,
+    retainOnBlur = true,
     onSuspend,
   }: ForegroundReadOptions = {},
 ) {
@@ -24,43 +24,33 @@ export function useForegroundRead(
   pausedRef.current = paused;
   const suspendRef = useRef(onSuspend);
   suspendRef.current = onSuspend;
-  const refreshRef = useRef<(() => void) | null>(null);
   const previousPaused = useRef(paused);
   const lastLoad = useRef(0);
   useEffect(() => {
     let foreground = document.visibilityState !== "hidden";
-    let discarded = false;
     const read = () => {
       if (!enabled || !foreground || document.visibilityState === "hidden") return;
-      discarded = false;
       lastLoad.current = Date.now();
       load();
     };
     const suspend = () => {
       foreground = false;
       suspendRef.current?.();
-      if (!retainOnBlur) {
-        discarded = true;
-        clear();
-      }
+      if (!retainOnBlur) clear();
     };
     const hide = suspend;
     const focus = () => {
+      if (document.visibilityState === "hidden") return;
       const wasForeground = foreground;
       foreground = true;
       if (pausedRef.current) return;
-      if (
-        retainOnBlur &&
-        !discarded &&
-        !wasForeground &&
-        Date.now() - lastLoad.current < intervalMs
-      )
-        return;
-      read();
+      // 仅在前台状态跃迁（false -> true）时后台复验一次；同一次回到前台若 visibilitychange 与 focus 先后到达，不重复触发
+      if (!wasForeground) {
+        read();
+      }
     };
     const visibility = () => (document.visibilityState === "hidden" ? hide() : focus());
     const blur = () => (document.visibilityState === "hidden" ? hide() : suspend());
-    refreshRef.current = read;
     if (enabled && foreground) read();
     else suspendRef.current?.();
     const polling = enabled
@@ -75,7 +65,6 @@ export function useForegroundRead(
       polling?.cancel();
       suspendRef.current?.();
       if (!retainOnBlur) clear();
-      refreshRef.current = null;
       window.removeEventListener("blur", blur);
       window.removeEventListener("focus", focus);
       document.removeEventListener("visibilitychange", visibility);

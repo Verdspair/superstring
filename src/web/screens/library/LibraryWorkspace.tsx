@@ -5,7 +5,7 @@ import { useSuperstringStore } from "@/store";
 import { KnowledgeLibrary } from "./KnowledgeLibrary";
 import { MemoryLibrary } from "./MemoryLibrary";
 import { StickerLibrary } from "./StickerLibrary";
-export function LibraryWorkspace() {
+export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute),
     navigate = useSuperstringStore((s) => s.openSettingsRoute),
     t = useTranslation().t;
@@ -56,7 +56,7 @@ export function LibraryWorkspace() {
       {tab === "knowledge" ? (
         <KnowledgeLibrary />
       ) : tab === "memory" ? (
-        <MemoryLibrary />
+        <MemoryLibrary active={active} />
       ) : (
         <StickerLibrary />
       )}

@@ -492,7 +492,7 @@ function SessionLinkDetail({ entry }: { entry: CapabilityEntry }) {
   );
 }
 
-function CapabilityDetail({ entry }: { entry: CapabilityEntry }) {
+function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; active?: boolean }) {
   const { t } = useTranslation();
   const openSettingsRoute = useSuperstringStore((state) => state.openSettingsRoute);
   if (entry.detail === "memory" || entry.detail === "knowledge")
@@ -550,7 +550,7 @@ function CapabilityDetail({ entry }: { entry: CapabilityEntry }) {
             {t("capabilities.execution.openTasks")}
           </Button>
         </div>
-        <ExecutionSettings />
+        <ExecutionSettings active={active} />
       </CapabilityDetailShell>
     );
   return (
@@ -560,8 +560,8 @@ function CapabilityDetail({ entry }: { entry: CapabilityEntry }) {
   );
 }
 
-export function CapabilitiesWorkspace() {
+export function CapabilitiesWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute);
   const entry = route === "system-capabilities" ? null : capabilityByRoute(route);
-  return entry ? <CapabilityDetail entry={entry} /> : <CapabilityDirectory />;
+  return entry ? <CapabilityDetail entry={entry} active={active} /> : <CapabilityDirectory />;
 }

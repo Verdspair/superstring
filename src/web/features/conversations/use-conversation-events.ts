@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConversationEventView } from "../../../shared/contracts/conversation";
+import {
+  loadQqEventsCache,
+  removeQqEventsCache,
+  saveQqEventsCache,
+} from "../../services/page-snapshot-cache";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
 
@@ -27,6 +32,10 @@ export function useConversationEvents(
   { refreshMs = 5000, enabled = true }: { refreshMs?: number; enabled?: boolean } = {},
 ) {
   const api = useSuperstringStore((s) => s.apiClient);
+  const sessionStateStorage = useSuperstringStore((s) => s.sessionStateStorage);
+  const conversation = useSuperstringStore((s) => s.summaryById[id]);
+  const agentId = conversation?.agentId ?? null;
+  const bindingEpoch = conversation?.bindingEpoch ?? null;
   const [items, setItems] = useState<ConversationEventView[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -36,29 +45,59 @@ export function useConversationEvents(
   const notify = useRef(beforeChange);
   notify.current = beforeChange;
   const pending = useRef<AbortController | null>(null);
-  const lastRefreshTime = useRef(0);
-  const hadPendingAborted = useRef(false);
-  const needsRevalidation = useRef(false);
+  const authoritativeSettled = useRef(false);
 
-  // Scope change cleanup
-  const lastScopeId = useRef(id);
-  const lastApi = useRef(api);
+  // Scope change cleanup: 严格按 summary (id, agentId, bindingEpoch) 及 api 判定范围跃迁
+  const lastScope = useRef({ id, agentId, bindingEpoch, api });
   useEffect(() => {
-    if (lastScopeId.current !== id || lastApi.current !== api) {
-      lastScopeId.current = id;
-      lastApi.current = api;
+    const prev = lastScope.current;
+    if (
+      prev.id !== id ||
+      prev.agentId !== agentId ||
+      prev.bindingEpoch !== bindingEpoch ||
+      prev.api !== api
+    ) {
+      lastScope.current = { id, agentId, bindingEpoch, api };
       pending.current?.abort();
       pending.current = null;
       first.current = 0;
       current.current = [];
+      authoritativeSettled.current = false;
       setItems([]);
       setHasMore(false);
       setLoading(false);
       setError("");
-      needsRevalidation.current = false;
       notify.current?.("clear", []);
     }
-  }, [id, api]);
+  }, [id, agentId, bindingEpoch, api]);
+
+  // F5 刷新缓存预显水合（缺 scope 不 hydrate；仅在网络落地前预显，绝不推进 first.current 保持 0）
+  useEffect(() => {
+    let active = true;
+    if (!sessionStateStorage || !id || agentId === null || bindingEpoch === null) return;
+    void loadQqEventsCache(sessionStateStorage, id, agentId, bindingEpoch).then((cached) => {
+      const scopeNow = lastScope.current;
+      const scopeMatches =
+        scopeNow.id === id &&
+        scopeNow.agentId === agentId &&
+        scopeNow.bindingEpoch === bindingEpoch;
+      if (
+        active &&
+        scopeMatches &&
+        cached &&
+        cached.length > 0 &&
+        current.current.length === 0 &&
+        !authoritativeSettled.current
+      ) {
+        current.current = cached;
+        setItems(cached);
+        notify.current?.("initial", cached);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [id, agentId, bindingEpoch, sessionStateStorage]);
 
   const load = useCallback(
     async (older = false) => {
@@ -67,8 +106,8 @@ export function useConversationEvents(
       pending.current = controller;
       setLoading(true);
       setError("");
-      hadPendingAborted.current = false;
-      const initial = !first.current;
+      // R7: 初始网络读取以是否已有权威数据到达为准，首次必走 latest，不把预览缓存当作已加载范围
+      const initial = !authoritativeSettled.current;
       const loadedCount = current.current.length;
       try {
         const page = await api.getConversationEvents(
@@ -84,7 +123,7 @@ export function useConversationEvents(
                 },
           controller.signal,
         );
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || lastScope.current.id !== id) return;
         let next = page.items;
         if (initial || older) {
           setHasMore(page.hasMore);
@@ -98,7 +137,7 @@ export function useConversationEvents(
               { direction: "after", afterSeq: cursor },
               controller.signal,
             );
-            if (controller.signal.aborted) return;
+            if (controller.signal.aborted || lastScope.current.id !== id) return;
             next = [...next, ...following.items];
             more = following.hasMore && following.nextSeq > cursor;
             cursor = following.nextSeq;
@@ -116,18 +155,20 @@ export function useConversationEvents(
         }
 
         first.current = merged[0]?.seq ?? 0;
+        authoritativeSettled.current = true;
         notify.current?.(initial ? "initial" : older ? "older" : "refresh", merged);
         current.current = merged;
         setItems(merged);
-        lastRefreshTime.current = Date.now();
-        needsRevalidation.current = false;
+        void saveQqEventsCache(sessionStateStorage, id, agentId, bindingEpoch, merged);
       } catch (reason) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && lastScope.current.id === id) {
+          authoritativeSettled.current = true;
           setError(errorText(reason));
           const redacted: ConversationEventView[] = current.current.map(redactEvent);
           notify.current?.("refresh", redacted);
           current.current = redacted;
           setItems(redacted);
+          void removeQqEventsCache(sessionStateStorage, id);
         }
       } finally {
         if (pending.current === controller) {
@@ -136,30 +177,27 @@ export function useConversationEvents(
         }
       }
     },
-    [api, id],
+    [api, id, agentId, bindingEpoch, sessionStateStorage],
   );
 
   useEffect(() => {
     let foreground = document.visibilityState !== "hidden";
 
-    const redact = () => {
+    const pause = () => {
+      // 暂停：只取消在途请求，不清空已加载内容。
+      // 通知"refresh"而不是"clear"：后者会让滚动层把整份记录当已清空而渲染为空。
       foreground = false;
-      needsRevalidation.current = true;
       if (pending.current) {
-        hadPendingAborted.current = true;
         pending.current.abort();
         pending.current = null;
       }
-      const redacted = current.current.map(redactEvent);
-      notify.current?.("clear", []);
-      current.current = redacted;
-      setItems(redacted);
+      notify.current?.("refresh", current.current);
       setLoading(false);
     };
 
     if (!enabled) {
-      // 当页签隐藏或会话失活时，脱敏受保护正文与 qqMessageFacts，保留占位/seq
-      redact();
+      // 当页签隐藏或会话失活时暂停在途请求，保留已加载正文与占位
+      pause();
       return;
     }
 
@@ -167,15 +205,14 @@ export function useConversationEvents(
       if (document.visibilityState !== "hidden") {
         // visible blur: cancel in-flight and pause polling, do NOT clear body
         if (pending.current) {
-          hadPendingAborted.current = true;
           pending.current.abort();
           pending.current = null;
-          setLoading(false);
         }
+        setLoading(false);
         foreground = false;
         return;
       }
-      redact();
+      pause();
     };
 
     const refresh = () => {
@@ -183,27 +220,18 @@ export function useConversationEvents(
     };
 
     const onFocus = () => {
+      if (document.visibilityState === "hidden") return;
       const wasForeground = foreground;
       foreground = true;
-      if (document.visibilityState !== "hidden") {
-        const timeSince = Date.now() - lastRefreshTime.current;
-        // Skip repeat fetch ONLY if NOT redacted/needsRevalidation, within refreshMs, and no aborted pending
-        if (
-          !needsRevalidation.current &&
-          !wasForeground &&
-          timeSince < refreshMs &&
-          !hadPendingAborted.current &&
-          current.current.length > 0
-        ) {
-          return;
-        }
+      // 回到前台状态跃迁（false -> true）一律后台复验一次；同一轮回到前台若 visibilitychange 与 focus 先后到达，不重复触发
+      if (!wasForeground) {
         void load();
       }
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        redact();
+        pause();
       } else {
         onFocus();
       }
@@ -221,6 +249,7 @@ export function useConversationEvents(
         pending.current.abort();
         pending.current = null;
       }
+      setLoading(false);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);

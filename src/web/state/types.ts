@@ -189,6 +189,7 @@ export interface SuperstringState
   chatContextCapacity: number | null;
   pendingOperations: number;
   browserStateStorage: BrowserStateStorage | null;
+  sessionStateStorage: BrowserStateStorage | null;
   apiClient: SuperstringApi;
   effects: RuntimeEffects;
   deleteMessage: (sessionId: string | null, messageId: string) => Promise<void>;

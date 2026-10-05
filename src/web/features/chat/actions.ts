@@ -2,6 +2,11 @@ import { type MessageResponse, UpdateSessionRequestSchema } from "../../../share
 import type { RunEvent } from "../../../shared/contracts/agent-run";
 import { ApiError } from "../../api";
 import { msg } from "../../i18n";
+import {
+  loadWebChatCache,
+  removeWebChatCache,
+  saveWebChatCache,
+} from "../../services/page-snapshot-cache";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { currentSessionId } from "../conversations/directory-state";
@@ -138,10 +143,31 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
     if (!initial) return;
     const revision = initial.loadRevision + 1;
     write(id, { loadRevision: revision, error: null });
+
+    let networkSettled = false;
+
+    // F5 刷新缓存预显水合（网络在途时先显缓存，网络响应返回后权威覆盖；响应落地后拒迟到缓存）
+    const storage = get().sessionStateStorage;
+    const currentAgentId = initial.runtimeConfig?.agent_id ?? get().selectedNewSessionAgentId;
+    if (storage && initial.messages.length === 0) {
+      void loadWebChatCache(storage, initial.sessionId, currentAgentId).then((cached) => {
+        if (
+          !networkSettled &&
+          cached &&
+          cached.messages.length > 0 &&
+          get().conversationById[id]?.loadRevision === revision &&
+          get().conversationById[id]?.messages.length === 0
+        ) {
+          write(id, { messages: cached.messages, phase: "idle" });
+        }
+      });
+    }
+
     const [messages, runtime] = await Promise.allSettled([
       get().apiClient.listMessages(initial.sessionId),
       get().apiClient.getSessionRuntime(initial.sessionId),
     ]);
+    networkSettled = true;
     if (get().conversationById[id]?.loadRevision !== revision) return;
     const recoveryRead =
       get().conversationById[id].phase === "reconciling" && !get().conversationById[id].request;
@@ -157,13 +183,20 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         : {}),
       runtimeConfig: runtime.status === "fulfilled" ? runtime.value : null,
       runtimeConfigUnavailable: runtime.status === "rejected",
-      ...(messages.status === "rejected"
-        ? { error: errorText(messages.reason) }
-        : runtime.status === "rejected"
-          ? { error: errorText(runtime.reason) }
-          : {}),
+      ...(messages.status === "rejected" ? { error: errorText(messages.reason) } : {}),
     }));
-    if (messages.status === "fulfilled" && recover) await recoverPendingTurn(id, messages.value);
+    if (messages.status === "fulfilled") {
+      const items = messages.value.map(toChatItem);
+      const agentId =
+        runtime.status === "fulfilled" && runtime.value ? runtime.value.agent_id : currentAgentId;
+      void saveWebChatCache(get().sessionStateStorage, initial.sessionId, agentId, revision, items);
+      if (recover) await recoverPendingTurn(id, messages.value);
+    } else if (messages.status === "rejected") {
+      const err = errorText(messages.reason);
+      if (err.includes("403") || err.includes("revoked") || err.includes("Forbidden")) {
+        void removeWebChatCache(get().sessionStateStorage, initial.sessionId);
+      }
+    }
   };
   const settleMessages = async (id: string): Promise<MessageResponse[]> => {
     const view = get().conversationById[id];

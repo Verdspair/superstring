@@ -130,7 +130,7 @@ it("OneBot timeline revalidates expired bodies and redacts projections only when
   expect(screen.getByText("原文已过保留期")).toBeTruthy();
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   fireEvent(document, new Event("visibilitychange"));
-  expect(screen.queryByText("原文已过保留期")).toBeNull();
+  expect(screen.getByText("原文已过保留期")).toBeTruthy();
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 it("unknown text/sticker delivery shows independent receipt facts and offers no resend", async () => {

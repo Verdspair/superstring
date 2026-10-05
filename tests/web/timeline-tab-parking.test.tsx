@@ -95,7 +95,8 @@ it("revalidates every five seconds while visible and stops reading when another 
     expect(screen.getByText("message-202")).toBeTruthy();
     expect(events).toHaveBeenCalledTimes(2);
     view.rerender(<ConversationTimeline conversation={conversation} active={false} />);
-    expect(screen.queryByText("message-202")).toBeNull();
+    // 隐藏页签保留已加载正文，但停止后台读取。
+    expect(screen.getByText("message-202")).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(20000);
     });
@@ -123,8 +124,8 @@ it("restores the parked scroll position after returning to the messages tab", as
   viewport.scrollTop = 300;
   fireEvent.scroll(viewport);
   view.rerender(<ConversationTimeline conversation={conversation} active={false} />);
-  expect(screen.queryByText("message-201")).toBeNull();
-  // display:none 的容器读不到滚动位置，只能靠隐藏前保存的元数据恢复。
+  // 隐藏页签保留正文；滚动位置仍靠隐藏前保存的元数据恢复。
+  expect(screen.getByText("message-201")).toBeTruthy();
   viewport.scrollTop = 0;
   view.rerender(<ConversationTimeline conversation={conversation} active />);
   expect(await screen.findByText("message-203")).toBeTruthy();
@@ -223,8 +224,8 @@ it("keeps the parked position and shows no protected body when the re-read fails
   view.rerender(<ConversationTimeline conversation={conversation} active={false} />);
   viewport.scrollTop = 0;
   view.rerender(<ConversationTimeline conversation={conversation} active />);
-  // 回到页签但授权正文尚未到位：旧正文不得闪现。
-  expect(screen.queryByText("message-201")).toBeNull();
+  // 保留正文不等于保留已被撤权的正文：重读失败后必须清除。
+  expect(screen.getByText("message-201")).toBeTruthy();
   await act(async () => {
     fail(new Error("Access revoked"));
   });

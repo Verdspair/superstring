@@ -5,6 +5,11 @@ import type {
   RuntimeTraceDetail,
   RuntimeTracesPage,
 } from "../../../shared/contracts/runtime-observability";
+import {
+  loadTracesCache,
+  removeTracesCache,
+  saveTracesCache,
+} from "../../services/page-snapshot-cache";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { useForegroundRead } from "../../services/use-foreground-read";
 import { errorText } from "../../state/helpers";
@@ -22,6 +27,7 @@ function filterKey(filters: RuntimeSpanFilters): string {
 
 export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, active = true) {
   const api = useSuperstringStore((s) => s.apiClient);
+  const sessionStateStorage = useSuperstringStore((s) => s.sessionStateStorage);
   const [items, setItems] = useState<RuntimeTrace[]>([]);
   const [summary, setSummary] = useState<RuntimeTracesPage["summary"] | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -29,6 +35,8 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
   const [error, setError] = useState("");
   const oldest = useRef(0);
   const pending = useRef<ReadTask | null>(null);
+  const authoritativeSettled = useRef(false);
+  const current = useRef(items);
 
   const key = filterKey(filters);
   const appliedFilters = useMemo(() => JSON.parse(key) as RuntimeSpanFilters, [key]);
@@ -43,6 +51,7 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
 
   const clear = useCallback(() => {
     cancel();
+    current.current = [];
     setItems([]);
     setSummary(null);
     setHasMore(false);
@@ -52,10 +61,34 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
   useEffect(() => {
     if (scopeRef.current.api !== api || scopeRef.current.appliedFilters !== appliedFilters) {
       scopeRef.current = { api, appliedFilters };
+      authoritativeSettled.current = false;
       clear();
       setError("");
     }
   }, [api, appliedFilters, clear]);
+
+  // F5 刷新缓存预显水合（仅摘要与列表，非瀑布流/详情；网络落地前先显，权威响应到达后拒迟到缓存）
+  useEffect(() => {
+    let unmounted = false;
+    if (!sessionStateStorage || !active) return;
+    void loadTracesCache(sessionStateStorage, key).then((cached) => {
+      if (
+        !unmounted &&
+        cached &&
+        cached.items.length > 0 &&
+        items.length === 0 &&
+        oldest.current === 0 &&
+        !authoritativeSettled.current
+      ) {
+        current.current = cached.items;
+        setSummary(cached.summary);
+        setItems(cached.items);
+      }
+    });
+    return () => {
+      unmounted = true;
+    };
+  }, [sessionStateStorage, key, active, items.length]);
 
   const load = useCallback(
     (kind: "background" | "refresh" | "older" = "background") => {
@@ -87,21 +120,29 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
         },
         {
           success: ({ page, next, nextSummary }) => {
+            authoritativeSettled.current = true;
             if (initial || kind !== "background") {
               oldest.current = page.nextBeforeId;
               setHasMore(page.hasMore);
             }
             setSummary(nextSummary);
-            setItems((previous) => {
-              const records = kind === "refresh" ? next : [...previous, ...next];
-              return [...new Map(records.map((item) => [item.traceId, item])).values()].sort(
-                (a, b) => b.cursorId - a.cursorId,
-              );
-            });
+
+            // 仅首次 initial 或显式 refresh 进行权威全量替换（淘汰已删 trace）；
+            // older 分页与非 initial 的后台轮询保留既有 merge 范围
+            const records = initial || kind === "refresh" ? next : [...current.current, ...next];
+            const deduplicated = [
+              ...new Map(records.map((item) => [item.traceId, item])).values(),
+            ].sort((a, b) => b.cursorId - a.cursorId);
+
+            current.current = deduplicated;
+            setItems(deduplicated);
+            void saveTracesCache(sessionStateStorage, key, nextSummary, deduplicated);
           },
           failure: (reason) => {
             clear();
+            authoritativeSettled.current = true;
             setError(errorText(reason));
+            void removeTracesCache(sessionStateStorage, key);
           },
           settled: () => {
             pending.current = null;
@@ -110,7 +151,7 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
         },
       );
     },
-    [api, appliedFilters, active, clear],
+    [api, appliedFilters, active, clear, key, sessionStateStorage],
   );
 
   const background = useCallback(() => load("background"), [load]);

@@ -98,4 +98,5 @@ export const initial = {
   chatContextCapacity: null as number | null,
   pendingOperations: 0,
   browserStateStorage: null as BrowserStateStorage | null,
+  sessionStateStorage: null as BrowserStateStorage | null,
 };

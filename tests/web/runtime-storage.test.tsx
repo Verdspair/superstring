@@ -496,6 +496,47 @@ describe("runtime storage panel", () => {
     expect(screen.getByText(contextEligible.stepId)).toBeTruthy();
   });
 
+  it("does not clear page or set error when superseded category query rejects late", async () => {
+    const stale = Promise.withResolvers<RuntimeStorageItemsPage>();
+    const list = vi
+      .fn()
+      .mockImplementationOnce(() => stale.promise)
+      .mockResolvedValueOnce(pageFixture([contextEligible], { category: "contexts" }));
+    await renderPanel({ list });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: T(`${P}.categoryContexts`) }));
+    await act(async () => {});
+    await act(async () => {
+      stale.reject(new Error("Superseded category error"));
+    });
+    expect(screen.queryByText("Superseded category error")).toBeNull();
+    expect(screen.getByText(contextEligible.stepId)).toBeTruthy();
+  });
+
+  it("preserves loaded page data when window blurs and cancels in-flight query", async () => {
+    const pendingQuery = Promise.withResolvers<RuntimeStorageItemsPage>();
+    const signals: AbortSignal[] = [];
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce(pageFixture([traceEligible]))
+      .mockImplementationOnce((_params, signal) => {
+        if (signal) signals.push(signal);
+        return pendingQuery.promise;
+      });
+    await renderPanel({ list });
+    expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
+
+    // Trigger second query that stays pending
+    fireEvent.click(screen.getByRole("button", { name: T("observability.applyFilters") }));
+    expect(list).toHaveBeenCalledTimes(2);
+
+    // Window blurs
+    fireEvent.blur(window);
+
+    // Page data must still be preserved
+    expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
   it("sits under the retention section of the execution settings page", async () => {
     const permissions: PermissionsResponse = {
       revision: "pr-1",
@@ -587,5 +628,90 @@ describe("runtime storage catalogs", () => {
       expect(input.className).toContain("min-w-0");
       expect(input.className).toContain("max-w-full");
     }
+  });
+
+  it("cancels old in-flight request when filters are applied and immediately dispatches new query", async () => {
+    const stale = Promise.withResolvers<RuntimeStorageItemsPage>();
+    const filteredPage = pageFixture([traceEligible], { category: "traces" });
+    const list = vi
+      .fn()
+      .mockImplementationOnce(() => stale.promise)
+      .mockResolvedValueOnce(filteredPage);
+
+    await renderPanel({ list });
+    expect(list).toHaveBeenCalledTimes(1);
+
+    // Apply agent filter while initial request is still in-flight
+    const input = screen.getByLabelText(T(`${P}.filterAgentId`));
+    fireEvent.change(input, { target: { value: AGENT_ID } });
+    fireEvent.click(screen.getByRole("button", { name: T("observability.applyFilters") }));
+
+    // The new query MUST be dispatched immediately, not blocked by the in-flight pending request!
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(list.mock.calls[1][0]).toMatchObject({ agentId: AGENT_ID });
+
+    // Old in-flight request rejects late
+    await act(async () => {
+      stale.reject(new Error("Old stale query rejected"));
+    });
+
+    // Old rejection must not wipe out or show error
+    expect(screen.queryByText("Old stale query rejected")).toBeNull();
+  });
+  it("pauses summary and list polling when active becomes false and aborts in-flight query while keeping page data", async () => {
+    vi.useFakeTimers();
+    let inFlightSignal: AbortSignal | undefined;
+    const summary = vi.fn().mockResolvedValue(summaryFixture());
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce(pageFixture([traceEligible]))
+      .mockImplementation((_params, signal) => {
+        inFlightSignal = signal;
+        return new Promise(() => {}); // stays pending
+      });
+
+    store.getState().resetForTests({
+      ...api,
+      getRuntimeStorage: summary,
+      listRuntimeStorageItems: list,
+    } as unknown as typeof api);
+
+    const { rerender } = render(<RuntimeStoragePanel active={true} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
+    expect(summary).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    // Advance 5000ms: second polling round starts (stays in-flight)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(summary).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledTimes(2);
+
+    // Now space is hidden: active becomes false
+    rerender(<RuntimeStoragePanel active={false} />);
+    await act(async () => {});
+
+    // In-flight read should be cancelled/aborted
+    expect(inFlightSignal?.aborted).toBe(true);
+    // Page data must still be visible (retained)
+    expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
+
+    // Advance time further while hidden: NO new polling requests should fire
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+    expect(summary).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledTimes(2);
+
+    // Space becomes active again
+    rerender(<RuntimeStoragePanel active={true} />);
+    await act(async () => {});
+    // Page data is still visible
+    expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
   });
 });

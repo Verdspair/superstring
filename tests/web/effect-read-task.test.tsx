@@ -86,7 +86,13 @@ it("pauses foreground polling, clears on blur, cancels pending reads, and reload
         },
       });
     }, []);
-    useForegroundRead(load, clear, { paused });
+    useForegroundRead(load, clear, {
+      paused,
+      onSuspend: () => {
+        pending.current?.cancel();
+        pending.current = null;
+      },
+    });
     return (
       <>
         <button type="button" onClick={() => setPaused(!paused)}>
@@ -113,8 +119,9 @@ it("pauses foreground polling, clears on blur, cancels pending reads, and reload
   });
   expect(request).toHaveBeenCalledTimes(2);
   fireEvent.blur(window);
-  expect(signals[1].aborted).toBe(true);
-  expect(screen.queryByText("visible metadata")).toBeNull();
+  // 失焦保留已加载数据；在途读取经 onSuspend 取消，延迟返回不得覆盖新状态。
+  expect(signals[1]?.aborted).toBe(true);
+  expect(screen.getByText("visible metadata")).toBeTruthy();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15000);
   });

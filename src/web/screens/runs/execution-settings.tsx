@@ -183,7 +183,7 @@ const PAGE_SCOPE: PermissionScope = {
   modules: [...PAGE_MODULE_KEYS],
 };
 
-export function ExecutionSettings() {
+export function ExecutionSettings({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const uid = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -377,7 +377,7 @@ export function ExecutionSettings() {
                 />
               </Field>
             </div>
-            <RuntimeStoragePanel />
+            <RuntimeStoragePanel active={active} />
           </CardContent>
         </Card>
       </div>

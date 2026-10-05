@@ -1,4 +1,5 @@
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
+import { clearAllCaches, saveDirectoryCache } from "../../services/page-snapshot-cache";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 
@@ -99,9 +100,16 @@ export function createDirectoryActions(
           },
           directoryCursor: page.nextCursor,
         }));
+        void saveDirectoryCache(get().sessionStateStorage, items, revision);
         return true;
       } catch (reason) {
-        if (get().directoryRevision === revision) set({ directoryError: errorText(reason) });
+        if (get().directoryRevision === revision) {
+          const err = errorText(reason);
+          set({ directoryError: err });
+          if (err.includes("403") || err.includes("revoked") || err.includes("Forbidden")) {
+            void clearAllCaches(get().sessionStateStorage);
+          }
+        }
         return false;
       } finally {
         // Local mutations invalidate a read without starting another one.

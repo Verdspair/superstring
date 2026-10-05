@@ -161,7 +161,15 @@ function openFixture(): Fixture {
         peerId: PEER,
         agentId: AGENT,
       },
-      bytes: new Uint8Array([137, 80, 78, 71, mediaNoteId.length, mediaNoteId.charCodeAt(3)]),
+      bytes: new Uint8Array([
+        // 字节必须逐条区分：mediaNoteId 为 recordMediaSegment 生成的 UUID（长度 36），旧实现仅取固定长度与 charCodeAt(3)（仅 16 种十六进制字符）易发生内容哈希碰撞；
+        // 资产按内容去重后合并为同一行，第二条分类覆盖第一条。这里取前缀字节保证不同 mediaNoteId 字节不同。
+        137,
+        80,
+        78,
+        71,
+        ...Array.from(new TextEncoder().encode(mediaNoteId)).slice(0, 6),
+      ]),
       mimeType: "image/png",
       expiresAt: future,
     });
@@ -201,7 +209,15 @@ function openFixture(): Fixture {
         peerId: PEER,
         agentId: AGENT,
       },
-      bytes: new Uint8Array([137, 80, 78, 71, mediaNoteId.length, mediaNoteId.charCodeAt(3)]),
+      bytes: new Uint8Array([
+        // 字节必须逐条区分：mediaNoteId 为 recordMediaSegment 生成的 UUID（长度 36），旧实现仅取固定长度与 charCodeAt(3)（仅 16 种十六进制字符）易发生内容哈希碰撞；
+        // 资产按内容去重后合并为同一行，第二条分类覆盖第一条。这里取前缀字节保证不同 mediaNoteId 字节不同。
+        137,
+        80,
+        78,
+        71,
+        ...Array.from(new TextEncoder().encode(mediaNoteId)).slice(0, 6),
+      ]),
       mimeType: "image/png",
       expiresAt: cap,
       at: mintAt,

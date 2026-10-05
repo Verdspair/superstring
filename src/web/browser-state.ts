@@ -3,7 +3,8 @@ import { persistDesktopPreference } from "./desktop-preferences";
 
 export interface BrowserStateStorage {
   read(storageKey: string): Promise<string | null>;
-  write(storageKey: string, value: string | null): Promise<void>;
+  write(storageKey: string, value: string | null, isStale?: () => boolean): Promise<void>;
+  remove?(storageKey: string): Promise<void>;
 }
 
 const encoder = new TextEncoder();
@@ -51,26 +52,51 @@ async function decrypt(value: string, secret: string): Promise<string | null> {
   }
 }
 
-export function createBrowserStateStorage(config: BrowserStateConfig): BrowserStateStorage {
+export function createBrowserStateStorage(
+  config: BrowserStateConfig,
+  backend?: Storage,
+): BrowserStateStorage {
+  const getBackend = (): Storage | null => {
+    if (backend) return backend;
+    try {
+      return typeof localStorage !== "undefined" ? localStorage : null;
+    } catch {
+      return null;
+    }
+  };
   return {
     async read(storageKey) {
-      let stored: string | null;
+      let stored: string | null = null;
       try {
-        stored = localStorage.getItem(storageKey);
+        const store = getBackend();
+        stored = store ? store.getItem(storageKey) : null;
       } catch {
         return null;
       }
       if (!stored) return null;
       return decrypt(stored, config.secret);
     },
-    async write(storageKey, value) {
+    async write(storageKey, value, isStale) {
       if (value === null) return;
       try {
+        const store = getBackend();
+        if (!store) return;
         const encrypted = await encrypt(value, config.secret);
-        localStorage.setItem(storageKey, encrypted);
-        await persistDesktopPreference(storageKey, encrypted);
+        if (isStale?.()) return;
+        store.setItem(storageKey, encrypted);
+        if (!backend && !storageKey.startsWith("superstring:cache:")) {
+          await persistDesktopPreference(storageKey, encrypted);
+        }
       } catch {
         // Persistence failure is non-fatal to the action.
+      }
+    },
+    async remove(storageKey) {
+      try {
+        const store = getBackend();
+        store?.removeItem(storageKey);
+      } catch {
+        // Non-fatal
       }
     },
   };
@@ -81,6 +107,18 @@ export async function loadBrowserStateStorage(
 ): Promise<BrowserStateStorage | null> {
   try {
     return createBrowserStateStorage(await loadConfig());
+  } catch {
+    return null;
+  }
+}
+
+export async function loadSessionStateStorage(
+  loadConfig: () => Promise<BrowserStateConfig>,
+): Promise<BrowserStateStorage | null> {
+  try {
+    const store = typeof sessionStorage !== "undefined" ? sessionStorage : undefined;
+    if (!store) return null;
+    return createBrowserStateStorage(await loadConfig(), store);
   } catch {
     return null;
   }

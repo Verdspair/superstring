@@ -5,7 +5,7 @@ import { DesignSystemProvider } from "./design-system/Providers";
 import { settingsHaveDrafts } from "./features/qq/draft-state";
 import { useLocale } from "./i18n";
 import { useSuperstringStore } from "./store";
-import { activeSpace } from "./workspace/navigation";
+import { activeSpace, type SpaceId } from "./workspace/navigation";
 import { WorkspaceShell } from "./workspace/WorkspaceShell";
 
 const ConversationWorkspace = lazy(() =>
@@ -62,21 +62,33 @@ function Application() {
   // Keep persisted language changes in sync across windows in every workspace.
   useLocale();
   const status = useSuperstringStore((s) => s.status);
+  const directoryIds = useSuperstringStore((s) => s.directoryIds);
+  const currentConversationId = useSuperstringStore((s) => s.currentConversationId);
   const bootstrap = useSuperstringStore((s) => s.bootstrap);
   const unsaved = useSuperstringStore(settingsHaveDrafts);
   const space = useSuperstringStore(activeSpace);
+  const [visitedSpaces, setVisitedSpaces] = useState<Set<SpaceId>>(() => new Set([space]));
   const isConversations = space === "conversations";
-  const [visitedConversations, setVisitedConversations] = useState(isConversations);
+  const isAssistants = space === "assistants";
+  const isCapabilities = space === "capabilities";
+  const isSchemes = space === "schemes";
+  const isLibrary = space === "library";
+  const isConnections = space === "connections";
+  const isModels = space === "models";
+  const isPreferences = space === "preferences";
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
 
   useEffect(() => {
-    if (isConversations) {
-      setVisitedConversations(true);
-    }
-  }, [isConversations]);
+    setVisitedSpaces((prev) => {
+      if (prev.has(space)) return prev;
+      const next = new Set(prev);
+      next.add(space);
+      return next;
+    });
+  }, [space]);
 
   useEffect(() => {
     if (!unsaved) return;
@@ -88,38 +100,71 @@ function Application() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [unsaved]);
 
-  if (status === "loading" || status === "idle")
+  const hasCachedWorkspace = directoryIds.length > 0 && !!currentConversationId;
+  if ((status === "loading" && !hasCachedWorkspace) || status === "idle")
     return (
       <div className="h-svh">
         <Waiting bootstrap />
       </div>
     );
 
-  const OtherScreen = !isConversations
-    ? {
-        assistants: AssistantWorkspace,
-        capabilities: CapabilitiesWorkspace,
-        schemes: SchemesWorkspace,
-        library: LibraryWorkspace,
-        connections: ConnectionWorkspace,
-        models: ModelServices,
-        preferences: Preferences,
-      }[space]
-    : null;
-
   return (
     <WorkspaceShell>
-      {(visitedConversations || isConversations) && (
+      {(visitedSpaces.has("conversations") || isConversations) && (
         <div hidden={!isConversations} className={isConversations ? "h-full" : "hidden"}>
           <Suspense fallback={<Waiting />}>
             <ConversationWorkspace active={isConversations} />
           </Suspense>
         </div>
       )}
-      {OtherScreen && (
-        <Suspense fallback={<Waiting />}>
-          <OtherScreen />
-        </Suspense>
+      {(visitedSpaces.has("assistants") || isAssistants) && (
+        <div hidden={!isAssistants} className={isAssistants ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <AssistantWorkspace />
+          </Suspense>
+        </div>
+      )}
+      {(visitedSpaces.has("capabilities") || isCapabilities) && (
+        <div hidden={!isCapabilities} className={isCapabilities ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <CapabilitiesWorkspace active={isCapabilities} />
+          </Suspense>
+        </div>
+      )}
+      {(visitedSpaces.has("schemes") || isSchemes) && (
+        <div hidden={!isSchemes} className={isSchemes ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <SchemesWorkspace active={isSchemes} />
+          </Suspense>
+        </div>
+      )}
+      {(visitedSpaces.has("library") || isLibrary) && (
+        <div hidden={!isLibrary} className={isLibrary ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <LibraryWorkspace active={isLibrary} />
+          </Suspense>
+        </div>
+      )}
+      {(visitedSpaces.has("connections") || isConnections) && (
+        <div hidden={!isConnections} className={isConnections ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <ConnectionWorkspace />
+          </Suspense>
+        </div>
+      )}
+      {(visitedSpaces.has("models") || isModels) && (
+        <div hidden={!isModels} className={isModels ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <ModelServices />
+          </Suspense>
+        </div>
+      )}
+      {(visitedSpaces.has("preferences") || isPreferences) && (
+        <div hidden={!isPreferences} className={isPreferences ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <Preferences />
+          </Suspense>
+        </div>
       )}
     </WorkspaceShell>
   );

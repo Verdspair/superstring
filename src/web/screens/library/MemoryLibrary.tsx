@@ -39,7 +39,7 @@ import { JobRunLink } from "../runs/RunEntry";
 import { BindingMemoryControls } from "./BindingMemoryControls";
 import { memoryScopeLabel } from "./scope-label";
 
-export function MemoryLibrary() {
+export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       agents: state.agents,
@@ -119,7 +119,7 @@ export function MemoryLibrary() {
       connectionError: connections.some((result) => result.status === "rejected"),
     };
   }, [s.apiClient, agentId]);
-  const resource = useLiveResource(read, { enabled: ready });
+  const resource = useLiveResource(read, { enabled: ready, paused: !active });
   useEffect(() => {
     if (!agentId) return;
     setScope("");

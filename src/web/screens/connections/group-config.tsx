@@ -1531,7 +1531,7 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
   );
 }
 
-export function QqGroupConfigPage() {
+export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const state = useSuperstringStore();
   const editor = state.qqGroupConfigEditor;
@@ -1546,7 +1546,10 @@ export function QqGroupConfigPage() {
     () => state.apiClient.getAgentKnowledgeRead(knowledgeAgentId),
     [state.apiClient, knowledgeAgentId],
   );
-  const knowledgeRead = useLiveResource(readKnowledgeRead, { enabled: knowledgeAgentId !== "" });
+  const knowledgeRead = useLiveResource(readKnowledgeRead, {
+    enabled: knowledgeAgentId !== "",
+    paused: !active,
+  });
   const [tab, setTab] = useState("participation");
   const [onlyCustom, setOnlyCustom] = useState(false);
   const [preview, setPreview] = useState(false);
