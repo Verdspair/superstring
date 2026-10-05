@@ -60,6 +60,7 @@ import { type ChatV2Event, ChatV2EventSchema } from "../shared/contracts/chat-v2
 import {
   ConversationEventsSchema,
   ConversationListSchema,
+  ConversationSummarySchema,
   DeliverySchema,
 } from "../shared/contracts/conversation";
 import {
@@ -265,6 +266,21 @@ export const api = {
       { signal, cache: "no-store" },
     );
   },
+  getConversation: (id: string, signal?: AbortSignal) =>
+    requestJson(`/v2/conversations/${encodeURIComponent(id)}`, ConversationSummarySchema, {
+      signal,
+      cache: "no-store",
+    }),
+  renameConversationGroup: (id: string, name: string | null) =>
+    requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/name`,
+      ConversationSummarySchema,
+      json("PATCH", { name }),
+    ),
+  subscribeConversationChanges: (
+    onEvent: (event: ConversationChangeEvent) => void,
+    signal?: AbortSignal,
+  ) => subscribeConversationChanges(onEvent, signal),
   getConversationRuntimeStatus: (id: string, signal?: AbortSignal) =>
     requestJson(
       `/v2/conversations/${encodeURIComponent(id)}/status`,
@@ -900,6 +916,76 @@ export async function streamChatV2(
   const decoder = new TextDecoder();
   const parser = createParser({
     onEvent: (frame) => onEvent(ChatV2EventSchema.parse(JSON.parse(frame.data))),
+  });
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      const text = decoder.decode(value, { stream: !done });
+      if (text) parser.feed(text);
+      if (done) break;
+    }
+    parser.reset({ consume: true });
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+export const ConversationChangeEventSchema = z.discriminatedUnion("event", [
+  z.strictObject({
+    event: z.literal("ready"),
+    ready: z.boolean().optional(),
+    conversationId: z.string().nullable().optional(),
+  }),
+  z.strictObject({
+    event: z.literal("conversation_changed"),
+    conversationId: z.string(),
+    seq: z.number().int().nonnegative(),
+    bindingEpoch: z.number().int().positive(),
+  }),
+]);
+
+export type ConversationChangeEvent = z.infer<typeof ConversationChangeEventSchema>;
+
+export async function subscribeConversationChanges(
+  onEvent: (event: ConversationChangeEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch("/v2/conversations/changes", {
+    headers: { accept: "text/event-stream" },
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) throw await responseError(response);
+  if (!response.body)
+    throw new ApiError(502, "STREAM_INTERRUPTED", msg("连接中断，正在核对服务端结果…"));
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = createParser({
+    onEvent: (frame) => {
+      if (frame.event === "ready") {
+        let readyData = {};
+        try {
+          readyData = JSON.parse(frame.data);
+        } catch {
+          // ignore malformed data on ready frame
+        }
+        onEvent(
+          ConversationChangeEventSchema.parse({
+            event: "ready",
+            ...readyData,
+          }),
+        );
+      } else if (frame.event === "conversation_changed") {
+        const data = JSON.parse(frame.data);
+        onEvent(
+          ConversationChangeEventSchema.parse({
+            event: "conversation_changed",
+            ...data,
+          }),
+        );
+      }
+    },
   });
   try {
     for (;;) {

@@ -110,6 +110,7 @@ namespace Superstring.Setup
         "app/resources/migrations/versions/0039_agent_runs.sql", "app/resources/migrations/versions/0040_conversation_wakes.sql", "app/resources/migrations/versions/0041_outbound_intents.sql", "app/resources/migrations/versions/0042_runtime_observability.sql", "app/resources/migrations/versions/0043_protected_model_results.sql", "app/resources/migrations/versions/0044_conversation_avatars.sql", "app/resources/migrations/versions/0045_qq_conversation_summaries.sql", "app/resources/migrations/versions/0046_qq_context_compression.sql", "app/resources/migrations/versions/0047_qq_context_limit_caps.sql", "app/resources/migrations/versions/0048_agent_tasks.sql", "app/resources/migrations/versions/0049_qq_output_reserve_caps.sql", "app/resources/migrations/versions/0050_qq_retention_days.sql",
         "app/resources/migrations/versions/0051_qq_group_agent_config.sql",
         "app/resources/migrations/versions/0052_qq_message_multimodal.sql",
+        "app/resources/migrations/versions/0053_qq_group_names.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

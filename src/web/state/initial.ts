@@ -10,6 +10,7 @@ import type {
   PersonaResponse,
   PolicyView,
 } from "../../shared/contracts";
+import type { ModelProviderResponse } from "../../shared/contracts/models";
 import type { SystemComponentTarget } from "../../shared/contracts/tool-directory";
 import type { BrowserStateStorage } from "../browser-state";
 import { permissionInitial } from "../features/access/permission-state";
@@ -91,6 +92,7 @@ export const initial = {
   qqMemoryBatchDrafts: {} as Record<string, { value: string; revision: number }>,
   qqMemoryBatchSaving: false,
   modelNames: [] as string[],
+  modelProviders: [] as ModelProviderResponse[],
   loadedModelNames: [] as string[],
   externalModelNames: [] as string[],
   modelStatus: "模型列表将在打开配置时加载。",

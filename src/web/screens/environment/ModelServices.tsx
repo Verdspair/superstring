@@ -40,9 +40,11 @@ import { ModelDefaults } from "./model-defaults";
 
 export function ModelServices() {
   const { t } = useTranslation();
-  const { apiClient, refreshModels, modelStatus, loadedModelNames, settingsRoute } =
+  const { apiClient, refreshModels, modelStatus, loadedModelNames, modelProviders, settingsRoute } =
     useSuperstringStore();
-  const [providers, setProviders] = useState<ModelProviderResponse[]>([]);
+  // Bootstrap already fetched the registered providers: first paint reuses that snapshot,
+  // then the authoritative read below corrects it (no second cache, no sync machinery).
+  const [providers, setProviders] = useState<ModelProviderResponse[]>(modelProviders);
   const [health, setHealth] = useState<
     Record<string, { ok: boolean; count: number; error: string | null }>
   >({});
@@ -77,7 +79,9 @@ export function ModelServices() {
     return () => task.cancel();
   }, [apiClient, refreshModels, revision]);
   // Provider editing must remain available even while a remote health check is slow.
+  // Probing waits for the authoritative read: never probe the stale bootstrap snapshot twice.
   useEffect(() => {
+    if (loading) return;
     setHealth({});
     setTesting(false);
     const tasks = providers.map((provider) =>
@@ -103,7 +107,7 @@ export function ModelServices() {
       recheck.current?.cancel();
       recheck.current = null;
     };
-  }, [apiClient, providers]);
+  }, [apiClient, providers, loading]);
   const parsed = editor ? providerPayload(editor) : null;
   const dirty =
     editor !== null &&

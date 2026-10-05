@@ -60,6 +60,7 @@ export function KnowledgeLibrary() {
       knowledgeEditor: state.knowledgeEditor,
       knowledgeFilters: state.knowledgeFilters,
       knowledgeLoading: state.knowledgeLoading,
+      knowledgeLoaded: state.knowledgeLoaded,
       knowledgeModelEditor: state.knowledgeModelEditor,
       knowledgeNextCursor: state.knowledgeNextCursor,
       knowledgeSettings: state.knowledgeSettings,
@@ -82,7 +83,8 @@ export function KnowledgeLibrary() {
     } | null>(null),
     [moveTo, setMoveTo] = useState("default");
   useEffect(() => {
-    void s.loadKnowledge();
+    // 挂载只发一次稳定读取：预热在途则接管那一次读取，预热已就绪则静默做一次权威刷新。
+    void s.loadKnowledge(undefined, { quiet: true });
   }, [s.loadKnowledge]);
   // 列表由服务端分页过滤；docs 就是当前页，不在客户端二次筛选。
   const docs = s.knowledgeDocuments,

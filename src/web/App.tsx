@@ -4,44 +4,21 @@ import { BrandLogo } from "./design-system/BrandLogo";
 import { DesignSystemProvider } from "./design-system/Providers";
 import { settingsHaveDrafts } from "./features/qq/draft-state";
 import { useLocale } from "./i18n";
+import { startConversationChanges } from "./services/conversation-changes";
+import { startChunkPreload } from "./state/preload-orchestrator";
+import { WORKSPACE_LOADERS } from "./state/preload-registry";
 import { useSuperstringStore } from "./store";
 import { activeSpace, type SpaceId } from "./workspace/navigation";
 import { WorkspaceShell } from "./workspace/WorkspaceShell";
 
-const ConversationWorkspace = lazy(() =>
-  import("./screens/conversations/ConversationWorkspace").then((m) => ({
-    default: m.ConversationWorkspace,
-  })),
-);
-const AssistantWorkspace = lazy(() =>
-  import("./screens/assistants/AssistantWorkspace").then((m) => ({
-    default: m.AssistantWorkspace,
-  })),
-);
-const LibraryWorkspace = lazy(() =>
-  import("./screens/library/LibraryWorkspace").then((m) => ({ default: m.LibraryWorkspace })),
-);
-const ConnectionWorkspace = lazy(() =>
-  import("./screens/connections/ConnectionWorkspace").then((m) => ({
-    default: m.ConnectionWorkspace,
-  })),
-);
-const CapabilitiesWorkspace = lazy(() =>
-  import("./screens/connections/CapabilitiesWorkspace").then((m) => ({
-    default: m.CapabilitiesWorkspace,
-  })),
-);
-const SchemesWorkspace = lazy(() =>
-  import("./screens/connections/SchemesWorkspace").then((m) => ({
-    default: m.SchemesWorkspace,
-  })),
-);
-const ModelServices = lazy(() =>
-  import("./screens/environment/ModelServices").then((m) => ({ default: m.ModelServices })),
-);
-const Preferences = lazy(() =>
-  import("./screens/environment/Preferences").then((m) => ({ default: m.Preferences })),
-);
+const ConversationWorkspace = lazy(WORKSPACE_LOADERS.conversations);
+const AssistantWorkspace = lazy(WORKSPACE_LOADERS.assistants);
+const LibraryWorkspace = lazy(WORKSPACE_LOADERS.library);
+const ConnectionWorkspace = lazy(WORKSPACE_LOADERS.connections);
+const CapabilitiesWorkspace = lazy(WORKSPACE_LOADERS.capabilities);
+const SchemesWorkspace = lazy(WORKSPACE_LOADERS.schemes);
+const ModelServices = lazy(WORKSPACE_LOADERS.models);
+const Preferences = lazy(WORKSPACE_LOADERS.preferences);
 
 function Waiting({ bootstrap = false }: { bootstrap?: boolean }) {
   const { t } = useTranslation();
@@ -80,6 +57,23 @@ function Application() {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (status !== "ready") return;
+    const current = activeSpace(useSuperstringStore.getState());
+    const handle = startChunkPreload({ currentSpace: current });
+    return () => {
+      handle.cancel();
+    };
+  }, [status]);
+
+  useEffect(() => {
+    if (status !== "ready") return;
+    const cleanup = startConversationChanges(useSuperstringStore.getState().apiClient);
+    return () => {
+      cleanup();
+    };
+  }, [status]);
 
   useEffect(() => {
     setVisitedSpaces((prev) => {

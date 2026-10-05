@@ -665,7 +665,7 @@ describe("0051 迁移：老开关列搬进记录且仍是布尔形态", () => {
         PRAGMA user_version=50;
       `);
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 53 });
 
       const orm = toOrmHandle(db).orm;
       const row = readQqGroupConfigRow(orm, "grp-1", "agent-1");

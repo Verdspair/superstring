@@ -1,17 +1,25 @@
 import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
 import type { ConversationEvent, ConversationSummary } from "../../shared/contracts/conversation";
-import { ConversationChannelSchema } from "../../shared/contracts/conversation";
+import {
+  ConversationChannelSchema,
+  ConversationGroupNamePatchSchema,
+} from "../../shared/contracts/conversation";
 import type { QqConversationScope, QqMessageFact } from "../../shared/contracts/qq-message";
 import { visibleConversation } from "../agent/conversation-access";
 import {
   loadQqOutboundMessageFact,
   projectQqMessageFacts,
 } from "../channels/onebot11/message-projection";
+import {
+  publishConversationChange,
+  subscribeConversationChanges,
+} from "../conversation/conversation-changes";
 import { projectConversationEvent } from "../conversation/conversation-view";
 import { toOrmHandle } from "../db/connection";
 import { ConversationAvatarRepository } from "../db/conversation-avatar-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
+import { saveQqCustomName } from "../db/qq-group-name-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
 import { ownerScope } from "../services/qq-media-sources";
@@ -22,6 +30,7 @@ import {
 } from "../services/qq-member-sources";
 import { qqOutboundFactSourceAccess } from "../services/qq-outbound-fact-sources";
 import { conversationAvatarRoutes } from "./conversation-avatars";
+import { createSseResponse, type SseWriter } from "./sse";
 import { parseUuidParam, validationFailed } from "./validation";
 
 const principal = { userId: DEFAULT_USER_ID };
@@ -104,6 +113,41 @@ export function conversationRoutes(
       }),
     });
   });
+  // Metadata-only change stream for directory + timeline. Registered before /:id
+  // so "changes" is never captured as a conversation id; each notification still
+  // passes the ordinary visibleConversation projection guard.
+  router.get("/changes", (c) => {
+    let writer: SseWriter | undefined;
+    let finish: () => void = () => {};
+    const disconnected = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const unsubscribe = subscribeConversationChanges(db, (change) => {
+      if (
+        visibleConversation(db, repository, change.conversationId, principal, options.includeShared)
+      )
+        writer?.send("conversation_changed", {
+          conversationId: change.conversationId,
+          seq: change.seq,
+          bindingEpoch: change.bindingEpoch,
+        });
+    });
+    return createSseResponse(
+      {
+        requestSignal: c.req.raw.signal,
+        onDisconnect: () => {
+          unsubscribe();
+          finish();
+        },
+      },
+      async (stream) => {
+        writer = stream;
+        // First connect and every reconnect: clients run one authoritative refresh.
+        stream.send("ready", { ready: true });
+        await disconnected;
+      },
+    );
+  });
   router.get("/:id", (c) => {
     const conversation = visibleConversation(
       db,
@@ -114,6 +158,27 @@ export function conversationRoutes(
     );
     return conversation
       ? c.json({ ...conversation, avatar: avatars.metadata(conversation.id) })
+      : c.json(conversationNotFound, 404);
+  });
+  // 0053 QQ 群显示备注：null / trim 空串恢复群默认名；只对 QQ 群开放，Web 会话沿用
+  // 既有改名入口，私聊一律 404（不新增错误码）。
+  router.patch("/:id/name", async (c) => {
+    const id = parseUuidParam(c.req.param("id"));
+    const conversation = visibleConversation(db, repository, id, principal, options.includeShared);
+    if (!conversation || conversation.channel !== "onebot11" || conversation.topology !== "shared")
+      return c.json(conversationNotFound, 404);
+    const parsed = ConversationGroupNamePatchSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationFailed();
+    const binding = db
+      .query("SELECT account_id, peer_id FROM qq_bindings WHERE id=?")
+      .get(conversation.sourceId) as { account_id: string; peer_id: string } | null;
+    if (!binding) return c.json(conversationNotFound, 404);
+    const name = parsed.data.name?.trim() ?? "";
+    saveQqCustomName(db, binding.account_id, binding.peer_id, name === "" ? null : name);
+    publishConversationChange(db, repository.historyRows(id).at(-1)!.id);
+    const updated = visibleConversation(db, repository, id, principal, options.includeShared);
+    return updated
+      ? c.json({ ...updated, avatar: avatars.metadata(updated.id) })
       : c.json(conversationNotFound, 404);
   });
   router.get("/:id/status", (c) => {

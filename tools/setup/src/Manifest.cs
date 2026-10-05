@@ -15,7 +15,7 @@ namespace Superstring.Setup
     {
         internal const int SupportedManifestVersion = 1;
         internal const int SupportedLayoutVersion = 1;
-        internal const int SupportedSchemaVersion = 52;
+        internal const int SupportedSchemaVersion = 53;
         internal const string Product = "superstring";
         internal const string Platform = "win32-x64";
 
@@ -180,6 +180,8 @@ namespace Superstring.Setup
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0051_qq_group_agent_config.sql");
             if (manifest.SchemaVersion >= 52 && !seen.Contains("app/resources/migrations/versions/0052_qq_message_multimodal.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0052_qq_message_multimodal.sql");
+            if (manifest.SchemaVersion >= 53 && !seen.Contains("app/resources/migrations/versions/0053_qq_group_names.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0053_qq_group_names.sql");
             if (manifest.SchemaVersion >= 41 && !seen.Contains("app/resources/migrations/versions/0041_outbound_intents.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0041_outbound_intents.sql");
             var launcher = root.ContainsKey("launcher") ? root["launcher"] as Dictionary<string, object> : null;

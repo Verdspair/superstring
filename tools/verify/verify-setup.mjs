@@ -348,6 +348,9 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0052_qq_message_multimodal.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0053_qq_group_names.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

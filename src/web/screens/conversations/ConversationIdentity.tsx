@@ -50,6 +50,11 @@ export function ConversationIdentity({
               : t("workspace.web_direct")}
           </Badge>
           {agentName && <span>{agentName}</span>}
+          {conversation?.qqGroup && (
+            <span className="font-mono" title={t("workspace.group_number")}>
+              {conversation.qqGroup.number}
+            </span>
+          )}
           {mode && (
             <span>
               {mode === "chat"
@@ -89,6 +94,9 @@ export function ConversationIdentity({
                 <dl className="space-y-4">
                   {[
                     ["workspace.conversation_id", conversation.id],
+                    ...(conversation.qqGroup
+                      ? [["workspace.group_number", conversation.qqGroup.number]]
+                      : []),
                     ["workspace.source_binding", conversation.sourceId],
                     ["workspace.assistant", conversation.agentId],
                     ["workspace.source_revision", conversation.bindingEpoch],

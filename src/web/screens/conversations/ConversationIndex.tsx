@@ -52,6 +52,32 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
   const [avatarId, setAvatarId] = useState<string | null>(null);
   const management = useDirectoryManagement();
   const header = useRef<HTMLHeadingElement>(null);
+  const [groupRenaming, setGroupRenaming] = useState(false);
+  const [groupNotice, setGroupNotice] = useState("");
+  const groupEditing =
+    management.editing?.channel === "onebot11" &&
+    management.editing.topology === "shared" &&
+    management.editing.qqGroup
+      ? management.editing
+      : null;
+  const busy = management.busy || groupRenaming;
+  const saveGroupName = async () => {
+    const editing = groupEditing;
+    if (!editing) return;
+    setGroupRenaming(true);
+    setGroupNotice("");
+    try {
+      const summary = await useSuperstringStore
+        .getState()
+        .apiClient.renameConversationGroup(editing.id, management.name.trim() || null);
+      useSuperstringStore.getState().rememberConversation(summary);
+      management.cancel();
+    } catch (e) {
+      setGroupNotice(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGroupRenaming(false);
+    }
+  };
   const deleteBusy = useSuperstringStore((s) =>
     sessionBusy(s, management.deleting?.sourceId ?? ""),
   );
@@ -166,7 +192,10 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             agentName={agents.find((agent) => agent.id === item.agentId)?.name}
             disabled={management.busy}
             onSelect={() => void choose(item.id)}
-            onRename={() => management.rename(item)}
+            onRename={() => {
+              setGroupNotice("");
+              management.rename(item);
+            }}
             onRefresh={() => void management.refresh(item)}
             onDelete={() => management.remove(item)}
             onAvatar={() => setAvatarId(item.id)}
@@ -213,44 +242,54 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
           if (!open) management.cancel();
         }}
       >
-        <DialogContent showCloseButton={!management.busy}>
+        <DialogContent showCloseButton={!busy}>
           <DialogTitle>{t("workspace.rename_conversation")}</DialogTitle>
-          <DialogDescription>{t("workspace.use_a_name_of_1_200_characters")}</DialogDescription>
+          <DialogDescription>
+            {groupEditing
+              ? t("workspace.qq_group_rename_hint")
+              : t("workspace.use_a_name_of_1_200_characters")}
+          </DialogDescription>
           <Input
             aria-label={t("workspace.conversation_name")}
             value={management.name}
+            placeholder={
+              groupEditing ? (groupEditing.qqGroup?.originalName ?? groupEditing.title) : undefined
+            }
             onChange={(e) => management.setName(e.target.value)}
-            disabled={management.busy}
+            disabled={busy}
             onKeyDown={(e) => {
+              const trimmed = management.name.trim();
               if (
                 e.key === "Enter" &&
                 !e.nativeEvent.isComposing &&
-                management.name.trim() &&
-                [...management.name.trim()].length <= 200
+                (groupEditing
+                  ? [...trimmed].length <= 100
+                  : !!trimmed && [...trimmed].length <= 200)
               ) {
                 e.preventDefault();
-                void management.save();
+                void (groupEditing ? saveGroupName() : management.save());
               }
             }}
           />
-          {management.notice && (
+          {(groupEditing ? groupNotice : management.notice) && (
             <p role="alert" className="text-sm text-destructive">
-              {translateNotice(management.notice)}
+              {translateNotice(groupEditing ? groupNotice : management.notice)}
             </p>
           )}
           <DialogFooter>
-            <Button variant="outline" disabled={management.busy} onClick={management.cancel}>
+            <Button variant="outline" disabled={busy} onClick={management.cancel}>
               {t("workspace.cancel")}
             </Button>
             <Button
               disabled={
-                management.busy ||
-                !management.name.trim() ||
-                [...management.name.trim()].length > 200
+                busy ||
+                (groupEditing
+                  ? [...management.name.trim()].length > 100
+                  : !management.name.trim() || [...management.name.trim()].length > 200)
               }
-              onClick={() => void management.save()}
+              onClick={() => void (groupEditing ? saveGroupName() : management.save())}
             >
-              {management.busy ? t("workspace.saving") : t("workspace.save")}
+              {busy ? t("workspace.saving") : t("workspace.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -357,7 +396,9 @@ function IndexRecord({
                 run: onDelete,
               },
             ]
-          : []),
+          : item.channel === "onebot11" && item.topology === "shared" && item.qqGroup
+            ? [{ label: t("workspace.rename"), icon: Edit3, run: onRename }]
+            : []),
       ]}
     >
       {(trigger) => (
@@ -397,6 +438,11 @@ function IndexRecord({
                 </Badge>
                 <Bot className="size-3 shrink-0" />
                 <span className="truncate">{agentName ?? "Agent"}</span>
+                {item.qqGroup && (
+                  <span className="font-mono" title={t("workspace.group_number")}>
+                    {item.qqGroup.number}
+                  </span>
+                )}
               </div>
               <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
                 <time dateTime={item.updatedAt}>

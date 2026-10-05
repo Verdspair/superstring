@@ -1,7 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { SkillCatalogResponse, SkillDetailResponse } from "../../../shared/contracts/skill";
+import type { SkillDetailResponse } from "../../../shared/contracts/skill";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
+import { useSkillsResource } from "../../services/connection-resources";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
@@ -27,31 +28,11 @@ export function SkillsPanel() {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const target = useSuperstringStore((s) => s.componentTarget);
-  const [catalog, setCatalog] = useState<SkillCatalogResponse | null>(null);
+  const { data: catalog, loading, error: readError, refresh } = useSkillsResource(apiClient);
   const [detail, setDetail] = useState<SkillDetailResponse | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const pending = useRef<ReadTask | null>(null);
   const pendingDetail = useRef<ReadTask | null>(null);
-  const load = useCallback(() => {
-    pending.current?.cancel();
-    setLoading(true);
-    pending.current = startRead((signal) => apiClient.getSkills(signal), {
-      success: (value) => {
-        setCatalog(value);
-        setError("");
-      },
-      failure: (caught) => setError(errorText(caught)),
-      settled: () => setLoading(false),
-    });
-  }, [apiClient]);
-  useEffect(() => {
-    load();
-    return () => {
-      pending.current?.cancel();
-      pendingDetail.current?.cancel();
-    };
-  }, [load]);
+  useEffect(() => () => pendingDetail.current?.cancel(), []);
   const open = useCallback(
     (name: string) => {
       pendingDetail.current?.cancel();
@@ -76,14 +57,14 @@ export function SkillsPanel() {
             {t("connections.skills.description")}
           </p>
         </div>
-        <Button variant="outline" disabled={loading} onClick={load}>
+        <Button variant="outline" disabled={loading} onClick={refresh}>
           <RefreshCw />
           {t("connections.common.refresh")}
         </Button>
       </div>
-      {error && (
+      {(readError || error) && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          {readError || error}
         </p>
       )}
       <div className="overflow-hidden rounded-lg border">

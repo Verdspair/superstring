@@ -49,7 +49,13 @@ function goAppRoute(route: SettingsRoute | undefined) {
 }
 
 /** 应用目录复用同一份目录组件，只把应用过滤固定在目标应用上。 */
-export function SchemeDirectory({ appId }: { appId?: string } = {}) {
+export function SchemeDirectory({
+  appId,
+  active = true,
+}: {
+  appId?: string;
+  active?: boolean;
+} = {}) {
   const { t, i18n } = useTranslation();
   const s = useSuperstringStore();
   const [query, setQuery] = useState("");
@@ -58,15 +64,33 @@ export function SchemeDirectory({ appId }: { appId?: string } = {}) {
   const [naming, setNaming] = useState(false);
   const [draftStep, setDraftStep] = useState(false);
   const [newName, setNewName] = useQqInput("schemeNewName");
-  const { loadQqSchemes, loadQqBindings } = s;
-  useEffect(() => {
-    void loadQqSchemes();
-    void loadQqBindings();
-  }, [loadQqSchemes, loadQqBindings]);
+  const { loadQqSchemes, loadQqBindings, selectQqScheme } = s;
   const busy = s.qqSchemeSaving || s.qqSchemesLoading;
   const invalidDraft =
     Object.keys(s.qqInputs.schemeInvalid).length > 0 || invalidSchemeInputs(s).length > 0;
   const dirtyDraft = qqSchemeDirty(s.qqSchemeEditor) || invalidDraft;
+
+  useEffect(() => {
+    void loadQqSchemes();
+    void loadQqBindings();
+  }, [loadQqSchemes, loadQqBindings]);
+
+  useEffect(() => {
+    if (!active) return;
+    if (dirtyDraft) return;
+    const isLibrary = s.settingsRoute === "scheme-library" || !s.settingsRoute;
+    if (isLibrary && !s.qqSchemeEditor && s.qqSchemesLoaded && s.qqSchemes.length > 0) {
+      selectQqScheme(s.qqSchemes[0].id);
+    }
+  }, [
+    active,
+    dirtyDraft,
+    s.settingsRoute,
+    s.qqSchemeEditor,
+    s.qqSchemesLoaded,
+    s.qqSchemes,
+    selectQqScheme,
+  ]);
   const openNaming = () => {
     setDraftStep(false);
     setNaming(true);
@@ -503,5 +527,5 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
       />
     );
   const app = route === "scheme-library" ? null : schemeAppByRoute(route);
-  return app ? <SchemeDetail app={app} /> : <SchemeDirectory />;
+  return app ? <SchemeDetail app={app} /> : <SchemeDirectory active={active} />;
 }

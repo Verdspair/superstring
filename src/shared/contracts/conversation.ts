@@ -19,6 +19,24 @@ export const ConversationAddressingSchema = z.strictObject({
     .strictObject({ sourceId: z.string(), participantId: z.string().optional() })
     .optional(),
 });
+/**
+ * QQ 群显示名（0053）：`number` 是恒在的群号；`originalName` 是 OneBot 报回的群本名
+ * （尚未取到为 null）；`customName` 是用户的显示备注。展示优先级由投影折进 `title`，
+ * 前端不自行取群名。
+ */
+export const ConversationQqGroupSchema = z.strictObject({
+  number: z.string().regex(/^\d+$/),
+  originalName: z.string().nullable(),
+  customName: z.string().nullable(),
+});
+export type ConversationQqGroup = z.infer<typeof ConversationQqGroupSchema>;
+
+/** 群备注保存请求：null / trim 后空串 = 清除备注恢复默认；非空 trim 长度 <= 100。 */
+export const ConversationGroupNamePatchSchema = z.strictObject({
+  name: z.string().max(100).nullable(),
+});
+export type ConversationGroupNamePatch = z.infer<typeof ConversationGroupNamePatchSchema>;
+
 export const ConversationSummarySchema = z.strictObject({
   id: z.string(),
   channel: ConversationChannelSchema,
@@ -27,6 +45,8 @@ export const ConversationSummarySchema = z.strictObject({
   agentId: z.string(),
   bindingEpoch: z.number().int().positive(),
   title: z.string(),
+  /** 仅 QQ 群（shared）会话携带；缺失即 Web / 私聊。 */
+  qqGroup: ConversationQqGroupSchema.optional(),
   avatar: ConversationAvatarSchema.optional(),
   participants: z.array(ConversationParticipantSchema),
   updatedAt: z.string(),

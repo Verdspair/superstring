@@ -3,6 +3,7 @@ import {
   executionPolicy,
   type PermissionsResponse,
 } from "../../../shared/contracts/permissions";
+import type { SuperstringApi } from "../../api";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
 import {
@@ -35,6 +36,11 @@ export interface PermissionEditor {
   baseline: ExecutionDraft;
   grants: Record<string, GrantDraft>;
 }
+export interface PermissionReadOptions {
+  refresh?: boolean;
+  background?: boolean;
+}
+
 export interface PermissionSettingsState {
   permissionEditor: PermissionEditor | null;
   permissionLoading: boolean;
@@ -43,7 +49,7 @@ export interface PermissionSettingsState {
   permissionErrorScope: PermissionErrorScope;
   permissionNotice: string;
   permissionProblem: ExecutionDraftKey | null;
-  loadPermissionSettings: (refresh?: boolean) => Promise<void>;
+  loadPermissionSettings: (options?: boolean | PermissionReadOptions) => Promise<void>;
   patchExecutionSettings: (patch: Partial<ExecutionDraft>) => void;
   patchToolGrant: (resource: string, patch: Partial<GrantDraft>) => void;
   savePermissionSettings: (scope?: PermissionScope) => Promise<boolean>;
@@ -243,36 +249,68 @@ function preserveUnselectedDrafts(
 export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
   let sequence = 0;
   let read: AbortController | null = null;
+  let permissionInFlight: { promise: Promise<void>; token: number; api: SuperstringApi } | null =
+    null;
   return {
-    loadPermissionSettings: async (refresh = false) => {
-      if (
-        get().permissionSaving ||
-        (!refresh && (get().permissionEditor || get().permissionLoading))
-      )
-        return;
-      read?.abort();
+    loadPermissionSettings: async (options: boolean | PermissionReadOptions = false) => {
+      const refresh = typeof options === "boolean" ? options : !!options.refresh;
+      const background = typeof options === "object" ? !!options.background : false;
+      const api = get().apiClient;
+
+      if (get().permissionSaving) return;
+      if (!refresh && permissionInFlight && permissionInFlight.api === api) {
+        return permissionInFlight.promise;
+      }
+
+      const hasEditor = !!get().permissionEditor;
+      if (!refresh && hasEditor && background) return;
+
+      const isQuietRevalidate = !refresh && hasEditor;
+
+      if (!isQuietRevalidate) {
+        read?.abort();
+      }
       const controller = new AbortController();
       read = controller;
       const token = ++sequence;
-      const api = get().apiClient;
-      set({ permissionLoading: true });
-      try {
-        const snapshot = await api.getPermissions(controller.signal);
-        if (token !== sequence || get().apiClient !== api) return;
-        const next = editorOf(snapshot);
-        const current = get().permissionEditor;
-        set({
-          permissionEditor: current ? preserveUnselectedDrafts(next, current, NO_SELECTION) : next,
-          permissionError: "",
-          permissionErrorScope: "",
-          permissionNotice: "",
-        });
-      } catch (error) {
-        if (token === sequence && !controller.signal.aborted && get().apiClient === api)
-          set({ permissionError: errorText(error), permissionErrorScope: "" });
-      } finally {
-        if (token === sequence && get().apiClient === api) set({ permissionLoading: false });
+
+      if (!isQuietRevalidate) {
+        set({ permissionLoading: true });
       }
+
+      const execute = async () => {
+        try {
+          const snapshot = await api.getPermissions(controller.signal);
+          if (token !== sequence || get().apiClient !== api) return;
+          const next = editorOf(snapshot);
+          const current = get().permissionEditor;
+          set({
+            permissionEditor: current
+              ? preserveUnselectedDrafts(next, current, NO_SELECTION)
+              : next,
+            permissionError: "",
+            permissionErrorScope: "",
+            permissionNotice: "",
+          });
+        } catch (error) {
+          if (token === sequence && !controller.signal.aborted && get().apiClient === api) {
+            if (!background && !isQuietRevalidate) {
+              set({ permissionError: errorText(error), permissionErrorScope: "" });
+            }
+          }
+        } finally {
+          if (token === sequence) {
+            set({ permissionLoading: false });
+          }
+          if (permissionInFlight?.token === token) {
+            permissionInFlight = null;
+          }
+        }
+      };
+
+      const promise = execute();
+      permissionInFlight = { promise, token, api };
+      return promise;
     },
     patchExecutionSettings: (patch: Partial<ExecutionDraft>) => {
       const editor = get().permissionEditor;
@@ -333,6 +371,7 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
       }
       read?.abort();
       ++sequence;
+      permissionInFlight = null;
       const api = get().apiClient;
       set({
         permissionSaving: true,
@@ -374,6 +413,7 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
       if (!editor || get().permissionSaving) return;
       read?.abort();
       ++sequence;
+      permissionInFlight = null;
       set({ permissionLoading: false });
       const next = preserveUnselectedDrafts(editorOf(editor.snapshot), editor, scopeOf(scope));
       set({

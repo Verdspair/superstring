@@ -1,5 +1,5 @@
 import { ArrowLeft, Bot, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { ConfirmDialog } from "@/components/confirmation";
@@ -46,9 +46,13 @@ export function AssistantWorkspace() {
   const [studio, setStudio] = useState(s.settingsView === "workspace" && !!s.pageEditor);
   const [selection, setSelection] = useState<string[]>([]);
   const [deleteIds, setDeleteIds] = useState<string[] | null>(null);
+  // Bootstrap already resolved the model names; only a failed/empty bootstrap triggers one refresh.
+  const modelsRefreshed = useRef(false);
   useEffect(() => {
+    if (s.modelNames.length > 0 || modelsRefreshed.current) return;
+    modelsRefreshed.current = true;
     void s.refreshModels();
-  }, [s.refreshModels]);
+  }, [s.refreshModels, s.modelNames]);
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return s.agents;

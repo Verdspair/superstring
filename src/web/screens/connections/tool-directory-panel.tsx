@@ -1,5 +1,5 @@
 import { RefreshCw, Search } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ToolDirectoryEntry } from "../../../shared/contracts/tool-directory";
 import { Badge } from "../../components/ui/badge";
@@ -22,8 +22,7 @@ import {
   TableRow,
 } from "../../components/ui/table";
 import { grantDraftOf } from "../../features/access/permission-draft";
-import { type ReadTask, startRead } from "../../services/read-task";
-import { errorText } from "../../state/helpers";
+import { useToolDirectoryResource } from "../../services/connection-resources";
 import { useSuperstringStore } from "../../store";
 import { CAPABILITY_CATALOG } from "../../workspace/capability-catalog";
 import { ToolGrantsPanel } from "./tool-grants-panel";
@@ -36,31 +35,16 @@ export function ToolDirectoryPanel() {
   const loadPermissions = useSuperstringStore((s) => s.loadPermissionSettings);
   const target = useSuperstringStore((s) => s.componentTarget);
   const openRoute = useSuperstringStore((s) => s.openSettingsRoute);
-  const [tools, setTools] = useState<ToolDirectoryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error: readError, refresh } = useToolDirectoryResource(api);
+  const tools = data?.tools ?? [];
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [origin, setOrigin] = useState("all");
   const [detail, setDetail] = useState<ToolDirectoryEntry | null>(null);
   const [grantResource, setGrantResource] = useState<string | null>(null);
-  const read = useRef<ReadTask | null>(null);
-  const load = useCallback(() => {
-    read.current?.cancel();
-    setLoading(true);
-    read.current = startRead((signal) => api.getToolDirectory(signal), {
-      success: (response) => {
-        setTools(response.tools);
-        setError("");
-      },
-      failure: (caught) => setError(errorText(caught)),
-      settled: () => setLoading(false),
-    });
-  }, [api]);
   useEffect(() => {
-    load();
     void loadPermissions();
-    return () => read.current?.cancel();
-  }, [load, loadPermissions]);
+  }, [loadPermissions]);
   useEffect(() => {
     if (target?.kind !== "tool" || loading) return;
     const entry = tools.find((tool) => tool.name === target.id);
@@ -108,7 +92,7 @@ export function ToolDirectoryPanel() {
           variant="outline"
           disabled={loading || saving}
           onClick={() => {
-            load();
+            refresh();
             void loadPermissions(true);
           }}
         >
@@ -138,9 +122,9 @@ export function ToolDirectoryPanel() {
           <option value="mcp">{t("schemes.qq.groupConfig.capability.mcp")}</option>
         </NativeSelect>
       </div>
-      {error && (
+      {(readError || error) && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          {readError || error}
         </p>
       )}
       <div className="overflow-hidden rounded-lg border">

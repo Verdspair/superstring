@@ -244,6 +244,7 @@ export function createBootstrapActions(
               .map((item) => [item.sourceId, item.id]),
           ),
           modelNames: reported,
+          modelProviders: providers,
           loadedModelNames: local,
           externalModelNames: external,
           modelStatus:

@@ -28,11 +28,15 @@ Connect a separately running OneBot 11 WebSocket service, such as NapCat, then b
 
 ![Connected QQ conversations and their bindings](docs/screenshots/connections.png)
 
+New messages appear in a bound conversation as they arrive. The workspace listens for a metadata-only notification and refreshes the visible list and the open conversation from the application itself, so an arriving QQ message shows up without a manual refresh while already loaded content and your scroll position stay where they are. Message text is never broadcast; only the fact that something arrived is.
+
 - Control direct responses, follow-up conversation, spontaneous participation and idle-topic initiation independently. A direct response triggers the Agent without an interest-score requirement; the Agent may still choose silence.
 - Set the initiative threshold, quiet periods, cooldown, active hours and reply grouping. The application controls recipients and mentions; a model cannot invent a destination.
 - Edit the scheme's scene, judgement, reply, review, sticker, media and compression prompts. Shared schemes can serve several bindings without sharing their conversation histories.
 - Configure separate judgement and reply windows. Older messages outside the reply window accumulate before compression into bounded context packages; judgement does not consume those packages.
+- A QQ wake-up is no longer refused as over budget when the material it actually assembles fits: the available reference material is now measured against the messages that survived selection, instead of the wider set before it. A conversation that genuinely does not fit is still rejected with the same clear reason.
 - Pause a binding while continuing to observe incoming messages. Inspect why an attempt stayed silent, failed or did not reach confirmed delivery.
+- Give a bound group a display name of your own. A custom name is shown when set, otherwise the group's own QQ name, and otherwise the group number. The group number stays visible on the conversation card, in the conversation header and in its details, so a renamed group is still identifiable.
 
 Each bound group can also be enabled or disabled from its conversation card and from the open group conversation. A disabled group keeps receiving and storing messages, but the Agent stays silent and starts no new model work; summaries and memory organisation already running finish under the existing pause boundary. The controls show why a group cannot speak, such as the global QQ switch being off, a disconnected transport or a disabled Agent.
 
@@ -59,7 +63,9 @@ Voice transcription, full-video understanding, image generation and arbitrary ex
 
 ### Workspace and diagnostics
 
-The navigation is organized as **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library** and **Extensions**, with **Model services** and **Preferences** as separate entrances. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
+The navigation is organized as **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library** and **Extensions**, with **Model services** and **Preferences** as separate entrances.
+
+The application warms the data behind its main spaces while it starts, so opening Agents, the knowledge library, memories, Model services or Extensions usually shows content straight away instead of an empty first load. A space you leave open for a moment updates quietly in the background rather than blocking you, and any draft you are editing is kept as you typed it. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
 
 **Extensions** shows one Tools page listing every registered tool — the built-in system tools and any MCP tools — with its origin, read/write effect, global state and authorisation, and the Skills page lists both your installed skill documents and the guidance bundled with the application. Built-in components are shipped with the application and cannot be deleted or redefined; they grey out only when their global switch is off, never because one assistant lacks a grant. Tools that share a single authorisation resource edit that one grant. System capability pages keep their own functional settings and link to the concrete components they use.
 
@@ -137,11 +143,15 @@ Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号�
 
 ![已连接的 QQ 会话与绑定](docs/screenshots/connections.png)
 
+新消息到达已绑定的会话时会直接显示出来。工作区只接收不含正文的消息通知，再由程序自行更新可见列表和正在看的会话，因此 QQ 新消息无需手动刷新即可出现，已加载的内容与滚动位置保持不动。通知里不含消息正文，只包含「有消息到达」这一事实。
+
 - 独立控制直接回应、连续交谈、自主接话和冷场发起。直接回应不要求兴趣评分，但 Agent 仍可选择沉默。
 - 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。收件人和提及由程序确定，模型不能自行指定任意目标。
 - 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用方案，不会因此共享会话历史。
 - 分别配置判断和回复窗口。回复窗口外的旧消息达到水位后压成有限数量的上下文包；判断档不读取这些包。
+- QQ 唤醒时实际装配得下就不再被判为超预算：可用资料现在按筛选后真正保留的消息计算，而不是按筛选前的更大范围计算。确实装不下的会话仍会按同样明确的原因拒绝。
 - 暂停绑定后继续观察新消息，并在执行记录里查看本轮为何沉默、失败或尚未确认送达。
+- 可以给已绑定的群起一个自己的显示名。设了自定义名称就用它，否则用 QQ 原群名，都没有则显示群号。群号在会话卡片、会话顶部和详情里始终可见，改了名字也认得出是哪个群。
 
 每个已绑定群还可以在会话卡片和打开的群会话顶部启用或停用。停用后群消息照常接收保存，但 Agent 不发言、不新增模型任务；已在运行的摘要与记忆整理按既有暂停边界完成。控件会如实显示群不能发言的原因，例如 QQ 总开关关闭、连接未就绪或 Agent 已停用。
 
@@ -168,7 +178,9 @@ QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代�
 
 ### 工作区与诊断
 
-导航按**对话、Agent、系统能力、方案、资料、扩展**组织，另设**模型服务**与**偏好**入口。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
+导航按**对话、Agent、系统能力、方案、资料、扩展**组织，另设**模型服务**与**偏好**入口。
+
+启动过程中会顺便预热主要页面所需的数据，因此打开 Agent、知识库、记忆、模型服务或扩展时通常直接看到内容，而不是先空一下再加载。页面停留一会儿会在后台安静更新，不会打断你；正在编辑的草稿按你输入的样子保留。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
 
 **扩展**中的「工具」页统一列出全部已注册工具——内置系统工具与 MCP 工具——逐项标注来源、读写、全局状态与授权；「技能」页同时列出你安装的技能文档与随应用提供的使用指南。内置组件随应用提供，不能删除或修改定义；只有全局开关关闭时才会灰显，不会因为某个助手缺少授权而变灰。共用同一授权资源的工具只编辑那一份授权。系统能力页保留各自的功能配置，并提供到具体所用组件的跳转。
 

@@ -1863,6 +1863,8 @@
   "workspace.qq_event_reply_to": "Quoted message ID",
   "workspace.qq_event_snapshot_names": "Names at send time",
   "workspace.qq_wide_schemes_speech_and_rhythm_context_and_memory_media_and_expressio": "QQ-wide schemes: speech and rhythm, context and memory, media and expression, and the six editable prompts.",
+  "workspace.qq_group_rename_hint": "Leave blank to use QQ group name",
+  "workspace.group_number": "Group ID",
   "workspace.qq_wide_shared_stickers_import_describe_file_and_enable": "QQ-wide shared stickers: import, describe, file and enable.",
   "workspace.read_only_conversation_history": "Read-only conversation history",
   "workspace.reading": "Reading…",

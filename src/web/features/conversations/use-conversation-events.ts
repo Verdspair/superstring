@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConversationEventView } from "../../../shared/contracts/conversation";
+import { addConversationChangeListener } from "../../services/conversation-changes";
 import {
   loadQqEventsCache,
   removeQqEventsCache,
@@ -45,6 +46,8 @@ export function useConversationEvents(
   const notify = useRef(beforeChange);
   notify.current = beforeChange;
   const pending = useRef<AbortController | null>(null);
+  const pendingRevalidate = useRef(false);
+  const pendingBackgroundUpdate = useRef(false);
   const authoritativeSettled = useRef(false);
 
   // Scope change cleanup: 严格按 summary (id, agentId, bindingEpoch) 及 api 判定范围跃迁
@@ -63,6 +66,8 @@ export function useConversationEvents(
       first.current = 0;
       current.current = [];
       authoritativeSettled.current = false;
+      pendingRevalidate.current = false;
+      pendingBackgroundUpdate.current = false;
       setItems([]);
       setHasMore(false);
       setLoading(false);
@@ -174,6 +179,14 @@ export function useConversationEvents(
         if (pending.current === controller) {
           pending.current = null;
           setLoading(false);
+          if (pendingRevalidate.current) {
+            pendingRevalidate.current = false;
+            if (document.visibilityState !== "hidden") {
+              void load();
+            } else {
+              pendingBackgroundUpdate.current = true;
+            }
+          }
         }
       }
     },
@@ -223,8 +236,9 @@ export function useConversationEvents(
       if (document.visibilityState === "hidden") return;
       const wasForeground = foreground;
       foreground = true;
-      // 回到前台状态跃迁（false -> true）一律后台复验一次；同一轮回到前台若 visibilitychange 与 focus 先后到达，不重复触发
-      if (!wasForeground) {
+      // 回到前台状态跃迁（false -> true）或后台有待更新通知时，一律后台权威复验一次
+      if (!wasForeground || pendingBackgroundUpdate.current) {
+        pendingBackgroundUpdate.current = false;
         void load();
       }
     };
@@ -237,8 +251,13 @@ export function useConversationEvents(
       }
     };
 
-    // Initial load when enabled
-    void load();
+    // Initial load or background pending update catch-up when enabled
+    if (pendingBackgroundUpdate.current) {
+      pendingBackgroundUpdate.current = false;
+      void load();
+    } else {
+      void load();
+    }
     const timer = setInterval(refresh, refreshMs);
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
@@ -255,6 +274,29 @@ export function useConversationEvents(
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, load, refreshMs]);
+
+  useEffect(() => {
+    const unsubscribe = addConversationChangeListener((event) => {
+      const isTarget =
+        event.event === "ready" ||
+        (event.event === "conversation_changed" && event.conversationId === id);
+
+      if (!isTarget) return;
+
+      const isForeground = enabled && document.visibilityState !== "hidden";
+      if (isForeground) {
+        if (pending.current) {
+          pendingRevalidate.current = true;
+        } else {
+          void load();
+        }
+      } else {
+        pendingBackgroundUpdate.current = true;
+      }
+    });
+
+    return unsubscribe;
+  }, [id, enabled, load]);
 
   return {
     items,

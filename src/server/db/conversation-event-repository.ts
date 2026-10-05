@@ -6,6 +6,8 @@ import type {
   ConversationSummary,
 } from "../../shared/contracts/conversation";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import { publishConversationChange } from "../conversation/conversation-changes";
+import { readQqGroupName } from "./qq-group-name-repository";
 import { DEFAULT_USER_ID } from "./repositories";
 
 type ConversationRow = {
@@ -163,6 +165,7 @@ export class ConversationEventRepository {
               : 0,
           );
         row = this.row(id)!;
+        publishConversationChange(this.db, id);
         if (input.channel === "onebot11" && previous.n && this.historyRows(id).length === 1) {
           // Upgrade may have indexed B while legacy source tables still contain A.
           // At A's first real activation, import its retained references as an already
@@ -278,6 +281,7 @@ export class ConversationEventRepository {
     } | null;
     let title = "";
     let peerId = r.user_id;
+    let qqGroup: ConversationSummary["qqGroup"];
     if (r.channel === "web") {
       title =
         (
@@ -286,11 +290,26 @@ export class ConversationEventRepository {
           } | null
         )?.title ?? "";
     } else {
-      const b = this.db.query("SELECT peer_id FROM qq_bindings WHERE id=?").get(r.source_id) as {
-        peer_id: string;
-      } | null;
+      const b = this.db
+        .query("SELECT account_id, peer_id FROM qq_bindings WHERE id=?")
+        .get(r.source_id) as { account_id: string; peer_id: string } | null;
       peerId = b?.peer_id ?? r.source_id;
-      title = `${r.topology === "shared" ? "群聊" : "私聊"} ${peerId}`;
+      // 0053：群显示名 = 备注 ?? 群本名 ?? 既有"群聊 群号"回退；群号始终独立可见。
+      // 名字尚未取得也要能备注、能看群号：已绑定的群一律出块，未知字段为 null。
+      const group =
+        r.topology === "shared" && b ? readQqGroupName(this.db, b.account_id, b.peer_id) : null;
+      if (r.topology === "shared") {
+        title = group?.customName ?? group?.qqName ?? `群聊 ${peerId}`;
+        qqGroup = b
+          ? {
+              number: peerId,
+              originalName: group?.qqName ?? null,
+              customName: group?.customName ?? null,
+            }
+          : undefined;
+      } else {
+        title = `私聊 ${peerId}`;
+      }
     }
     return {
       id: r.id,
@@ -300,6 +319,7 @@ export class ConversationEventRepository {
       agentId: r.agent_id,
       bindingEpoch: r.binding_epoch,
       title,
+      ...(qqGroup ? { qqGroup } : {}),
       participants: [
         { id: r.agent_id, label: agent?.name ?? r.agent_id, role: "agent" },
         ...(r.topology === "direct" ? [{ id: peerId, label: peerId, role: "user" as const }] : []),
@@ -407,6 +427,7 @@ export class ConversationEventRepository {
           "UPDATE conversations SET next_seq=next_seq+1,updated_at=MAX(updated_at,?) WHERE id=?",
         )
         .run(at, row.id);
+      publishConversationChange(this.db, row.id);
       return {
         ...input,
         seq: row.next_seq,
@@ -591,7 +612,10 @@ export class ConversationEventRepository {
             "UPDATE conversation_events SET sources=? WHERE conversation_id=? AND event_key=? AND sources=? RETURNING *",
           )
           .get(sources, conversationId, eventKey, row.sources) as EventRow | null;
-        if (updated) return eventFromRow(updated);
+        if (updated) {
+          publishConversationChange(this.db, conversationId);
+          return eventFromRow(updated);
+        }
         const fresh = this.db
           .query("SELECT * FROM conversation_events WHERE conversation_id=? AND event_key=?")
           .get(conversationId, eventKey) as EventRow | null;

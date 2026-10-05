@@ -350,8 +350,15 @@ export type QqSchemeGroupKey =
  */
 export type QqSchemeGroupPatch = Record<string, number | boolean | string | null>;
 
+export interface QqSchemesReadOptions {
+  refresh?: boolean;
+  background?: boolean;
+  editor?: boolean;
+}
+
 export interface QqSchemeState {
   qqSchemes: QqSchemeResponse[];
+  qqSchemesLoaded: boolean;
   qqSchemesLoading: boolean;
   qqSchemeSaving: boolean;
   qqSchemesReadId: number;
@@ -364,7 +371,7 @@ export interface QqSchemeState {
   qqSchemeUsage: { readonly schemeId: string; readonly bindings: number } | null;
   /** 使用量读取失败的原因；显式刷新会重读使用量，界面据此给出可重试的说明。 */
   qqSchemeUsageError: string | null;
-  loadQqSchemes: () => Promise<void>;
+  loadQqSchemes: (options?: boolean | QqSchemesReadOptions) => Promise<boolean>;
   /** 显式刷新保存基线：重读目录并按字段合并草稿（含非法原值），推进未改字段与 revision，不自动重试保存。 */
   refreshQqScheme: () => Promise<boolean>;
   createQqScheme: (name: string) => Promise<boolean>;
@@ -480,6 +487,7 @@ export const qqStorageInitial = {
 
 export const qqSchemeInitial = {
   qqSchemes: [] as QqSchemeResponse[],
+  qqSchemesLoaded: false,
   qqSchemesLoading: false,
   qqSchemeSaving: false,
   qqSchemesReadId: 0,
@@ -493,6 +501,11 @@ export const qqSchemeInitial = {
 // 第三方App接入 (§11.1, P5q): the connection, the conversations the intake has actually seen, and
 // the bindings that tie a conversation to an assistant and a scheme. The switch lives here as a
 // quick field AND on 运行模式 as the master one — one value, two surfaces, both compare-and-swap.
+export interface QqBindingsReadOptions {
+  refresh?: boolean;
+  background?: boolean;
+}
+
 export interface QqAccessState {
   qqSettings: QqSettingsResponse | null;
   qqConnection: QqStatusResponse["connection"] | null;
@@ -519,7 +532,7 @@ export interface QqAccessState {
    * session; on failure it records `qqBindingsError` with `qqBindingsLoaded = false`, so counts
    * read as unknown rather than 0.
    */
-  loadQqBindings: (refresh?: boolean) => Promise<void>;
+  loadQqBindings: (options?: boolean | QqBindingsReadOptions) => Promise<void>;
   /**
    * 绑定目录最小读取：设置、会话、绑定与方案一次读齐，不读连接状态。绑定管理视图（方案详情的
    * 「使用会话」与全局会话绑定页）用这一条，而不是 loadQqAccess 的整页读取。保存进行中不开始

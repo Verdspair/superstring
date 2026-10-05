@@ -11,6 +11,7 @@ import type {
   PersonaResponse,
   PolicyView,
 } from "../../shared/contracts";
+import type { ModelProviderResponse } from "../../shared/contracts/models";
 import type { SystemComponentTarget } from "../../shared/contracts/tool-directory";
 import type { SuperstringApi, streamChatV2 } from "../api";
 import type { BrowserStateStorage } from "../browser-state";
@@ -179,6 +180,8 @@ export interface SuperstringState
   discardQqMemoryBatchDrafts: () => void;
   /** 所有可选项（本地已加载 + 外部声明的），选择器用它渲染选项。 */
   modelNames: string[];
+  /** Bootstrap 时登记过的外部模型服务（编辑器消费的真实对象，仅启动快照）。 */
+  modelProviders: ModelProviderResponse[];
   /** 本地服务**当前已加载**的模型。 */
   loadedModelNames: string[];
   /** 外部模型 API 里声明过的模型名。 */

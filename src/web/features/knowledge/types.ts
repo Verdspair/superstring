@@ -23,6 +23,12 @@ export const emptyKnowledgeListFilters: KnowledgeListFilters = {
   category: "all",
   status: "all",
 };
+/** 启动预热选项：background=true 走后台预热读取；成功置 knowledgeLoaded，失败静默降级。 */
+export interface KnowledgeLoadOptions {
+  background?: boolean;
+  /** quiet：已有可用列表时的静默权威刷新，不显示 loading、不占用全局 error。 */
+  quiet?: boolean;
+}
 /** 列表请求只带实际生效的条件：cursor 仅翻页时出现，limit 固定有界。 */
 export function knowledgeListQuery(
   filters: KnowledgeListFilters,
@@ -191,9 +197,14 @@ export interface KnowledgeState {
   knowledgeDirty: boolean;
   knowledgeBusy: boolean;
   knowledgeLoading: boolean;
+  /** 第一页列表是否已就绪（预热或前台读取成功后为 true）；前台挂载据此复用，不再重复取首页。 */
+  knowledgeLoaded: boolean;
   knowledgeReadId: number;
   /** 不传过滤＝按现有过滤刷新并回第一页；传入则合并过滤、重置游标后取第一页。 */
-  loadKnowledge: (filters?: Partial<KnowledgeListFilters>) => Promise<boolean>;
+  loadKnowledge: (
+    filters?: Partial<KnowledgeListFilters>,
+    options?: KnowledgeLoadOptions,
+  ) => Promise<boolean>;
   /** 键集翻页：next 用服务端 next_cursor，prev 出栈回上一页；成功后交回 true。 */
   loadKnowledgePage: (direction: "next" | "prev") => Promise<boolean>;
   requestKnowledgeEditor: (target: KnowledgeTarget) => void;
@@ -228,5 +239,6 @@ export const knowledgeInitial = {
   knowledgeDirty: false,
   knowledgeBusy: false,
   knowledgeLoading: false,
+  knowledgeLoaded: false,
   knowledgeReadId: 0,
 };

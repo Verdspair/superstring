@@ -12,6 +12,7 @@ export interface ConversationDirectoryState {
   directoryRevision: number;
   selectionRevision: number;
   rememberConversation: (summary: ConversationSummary) => void;
+  refreshConversationSummary: (id: string) => Promise<boolean>;
   loadConversations: (mode?: "refresh" | "more" | "refresh-loaded") => Promise<boolean>;
   selectConversation: (id: string) => Promise<void>;
   requestConversationNavigation: (id: string) => Promise<void>;
@@ -41,22 +42,29 @@ export function createDirectoryActions(
   get: StoreGet,
 ): Pick<
   ConversationDirectoryState,
-  "rememberConversation" | "loadConversations" | "selectConversation"
+  "rememberConversation" | "refreshConversationSummary" | "loadConversations" | "selectConversation"
 > {
   let activeRead = 0;
   return {
     rememberConversation: (summary) =>
       set((state) => ({
         summaryById: { ...state.summaryById, [summary.id]: summary },
-        directoryIds: state.directoryIds.includes(summary.id)
-          ? state.directoryIds
-          : [summary.id, ...state.directoryIds],
+        directoryIds: [summary.id, ...state.directoryIds.filter((item) => item !== summary.id)],
         sessionConversationIds:
           summary.channel === "web"
             ? { ...state.sessionConversationIds, [summary.sourceId]: summary.id }
             : state.sessionConversationIds,
         directoryRevision: state.directoryRevision + 1,
       })),
+    refreshConversationSummary: async (id: string) => {
+      try {
+        const summary = await get().apiClient.getConversation(id);
+        get().rememberConversation(summary);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     loadConversations: async (mode = "refresh") => {
       const more = mode === "more";
       const loadedCount = get().directoryIds.length;

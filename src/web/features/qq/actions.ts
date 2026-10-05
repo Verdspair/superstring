@@ -17,6 +17,7 @@ import type {
   QqStorageCleanupRequest,
   QqStorageSettingsResponse,
 } from "../../../shared/contracts/qq-storage";
+import { ApiError, type SuperstringApi } from "../../api";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
@@ -24,8 +25,10 @@ import { invalidSchemeInputs, invalidSchemeTimezone, parseAttentionMembers } fro
 import {
   QQ_STORAGE_PAGE_SIZE,
   type QqAccessState,
+  type QqBindingsReadOptions,
   type QqSchemeEditor,
   type QqSchemeState,
+  type QqSchemesReadOptions,
   type QqStickerState,
   type QqStorageItemsQuery,
   type QqStorageState,
@@ -330,9 +333,12 @@ export function createQqStickerActions(
  * 调用方必须先做代次/API 身份校验，保存进行中的旧读取不得走到这里。
  */
 function createSchemeDirectorySync(set: StoreSet, get: StoreGet) {
-  const loadUsage = async (id: string) => {
+  let usageInFlight: { id: string; readId: number } | null = null;
+  const loadUsage = async (id: string, force = false) => {
+    if (!force && (usageInFlight?.id === id || get().qqSchemeUsage?.schemeId === id)) return;
     const api = get().apiClient;
     const readId = get().qqSchemeUsageReadId + 1;
+    usageInFlight = { id, readId };
     set({ qqSchemeUsageReadId: readId });
     try {
       const usage = await api.getQqSchemeUsage(id);
@@ -347,6 +353,10 @@ function createSchemeDirectorySync(set: StoreSet, get: StoreGet) {
       if (get().apiClient !== api || get().qqSchemeUsageReadId !== readId) return;
       if (get().qqSchemeEditor?.source.id !== id) return;
       set({ qqSchemeUsage: null, qqSchemeUsageError: errorText(error) });
+    } finally {
+      if (usageInFlight?.readId === readId) {
+        usageInFlight = null;
+      }
     }
   };
   const openEditor = (scheme: QqSchemeResponse) => {
@@ -397,12 +407,16 @@ function createSchemeDirectorySync(set: StoreSet, get: StoreGet) {
     next.mediaInput = { ...next.mediaInput, stages: nextStages };
     return next;
   };
-  const applyDirectoryRead = (schemes: QqSchemeResponse[], refreshEditor = true) => {
+  const applyDirectoryRead = (
+    schemes: QqSchemeResponse[],
+    refreshEditor = true,
+    forceUsage = false,
+  ) => {
     set({ qqSchemes: schemes });
     const editor = get().qqSchemeEditor;
     const fresh = editor ? schemes.find((row) => row.id === editor.source.id) : undefined;
     if (!refreshEditor) {
-      if (editor && fresh) void loadUsage(fresh.id);
+      if (editor && fresh) void loadUsage(fresh.id, forceUsage);
       else if (editor) set({ qqSchemeUsage: null });
       return;
     }
@@ -411,7 +425,7 @@ function createSchemeDirectorySync(set: StoreSet, get: StoreGet) {
         qqSchemeEditor: mergeFreshSource(editor, fresh),
         feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。"),
       });
-      void loadUsage(fresh.id);
+      void loadUsage(fresh.id, forceUsage);
       return;
     }
     if (editor && !fresh && (qqSchemeDirty(editor) || schemeInputsLive())) {
@@ -460,13 +474,16 @@ export function createQqSchemeActions(
     set({ error: message, feedback: "" });
   };
   // 变更操作的模块级令牌：`resetForTests` 会把 store 里的代次清零，单靠代次无法区分
-  // 「重置后新操作恰好拿到同一编号」；令牌不随重置回收，与代次一起判定「仍是当前操作」。
+  // 「重置后新操作恰好拿到同一编号」��令牌不随重置回收，与代次一起判定「仍是当前操作」。
   let operationToken = 0;
+  let schemesInFlight: { promise: Promise<boolean>; readId: number; api: SuperstringApi } | null =
+    null;
   /**
    * 变更开始：记录 API、编辑器引用与操作代次，并作废在途的目录读取。
    * 响应、错误与 finally 都据此判定自己是否仍属于当前操作，旧操作不得写入新状态。
    */
   const beginOperation = () => {
+    schemesInFlight = null;
     const state = get();
     operationToken += 1;
     const operation = {
@@ -492,24 +509,47 @@ export function createQqSchemeActions(
   const isCurrentApi = (operation: ReturnType<typeof beginOperation>) =>
     get().apiClient === operation.api && isCurrentOperation(operation);
   const schemeDirectory = createSchemeDirectorySync(set, get);
-  const readDirectory = async (): Promise<boolean> => {
+  const readDirectory = async (readOptions?: {
+    background?: boolean;
+    editor?: boolean;
+    quiet?: boolean;
+    forceUsage?: boolean;
+  }): Promise<boolean> => {
     // 保存进行中：目录读取不得与写入交错（旧列表晚到会盖掉刚保存的行）；与界面 busy 禁用一致。
     if (get().qqSchemeSaving) return false;
     const api = get().apiClient;
     const readId = get().qqSchemesReadId + 1;
-    set({ qqSchemesReadId: readId, qqSchemesLoading: true, error: null });
+    if (!readOptions?.quiet && !readOptions?.background) {
+      set({ qqSchemesReadId: readId, qqSchemesLoading: true, error: null });
+    } else if (!readOptions?.quiet) {
+      set({ qqSchemesReadId: readId, qqSchemesLoading: true });
+    } else {
+      set({ qqSchemesReadId: readId });
+    }
     try {
       const schemes = await api.listQqSchemes();
       if (get().qqSchemesReadId !== readId || get().apiClient !== api) return false;
-      schemeDirectory.applyDirectoryRead(schemes);
+      set({ qqSchemes: schemes, qqSchemesLoaded: true });
+      if (readOptions?.editor !== false && !readOptions?.background) {
+        schemeDirectory.applyDirectoryRead(schemes, !readOptions?.quiet, !!readOptions?.forceUsage);
+      }
       return true;
     } catch (error) {
       if (get().qqSchemesReadId !== readId || get().apiClient !== api) return false;
-      report(error);
+      if (error instanceof ApiError && error.status === 403) {
+        set({ qqSchemes: [], qqSchemesLoaded: false });
+      }
+      if (!readOptions?.background && !readOptions?.quiet) {
+        report(error);
+      }
       return false;
     } finally {
-      if (get().qqSchemesReadId === readId && get().apiClient === api)
+      if (get().qqSchemesReadId === readId && get().apiClient === api) {
         set({ qqSchemesLoading: false });
+      }
+      if (schemesInFlight?.readId === readId) {
+        schemesInFlight = null;
+      }
     }
   };
   const replaceScheme = (scheme: QqSchemeResponse) =>
@@ -517,13 +557,30 @@ export function createQqSchemeActions(
       qqSchemes: state.qqSchemes.map((row) => (row.id === scheme.id ? scheme : row)),
     }));
   return {
-    loadQqSchemes: async () => {
-      if (get().qqSchemesLoading) return;
-      await readDirectory();
+    loadQqSchemes: async (options?: boolean | QqSchemesReadOptions) => {
+      const refresh = typeof options === "boolean" ? options : !!options?.refresh;
+      const background = typeof options === "object" && !!options?.background;
+      const editor =
+        typeof options === "object" && options.editor !== undefined ? options.editor : !background;
+      const api = get().apiClient;
+
+      if (get().qqSchemeSaving) return false;
+      if (!refresh && schemesInFlight && schemesInFlight.api === api) {
+        return schemesInFlight.promise;
+      }
+
+      const alreadyLoaded = get().qqSchemesLoaded;
+      if (!refresh && alreadyLoaded && background) return true;
+
+      const isQuietRevalidate = !refresh && alreadyLoaded;
+
+      const promise = readDirectory({ background, editor, quiet: isQuietRevalidate });
+      schemesInFlight = { promise, readId: get().qqSchemesReadId, api };
+      return promise;
     },
     refreshQqScheme: async () => {
       if (get().qqSchemesLoading) return false;
-      return readDirectory();
+      return readDirectory({ editor: true, forceUsage: true });
     },
     createQqScheme: async (name) => {
       if (get().qqSchemeSaving) return false;
@@ -1030,6 +1087,8 @@ export function createQqAccessActions(
   const report = (error: unknown) =>
     set({ error: error instanceof Error ? error.message : String(error), feedback: "" });
   const schemeDirectory = createSchemeDirectorySync(set, get);
+  let bindingsInFlight: { promise: Promise<void>; readId: number; api: SuperstringApi } | null =
+    null;
   // 访问侧读取的模块级令牌（与方案模块同一模式）：`resetForTests` 会把 store 里的代次清零，
   // 单靠代次无法区分「重置后新读取恰好拿到同一编号」；令牌不随重置回收。
   let accessReadToken = 0;
@@ -1049,14 +1108,16 @@ export function createQqAccessActions(
   const isCurrentAccessApi = (operation: ReturnType<typeof beginAccessRead>) =>
     get().apiClient === operation.api && isCurrentAccessRead(operation);
   /** 写入开始即作废在途读取：旧列表/旧设置晚到不得盖掉刚写入的结果，也不留悬空的 loading。 */
-  const invalidateAccessReads = () =>
+  const invalidateAccessReads = () => {
+    bindingsInFlight = null;
     set({ qqBindingsReadId: get().qqBindingsReadId + 1, qqBindingsLoading: false });
+  };
   /** 绑定写入成功后当前方案的使用量可能已变：清为未知再真实重读，旧计数 0 不得放行删除。 */
   const refreshSchemeUsage = () => {
     const editor = get().qqSchemeEditor;
     if (!editor) return;
     set({ qqSchemeUsage: null });
-    void schemeDirectory.loadUsage(editor.source.id);
+    void schemeDirectory.loadUsage(editor.source.id, true);
   };
   /** 显式刷新连接时合并连接草稿：已改字段保留输入，未改字段跟随新基线，revision 推进到刷新值。 */
   const mergeConnectionDraft = (fresh: QqSettingsResponse) => {
@@ -1174,35 +1235,67 @@ export function createQqAccessActions(
     // hint). 无参保持缓存语义：读成功过就不再请求，失败保持安静（提示宁可不显示，也不重试轰炸）。
     // 显式刷新（refresh = true，目录刷新与使用量会话）绕开缓存真实重读；失败时把「未知」与原因
     // 留下（qqBindingsLoaded = false + qqBindingsError），不写全局 error，别的页面保持安静。
-    loadQqBindings: async (refresh = false) => {
-      if (!refresh && get().qqBindingsLoaded) return;
+    loadQqBindings: async (options?: boolean | QqBindingsReadOptions) => {
+      const refresh = typeof options === "boolean" ? options : !!options?.refresh;
+      const background = typeof options === "object" && !!options?.background;
+      const api = get().apiClient;
+
+      if (!refresh && bindingsInFlight && bindingsInFlight.api === api) {
+        return bindingsInFlight.promise;
+      }
+      const alreadyLoaded = get().qqBindingsLoaded;
+      if (!refresh && alreadyLoaded) return;
+
+      const isQuietRevalidate = !refresh && alreadyLoaded;
+
       const operation = beginAccessRead();
-      set({
-        qqBindingsLoading: true,
-        ...(refresh ? { qqBindingsLoaded: false, qqBindingsError: null } : {}),
-      });
-      try {
-        const bindings = await operation.api.listQqBindings();
-        if (!isCurrentAccessApi(operation)) return;
+      if (!isQuietRevalidate && !background) {
         set({
-          qqBindings: bindings,
-          qqBindingsLoaded: true,
-          qqBindingsError: null,
-          qqBindingsLoading: false,
+          qqBindingsLoading: true,
+          ...(refresh ? { qqBindingsLoaded: false, qqBindingsError: null } : {}),
         });
-      } catch (error) {
-        if (!isCurrentAccessApi(operation)) return;
-        if (refresh) {
+      } else if (!isQuietRevalidate) {
+        set({ qqBindingsLoading: true });
+      }
+
+      const execute = async () => {
+        try {
+          const bindings = await operation.api.listQqBindings();
+          if (!isCurrentAccessApi(operation)) return;
           set({
-            qqBindingsLoaded: false,
-            qqBindingsError: errorText(error),
+            qqBindings: bindings,
+            qqBindingsLoaded: true,
+            ...(background ? {} : { qqBindingsError: null }),
             qqBindingsLoading: false,
           });
-        } else {
-          // 静默读失败：保持原样，不制造错误提示。
-          set({ qqBindingsLoading: false });
+        } catch (error) {
+          if (!isCurrentAccessApi(operation)) return;
+          if (error instanceof ApiError && error.status === 403) {
+            set({ qqBindings: [], qqBindingsLoaded: false });
+          }
+          if (refresh) {
+            set({
+              qqBindingsLoaded: false,
+              qqBindingsError: errorText(error),
+              qqBindingsLoading: false,
+            });
+          } else {
+            // 静默读失败：保持原样，不制造错误提示。
+            set({ qqBindingsLoading: false });
+          }
+        } finally {
+          if (isCurrentAccessApi(operation)) {
+            set({ qqBindingsLoading: false });
+          }
+          if (bindingsInFlight?.readId === operation.id) {
+            bindingsInFlight = null;
+          }
         }
-      }
+      };
+
+      const promise = execute();
+      bindingsInFlight = { promise, readId: operation.id, api };
+      return promise;
     },
     loadQqBindingDirectory: async (bindingId?: string) => {
       // 保存进行中不开始读取：结果只会与刚写入的内容竞争，等保存方完成后自己重读。

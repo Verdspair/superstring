@@ -1,5 +1,6 @@
 import type { PolicyView } from "../../../shared/contracts";
 import { msg } from "../../i18n";
+import { consumePreloadedMemory } from "../../services/agent-preload";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { type PageEditor, POLICY_FIELDS } from "../agents/page-drafts";
@@ -348,7 +349,19 @@ export function createMemoryActions(
         return;
       }
       try {
-        const result = await get().apiClient.listMemoryEntries(id, (page - 1) * 100, 100, filters);
+        // 首屏预热只覆盖第 1 页无筛选的摘要预览，且仅在当前列表为空（首次进入）时消费；
+        // 治理/纠正后的刷新永远走真实读取，纠正草稿与详情在上游守卫中已保护。
+        const preloaded =
+          page === 1 &&
+          get().memoryEntries.length === 0 &&
+          !filters?.scope_key &&
+          !filters?.search &&
+          !filters?.status
+            ? consumePreloadedMemory(get().apiClient, id)
+            : null;
+        const result =
+          preloaded ??
+          (await get().apiClient.listMemoryEntries(id, (page - 1) * 100, 100, filters));
         if (
           !matches() ||
           request !== selectionRequest ||

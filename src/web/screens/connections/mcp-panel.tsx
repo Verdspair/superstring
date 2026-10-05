@@ -1,11 +1,7 @@
 import { PlugZap, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type {
-  McpServerConfig,
-  McpServerStatus,
-  McpStatusResponse,
-} from "../../../shared/contracts/mcp";
+import type { McpServerConfig, McpServerStatus } from "../../../shared/contracts/mcp";
 import { executionPolicy } from "../../../shared/contracts/permissions";
 import type { ToolDirectoryEntry } from "../../../shared/contracts/tool-directory";
 import { ConfirmDialog } from "../../components/confirmation";
@@ -40,6 +36,7 @@ import {
   serverPayload,
   upsertServer,
 } from "../../features/access/mcp-draft";
+import { useMcpServersResource } from "../../services/connection-resources";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
@@ -73,8 +70,13 @@ export function McpPanel() {
   const [detail, setDetail] = useState<McpServerStatus | null>(null);
   const [detailTools, setDetailTools] = useState<ToolDirectoryEntry[]>([]);
   const toolRead = useRef<ReadTask | null>(null);
-  const [status, setStatus] = useState<McpStatusResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const {
+    data: status,
+    loading,
+    error: readError,
+    refresh,
+    mutate,
+  } = useMcpServersResource(apiClient);
   const [busy, setBusy] = useState<"" | "save" | "reload">("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -97,27 +99,14 @@ export function McpPanel() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty, busy]);
-  const pending = useRef<ReadTask | null>(null);
-  const load = useCallback(() => {
-    pending.current?.cancel();
-    setLoading(true);
-    pending.current = startRead((signal) => apiClient.getMcpServers(signal), {
-      success: (value) => {
-        setStatus(value);
-        setError("");
-      },
-      failure: (caught) => setError(errorText(caught)),
-      settled: () => setLoading(false),
-    });
-  }, [apiClient]);
+  const reloadTask = useRef<ReadTask | null>(null);
   useEffect(() => {
-    load();
     void loadPermissions();
     return () => {
-      pending.current?.cancel();
+      reloadTask.current?.cancel();
       toolRead.current?.cancel();
     };
-  }, [load, loadPermissions]);
+  }, [loadPermissions]);
   useEffect(() => {
     if (target?.kind === "mcp" && status) {
       const server = status.servers.find((row) => row.config.id === target.id);
@@ -142,7 +131,6 @@ export function McpPanel() {
   const save = async (next: McpServerConfig[]) => {
     if (!status || loading || mutation.current) return;
     mutation.current = true;
-    pending.current?.cancel();
     setBusy("save");
     setError("");
     setNotice("");
@@ -151,7 +139,7 @@ export function McpPanel() {
         expectedRevision: status.revision,
         servers: next,
       });
-      setStatus(saved);
+      mutate(() => saved);
       setEditor(null);
       setNotice(t("connections.mcp.saved"));
     } catch (caught) {
@@ -172,7 +160,7 @@ export function McpPanel() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={loading || busy !== ""} onClick={load}>
+          <Button variant="outline" disabled={loading || busy !== ""} onClick={refresh}>
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
@@ -182,13 +170,12 @@ export function McpPanel() {
             onClick={() => {
               if (mutation.current) return;
               mutation.current = true;
-              pending.current?.cancel();
               setBusy("reload");
               setError("");
               setNotice("");
-              pending.current = startRead(() => apiClient.reloadMcpServers(), {
+              reloadTask.current = startRead(() => apiClient.reloadMcpServers(), {
                 success: (value) => {
-                  setStatus(value);
+                  mutate(() => value);
                   setNotice(t("connections.mcp.reloaded"));
                 },
                 failure: (caught) => setError(errorText(caught)),
@@ -220,9 +207,9 @@ export function McpPanel() {
           {t("connections.mcp.configUnreadable", { "0": status.code })}
         </p>
       )}
-      {error && (
+      {(readError || error) && (
         <p role="alert" className="text-sm text-destructive">
-          {error}
+          {readError || error}
         </p>
       )}
       {notice && (

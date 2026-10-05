@@ -951,6 +951,35 @@ export class OneBotHost {
         spec.instructions = observationEpoch(seq);
         if (runId) o.journal.linkRun(runId, conversation.id, seq, wake.id);
       },
+      // 预算/补充诊断经既有 diagnose→runtime feedback span（observers 可从 runs span API 读回）。
+      // 闭包引用下方 diagnose：context-source 只在构造后的异步 read/view 里调用本回调
+      // （构造本身不触发），不会先于 diagnose 初始化执行。
+      onDiagnostic: (event) => {
+        if (event.kind === "context_budget_exceeded") {
+          diagnose({
+            stage: "context_budget",
+            status: "failed",
+            code: "CONTEXT_BUDGET_EXCEEDED",
+            details: {
+              stage: event.stage,
+              tier: event.tier,
+              model: event.model,
+              capacity: event.capacity,
+              ceiling: event.ceiling,
+              renderedCost: event.renderedCost,
+              roomFor: event.roomFor,
+            },
+          });
+          return;
+        }
+        // 原 supplemental 事件：stage+code 同错误透传，语义不变（此前只落 console）。
+        diagnose({
+          stage: event.kind,
+          status: "failed",
+          code: event.code,
+          details: event.name === undefined ? undefined : { name: event.name },
+        });
+      },
     });
     const diagnose = (event: Omit<BotHostDiagnostic, "runId" | "conversationId" | "sourceSeq">) => {
       try {
@@ -1097,7 +1126,24 @@ export class OneBotHost {
           : stripped;
       // 最终 materials 预算复验（当前真源）：超上限＝该次尝试不发出（fail closed）。
       const ceiling = source.phaseUnitsCeiling(qqPhase);
-      if (ceiling !== undefined && inputUnits(messages) > ceiling) {
+      const units = inputUnits(messages);
+      if (ceiling !== undefined && units > ceiling) {
+        // 判据就是 ceiling−units（无 envelope512），roomFor 按同一公式实算；capacity 只读
+        // source 既有缓存（cachedCapacity），不重复探测；该模型未被探过＝unknown→null。
+        diagnose({
+          stage: "context_budget",
+          status: "failed",
+          code: "CONTEXT_BUDGET_EXCEEDED",
+          details: {
+            stage: "media_fallback",
+            tier: qqPhase === "generation" ? "reply" : decisionTier,
+            model: input.model,
+            capacity: source.cachedCapacity(input.model) ?? null,
+            ceiling,
+            renderedCost: units,
+            roomFor: ceiling - units,
+          },
+        });
         fail("CONTEXT_BUDGET_EXCEEDED", "fallback 后的材料超过模型容量");
       }
       return { messages };

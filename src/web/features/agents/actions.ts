@@ -1,5 +1,6 @@
 import type { AgentResponse } from "../../../shared/contracts";
 import { msg } from "../../i18n";
+import { resolvePreloadedPersona } from "../../services/agent-preload";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { toDraft } from "./draft";
@@ -86,7 +87,10 @@ export function createAgentActions(
       try {
         const [agent, persona] = await Promise.all([
           get().apiClient.getAgent(id),
-          get().apiClient.getPersona(id),
+          // 首屏预热人设直接消费（在途则共享同一请求）；未命中或预热失败才走前台读取。
+          resolvePreloadedPersona(get().apiClient, id).then(
+            (preloaded) => preloaded ?? get().apiClient.getPersona(id),
+          ),
         ]);
         if (request !== editorRequest) return false;
         get().discardKnowledgeRead();

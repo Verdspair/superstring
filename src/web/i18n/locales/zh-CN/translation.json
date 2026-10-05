@@ -1863,6 +1863,8 @@
   "workspace.qq_event_reply_to": "引用消息 ID",
   "workspace.qq_event_snapshot_names": "发送时名称",
   "workspace.qq_wide_schemes_speech_and_rhythm_context_and_memory_media_and_expressio": "QQ 全局方案：发言与节奏、上下文与记忆、媒体与表达、六段提示词。",
+  "workspace.qq_group_rename_hint": "留空使用QQ群名称",
+  "workspace.group_number": "群号",
   "workspace.qq_wide_shared_stickers_import_describe_file_and_enable": "QQ 全局共享素材：导入、补说明、归类与启用。",
   "workspace.read_only_conversation_history": "只读消息记录",
   "workspace.reading": "正在读取…",

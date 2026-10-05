@@ -1,4 +1,7 @@
+import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
+import { publishConversationChange } from "../conversation/conversation-changes";
+import { saveQqOriginalName } from "../db/qq-group-name-repository";
 import * as schema from "../db/schema";
 // The intake runtime: connection events in, durable observations out.
 //
@@ -233,6 +236,11 @@ export const QQ_SUPERVISE_INTERVAL_MS = 5_000;
 export class QqIntakeRuntime {
   readonly #options: QqIntakeRuntimeOptions;
   #connection: OneBotConnection | null = null;
+  /**
+   * 0053 群显示名：每条连接一份去重 Set——同一连接对同一群只发一次只读
+   * `get_group_info`；重连换新 Set，可刷新群本名但永不覆写用户备注。
+   */
+  #namedGroups = new Set<string>();
   #timer: ReturnType<typeof setInterval> | null = null;
   #supervise: unknown = null;
   #stopped = true;
@@ -336,6 +344,18 @@ export class QqIntakeRuntime {
             ) {
               this.#options.onAddressedMessage?.();
             }
+            // 0053：群消息录入后，本连接若还没问过这个群的名字，异步补一次（不阻发送链）。
+            if (
+              outcome.kind === "recorded" &&
+              message.kind === "message" &&
+              message.observation.conversation.kind === "group"
+            ) {
+              this.#queueGroupName(
+                saved.accountId,
+                message.observation.conversation.peerId,
+                connection,
+              );
+            }
             this.#followUp(message, outcome);
           } catch {
             onEvent?.({ kind: "discarded", reason: "invalid_observation" });
@@ -345,6 +365,7 @@ export class QqIntakeRuntime {
       },
     );
     this.#connection = connection;
+    this.#namedGroups = new Set<string>();
     const result = await connection.connect();
     onEvent?.({ kind: "connection", state: connection.state.phase });
     // The attempt took time, and the world may have moved: a `stop()` during the handshake must
@@ -360,6 +381,8 @@ export class QqIntakeRuntime {
       this.#connection = null;
       return this.state;
     }
+    // 0053：连接 ready 后对现已绑定的群各做一次只读取名——不需要等新消息才有群名。
+    this.#queueGroupNames(saved.accountId, connection);
     const interval = this.#options.cycleIntervalMs ?? 60_000;
     this.#timer = setInterval(() => {
       try {
@@ -480,6 +503,43 @@ export class QqIntakeRuntime {
         });
       })
       .catch(() => this.#options.onEvent?.({ kind: "follow_up_failed" }));
+  }
+
+  /** One read-only naming fetch per (connection, group); failures keep the fallback name. */
+  #queueGroupNames(accountId: string, connection: OneBotConnection): void {
+    const db = (this.#options.orm as unknown as { $client: Database }).$client;
+    const rows = db
+      .query(
+        "SELECT DISTINCT peer_id FROM qq_bindings WHERE account_id=? AND conversation_kind='group'",
+      )
+      .all(accountId) as { peer_id: string }[];
+    for (const row of rows) this.#queueGroupName(accountId, row.peer_id, connection);
+  }
+
+  #queueGroupName(accountId: string, groupId: string, connection: OneBotConnection): void {
+    if (this.#namedGroups.has(groupId)) return;
+    this.#namedGroups.add(groupId);
+    void connection
+      .getGroupName(groupId)
+      .then((name) => {
+        // 连接已被替换的旧取回应丢弃，绝不把名字落到另一个账号下。
+        if (name === null || this.#connection !== connection) return;
+        const db = (this.#options.orm as unknown as { $client: Database }).$client;
+        saveQqOriginalName(db, accountId, groupId, name);
+        this.#publishGroupConversation(db, accountId, groupId);
+      })
+      .catch(() => {});
+  }
+
+  #publishGroupConversation(db: Database, accountId: string, groupId: string): void {
+    const row = db
+      .query(
+        `SELECT c.id FROM conversations c JOIN qq_bindings b ON b.id=c.source_id
+         WHERE b.account_id=? AND b.peer_id=? AND c.channel='onebot11' AND c.closed_at IS NULL
+         ORDER BY c.binding_epoch DESC LIMIT 1`,
+      )
+      .get(accountId, groupId) as { id: string } | null;
+    if (row) publishConversationChange(db, row.id);
   }
 
   /** One housekeeping pass, reporting a fixed summary through `onEvent`. */

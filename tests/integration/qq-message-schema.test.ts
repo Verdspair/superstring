@@ -424,7 +424,7 @@ describe("0052 message facts and media persistence", () => {
 
       ensureBusinessSchema(db);
 
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 53 });
       // Old switches and old custom values survive byte for byte.
       const after = db.prepare("SELECT * FROM qq_schemes").all() as Record<string, unknown>[];
       for (const key of Object.keys(before[0])) {
@@ -501,7 +501,7 @@ describe("0052 message facts and media persistence", () => {
   it("still rejects an unknown future version", () => {
     const h = cloneBusinessDb();
     try {
-      h.db.exec("PRAGMA user_version = 53");
+      h.db.exec("PRAGMA user_version = 54");
       expect(() => ensureBusinessSchema(h.db)).toThrow("REJECT_UNKNOWN_VERSION");
     } finally {
       h.close();

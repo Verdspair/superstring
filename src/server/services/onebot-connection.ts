@@ -277,6 +277,25 @@ export class OneBotConnection {
     return Object.freeze({ kind: "source", reference: file.trim() });
   }
 
+  /**
+   * One read-only `get_group_info` for the group display name (0053). Standard OneBot 11
+   * action, `no_cache: false`; never sent for sending, waking or inference. Any transport
+   * problem resolves to `null` and the caller keeps its fallback name.
+   */
+  async getGroupName(groupId: string): Promise<string | null> {
+    const attempt = this.#active;
+    if (!attempt || this.#state.phase !== "ready") return null;
+    const id = Number(groupId);
+    if (!Number.isSafeInteger(id) || id <= 0) return null;
+    const result = await this.#request(attempt, "get_group_info", {
+      group_id: id,
+      no_cache: false,
+    });
+    if (result.kind !== "response" || !this.#successful(result)) return null;
+    const name = record(result.value.data)?.group_name;
+    return typeof name === "string" && name.trim() ? name.trim() : null;
+  }
+
   async #verify(attempt: ConnectionAttempt): Promise<void> {
     const login = await this.#request(attempt, "get_login_info", {});
     if (this.#active !== attempt) return;

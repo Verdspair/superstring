@@ -85,6 +85,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0050_qq_retention_days.sql",
     "versions/0051_qq_group_agent_config.sql",
     "versions/0052_qq_message_multimodal.sql",
+    "versions/0053_qq_group_names.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

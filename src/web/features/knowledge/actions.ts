@@ -34,11 +34,23 @@ export function createKnowledgeActions(
   // 不牵连并行的编辑器读取（编辑器读取仍走 knowledgeReadId）。
   let listRead = 0;
   let listAbort: AbortController | null = null;
+  /** 后台预热的在途记录：来源 api、过滤条件与承诺，供前台接管同一次首页读取。 */
+  let warmInflight: {
+    api: ReturnType<StoreGet>["apiClient"];
+    filterKey: string;
+    promise: Promise<boolean>;
+  } | null = null;
+  const listKey = (filters: KnowledgeListFilters, cursors: (string | null)[]) =>
+    [filters.search, filters.category, filters.status, cursors.join(",")].join("\u0000");
   const loadList = async (
     filters: KnowledgeListFilters,
     cursors: (string | null)[],
+    background = false,
+    // quiet：已有可用列表时的静默权威刷新，不动 loading 与 error 显示。
+    quiet = false,
   ): Promise<boolean> => {
     if (guard()) return false;
+    const api = get().apiClient;
     const id = ++listRead;
     listAbort?.abort();
     const controller = new AbortController();
@@ -49,13 +61,14 @@ export function createKnowledgeActions(
       settingsView: get().settingsView,
       settingsRoute: get().settingsRoute,
     };
+    // 预热在其它分区后台发起，写回不依赖当前页面身份；前台读保留页面保护。
     const viewChanged = () =>
-      get().page !== view.page ||
-      get().settingsView !== view.settingsView ||
-      get().settingsRoute !== view.settingsRoute;
-    set({ knowledgeLoading: true });
+      !background &&
+      (get().page !== view.page ||
+        get().settingsView !== view.settingsView ||
+        get().settingsRoute !== view.settingsRoute);
+    if (!quiet) set({ knowledgeLoading: true });
     try {
-      const api = get().apiClient;
       const [page, categories, settings] = await Promise.all([
         api.listKnowledgeDocuments(
           knowledgeListQuery(filters, cursors[cursors.length - 1] ?? null),
@@ -64,7 +77,8 @@ export function createKnowledgeActions(
         api.listKnowledgeCategories(),
         api.getKnowledgeSettings(),
       ]);
-      if (id !== listRead || viewChanged()) return false;
+      // 同源校验：切换 api 后的迟到响应不写回旧客户端的数据。
+      if (id !== listRead || viewChanged() || get().apiClient !== api) return false;
       set({
         knowledgeCategories: categories,
         knowledgeSettings: settings,
@@ -72,25 +86,57 @@ export function createKnowledgeActions(
         knowledgeNextCursor: page.next_cursor,
         knowledgeTotal: page.total,
         knowledgeDocuments: page.items,
-        error: null,
+        knowledgeLoaded: true,
+        // 后台预热与静默刷新成功不清理无关的全局 error。
+        ...(background || quiet ? {} : { error: null }),
       });
       return true;
     } catch (error) {
-      if (id !== listRead || controller.signal.aborted || viewChanged()) return false;
-      set({ error: errorText(error) });
+      if (id !== listRead || controller.signal.aborted || viewChanged() || get().apiClient !== api)
+        return false;
+      // 预热与静默刷新失败静默降级：不占用全局 error，前台显式读取时自然重取并提示。
+      if (!background && !quiet) set({ error: errorText(error) });
       return false;
     } finally {
-      if (id === listRead) set({ knowledgeLoading: false });
+      if (!quiet && id === listRead) set({ knowledgeLoading: false });
       if (listAbort === controller) listAbort = null;
     }
   };
   return {
-    loadKnowledge: async (filters) => {
+    loadKnowledge: async (filters, options) => {
+      const api = get().apiClient;
+      if (options?.background) {
+        // 启动预热：busy/脏数据时静默让位；列表已就绪则直接复用；同一时刻共享同一在途预热。
+        if (guard()) return false;
+        if (get().knowledgeLoaded) return true;
+        if (warmInflight && warmInflight.api === api) return warmInflight.promise;
+        // 预热只取当前默认过滤的第一页，不先改用户的过滤与光标状态；
+        // 真实页与光标在权威响应落地时才写入。
+        const warmFilters = filters
+          ? { ...get().knowledgeFilters, ...filters }
+          : get().knowledgeFilters;
+        const task = loadList(warmFilters, [null], true);
+        warmInflight = { api, filterKey: listKey(warmFilters, [null]), promise: task };
+        // 只有本次预热自己能清掉在途记录：新请求不会被旧预热的 finally 清空。
+        void task.finally(() => {
+          if (warmInflight?.promise === task) warmInflight = null;
+        });
+        return task;
+      }
       if (guard()) return false;
       // 刷新保过滤；指定过滤则合并（含清空）并回第一页，光标先落位再取页。
       const next = filters ? { ...get().knowledgeFilters, ...filters } : get().knowledgeFilters;
+      // 默认前台读取：同源同过滤且预热在途时接管那一次读取，不重发也不作废它。
+      if (
+        !filters &&
+        warmInflight &&
+        warmInflight.api === api &&
+        warmInflight.filterKey === listKey(next, [null])
+      )
+        return warmInflight.promise;
       set({ knowledgeFilters: next, knowledgeCursors: [null], knowledgeNextCursor: null });
-      return loadList(next, [null]);
+      // 挂载/静默刷新不阻塞当前数据也不占用 error 提示；用户刷新与重试仍是显式 loud 语义。
+      return loadList(next, [null], false, options?.quiet === true);
     },
     loadKnowledgePage: async (direction) => {
       const cursors = get().knowledgeCursors;

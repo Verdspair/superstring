@@ -2030,6 +2030,31 @@ export const qqGroupAgentConfigs = sqliteTable(
   ],
 );
 
+// 0053：QQ 群显示名称。按登录的 QQ 账号 × 群号存一行——不是按绑定或助手，
+// 所以换绑/换助手后同一个群的备注仍然一致（跨绑定纪元显示不变）。
+// qq_name 是取自 QQ 的群本名，custom_name 是用户在本项目里设的显示备注：
+// 取群本名只更新前者，绝不覆盖后者，备注永远优先且不随群改名丢失。
+// 两列空白串不入库（与 API 的 trim→NULL 一致），显示侧只需判 NULL。
+export const qqGroupNames = sqliteTable(
+  "qq_group_names",
+  {
+    accountId: text("account_id").notNull(),
+    groupId: text("group_id").notNull(),
+    qqName: text("qq_name"),
+    customName: text("custom_name"),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.accountId, t.groupId] }),
+    check("qq_group_names_qq_name", sql`${t.qqName} IS NULL OR length(trim(${t.qqName})) > 0`),
+    check(
+      "qq_group_names_custom_name",
+      sql`${t.customName} IS NULL
+        OR (length(trim(${t.customName})) > 0 AND length(trim(${t.customName})) <= 100)`,
+    ),
+  ],
+);
+
 // 0052：入站消息事实（规格 §13.2）。event_key 关联永久去重身份；双昵称快照、有序片段与
 // 引用关系是可过期事实，正文到期则 text 片段的区间不可读取。
 export const qqMessageFacts = sqliteTable(
@@ -2399,6 +2424,7 @@ export const businessTables = {
   qqMediaVariants,
   qqMediaClassifications,
   qqMediaReadTasks,
+  qqGroupNames,
 } as const;
 
 export type BusinessTables = typeof businessTables;
