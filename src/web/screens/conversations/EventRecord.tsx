@@ -143,13 +143,18 @@ function QqEventFactDetails({
     </div>
   );
 }
-export function EventRecord({
+
+import { memo } from "react";
+
+function EventRecordComponent({
   event,
   rows,
+  bySourceMap,
   conversation,
 }: {
   event: ConversationEventView;
-  rows: ConversationEventView[];
+  rows?: ConversationEventView[];
+  bySourceMap?: Map<string, ConversationEventView>;
   conversation: ConversationSummary;
 }) {
   const { t, i18n } = useTranslation();
@@ -158,10 +163,13 @@ export function EventRecord({
   const source = event.addressing.replyTo;
   const quoted =
     source &&
-    rows.find(
-      (row) =>
-        row.source.id === source.sourceId || row.sources.some((ref) => ref.id === source.sourceId),
-    );
+    (bySourceMap
+      ? bySourceMap.get(source.sourceId)
+      : rows?.find(
+          (row) =>
+            row.source.id === source.sourceId ||
+            row.sources.some((ref) => ref.id === source.sourceId),
+        ));
   return (
     <li
       data-timeline-key={timelineKey(event)}
@@ -340,3 +348,5 @@ export function EventRecord({
     </li>
   );
 }
+
+export const EventRecord = memo(EventRecordComponent);

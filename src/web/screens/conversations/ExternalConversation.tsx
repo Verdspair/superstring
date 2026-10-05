@@ -1,7 +1,10 @@
 import { ArrowDown, RefreshCw } from "lucide-react";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { ConversationSummary } from "../../../shared/contracts/conversation";
+import type {
+  ConversationEventView,
+  ConversationSummary,
+} from "../../../shared/contracts/conversation";
 import { Button } from "../../components/ui/button";
 import { useConversationEvents } from "../../features/conversations/use-conversation-events";
 import { timelineKey, useTimelineScroll } from "../../features/conversations/use-timeline-scroll";
@@ -25,7 +28,21 @@ export function ExternalConversation({
   );
   const scroll = useTimelineScroll();
   const history = useConversationEvents(conversation.id, scroll.beforeChange, { enabled: active });
-  const rows = timelineRows(history.items);
+  const rows = useMemo(() => timelineRows(history.items), [history.items]);
+  const bySourceMap = useMemo(() => {
+    const map = new Map<string, ConversationEventView>();
+    for (const row of rows) {
+      if (row.source.id && !map.has(row.source.id)) {
+        map.set(row.source.id, row);
+      }
+      for (const ref of row.sources) {
+        if (ref.id && !map.has(ref.id)) {
+          map.set(ref.id, row);
+        }
+      }
+    }
+    return map;
+  }, [rows]);
   const parkBeforeHide = scroll.parkBeforeHide;
   const wasActive = useRef(active);
   useLayoutEffect(() => {
@@ -121,6 +138,7 @@ export function ExternalConversation({
                   key={timelineKey(event)}
                   event={event}
                   rows={rows}
+                  bySourceMap={bySourceMap}
                   conversation={conversation}
                 />
               ))}

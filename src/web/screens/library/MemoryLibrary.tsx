@@ -7,8 +7,9 @@ import {
   RotateCcw,
   SlidersHorizontal,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
 import { Badge } from "@/components/ui/badge";
@@ -39,7 +40,52 @@ import { BindingMemoryControls } from "./BindingMemoryControls";
 import { memoryScopeLabel } from "./scope-label";
 
 export function MemoryLibrary() {
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      agents: state.agents,
+      apiClient: state.apiClient,
+      clearMemoryDetail: state.clearMemoryDetail,
+      clearMemoryTurns: state.clearMemoryTurns,
+      discardMemoryCorrection: state.discardMemoryCorrection,
+      editorAgentId: state.editorAgentId,
+      editorLoading: state.editorLoading,
+      error: state.error,
+      feedback: state.feedback,
+      governMemories: state.governMemories,
+      loadMemoryContent: state.loadMemoryContent,
+      loadMemoryEntryDetail: state.loadMemoryEntryDetail,
+      loadMemoryPage: state.loadMemoryPage,
+      loadMemoryPolicy: state.loadMemoryPolicy,
+      loadMemoryTurns: state.loadMemoryTurns,
+      manualConsolidate: state.manualConsolidate,
+      memoryContent: state.memoryContent,
+      memoryCorrectionDirty: state.memoryCorrectionDirty,
+      memoryCorrectionDraft: state.memoryCorrectionDraft,
+      memoryCorrectionSaving: state.memoryCorrectionSaving,
+      memoryEntries: state.memoryEntries,
+      memoryEntryDetail: state.memoryEntryDetail,
+      memoryEntryTotal: state.memoryEntryTotal,
+      memoryJobs: state.memoryJobs,
+      memorySessions: state.memorySessions,
+      memoryTurns: state.memoryTurns,
+      mergeMemories: state.mergeMemories,
+      openSettingsRoute: state.openSettingsRoute,
+      pageEditor: state.pageEditor,
+      patchMemoryCorrection: state.patchMemoryCorrection,
+      patchPageAgent: state.patchPageAgent,
+      patchPagePolicy: state.patchPagePolicy,
+      pendingOperations: state.pendingOperations,
+      qqMemoryBatchDrafts: state.qqMemoryBatchDrafts,
+      reloadMemory: state.reloadMemory,
+      requestAgentNavigation: state.requestAgentNavigation,
+      resetMemoryManagement: state.resetMemoryManagement,
+      saveMemoryCorrection: state.saveMemoryCorrection,
+      saveSettingsPage: state.saveSettingsPage,
+      setNotice: state.setNotice,
+      settingsRoute: state.settingsRoute,
+      settingsSaving: state.settingsSaving,
+    })),
+  );
   const { t, i18n } = useTranslation();
   const [scope, setScope] = useState(""),
     [search, setSearch] = useState(""),
@@ -114,7 +160,11 @@ export function MemoryLibrary() {
     owner?.configured &&
     owner.account_id === binding.account_id &&
     owner.peer_id === binding.peer_id;
-  const selectedRows = s.memoryEntries.filter((row) => selected.includes(row.id));
+  const selectedIdSet = useMemo(() => new Set(selected), [selected]);
+  const selectedRows = useMemo(
+    () => s.memoryEntries.filter((row) => selectedIdSet.has(row.id)),
+    [s.memoryEntries, selectedIdSet],
+  );
   const mergeable =
     selectedRows.length >= 2 &&
     selectedRows.every(

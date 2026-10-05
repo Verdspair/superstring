@@ -6,6 +6,20 @@ import { useSuperstringStore } from "../../store";
 export type HistoryChange = "initial" | "older" | "refresh" | "clear";
 export type BeforeHistoryChange = (kind: HistoryChange, next: ConversationEventView[]) => void;
 
+function redactEvent(item: ConversationEventView): ConversationEventView {
+  return {
+    ...item,
+    text: null,
+    contentState: "unavailable",
+    media: item.media.map((media) => ({
+      ...media,
+      description: null,
+      availability: "unavailable",
+    })),
+    qqMessageFacts: [],
+  };
+}
+
 /** Refresh every loaded source projection: expiry/revocation does not append a sequence. */
 export function useConversationEvents(
   id: string,
@@ -22,6 +36,30 @@ export function useConversationEvents(
   const notify = useRef(beforeChange);
   notify.current = beforeChange;
   const pending = useRef<AbortController | null>(null);
+  const lastRefreshTime = useRef(0);
+  const hadPendingAborted = useRef(false);
+  const needsRevalidation = useRef(false);
+
+  // Scope change cleanup
+  const lastScopeId = useRef(id);
+  const lastApi = useRef(api);
+  useEffect(() => {
+    if (lastScopeId.current !== id || lastApi.current !== api) {
+      lastScopeId.current = id;
+      lastApi.current = api;
+      pending.current?.abort();
+      pending.current = null;
+      first.current = 0;
+      current.current = [];
+      setItems([]);
+      setHasMore(false);
+      setLoading(false);
+      setError("");
+      needsRevalidation.current = false;
+      notify.current?.("clear", []);
+    }
+  }, [id, api]);
+
   const load = useCallback(
     async (older = false) => {
       if (pending.current) return;
@@ -29,7 +67,9 @@ export function useConversationEvents(
       pending.current = controller;
       setLoading(true);
       setError("");
+      hadPendingAborted.current = false;
       const initial = !first.current;
+      const loadedCount = current.current.length;
       try {
         const page = await api.getConversationEvents(
           id,
@@ -37,13 +77,19 @@ export function useConversationEvents(
             ? { direction: "latest" }
             : older
               ? { direction: "before", beforeSeq: first.current }
-              : { direction: "after", afterSeq: first.current - 1 },
+              : {
+                  direction: "after",
+                  afterSeq: first.current - 1,
+                  limit: Math.max(100, loadedCount + 100),
+                },
           controller.signal,
         );
         if (controller.signal.aborted) return;
         let next = page.items;
-        if (initial || older) setHasMore(page.hasMore);
-        else {
+        if (initial || older) {
+          setHasMore(page.hasMore);
+        } else {
+          // If server has more beyond our expanded limit, page forward
           let cursor = page.nextSeq;
           let more = page.hasMore;
           while (more) {
@@ -54,33 +100,31 @@ export function useConversationEvents(
             );
             if (controller.signal.aborted) return;
             next = [...next, ...following.items];
-            // A non-advancing response cannot represent another page.
             more = following.hasMore && following.nextSeq > cursor;
             cursor = following.nextSeq;
           }
         }
-        next = [
-          ...new Map(
-            [...(older ? current.current : []), ...next].map((item) => [item.seq, item]),
-          ).values(),
-        ].sort((a, b) => a.seq - b.seq);
-        first.current = next[0]?.seq ?? 0;
-        notify.current?.(initial ? "initial" : older ? "older" : "refresh", next);
-        current.current = next;
-        setItems(next);
+
+        let merged: ConversationEventView[];
+        if (older) {
+          merged = [
+            ...new Map([...next, ...current.current].map((item) => [item.seq, item])).values(),
+          ].sort((a, b) => a.seq - b.seq);
+        } else {
+          // Fresh authoritative projections from server replace loaded range
+          merged = [...next].sort((a, b) => a.seq - b.seq);
+        }
+
+        first.current = merged[0]?.seq ?? 0;
+        notify.current?.(initial ? "initial" : older ? "older" : "refresh", merged);
+        current.current = merged;
+        setItems(merged);
+        lastRefreshTime.current = Date.now();
+        needsRevalidation.current = false;
       } catch (reason) {
         if (!controller.signal.aborted) {
           setError(errorText(reason));
-          const redacted: ConversationEventView[] = current.current.map((item) => ({
-            ...item,
-            text: null,
-            contentState: "unavailable",
-            media: item.media.map((media) => ({
-              ...media,
-              description: null,
-              availability: "unavailable",
-            })),
-          }));
+          const redacted: ConversationEventView[] = current.current.map(redactEvent);
           notify.current?.("refresh", redacted);
           current.current = redacted;
           setItems(redacted);
@@ -94,43 +138,101 @@ export function useConversationEvents(
     },
     [api, id],
   );
+
   useEffect(() => {
-    let foreground = true;
-    const clear = () => {
+    let foreground = document.visibilityState !== "hidden";
+
+    const redact = () => {
       foreground = false;
-      pending.current?.abort();
-      pending.current = null;
+      needsRevalidation.current = true;
+      if (pending.current) {
+        hadPendingAborted.current = true;
+        pending.current.abort();
+        pending.current = null;
+      }
+      const redacted = current.current.map(redactEvent);
       notify.current?.("clear", []);
-      current.current = [];
-      setItems([]);
+      current.current = redacted;
+      setItems(redacted);
       setLoading(false);
     };
+
     if (!enabled) {
-      // 隐藏页签与失焦同语义：停掉读取、清空受保护正文；回到页签立即重读。
-      clear();
+      // 当页签隐藏或会话失活时，脱敏受保护正文与 qqMessageFacts，保留占位/seq
+      redact();
       return;
     }
+
+    const onBlur = () => {
+      if (document.visibilityState !== "hidden") {
+        // visible blur: cancel in-flight and pause polling, do NOT clear body
+        if (pending.current) {
+          hadPendingAborted.current = true;
+          pending.current.abort();
+          pending.current = null;
+          setLoading(false);
+        }
+        foreground = false;
+        return;
+      }
+      redact();
+    };
+
     const refresh = () => {
       if (foreground && document.visibilityState !== "hidden") void load();
     };
-    const focus = () => {
+
+    const onFocus = () => {
+      const wasForeground = foreground;
       foreground = true;
-      refresh();
+      if (document.visibilityState !== "hidden") {
+        const timeSince = Date.now() - lastRefreshTime.current;
+        // Skip repeat fetch ONLY if NOT redacted/needsRevalidation, within refreshMs, and no aborted pending
+        if (
+          !needsRevalidation.current &&
+          !wasForeground &&
+          timeSince < refreshMs &&
+          !hadPendingAborted.current &&
+          current.current.length > 0
+        ) {
+          return;
+        }
+        void load();
+      }
     };
-    const visibility = () => (document.visibilityState === "hidden" ? clear() : focus());
-    refresh();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        redact();
+      } else {
+        onFocus();
+      }
+    };
+
+    // Initial load when enabled
+    void load();
     const timer = setInterval(refresh, refreshMs);
-    window.addEventListener("blur", clear);
-    window.addEventListener("focus", focus);
-    document.addEventListener("visibilitychange", visibility);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       clearInterval(timer);
-      pending.current?.abort();
-      pending.current = null;
-      window.removeEventListener("blur", clear);
-      window.removeEventListener("focus", focus);
-      document.removeEventListener("visibilitychange", visibility);
+      if (pending.current) {
+        pending.current.abort();
+        pending.current = null;
+      }
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, load, refreshMs]);
-  return { items, hasMore, loading, error, refresh: () => load(), loadMore: () => load(true) };
+
+  return {
+    items,
+    hasMore,
+    loading,
+    error,
+    refresh: () => load(),
+    loadMore: () => load(true),
+  };
 }

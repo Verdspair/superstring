@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, MessagesSquare, Search, Wrench } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { executionPolicy } from "../../../shared/contracts/permissions";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
@@ -57,7 +58,14 @@ function capabilityFact(entry: CapabilityEntry, editor: PermissionEditor | null)
 
 function CapabilityDirectory() {
   const { t, i18n } = useTranslation();
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      loadPermissionSettings: state.loadPermissionSettings,
+      openSettingsRoute: state.openSettingsRoute,
+      permissionEditor: state.permissionEditor,
+      permissionError: state.permissionError,
+    })),
+  );
   const [query, setQuery] = useState("");
   useEffect(() => {
     void s.loadPermissionSettings();
@@ -256,7 +264,33 @@ function useAgentAutoLoad() {
 
 function AgentScopedDetail({ entry }: { entry: CapabilityEntry }) {
   const { t } = useTranslation();
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      agents: state.agents,
+      dirty: state.dirty,
+      editorAgentId: state.editorAgentId,
+      editorLoading: state.editorLoading,
+      error: state.error,
+      knowledgeBusy: state.knowledgeBusy,
+      knowledgeModelLoading: state.knowledgeModelLoading,
+      knowledgeReadEditor: state.knowledgeReadEditor,
+      knowledgeReadLoading: state.knowledgeReadLoading,
+      memoryCorrectionDirty: state.memoryCorrectionDirty,
+      memoryCorrectionSaving: state.memoryCorrectionSaving,
+      openAgentSettings: state.openAgentSettings,
+      organizationLoading: state.organizationLoading,
+      pageEditor: state.pageEditor,
+      permissionSaving: state.permissionSaving,
+      qqAccessSaving: state.qqAccessSaving,
+      qqMemoryBatchDrafts: state.qqMemoryBatchDrafts,
+      qqMemoryBatchSaving: state.qqMemoryBatchSaving,
+      qqSchemeSaving: state.qqSchemeSaving,
+      qqStickerSaving: state.qqStickerSaving,
+      requestAgentNavigation: state.requestAgentNavigation,
+      settingsSaving: state.settingsSaving,
+      webAccessSaving: state.webAccessSaving,
+    })),
+  );
   const attempt = useAgentAutoLoad();
   const busy = capabilityGuards(s);
   const pendingDraft =
@@ -347,7 +381,30 @@ function AgentScopedDetail({ entry }: { entry: CapabilityEntry }) {
 
 function SessionLinkDetail({ entry }: { entry: CapabilityEntry }) {
   const { t } = useTranslation();
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      agents: state.agents,
+      editorAgentId: state.editorAgentId,
+      editorLoading: state.editorLoading,
+      error: state.error,
+      knowledgeBusy: state.knowledgeBusy,
+      knowledgeModelLoading: state.knowledgeModelLoading,
+      knowledgeReadLoading: state.knowledgeReadLoading,
+      memoryCorrectionSaving: state.memoryCorrectionSaving,
+      openAgentSettings: state.openAgentSettings,
+      openSettingsRoute: state.openSettingsRoute,
+      organizationLoading: state.organizationLoading,
+      pageEditor: state.pageEditor,
+      permissionSaving: state.permissionSaving,
+      qqAccessSaving: state.qqAccessSaving,
+      qqMemoryBatchSaving: state.qqMemoryBatchSaving,
+      qqSchemeSaving: state.qqSchemeSaving,
+      qqStickerSaving: state.qqStickerSaving,
+      requestAgentNavigation: state.requestAgentNavigation,
+      settingsSaving: state.settingsSaving,
+      webAccessSaving: state.webAccessSaving,
+    })),
+  );
   const [selectedId, setSelectedId] = useState(
     () => s.agents.find((agent) => agent.id === s.editorAgentId)?.id ?? s.agents[0]?.id ?? "",
   );
@@ -437,7 +494,7 @@ function SessionLinkDetail({ entry }: { entry: CapabilityEntry }) {
 
 function CapabilityDetail({ entry }: { entry: CapabilityEntry }) {
   const { t } = useTranslation();
-  const s = useSuperstringStore();
+  const openSettingsRoute = useSuperstringStore((state) => state.openSettingsRoute);
   if (entry.detail === "memory" || entry.detail === "knowledge")
     return (
       <CapabilityDetailShell entry={entry}>
@@ -467,17 +524,17 @@ function CapabilityDetail({ entry }: { entry: CapabilityEntry }) {
           <p className="text-sm text-muted-foreground">{t("capabilities.media.scopeNote")}</p>
           <CapabilityPolicyPanel modules={["qqMedia", "qqStickers"]} />
           <div className="flex flex-wrap gap-2 border-t pt-4">
-            <Button variant="outline" size="sm" onClick={() => s.openSettingsRoute("qq-stickers")}>
+            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("qq-stickers")}>
               {t("workspace.sticker_library")}
             </Button>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => s.openSettingsRoute("qq-scheme-config")}
+              onClick={() => openSettingsRoute("qq-scheme-config")}
             >
               {t("workspace.chat_schemes")}
             </Button>
-            <Button variant="outline" size="sm" onClick={() => s.openSettingsRoute("models")}>
+            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("models")}>
               {t("library.open.model.services")}
             </Button>
           </div>
@@ -489,7 +546,7 @@ function CapabilityDetail({ entry }: { entry: CapabilityEntry }) {
       <CapabilityDetailShell entry={entry}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
           <p className="text-sm text-muted-foreground">{t("capabilities.execution.scopeNote")}</p>
-          <Button variant="outline" size="sm" onClick={() => s.openSettingsRoute("task-ledger")}>
+          <Button variant="outline" size="sm" onClick={() => openSettingsRoute("task-ledger")}>
             {t("capabilities.execution.openTasks")}
           </Button>
         </div>

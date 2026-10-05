@@ -1,6 +1,7 @@
 import { ArrowLeft, Bot, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +17,30 @@ import { CapabilityEditor, IdentityEditor } from "./StudioEditors";
 
 /** The directory chooses an object; the studio always edits an explicit assistant. */
 export function AssistantWorkspace() {
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      agents: state.agents,
+      deleteAgents: state.deleteAgents,
+      discardSettingsPages: state.discardSettingsPages,
+      editorAgentId: state.editorAgentId,
+      editorDraft: state.editorDraft,
+      editorLoading: state.editorLoading,
+      modelNames: state.modelNames,
+      openSettingsRoute: state.openSettingsRoute,
+      pageEditor: state.pageEditor,
+      patchDraft: state.patchDraft,
+      pendingOperations: state.pendingOperations,
+      refreshModels: state.refreshModels,
+      requestAgentNavigation: state.requestAgentNavigation,
+      saveAllSettingsPages: state.saveAllSettingsPages,
+      saveCurrentSection: state.saveCurrentSection,
+      selectedNewSessionAgentId: state.selectedNewSessionAgentId,
+      setNewSessionAgent: state.setNewSessionAgent,
+      settingsRoute: state.settingsRoute,
+      settingsSaving: state.settingsSaving,
+      settingsView: state.settingsView,
+    })),
+  );
   const t = useTranslation().t;
   const [search, setSearch] = useState("");
   const [studio, setStudio] = useState(s.settingsView === "workspace" && !!s.pageEditor);
@@ -25,9 +49,13 @@ export function AssistantWorkspace() {
   useEffect(() => {
     void s.refreshModels();
   }, [s.refreshModels]);
-  const visible = s.agents.filter((a) =>
-    `${a.name} ${a.description} ${a.model_name}`.toLowerCase().includes(search.toLowerCase()),
-  );
+  const visible = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return s.agents;
+    return s.agents.filter((a) =>
+      `${a.name} ${a.description} ${a.model_name}`.toLowerCase().includes(needle),
+    );
+  }, [s.agents, search]);
   const select = (id: string) => {
     if (s.editorLoading || s.settingsSaving) return;
     s.requestAgentNavigation(id);

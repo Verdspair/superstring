@@ -66,6 +66,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 it("opens the latest page, loads older above, and revalidates every loaded page including source expiry", async () => {
   const events = vi
@@ -103,7 +104,7 @@ it("opens the latest page, loads older above, and revalidates every loaded page 
   ]);
   fireEvent.click(screen.getByRole("button", { name: "刷新记录" }));
   await screen.findByText("message-206");
-  expect(events.mock.calls[2][1]).toEqual({ direction: "after", afterSeq: 99 });
+  expect(events.mock.calls[2][1]).toEqual({ direction: "after", afterSeq: 99, limit: 104 });
   expect(events.mock.calls[3][1]).toEqual({ direction: "after", afterSeq: 200 });
   expect(screen.queryByText("message-100")).toBeNull();
   expect(screen.getByText("原文已过保留期")).toBeTruthy();
@@ -179,7 +180,7 @@ it("prepending earlier pages preserves the first visible source offset", async (
   await screen.findByText("message-100");
   expect(viewport.scrollTop).toBe(500);
 });
-it("restores the source anchor after clearing bodies in a blurred window", async () => {
+it("preserves a visible blurred timeline and revalidates its source anchor after hiding", async () => {
   const events = vi
     .fn()
     .mockResolvedValue({ items: [row(201), row(202)], nextSeq: 202, hasMore: false });
@@ -194,13 +195,18 @@ it("restores the source anchor after clearing bodies in a blurred window", async
   viewport.scrollTop = 200;
   fireEvent.scroll(viewport);
   fireEvent.blur(window);
+  expect(screen.getByText("message-201")).toBeTruthy();
+  expect(events).toHaveBeenCalledOnce();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  fireEvent(document, new Event("visibilitychange"));
   expect(screen.queryByText("message-201")).toBeNull();
   viewport.scrollTop = 0;
   fireEvent.scroll(viewport);
-  fireEvent.focus(window);
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  fireEvent(document, new Event("visibilitychange"));
   await screen.findByText("message-201");
   expect(viewport.scrollTop).toBe(200);
-  expect(events.mock.calls[1][1]).toEqual({ direction: "after", afterSeq: 200 });
+  expect(events.mock.calls[1][1]).toEqual({ direction: "after", afterSeq: 200, limit: 102 });
 });
 
 it("Home and End scroll the reading region without intercepting nested controls", async () => {

@@ -42,6 +42,7 @@ function setup(client: Partial<SuperstringApi>) {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 const source = { kind: "qq_event", id: "source", revision: "1" };
 const observed: ConversationEventView = {
@@ -107,7 +108,7 @@ it("keeps only the latest orphan media revision even when it becomes unavailable
   };
   expect(timelineRows([first, latest])).toEqual([latest]);
 });
-it("OneBot timeline revalidates expired bodies on refresh and clears projections on blur", async () => {
+it("OneBot timeline revalidates expired bodies and redacts projections only when hidden", async () => {
   const events = vi
     .fn()
     .mockResolvedValueOnce({ items: [observed], nextSeq: 1, hasMore: false })
@@ -124,9 +125,13 @@ it("OneBot timeline revalidates expired bodies on refresh and clears projections
   expect(await screen.findByText("原文已过保留期")).toBeTruthy();
   expect(screen.queryByText("source text")).toBeNull();
   expect(events.mock.calls[0][1]).toEqual({ direction: "latest" });
-  expect(events.mock.calls[1][1]).toEqual({ direction: "after", afterSeq: 0 });
+  expect(events.mock.calls[1][1]).toEqual({ direction: "after", afterSeq: 0, limit: 101 });
   fireEvent.blur(window);
+  expect(screen.getByText("原文已过保留期")).toBeTruthy();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  fireEvent(document, new Event("visibilitychange"));
   expect(screen.queryByText("原文已过保留期")).toBeNull();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 it("unknown text/sticker delivery shows independent receipt facts and offers no resend", async () => {
   const delivery: Delivery = {
@@ -324,4 +329,156 @@ it("separate group output targets show their own partial and unknown outcomes", 
         name: /重发|重试|Resend/,
       }),
     ).toBeNull();
+});
+
+it("projects 2000 records + 2000 revisions without dropping sources", () => {
+  const baseTime = "2026-10-02T10:00:00Z";
+  const records: ConversationEventView[] = [];
+
+  for (let i = 1; i <= 2000; i++) {
+    const s = { kind: "qq_event", id: `src-${i}`, revision: "1" };
+    records.push({
+      wake: null,
+      conversationId: "bot",
+      seq: i * 2,
+      eventKey: `event-${i}`,
+      kind: "inbound",
+      source: s,
+      sources: [s],
+      occurredAt: baseTime,
+      recordedAt: baseTime,
+      participant: { id: `user-${i}`, label: `User ${i}`, role: "user" },
+      addressing: {
+        reasons: ["private"],
+        mentionIds: [],
+        replyTo: i > 1 ? { sourceId: `src-${i - 1}` } : undefined,
+      },
+      runId: null,
+      outputId: null,
+      text: `message content ${i}`,
+      contentState: "active",
+      media: [],
+      deliveryStatus: null,
+      messageStatus: null,
+    });
+  }
+
+  const revisions: ConversationEventView[] = [];
+  for (let i = 1; i <= 2000; i++) {
+    const parentId = `src-${i}`;
+    revisions.push({
+      wake: null,
+      conversationId: "bot",
+      seq: i * 2 + 1,
+      eventKey: `rev-${i}`,
+      kind: "media_revision",
+      source: { kind: "qq_media", id: `media-src-${i}`, revision: "1" },
+      sources: [{ kind: "qq_event", id: parentId, revision: "1" }],
+      occurredAt: baseTime,
+      recordedAt: baseTime,
+      participant: null,
+      addressing: { reasons: [], mentionIds: [] },
+      runId: null,
+      outputId: null,
+      text: null,
+      contentState: "active",
+      media: [
+        {
+          id: `img-${i}`,
+          kind: "image",
+          description: `attachment ${i}`,
+          availability: "available",
+        },
+      ],
+      deliveryStatus: null,
+      messageStatus: null,
+    });
+  }
+
+  // Interleave records and revisions
+  const allEvents: ConversationEventView[] = [];
+  for (let i = 0; i < 2000; i++) {
+    allEvents.push(records[i]);
+    allEvents.push(revisions[i]);
+  }
+
+  const projected = timelineRows(allEvents);
+
+  expect(projected.length).toBe(2000);
+  // Verify strict ordering and source identity
+  expect(projected[0].seq).toBe(2);
+  expect(projected[0].source.id).toBe("src-1");
+  expect(projected[1999].seq).toBe(4000);
+  expect(projected[1999].source.id).toBe("src-2000");
+
+  // Verify revisions decorated parent correctly
+  expect(projected[0].media).toHaveLength(1);
+  expect(projected[0].media[0].id).toBe("img-1");
+  expect(projected[1999].media).toHaveLength(1);
+  expect(projected[1999].media[0].id).toBe("img-2000");
+});
+
+it("correctly resolves quotes with bySourceMap and handles duplicate quotes and unknown references", () => {
+  const quoteSource = { kind: "qq_event", id: "target-msg", revision: "1" };
+  const targetEvent: ConversationEventView = {
+    ...observed,
+    seq: 10,
+    source: quoteSource,
+    sources: [quoteSource],
+    text: "target message content",
+  };
+
+  const quotingEvent: ConversationEventView = {
+    ...observed,
+    seq: 11,
+    source: { kind: "qq_event", id: "quoting-msg-1", revision: "1" },
+    sources: [{ kind: "qq_event", id: "quoting-msg-1", revision: "1" }],
+    addressing: { reasons: [], mentionIds: [], replyTo: { sourceId: "target-msg" } },
+    text: "reply 1",
+  };
+
+  const duplicateQuotingEvent: ConversationEventView = {
+    ...observed,
+    seq: 12,
+    source: { kind: "qq_event", id: "quoting-msg-2", revision: "1" },
+    sources: [{ kind: "qq_event", id: "quoting-msg-2", revision: "1" }],
+    addressing: { reasons: [], mentionIds: [], replyTo: { sourceId: "target-msg" } },
+    text: "reply 2",
+  };
+
+  const unknownRefEvent: ConversationEventView = {
+    ...observed,
+    seq: 13,
+    source: { kind: "qq_event", id: "quoting-msg-3", revision: "1" },
+    sources: [{ kind: "qq_event", id: "quoting-msg-3", revision: "1" }],
+    addressing: { reasons: [], mentionIds: [], replyTo: { sourceId: "non-existent-source" } },
+    text: "reply to unknown",
+  };
+
+  const rows = timelineRows([targetEvent, quotingEvent, duplicateQuotingEvent, unknownRefEvent]);
+  const bySourceMap = new Map<string, ConversationEventView>();
+  for (const row of rows) {
+    if (row.source.id && !bySourceMap.has(row.source.id)) {
+      bySourceMap.set(row.source.id, row);
+    }
+    for (const ref of row.sources) {
+      if (ref.id && !bySourceMap.has(ref.id)) {
+        bySourceMap.set(ref.id, row);
+      }
+    }
+  }
+
+  // Exact resolution assertions
+  expect(bySourceMap.get("target-msg")).toBe(rows[0]);
+  expect(bySourceMap.get("quoting-msg-1")).toBe(rows[1]);
+  expect(bySourceMap.get("quoting-msg-2")).toBe(rows[2]);
+  expect(bySourceMap.get("non-existent-source")).toBeUndefined();
+
+  // Both quoting events reference the exact same target event object
+  const replyTarget1 = quotingEvent.addressing.replyTo?.sourceId;
+  const replyTarget2 = duplicateQuotingEvent.addressing.replyTo?.sourceId;
+  expect(replyTarget1).toBeDefined();
+  expect(replyTarget2).toBeDefined();
+  if (replyTarget1) expect(bySourceMap.get(replyTarget1)).toBe(targetEvent);
+  if (replyTarget2) expect(bySourceMap.get(replyTarget2)).toBe(targetEvent);
 });

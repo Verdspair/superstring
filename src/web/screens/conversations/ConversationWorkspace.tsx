@@ -28,7 +28,7 @@ import { ConversationIndex } from "./ConversationIndex";
 import { DirectConversation } from "./DirectConversation";
 import { ExternalConversation } from "./ExternalConversation";
 
-export function ConversationWorkspace() {
+export function ConversationWorkspace({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const mobile = useIsMobile();
   const conversation = useSuperstringStore(selectedConversation);
@@ -43,6 +43,18 @@ export function ConversationWorkspace() {
   }, [selected]);
   // 没有选中会话时「当前会话」没有对象：运行观测与任务自动按全局展示。
   const global = !conversation || scope === "global";
+  const isActivity = view === "activity";
+  const activityScopeKey = global ? "global" : (conversation?.id ?? "none");
+  const [visitedActivityScopes, setVisitedActivityScopes] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (isActivity) {
+      setVisitedActivityScopes((prev) =>
+        prev[activityScopeKey] ? prev : { ...prev, [activityScopeKey]: true },
+      );
+    }
+  }, [isActivity, activityScopeKey]);
+
   useEffect(() => {
     if (!global) setCollapsed(false);
   }, [global]);
@@ -132,20 +144,36 @@ export function ConversationWorkspace() {
             <ExternalConversation
               key={conversation.id}
               conversation={conversation}
-              active={view === "messages"}
+              active={active && view === "messages"}
             />
           ) : (
-            <DirectConversation key={conversation?.id ?? "none"} active={view === "messages"} />
+            <DirectConversation
+              key={conversation?.id ?? "none"}
+              active={active && view === "messages"}
+            />
           )}
         </div>
-        {view === "activity" &&
-          (global ? (
-            <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
-              <ObservabilityWorkspace />
-            </div>
-          ) : (
-            <ConversationActivity key={conversation.id} conversationId={conversation.id} />
-          ))}
+        {(isActivity || visitedActivityScopes[activityScopeKey]) && (
+          <div
+            key={activityScopeKey}
+            hidden={!isActivity}
+            className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden"
+          >
+            {global ? (
+              <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
+                <ObservabilityWorkspace active={active && isActivity} />
+              </div>
+            ) : (
+              conversation && (
+                <ConversationActivity
+                  key={conversation.id}
+                  conversationId={conversation.id}
+                  active={active && isActivity}
+                />
+              )
+            )}
+          </div>
+        )}
         {view === "tasks" && (
           <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
             {conversation && !global ? (

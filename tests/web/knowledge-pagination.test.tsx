@@ -42,6 +42,7 @@ const rowCheckbox = (name: string) =>
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("资料列表的服务端分页", () => {
@@ -79,6 +80,7 @@ describe("资料列表的服务端分页", () => {
   });
 
   it("搜索/分类/状态合并进服务端请求并重置回第一页", async () => {
+    vi.useFakeTimers();
     const client = setupLibrary({
       listKnowledgeDocuments: vi
         .fn()
@@ -95,6 +97,7 @@ describe("资料列表的服务端分页", () => {
 
     await act(async () => {
       fireEvent.change(searchInput(), { target: { value: "笔记" } });
+      await vi.advanceTimersByTimeAsync(250);
     });
     expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith(
       { search: "笔记", limit: 50 },
@@ -125,6 +128,7 @@ describe("资料列表的服务端分页", () => {
     // 清空搜索即回到不带 search 的请求，其余过滤保留。
     await act(async () => {
       fireEvent.change(searchInput(), { target: { value: "" } });
+      await vi.advanceTimersByTimeAsync(250);
     });
     expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith(
       { category: "default", status: "failed", limit: 50 },
@@ -133,6 +137,7 @@ describe("资料列表的服务端分页", () => {
   });
 
   it("迟到的旧请求不覆盖已经落页的新结果", async () => {
+    vi.useFakeTimers();
     let resolveSlow!: (value: KnowledgeDocumentsPage) => void;
     const slow = new Promise<KnowledgeDocumentsPage>((resolve) => {
       resolveSlow = resolve;
@@ -146,6 +151,7 @@ describe("资料列表的服务端分页", () => {
     await act(async () => render(<KnowledgeLibrary />));
     await act(async () => {
       fireEvent.change(searchInput(), { target: { value: "b" } });
+      await vi.advanceTimersByTimeAsync(250);
     });
     expect(store.getState().knowledgeDocuments.map((doc) => doc.id)).toEqual([docC.id]);
     await act(async () => {
@@ -224,6 +230,7 @@ describe("资料列表的服务端分页", () => {
   });
 
   it("模式保存只提交模式字段，成功后带过滤回第一页取真实总数", async () => {
+    vi.useFakeTimers();
     const client = setupLibrary({
       listKnowledgeDocuments: vi
         .fn()
@@ -235,6 +242,7 @@ describe("资料列表的服务端分页", () => {
     await act(async () => render(<KnowledgeLibrary />));
     await act(async () => {
       fireEvent.change(searchInput(), { target: { value: "标签" } });
+      await vi.advanceTimersByTimeAsync(250);
     });
     await act(async () => fireEvent.click(nextButton()));
     expect(store.getState().knowledgeCursors).toEqual([null, "c2"]);

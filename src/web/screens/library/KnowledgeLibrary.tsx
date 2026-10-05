@@ -9,8 +9,9 @@ import {
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { AlertDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
 import { Badge } from "@/components/ui/badge";
@@ -42,9 +43,36 @@ import { useSuperstringStore } from "@/store";
 import type { KnowledgeCategory } from "../../../shared/contracts/knowledge";
 import { JobRunLink } from "../runs/RunEntry";
 
+/** 搜索输入防抖常量（250ms），避免高频击键请求风暴与网络竞态 */
+const KNOWLEDGE_SEARCH_DEBOUNCE_MS = 250;
+
 export function KnowledgeLibrary() {
-  const s = useSuperstringStore(),
-    t = useTranslation().t;
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      agents: state.agents,
+      deleteKnowledgeItem: state.deleteKnowledgeItem,
+      error: state.error,
+      knowledgeBusy: state.knowledgeBusy,
+      knowledgeCategories: state.knowledgeCategories,
+      knowledgeCursors: state.knowledgeCursors,
+      knowledgeDirty: state.knowledgeDirty,
+      knowledgeDocuments: state.knowledgeDocuments,
+      knowledgeEditor: state.knowledgeEditor,
+      knowledgeFilters: state.knowledgeFilters,
+      knowledgeLoading: state.knowledgeLoading,
+      knowledgeModelEditor: state.knowledgeModelEditor,
+      knowledgeNextCursor: state.knowledgeNextCursor,
+      knowledgeSettings: state.knowledgeSettings,
+      knowledgeTotal: state.knowledgeTotal,
+      loadKnowledge: state.loadKnowledge,
+      loadKnowledgePage: state.loadKnowledgePage,
+      openSettingsRoute: state.openSettingsRoute,
+      requestKnowledgeEditor: state.requestKnowledgeEditor,
+      saveKnowledgeEditor: state.saveKnowledgeEditor,
+      updateKnowledgeEditor: state.updateKnowledgeEditor,
+    })),
+  );
+  const t = useTranslation().t;
   const [selected, setSelected] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<{
       kind: "document" | "category";
@@ -61,6 +89,30 @@ export function KnowledgeLibrary() {
     filters = s.knowledgeFilters,
     page = s.knowledgeCursors.length,
     paging = s.knowledgeLoading || s.knowledgeBusy || s.knowledgeDirty;
+
+  // 搜索框本地受控状态与防抖调度
+  const [localSearch, setLocalSearch] = useState(filters.search);
+  const isComposingRef = useRef(false);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localEditSeqRef = useRef(0);
+  const appliedSeqRef = useRef(0);
+
+  useEffect(() => {
+    // 本地输入序列若未应用（用户仍在输入或防抖中），不让服务端的 filters.search 冲掉本地草稿
+    if (localEditSeqRef.current === appliedSeqRef.current) {
+      setLocalSearch(filters.search);
+    }
+  }, [filters.search]);
+
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // 翻页、换过滤与刷新只在成功落页后清选择：失败保留原列表与既有选择，
   // 批量快照因此只含本页显式勾选项，不会夹带已翻走页的旧 ID。
   const changeList = (load: Promise<boolean>) => {
@@ -68,6 +120,40 @@ export function KnowledgeLibrary() {
       if (ok) setSelected([]);
     });
   };
+
+  const scheduleSearch = (nextSearch: string) => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+    }
+    const seq = localEditSeqRef.current;
+    searchTimerRef.current = setTimeout(() => {
+      searchTimerRef.current = null;
+      appliedSeqRef.current = seq;
+      changeList(s.loadKnowledge({ search: nextSearch }));
+    }, KNOWLEDGE_SEARCH_DEBOUNCE_MS);
+  };
+
+  const cancelPendingSearch = () => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    appliedSeqRef.current = localEditSeqRef.current;
+  };
+
+  const flushPendingSearch = (overridePatch?: Parameters<typeof s.loadKnowledge>[0]) => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    appliedSeqRef.current = localEditSeqRef.current;
+    const patch = {
+      ...(localSearch !== filters.search ? { search: localSearch } : {}),
+      ...overridePatch,
+    };
+    return s.loadKnowledge(patch);
+  };
+
   const activeCategory = s.knowledgeCategories.find((item) => item.id === filters.category);
   return (
     <section className="space-y-4" aria-label={t("library.document.library")}>
@@ -76,13 +162,32 @@ export function KnowledgeLibrary() {
           className="min-w-48 flex-1"
           aria-label={t("library.search.documents")}
           placeholder={t("library.search.titles.summaries.or.tags")}
-          value={filters.search}
-          onChange={(e) => changeList(s.loadKnowledge({ search: e.target.value }))}
+          value={localSearch}
+          onChange={(e) => {
+            const nextVal = e.target.value;
+            localEditSeqRef.current += 1;
+            setLocalSearch(nextVal);
+            if (!isComposingRef.current) {
+              scheduleSearch(nextVal);
+            }
+          }}
+          onCompositionStart={() => {
+            isComposingRef.current = true;
+            if (searchTimerRef.current) {
+              clearTimeout(searchTimerRef.current);
+              searchTimerRef.current = null;
+            }
+          }}
+          onCompositionEnd={(e) => {
+            isComposingRef.current = false;
+            localEditSeqRef.current += 1;
+            scheduleSearch(e.currentTarget.value);
+          }}
         />
         <NativeSelect
           aria-label={t("library.filter.categories")}
           value={filters.category}
-          onChange={(e) => changeList(s.loadKnowledge({ category: e.target.value }))}
+          onChange={(e) => changeList(flushPendingSearch({ category: e.target.value }))}
         >
           <option value="all">{t("library.all.categories")}</option>
           {s.knowledgeCategories.map((item) => (
@@ -94,7 +199,7 @@ export function KnowledgeLibrary() {
         <NativeSelect
           aria-label={t("library.organization.status")}
           value={filters.status}
-          onChange={(e) => changeList(s.loadKnowledge({ status: e.target.value }))}
+          onChange={(e) => changeList(flushPendingSearch({ status: e.target.value }))}
         >
           <option value="all">{t("library.all.statuses")}</option>
           {["pending", "queued", "running", "succeeded", "failed", "cancelled", "disabled"].map(
@@ -108,7 +213,7 @@ export function KnowledgeLibrary() {
         <Button
           variant="outline"
           disabled={s.knowledgeLoading || s.knowledgeDirty || s.knowledgeBusy}
-          onClick={() => changeList(s.loadKnowledge())}
+          onClick={() => changeList(flushPendingSearch())}
         >
           <RefreshCw />
           {t("library.refresh")}
@@ -329,7 +434,10 @@ export function KnowledgeLibrary() {
               variant="outline"
               aria-label={t("library.previous.page")}
               disabled={page <= 1 || paging}
-              onClick={() => changeList(s.loadKnowledgePage("prev"))}
+              onClick={() => {
+                cancelPendingSearch();
+                changeList(s.loadKnowledgePage("prev"));
+              }}
             >
               <ChevronLeft />
             </Button>
@@ -338,7 +446,10 @@ export function KnowledgeLibrary() {
               variant="outline"
               aria-label={t("library.next.page")}
               disabled={s.knowledgeNextCursor === null || paging}
-              onClick={() => changeList(s.loadKnowledgePage("next"))}
+              onClick={() => {
+                cancelPendingSearch();
+                changeList(s.loadKnowledgePage("next"));
+              }}
             >
               <ChevronRight />
             </Button>

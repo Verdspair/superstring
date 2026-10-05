@@ -163,11 +163,15 @@ export function conversationRoutes(
             direction === "latest" ? Number.MAX_SAFE_INTEGER : before,
             limit,
           );
+    // T13 Step6：scope 缓存按真实 event.conversationId（epoch/owner）分键，只活在本次
+    // 请求闭包——同一真实会话只重建一次，不同 epoch/owner 各自重算；不跨请求持久，
+    // 不按展示 root 或分页范围共键。投影授权与既有守卫全部不变。
+    const requestScopes = new Map<string, ReturnType<typeof ownerScope>>();
     return c.json({
       ...result,
       items: result.items.map(({ event, seq }) => ({
         ...projectConversationEvent(db, event),
-        ...qqEventFacts(db, factStore, event, conversation),
+        ...qqEventFacts(db, factStore, event, conversation, requestScopes),
         conversationId: conversation.id,
         seq,
       })),
@@ -177,14 +181,38 @@ export function conversationRoutes(
 }
 
 /** T13 Step6：按事件种类分派详情组（入站事实 / 出站 delivery 确认部件）。 */
+
+/** 本请求内按真实 event conversationId（epoch/owner）缓存 ownerScope；跨请求不持久。 */
+function requestScope(
+  db: Database,
+  conversation: ConversationSummary,
+  eventConversationId: string,
+  requestScopes: Map<string, ReturnType<typeof ownerScope>>,
+): ReturnType<typeof ownerScope> {
+  let located = requestScopes.get(eventConversationId);
+  if (located === undefined) {
+    located = ownerScope(db, {
+      kind: "conversation",
+      id: eventConversationId,
+      userId: DEFAULT_USER_ID,
+      agentId: conversation.agentId,
+    });
+    requestScopes.set(eventConversationId, located);
+  }
+  return located;
+}
+
 function qqEventFacts(
   db: Database,
   store: EvidenceStore,
   event: ConversationEvent,
   conversation: ConversationSummary,
+  requestScopes: Map<string, ReturnType<typeof ownerScope>>,
 ): { qqMessageFacts?: QqMessageFact[] } {
-  if (event.kind === "inbound") return qqInboundEventFacts(db, store, event, conversation);
-  if (event.kind === "delivery") return qqDeliveryEventFacts(db, store, event, conversation);
+  if (event.kind === "inbound")
+    return qqInboundEventFacts(db, store, event, conversation, requestScopes);
+  if (event.kind === "delivery")
+    return qqDeliveryEventFacts(db, store, event, conversation, requestScopes);
   return {};
 }
 
@@ -205,17 +233,13 @@ function qqInboundEventFacts(
   store: EvidenceStore,
   event: ConversationEvent,
   conversation: ConversationSummary,
+  requestScopes: Map<string, ReturnType<typeof ownerScope>>,
 ): { qqMessageFacts?: QqMessageFact[] } {
   const eventKeySource = event.sources.find((ref) => ref.kind === "qq_event");
   if (!eventKeySource) return {};
   // 真实 event 归属（不是展示 root）：ownerScope 从 conversation 行重建完整 scope，
   // remap 后 root ID 与真实事件会话不一致时自然拿不到 scope。
-  const located = ownerScope(db, {
-    kind: "conversation",
-    id: event.conversationId,
-    userId: DEFAULT_USER_ID,
-    agentId: conversation.agentId,
-  });
+  const located = requestScope(db, conversation, event.conversationId, requestScopes);
   if (!located || located === "ambiguous") return {};
   const scope: QqConversationScope = located.scope;
   const now = new Date().toISOString();
@@ -274,6 +298,7 @@ function qqDeliveryEventFacts(
   store: EvidenceStore,
   event: ConversationEvent,
   conversation: ConversationSummary,
+  requestScopes: Map<string, ReturnType<typeof ownerScope>>,
 ): { qqMessageFacts?: QqMessageFact[] } {
   const intentSource = event.sources.find((ref) => ref.kind === "outbound_intent");
   if (!intentSource || intentSource.id !== event.source.id) return {};
@@ -304,12 +329,7 @@ function qqDeliveryEventFacts(
     claimed.add(entry[1]);
   }
   if (!claimed.size) return {};
-  const located = ownerScope(db, {
-    kind: "conversation",
-    id: event.conversationId,
-    userId: DEFAULT_USER_ID,
-    agentId: conversation.agentId,
-  });
+  const located = requestScope(db, conversation, event.conversationId, requestScopes);
   if (!located || located === "ambiguous") return {};
   const scope = located.scope;
   const now = new Date().toISOString();

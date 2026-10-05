@@ -1,39 +1,88 @@
 import { useEffect, useRef } from "react";
 import { startReadPolling } from "./read-task";
 
-/** No polling outside the foreground. Losing focus also discards the current read material. */
+export interface ForegroundReadOptions {
+  paused?: boolean;
+  enabled?: boolean;
+  intervalMs?: number;
+  retainOnBlur?: boolean;
+  onSuspend?: () => void;
+}
+
 export function useForegroundRead(
   load: () => void,
   clear: () => void,
-  { paused = false, intervalMs = 5000 }: { paused?: boolean; intervalMs?: number } = {},
+  {
+    paused = false,
+    enabled = true,
+    intervalMs = 5000,
+    retainOnBlur = false,
+    onSuspend,
+  }: ForegroundReadOptions = {},
 ) {
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  const suspendRef = useRef(onSuspend);
+  suspendRef.current = onSuspend;
+  const refreshRef = useRef<(() => void) | null>(null);
+  const previousPaused = useRef(paused);
+  const lastLoad = useRef(0);
   useEffect(() => {
     let foreground = document.visibilityState !== "hidden";
-    const discard = () => {
+    let discarded = false;
+    const read = () => {
+      if (!enabled || !foreground || document.visibilityState === "hidden") return;
+      discarded = false;
+      lastLoad.current = Date.now();
+      load();
+    };
+    const suspend = () => {
       foreground = false;
-      clear();
+      suspendRef.current?.();
+      if (!retainOnBlur) {
+        discarded = true;
+        clear();
+      }
     };
-    const refresh = () => {
-      if (foreground && document.visibilityState !== "hidden" && !pausedRef.current) load();
-    };
+    const hide = suspend;
     const focus = () => {
+      const wasForeground = foreground;
       foreground = true;
-      refresh();
+      if (pausedRef.current) return;
+      if (
+        retainOnBlur &&
+        !discarded &&
+        !wasForeground &&
+        Date.now() - lastLoad.current < intervalMs
+      )
+        return;
+      read();
     };
-    const visibility = () => (document.visibilityState === "hidden" ? discard() : focus());
-    if (foreground) load();
-    const polling = startReadPolling(refresh, intervalMs);
-    window.addEventListener("blur", discard);
+    const visibility = () => (document.visibilityState === "hidden" ? hide() : focus());
+    const blur = () => (document.visibilityState === "hidden" ? hide() : suspend());
+    refreshRef.current = read;
+    if (enabled && foreground) read();
+    else suspendRef.current?.();
+    const polling = enabled
+      ? startReadPolling(() => {
+          if (!pausedRef.current && Date.now() - lastLoad.current >= intervalMs) read();
+        }, intervalMs)
+      : null;
+    window.addEventListener("blur", blur);
     window.addEventListener("focus", focus);
     document.addEventListener("visibilitychange", visibility);
     return () => {
-      polling.cancel();
-      clear();
-      window.removeEventListener("blur", discard);
+      polling?.cancel();
+      suspendRef.current?.();
+      if (!retainOnBlur) clear();
+      refreshRef.current = null;
+      window.removeEventListener("blur", blur);
       window.removeEventListener("focus", focus);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [load, clear, intervalMs]);
+  }, [load, clear, enabled, intervalMs, retainOnBlur]);
+  useEffect(() => {
+    if (paused && !previousPaused.current) suspendRef.current?.();
+    previousPaused.current = paused;
+  }, [paused]);
 }

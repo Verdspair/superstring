@@ -13,10 +13,10 @@ import { ReadError } from "./presentation";
 import { QueryToolbar } from "./QueryToolbar";
 import { TraceComparison } from "./TraceComparison";
 
-export function ObservabilityWorkspace() {
+export function ObservabilityWorkspace({ active = true }: { active?: boolean } = {}) {
   return (
     <div className="w-full min-w-0 px-4 py-4">
-      <ExecutionWorkspace />
+      <ExecutionWorkspace active={active} />
     </div>
   );
 }
@@ -26,9 +26,11 @@ export function ExecutionWorkspace({
   header = true,
   refreshSignal = 0,
   paused: pausedProp,
+  active = true,
   onPausedChange,
   onState,
 }: {
+  active?: boolean;
   conversationId?: string;
   header?: boolean;
   refreshSignal?: number;
@@ -49,10 +51,11 @@ export function ExecutionWorkspace({
     [trace, setTrace] = useState<string | null>(null),
     [compare, setCompare] = useState(false),
     [selected, setSelected] = useState<string[]>([]);
-  const paused = pausedProp ?? pausedLocal;
+  const paused = !active || (pausedProp ?? pausedLocal);
   const { items, summary, loading, error, hasMore, refresh, loadMore } = useRuntimeTraces(
     filters,
     paused,
+    active,
   );
   const lastRefreshSignal = useRef(0);
   const notify = useRef(onState);
@@ -142,7 +145,7 @@ export function ExecutionWorkspace({
       aria-label={t("observability.executionWorkspace")}
       className="min-w-0 space-y-6 outline-none"
     >
-      {trace ? (
+      {trace && active ? (
         <InvestigationCanvas
           key={trace}
           traceId={trace}
@@ -150,7 +153,7 @@ export function ExecutionWorkspace({
           paused={paused}
           onBack={back}
         />
-      ) : compare ? (
+      ) : compare && active ? (
         <TraceComparison ids={selected} filters={filters} onBack={back} />
       ) : (
         <motion.div

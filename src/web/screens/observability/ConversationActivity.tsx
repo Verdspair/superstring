@@ -19,7 +19,13 @@ const phases: Record<string, string> = {
   unknown: "observability.connectionStatusUnknown",
 };
 
-export function ConversationActivity({ conversationId }: { conversationId: string }) {
+export function ConversationActivity({
+  conversationId,
+  active = true,
+}: {
+  conversationId: string;
+  active?: boolean;
+}) {
   const { t } = useTranslation();
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -66,7 +72,8 @@ export function ConversationActivity({ conversationId }: { conversationId: strin
           <ConversationRuntimeSummary
             conversationId={conversationId}
             refreshSignal={refreshSignal}
-            paused={paused}
+            paused={!active || paused}
+            active={active}
             onState={reportSummary}
           />
           <ExecutionWorkspace
@@ -74,7 +81,8 @@ export function ConversationActivity({ conversationId }: { conversationId: strin
             conversationId={conversationId}
             header={false}
             refreshSignal={refreshSignal}
-            paused={paused}
+            paused={!active || paused}
+            active={active}
             onPausedChange={setPaused}
             onState={reportTraces}
           />
@@ -88,11 +96,13 @@ export function ConversationRuntimeSummary({
   conversationId,
   refreshSignal = 0,
   paused = false,
+  active = true,
   onState,
 }: {
   conversationId: string;
   refreshSignal?: number;
   paused?: boolean;
+  active?: boolean;
   onState?: (state: { loading: boolean }) => void;
 }) {
   const { t, i18n } = useTranslation(),
@@ -101,7 +111,10 @@ export function ConversationRuntimeSummary({
     (signal: AbortSignal) => api.getConversationRuntimeStatus(conversationId, signal),
     [api, conversationId],
   );
-  const { data, error, loading, refresh } = useLiveResource(read, { paused });
+  const { data, error, loading, refresh } = useLiveResource(read, {
+    paused: paused || !active,
+    enabled: active,
+  });
   const lastRefreshSignal = useRef(0);
   const notify = useRef(onState);
   notify.current = onState;

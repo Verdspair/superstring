@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BrandLogo } from "./design-system/BrandLogo";
 import { DesignSystemProvider } from "./design-system/Providers";
@@ -65,9 +65,19 @@ function Application() {
   const bootstrap = useSuperstringStore((s) => s.bootstrap);
   const unsaved = useSuperstringStore(settingsHaveDrafts);
   const space = useSuperstringStore(activeSpace);
+  const isConversations = space === "conversations";
+  const [visitedConversations, setVisitedConversations] = useState(isConversations);
+
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (isConversations) {
+      setVisitedConversations(true);
+    }
+  }, [isConversations]);
+
   useEffect(() => {
     if (!unsaved) return;
     const warn = (event: BeforeUnloadEvent) => {
@@ -77,27 +87,40 @@ function Application() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [unsaved]);
+
   if (status === "loading" || status === "idle")
     return (
       <div className="h-svh">
         <Waiting bootstrap />
       </div>
     );
-  const Screen = {
-    conversations: ConversationWorkspace,
-    assistants: AssistantWorkspace,
-    capabilities: CapabilitiesWorkspace,
-    schemes: SchemesWorkspace,
-    library: LibraryWorkspace,
-    connections: ConnectionWorkspace,
-    models: ModelServices,
-    preferences: Preferences,
-  }[space];
+
+  const OtherScreen = !isConversations
+    ? {
+        assistants: AssistantWorkspace,
+        capabilities: CapabilitiesWorkspace,
+        schemes: SchemesWorkspace,
+        library: LibraryWorkspace,
+        connections: ConnectionWorkspace,
+        models: ModelServices,
+        preferences: Preferences,
+      }[space]
+    : null;
+
   return (
     <WorkspaceShell>
-      <Suspense fallback={<Waiting />}>
-        <Screen />
-      </Suspense>
+      {(visitedConversations || isConversations) && (
+        <div hidden={!isConversations} className={isConversations ? "h-full" : "hidden"}>
+          <Suspense fallback={<Waiting />}>
+            <ConversationWorkspace active={isConversations} />
+          </Suspense>
+        </div>
+      )}
+      {OtherScreen && (
+        <Suspense fallback={<Waiting />}>
+          <OtherScreen />
+        </Suspense>
+      )}
     </WorkspaceShell>
   );
 }

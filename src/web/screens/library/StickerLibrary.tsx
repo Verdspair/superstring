@@ -1,6 +1,7 @@
 import { FolderPlus, ImagePlus, RefreshCw, SlidersHorizontal, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { AlertDialog, ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
 import { Badge } from "@/components/ui/badge";
@@ -29,7 +30,34 @@ import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 
 export function StickerLibrary() {
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      annotateQqSticker: state.annotateQqSticker,
+      bulkUpdateQqStickers: state.bulkUpdateQqStickers,
+      closeQqStickerEditor: state.closeQqStickerEditor,
+      error: state.error,
+      importQqStickerFile: state.importQqStickerFile,
+      loadQqStickerBatchImpact: state.loadQqStickerBatchImpact,
+      loadQqStickers: state.loadQqStickers,
+      openQqStickerEditor: state.openQqStickerEditor,
+      openSettingsRoute: state.openSettingsRoute,
+      patchQqStickerEditor: state.patchQqStickerEditor,
+      qqStickerAssets: state.qqStickerAssets,
+      qqStickerBatchImpact: state.qqStickerBatchImpact,
+      qqStickerCollections: state.qqStickerCollections,
+      qqStickerEditor: state.qqStickerEditor,
+      qqStickerImpact: state.qqStickerImpact,
+      qqStickerImportNotice: state.qqStickerImportNotice,
+      qqStickerLoading: state.qqStickerLoading,
+      qqStickerSaving: state.qqStickerSaving,
+      createQqStickerCollection: state.createQqStickerCollection,
+      qqStickerSelection: state.qqStickerSelection,
+      renameQqStickerCollection: state.renameQqStickerCollection,
+      saveQqStickerEditor: state.saveQqStickerEditor,
+      setQqStickerEnabled: state.setQqStickerEnabled,
+      setQqStickerSelection: state.setQqStickerSelection,
+    })),
+  );
   const { t, i18n } = useTranslation();
   const [search, setSearch] = useState(""),
     [collection, setCollection] = useState("all"),
@@ -53,15 +81,27 @@ export function StickerLibrary() {
   }, [s.loadQqStickers]);
   const editor = s.qqStickerEditor,
     dirty = qqStickerEditorDirty(editor);
-  const assets = s.qqStickerAssets.filter(
-    (asset) =>
-      (collection === "all" || asset.collection_ids.includes(collection)) &&
-      (enabled === "all" || asset.enabled === (enabled === "enabled")) &&
-      (media === "all" || asset.media_type === media) &&
-      `${asset.name} ${asset.description ?? ""} ${asset.tags.join(" ")}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-  );
+
+  // 预先缓存每项资产的小写检索文本，仅在 qqStickerAssets 变化时重新计算
+  const assetSearchIndex = useMemo(() => {
+    return s.qqStickerAssets.map((asset) => ({
+      asset,
+      searchBlob: `${asset.name} ${asset.description ?? ""} ${asset.tags.join(" ")}`.toLowerCase(),
+    }));
+  }, [s.qqStickerAssets]);
+
+  const assets = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return assetSearchIndex
+      .filter(
+        ({ asset, searchBlob }) =>
+          (collection === "all" || asset.collection_ids.includes(collection)) &&
+          (enabled === "all" || asset.enabled === (enabled === "enabled")) &&
+          (media === "all" || asset.media_type === media) &&
+          (!needle || searchBlob.includes(needle)),
+      )
+      .map(({ asset }) => asset);
+  }, [assetSearchIndex, collection, enabled, media, search]);
   const open = (id: string | null) => {
     if (dirty) setSwitchTo(id);
     else {
