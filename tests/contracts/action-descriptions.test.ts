@@ -192,7 +192,7 @@ describe("qq media tool descriptions", () => {
       effect: "read",
       parameters: z.toJSONSchema(QQ_MEDIA_TOOL_SCHEMAS["media.list"]),
       description:
-        "List images recorded in this conversation's journal, newest first. Returns {status, items:[{id,eventKey,index,kind,described,attempts}], nextCursor}; the fetch reference and note text are never returned. Pass nextCursor back for older pages; ids are usable only in this run by media.note.read and media.describe. ok with empty items and no nextCursor means there is nothing.",
+        "List images recorded in this conversation's journal, newest first. Returns {status, items:[{id,eventKey,index,kind,described,attempts}], nextCursor}; the fetch reference and note text are never returned. Pass nextCursor back for older pages; ids are usable only in this run by media.note.read, media.describe and media.read. ok with empty items and no nextCursor means there is nothing.",
     });
     expect(QQ_MEDIA_TOOL_DESCRIPTIONS["media.note.read"]).toEqual({
       name: "media.note.read",
@@ -200,7 +200,7 @@ describe("qq media tool descriptions", () => {
       effect: "read",
       parameters: z.toJSONSchema(QQ_MEDIA_TOOL_SCHEMAS["media.note.read"]),
       description:
-        "Read the stored description of an id returned by media.list in this run. {status:'ok', model, text, offset, nextOffset}: model names the model that wrote it; offset/limit count Unicode characters (limit <= 4096), follow nextOffset until null. {status:'undescribed', attempts} means no description exists yet — nothing is known about the picture. Read-only: never calls a model and never writes.",
+        "Read the stored description of an id returned by media.list in this run. {status:'ok', model, text, offset, nextOffset}: model names the model that wrote it; offset/limit count Unicode characters (limit <= 4096), follow nextOffset until null. Without questionMessageId this reads the first (baseline) description; with questionMessageId it reads the already-succeeded higher-detail description for that same question, written by an earlier media.describe or media.read with the same pointer — the pointer only selects which stored description to read: it never triggers a vision read, never spends an attempt, and never falls back to the baseline text. {status:'undescribed', attempts} means no such description exists yet — nothing is known about the picture at that level. Read-only: never calls a model and never writes.",
     });
     expect(QQ_MEDIA_TOOL_DESCRIPTIONS["media.describe"]).toEqual({
       name: "media.describe",
@@ -208,7 +208,15 @@ describe("qq media tool descriptions", () => {
       effect: "write",
       parameters: z.toJSONSchema(QQ_MEDIA_TOOL_SCHEMAS["media.describe"]),
       description:
-        "Ask the configured vision model to read one listed image id (only images; only ids from media.list in this run; single-flight, reused from cache, at most two attempts ever). Returns {status,attempt,described} metadata only — read the text with media.note.read. A failed read is recorded but never announced in the conversation; a second attempt waits for a later addressed supplement. Cancels with the run.",
+        "Ask the configured vision model to read one listed image id (only images; only ids from media.list in this run; single-flight, reused from cache, at most two attempts per read task). Returns {status,attempt,described} metadata only — read the text with media.note.read. A failed read is recorded but never announced in the conversation; a second attempt waits for a later addressed supplement, and switching model or settings never resets the attempts a task has spent. Cancels with the run.",
+    });
+    expect(QQ_MEDIA_TOOL_DESCRIPTIONS["media.read"]).toEqual({
+      name: "media.read",
+      capability: "media.read",
+      effect: "read",
+      parameters: z.toJSONSchema(QQ_MEDIA_TOOL_SCHEMAS["media.read"]),
+      description:
+        "Receive one listed image id as picture input for the next step (only images; only ids from media.list in this run). Returns {status, mediaId, category, images:[{sourceId,revision,mimeType,sha256,width,height,frameIndex}]} metadata only — never the picture bytes. Whether the picture is actually attached to the next step still follows the conversation's image settings. Read-only for the conversation: preparing the picture is a derived cache, not an external write. Cancels with the run.",
     });
   });
   test("schemas keep their parse contract", () => {
@@ -217,7 +225,47 @@ describe("qq media tool descriptions", () => {
     expect(list.parse({ limit: 50 })).toEqual({ limit: 50 });
     expect(() => list.parse({ limit: 51 })).toThrow();
     expect(() => QQ_MEDIA_TOOL_SCHEMAS["media.note.read"].parse({})).toThrow();
+    expect(QQ_MEDIA_TOOL_SCHEMAS["media.note.read"].parse({ id: "m1" })).toEqual({ id: "m1" });
+    expect(
+      QQ_MEDIA_TOOL_SCHEMAS["media.note.read"].parse({ id: "m1", questionMessageId: "q1" }),
+    ).toEqual({ id: "m1", questionMessageId: "q1" });
+    expect(() =>
+      QQ_MEDIA_TOOL_SCHEMAS["media.note.read"].parse({ id: "m1", extra: true }),
+    ).toThrow();
     expect(QQ_MEDIA_TOOL_SCHEMAS["media.describe"].parse({ id: "m1" })).toEqual({ id: "m1" });
+    expect(
+      QQ_MEDIA_TOOL_SCHEMAS["media.describe"].parse({ id: "m1", questionMessageId: "q1" }),
+    ).toEqual({ id: "m1", questionMessageId: "q1" });
+    expect(
+      QQ_MEDIA_TOOL_SCHEMAS["media.read"].parse({ id: "m1", questionMessageId: "q1" }),
+    ).toEqual({ id: "m1", questionMessageId: "q1" });
+    expect(() => QQ_MEDIA_TOOL_SCHEMAS["media.read"].parse({ id: "m1", extra: true })).toThrow();
+    // 单一指针 schema：describe/read/note.read 引用同一个 questionMessageId 定义，不复制第二份。
+    expect(QQ_MEDIA_TOOL_SCHEMAS["media.describe"].shape.questionMessageId).toBe(
+      QQ_MEDIA_TOOL_SCHEMAS["media.read"].shape.questionMessageId,
+    );
+    expect(QQ_MEDIA_TOOL_SCHEMAS["media.note.read"].shape.questionMessageId).toBe(
+      QQ_MEDIA_TOOL_SCHEMAS["media.describe"].shape.questionMessageId,
+    );
+  });
+  test("questionMessageId pointer wording stays verbatim on all three tools", () => {
+    const pointer =
+      "Only when this image needs a NEW detail that the current question asks for: the " +
+      "id of the real already-seen user message that asks it, exactly as printed in the " +
+      "qq_message_facts block. It must be this turn's question message (the message this " +
+      "turn answers, or a message it directly quotes), and this image must be in that " +
+      "message's own image range. The pointer only selects the higher-detail spec for " +
+      "this image: the host re-reads that real message, freezes the question key from " +
+      "its real original text and re-verifies the question, source and current " +
+      "capability itself — your wording is never used as the question, the pointer " +
+      "grants no extra permission, and the same question never buys a second read. " +
+      "Omit it for a first read of this image.";
+    for (const key of ["media.describe", "media.read", "media.note.read"] as const) {
+      const json = z.toJSONSchema(QQ_MEDIA_TOOL_SCHEMAS[key]) as {
+        properties: Record<string, { description?: string }>;
+      };
+      expect(json.properties.questionMessageId?.description).toBe(pointer);
+    }
   });
 });
 

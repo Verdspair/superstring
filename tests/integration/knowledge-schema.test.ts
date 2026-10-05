@@ -216,6 +216,10 @@ const v51 = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"),
   "utf8",
 );
+const v52 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0052_qq_message_multimodal.sql"),
+  "utf8",
+);
 const ddl = (db: Database) =>
   db
     .query(
@@ -315,6 +319,7 @@ describe("frozen schema defaults and product initialization", () => {
     v49,
     v50,
     v51,
+    v52,
   ] as const;
   // Independent snapshots: v1 matches published v0.2.0-alpha; v2-v4 are the
   // accepted pre-ADR0016 development schemas; v5 onwards are the additive QQ
@@ -403,6 +408,13 @@ describe("frozen schema defaults and product initialization", () => {
     // 与每项能力的单调修订）。迁移部署前补了 capability_revisions 列，故此值在 v1—v50 逐字节
     // 重现原值之后重取；重取当日 0051 尚未部署，没有已迁移的库需要兼容。
     "dd68b3874de96ca6d0a3c4abf7027016826968a01138f6ff1dccbf0b90c48da0",
+    // 0052：QQ 消息事实/出站事实/媒体资产与读取任务（纯新增表 + qq_members/qq_schemes 追加列 +
+    // 两条 scheme JSON 组回填 + 旧媒体 note 的 legacy 任务导入）。在 v1—v51 逐字节重现原值之后
+    // 量取；不含任何数据行，指纹只由 DDL 决定，legacy 导入不影响它。T02 fix1：读任务唯一约束
+    // 从表内 UNIQUE（对 NULL 互异，baseline 形同虚设）改为两个 partial unique index，指纹随之
+    // 重取——0052 是本批次在制品、从未应用到真实库。F4：qq_message_facts 追加逐字段姓名来源
+    // 两列（group_card_source/personal_nickname_source，CHECK 'wire'/'local'/NULL），指纹再取。
+    "6ba8b8640f063ce20002d5bf16b4431ae554d8f0c51e7479d2455eb748971420",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
@@ -427,7 +439,7 @@ describe("frozen schema defaults and product initialization", () => {
           target_chars: 300,
         });
         ensureBusinessSchema(db);
-        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
         expect(db.query("SELECT target_chars FROM memory_policies").get()).toEqual({
           target_chars: 300,
         });
@@ -460,7 +472,7 @@ describe("knowledge schema v2 migration", () => {
         old.query(`SELECT * FROM ${table}`).all(),
       );
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
       expect(ddl(old)).toEqual(ddl(fresh.db));
       expect(
         BUSINESS_TABLE_NAMES.slice(0, 16).map((table) => old.query(`SELECT * FROM ${table}`).all()),
@@ -544,13 +556,14 @@ describe("knowledge schema v2 migration", () => {
           v49,
           v50,
           v51,
+          v52,
         ]),
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
       expect(db.query("SELECT body FROM memory_entries").get()).toEqual({ body: "旧记忆" });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
     } finally {
       db.close();
     }

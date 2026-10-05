@@ -20,7 +20,7 @@ import type {
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
-import { invalidSchemeInputs, parseAttentionMembers } from "./draft-state";
+import { invalidSchemeInputs, invalidSchemeTimezone, parseAttentionMembers } from "./draft-state";
 import {
   QQ_STORAGE_PAGE_SIZE,
   type QqAccessState,
@@ -386,6 +386,15 @@ function createSchemeDirectorySync(set: StoreSet, get: StoreGet) {
     carry("prompts", editor.prompts, next.prompts);
     if (changed.has("reply.split_by_speaker"))
       next.reply = { ...next.reply, split_by_speaker: editor.reply.split_by_speaker };
+    // 0052 两组：已改叶子保留草稿（含 stages 嵌套逐叶子与可空原图），未改叶子跟随新答案。
+    carry("message_settings", editor.messageSettings, next.messageSettings);
+    carry("media_input", editor.mediaInput, next.mediaInput);
+    // 0052 stages 逐叶子 carry：三相位是契约固定布尔，只把已改的相位从草稿编辑器带过来。
+    const draftStages = editor.mediaInput.stages;
+    const nextStages = { ...next.mediaInput.stages };
+    for (const phase of ["decision", "evaluation", "generation"] as const)
+      if (changed.has(`media_input.stages.${phase}`)) nextStages[phase] = draftStages[phase];
+    next.mediaInput = { ...next.mediaInput, stages: nextStages };
     return next;
   };
   const applyDirectoryRead = (schemes: QqSchemeResponse[], refreshEditor = true) => {
@@ -566,6 +575,11 @@ export function createQqSchemeActions(
         set({ error: msg("请先修正方案中的无效数字，再保存。") });
         return false;
       }
+      // 0052 时区：非法 IANA 原文拦页内保存（与服务端契约同一判定）。
+      if (invalidSchemeTimezone(get())) {
+        set({ error: msg("请填写真实的 IANA 时区名称，再保存。") });
+        return false;
+      }
       const schemeId = editor.source.id;
       const operation = beginOperation();
       try {
@@ -581,6 +595,8 @@ export function createQqSchemeActions(
           sticker_collections: { collection_ids: editor.stickerCollectionIds },
           prompts: editor.prompts,
           reply: editor.reply,
+          message_settings: editor.messageSettings,
+          media_input: editor.mediaInput,
           expected_revision: editor.source.revision,
         });
         if (!isCurrentApi(operation)) return false;
@@ -609,6 +625,11 @@ export function createQqSchemeActions(
         set({ error: msg("请先修正方案中的无效数字，再保存。") });
         return false;
       }
+      // 复制同样不能带非法时区出去（create 没有兜底校验，洗过去就是坏数据）。
+      if (invalidSchemeTimezone(get())) {
+        set({ error: msg("请填写真实的 IANA 时区名称，再保存。") });
+        return false;
+      }
       const operation = beginOperation();
       try {
         const created = await operation.api.createQqScheme({
@@ -623,6 +644,9 @@ export function createQqSchemeActions(
           sticker_collections: { collection_ids: editor.stickerCollectionIds },
           prompts: editor.prompts,
           reply: editor.reply,
+          // create 通道没有「未提供＝保持现值」：两组不带上会让另存为新方案静默丢自定义。
+          message_settings: editor.messageSettings,
+          media_input: editor.mediaInput,
         });
         if (!isCurrentApi(operation)) return false;
         set((state) => ({ qqSchemes: [...state.qqSchemes, created] }));

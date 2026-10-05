@@ -10,14 +10,18 @@ import {
   QQ_REPLY_DEFAULT,
   QQ_STICKER_DEDUP_DEFAULT,
   type QqSchemeResponse,
+  QqSchemeResponseSchema,
 } from "../../src/shared/contracts/qq";
 import {
   isEmptyQqGroupOverrides,
   mergeQqGroupScheme,
   normalizeQqGroupCapabilities,
+  type QqGroupSchemeOverrides,
   QqGroupSchemeOverridesSchema,
   UpdateQqGroupConfigRequestSchema,
 } from "../../src/shared/contracts/qq-group-config";
+import { QQ_MEDIA_INPUT_DEFAULT } from "../../src/shared/contracts/qq-media-input";
+import { QQ_MESSAGE_SETTINGS_DEFAULT } from "../../src/shared/contracts/qq-message";
 
 const COLLECTION_A = "11111111-1111-4111-8111-111111111111";
 const COLLECTION_B = "22222222-2222-4222-8222-222222222222";
@@ -37,6 +41,8 @@ function baseScheme(): QqSchemeResponse {
     sticker_collections: { collection_ids: [COLLECTION_A, COLLECTION_B] },
     prompts: { ...QQ_PROMPT_DEFAULTS },
     reply: { ...QQ_REPLY_DEFAULT },
+    message_settings: { ...QQ_MESSAGE_SETTINGS_DEFAULT },
+    media_input: { ...QQ_MEDIA_INPUT_DEFAULT },
     revision: 1,
     created_at: "2026-01-01T00:00:00.000000Z",
     updated_at: "2026-01-01T00:00:00.000000Z",
@@ -165,5 +171,125 @@ describe("本群方案差异的稀疏形状", () => {
     });
     expect(request.overrides).toEqual({});
     expect(request.scheme_change).toBeUndefined();
+  });
+});
+
+describe("0052 消息设置与图片输入组的稀疏差异（T01 Step5）", () => {
+  /**
+   * 合并结果总是完整方案（生效值不允许缺席组）；契约在迁移间隙保持 optional，
+   * 测试用一次显式 parse ＋缺组即抛错把「完整」钉成运行时事实，避免散落的非空断言。
+   */
+  function mergeEffective(
+    base: QqSchemeResponse,
+    overrides: QqGroupSchemeOverrides,
+  ): QqSchemeResponse & {
+    message_settings: NonNullable<QqSchemeResponse["message_settings"]>;
+    media_input: NonNullable<QqSchemeResponse["media_input"]>;
+  } {
+    const merged = QqSchemeResponseSchema.parse(mergeQqGroupScheme(base, overrides));
+    if (merged.message_settings === undefined || merged.media_input === undefined) {
+      throw new Error("合并结果必须携带完整的消息设置与图片输入组");
+    }
+    return merged as QqSchemeResponse & {
+      message_settings: NonNullable<QqSchemeResponse["message_settings"]>;
+      media_input: NonNullable<QqSchemeResponse["media_input"]>;
+    };
+  }
+
+  it("media_input.stages 逐字段覆盖：只关 evaluation，decision/generation 保持基础方案", () => {
+    // 计划 T12 Step7 的合并语义锚点（行为落地在 T12，合并纯函数在共享契约先钉死）。
+    const overrides = QqGroupSchemeOverridesSchema.parse({
+      media_input: { stages: { evaluation: false } },
+    });
+    expect(overrides.media_input).toEqual({ stages: { evaluation: false } });
+    const effective = mergeEffective(baseScheme(), overrides);
+    expect(effective.media_input.stages).toEqual({
+      decision: true,
+      evaluation: false,
+      generation: true,
+    });
+    // 单独关 generation 也一样：缺席成员永远是逐字段继承，不是整组替换。
+    const onlyGeneration = QqGroupSchemeOverridesSchema.parse({
+      media_input: { stages: { generation: false } },
+    });
+    expect(mergeEffective(baseScheme(), onlyGeneration).media_input.stages).toEqual({
+      decision: true,
+      evaluation: true,
+      generation: false,
+    });
+    // stages 缺席时三阶段全部保持基础方案。
+    const modeOnly = QqGroupSchemeOverridesSchema.parse({ media_input: { mode: "description" } });
+    const merged = mergeEffective(baseScheme(), modeOnly);
+    expect(merged.media_input.mode).toBe("description");
+    expect(merged.media_input.stages).toEqual(QQ_MEDIA_INPUT_DEFAULT.stages);
+  });
+
+  it("stages 的 false 是实打实的覆盖；允许全 false（图片开关开但不自动发，仅按需）", () => {
+    const allFalse = QqGroupSchemeOverridesSchema.parse({
+      media_input: { stages: { decision: false, evaluation: false, generation: false } },
+    });
+    const effective = mergeEffective(baseScheme(), allFalse);
+    expect(effective.media_input.stages).toEqual({
+      decision: false,
+      evaluation: false,
+      generation: false,
+    });
+  });
+
+  it("ordinary_still_max_dimension: null 合并后就是 null（原图），不是跟随基础方案", () => {
+    const overrides = QqGroupSchemeOverridesSchema.parse({
+      media_input: { ordinary_still_max_dimension: null },
+    });
+    expect(overrides.media_input?.ordinary_still_max_dimension).toBeNull();
+    expect(mergeEffective(baseScheme(), overrides).media_input.ordinary_still_max_dimension).toBe(
+      null,
+    );
+    // 数值覆盖照常生效；0 不是合法尺寸（64–2048），不是「跟随」的写法。
+    const sized = QqGroupSchemeOverridesSchema.parse({
+      media_input: { ordinary_still_max_dimension: 1024 },
+    });
+    expect(mergeEffective(baseScheme(), sized).media_input.ordinary_still_max_dimension).toBe(1024);
+    expect(
+      QqGroupSchemeOverridesSchema.safeParse({
+        media_input: { ordinary_still_max_dimension: 0 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("message_settings 逐字段稀疏覆盖，其余字段保持基础方案", () => {
+    const overrides = QqGroupSchemeOverridesSchema.parse({
+      message_settings: { time_display: "full" },
+    });
+    expect(overrides.message_settings).toEqual({ time_display: "full" });
+    const effective = mergeEffective(baseScheme(), overrides);
+    expect(effective.message_settings.time_display).toBe("full");
+    expect(effective.message_settings.timezone).toBe(QQ_MESSAGE_SETTINGS_DEFAULT.timezone);
+    expect(effective.message_settings.reply_mode).toBe(QQ_MESSAGE_SETTINGS_DEFAULT.reply_mode);
+    expect(effective.message_settings.reply_depth).toBe(QQ_MESSAGE_SETTINGS_DEFAULT.reply_depth);
+    // depth=9 越界拒绝；时区沿用同一 IANA 验证。
+    expect(
+      QqGroupSchemeOverridesSchema.safeParse({ message_settings: { reply_depth: 9 } }).success,
+    ).toBe(false);
+    expect(
+      QqGroupSchemeOverridesSchema.safeParse({ message_settings: { timezone: "Not/AZone" } })
+        .success,
+    ).toBe(false);
+  });
+
+  it("两组的额外字段与空组归一化语义与其他组一致", () => {
+    expect(QqGroupSchemeOverridesSchema.safeParse({ media_input: { nope: 1 } }).success).toBe(
+      false,
+    );
+    expect(QqGroupSchemeOverridesSchema.safeParse({ message_settings: { nope: 1 } }).success).toBe(
+      false,
+    );
+    expect(
+      QqGroupSchemeOverridesSchema.safeParse({ media_input: { stages: { nope: true } } }).success,
+    ).toBe(false);
+    const empty = QqGroupSchemeOverridesSchema.parse({
+      message_settings: {},
+      media_input: { stages: {} },
+    });
+    expect(empty).toEqual({});
   });
 });

@@ -3,7 +3,7 @@
 // The two promises worth pinning: the stored key is never rendered (the field is empty and
 // password-typed, and clearing it is its own explicit action), and a model cannot be saved without
 // a context window — that number is what keeps the QQ chain able to call an external model at all.
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProviderResponse } from "../../src/shared/contracts/models";
 import { api, type SuperstringApi } from "../../src/web/api";
@@ -181,6 +181,221 @@ describe("Model services workspace", () => {
       expected_revision: 3,
     });
     expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("Draft name");
+  });
+  // 0052/T12：vision 是三态——false 与「未声明」是不同的持久状态，往返都不许被压成另一端。
+  it("preserves vision:false through a save round-trip", async () => {
+    const declared = {
+      ...provider,
+      models: [
+        {
+          name: "deepseek-chat",
+          context_window: 65536,
+          capabilities: {
+            toolCalling: false,
+            parallelToolCalls: false,
+            codeExecution: false,
+            vision: false,
+          },
+        },
+      ],
+    };
+    const fake = await renderPage([declared]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(
+      PROVIDER_ID,
+      expect.objectContaining({
+        models: [
+          {
+            name: "deepseek-chat",
+            context_window: 65536,
+            capabilities: expect.objectContaining({ vision: false }),
+          },
+        ],
+      }),
+    );
+  });
+  it("keeps an undeclared vision absent after saving (not written as false)", async () => {
+    const undeclared = {
+      ...provider,
+      models: [
+        {
+          name: "deepseek-chat",
+          context_window: 65536,
+          capabilities: { toolCalling: true, parallelToolCalls: false, codeExecution: false },
+        },
+      ],
+    };
+    const fake = await renderPage([undeclared]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(
+      PROVIDER_ID,
+      expect.objectContaining({
+        models: [
+          {
+            name: "deepseek-chat",
+            context_window: 65536,
+            capabilities: { toolCalling: true, parallelToolCalls: false, codeExecution: false },
+          },
+        ],
+      }),
+    );
+  });
+  // 0052/T13b：vision 三态下拉——unknown 是「未声明」不是 false；清除只删 vision 键，
+  // 保留其余能力（含合法的未知现有键，payload 沿真实 spread 保留）。
+  it("writes vision:true through the tri-state select without touching other declarations", async () => {
+    const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: true };
+    const current = { ...provider, models: [{ ...provider.models[0], capabilities }] };
+    const fake = await renderPage([current]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.change(screen.getByLabelText("图片理解"), { target: { value: "supported" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(
+      PROVIDER_ID,
+      expect.objectContaining({
+        models: [
+          {
+            name: "deepseek-chat",
+            context_window: 65536,
+            capabilities: {
+              toolCalling: true,
+              parallelToolCalls: false,
+              codeExecution: true,
+              vision: true,
+            },
+          },
+        ],
+      }),
+    );
+  });
+  it("writes vision:false through the select and keeps other capability keys when saving", async () => {
+    const capabilities = { toolCalling: false, parallelToolCalls: false, codeExecution: true };
+    const current = { ...provider, models: [{ ...provider.models[0], capabilities }] };
+    const fake = await renderPage([current]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.change(screen.getByLabelText("图片理解"), { target: { value: "unsupported" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(
+      PROVIDER_ID,
+      expect.objectContaining({
+        models: [
+          {
+            name: "deepseek-chat",
+            context_window: 65536,
+            capabilities: {
+              toolCalling: false,
+              parallelToolCalls: false,
+              codeExecution: true,
+              vision: false,
+            },
+          },
+        ],
+      }),
+    );
+  });
+  it("clearing the vision selection removes only vision and preserves the other declarations", async () => {
+    const capabilities = {
+      toolCalling: true,
+      parallelToolCalls: false,
+      codeExecution: true,
+      vision: true,
+    };
+    const current = { ...provider, models: [{ ...provider.models[0], capabilities }] };
+    const fake = await renderPage([current]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    fireEvent.change(screen.getByLabelText("图片理解"), { target: { value: "unknown" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(
+      PROVIDER_ID,
+      expect.objectContaining({
+        models: [
+          {
+            name: "deepseek-chat",
+            context_window: 65536,
+            capabilities: { toolCalling: true, parallelToolCalls: false, codeExecution: true },
+          },
+        ],
+      }),
+    );
+  });
+  it("shows 未声明 for a model without capabilities and keeps it undeclared after saving", async () => {
+    const fake = await renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    expect((screen.getByLabelText("图片理解") as HTMLSelectElement).value).toBe("unknown");
+    fireEvent.change(screen.getByLabelText("上下文窗口"), { target: { value: "131072" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    expect(fake.updateModelProvider).toHaveBeenCalledWith(PROVIDER_ID, {
+      name: provider.name,
+      base_url: provider.base_url,
+      models: [{ name: "deepseek-chat", context_window: 131072 }],
+      expected_revision: 3,
+    });
+  });
+  it("keeps per-model vision tri-state independent across multiple models", async () => {
+    const current: ModelProviderResponse = {
+      ...provider,
+      models: [
+        {
+          name: "vision-model",
+          context_window: 65536,
+          capabilities: {
+            toolCalling: false,
+            parallelToolCalls: false,
+            codeExecution: false,
+            vision: true,
+          },
+        },
+        { name: "plain-model", context_window: 32768 },
+      ],
+    };
+    const fake = await renderPage([current]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    // 两个模型各有一个同名字段：按模型的能力声明分组取各自的下拉，不靠脆弱的全局序号。
+    const group = screen.getByRole("group", { name: "vision-model 的能力声明" });
+    const visionSelect = within(group).getByRole("combobox");
+    expect(visionSelect).toBeTruthy();
+    expect((visionSelect as HTMLSelectElement).value).toBe("supported");
+    fireEvent.change(visionSelect, { target: { value: "unsupported" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
+    const models = vi.mocked(fake.updateModelProvider).mock.calls[0][1].models as {
+      name: string;
+      capabilities?: { vision?: boolean };
+    }[];
+    expect(models).toEqual([
+      {
+        name: "vision-model",
+        context_window: 65536,
+        capabilities: {
+          toolCalling: false,
+          parallelToolCalls: false,
+          codeExecution: false,
+          vision: false,
+        },
+      },
+      { name: "plain-model", context_window: 32768 },
+    ]);
+  });
+  it("reads back an existing model without vision as 未声明 and keeps its saved declarations", async () => {
+    const saved = {
+      ...provider,
+      models: [
+        {
+          name: "deepseek-chat",
+          context_window: 65536,
+          capabilities: { toolCalling: true, parallelToolCalls: true, codeExecution: false },
+        },
+      ],
+    };
+    await renderPage([saved]);
+    fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    const select = screen.getByLabelText("图片理解") as HTMLSelectElement;
+    expect(select.value).toBe("unknown");
+    expect(screen.getByRole("checkbox", { name: "原生工具调用" }).getAttribute("data-state")).toBe(
+      "checked",
+    );
   });
   it("rejects missing capacity using the provider contract", async () => {
     const fake = await edit();

@@ -323,6 +323,10 @@ export async function mediaReadFailureThenSupplement(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     vision: ["fail", "图里是一只猫"],
     model: [],
+    mediaInput: {
+      mode: "native",
+      stages: { decision: false, evaluation: false, generation: false },
+    },
   });
   let mediaId: string | null = null;
   driveToolFirst(harness, (observation) => {
@@ -362,6 +366,7 @@ export async function mediaReadFailureThenSupplement(): Promise<ScenarioRun> {
   if (blockedRun === undefined) throw new Error("缺少被媒体闸门挡下的运行");
 
   // ② 更晚、明确叫她看这张图的补充：直接回应路径重读一次（最后一次尝试）并收口。
+  harness.advance(1);
   harness.receive({ id: "2", speaker: "20002", addressed: true, text: "就是这张，你看下" });
   harness.model?.push([decideInvoke("media.list", {})]);
   const result = await harness.activate("direct_reply");

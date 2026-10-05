@@ -4,6 +4,7 @@ import type {
   ConversationEventView,
   ConversationSummary,
 } from "../../../shared/contracts/conversation";
+import type { QqIdentity } from "../../../shared/contracts/qq-message";
 import { Badge } from "../../components/ui/badge";
 import { timelineKey } from "../../features/conversations/use-timeline-scroll";
 import { cn } from "../../lib/utils";
@@ -46,6 +47,102 @@ const unavailable = {
   revoked: "workspace.original_content_was_revoked_or_deleted",
   unavailable: "workspace.original_content_is_unavailable",
 };
+const nameStates = {
+  known: "workspace.qq_event_name_state_known",
+  unknown: "workspace.qq_event_name_state_unknown",
+  legacy: "workspace.qq_event_name_state_legacy",
+};
+
+/** 一条身份的双名展示：发送时快照与当前映射分行，legacy 明确"未知"而不冒充。 */
+function QqNameLines({ identity }: { identity: QqIdentity }) {
+  const { t } = useTranslation();
+  const current = identity.currentName;
+  return (
+    <>
+      <p>
+        {t("workspace.qq_event_snapshot_names")}:{" "}
+        {identity.nameState === "legacy" ? (
+          <span className="break-all">{identity.legacyDisplayName ?? "—"}</span>
+        ) : identity.groupCard !== null || identity.personalNickname !== null ? (
+          <>
+            <span className="break-all">{identity.groupCard ?? "—"}</span>
+            {" / "}
+            <span className="break-all">{identity.personalNickname ?? "—"}</span>
+          </>
+        ) : (
+          t("workspace.qq_event_name_state_unknown")
+        )}
+        {identity.nameState !== "known" && (
+          <span className="ml-1 text-[9px] opacity-75">{t(nameStates[identity.nameState])}</span>
+        )}
+      </p>
+      <p>
+        {t("workspace.qq_event_current_names")}:{" "}
+        {current ? (
+          <>
+            <span className="break-all">{current.groupCard ?? "—"}</span>
+            {" / "}
+            <span className="break-all">{current.personalNickname ?? "—"}</span>
+          </>
+        ) : (
+          <span className="italic opacity-75">
+            {t("workspace.qq_event_current_names_unavailable")}
+          </span>
+        )}
+      </p>
+    </>
+  );
+}
+
+/** T13 Step6：`source_record` 折叠区内的 QQ 消息详情组（快照/当前双名、@、reply、平台 ID）。 */
+function QqEventFactDetails({
+  facts,
+}: {
+  facts: NonNullable<ConversationEventView["qqMessageFacts"]>;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="mt-2 space-y-2 border-l-2 border-muted pl-2">
+      <p className="font-medium">{t("workspace.qq_event_details")}</p>
+      {facts.map((fact) => (
+        <div key={fact.id} className="space-y-1">
+          <QqNameLines identity={fact.speaker} />
+          <p>
+            {t("workspace.qq_event_platform_message_id")}:{" "}
+            <code className="break-all">{fact.platformMessageId ?? "—"}</code>
+          </p>
+          {fact.mentions.length > 0 && (
+            <p>
+              {t("workspace.qq_event_mentions")}:{" "}
+              {fact.mentions.map((mention, index) => (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: Mentions are an immutable ordered snapshot; repeated @ needs the index for a unique key.
+                  key={`${mention.qq}:${index}`}
+                  className="mr-2 break-all"
+                >
+                  @{mention.qq === "all" ? t("workspace.qq_event_mention_all") : mention.qq}
+                </span>
+              ))}
+            </p>
+          )}
+          {fact.replyTo && (
+            <p>
+              {t("workspace.qq_event_reply_to")}:{" "}
+              <code className="break-all">{fact.replyTo.platformMessageId}</code>
+            </p>
+          )}
+          <p>
+            {t(
+              fact.completeness === "full"
+                ? "workspace.qq_event_completeness_full"
+                : "workspace.qq_event_completeness_legacy_partial",
+            )}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
 export function EventRecord({
   event,
   rows,
@@ -109,8 +206,12 @@ export function EventRecord({
               {t(reasons[reason])}
             </Badge>
           ))}
-          {event.addressing.mentionIds.map((id) => (
-            <span key={id} className="text-[11px] text-primary">
+          {event.addressing.mentionIds.map((id, index) => (
+            <span
+              // biome-ignore lint/suspicious/noArrayIndexKey: Mention IDs are an immutable ordered snapshot; repeated @ needs the index for a unique key.
+              key={`${id}:${index}`}
+              className="text-[11px] text-primary"
+            >
               @{conversation.participants.find((person) => person.id === id)?.label ?? id}{" "}
               <code>{id}</code>
             </span>
@@ -231,6 +332,9 @@ export function EventRecord({
             {event.source.kind}:{event.source.id}
           </p>
           <p>{t("workspace.event_revision", { "0": event.seq, "1": event.source.revision })}</p>
+          {event.qqMessageFacts && event.qqMessageFacts.length > 0 && (
+            <QqEventFactDetails facts={event.qqMessageFacts} />
+          )}
         </details>
       </article>
     </li>

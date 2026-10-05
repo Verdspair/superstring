@@ -59,6 +59,10 @@ run(path.join(root, "node_modules/bun/bin/bun.exe"), [
   "--minify-syntax",
   "./src/server/installed-entry.ts",
   "./src/server/agent/quickjs-worker.ts",
+  // The QQ image worker must be its own compile entry: qq-image-worker.ts resolves the
+  // entry file relative to import.meta.url, and a missing entry would break the scaling
+  // and GIF-sampling paths in compiled products (T14 Step5).
+  "./src/server/services/qq-image-worker-entry.ts",
   "--outfile",
   path.join(packageDir, "app", "superstring-server.exe"),
 ]);
@@ -76,7 +80,7 @@ const manifest = {
   version,
   platform: "win32-x64",
   layoutVersion: 1,
-  businessSchemaVersion: 51,
+  businessSchemaVersion: 52,
   kind: "full-package",
   files,
   launcher: fileRecord(path.join(packageDir, "superstring.exe"), "superstring.exe"),

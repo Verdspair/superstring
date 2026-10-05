@@ -102,15 +102,16 @@ async function postChat(
 
 /** 从模型请求里按名字取最近一条 action_observation（内容为 JSON 文本）。 */
 function lastObservation(
-  messages: readonly { content: string }[],
+  messages: readonly { content: string | unknown[] }[],
   name: string,
 ): { arguments?: unknown; value?: { items?: unknown[] } } | undefined {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
-    if (!message?.content.includes(`"${name}"`)) continue;
+    const content = message?.content;
+    if (typeof content !== "string" || !content.includes(`"${name}"`)) continue;
     let parsed: unknown;
     try {
-      parsed = JSON.parse(message.content);
+      parsed = JSON.parse(content);
     } catch {
       continue;
     }
@@ -130,7 +131,9 @@ function historyBodyRef(input: CompleteInput): string {
   return first.bodyRef;
 }
 
-function readTexts(calls: readonly { messages: readonly { content: string }[] }[]): unknown[] {
+function readTexts(
+  calls: readonly { messages: readonly { content: string | unknown[] }[] }[],
+): unknown[] {
   const texts: unknown[] = [];
   for (const call of calls) {
     const items = lastObservation(call.messages, "history.read")?.value?.items;

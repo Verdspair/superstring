@@ -1,6 +1,7 @@
 import type { Delivery } from "../../shared/contracts/conversation";
 import type { ConversationEventRepository } from "../db/conversation-event-repository";
 import type { OutboundIntentRepository, OutboundTarget } from "../db/outbound-intent-repository";
+import { confirmQqOutboundPart } from "../db/qq-message-repository";
 import { recordQqSend } from "../db/qq-send-repository";
 import type { Orm } from "../db/repositories";
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
@@ -59,6 +60,23 @@ export class OutboundDelivery {
     const parts = repository.parts(id);
     if (!parts.some((p) => p.attempted_at)) return;
     const target = JSON.parse(row.target) as OutboundTarget;
+    // The projected send and its speech record must not outlive their provenance: the kept
+    // window is capped by the earliest of the intent's own expiry and the outbound fact's
+    // expiry (by exact intent id, never by text or time guessing). A missing fact is not
+    // guessed around — the intent's stamp alone then caps; with no stamp at all nothing is
+    // passed and the plain retention stamp stands.
+    const factExpiresAt = (
+      repository.db
+        .query("SELECT expires_at FROM qq_outbound_message_facts WHERE intent_id=?")
+        .get(id) as { expires_at: string } | undefined
+    )?.expires_at;
+    const sourceExpiresAt = [row.expires_at, factExpiresAt]
+      .filter((cap): cap is string => cap != null)
+      .reduce<string | undefined>(
+        (earliest, cap) =>
+          earliest === undefined || Date.parse(cap) < Date.parse(earliest) ? cap : earliest,
+        undefined,
+      );
     const text =
       parts
         .filter((p) => p.kind === "text" && p.status === "confirmed" && p.payload)
@@ -91,6 +109,7 @@ export class OutboundDelivery {
         sentAtSeconds: Math.floor(
           Date.parse(parts.find((p) => p.attempted_at)!.attempted_at!) / 1000,
         ),
+        sourceExpiresAt,
       },
       undefined,
       repository.db,
@@ -153,7 +172,7 @@ export class OutboundDelivery {
     }
   }
   private async deliverParts(id: string, span?: TraceScope): Promise<Delivery | null> {
-    const { repository, journal } = this.options;
+    const { repository, journal, orm } = this.options;
     let row = repository.row(id);
     if (!row) return null;
     while (!this.stopped && ["planned", "delivering"].includes(row.status)) {
@@ -238,6 +257,28 @@ export class OutboundDelivery {
             },
             this.now(),
           );
+          // 平台 part 消息 ID 映射（§13.4）：只有确认送达的部件才映射到实际 part 正文；
+          // 未确认（failed/unknown/not_sent）不作为已发原文，facts 保持该部件空缺。
+          if (result.kind === "confirmed") {
+            // 旧意图可能缺出站事实行：只按库内存在性判断，不凭模型拼身份。
+            const factsExist =
+              repository.db
+                .query("SELECT 1 FROM qq_outbound_message_facts WHERE intent_id=?")
+                .get(id) !== null;
+            if (factsExist) {
+              confirmQqOutboundPart(
+                orm,
+                {
+                  intentId: id,
+                  platformMessageId: result.messageId,
+                  kind: claim.part.kind,
+                  ordinal: claim.part.ordinal,
+                  text: "text" in claim.payload ? claim.payload.text : null,
+                },
+                repository.db,
+              );
+            }
+          }
           this.projectLegacy(id);
           this.revision(id);
         })();

@@ -18,8 +18,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
-import { sampleQqAnimationFrames } from "./qq-animation-frames";
-import { QQ_STICKER_CONTENT_TYPES, readQqImageHeader } from "./qq-image-header";
+import { prepareQqImage } from "./qq-image-codec";
 import type { QqMediaReadAdapter } from "./qq-media-reader";
 
 /**
@@ -53,27 +52,55 @@ export interface QqMediaAdapterOptions {
   readonly maxDimension?: number;
 }
 
-/** The frames to show for an animation, or the picture itself for a still. */
-function imagesFor(
+/** The frames to show for an animation, or the picture itself for a still (§7.4). */
+async function imagesFor(
   bytes: Uint8Array,
   frames: number,
   maxDimension: number,
-): { mimeType: string; bytes: Uint8Array }[] {
-  const header = readQqImageHeader(bytes);
-  if (header.kind !== "read") throw new Error("QQ media adapter could not read the image header");
-  if (header.format !== "gif") {
-    return [{ mimeType: QQ_STICKER_CONTENT_TYPES[header.format], bytes }];
-  }
-  // §7.1's 有限抽帧: a GIF is shown as sampled, composited frames rather than as the file.
-  const sample = sampleQqAnimationFrames(bytes, {
-    frames,
-    maxDimension,
-    budgetTokens: 1,
+  signal: AbortSignal,
+): Promise<
+  {
+    mimeType: string;
+    bytes: Uint8Array;
+    frameIndex: number | null;
+    sourceFrameCount: number;
+    truncated: boolean;
+  }[]
+> {
+  const prepared = await prepareQqImage(bytes, {
+    category: "ordinary",
+    detail: false,
+    stillMaxDimension: null,
+    frameCount: frames,
+    frameMaxDimension: maxDimension,
+    signal,
   });
-  if (sample.kind !== "sampled" || sample.frames.length === 0) {
-    throw new Error("QQ media adapter could not sample the animation");
-  }
-  return sample.frames.map((frame) => ({ mimeType: "image/png", bytes: frame.png }));
+  return prepared.map((frame) => ({
+    mimeType: frame.mimeType,
+    bytes: frame.bytes,
+    frameIndex: frame.frameIndex,
+    sourceFrameCount: frame.sourceFrameCount,
+    truncated: frame.truncated,
+  }));
+}
+
+function samplingSuffix(
+  sourceId: string,
+  images: readonly { frameIndex: number | null; sourceFrameCount: number; truncated: boolean }[],
+): string {
+  const sampled = images.filter((image) => image.frameIndex !== null);
+  if (sampled.length === 0) return "";
+  return `\n${JSON.stringify({
+    sampled_frames: {
+      source: sourceId,
+      suppliedCount: sampled.length,
+      truncated: sampled.some((image) => image.truncated),
+      frames: sampled.map((image) => ({
+        index: image.frameIndex,
+        sourceTotal: image.sourceFrameCount,
+      })),
+    },
+  })}\n以上仅是对动画的有限采样，不是完整动画；未列出的帧你没有看到。`;
 }
 
 export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaReadAdapter {
@@ -95,7 +122,29 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
   return {
     // 语音与视频没有实现：能力声明是这一版的产品事实，不是临时限制。
     capabilities: ["image"] as const,
-    async read({ kind, sourceRef, model, source: reference, owner, signal }): Promise<string> {
+    // 身份派生的受控字节：复用同一个 fetchSource 链（不建第二下载路径）；
+    // reader 已 fetch 的 bytes 由 read() 的 bytes 参数复用，不重复下载。
+    async fetchBytes(input: {
+      kind: "image" | "record" | "video";
+      sourceRef: string;
+      signal?: AbortSignal;
+    }) {
+      const fetched = await options.fetchSource({
+        kind: input.kind,
+        sourceRef: input.sourceRef,
+        signal: input.signal,
+      });
+      return { bytes: fetched.bytes };
+    },
+    async read({
+      kind,
+      sourceRef,
+      model,
+      source: reference,
+      owner,
+      signal,
+      bytes,
+    }): Promise<string> {
       if (kind === "record") {
         throw new Error("QQ media adapter cannot transcribe voice: the protocol is undecided");
       }
@@ -103,17 +152,28 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
         throw new Error("QQ media adapter does not read video");
       }
       signal?.throwIfAborted();
-      const source = await options.fetchSource({ kind, sourceRef, signal });
+      // 一次下载两用：reader 为身份派生取过的字节直接复用（同一受控链，不二次下载）。
+      const source = bytes ? { bytes } : await options.fetchSource({ kind, sourceRef, signal });
       signal?.throwIfAborted();
       // The transport reference can contain a signed URL or a data URL. Only the source
       // identity and the runtime's image hashes are persisted in a ContextHandle.
       const sourceId = reference?.id ?? createHash("sha256").update(sourceRef).digest("hex");
+      const signalForPrepare = signal ?? new AbortController().signal;
+      // The worker path cannot clone an optional signal into its job; it requires a real
+      // AbortSignal, and this request's own signal (already carried through fetchSource) is
+      // the cancellation the caller gave us — never a fresh one that would fake no-cancellation.
+      const images = await imagesFor(source.bytes, frames, maxDimension, signalForPrepare);
+      // §11: cancellation is re-checked after the await — a read cancelled while the codec
+      // worker was running must not continue into a vision call, and the worker's own
+      // `cancelled` error (carrying the caller's reason) is rethrown, not swallowed.
+      signalForPrepare.throwIfAborted();
+      const sampledPrompt = `${prompt}${samplingSuffix(sourceId, images)}`;
       return options.agentRuntime.completeVisionLeaf(
         { id: "media.describe", version: "1" },
         {
           model,
-          prompt,
-          images: imagesFor(source.bytes, frames, maxDimension),
+          prompt: sampledPrompt,
+          images,
           signal,
           owner: owner ?? { kind: "qq_media", id: sourceId },
           sources: reference ? [reference] : [],

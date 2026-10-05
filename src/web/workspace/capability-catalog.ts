@@ -85,7 +85,7 @@ export function capabilityComponents(entry: CapabilityEntry): readonly SystemCom
     memory: ["memory.query", "memory.read"],
     knowledge: ["knowledge.query", "knowledge.read"],
     web: ["web.search", "web.fetch"],
-    media: ["media.list", "media.note.read", "media.describe", "sticker.search"],
+    media: ["media.list", "media.read", "media.note.read", "media.describe", "sticker.search"],
     execution: ["task.start", "task.read", "research.run", "code.run"],
     link: ["history.query", "history.read", "summary.query", "summary.read"],
   };

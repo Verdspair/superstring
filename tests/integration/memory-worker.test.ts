@@ -15,6 +15,7 @@
 import { describe, expect, it } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { and, eq } from "drizzle-orm";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
 import {
   claim,
@@ -158,7 +159,13 @@ function setup(
     jobTimeoutMs: options.jobTimeoutMs ?? 2_000,
     enabled: options.enabled,
   });
-  return { business, orm: business.orm, gateway, service };
+  return {
+    business,
+    orm: business.orm,
+    gateway,
+    service,
+    journal: new ConversationEventRepository(business.db),
+  };
 }
 
 type Orm = ReturnType<typeof setup>["orm"];
@@ -792,7 +799,7 @@ describe("job execution", () => {
    * 名单内那条来源带 `important: true` 与它的号，名单外的照旧不带；提示里也解释了标记。
    */
   it("marks observations from the conversation's attention list", async () => {
-    const { orm, gateway, service } = setup();
+    const { orm, gateway, service, journal } = setup();
     const scheme = createQqScheme(orm, {
       name: "attention",
       prompts: { ...QQ_PROMPT_DEFAULTS },
@@ -818,6 +825,9 @@ describe("job execution", () => {
         updatedAt: nowIso(),
       })
       .run();
+    // Production intake (adapter.ts) ensures the conversation before events are
+    // journaled; the reverse order would let the epoch watermark swallow these rows.
+    journal.ensureOneBot("11111111-1111-4111-8111-111111111111");
     for (const [eventKey, speakerId] of [
       ["evt_listed", "30001"],
       ["evt_other", "30002"],
@@ -848,6 +858,8 @@ describe("job execution", () => {
         })
         .run();
     }
+    journal.ingestOneBotEvent("evt_listed", "11111111-1111-4111-8111-111111111111");
+    journal.ingestOneBotEvent("evt_other", "11111111-1111-4111-8111-111111111111");
     policy(orm, AGENT_ID);
     enqueue(orm, AGENT_ID, "req_attention", {
       kind: "manual",

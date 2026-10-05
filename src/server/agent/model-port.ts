@@ -1,6 +1,40 @@
-import type { ModelMessage } from "../../shared/contracts/agent-run";
-import type { ChatMessage, ModelGateway, ModelTool } from "../llm/model-gateway";
+import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
+import { toGatewayMessages } from "../llm/chat-content";
+import type {
+  ChatContentResolver,
+  ChatMessage,
+  ModelGateway,
+  ModelTool,
+} from "../llm/model-gateway";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
+
+/**
+ * 受信任宿主的同次准备钩子入参（T10 基础）：actualModel 已冻结（与 HTTP body 的 model 同值），
+ * 请求尚未发出。宿主据此准备最终 messages/resolver；这里的 model 是唯一真源，不另造解析链。
+ */
+export interface ModelResolvedPrepareInput {
+  /** 本次实际模型（effectiveModel 结果，与发送 body 的 model 逐字同值）。 */
+  readonly model: string;
+  /**
+   * 能力维度的图片放行判定：外部声明 vision!==false 且进程负缓存未记该模型。
+   * 未声明（undefined）=== true；与明确 vision:false 区分。消息无关——最终消息若仍含图，
+   * 由发送前的 assertVisionAllowed 按最终 messages 再拦。
+   */
+  readonly imagesAllowed: boolean;
+  /** 原始请求消息（只读；最终发送内容以钩子输出为准）。 */
+  readonly messages: readonly ModelMessage[];
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * 钩子输出：替换本 call 的最终发送内容。省略字段=沿用原值。
+ * metadata 由调用方（Runtime 宿主）白名单解析为安全 primitive 后自持；port/gateway 不转发、不进 wire。
+ */
+export interface ModelResolvedPrepareOutput {
+  readonly messages?: readonly ModelMessage[];
+  readonly imageResolver?: ChatContentResolver;
+  readonly metadata?: Record<string, unknown>;
+}
 
 export interface ModelRequest {
   messages: readonly ModelMessage[];
@@ -15,6 +49,25 @@ export interface ModelRequest {
   onModelResolved?: (model: string) => void;
   /** Retains returned text even when a completion terminates with a protocol error. */
   onResponseText?: (text: string, complete: boolean) => void;
+  /**
+   * 受信任宿主的同次准备钩子（T10）：actualModel 冻结后、HTTP body 组装前调用一次。
+   * 输出的 messages/resolver 决定本 call 最终发送内容；抛错=请求不发出（fail closed）。
+   * 省略=零行为变化。schema/tools 受控重试共用同一次钩子结果，不重入。
+   */
+  prepareWithResolved?: (input: ModelResolvedPrepareInput) => Promise<ModelResolvedPrepareOutput>;
+  /**
+   * 每次真正发送前的可信宿主复验（fix1）：每次 HTTP 尝试（schema/tools 受控重试各算一次）
+   * 与 stream 发送前各调用一次；抛错=该次尝试不发出（零追加 HTTP）。来源纪元/provider 配置
+   * 当前性由 Runtime 宿主闭包读真值；缺省=原行为。
+   */
+  assertPreparedCurrent?: (input: { model: string }) => void;
+  /**
+   * 可信运行标识注入（由 Runtime 宿主填，模型/调用方不能自造）。带图片的请求必须有
+   * runId+owner+imageResolver 三件套才能在发送边界解析字节；text-only 请求不需要它们。
+   */
+  runId?: string;
+  owner?: RunOwner;
+  imageResolver?: ChatContentResolver;
 }
 export interface MultimodalRequest {
   systemPrompt?: string;
@@ -41,6 +94,10 @@ export function textMessages(messages: readonly ChatMessage[]): ModelMessage[] {
     if (!["system", "user", "assistant"].includes(message.role)) {
       throw new Error(`Unsupported text message role: ${message.role}`);
     }
+    // 先 type narrow（T09 union）：本助手只构造字符串 content 的文字消息。
+    if (typeof message.content !== "string") {
+      throw new Error("textMessages only accepts string content");
+    }
     return {
       role: message.role as ModelMessage["role"],
       content: [{ kind: "text", text: message.content }],
@@ -48,16 +105,20 @@ export function textMessages(messages: readonly ChatMessage[]): ModelMessage[] {
   });
 }
 
-function gatewayMessages(messages: readonly ModelMessage[]): ChatMessage[] {
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content
-      .map((part) => {
-        if (part.kind !== "text") throw new Error("Use completeMultimodal for image inputs");
-        return part.text;
-      })
-      .join(""),
-  }));
+/** 多模态转换：completion 与 stream 复用同一 content 转换（chat-content.ts）。text-only
+ * 保持字符串旧行为；含图且缺可信 resolver 的请求在这里明确拒绝（CONTEXT_SOURCE_INVALID，
+ * 来源/宿主缺陷），不会暗发字符串化的图片元数据。 */
+async function gatewayMessagesAsync(
+  messages: readonly ModelMessage[],
+  request: Pick<ModelRequest, "runId" | "owner" | "imageResolver" | "signal">,
+): Promise<ChatMessage[]> {
+  return toGatewayMessages({
+    messages,
+    ...(request.runId === undefined ? {} : { runId: request.runId }),
+    ...(request.owner === undefined ? {} : { owner: request.owner }),
+    ...(request.imageResolver === undefined ? {} : { imageResolver: request.imageResolver }),
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
+  });
 }
 
 /**
@@ -181,8 +242,32 @@ export function createModelPort(options: {
     async complete(request) {
       const gateway = options.gateway;
       if (!gateway) throw new Error("Text model gateway is not configured");
+      // 准备钩子路径（T10）：原始 ModelMessage[] 走 preparedFrom，钩子输出最终 messages 后
+      // 在网关内完成 wire 转换（used 冻结后）；无钩子路径保持先转换的旧行为逐字不变。
+      // fix2：messages 槽恢复必填——hook 路径显式传 `[]` 占位（仅 port 受控路径合法；
+      // 占位被钩子输出替换，永不落 wire），preparedFrom 携带真实原始 readonly 数组。
+      if (request.prepareWithResolved !== undefined) {
+        return guarded(
+          () =>
+            gateway.complete({
+              ...request,
+              messages: [],
+              preparedFrom: {
+                messages: request.messages,
+                ...(request.runId === undefined ? {} : { runId: request.runId }),
+                ...(request.owner === undefined ? {} : { owner: request.owner }),
+                ...(request.imageResolver === undefined
+                  ? {}
+                  : { imageResolver: request.imageResolver }),
+              },
+            }),
+          request.model,
+          request.signal,
+        );
+      }
+      const messages = await gatewayMessagesAsync(request.messages, request);
       return guarded(
-        () => gateway.complete({ ...request, messages: gatewayMessages(request.messages) }),
+        () => gateway.complete({ ...request, messages }),
         request.model,
         request.signal,
       );
@@ -197,9 +282,27 @@ export function createModelPort(options: {
           : await acquire(request.model, request.signal);
       try {
         request.signal?.throwIfAborted();
+        // 准备钩子路径（T10）：同 complete——原始消息走 preparedFrom，转换在钩子后按最终值完成。
+        // fix2：messages 槽传 `[]` 占位（仅 port 受控路径合法），成对契约同 complete。
+        if (request.prepareWithResolved !== undefined) {
+          yield* options.gateway.streamChat({
+            ...request,
+            messages: [],
+            preparedFrom: {
+              messages: request.messages,
+              ...(request.runId === undefined ? {} : { runId: request.runId }),
+              ...(request.owner === undefined ? {} : { owner: request.owner }),
+              ...(request.imageResolver === undefined
+                ? {}
+                : { imageResolver: request.imageResolver }),
+            },
+          });
+          return;
+        }
+        const messages = await gatewayMessagesAsync(request.messages, request);
         yield* options.gateway.streamChat({
           ...request,
-          messages: gatewayMessages(request.messages),
+          messages,
         });
       } finally {
         release?.();

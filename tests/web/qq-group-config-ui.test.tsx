@@ -74,6 +74,22 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     media: "媒体提示词",
     compress: "压缩提示词",
   },
+  // 0052：响应契约收紧后两组必填，夹具照完整响应形状造。
+  message_settings: {
+    reply_mode: "one_then_on_demand",
+    reply_depth: 2,
+    time_display: "hybrid",
+    timezone: "Asia/Shanghai",
+  },
+  media_input: {
+    mode: "native",
+    stages: { decision: true, evaluation: true, generation: true },
+    max_images: 8,
+    ordinary_still_max_dimension: null,
+    expression_max_dimension: 512,
+    expression_frame_count: 3,
+    expression_frame_max_dimension: 512,
+  },
   reply: { split_by_speaker: true },
   revision: 3,
   created_at: NOW,
@@ -564,6 +580,305 @@ it("变更预览：布尔显示为开/关、不暴露 true/false 与机器字段
   expect(text).not.toContain("false");
   expect(text).not.toContain("rhythm.merge_window_seconds");
   expect(text).not.toContain("triggers.direct_reply");
+});
+
+it("0052 新两组接入：枚举/数字/时区与嵌套 stages 钉住进真实 store 载荷，follow 才取消", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+
+  const depth = view.container.querySelector(
+    'input[data-field="message_settings.reply_depth"]',
+  ) as HTMLInputElement;
+  expect(depth).toBeTruthy();
+  fireEvent.change(depth, { target: { value: "4" } });
+  expect(editorOf()?.overrides).toEqual({ message_settings: { reply_depth: 4 } });
+  // 与基线同值（2）也是显式钉住：仍然 dirty。
+  fireEvent.change(depth, { target: { value: "2" } });
+  expect(editorOf()?.overrides).toEqual({ message_settings: { reply_depth: 2 } });
+  expect(qqGroupConfigDirty(editorOf())).toBe(true);
+
+  const timeSelect = view.container.querySelector(
+    'select[data-field="message_settings.time_display"]',
+  ) as HTMLSelectElement;
+  expect(timeSelect).toBeTruthy();
+  fireEvent.change(timeSelect, { target: { value: "full" } });
+  expect(editorOf()?.overrides.message_settings).toMatchObject({
+    reply_depth: 2,
+    time_display: "full",
+  });
+
+  const timezone = view.container.querySelector(
+    'input[data-field="message_settings.timezone"]',
+  ) as HTMLInputElement;
+  expect(timezone).toBeTruthy();
+  fireEvent.change(timezone, { target: { value: "Asia/Tokyo" } });
+  expect(editorOf()?.overrides.message_settings).toMatchObject({ timezone: "Asia/Tokyo" });
+
+  // 嵌套 stages：媒体页签里逐阶段钉住；follow 只取消这一个阶段。
+  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  const mode = view.container.querySelector(
+    'select[data-field="media_input.mode"]',
+  ) as HTMLSelectElement;
+  expect(mode).toBeTruthy();
+  fireEvent.change(mode, { target: { value: "description" } });
+  const stage = view.container.querySelector(
+    'select[data-field="media_input.stages.evaluation"]',
+  ) as HTMLSelectElement;
+  expect(stage).toBeTruthy();
+  fireEvent.change(stage, { target: { value: "off" } });
+  expect(editorOf()?.overrides.media_input).toMatchObject({
+    mode: "description",
+    stages: { evaluation: false },
+  });
+  const maxImages = view.container.querySelector(
+    'input[data-field="media_input.max_images"]',
+  ) as HTMLInputElement;
+  expect(maxImages).toBeTruthy();
+  fireEvent.change(maxImages, { target: { value: "6" } });
+  expect(editorOf()?.overrides.media_input).toMatchObject({ max_images: 6 });
+  fireEvent.change(stage, { target: { value: "inherit" } });
+  expect(editorOf()?.overrides.media_input?.stages).toBeUndefined();
+  expect(editorOf()?.overrides.media_input).toMatchObject({ mode: "description" });
+});
+
+it("普通静图规格：null 是显式钉住原图（与基线同值也 dirty）、0 拒绝留原文拦保存、follow 才取消", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  const choice = view.container.querySelector(
+    'select[data-field="media_input.ordinary_still_max_dimension.choice"]',
+  ) as HTMLSelectElement;
+  expect(choice).toBeTruthy();
+  const input = view.container.querySelector(
+    'input[data-field="media_input.ordinary_still_max_dimension"]',
+  ) as HTMLInputElement;
+  expect(input).toBeTruthy();
+  // 基线是 null（原图）：选「限制长边」从契约下限起步（不是 0）。
+  fireEvent.change(choice, { target: { value: "limited" } });
+  expect(editorOf()?.overrides.media_input).toMatchObject({ ordinary_still_max_dimension: 64 });
+  // 0 不是原图的编码：非法原文留底、拦保存。
+  fireEvent.change(input, { target: { value: "0" } });
+  expect(editorOf()?.rawTexts).toEqual({ "media_input.ordinary_still_max_dimension": "0" });
+  expect(saveButtonOf(view).disabled).toBe(true);
+  fireEvent.change(input, { target: { value: "800" } });
+  expect(editorOf()?.overrides.media_input).toMatchObject({ ordinary_still_max_dimension: 800 });
+  expect(editorOf()?.rawTexts).toEqual({});
+  // 选「原图」＝显式 null 钉住（不是 undefined 取消）；与基线同值也 dirty。
+  fireEvent.change(choice, { target: { value: "original" } });
+  expect(editorOf()?.overrides.media_input).toMatchObject({ ordinary_still_max_dimension: null });
+  expect(qqGroupConfigDirty(editorOf())).toBe(true);
+  // follow 才是取消钉住：字段从 overrides 消失，没有其他钉住时不 dirty。
+  const fieldEl = view.container
+    .querySelector('input[data-field="media_input.ordinary_still_max_dimension"]')
+    ?.closest('[data-slot="field"]') as HTMLElement;
+  const stateSelect = [...fieldEl.querySelectorAll("select")].find(
+    (node) => node.getAttribute("data-field-state") !== null,
+  ) as HTMLSelectElement;
+  fireEvent.change(stateSelect, { target: { value: "follow" } });
+  expect(editorOf()?.overrides.media_input?.ordinary_still_max_dimension).toBeUndefined();
+  expect(qqGroupConfigDirty(editorOf())).toBe(false);
+});
+
+it("非法时区保稿并拒保存、修正后可保存；one_then_on_demand 层数禁用但保稿，切回按层数恢复可编辑", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  const timezone = view.container.querySelector(
+    'input[data-field="message_settings.timezone"]',
+  ) as HTMLInputElement;
+  fireEvent.change(timezone, { target: { value: "Mars/Olympus" } });
+  expect(editorOf()?.rawTexts).toEqual({ "message_settings.timezone": "Mars/Olympus" });
+  expect(screen.queryAllByRole("alert")).toEqual([]);
+  fireEvent.blur(timezone);
+  expect(screen.getAllByRole("alert")).toHaveLength(1);
+  expect(saveButtonOf(view).disabled).toBe(true);
+  fireEvent.change(timezone, { target: { value: "Asia/Tokyo" } });
+  expect(editorOf()?.rawTexts).toEqual({});
+  expect(editorOf()?.overrides.message_settings).toMatchObject({ timezone: "Asia/Tokyo" });
+  expect(saveButtonOf(view).disabled).toBe(false);
+
+  // 基线 one_then_on_demand：层数不用于自动展开＝输入禁用，但钉住的配置值保留。
+  const depth = view.container.querySelector(
+    'input[data-field="message_settings.reply_depth"]',
+  ) as HTMLInputElement;
+  expect(depth.disabled).toBe(true);
+  fireEvent.change(depth, { target: { value: "4" } });
+  expect(depth.value).toBe("4");
+  expect(editorOf()?.overrides.message_settings).toMatchObject({
+    reply_depth: 4,
+    timezone: "Asia/Tokyo",
+  });
+  const replyMode = view.container.querySelector(
+    'select[data-field="message_settings.reply_mode"]',
+  ) as HTMLSelectElement;
+  fireEvent.change(replyMode, { target: { value: "configured_depth" } });
+  const depthAfter = view.container.querySelector(
+    'input[data-field="message_settings.reply_depth"]',
+  ) as HTMLInputElement;
+  expect(depthAfter.disabled).toBe(false);
+});
+
+it("刷新保稿：0052 新两组本地钉住按三路合并保留，不被服务端旧值回退", async () => {
+  const read = vi.fn(async () => qqConfig());
+  const view = await renderPage({ getQqGroupConfig: read });
+  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  act(() => {
+    store.getState().patchQqGroupOverride("media_input", "mode", "description");
+    store.getState().patchQqGroupOverride("message_settings", "reply_depth", "3");
+  });
+  // 服务端出现了别的改动（别人钉了 6 层）：本地动过的字段保留本地值。
+  read.mockImplementation(async () =>
+    qqConfig({ overrides: { message_settings: { reply_depth: 6 } }, revision: 2 }),
+  );
+  await act(async () => {
+    await store.getState().refreshQqGroupConfig();
+  });
+  expect(editorOf()?.overrides.message_settings).toMatchObject({ reply_depth: 3 });
+  expect(editorOf()?.overrides.media_input).toMatchObject({ mode: "description" });
+  const depth = view.container.querySelector(
+    'input[data-field="message_settings.reply_depth"]',
+  ) as HTMLInputElement;
+  expect(depth.value).toBe("3");
+});
+
+it("变更预览：0052 字段人话显示——阶段布尔开/关、枚举选项名、null 原图；不暴露机器值", async () => {
+  await renderPage();
+  act(() => {
+    store.getState().patchQqGroupOverride("media_input", "stages.evaluation", false);
+    store.getState().patchQqGroupOverride("media_input", "mode", "description");
+    store.getState().patchQqGroupOverride("media_input", "ordinary_still_max_dimension", null);
+    store.getState().patchQqGroupOverride("message_settings", "reply_mode", "configured_depth");
+  });
+  fireEvent.click(screen.getByRole("button", { name: "预览变更" }));
+  const dialog = await screen.findByRole("dialog");
+  const text = dialog.textContent ?? "";
+  expect(text).toContain("评估阶段");
+  expect(text).toContain("关");
+  expect(text).toContain("文字描述缓存");
+  expect(text).toContain("原图");
+  expect(text).toContain("按层数自动展开引用");
+  expect(text).not.toContain("true");
+  expect(text).not.toContain("false");
+  expect(text).not.toContain("null");
+});
+
+it("换方案预览：嵌套 stage 展开成逐阶段人话行、目标基线走同一嵌套路径；keep 后载荷 stage 仍 false，reset 丢 override，取消零 PUT", async () => {
+  const target = qqScheme({
+    id: TARGET_SCHEME_ID,
+    name: "新方案",
+    revision: 7,
+    media_input: {
+      ...qqScheme().media_input,
+      stages: { decision: false, evaluation: true, generation: false },
+    },
+  });
+  const { fake, container } = await renderPage({
+    listQqSchemes: vi.fn(async () => [qqScheme(), target]),
+  });
+  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  const stage = container.querySelector(
+    'select[data-field="media_input.stages.evaluation"]',
+  ) as HTMLSelectElement;
+  fireEvent.change(stage, { target: { value: "off" } });
+  const select = container.querySelector('select[data-field="scheme.switch"]') as HTMLSelectElement;
+  fireEvent.change(select, { target: { value: TARGET_SCHEME_ID } });
+
+  const dialog = await screen.findByRole("dialog");
+  // 没有 stages 对象父行；只有真实钉住的叶子阶段行，人话显示（钉住关 → 目标开）。
+  expect(dialog.querySelector('[data-switch-row="media_input.stages"]')).toBeNull();
+  const row = dialog.querySelector(
+    '[data-switch-row="media_input.stages.evaluation"]',
+  ) as HTMLElement;
+  expect(row).toBeTruthy();
+  expect(row.textContent).toContain("评估阶段");
+  expect(row.textContent).toContain("关 → 开");
+  expect(dialog.textContent ?? "").not.toContain("[object Object]");
+
+  // 取消：预览零 PUT，草稿里的 stage 钉住原样保留。
+  fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(fake.saveQqGroupConfig).not.toHaveBeenCalled();
+  expect(editorOf()?.overrides.media_input?.stages).toMatchObject({ evaluation: false });
+
+  // keep：保存载荷里 stage 仍是真实 false，没有 media_input.stages 空对象父行。
+  fireEvent.change(select, { target: { value: TARGET_SCHEME_ID } });
+  const keepDialog = await screen.findByRole("dialog");
+  fireEvent.click(keepDialog.querySelector('[data-switch-action="keep"]') as HTMLElement);
+  await act(async () => {
+    await store.getState().saveQqGroupConfig();
+  });
+  const payload = (fake.saveQqGroupConfig as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+    overrides: { media_input?: { stages?: Record<string, unknown> } };
+  };
+  expect(payload?.overrides?.media_input?.stages).toEqual({ evaluation: false });
+
+  // reset：本群 override 丢失（stage 回到跟随目标基线）。
+  fireEvent.change(stage, { target: { value: "off" } });
+  fireEvent.change(select, { target: { value: TARGET_SCHEME_ID } });
+  const resetDialog = await screen.findByRole("dialog");
+  fireEvent.click(resetDialog.querySelector('[data-switch-action="reset"]') as HTMLElement);
+  expect(editorOf()?.overrides.media_input?.stages).toBeUndefined();
+});
+
+it("数字字段错误提示有 id 且输入框 aria-describedby 指向该真实错误 DOM", async () => {
+  const view = await renderPage();
+  const input = view.container.querySelector(
+    'input[data-field="rhythm.hourly_speech_limit"]',
+  ) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "3000" } });
+  fireEvent.blur(input);
+  const fieldEl = input.closest('[data-slot="field"]') as HTMLElement;
+  const alert = within(fieldEl).getByRole("alert");
+  expect(alert.id).not.toBe("");
+  // Field 组件会把自己 info 描述的 id 追加在后面；错误 DOM 的 id 必须真实出现在关联列表里。
+  expect((input.getAttribute("aria-describedby") ?? "").split(" ")).toContain(alert.id);
+});
+
+it("普通静图规格：Field 标题以 htmlFor 关联选择框，数值框独立 aria-label 且错误 describedby 指真实 DOM", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  const choice = view.container.querySelector(
+    'select[data-field="media_input.ordinary_still_max_dimension.choice"]',
+  ) as HTMLSelectElement;
+  expect(choice).toBeTruthy();
+  // Field 标题（普通静图规格）用 label[for] 关联选择框。
+  const title = [...view.container.querySelectorAll("label")].find(
+    (node) => node.htmlFor === choice.id && node.textContent?.includes("普通静图规格"),
+  );
+  expect(title).toBeTruthy();
+  // 数值框保留独立 aria-label「普通静图长边上限」。
+  const input = view.container.querySelector(
+    'input[data-field="media_input.ordinary_still_max_dimension"]',
+  ) as HTMLInputElement;
+  expect(input.getAttribute("aria-label")).toBe("普通静图长边上限");
+  // 0 非法 → blur 后错误出现，aria-describedby 指向该错误 DOM。
+  fireEvent.change(input, { target: { value: "0" } });
+  fireEvent.blur(input);
+  const alert = within(input.closest('[data-slot="field"]') as HTMLElement).getByRole("alert");
+  expect(input.getAttribute("aria-describedby")).toBe(alert.id);
+});
+
+it("模型输入示例按生效值渲染，随本群时区改写与恢复跟随更新且只读", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  // 基础方案默认 hybrid/Asia/Shanghai：示例存在且只读，头部是该时区与冻结 now。
+  const preview = () =>
+    view.container.querySelector("[data-qq-message-preview] pre")?.textContent ?? "";
+  expect(preview()).toContain("now=2026-10-02 00:00:00，timezone=Asia/Shanghai");
+  const block = view.container.querySelector("[data-qq-message-preview]") as HTMLElement;
+  expect(block.querySelector("input, textarea, select, button")).toBeNull();
+
+  // 本群改写时区为 Asia/Tokyo：示例按**合并后的生效值**更新（不是未 merge 的原 base）。
+  const timezone = view.container.querySelector(
+    'input[data-field="message_settings.timezone"]',
+  ) as HTMLInputElement;
+  fireEvent.change(timezone, { target: { value: "Asia/Tokyo" } });
+  expect(preview()).toContain("timezone=Asia/Tokyo");
+  // follow 回基础方案：示例回到基础方案的时区。
+  fireEvent.change(timezone, { target: { value: "Asia/Shanghai" } });
+  const stateSelect = [
+    ...(timezone.closest('[data-slot="field"]') as HTMLElement).querySelectorAll("select"),
+  ].find((node) => node.getAttribute("data-field-state") !== null) as HTMLSelectElement;
+  fireEvent.change(stateSelect, { target: { value: "follow" } });
+  expect(preview()).toContain("timezone=Asia/Shanghai");
 });
 
 it("返回会话只认同一绑定、同一助手的摘要；页脚保存按钮允许换行且不矮于 32px", async () => {

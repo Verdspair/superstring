@@ -2,6 +2,8 @@ import type { QqSchemePrompts } from "../../../shared/contracts/qq";
 import {
   QqSchemeCompressionSchema,
   QqSchemeContextSchema,
+  QqSchemeMediaInputSchema,
+  QqSchemeMessageSettingsSchema,
   QqSchemeOutputReserveSchema,
   QqSchemeRhythmSchema,
   QqSchemeStickersSchema,
@@ -15,6 +17,15 @@ export const numericGroups = {
   stickers: QqSchemeStickersSchema,
 };
 export type NumericGroup = keyof typeof numericGroups;
+
+/** 0052 两个数字组：编辑器组名（camelCase）→ 数字栏的契约 schema。 */
+export const numberEditorGroups = {
+  ...numericGroups,
+  messageSettings: QqSchemeMessageSettingsSchema,
+  mediaInput: QqSchemeMediaInputSchema,
+} as const;
+/** 0052 数字栏所在的编辑器组（与 numericGroups 同一用法；可空长边字段由页面特判 null 原图）。 */
+export type NumberEditorGroup = keyof typeof numberEditorGroups;
 
 /** The four editing tasks of the studio; a field's task is also the tab its error is fixed on. */
 export type SchemeTask = "participation" | "response" | "context" | "media";
@@ -68,20 +79,32 @@ export const imageFields = [
   ["rhythm", "media_max_dimension", "connections.sampledFrameLongEdgePx"],
 ] as const;
 
-type NumberSchema = {
-  readonly minValue: number | null;
-  readonly maxValue: number | null;
-  readonly isInt: boolean;
-};
-const numberSchema = (group: NumericGroup, name: string) =>
-  (numericGroups[group].shape as Record<string, NumberSchema | undefined>)[name];
-
 /**
  * 每个数字输入框的 min/max/step 都从契约 schema 现读，不在这里另抄一份边界：
  * schema 改动时输入框跟着变，浏览器拦下的范围就是服务端会拒绝的范围。
+ * 0052 的两组编辑器组同样按契约现读；可空字段（普通静图长边）按任务约束用 unwrap
+ * 取内层数值 schema 的真实边界（不猜值），由页面特判 null 原图语义。
  */
-export function fieldBounds(group: NumericGroup, name: string) {
-  const schema = numberSchema(group, name);
+export function fieldBounds(group: NumberEditorGroup, name: string) {
+  const shape = numberEditorGroups[group].shape as Record<
+    string,
+    | {
+        readonly minValue: number | null;
+        readonly maxValue: number | null;
+        readonly isInt: boolean;
+        readonly def?: { readonly type?: string };
+        readonly unwrap?: () => unknown;
+      }
+    | undefined
+  >;
+  let schema = shape[name];
+  // 可空字段（nullable 包装）：解到内层数值 schema 读真实 min/max，不猜值。
+  if (
+    schema?.def?.type === "nullable" &&
+    typeof (schema as { unwrap?: unknown }).unwrap === "function"
+  ) {
+    schema = (schema as unknown as { unwrap: () => typeof schema }).unwrap();
+  }
   return {
     min: schema?.minValue ?? undefined,
     max: schema?.maxValue ?? undefined,
@@ -111,9 +134,14 @@ const mediaRhythmNames = new Set<string>(
     .map(([, name]) => name),
 );
 
-/** 一个字段在哪个页签编辑——用来在保存前把无效数字所在的页签先切出来并聚焦。 */
+/**
+ * 一个字段在哪个页签编辑——用来在保存前把无效数字所在的页签先切出来并聚焦。
+ * 0052 的两组进既有四 Tab：消息设置归「读取什么」（context），图片输入归「媒体与表达」（media）。
+ */
 export function schemeFieldTask(field: string): SchemeTask {
   const [group, name] = field.split(".");
+  if (group === "message_settings") return "context";
+  if (group === "media_input") return "media";
   if (group === "rhythm") return mediaRhythmNames.has(name) ? "media" : "participation";
   if (group === "stickers") return "media";
   if (

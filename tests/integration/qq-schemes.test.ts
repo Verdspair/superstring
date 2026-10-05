@@ -21,6 +21,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { eq } from "drizzle-orm";
+import { toOrmHandle } from "../../src/server/db/connection";
 import {
   createQqScheme,
   deleteQqScheme,
@@ -28,6 +29,8 @@ import {
   readQqScheme,
   readQqSchemes,
   schemeContext,
+  schemeMediaInput,
+  schemeMessageSettings,
   schemeReply,
   schemeRhythm,
   schemeStickers,
@@ -43,7 +46,12 @@ import {
 import { createQqBinding } from "../../src/server/services/qq-binding-contract";
 import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
-import { QQ_STICKER_DEDUP_DEFAULT } from "../../src/shared/contracts/qq";
+import {
+  QQ_MEDIA_INPUT_SCHEME_DEFAULT,
+  QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
+  QQ_STICKER_DEDUP_DEFAULT,
+  type QqSchemeMediaInput,
+} from "../../src/shared/contracts/qq";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const BINDING_ID = "11111111-1111-4111-8111-111111111111";
@@ -97,7 +105,7 @@ describe("context limit caps (0047)", () => {
         "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,judgement_message_limit,reply_message_limit) VALUES ('old','旧方案',3,'then','then',137,321)",
       );
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
       expect(
         db
           .query(
@@ -177,6 +185,9 @@ describe("scheme identity", () => {
         // 0049 为抬高上限（16384 → 32768）重建过这两列，同样排在表尾。
         "judgement_output_reserved",
         "reply_output_reserved",
+        // 0052 的两组严格 JSON 设置；SQLite 只能追加，排在表尾。
+        "message_settings",
+        "media_input",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -548,6 +559,215 @@ describe("binding integrity", () => {
       if (created.kind !== "saved") throw new Error("expected a saved binding");
       insertBinding(h.orm, created.binding.schemeId);
       expect(qqSchemeUsage(h.orm, scheme.id)).toBe(1);
+    } finally {
+      h.business.close();
+    }
+  });
+});
+
+/**
+ * 0052 的两组设置（规格 §5/§6/§7）：消息关系与时间、图片输入。T12 的写入侧语义——
+ * create 未提供两组 → 落默认值（不是 NULL）；update 未提供 → 保持现值；整组来或整组不动。
+ * `ordinary_still_max_dimension: null` 是「原图」，它是一个真实的设置值，不是「跟随」。
+ */
+describe("message settings and media input groups (0052/T12)", () => {
+  it("writes the approved defaults on create when neither group is provided (not NULL)", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      // Spelled out, so a default change has to edit this test deliberately.
+      expect(schemeMessageSettings(created)).toEqual({
+        reply_mode: "one_then_on_demand",
+        reply_depth: 2,
+        time_display: "hybrid",
+        timezone: "Asia/Shanghai",
+      });
+      expect(schemeMessageSettings(created)).toEqual(QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT);
+      expect(schemeMediaInput(created)).toEqual({
+        mode: "native",
+        stages: { decision: true, evaluation: true, generation: true },
+        max_images: 8,
+        ordinary_still_max_dimension: null,
+        expression_max_dimension: 512,
+        expression_frame_count: 3,
+        expression_frame_max_dimension: 512,
+      });
+      expect(schemeMediaInput(created)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
+      // 写入侧补默认：列上必须是完整 JSON，而不是靠读取兜底的 NULL。
+      const raw = h.orm
+        .select({ m: schema.qqSchemes.messageSettings, v: schema.qqSchemes.mediaInput })
+        .from(schema.qqSchemes)
+        .get();
+      expect(raw?.m).not.toBeNull();
+      expect(raw?.v).not.toBeNull();
+      expect(JSON.parse(raw?.m ?? "null")).toEqual(QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT);
+      expect(JSON.parse(raw?.v ?? "null")).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("keeps explicit groups on create and round-trips them under CAS", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, {
+        name: "自定义方案",
+        messageSettings: {
+          reply_mode: "configured_depth",
+          reply_depth: 5,
+          time_display: "full",
+          timezone: "Europe/Berlin",
+        },
+        mediaInput: {
+          mode: "description",
+          stages: { decision: false, evaluation: true, generation: false },
+          max_images: 2,
+          // null 是一个真实的设置值（＝原图），不是「跟随」。
+          ordinary_still_max_dimension: null,
+          expression_max_dimension: 1024,
+          expression_frame_count: 6,
+          expression_frame_max_dimension: 256,
+        },
+      });
+      expect(schemeMessageSettings(created)).toEqual({
+        reply_mode: "configured_depth",
+        reply_depth: 5,
+        time_display: "full",
+        timezone: "Europe/Berlin",
+      });
+      expect(schemeMediaInput(created)).toEqual({
+        mode: "description",
+        stages: { decision: false, evaluation: true, generation: false },
+        max_images: 2,
+        ordinary_still_max_dimension: null,
+        expression_max_dimension: 1024,
+        expression_frame_count: 6,
+        expression_frame_max_dimension: 256,
+      });
+      expect(created.revision).toBe(1);
+
+      // Omitting the group leaves it alone (update keeps the stored value).
+      const renamed = updateQqScheme(h.orm, created.id, { name: "改名", expectedRevision: 1 });
+      expect(schemeMessageSettings(renamed).timezone).toBe("Europe/Berlin");
+      expect(schemeMediaInput(renamed).mode).toBe("description");
+      expect(schemeMediaInput(renamed).stages).toEqual({
+        decision: false,
+        evaluation: true,
+        generation: false,
+      });
+      expect(renamed.revision).toBe(2);
+
+      // A whole-group save updates and bumps the revision.
+      const next = updateQqScheme(h.orm, created.id, {
+        name: "改名",
+        messageSettings: { ...schemeMessageSettings(renamed), reply_depth: 1 },
+        mediaInput: { ...schemeMediaInput(renamed), mode: "native" },
+        expectedRevision: renamed.revision,
+      });
+      expect(schemeMessageSettings(next).reply_depth).toBe(1);
+      expect(schemeMediaInput(next).mode).toBe("native");
+      expect(next.revision).toBe(3);
+
+      // The same group again is a no-op: the revision must not move.
+      const noop = updateQqScheme(h.orm, created.id, {
+        name: "改名",
+        messageSettings: schemeMessageSettings(next),
+        mediaInput: schemeMediaInput(next),
+        expectedRevision: next.revision,
+      });
+      expect(noop.revision).toBe(3);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("refuses invalid group values instead of storing something the contract rejects", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: "默认方案",
+          // Not a real IANA timezone — the contract verifies real names, not non-empty strings.
+          messageSettings: { ...schemeMessageSettings(created), timezone: "Mars/Olympus" },
+          expectedRevision: created.revision,
+        }),
+      ).toThrow(TypeError);
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: "默认方案",
+          // reply_depth 0 is outside 1..8.
+          messageSettings: { ...schemeMessageSettings(created), reply_depth: 0 },
+          expectedRevision: created.revision,
+        }),
+      ).toThrow(TypeError);
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: "默认方案",
+          // stages must travel as a whole: a missing member is not "leave that stage alone".
+          mediaInput: { ...schemeMediaInput(created), stages: { decision: false } as never },
+          expectedRevision: created.revision,
+        }),
+      ).toThrow(TypeError);
+      // Unknown fields are refused too (strictObject), not silently dropped.
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: "默认方案",
+          mediaInput: {
+            ...schemeMediaInput(created),
+            ordinary_frame_count: 3,
+          } as unknown as QqSchemeMediaInput,
+          expectedRevision: created.revision,
+        }),
+      ).toThrow(TypeError);
+      expect(readQqScheme(h.orm, created.id)?.revision).toBe(created.revision);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("reads a legacy NULL row through the migration backfill defaults (already backfilled rows keep native)", () => {
+    const db = new Database(":memory:");
+    try {
+      // Pre-0052 shape: the two columns do not exist yet, an old scheme row exists.
+      for (const file of BUSINESS_MIGRATION_FILES.slice(0, 51))
+        db.exec(
+          readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
+        );
+      db.exec(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at) VALUES ('old','旧方案',2,'then','then')",
+      );
+      db.exec("PRAGMA user_version = 51");
+      ensureBusinessSchema(db);
+      const orm = toOrmHandle(db).orm;
+      const row = readQqScheme(orm, "old");
+      if (row === null) throw new Error("legacy row missing");
+      // 0052 已回填：旧方案按已批准默认组、mode 统一 native（不自动开启看图以外的改动）。
+      expect(schemeMessageSettings(row)).toEqual(QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT);
+      expect(schemeMediaInput(row)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
+      expect(schemeMediaInput(row).mode).toBe("native");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps ordinary animation fields on rhythm as the only source (no second copy in media_input)", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      // The media_input group does not carry the ordinary animation fields; the rhythm group
+      // stays the single source of truth for both.
+      expect(schemeMediaInput(created)).not.toHaveProperty("ordinary_frame_count");
+      expect(schemeMediaInput(created)).not.toHaveProperty("ordinary_frame_max_dimension");
+      const custom = updateQqScheme(h.orm, created.id, {
+        name: "默认方案",
+        rhythm: { ...schemeRhythm(created), media_frame_count: 7, media_max_dimension: 1024 },
+        expectedRevision: created.revision,
+      });
+      expect(schemeRhythm(custom).media_frame_count).toBe(7);
+      expect(schemeRhythm(custom).media_max_dimension).toBe(1024);
+      // Changing the rhythm values did not grow a media_input field.
+      expect(schemeMediaInput(custom)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
     } finally {
       h.business.close();
     }

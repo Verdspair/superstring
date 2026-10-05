@@ -7,7 +7,11 @@ import {
   createAgentRuntime,
 } from "../../src/server/agent/agent-runtime";
 import type { ActionDescription, AgentSpec } from "../../src/server/agent/agent-specs";
-import { type BuiltInAction, createBuiltInActions } from "../../src/server/agent/built-in-actions";
+import {
+  type ActionContext,
+  type BuiltInAction,
+  createBuiltInActions,
+} from "../../src/server/agent/built-in-actions";
 import { inputUnits, textMessage } from "../../src/server/agent/context-engine";
 import { estimateMessages } from "../../src/server/agent/conversation-context";
 import {
@@ -1308,6 +1312,7 @@ describe("unified AgentRuntime", () => {
       ],
       sources: [source],
       units: 0,
+      visionCost: { state: "estimated" as const, images: 0, pixels: 0 },
     };
     const result = await runtime.run(spec, {
       ...direct,
@@ -1490,5 +1495,192 @@ describe("unified AgentRuntime", () => {
     expect(
       repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0].steps[0].model,
     ).toBe("default");
+  });
+});
+
+describe("AgentRuntime context source bindRun lifecycle", () => {
+  function bindSetup(model: Partial<ModelPort> = {}) {
+    const h = openBusinessDb();
+    handles.push(h);
+    const repository = new AgentRunRepository(h.db);
+    const port: ModelPort = {
+      async complete() {
+        return '{"kind":"none"}';
+      },
+      async *streamText() {
+        yield "answer";
+      },
+      async completeMultimodal() {
+        return "vision";
+      },
+      ...model,
+    };
+    return { repository, runtime: new AgentRuntime({ model: port, repository }) };
+  }
+
+  it("binds the source once per run with the real runId, owner and running signal before the first read", async () => {
+    const { runtime, repository } = bindSetup();
+    const bindings: Array<{
+      runId: string | undefined;
+      owner: unknown;
+      signal: AbortSignal | undefined;
+    }> = [];
+    let reads = 0;
+    let boundRunId: string | undefined;
+    let runIdAtRead: string | undefined;
+    const runOwner = { kind: "test_job" as const, id: "job-bind", userId: "u", agentId: "a" };
+    const result = await runtime.run(spec, {
+      owner: runOwner,
+      authorizedTargets: ["web"],
+      outputMode: "stream",
+      context: {
+        bindRun(context: ActionContext) {
+          bindings.push({
+            runId: context.runId,
+            owner: context.owner,
+            signal: context.signal,
+          });
+          boundRunId = context.runId;
+        },
+        async read() {
+          reads += 1;
+          runIdAtRead = boundRunId;
+          return { pending: [textMessage("user", "hello")] };
+        },
+      },
+    });
+    expect(result.status).toBe("no_output");
+    expect(bindings).toHaveLength(1);
+    expect(reads).toBe(1);
+    expect(bindings[0]?.owner).toEqual(runOwner);
+    expect(bindings[0]?.signal?.aborted).toBe(false);
+    expect(bindings[0]?.runId).toBe(result.runId);
+    expect(repository.getRun(result.runId)?.status).toBe("no_output");
+    expect(bindings[0]?.runId).toBe(runIdAtRead);
+  });
+
+  it("binds only once across multiple reads and invokes", async () => {
+    let modelCalls = 0;
+    const { runtime } = bindSetup({
+      async complete() {
+        modelCalls += 1;
+        return modelCalls === 1
+          ? '{"kind":"invoke","calls":[{"name":"records.query","arguments":{"query":"x"}}]}'
+          : '{"kind":"none"}';
+      },
+    });
+    const action = boundAction();
+    let binds = 0;
+    let reads = 0;
+    const result = await runtime.run(
+      { ...spec, availableActions: [action.description] },
+      {
+        ...direct,
+        actions: [action],
+        context: {
+          bindRun() {
+            binds += 1;
+          },
+          async read() {
+            reads += 1;
+            return { pending: [textMessage("user", "hello")] };
+          },
+        },
+      },
+    );
+    expect(result.status).toBe("no_output");
+    expect(binds).toBe(1);
+    expect(reads).toBe(2);
+  });
+
+  it("a bindRun error fails the run before any read, model call or commit and persists failed", async () => {
+    const { runtime, repository } = bindSetup({
+      async complete() {
+        throw new Error("model must not be called");
+      },
+    });
+    let reads = 0;
+    let committed = false;
+    await expect(
+      runtime.run(spec, {
+        ...direct,
+        async commitOutputs() {
+          committed = true;
+          return undefined;
+        },
+        context: {
+          bindRun() {
+            throw Object.assign(new Error("reject rebind"), { code: "CONTEXT_INVALID_SELECTION" });
+          },
+          async read() {
+            reads += 1;
+            return { pending: [textMessage("user", "hello")] };
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+    expect(reads).toBe(0);
+    expect(committed).toBe(false);
+    const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
+    expect(run.status).toBe("failed");
+    expect(run.steps).toEqual([]);
+  });
+
+  it("runs without a hook keep the legacy web behaviour", async () => {
+    const { runtime, repository } = bindSetup({
+      async complete() {
+        return '{"kind":"none"}';
+      },
+    });
+    let reads = 0;
+    const result = await runtime.run(spec, {
+      ...direct,
+      context: {
+        async read() {
+          reads += 1;
+          return { pending: [textMessage("user", "hello")] };
+        },
+      },
+    });
+    expect(result.status).toBe("no_output");
+    expect(reads).toBe(1);
+    expect(repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0].status).toBe(
+      "no_output",
+    );
+  });
+
+  it("a cancelled run never reaches a subsequent model phase after binding", async () => {
+    const { runtime, repository } = bindSetup({
+      async complete() {
+        modelCalls += 1;
+        return '{"kind":"none"}';
+      },
+    });
+    const controller = new AbortController();
+    let modelCalls = 0;
+    let binds = 0;
+    let error: unknown;
+    try {
+      await runtime.run(spec, {
+        ...direct,
+        signal: controller.signal,
+        context: {
+          bindRun() {
+            binds += 1;
+            controller.abort(new Error("cancel after bind"));
+          },
+          async read() {
+            return { pending: [textMessage("user", "hello")] };
+          },
+        },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeDefined();
+    expect(binds).toBe(1);
+    expect(modelCalls).toBe(0);
+    const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
+    expect(["failed", "cancelled"]).toContain(run.status);
   });
 });

@@ -13,6 +13,8 @@ import {
   type QqMemoryOrganiseResponse,
   type QqSchemeCompression,
   type QqSchemeContext,
+  type QqSchemeMediaInput,
+  type QqSchemeMessageSettings,
   type QqSchemeOutputReserve,
   type QqSchemePrompts,
   type QqSchemeReply,
@@ -179,6 +181,10 @@ export interface QqSchemeEditor {
   stickerCollectionIds: string[];
   prompts: QqSchemePrompts;
   reply: QqSchemeReply;
+  /** 0052 消息设置组（引用模式、层数、时间模式、时区）；API 持久键仍是 message_settings。 */
+  messageSettings: QqSchemeMessageSettings;
+  /** 0052 图片输入组（模式、阶段、图数、规格）；stages 深复制，API 持久键仍是 media_input。 */
+  mediaInput: QqSchemeMediaInput;
 }
 
 export function qqSchemeEditorFrom(scheme: QqSchemeResponse): QqSchemeEditor {
@@ -195,6 +201,12 @@ export function qqSchemeEditorFrom(scheme: QqSchemeResponse): QqSchemeEditor {
     stickerCollectionIds: [...scheme.sticker_collections.collection_ids],
     prompts: { ...scheme.prompts },
     reply: { ...scheme.reply },
+    messageSettings: { ...scheme.message_settings },
+    // stages 的三个布尔是嵌套对象：浅复制会让编辑写到目录行上，必须逐叶子新建。
+    mediaInput: {
+      ...scheme.media_input,
+      stages: { ...scheme.media_input.stages },
+    },
   };
 }
 
@@ -260,6 +272,60 @@ export function qqSchemeChanges(editor: QqSchemeEditor | null): readonly QqSchem
     editor.source.reply.split_by_speaker,
     editor.reply.split_by_speaker,
   );
+  // 0052 两组：逐叶子比较，stages 的三个布尔逐项展开（不能 String(object) 比较）。
+  compare(
+    "message_settings.reply_mode",
+    editor.source.message_settings.reply_mode,
+    editor.messageSettings.reply_mode,
+  );
+  compare(
+    "message_settings.reply_depth",
+    editor.source.message_settings.reply_depth,
+    editor.messageSettings.reply_depth,
+  );
+  compare(
+    "message_settings.time_display",
+    editor.source.message_settings.time_display,
+    editor.messageSettings.time_display,
+  );
+  compare(
+    "message_settings.timezone",
+    editor.source.message_settings.timezone,
+    editor.messageSettings.timezone,
+  );
+  compare("media_input.mode", editor.source.media_input.mode, editor.mediaInput.mode);
+  for (const phase of ["decision", "evaluation", "generation"] as const) {
+    compare(
+      `media_input.stages.${phase}`,
+      editor.source.media_input.stages[phase],
+      editor.mediaInput.stages[phase],
+    );
+  }
+  compare(
+    "media_input.max_images",
+    editor.source.media_input.max_images,
+    editor.mediaInput.max_images,
+  );
+  compare(
+    "media_input.ordinary_still_max_dimension",
+    editor.source.media_input.ordinary_still_max_dimension,
+    editor.mediaInput.ordinary_still_max_dimension,
+  );
+  compare(
+    "media_input.expression_max_dimension",
+    editor.source.media_input.expression_max_dimension,
+    editor.mediaInput.expression_max_dimension,
+  );
+  compare(
+    "media_input.expression_frame_count",
+    editor.source.media_input.expression_frame_count,
+    editor.mediaInput.expression_frame_count,
+  );
+  compare(
+    "media_input.expression_frame_max_dimension",
+    editor.source.media_input.expression_frame_max_dimension,
+    editor.mediaInput.expression_frame_max_dimension,
+  );
   return changes;
 }
 
@@ -271,13 +337,18 @@ export type QqSchemeGroupKey =
   | "outputReserve"
   | "stickers"
   | "prompts"
-  | "reply";
+  | "reply"
+  /** 0052：消息设置组（引用模式、层数、时间模式、时区）。 */
+  | "messageSettings"
+  /** 0052：图片输入组（模式、stages、图数、规格）。 */
+  | "mediaInput";
 /**
  * A patch to one parameter group. Loose on purpose: the grids drive their patches from const
  * tables, so the alternative would be a cast at every field. A key the group does not have is
  * not silently ignored — the save sends the whole group and the contract rejects it.
+ * 0052 的可空字段（普通静图长边）可传 null（＝钉住「原图」）。
  */
-export type QqSchemeGroupPatch = Record<string, number | boolean | string>;
+export type QqSchemeGroupPatch = Record<string, number | boolean | string | null>;
 
 export interface QqSchemeState {
   qqSchemes: QqSchemeResponse[];

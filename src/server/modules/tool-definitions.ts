@@ -34,6 +34,7 @@ export const SYSTEM_TOOL_DEFINITIONS: readonly SystemToolDefinition[] = [
     sandboxCallable: false,
     functionId: "media-stickers",
   },
+  { description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.read"], functionId: "media-stickers" },
   { description: STICKER_SEARCH_DESCRIPTION, functionId: "media-stickers" },
   { description: taskStartDescription([]), sandboxCallable: false, functionId: "execution-limits" },
   { description: TASK_READ_DESCRIPTION, sandboxCallable: false, functionId: "execution-limits" },

@@ -15,12 +15,14 @@ import {
   readQqGroupConfigRow,
 } from "../../src/server/db/qq-binding-repository";
 import {
+  readEffectiveQqScheme,
   readQqGroupCapabilityRevision,
   readQqGroupCapabilityRevisions,
 } from "../../src/server/db/qq-group-config-repository";
 import {
   createQqScheme,
   readQqScheme,
+  schemeMessageSettings,
   schemeRhythm,
   updateQqScheme,
 } from "../../src/server/db/qq-scheme-repository";
@@ -663,7 +665,7 @@ describe("0051 迁移：老开关列搬进记录且仍是布尔形态", () => {
         PRAGMA user_version=50;
       `);
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
 
       const orm = toOrmHandle(db).orm;
       const row = readQqGroupConfigRow(orm, "grp-1", "agent-1");
@@ -869,5 +871,213 @@ describe("能力停用的单调修订（证据失效用）", () => {
     expect((await errorOf(response)).code).toBe("VALIDATION_ERROR");
     // 修订由服务端推导，客户端给的 99 不生效。
     expect(readQqGroupCapabilityRevision(orm, bindingRef(binding.id), "web")).toBe(1);
+  });
+});
+
+// 0052/T12：两组设置进本群稀疏覆盖——嵌套 stages 逐字段跟随、null 原图是真实设置值、
+// 保存只动提交的组；配置值改动不推进能力修订（修订只随能力开关翻转前进）。
+describe("本群覆盖 0052 的两组设置（T12）", () => {
+  it("media_input 的 stages 逐字段覆盖：只关 evaluation 不丢另外两个 true；message_settings 逐字段跟随", async () => {
+    const { orm, app, scheme } = setup();
+    const binding = groupBinding(orm, scheme.id, "22001");
+    const current = await currentConfig(app, binding.id);
+    const response = await putConfig(app, binding.id, {
+      agent_id: current.binding.agent_id,
+      expected_binding_revision: current.binding.revision,
+      expected_scheme_revision: current.base_scheme.revision,
+      expected_revision: current.revision,
+      overrides: { media_input: { stages: { evaluation: false } } },
+      disabled_capabilities: current.disabled_capabilities,
+    });
+    expect(response.status).toBe(200);
+    const saved = (await response.json()) as QqGroupConfigResponse;
+    // 计划 T12 Step7 锚点：evaluation false 落地，decision/generation 保持基础方案的 true。
+    expect(saved.effective_scheme.media_input.stages).toEqual({
+      decision: true,
+      evaluation: false,
+      generation: true,
+    });
+    // 差异里只钉住提交的那个字段，其余字段跟随（浅合并会把整组替换——这是被拒绝的语义）。
+    expect(saved.overrides).toEqual({ media_input: { stages: { evaluation: false } } });
+    expect(saved.base_scheme.media_input.mode).toBe("native");
+    expect(saved.effective_scheme.media_input.mode).toBe("native");
+
+    // message_settings 逐字段：只覆盖 timezone，其余跟随基础方案；media_input 整份提交
+    // （已钉住的 stages 一并带上——客户端提交的是完整差异草稿）。
+    const second = await save(app, orm, binding.id, {
+      message_settings: { timezone: "Asia/Tokyo" },
+      media_input: { stages: { evaluation: false }, ordinary_still_max_dimension: 1024 },
+    });
+    expect(second.overrides).toEqual({
+      media_input: { stages: { evaluation: false }, ordinary_still_max_dimension: 1024 },
+      message_settings: { timezone: "Asia/Tokyo" },
+    });
+    expect(second.effective_scheme.message_settings).toEqual({
+      ...schemeMessageSettings(scheme),
+      timezone: "Asia/Tokyo",
+    });
+    // null（原图）是可以被显式钉住的真实设置值；保存后读回仍是 null 而不是基础方案值。
+    // 整份提交：已钉住的 message_settings 一并带上，不因这次只改 media_input 被清掉。
+    expect(second.effective_scheme.media_input.ordinary_still_max_dimension).toBe(1024);
+    const backToOriginal = await save(app, orm, binding.id, {
+      message_settings: { timezone: "Asia/Tokyo" },
+      media_input: { stages: { evaluation: false }, ordinary_still_max_dimension: null },
+    });
+    expect(backToOriginal.effective_scheme.media_input.ordinary_still_max_dimension).toBeNull();
+    expect(backToOriginal.overrides.media_input?.ordinary_still_max_dimension).toBeNull();
+    expect(backToOriginal.overrides.message_settings?.timezone).toBe("Asia/Tokyo");
+
+    // 读回稳定：同一份状态再读一次不变。
+    const reread = await currentConfig(app, binding.id);
+    expect(reread.overrides).toEqual(backToOriginal.overrides);
+    expect(reread.effective_scheme.message_settings.timezone).toBe("Asia/Tokyo");
+  });
+
+  it("整组提交不丢未提交组的差异：换基础方案 keep/reset 时两组差异随既有语义处理", async () => {
+    const { orm, app, scheme } = setup();
+    const other = createQqScheme(orm, { name: "另一个方案" });
+    const binding = groupBinding(orm, scheme.id, "22002");
+    const first = await save(app, orm, binding.id, {
+      media_input: { stages: { generation: false } },
+      message_settings: { reply_depth: 5 },
+    });
+    expect(first.overrides).toEqual({
+      media_input: { stages: { generation: false } },
+      message_settings: { reply_depth: 5 },
+    });
+
+    // keep：差异原样保留，生效值按新基础方案合并（其他字段跟随目标方案）。
+    const kept = await save(app, orm, binding.id, first.overrides, {
+      schemeId: other.id,
+      schemeChange: "keep",
+    });
+    expect(kept.base_scheme.id).toBe(other.id);
+    expect(kept.overrides).toEqual(first.overrides);
+    expect(kept.effective_scheme.media_input.stages.generation).toBe(false);
+    expect(kept.effective_scheme.message_settings.reply_depth).toBe(5);
+
+    // reset：全部跟随新方案（差异清空，能力停用不在本用例范围）。
+    const reset = await save(app, orm, binding.id, {}, { schemeChange: "reset" });
+    expect(reset.overrides).toEqual({});
+    expect(reset.effective_scheme.media_input.stages).toEqual({
+      decision: true,
+      evaluation: true,
+      generation: true,
+    });
+    expect(reset.effective_scheme.message_settings).toEqual(
+      schemeMessageSettings(required(readQqScheme(orm, scheme.id))),
+    );
+  });
+
+  it("新 group override 写两组设置不推进能力修订；越界/未知字段拒绝且无部分写", async () => {
+    const { orm, app, scheme } = setup();
+    const binding = groupBinding(orm, scheme.id, "22003");
+    const before = await currentConfig(app, binding.id);
+
+    // 只动配置值（两组覆盖）：能力修订不动（修订只在能力开关翻转时推进）。
+    const saved = await save(
+      app,
+      orm,
+      binding.id,
+      { media_input: { max_images: 3 } },
+      { disabled: ["web"] },
+    );
+    expect(saved.disabled_capabilities).toEqual(["web"]);
+    expect(readQqGroupCapabilityRevision(orm, bindingRef(binding.id), "web")).toBe(1);
+    expect(saved.effective_scheme.media_input.max_images).toBe(3);
+
+    // 越界与未知字段在写入口拒绝：无部分写（revision 不动、记录不出现半截组）。
+    const rejected: unknown[] = [
+      { media_input: { max_images: 0 } },
+      { media_input: { stages: { decision: "yes" } } },
+      { message_settings: { reply_depth: 9 } },
+      { message_settings: { timezone: "Not/AZone" } },
+      { media_input: { nope: 1 } },
+      { nope: {} },
+    ];
+    for (const bad of rejected) {
+      const response = await saveConfig(app, orm, binding.id, bad);
+      expect(response.status).toBe(422);
+      expect((await errorOf(response)).code).toBe("VALIDATION_ERROR");
+    }
+    const after = await currentConfig(app, binding.id);
+    expect(after.overrides).toEqual(saved.overrides);
+    expect(after.revision).toBe(saved.revision);
+    expect(before.disabled_capabilities).toEqual([]);
+  });
+
+  it("换 Agent：新 Agent 无记录＝全部跟随两组；旧 Agent 的两组差异在回切时恢复", async () => {
+    const { orm, app, scheme } = setup();
+    const binding = groupBinding(orm, scheme.id, "22004");
+    const saved = await save(app, orm, binding.id, {
+      media_input: { mode: "description" },
+      message_settings: { time_display: "full" },
+    });
+    expect(saved.revision).toBe(1);
+
+    const agentB = createAgent(
+      orm,
+      { name: "T12 助手 B", description: "second", model_name: "test-model", is_active: true },
+      {
+        core_identity: "Synthetic B",
+        communication_style: "",
+        interaction_boundaries: "",
+        example_dialogues: "",
+        advanced_instructions: "",
+      },
+    );
+    const put = (payload: unknown) =>
+      app.request(`/qq/bindings/${binding.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+        headers: { "content-type": "application/json" },
+      });
+    const toB = await put({
+      agent_id: agentB.id,
+      expected_revision: required(readQqBinding(orm, binding.id)).revision,
+    });
+    expect(toB.status).toBe(200);
+    const configB = await currentConfig(app, binding.id);
+    expect(configB.overrides).toEqual({});
+    expect(configB.effective_scheme.media_input.mode).toBe("native");
+    expect(configB.effective_scheme.message_settings.time_display).toBe("hybrid");
+
+    const toA = await put({
+      agent_id: DEFAULT_AGENT_ID,
+      expected_revision: required(readQqBinding(orm, binding.id)).revision,
+    });
+    expect(toA.status).toBe(200);
+    const configA = await currentConfig(app, binding.id);
+    expect(configA.revision).toBe(1);
+    expect(configA.overrides).toEqual(saved.overrides);
+    expect(configA.effective_scheme.media_input.mode).toBe("description");
+    expect(configA.effective_scheme.message_settings.time_display).toBe("full");
+  });
+
+  it("runtime 生效行读出两组合并值：readEffectiveQqScheme 应用本群差异", async () => {
+    const { orm, app, scheme } = setup();
+    const binding = groupBinding(orm, scheme.id, "22005");
+    await save(app, orm, binding.id, {
+      media_input: { stages: { evaluation: false }, max_images: 2 },
+      message_settings: { reply_mode: "configured_depth", reply_depth: 6 },
+    });
+    const effective = readEffectiveQqScheme(orm, required(readQqBinding(orm, binding.id)));
+    if (effective === null) throw new Error("effective scheme missing");
+    expect(effective.mediaInput).not.toBeNull();
+    expect(JSON.parse(String(effective.mediaInput))).toEqual({
+      mode: "native",
+      stages: { decision: true, evaluation: false, generation: true },
+      max_images: 2,
+      ordinary_still_max_dimension: null,
+      expression_max_dimension: 512,
+      expression_frame_count: 3,
+      expression_frame_max_dimension: 512,
+    });
+    expect(JSON.parse(String(effective.messageSettings))).toEqual({
+      reply_mode: "configured_depth",
+      reply_depth: 6,
+      time_display: "hybrid",
+      timezone: "Asia/Shanghai",
+    });
   });
 });

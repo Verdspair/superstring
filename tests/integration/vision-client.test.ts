@@ -6,6 +6,7 @@
 // gateway's own calls use. These cases pin exactly that, with `fetch` injected.
 
 import { describe, expect, it } from "bun:test";
+import http from "node:http";
 import { createLmStudioVisionClient } from "../../src/server/llm/vision-client";
 
 const config = {
@@ -201,6 +202,36 @@ describe("the multimodal request shape", () => {
     expect(answer).toBe('{"a":1}');
     expect(formats).toEqual(["json_schema", "json_object"]);
   });
+
+  /**
+   * 413（输入超长）不是 schema 形状问题：与网关共用同一条降级资格谓词，视觉链同样只有
+   * 一次失败，不把图字节重传、不降 schema 档。
+   */
+  it("does not fall back on a 413 (input too long): one failure, generic code", async () => {
+    const formats: (string | undefined)[] = [];
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        response_format?: { type?: string };
+      };
+      formats.push(body.response_format?.type);
+      return new Response("payload too large", { status: 413 });
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(config, fetchImpl);
+    const failure = await client
+      .annotate({
+        model: "vision-413-model",
+        prompt: "p",
+        images: [{ mimeType: "image/png", bytes: new Uint8Array([1]) }],
+        responseSchema: { type: "object" },
+      })
+      .then(
+        () => null,
+        (error: unknown) => error as { code?: string; status?: number },
+      );
+    expect(formats).toEqual(["json_schema"]);
+    expect(failure?.code).toBe("MODEL_ERROR");
+    expect(failure?.status).toBe(413);
+  });
 });
 
 it("propagates caller cancellation to the in-flight vision request", async () => {
@@ -241,4 +272,69 @@ it("does not begin a vision request after its caller has cancelled", async () =>
     client.annotate({ model: "vision", prompt: "describe", images: [], signal }),
   ).rejects.toThrow("already cancelled");
   expect(calls).toBe(0);
+});
+
+/**
+ * 真实传输层回归：宿主机器设置了 HTTP_PROXY 且未设 NO_PROXY 时，Bun 的全局 fetch 连
+ * 127.0.0.1 也会送进代理，图片理解全部 "Unable to connect"。视觉客户端的默认传输必须
+ * 像网关一样绕开代理直达本地服务。本用例自带 stub 与环境变量（try/finally 还原），
+ * 不改变其他用例的运行环境。
+ */
+it("reaches the local model service directly despite a dead HTTP_PROXY", async () => {
+  const saved = {
+    HTTP_PROXY: process.env.HTTP_PROXY,
+    HTTPS_PROXY: process.env.HTTPS_PROXY,
+    NO_PROXY: process.env.NO_PROXY,
+    no_proxy: process.env.no_proxy,
+  };
+  const seen: Array<{ path: string; authorization: string | undefined; body: string }> = [];
+  const stub = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      seen.push({ path: req.url ?? "", authorization: req.headers.authorization, body: raw });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok" } }] }));
+    });
+  });
+  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  const port = (stub.address() as { port: number }).port;
+  try {
+    process.env.HTTP_PROXY = "http://127.0.0.1:1"; // dead: nothing listening
+    process.env.HTTPS_PROXY = "http://127.0.0.1:1";
+    delete process.env.NO_PROXY;
+    delete process.env.no_proxy;
+    const client = createLmStudioVisionClient({
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      model: "text-model",
+      timeoutSeconds: 5,
+      apiKey: "secret",
+    });
+    const answer = await client.annotate({
+      model: "vision-model",
+      prompt: "写一段说明",
+      images: [{ mimeType: "image/png", bytes: new Uint8Array([7, 8, 9]) }],
+    });
+    expect(answer).toBe("ok");
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    await new Promise<void>((resolve) => stub.close(() => resolve()));
+  }
+  // 恰一次直达自己的 stub：带鉴权、模型名与图字节，而不是死代理的连接失败。
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.path).toBe("/v1/chat/completions");
+  expect(seen[0]?.authorization).toBe("Bearer secret");
+  const body = JSON.parse(seen[0]?.body ?? "{}") as {
+    model: string;
+    messages: { content: { type: string; image_url?: { url: string } }[] }[];
+  };
+  expect(body.model).toBe("vision-model");
+  expect(body.messages[0]?.content[1]?.image_url?.url).toBe(
+    `data:image/png;base64,${Buffer.from([7, 8, 9]).toString("base64")}`,
+  );
 });

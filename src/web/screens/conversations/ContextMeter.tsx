@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { ContextUsage } from "../../../shared/contracts/context-usage";
 import { ContextRing } from "../../components/context-ring";
 import { Button } from "../../components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
@@ -18,6 +19,36 @@ const sections = [
   ["current_question", "workspace.current_question"],
   ["protocol", "workspace.protocol_overhead"],
 ] as const;
+
+function getVisionNoteText(
+  vision: NonNullable<ContextUsage["vision_cost"]>,
+  t: (key: string, options?: Record<string, string>) => string,
+  resolvedLanguage: string | undefined,
+): string {
+  const hasImages = vision.images !== undefined && vision.images > 0;
+  const hasPixels = hasImages && vision.pixels !== undefined && vision.pixels > 0;
+  const opts = {
+    "0": (vision.images ?? 0).toLocaleString(resolvedLanguage),
+    "1": (vision.pixels ?? 0).toLocaleString(resolvedLanguage),
+  };
+
+  if (vision.state === "unknown") {
+    if (hasPixels) return t("workspace.vision_cost_unknown_with_pixels", opts);
+    if (hasImages) return t("workspace.vision_cost_unknown_with_images", opts);
+    return t("workspace.vision_cost_unknown_missing_counts");
+  }
+  if (vision.state === "estimated") {
+    if (hasPixels) return t("workspace.vision_cost_estimated_with_pixels", opts);
+    if (hasImages) return t("workspace.vision_cost_estimated_with_images", opts);
+    return t("workspace.vision_cost_estimated_missing_counts");
+  }
+  if (vision.state === "reported") {
+    if (hasPixels) return t("workspace.vision_cost_reported_with_pixels", opts);
+    if (hasImages) return t("workspace.vision_cost_reported_with_images", opts);
+    return t("workspace.vision_cost_reported_missing_counts");
+  }
+  return "";
+}
 export function ContextMeter() {
   const { t, i18n } = useTranslation();
   const chat = useSuperstringStore(currentChat);
@@ -36,12 +67,21 @@ export function ContextMeter() {
   useEffect(() => {
     if (owner !== session) setOpen(false);
   }, [owner, session]);
+  const vision = usage?.vision_cost;
+  const isTextOnly = Boolean(vision && vision.images !== 0);
+  const triggerLabel = isTextOnly
+    ? t("workspace.context_usage_text_only")
+    : t("workspace.context_usage");
   const parts = usage
     ? [
         ...sections.map(([key, label]) => ({ key, label, value: usage.components[key] })),
         { key: "output", label: "workspace.reply_reserve", value: usage.output_reserved },
         { key: "safety", label: "workspace.safety_margin", value: usage.safety_reserved },
-        { key: "remaining", label: "workspace.remaining_space", value: usage.remaining },
+        {
+          key: "remaining",
+          label: isTextOnly ? "workspace.text_remaining_space" : "workspace.remaining_space",
+          value: usage.remaining,
+        },
       ]
     : [];
   return (
@@ -56,8 +96,8 @@ export function ContextMeter() {
         <Button
           variant="ghost"
           size="sm"
-          aria-label={t("workspace.context_usage")}
-          title={t("workspace.context_usage")}
+          aria-label={triggerLabel}
+          title={triggerLabel}
           className="gap-1.5 px-2 text-muted-foreground"
         >
           <ContextRing percent={percent} />
@@ -94,13 +134,17 @@ export function ContextMeter() {
             {percent === null ? "—" : percentage.format(percent / 100)}
           </strong>
           <span className="pb-1 text-xs text-muted-foreground">
-            {t("workspace.input_usage_of_the_latest_request")}
+            {t(
+              isTextOnly
+                ? "workspace.text_input_usage_of_the_latest_request"
+                : "workspace.input_usage_of_the_latest_request",
+            )}
           </span>
         </div>
         {usage ? (
           <>
             <p className="text-xs text-muted-foreground">
-              {t("workspace.approx_used", {
+              {t(isTextOnly ? "workspace.approx_text_used" : "workspace.approx_used", {
                 "0": usage.input_units.toLocaleString(i18n.resolvedLanguage),
                 "1": usage.capacity.toLocaleString(i18n.resolvedLanguage),
               })}
@@ -128,6 +172,11 @@ export function ContextMeter() {
                 "0": usage.model,
               })}
             </p>
+            {isTextOnly && vision && (
+              <p className="text-xs text-muted-foreground">
+                {getVisionNoteText(vision, t, i18n.resolvedLanguage)}
+              </p>
+            )}
           </>
         ) : (
           <p className="text-sm text-muted-foreground">

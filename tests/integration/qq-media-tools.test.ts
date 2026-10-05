@@ -11,16 +11,20 @@ import type { ActionContext, BuiltInAction } from "../../src/server/agent/built-
 import { assertContextSources } from "../../src/server/agent/context-access";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { readBindingByConversation } from "../../src/server/db/qq-binding-repository";
+import {
+  linkMediaAssetSource,
+  recordMediaAsset,
+} from "../../src/server/db/qq-media-asset-repository";
 import { mediaNoteRow, recordMediaSegment } from "../../src/server/db/qq-media-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_USER_ID, ensureDefaults, nowIso } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
 import type { QqBinding } from "../../src/server/services/qq-binding-contract";
 import {
   createQqMediaTools,
-  mediaNoteRevision,
   type QqMediaToolsOptions,
 } from "../../src/server/services/qq-media-tools";
 import type { ConversationAddressing } from "../../src/shared/contracts/conversation";
@@ -30,6 +34,16 @@ const ACCOUNT = "10001";
 const PEER = "30003";
 const AGENT = "00000000-0000-0000-0000-000000000001";
 const BINDING_ID = "11111111-1111-4111-8111-111111111111";
+/**
+ * 受控合法 PNG 字节：按 sha(kind+ref) 生成真实 RGBA 像素——同一 ref 永远同字节
+ * （身份稳定），不同 ref 字节不同（绝不误判同内容）。头部经真实 readQqImageHeader 校验。
+ */
+function pngBytesFor(kind: string, ref: string): Uint8Array {
+  const seed = createHash("sha256").update(`test-bytes:${kind}:${ref}`).digest();
+  const pixels = new Uint8Array(2 * 2 * 4);
+  for (let i = 0; i < pixels.length; i += 1) pixels[i] = seed[i % seed.length] ?? 0;
+  return encodeQqFramePng(pixels, 2, 2);
+}
 
 type Reason = ConversationAddressing["reasons"][number];
 
@@ -177,10 +191,16 @@ function open() {
   /** 一条带图片的消息：默认进 journal（可披露）；hidden 用于"有行但从未披露"。 */
   function image(
     eventKey: string,
-    input: { at?: number; sourceRef?: string; hidden?: boolean } = {},
+    input: {
+      at?: number;
+      sourceRef?: string;
+      hidden?: boolean;
+      reasons?: readonly Reason[];
+    } = {},
   ): NonNullable<ReturnType<typeof mediaNoteRow>> {
-    if (input.hidden) recordEvent(eventKey, input.at);
-    else message(eventKey, { at: input.at });
+    recordEvent(eventKey, input.at);
+    // 与生产 observation-intake 同序：媒体行先落库，journal 摄入时把 qq_media 引用写进
+    // 时间线（typed 来源复验依赖这条事实）。
     recordMediaSegment(h.orm, {
       eventKey,
       segmentIndex: 0,
@@ -189,6 +209,11 @@ function open() {
       occurredAtSeconds: input.at ?? baseSeconds,
       addressed: true,
     });
+    if (!input.hidden)
+      journal.ingestOneBotEvent(eventKey, binding.id, {
+        reasons: input.reasons ? [...input.reasons] : ["mention"],
+        mentionIds: [],
+      });
     const row = mediaNoteRow(h.orm, eventKey, 0);
     if (!row) throw new Error("media fixture missing");
     return row;
@@ -224,6 +249,12 @@ function open() {
       binding: input.binding ?? binding,
       adapter: {
         capabilities: ["image"] as const,
+        // The reader's identity discipline needs controlled bytes: the test
+        // adapter derives them deterministically from the source ref (same
+        // ref = same bytes = same identity), exactly one download per read.
+        fetchBytes: async (request) => ({
+          bytes: pngBytesFor(request.kind, request.sourceRef),
+        }),
         read: async (request) => {
           stats.calls++;
           return (input.read ?? (async () => "橘猫"))(request);
@@ -234,8 +265,10 @@ function open() {
         transcriptionModelName: null,
       },
       supplementWindowMinutes: 30,
+      policyRevision: "test-policy",
       assertCurrent: () => {},
       fit: input.fit ?? (async () => () => true),
+      evidence: { db: h.db, orm: h.orm },
       onDescribed: (eventKey) => {
         stats.described.push(eventKey);
       },
@@ -356,20 +389,20 @@ describe("run-scoped QQ media tools", () => {
       await tool.execute("media.list", {}, ctx);
       const described = await tool.execute("media.describe", { id: img.id }, ctx);
       expect(described.value).toEqual({ status: "described", described: true, attempt: 1 });
-      // 成功正文带两种引用：qq_media 管删除与 attempts，qq_media_note 管正文修订（稳定哈希）。
-      const expectedRevision = createHash("sha256")
-        .update(JSON.stringify(["甲乙丙丁", "vision-local", 1, "img-1"]))
-        .digest("hex");
-      expect(described.sources).toHaveLength(2);
-      expect(described.sources[0]).toMatchObject({ kind: "qq_media", id: img.id, revision: "1" });
-      expect(described.sources[1]).toMatchObject({
-        kind: "qq_media_note",
-        id: img.id,
-        revision: expectedRevision,
+      // typed 成功只签发一个真实任务引用：正文修订驻留在 typed 任务（qq_media_read_task），
+      // 旧 qq_media_note 引用链退役；typed 结果不回写 legacy note。
+      expect(described.sources).toHaveLength(1);
+      // 传入副本断言：toMatchObject + expect.any 会原地改写 received 的 id。
+      expect({ ...described.sources[0] }).toMatchObject({
+        kind: "qq_media_read_task",
+        id: expect.any(String),
       });
       const storedRow = mediaNoteRow(f.h.orm, "img-1", 0);
       if (!storedRow) throw new Error("media fixture missing");
-      expect(mediaNoteRevision(storedRow)).toBe(expectedRevision);
+      expect({ note: storedRow.note, attempts: storedRow.attempts }).toEqual({
+        note: null,
+        attempts: 0,
+      });
       expectSourcesValid(f, described.sources);
       // describe 只回元信息：正文不在它的值里。
       expect(JSON.stringify(described.value)).not.toContain("甲乙丙丁");
@@ -384,27 +417,46 @@ describe("run-scoped QQ media tools", () => {
         offset: 0,
         nextOffset: 2,
       });
-      expect(headObservation.sources).toHaveLength(2);
+      expect(headObservation.sources).toHaveLength(1);
       expectSourcesValid(f, headObservation.sources);
       const tail = expectNoteText(
         (await tool.execute("media.note.read", { id: img.id, offset: 2, limit: 2 }, ctx)).value,
       );
       expect(tail).toMatchObject({ text: "丙丁", offset: 2, nextOffset: null });
       expect(tool.stats.calls).toBe(1);
-      // 同一 attempts 内的正文改写：qq_media 看不见（attempts 未变），qq_media_note 能检出。
-      f.h.orm.update(schema.qqMediaNotes).set({ note: "被改写的描述" }).run();
-      expectSourcesValid(f, [described.sources[0]]);
-      expectSourcesRevoked(f, [described.sources[1]]);
+      // 同一 attempt 内的正文改写：typed 任务引用按任务现值复算，能检出改写。
+      f.h.db
+        .query("UPDATE qq_media_read_tasks SET note='被改写的描述' WHERE media_note_id=?")
+        .run(img.id);
+      expectSourcesRevoked(f, described.sources);
     } finally {
       f.h.close();
     }
   });
 
-  it("reuses one description for the same reference without a second call", async () => {
+  it("reuses one description for the same CONTENT on a new carrier: one budget, one call, no second attempt", async () => {
     const f = open();
     try {
       const first = f.image("img-a", { sourceRef: "shared-ref" });
       const second = f.image("img-b", { at: f.baseSeconds + 1, sourceRef: "shared-ref" });
+      // T08 identity 纪律：身份来自受控字节的 sha（adapter fetchBytes 派生）。第二
+      // 载体要被复合引用授权，必须自己持有同一内容的活资产/来源链（与生产一致：
+      // 同字节重发落在真实资产行上）。
+      const identityBytes = pngBytesFor("image", "shared-ref");
+      for (const mediaId of [first.id, second.id]) {
+        const { asset } = recordMediaAsset(f.h.orm, {
+          scope: { accountId: ACCOUNT, conversationKind: "group", peerId: PEER, agentId: AGENT },
+          bytes: identityBytes,
+          mimeType: "image/png",
+          expiresAt: new Date(Date.parse(nowIso()) + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+        linkMediaAssetSource(f.h.orm, {
+          assetId: asset.id,
+          mediaNoteId: mediaId,
+          scope: { accountId: ACCOUNT, conversationKind: "group", peerId: PEER, agentId: AGENT },
+          expiresAt: new Date(Date.parse(nowIso()) + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        });
+      }
       const tool = f.mount({ read: async () => "橘猫" });
       const { ctx } = f.context();
       await tool.execute("media.list", {}, ctx);
@@ -413,17 +465,28 @@ describe("run-scoped QQ media tools", () => {
         described: true,
         attempt: 1,
       });
+      // 同内容的新载体：cache 命中，不花第二次视觉调用，也不新建账本行。
       expect((await tool.execute("media.describe", { id: second.id }, ctx)).value).toEqual({
         status: "described",
         described: true,
-        attempt: 0,
+        attempt: 1,
       });
       expect(tool.stats.calls).toBe(1);
+      // typed 成功不回写 legacy note：两行 note 全空。
       expect(mediaNoteRow(f.h.orm, "img-b", 0)).toMatchObject({
-        note: "橘猫",
-        noteModel: "vision-local",
+        note: null,
+        noteModel: null,
         attempts: 0,
       });
+      // 唯一账本行（identity 主行，停在首载体），attempts 只花过一次。
+      const tasks = f.h.db
+        .query("SELECT media_note_id AS m, attempts, status, identity_key FROM qq_media_read_tasks")
+        .all() as { m: string; attempts: number; status: string; identity_key: string | null }[];
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]).toMatchObject({ attempts: 1, status: "succeeded" });
+      expect(tasks[0].identity_key).not.toBeNull();
+      expect(tasks[0].m).toBe(first.id);
+      // 复用成功按 own 同规则通知：两个 event（首/第二 carrier）、同一账本行 taskId。
       expect(tool.stats.described).toEqual(["img-a", "img-b"]);
     } finally {
       f.h.close();
@@ -560,8 +623,11 @@ describe("run-scoped QQ media tools", () => {
       expect((error as { name?: string }).name).toBe("AbortError");
       const row = mediaNoteRow(f.h.orm, "img-1", 0);
       expect(row?.note).toBeNull();
-      // 尝试在取流前已认领：取消不写回，但这一次尝试不被取消"复活"。
-      expect(row?.attempts).toBe(1);
+      // 尝试在取流前已被任务账本认领：取消不写回，但这一次尝试不被取消"复活"。
+      const task = f.h.db
+        .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
+        .get(img.id) as { attempts: number; status: string };
+      expect(task).toMatchObject({ attempts: 1, status: "failed" });
     } finally {
       f.h.close();
     }
@@ -663,7 +729,64 @@ describe("run-scoped QQ media tools", () => {
         code: "attempts_exhausted",
       });
       expect(tool.stats.calls).toBe(2);
-      expect(mediaNoteRow(f.h.orm, "img-1", 0)).toMatchObject({ attempts: 2, note: null });
+      // 两次尝试记在 typed 任务账本上；legacy 行旧账保持 0（typed 不回写）。
+      expect(mediaNoteRow(f.h.orm, "img-1", 0)).toMatchObject({ attempts: 0, note: null });
+      const task = f.h.db
+        .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
+        .get(img.id) as { attempts: number; status: string };
+      expect(task).toMatchObject({ attempts: 2, status: "failed" });
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("unlocks a second attempt on an unaddressed image only through a genuinely later supplement", async () => {
+    const f = open();
+    try {
+      // 原图未被 @（journal reasons 为空但已披露）：第一次尝试走既有主动读。
+      const img = f.image("img-plain", { at: f.baseSeconds - 120, reasons: [] });
+      const tool = f.mount({
+        read: async () => {
+          throw new Error("synthetic vision failure");
+        },
+      });
+      const run1 = f.context("run-1");
+      await tool.execute("media.list", {}, run1.ctx);
+      expect((await tool.execute("media.describe", { id: img.id }, run1.ctx)).value).toEqual({
+        status: "failed",
+        described: false,
+        attempt: 1,
+        awaitSupplement: false,
+      });
+      expect(tool.stats.calls).toBe(1);
+
+      // 不晚于上次尝试的补充不是新事实：仍未被 @ 的原图不重读。
+      f.message("stale-supp", { at: f.baseSeconds - 60, reasons: ["mention"] });
+      const run2 = f.context("run-2");
+      await tool.execute("media.list", {}, run2.ctx);
+      expect((await tool.execute("media.describe", { id: img.id }, run2.ctx)).value).toEqual({
+        status: "unavailable",
+        code: "not_addressed",
+      });
+      expect(tool.stats.calls).toBe(1);
+
+      // 更晚、在窗口内、晚于上次尝试的真实 @ 补充解锁第二次尝试。
+      f.message("fresh-supp", { at: f.baseSeconds + 90, reasons: ["mention"] });
+      const run3 = f.context("run-3");
+      await tool.execute("media.list", {}, run3.ctx);
+      expect((await tool.execute("media.describe", { id: img.id }, run3.ctx)).value).toEqual({
+        status: "failed",
+        described: false,
+        attempt: 2,
+        awaitSupplement: false,
+      });
+      expect(tool.stats.calls).toBe(2);
+      // 两次尝试记在 typed 任务账本上；媒体行旧账保持 0（typed 不回写）。
+      expect(mediaNoteRow(f.h.orm, "img-plain", 0)).toMatchObject({ attempts: 0, note: null });
+      const task2 = f.h.db
+        .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
+        .get(img.id) as { attempts: number; status: string };
+      expect(task2).toMatchObject({ attempts: 2, status: "failed" });
     } finally {
       f.h.close();
     }
@@ -822,7 +945,7 @@ describe("run-scoped QQ media tools", () => {
   it("never returns a note changed, revoked or deleted while the result waited for fit", async () => {
     const f = open();
     try {
-      // (a) 等待 fit 期间正文被改写（attempts 不变）：不给旧正文，也不给引用。
+      // (a) 等待 fit 期间 typed 任务正文被改写：不给旧正文，也不给引用。
       const first = f.image("img-1");
       const changed = f.mount({
         fit: async (name) => {
@@ -830,7 +953,9 @@ describe("run-scoped QQ media tools", () => {
           return () => {
             if (name === "media.note.read" && !fired) {
               fired = true;
-              f.h.orm.update(schema.qqMediaNotes).set({ note: "改写后的描述" }).run();
+              f.h.db
+                .query("UPDATE qq_media_read_tasks SET note='改写后的描述' WHERE media_note_id=?")
+                .run(first.id);
             }
             return true;
           };
@@ -912,11 +1037,12 @@ describe("run-scoped QQ media tools", () => {
       const described = await tool.execute("media.describe", { id: img.id }, ctx);
       expect(described.value).toEqual({ status: "described", described: true, attempt: 1 });
       expect(tool.stats.calls).toBe(1);
-      expect(mediaNoteRow(f.h.orm, "img-1", 0)).toMatchObject({
-        attempts: 1,
-        note: "橘猫",
-        noteModel: "vision-local",
-      });
+      // 结果记在 typed 任务账本上；legacy 行不回写。
+      expect(mediaNoteRow(f.h.orm, "img-1", 0)).toMatchObject({ attempts: 0, note: null });
+      const task = f.h.db
+        .query("SELECT attempts,status,note FROM qq_media_read_tasks WHERE media_note_id=?")
+        .get(img.id) as { attempts: number; status: string; note: string };
+      expect(task).toMatchObject({ attempts: 1, status: "succeeded", note: "橘猫" });
     } finally {
       f.h.close();
     }

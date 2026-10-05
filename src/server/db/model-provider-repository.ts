@@ -29,6 +29,13 @@ export interface ModelProviderRoute {
   readonly baseUrl: string;
   readonly apiKey: string | null;
   readonly contextWindow: number;
+  /**
+   * 能力声明里的"图片输入"三态：true/false 是用户声明；undefined = 未声明而**不是**不支持，
+   * 接口诚实保持"允许原生尝试"。
+   */
+  readonly vision?: boolean;
+  /** Provider 行修订号：模型网关用它区分"旧声明下的观察"与"新声明后的重试"。 */
+  readonly providerRevision: number;
 }
 
 /** The row -> wire mapping. The key's ciphertext never leaves this module. */
@@ -218,6 +225,12 @@ export function resolveModelProviderRoute(
       baseUrl: row.baseUrl,
       apiKey: row.apiKey === null ? null : openSecret(row.apiKey, transportSecret(keyPath)),
       contextWindow: declared.context_window,
+      ...(declared.capabilities === undefined
+        ? {}
+        : declared.capabilities.vision === undefined
+          ? {}
+          : { vision: declared.capabilities.vision }),
+      providerRevision: row.revision,
     });
   }
   return null;

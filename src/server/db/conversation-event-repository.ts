@@ -523,6 +523,18 @@ export class ConversationEventRepository {
       (!historical && c.bindingEpoch > 1 && e.source_rowid <= this.row(c.id)!.source_watermark)
     )
       return null;
+    const media = this.db
+      .query(
+        `SELECT n.id,n.attempts,n.expires_at FROM qq_media_notes n
+        WHERE n.event_key=? ORDER BY n.segment_index`,
+      )
+      .all(eventKey) as { id: string; attempts: number; expires_at: string }[];
+    const mediaRefs: SourceRef[] = media.map((n) => ({
+      kind: "qq_media",
+      id: n.id,
+      revision: String(n.attempts),
+      expiresAt: n.expires_at,
+    }));
     const source: SourceRef = { kind: "qq_event", id: eventKey, revision: e.recorded_at };
     const sources: SourceRef[] = [source];
     if (e.body && e.expires_at)
@@ -532,7 +544,8 @@ export class ConversationEventRepository {
         revision: bodyRevision(e.body),
         expiresAt: e.expires_at,
       });
-    return this.append({
+    sources.push(...mediaRefs);
+    const appended = this.append({
       conversationId: c.id,
       eventKey: `onebot:${eventKey}`,
       kind: "inbound",
@@ -550,6 +563,41 @@ export class ConversationEventRepository {
         mentionIds: [],
       },
     });
+    if (!mediaRefs.length) return appended;
+    return this.mergeMissingMediaSources(c.id, `onebot:${eventKey}`, mediaRefs);
+  }
+  private mergeMissingMediaSources(
+    conversationId: string,
+    eventKey: string,
+    mediaRefs: SourceRef[],
+  ): ConversationEvent | null {
+    return this.db
+      .transaction(() => {
+        const row = this.db
+          .query("SELECT * FROM conversation_events WHERE conversation_id=? AND event_key=?")
+          .get(conversationId, eventKey) as EventRow | null;
+        if (!row) return null;
+        // A sealed journal is a read-only reference; backfill never reopens a closed row.
+        const conversation = this.row(conversationId);
+        if (!conversation || conversation.closed_at) return eventFromRow(row);
+        const live = JSON.parse(row.sources) as SourceRef[];
+        const absent = mediaRefs.filter(
+          (ref) => !live.some((s) => s.kind === ref.kind && s.id === ref.id),
+        );
+        if (!absent.length) return eventFromRow(row);
+        const sources = JSON.stringify([...live, ...absent]);
+        const updated = this.db
+          .query(
+            "UPDATE conversation_events SET sources=? WHERE conversation_id=? AND event_key=? AND sources=? RETURNING *",
+          )
+          .get(sources, conversationId, eventKey, row.sources) as EventRow | null;
+        if (updated) return eventFromRow(updated);
+        const fresh = this.db
+          .query("SELECT * FROM conversation_events WHERE conversation_id=? AND event_key=?")
+          .get(conversationId, eventKey) as EventRow | null;
+        return fresh ? eventFromRow(fresh) : null;
+      })
+      .immediate();
   }
   ingestMedia(noteId: string, bindingId: string): ConversationEvent | null {
     const c = this.ensureOneBot(bindingId);

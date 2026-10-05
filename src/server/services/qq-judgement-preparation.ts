@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { readQqBinding } from "../db/qq-binding-repository";
 import { readEffectiveQqScheme } from "../db/qq-group-config-repository";
-import { attemptedUnreadMediaCount } from "../db/qq-media-repository";
+import { attemptedUnreadMediaNoteIds } from "../db/qq-media-repository";
 import { qqMemberLabels } from "../db/qq-member-repository";
 import {
   conversationMessagesSince,
@@ -189,6 +189,53 @@ export function prepareQqJudgement(
     eligibilityOnly?: boolean;
     /** Host-owned mature, unhandled participant opportunities; never supplied by a model. */
     pendingTargets?: readonly QqReplyTarget[];
+    /**
+     * T11 host proof (qqNativeReadProof, runId pre-bound in the host closure): which of the blocked
+     * media rows were ACTUALLY READ this run — a successful model call really consumed the image
+     * part in THIS activation (prepared inventory, HTTP-unsupported failures, fetch-without-send,
+     * phase-off and revoked sources are NEVER a proof). Only such rows are relieved from the legacy
+     * unread-failure gate (spec §8.1: a valid current-round native read is not blocked by an old
+     * failure); mode==native alone is never a proof, and the gate derives no other stage claim from
+     * this fact. Undefined = host without native proof support: the gate stays closed.
+     */
+    nativeReadProof?: (input: {
+      scope: QqConversationScope;
+      mediaNoteIds: readonly string[];
+      now: string;
+    }) => ReadonlyArray<{
+      mediaNoteId: string;
+      proof: {
+        /** 本 run 一次成功模型调用实际消费了该图的图像 part。 */
+        kind: "model_consumed";
+        /** 该成功调用的时刻（run 内真源）。 */
+        consumedAt: string;
+        /** 被消费的图像来源引用（epoch/seq/ref 由 host 末验仍 current）。 */
+        sourceRefs: readonly SourceRef[];
+      } | null;
+    }>;
+    /**
+     * 初始资格探询（§8.1）——**「可尝试」，不是「已理解」**。
+     *
+     * 与 `nativeReadProof` 的分层（两者不可混、不可互相代替）：
+     *   * `nativeReadProof` ＝ **已发生的实际理解证据**：同 run 一次成功模型调用真消费了图像
+     *     part。只有它能让 `prepareOutput`/`commitOutputs` 的严格闸放行。
+     *   * 本回调 ＝ 宿主回答「这些本轮失败的媒体行，本 run 有**可能**真实供图」。它只让
+     *     **首次** preparation 暂缓 `media_read_failed` 这一个 reason，好让主链真的走一次
+     *     决策相，从而有机会产生上面那种证据。它不解除任何闸、不进缓存、不写状态。
+     *
+     * 返回值＝**可尝试**的 mediaNoteId 子集。宿主只能返回它能在本 run 自动范围里真实供图的
+     * 行（native 模式 ∧ decision 阶段开 ∧ media 能力开 ∧ 该行当前来源有效 ∧ 落在 focus+direct
+     * 自动范围内，§7.1）。判定全在宿主闭包内。
+     *
+     * 消费端只做一个**纯形状**的集合覆盖检查（与上面 requested-notes 检查同一性质，**不重建
+     * 任何权限系统**）：所有未 proven 的失败行都被返回才暂缓。部分覆盖、未知/重复 id、空
+     * 返回、未提供本回调、回调抛错——一律照旧 blocked（fail closed）。
+     */
+    initialNativeReadEligibility?: (input: {
+      scope: QqConversationScope;
+      mediaNoteIds: readonly string[];
+      now: string;
+    }) => readonly string[];
   },
 ): QqJudgementPreparation {
   const parsed = Input.safeParse(input);
@@ -336,15 +383,77 @@ export function prepareQqJudgement(
           (lastSpeechSeconds === null || message.occurredAtSeconds >= lastSpeechSeconds) &&
           targets.some((target) => target.speakerId === message.speakerId),
       );
-      const failedMedia = attemptedUnreadMediaCount(
+      // 该轮判断自己的真实时钟（由 nowSeconds 推导的 ISO），不取宿主当前钟：
+      // 同一次判定的媒体闸与窗口读数必须出自同一时刻。
+      const gateAt = new Date(nowSeconds * 1000).toISOString();
+      const blockedNotes = attemptedUnreadMediaNoteIds(
         orm,
         mediaScope.map((message) => message.eventKey),
+        gateAt,
       );
-      if (failedMedia > 0) {
-        console.warn(
-          `[qq-media] ${path} 放弃开口：本轮有 ${failedMedia} 项媒体读取未成功（会话 ${scope.conversationKind}:${scope.peerId}）`,
-        );
-        return { kind: "blocked", reason: "media_read_failed" };
+      // 本轮 native 已真实投喂的行（host 闭包内 runId/scope/assertCurrent 复验）按 §8.1 解除
+      // 旧失败误挡；host 未注入 proof（undefined）时闸保持原样——宁误挡不误放。
+      // The trusted host callback is the ONLY authorization source: run/owner/observedSeq/scope/
+      // sent-imageSource correspondence, source readability and consumedAt validity are the
+      // PRODUCER's contractual duties (verified inside its closure) — the gate builds no second
+      // permission system. It does enforce the light input contract of the response shape itself:
+      // only requested ids, no duplicates, and a well-formed non-future consumedAt (these are shape
+      // consistency, not authorization).
+      const requestedNotes = new Set(blockedNotes);
+      const provenNotes = new Set<string>();
+      if (blockedNotes.length > 0 && options?.nativeReadProof !== undefined) {
+        const nowMs = Date.parse(gateAt);
+        for (const entry of options.nativeReadProof({
+          scope,
+          mediaNoteIds: blockedNotes,
+          now: gateAt,
+        })) {
+          if (!requestedNotes.has(entry.mediaNoteId)) continue;
+          if (provenNotes.has(entry.mediaNoteId)) continue;
+          const proof = entry.proof;
+          if (proof?.kind !== "model_consumed") continue;
+          const consumedMs = Date.parse(proof.consumedAt);
+          if (!Number.isFinite(consumedMs) || consumedMs > nowMs) continue;
+          provenNotes.add(entry.mediaNoteId);
+        }
+      }
+      const pendingNotes = blockedNotes.filter((id) => !provenNotes.has(id));
+      if (pendingNotes.length > 0) {
+        // 初始资格探询（§8.1）：仅当宿主声明**每一个**未 proven 的失败行本 run 都有可真实供图的机会
+        // 才暂缓这一个 reason，让主链真的走一次决策相——决策成功消费后，
+        // `prepareOutput`/`commitOutputs` 的严格闸会凭 `model_consumed` 放行。这是“可尝试”，不是“已理解”。
+        // 任何不覆盖、未知/重复 id、空返回、未提供本回调、回调抛错 → 一律照旧阻断。
+        // 消费端只做**纯形状**的集合覆盖检查，**不重建任何授权**：scope/来源/能力的判定全在宿主闭包内。
+        const eligibility = options?.initialNativeReadEligibility;
+        let deferrable = eligibility !== undefined;
+        if (eligibility !== undefined) {
+          // 保留原始数组（不提前去重）：重复与未知都是宿主回答不可信的形状。
+          // 回调抛错无需尝试：不吞掉、不转 blocked（blocked 是一种误导），自然穿透。
+          const offered = eligibility({ scope, mediaNoteIds: pendingNotes, now: gateAt });
+          const requested = new Set(pendingNotes);
+          const seen = new Set<string>();
+          let wellFormed = true;
+          for (const id of offered) {
+            if (!requested.has(id) || seen.has(id)) {
+              wellFormed = false;
+              break;
+            }
+            seen.add(id);
+          }
+          // 三个条件同时才算「都能尝试」：无未知、无重复、且完整覆盖。
+          // 一张焦点图不能放任窗口里无关失败行解锁；多报一个不请求的 id 也不能算。
+          deferrable = wellFormed && pendingNotes.every((id) => seen.has(id));
+        }
+        if (deferrable) {
+          console.warn(
+            `[qq-media] ${path} 暂缓媒体失败闸：本轮 ${pendingNotes.length} 项待真实供图后才可开口（会话 ${scope.conversationKind}:${scope.peerId}）`,
+          );
+        } else {
+          console.warn(
+            `[qq-media] ${path} 放弃开口：本轮有 ${pendingNotes.length} 项媒体读取未成功（会话 ${scope.conversationKind}:${scope.peerId}）`,
+          );
+          return { kind: "blocked", reason: "media_read_failed" };
+        }
       }
     }
     // 打分口径里排在人物与上下文之后的两层：长期记忆与知识库。只在真会跑判断的

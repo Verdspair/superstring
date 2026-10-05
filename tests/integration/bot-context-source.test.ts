@@ -114,7 +114,9 @@ function setup(
     loadedContextCapacity: async () => 65536,
     async complete(request) {
       calls.push(request);
-      const data = JSON.parse(request.messages[1].content);
+      const first = request.messages?.[1]?.content;
+      if (typeof first !== "string") throw new Error("text content expected");
+      const data = JSON.parse(first);
       if (data.events)
         return JSON.stringify({
           facts: [
@@ -901,10 +903,14 @@ describe("shared Bot context source", () => {
       target: { id: "bob", speakerId: "20003" },
     });
     expect(prepared.model).toBe("judge-model");
-    expect(prepared.messages[0].content).toContain("20003");
-    expect(prepared.messages[0].content).toContain("score");
-    expect(prepared.messages[0].content).not.toContain("Return exactly one JSON decision");
-    expect(prepared.messages[0].content).not.toContain("Write only the response body");
+    // T11 Step5：评分材料改原生有序消息（content 为有序 part）；文字断言对文本投影做。
+    const scoreText = prepared.messages[0].content
+      .map((part) => (part.kind === "text" ? part.text : JSON.stringify(part)))
+      .join("");
+    expect(scoreText).toContain("20003");
+    expect(scoreText).toContain("score");
+    expect(scoreText).not.toContain("Return exactly one JSON decision");
+    expect(scoreText).not.toContain("Write only the response body");
     expect(prepared.messages.slice(1).every((message) => message.role !== "system")).toBe(true);
     expect(JSON.stringify(prepared.messages)).toContain("supplemental result");
     expect(prepared.sources.some((source) => source.id === own)).toBe(true);
@@ -1083,7 +1089,9 @@ describe("shared Bot context source", () => {
     });
     await h.source.read(readInput());
     await compress(h.source);
-    const events = JSON.parse(h.calls[0].messages[1].content).events as {
+    const compressRaw = h.calls[0].messages?.[1]?.content ?? "";
+    if (typeof compressRaw !== "string") throw new Error("text content expected");
+    const events = JSON.parse(compressRaw).events as {
       speaker: string;
       text: string;
     }[];
@@ -1571,7 +1579,11 @@ describe("shared Bot context source", () => {
     const seen: Parameters<ModelGateway["complete"]>[0][] = [];
     h.gateway.complete = async (request) => {
       seen.push(request);
-      if (request.messages[0]?.content.includes("Return exactly one JSON decision"))
+      const firstContent = request.messages?.[0]?.content;
+      if (
+        typeof firstContent === "string" &&
+        firstContent.includes("Return exactly one JSON decision")
+      )
         return decisions.shift() ?? '{"kind":"none"}';
       return JSON.stringify({ ids: [] });
     };
@@ -1591,9 +1603,11 @@ describe("shared Bot context source", () => {
     });
     expect(result.status).toBe("completed");
     expect(seen).toHaveLength(2);
-    const observations = seen[1].messages.flatMap((message) => {
+    const observations = (seen[1].messages ?? []).flatMap((message) => {
       try {
-        const data = JSON.parse(message.content) as { kind?: string; value?: unknown };
+        const rawContent = message.content;
+        if (typeof rawContent !== "string") throw new Error("text content expected");
+        const data = JSON.parse(rawContent) as { kind?: string; value?: unknown };
         return data.kind === "action_observation"
           ? [data.value as { name: string; value: { status: string; items: { id: string }[] } }]
           : [];
@@ -1718,9 +1732,11 @@ describe("shared Bot context source", () => {
     const evidence = await compressor.summarize(input);
     expect(h.calls.length).toBeGreaterThan(1);
     expect(JSON.parse(evidence?.text ?? "{}").facts).toHaveLength(4);
-    const seen = h.calls.flatMap((call) =>
-      JSON.parse(call.messages[1].content).events.map((event: { id: string }) => event.id),
-    );
+    const seen = h.calls.flatMap((call) => {
+      const raw = call.messages?.[1]?.content;
+      if (typeof raw !== "string") throw new Error("text content expected");
+      return (JSON.parse(raw) as { events: { id: string }[] }).events.map((event) => event.id);
+    });
     expect(seen).toEqual(records.map((record) => record.id));
     expect(evidence?.sources).toContainEqual(questionSource);
     const count = h.calls.length;

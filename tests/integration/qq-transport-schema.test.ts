@@ -63,6 +63,7 @@ const v48 = sql("0048_agent_tasks.sql");
 const v49 = sql("0049_qq_output_reserve_caps.sql");
 const v50 = sql("0050_qq_retention_days.sql");
 const v51 = sql("0051_qq_group_agent_config.sql");
+const v52 = sql("0052_qq_message_multimodal.sql");
 const QQ_TABLES = ["qq_settings", "qq_owner_identities", "qq_bindings", "qq_events"] as const;
 const NOW = "2026-01-01T00:00:00.000000Z";
 
@@ -163,7 +164,11 @@ const GOLDEN_INDEXES: Record<string, Array<{ name: string; unique: boolean }>> =
     { name: "ix_qq_binding_agent", unique: false },
     { name: "uq_qq_binding_conversation", unique: true },
   ],
-  qq_events: [{ name: "ix_qq_event_conversation", unique: false }],
+  qq_events: [
+    { name: "ix_qq_event_conversation", unique: false },
+    // 0052 adds the message_id lookup index on qq_events.
+    { name: "ix_qq_event_message", unique: false },
+  ],
 };
 
 function seedAgent(db: Database, id = "a1") {
@@ -305,6 +310,7 @@ describe("0005 QQ transport schema", () => {
           v49,
           v50,
           v51,
+          v52,
         ].join("\n"),
       );
       for (const [table, golden] of Object.entries(GOLDEN)) {
@@ -374,6 +380,7 @@ describe("0005 QQ transport schema", () => {
           // 0050 给 qq_settings 加了 retention_days；与 0038 同理，比较列结构需要它。
           v50,
           v51,
+          v52,
         ].join("\n"),
       );
       for (const table of [qqSettings, qqOwnerIdentities, qqBindings, qqEvents]) {
@@ -576,7 +583,7 @@ describe("0005 QQ transport schema", () => {
       const legacyTables = legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all());
       const sharedRow = old.query("SELECT model_name, revision FROM organization_settings").get();
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
       expect(legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all())).toEqual(
         legacyTables,
       );
@@ -677,6 +684,7 @@ describe("0005 QQ transport schema", () => {
           v49,
           v50,
           v51,
+          v52,
         ]),
       ).toThrow();
       expect(db.query("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()).toEqual(
@@ -685,7 +693,7 @@ describe("0005 QQ transport schema", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
       expect(db.query("SELECT count(*) AS n FROM agents").get()).toEqual({ n: 1 });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
       expect(db.query("SELECT count(*) AS n FROM qq_settings").get()).toEqual({ n: 1 });
     } finally {
       db.close();

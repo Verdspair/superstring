@@ -27,6 +27,7 @@ import {
   sqliteTable,
   text,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import {
   QQ_COMPRESSION_DEFAULT,
@@ -783,6 +784,8 @@ export const qqEvents = sqliteTable(
       t.peerId,
       t.occurredAtSeconds,
     ),
+    // 0052：事实投影按平台消息 ID 取一条消息的全部观测（T03/T04 的 load 路径）。
+    index("ix_qq_event_message").on(t.accountId, t.conversationKind, t.agentId, t.messageId),
   ],
 );
 
@@ -1066,6 +1069,11 @@ export const qqMembers = sqliteTable(
     firstSeenAtSeconds: integer("first_seen_at_seconds").notNull(),
     lastSeenAtSeconds: integer("last_seen_at_seconds").notNull(),
     expiresAt: text("expires_at").notNull(),
+    // 0052：当前双昵称与来源状态（规格 §3.1/§13.5）。旧 nickname 列是真实的 legacy 显示
+    // 证据，保留不动；已存在的行标 'legacy'，新观察才写当前值。列在表尾（SQLite 只能追加）。
+    groupCard: text("group_card"),
+    personalNickname: text("personal_nickname"),
+    nameState: text("name_state").notNull().default("legacy"),
   },
   (t) => [
     check("qq_members_conversation_kind", sql`${t.conversationKind} IN ('group', 'private')`),
@@ -1073,6 +1081,7 @@ export const qqMembers = sqliteTable(
       "qq_members_nickname",
       sql`length(trim(${t.nickname})) > 0 AND length(${t.nickname}) <= 64`,
     ),
+    check("qq_members_name_state", sql`${t.nameState} IN ('known', 'unknown', 'legacy')`),
     check("qq_members_first_seen", sql`${t.firstSeenAtSeconds} >= 0`),
     check("qq_members_last_seen", sql`${t.lastSeenAtSeconds} >= 0`),
     check("qq_members_seen_order", sql`${t.lastSeenAtSeconds} >= ${t.firstSeenAtSeconds}`),
@@ -1290,6 +1299,10 @@ export const qqSchemes = sqliteTable(
     replyOutputReserved: integer("reply_output_reserved")
       .notNull()
       .default(QQ_MODEL_OUTPUT_RESERVE_DEFAULT.reply_output_reserved),
+    // 0052：两组严格 JSON 设置（规格 §6/§7）。列在表尾——SQLite 只能追加列，声明顺序要跟
+    // 表的真实顺序一致。值的有效性由共享契约在仓储读取时验证；CHECK 只保证 JSON object。
+    messageSettings: text("message_settings"),
+    mediaInput: text("media_input"),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
@@ -1420,6 +1433,15 @@ export const qqSchemes = sqliteTable(
     check(
       "qq_scheme_judgement_interval",
       sql`${t.judgementIntervalTurns} >= 1 AND ${t.judgementIntervalTurns} <= 50`,
+    ),
+    // 0052 的两组设置：CHECK 只保证 JSON object，字段语义由共享契约在读取时验证。
+    check(
+      "qq_scheme_message_settings",
+      sql`${t.messageSettings} IS NULL OR (json_valid(${t.messageSettings}) AND json_type(${t.messageSettings}) = 'object')`,
+    ),
+    check(
+      "qq_scheme_media_input",
+      sql`${t.mediaInput} IS NULL OR (json_valid(${t.mediaInput}) AND json_type(${t.mediaInput}) = 'object')`,
     ),
     unique("uq_qq_scheme_name").on(t.name),
   ],
@@ -2008,6 +2030,300 @@ export const qqGroupAgentConfigs = sqliteTable(
   ],
 );
 
+// 0052：入站消息事实（规格 §13.2）。event_key 关联永久去重身份；双昵称快照、有序片段与
+// 引用关系是可过期事实，正文到期则 text 片段的区间不可读取。
+export const qqMessageFacts = sqliteTable(
+  "qq_message_facts",
+  {
+    eventKey: text("event_key")
+      .primaryKey()
+      .references(() => qqEvents.eventKey, { onDelete: "cascade" }),
+    groupCard: text("group_card"),
+    // F4（§3.1）：逐字段姓名证据来源（'wire' 含显式清空；NULL＝历史无证据）。
+    groupCardSource: text("group_card_source"),
+    personalNickname: text("personal_nickname"),
+    personalNicknameSource: text("personal_nickname_source"),
+    legacyDisplayName: text("legacy_display_name"),
+    nameState: text("name_state").notNull(),
+    parts: text("parts").notNull(), // JSON array
+    replyToMessageId: text("reply_to_message_id"),
+    revision: integer("revision").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (t) => [
+    check(
+      "qq_message_facts_group_card",
+      sql`${t.groupCard} IS NULL OR length(trim(${t.groupCard})) > 0`,
+    ),
+    check(
+      "qq_message_facts_group_card_source",
+      sql`${t.groupCardSource} IS NULL OR ${t.groupCardSource} IN ('wire', 'local')`,
+    ),
+    check(
+      "qq_message_facts_personal_nickname",
+      sql`${t.personalNickname} IS NULL OR length(trim(${t.personalNickname})) > 0`,
+    ),
+    check(
+      "qq_message_facts_personal_nickname_source",
+      sql`${t.personalNicknameSource} IS NULL OR ${t.personalNicknameSource} IN ('wire', 'local')`,
+    ),
+    check(
+      "qq_message_facts_legacy_display_name",
+      sql`${t.legacyDisplayName} IS NULL OR length(trim(${t.legacyDisplayName})) > 0`,
+    ),
+    check("qq_message_facts_name_state", sql`${t.nameState} IN ('known', 'unknown', 'legacy')`),
+    check(
+      "qq_message_facts_parts",
+      sql`json_valid(${t.parts}) AND json_type(${t.parts}) = 'array'`,
+    ),
+    check(
+      "qq_message_facts_reply_to",
+      sql`${t.replyToMessageId} IS NULL OR length(${t.replyToMessageId}) > 0`,
+    ),
+    check("qq_message_facts_revision", sql`${t.revision} >= 1`),
+    index("ix_qq_message_facts_expiry").on(t.expiresAt),
+    index("ix_qq_message_facts_reply").on(t.replyToMessageId),
+  ],
+);
+
+// 0052：助手出站消息事实（规格 §13.4）。按出站意图绑定；平台 part 消息 ID 由原
+// outbound_parts 确认台账解析，这里不造 platformID。
+export const qqOutboundMessageFacts = sqliteTable(
+  "qq_outbound_message_facts",
+  {
+    intentId: text("intent_id")
+      .primaryKey()
+      .references(() => outboundIntents.id, { onDelete: "cascade" }),
+    accountId: text("account_id").notNull(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    groupCard: text("group_card"),
+    personalNickname: text("personal_nickname"),
+    legacyDisplayName: text("legacy_display_name"),
+    parts: text("parts").notNull(), // JSON array
+    revision: integer("revision").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (t) => [
+    check(
+      "qq_outbound_message_facts_group_card",
+      sql`${t.groupCard} IS NULL OR length(trim(${t.groupCard})) > 0`,
+    ),
+    check(
+      "qq_outbound_message_facts_personal_nickname",
+      sql`${t.personalNickname} IS NULL OR length(trim(${t.personalNickname})) > 0`,
+    ),
+    check(
+      "qq_outbound_message_facts_legacy_display_name",
+      sql`${t.legacyDisplayName} IS NULL OR length(trim(${t.legacyDisplayName})) > 0`,
+    ),
+    check(
+      "qq_outbound_message_facts_parts",
+      sql`json_valid(${t.parts}) AND json_type(${t.parts}) = 'array'`,
+    ),
+    check("qq_outbound_message_facts_revision", sql`${t.revision} >= 1`),
+    index("ix_qq_outbound_message_facts_expiry").on(t.expiresAt),
+  ],
+);
+
+// 0052：图片资产字节缓存（规格 §8.2/§13.6）。去重身份在 scope 内——同 sha 不同群/Agent
+// 是不同行；sha 去重不代替 scope 授权。
+export const qqMediaAssets = sqliteTable(
+  "qq_media_assets",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    conversationKind: text("conversation_kind").notNull(),
+    peerId: text("peer_id").notNull(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    contentSha256: text("content_sha256").notNull(),
+    bytes: blob("bytes").notNull(),
+    mimeType: text("mime_type").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    revision: integer("revision").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (t) => [
+    check("qq_media_assets_conversation_kind", sql`${t.conversationKind} IN ('group', 'private')`),
+    check("qq_media_assets_content_sha256", sql`length(${t.contentSha256}) = 64`),
+    check("qq_media_assets_bytes", sql`length(${t.bytes}) > 0`),
+    check("qq_media_assets_mime_type", sql`length(trim(${t.mimeType})) > 0`),
+    check("qq_media_assets_width", sql`${t.width} IS NULL OR ${t.width} > 0`),
+    check("qq_media_assets_height", sql`${t.height} IS NULL OR ${t.height} > 0`),
+    check("qq_media_assets_revision", sql`${t.revision} >= 1`),
+    unique("uq_qq_media_asset_scope_sha").on(
+      t.accountId,
+      t.conversationKind,
+      t.peerId,
+      t.agentId,
+      t.contentSha256,
+    ),
+    index("ix_qq_media_assets_expiry").on(t.expiresAt),
+  ],
+);
+
+// 0052：资产来源——哪条消息媒体行带来这块字节；每来源独立 expiry（§8.2）。一行媒体只
+// 指向一个资产（UNIQUE media_note_id），缓存复用返回的到期时间取所有实际消费来源最早值。
+export const qqMediaAssetSources = sqliteTable(
+  "qq_media_asset_sources",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => qqMediaAssets.id, { onDelete: "cascade" }),
+    mediaNoteId: text("media_note_id")
+      .notNull()
+      .references(() => qqMediaNotes.id, { onDelete: "cascade" }),
+    expiresAt: text("expires_at").notNull(),
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (t) => [unique("uq_qq_media_asset_source_media").on(t.mediaNoteId)],
+);
+
+// 0052：准备副本——按策略/形状准备好的 PNG/JPEG 及尺寸/帧元数据（§7.4）。
+export const qqMediaVariants = sqliteTable(
+  "qq_media_variants",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => qqMediaAssets.id, { onDelete: "cascade" }),
+    policy: text("policy").notNull(),
+    bytes: blob("bytes").notNull(),
+    mimeType: text("mime_type").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    frameCount: integer("frame_count"),
+    frames: text("frames"), // JSON array
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (t) => [
+    check("qq_media_variants_policy", sql`length(trim(${t.policy})) > 0`),
+    check("qq_media_variants_bytes", sql`length(${t.bytes}) > 0`),
+    check("qq_media_variants_mime_type", sql`length(trim(${t.mimeType})) > 0`),
+    check("qq_media_variants_width", sql`${t.width} IS NULL OR ${t.width} > 0`),
+    check("qq_media_variants_height", sql`${t.height} IS NULL OR ${t.height} > 0`),
+    check("qq_media_variants_frame_count", sql`${t.frameCount} IS NULL OR ${t.frameCount} >= 1`),
+    check(
+      "qq_media_variants_frames",
+      sql`${t.frames} IS NULL OR (json_valid(${t.frames}) AND json_type(${t.frames}) = 'array')`,
+    ),
+    unique("uq_qq_media_variant_policy").on(t.assetId, t.policy),
+  ],
+);
+
+// 0052：分类缓存——按资产＋模型/策略版本（§7.2）。evidence 说明类别证据来自哪里；
+// model 平台证据为空、model 证据必填模型（与 0012 的归属纪律一致）。
+export const qqMediaClassifications = sqliteTable(
+  "qq_media_classifications",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => qqMediaAssets.id, { onDelete: "cascade" }),
+    category: text("category").notNull(),
+    evidence: text("evidence").notNull(),
+    modelName: text("model_name"),
+    policy: text("policy").notNull(),
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (t) => [
+    check(
+      "qq_media_classifications_category",
+      sql`${t.category} IN ('ordinary', 'expression', 'unknown')`,
+    ),
+    check(
+      "qq_media_classifications_evidence",
+      sql`${t.evidence} IN ('platform', 'model', 'unknown')`,
+    ),
+    check(
+      "qq_media_classifications_model_name",
+      sql`${t.modelName} IS NULL OR length(trim(${t.modelName})) > 0`,
+    ),
+    check("qq_media_classifications_policy", sql`length(trim(${t.policy})) > 0`),
+    unique("uq_qq_media_classification_policy").on(t.assetId, t.policy),
+  ],
+);
+
+// 0052：读取任务（规格 §8.1）。attempts 是每任务自己的计数，不与整个媒体行共享；
+// baseline 无问题键、detail 必须带；一次"已读"必须可归属（成功任务留 note 与模型）。
+export const qqMediaReadTasks = sqliteTable(
+  "qq_media_read_tasks",
+  {
+    id: text("id").primaryKey(),
+    // 载体列可空（ON DELETE SET NULL）：载体 purge 只去私文/字节，任务账本（identity、
+    // attempts、status）必须存活——预算不随载体清理消失（§8.1 稳定任务身份）。
+    mediaNoteId: text("media_note_id").references(() => qqMediaNotes.id, {
+      onDelete: "set null",
+    }),
+    assetSourceId: text("asset_source_id").references(() => qqMediaAssetSources.id, {
+      onDelete: "set null",
+    }),
+    // 账本自身的 scope 归属：载体 SET NULL 后管理面/诊断仍可归属（导入取 event）。
+    accountId: text("account_id").notNull(),
+    conversationKind: text("conversation_kind").notNull(),
+    peerId: text("peer_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    // 稳定身份键：sha256(scope 四维 + segmentKind + purpose + question + "\n" + 内容 sha)。
+    // 同 scope 同字节同问题＝同一账本行；NULL＝尚未以受控字节确认内容身份，绝不伪造。
+    identityKey: text("identity_key"),
+    purpose: text("purpose").notNull(),
+    questionKey: text("question_key"),
+    modelName: text("model_name"),
+    policy: text("policy").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    status: text("status").notNull(),
+    // 0052：真实"第 N 次尝试被消耗"的时刻，只在 claim 的 CAS 写入打点；NULL＝还没花过
+    // 尝试。result/fail 不回写（否则移动"补充晚于尝试"边界）；legacy 迁移取媒体行
+    // updated_at，不伪造迁移时钟。
+    lastAttemptAt: text("last_attempt_at"),
+    note: text("note"),
+    revision: integer("revision").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (t) => [
+    check("qq_media_read_tasks_purpose", sql`${t.purpose} IN ('baseline', 'detail')`),
+    check(
+      "qq_media_read_tasks_question_key",
+      sql`(${t.purpose} = 'detail') = (${t.questionKey} IS NOT NULL)`,
+    ),
+    check(
+      "qq_media_read_tasks_model_name",
+      sql`${t.modelName} IS NULL OR length(trim(${t.modelName})) > 0`,
+    ),
+    check("qq_media_read_tasks_policy", sql`length(trim(${t.policy})) > 0`),
+    check("qq_media_read_tasks_attempts", sql`${t.attempts} >= 0 AND ${t.attempts} <= 2`),
+    check(
+      "qq_media_read_tasks_status",
+      sql`${t.status} IN ('pending', 'running', 'succeeded', 'failed')`,
+    ),
+    check(
+      "qq_media_read_tasks_attributed",
+      sql`${t.status} <> 'succeeded' OR (${t.note} IS NOT NULL AND ${t.modelName} IS NOT NULL)`,
+    ),
+    check("qq_media_read_tasks_revision", sql`${t.revision} >= 1`),
+    // 0052：UNIQUE 对 NULL 互异，任务身份按 purpose 拆成两个 partial unique index（与
+    // 0052 DDL 一致）——baseline（question_key 恒 NULL）一条，detail 按 question_key 一条。
+    uniqueIndex("uq_qq_media_read_task_baseline")
+      .on(t.mediaNoteId)
+      .where(sql`question_key IS NULL`),
+    uniqueIndex("uq_qq_media_read_task_detail")
+      .on(t.mediaNoteId, t.questionKey)
+      .where(sql`question_key IS NOT NULL`),
+    // 内容身份唯一槽：同 scope 同字节同问题的账本只许一行（并发下也防重）。NULL 不进索引。
+    uniqueIndex("uq_qq_media_read_task_identity")
+      .on(t.identityKey)
+      .where(sql`identity_key IS NOT NULL`),
+  ],
+);
+
 export const businessTables = {
   agentTasks,
   agentTaskCalls,
@@ -2076,6 +2392,13 @@ export const businessTables = {
   qqIdleJudgements,
   qqJudgementReadings,
   qqGroupAgentConfigs,
+  qqMessageFacts,
+  qqOutboundMessageFacts,
+  qqMediaAssets,
+  qqMediaAssetSources,
+  qqMediaVariants,
+  qqMediaClassifications,
+  qqMediaReadTasks,
 } as const;
 
 export type BusinessTables = typeof businessTables;

@@ -10,6 +10,7 @@ import { AGENT_DECISION_JSON_SCHEMA } from "../../src/server/agent/agent-specs";
 import {
   rememberStructuredOutput,
   strictSchemaAccepted,
+  structuredOutputRejected,
   structuredOutputStart,
   toStrictRequiredSchema,
 } from "../../src/server/llm/strict-json-schema";
@@ -134,5 +135,29 @@ describe("严格模式不收的 schema 形状（云端 oneOf 400）", () => {
     rememberStructuredOutput(key, "none");
     expect(structuredOutputStart(key, true)).toBe("none");
     expect(structuredOutputStart(key, false)).toBe("none");
+  });
+});
+
+// 输入超长（413）是请求体的问题，不是 schema/tools 的形状问题：它没有降级资格——
+// 降级只会把全部图字节最多重传 5 次，还把该服务永久记成"不支持 tools"。400/422 这类
+// 确实的形状/能力拒绝保持原有 fallback（tools、json_schema → json_object → none）。
+describe("structuredOutputRejected 的降级资格", () => {
+  const err = (status: number) => ({ status });
+
+  it("413 没有降级资格：tools 与 schema 共用同一条谓词，都直接失败", () => {
+    expect(structuredOutputRejected(err(413))).toBe(false);
+  });
+
+  it("确实的形状/能力 4xx 保持 fallback：400/422 仍算被拒", () => {
+    expect(structuredOutputRejected(err(400))).toBe(true);
+    expect(structuredOutputRejected(err(422))).toBe(true);
+  });
+
+  it("暂时状态与凭据问题不降级：401/403/408/429/5xx/网络错误原样抛出", () => {
+    for (const status of [401, 403, 408, 429, 500, 502]) {
+      expect(structuredOutputRejected(err(status))).toBe(false);
+    }
+    expect(structuredOutputRejected(new Error("fetch failed"))).toBe(false);
+    expect(structuredOutputRejected(undefined)).toBe(false);
   });
 });

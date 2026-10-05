@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { ActionContext, EvidenceQueryModule } from "../agent/built-in-actions";
+import { readQqMessageFactsByPlatformMessageId } from "../db/qq-message-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
 import { fullCasefold } from "../services/text";
@@ -36,7 +37,15 @@ export interface BotEvidenceScope {
   peerId: string;
 }
 export type ConversationEvidenceScope = WebEvidenceScope | BotEvidenceScope;
-function evidenceScopeExists(db: EvidenceStore["db"], scope: ConversationEvidenceScope): boolean {
+/**
+ * Scope existence check shared with the QQ message fact projection (T03a): the full
+ * conversation/binding/authority/agent/account identity, re-validated per read.
+ * Exported for reuse — projection must not copy this authorisation query.
+ */
+export function evidenceScopeExists(
+  db: EvidenceStore["db"],
+  scope: ConversationEvidenceScope,
+): boolean {
   if (scope.channel === "web")
     return !!db
       .query(`SELECT 1 FROM sessions s JOIN turns t ON t.session_id=s.id
@@ -251,16 +260,14 @@ export function conversationEvidenceSourceAccess(
     ? "available"
     : "revoked";
 }
-function createDomain(
-  options: CommonOptions,
-  scope: ConversationEvidenceScope,
-  domain: EvidenceDomain,
-): EvidenceQueryModule {
-  // Internal keysets are authenticated; the factory alone mints run/owner opaque tool cursors.
-  const secret = randomBytes(32),
-    scopeKey = JSON.stringify(scope);
-  const sign = (text: string) => createHmac("sha256", secret).update(text).digest("hex");
-  function guard(context: ActionContext) {
+/**
+ * Shared guard for every evidence entry point (query/read/locate): one sequence,
+ * one owner/scope check, one source re-check — duplicated sequences would drift.
+ * The web-turn liveness clause is a no-op for bot scopes, so one implementation
+ * serves both channels.
+ */
+function createEvidenceGuard(options: CommonOptions, scope: ConversationEvidenceScope) {
+  return function guard(context: ActionContext) {
     context.signal.throwIfAborted();
     context.assertAuthority?.();
     options.assertCurrent();
@@ -276,12 +283,27 @@ function createDomain(
       revoked();
     options.assertSources(context.sources ?? []);
     context.signal.throwIfAborted();
-  }
-  const now = () => {
+  };
+}
+/** Same clock validation as the guard's callers rely on: an unparsable clock must not mint or load a reference. */
+function createEvidenceNow(options: CommonOptions) {
+  return () => {
     const value = options.now?.() ?? new Date().toISOString();
     if (!Number.isFinite(Date.parse(value))) revoked();
     return value;
   };
+}
+function createDomain(
+  options: CommonOptions,
+  scope: ConversationEvidenceScope,
+  domain: EvidenceDomain,
+  guard: (context: ActionContext) => void,
+  now: () => string,
+): EvidenceQueryModule {
+  // Internal keysets are authenticated; the factory alone mints run/owner opaque tool cursors.
+  const secret = randomBytes(32),
+    scopeKey = JSON.stringify(scope);
+  const sign = (text: string) => createHmac("sha256", secret).update(text).digest("hex");
   function position(query: string, cursor?: string): string | number {
     if (cursor === undefined) return domain === "history" ? 0 : "";
     const split = cursor.lastIndexOf("."),
@@ -384,14 +406,17 @@ export function createWebConversationEvidence(options: WebConversationEvidenceOp
     currentTurnId: options.currentTurnId,
     retrievalEnabled: options.retrievalEnabled ?? true,
   });
+  const guard = createEvidenceGuard(options, scope),
+    now = createEvidenceNow(options);
   return {
-    history: createDomain(options, scope, "history"),
-    summary: createDomain(options, scope, "summary"),
+    history: createDomain(options, scope, "history", guard, now),
+    summary: createDomain(options, scope, "summary", guard, now),
   };
 }
 export function createBotConversationEvidence(options: BotConversationEvidenceOptions): {
   history: EvidenceQueryModule;
   summary?: EvidenceQueryModule;
+  locateHistory(platformMessageId: string, context: ActionContext): Evidence | null;
 } {
   if (options.scope.kind !== "qq" || options.scope.agentId !== options.agentId) revoked();
   const scope: BotEvidenceScope = ScopeSchema.options[1].parse({
@@ -405,8 +430,48 @@ export function createBotConversationEvidence(options: BotConversationEvidenceOp
     conversationKind: options.scope.conversationKind,
     peerId: options.scope.peerId,
   });
+  const guard = createEvidenceGuard(options, scope),
+    now = createEvidenceNow(options);
+  const history = createDomain(options, scope, "history", guard, now);
+  const summary = options.summaryEnabled
+    ? createDomain(options, scope, "summary", guard, now)
+    : undefined;
+  /**
+   * Host-side location of one inbound message by platform message ID: the SQL scope
+   * filter of `readQqMessageFactsByPlatformMessageId` is the authorisation boundary,
+   * so a cross-conversation ID resolves to zero candidates and reveals nothing. The
+   * returned item is minted by the same evidence wrapper as a query hit, with the
+   * tagged `qq-message:<eventKey>` key — the body is never attached here; pages come
+   * only from the module's own read path through that loader, so body/fact state and
+   * sources are re-checked on every read.
+   */
+  function locateHistory(platformMessageId: string, context: ActionContext): Evidence | null {
+    guard(context);
+    if (!z.string().min(1).max(1024).safeParse(platformMessageId).success) selection();
+    const facts = readQqMessageFactsByPlatformMessageId(options.orm, {
+      accountId: scope.accountId,
+      conversationKind: scope.conversationKind,
+      peerId: scope.peerId,
+      agentId: scope.agentId,
+      platformMessageId,
+    });
+    const keys = [...new Set(facts.map((row) => row.eventKey))];
+    // Zero candidates or an ambiguous platform ID resolve to nothing; a foreign-scope
+    // ID never enters the candidate set (the SQL filter runs before any row is read).
+    const [only] = keys;
+    if (only === undefined || keys.length !== 1) return null;
+    const key = `qq-message:${only}`;
+    const row = loadConversationEvidence(options, scope, "history", key, now());
+    if (!row) return null;
+    const item = evidence(scope, "history", key, row);
+    if (!RefSchema.safeParse(parseJson(item.id)).success) return null;
+    options.assertSources(item.sources);
+    guard(context);
+    return item;
+  }
   return {
-    history: createDomain(options, scope, "history"),
-    ...(options.summaryEnabled ? { summary: createDomain(options, scope, "summary") } : {}),
+    history,
+    ...(summary ? { summary } : {}),
+    locateHistory,
   };
 }

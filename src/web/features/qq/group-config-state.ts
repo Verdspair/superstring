@@ -26,14 +26,18 @@ export type QqGroupConfigGroupKey =
   | "stickers"
   | "sticker_collections"
   | "prompts"
-  | "reply";
+  | "reply"
+  /** 0052：消息设置组（引用模式、层数、时间模式、时区），逐字段稀疏。 */
+  | "message_settings"
+  /** 0052：图片输入组（模式、阶段、图数、规格），stages 内逐字段稀疏。 */
+  | "media_input";
 
 /**
  * 一次编辑传入的值：开关传 boolean；数字字段传输入框原文（非法进 rawTexts，保存被拦）；
- * 集合传 id 数组；提示词传文本。`undefined`＝取消该字段的自定义（回到跟随基线）；
- * 传错类型一律忽略，不写入半截状态。
+ * 集合传 id 数组；提示词传文本；0052 的可空字段可传 null（＝钉住「原图」）。
+ * `undefined`＝取消该字段的自定义（回到跟随基线）；传错类型一律忽略，不写入半截状态。
  */
-export type QqGroupConfigPatchValue = string | boolean | readonly string[] | undefined;
+export type QqGroupConfigPatchValue = string | boolean | null | readonly string[] | undefined;
 
 export interface QqGroupConfigEditor {
   /** 最近一次读取/保存的服务端答案，保存基线的唯一来源。 */
@@ -112,6 +116,73 @@ const baseGroupOf = (scheme: QqSchemeResponse, group: string): Record<string, un
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 };
 
+/**
+ * 字段在基础方案里是否存在（0052 的嵌套 stages 按 `media_input.stages` 解析）。
+ * 钉住判定、变更预览与刷新合并共用：嵌套字段的存在性以 stages 对象里的键为准。
+ */
+function baseFieldExists(scheme: QqSchemeResponse, group: string, name: string): boolean {
+  if (group === "media_input") {
+    const field = mediaInputFieldName(name);
+    if (field.kind === "stage") {
+      const stages = baseGroupOf(scheme, "media_input")?.stages;
+      return (
+        stages !== undefined && typeof stages === "object" && field.phase in (stages as object)
+      );
+    }
+    return baseGroupOf(scheme, group) !== null && field.name in (baseGroupOf(scheme, group) ?? {});
+  }
+  const base = baseGroupOf(scheme, group);
+  return base !== null && name in base;
+}
+
+/** 基础方案里的字段现值（含嵌套 stages；组不存在时返回 undefined）。 */
+function baseFieldValue(scheme: QqSchemeResponse, group: string, name: string): unknown {
+  if (group === "media_input") {
+    const field = mediaInputFieldName(name);
+    if (field.kind === "stage") {
+      const stages = baseGroupOf(scheme, "media_input")?.stages as
+        | Record<string, unknown>
+        | undefined;
+      return stages?.[field.phase];
+    }
+    return baseGroupOf(scheme, group)?.[field.name];
+  }
+  return baseGroupOf(scheme, group)?.[name];
+}
+
+function withStageOverride(
+  overrides: QqGroupSchemeOverrides,
+  name: string,
+  value: unknown,
+): QqGroupSchemeOverrides {
+  const bag = bagOf(overrides);
+  const media = bag.media_input ?? {};
+  const stages = {
+    ...((media.stages as Record<string, unknown> | undefined) ?? {}),
+    [name]: value,
+  };
+  return overridesOf({ ...bag, media_input: { ...media, stages } });
+}
+function withoutStageOverride(
+  overrides: QqGroupSchemeOverrides,
+  name: string,
+): QqGroupSchemeOverrides {
+  const bag = bagOf(overrides);
+  const media = bag.media_input;
+  if (!media) return overrides;
+  const stages = (media.stages as Record<string, unknown> | undefined) ?? {};
+  if (!(name in stages)) return overrides;
+  const restStages = { ...stages };
+  delete restStages[name];
+  const restMedia: Record<string, unknown> = { ...media };
+  if (Object.keys(restStages).length) restMedia.stages = restStages;
+  else delete restMedia.stages;
+  const next = { ...bag };
+  if (Object.keys(restMedia).length) next.media_input = restMedia;
+  else delete next.media_input;
+  return overridesOf(next);
+}
+
 /** 数组按集合比较（集合字段与顺序无关）；其余严格相等。 */
 const sameValue = (a: unknown, b: unknown): boolean => {
   if (Array.isArray(a) || Array.isArray(b)) {
@@ -135,7 +206,7 @@ const changeValueText = (group: string, name: string, value: unknown): string =>
 
 const copyValue = (value: unknown): unknown => (Array.isArray(value) ? [...value] : value);
 
-/** 只保留基础方案里存在且未退役的字段；空组不保留（稀疏）。 */
+/** 只保留基础方案里存在且未退役的字段（0052 的嵌套 stages 逐字段过滤）；空组不保留（稀疏）。 */
 function sanitizeOverrides(
   overrides: QqGroupSchemeOverrides,
   scheme: QqSchemeResponse,
@@ -144,13 +215,33 @@ function sanitizeOverrides(
   const next: OverridesBag = {};
   for (const [group, fields] of Object.entries(bag)) {
     if (!fields || typeof fields !== "object") continue;
-    const base = baseGroupOf(scheme, group);
-    if (!base) continue;
+    if (!baseGroupOf(scheme, group)) continue;
     const copied: Record<string, unknown> = {};
     for (const [name, value] of Object.entries(fields)) {
       if (value === undefined) continue;
       if (RETIRED_OVERRIDE_FIELDS.has(`${group}.${name}`)) continue;
-      if (!(name in base)) continue;
+      if (group === "media_input" && name === "stages") {
+        // 嵌套 stages 逐字段过滤与拷贝；全空＝没有覆盖，整组去掉。
+        const stages = (value as Record<string, unknown>) ?? {};
+        const stagesCopy: Record<string, unknown> = {};
+        for (const [phase, phaseValue] of Object.entries(stages)) {
+          if (phaseValue === undefined) continue;
+          if (!MEDIA_INPUT_STAGES_FIELDS.has(phase)) continue;
+          stagesCopy[phase] = copyValue(phaseValue);
+        }
+        if (Object.keys(stagesCopy).length) copied.stages = stagesCopy;
+        continue;
+      }
+      if (group === "media_input" && mediaInputFieldName(name).kind === "stage") {
+        // 裸阶段名（无 stages. 前缀）不是契约里的顶层字段：归位到 stages，不按原样拷贝。
+        const media = copied as Record<string, unknown>;
+        const stages = { ...((media.stages as Record<string, unknown> | undefined) ?? {}) };
+        const field = mediaInputFieldName(name);
+        if (field.kind === "stage") stages[field.phase] = copyValue(value);
+        media.stages = stages;
+        continue;
+      }
+      if (!baseFieldExists(scheme, group, name)) continue;
       copied[name] = copyValue(value);
     }
     if (Object.keys(copied).length) next[group] = copied;
@@ -208,6 +299,26 @@ function withoutGroup(overrides: QqGroupSchemeOverrides, group: string): QqGroup
   return overridesOf(next);
 }
 
+/** 0052 的嵌套 stages 字段：`media_input.stages.<phase>`（含点路径）是逐字段钉住，不是组级整体替换。 */
+const MEDIA_INPUT_STAGES_FIELDS = new Set(["decision", "evaluation", "generation"]);
+/**
+ * 解析 `media_input` 的字段名：`stages.evaluation` → ("stages", "evaluation")，其余原样。
+ * 裸阶段名（`evaluation`）也按 stage 解析：变更比较/存在性判定把 stages 展平成点路径后，
+ * 传回的就是去掉前缀的 `stages.<phase>` 后半段；media_input 顶层没有同名标量，不会歧义。
+ */
+function mediaInputFieldName(
+  name: string,
+): { kind: "stage"; phase: string } | { kind: "plain"; name: string } {
+  if (name.startsWith("stages.")) {
+    const phase = name.slice("stages.".length);
+    if (MEDIA_INPUT_STAGES_FIELDS.has(phase)) return { kind: "stage", phase };
+  }
+  if (MEDIA_INPUT_STAGES_FIELDS.has(name)) return { kind: "stage", phase: name };
+  return { kind: "plain", name };
+}
+/** 0052 图片输入组的可空字段：显式传 null 是钉住「原图」，不是取消钉住。 */
+const MEDIA_INPUT_NULLABLE_FIELDS = new Set(["ordinary_still_max_dimension"]);
+
 /** 除素材集合（整体替换、可省略）以外的差异组；单字段候选过 schema 时用空组占位。 */
 const OVERRIDE_GROUPS = [
   "triggers",
@@ -218,11 +329,14 @@ const OVERRIDE_GROUPS = [
   "stickers",
   "prompts",
   "reply",
+  "message_settings",
+  "media_input",
 ] as const;
 
 /**
  * 单字段候选过共享契约（不自抄边界数值）：只放这一个字段，其余组空占位——空组本身就是合法输入，
  * 归一化时会被去掉，不会污染结果；失败即该字段非法，成功取归一化后的值。
+ * 0052 的嵌套 stages：候选按 `media_input.stages.<field>` 的路径构造。
  */
 function parseOverrideField(
   group: string,
@@ -231,11 +345,23 @@ function parseOverrideField(
 ): { ok: true; value: unknown } | { ok: false } {
   const candidate: Record<string, unknown> = {};
   for (const key of OVERRIDE_GROUPS) candidate[key] = {};
-  candidate[group] = { [name]: value };
+  const field =
+    group === "media_input" ? mediaInputFieldName(name) : { kind: "plain" as const, name };
+  if (field.kind === "stage") {
+    candidate.media_input = { stages: { [field.phase]: value } };
+  } else {
+    candidate[group] = { [field.name]: value };
+  }
   const parsed = QqGroupSchemeOverridesSchema.safeParse(candidate);
   if (!parsed.success) return { ok: false };
-  const field = (parsed.data as unknown as OverridesBag)[group]?.[name];
-  return { ok: true, value: field === undefined ? value : field };
+  if (field.kind === "stage") {
+    const stage = (parsed.data as unknown as OverridesBag).media_input?.stages as
+      | Record<string, unknown>
+      | undefined;
+    return { ok: true, value: stage?.[field.phase] === undefined ? value : stage[field.phase] };
+  }
+  const parsedField = (parsed.data as unknown as OverridesBag)[group]?.[field.name];
+  return { ok: true, value: parsedField === undefined ? value : parsedField };
 }
 
 export function qqGroupConfigEditorFrom(response: QqGroupConfigResponse): QqGroupConfigEditor {
@@ -309,22 +435,36 @@ export function qqGroupConfigChanges(
     if (!groupBase) continue;
     const recordFields = recordBag[group] ?? {};
     const localFields = localBag[group] ?? {};
-    for (const name of new Set([...Object.keys(recordFields), ...Object.keys(localFields)])) {
-      if (!(name in groupBase)) continue;
-      // 非法原文的字段由 raw 行呈现（且保存被拦）；不再叠一条数值行。
-      if (`${group}.${name}` in editor.rawTexts) continue;
-      const recorded = name in recordFields;
-      const pinned = name in localFields;
-      if (recorded === pinned && (!recorded || sameValue(recordFields[name], localFields[name])))
-        continue;
-      const before = recorded ? recordFields[name] : groupBase[name];
-      const after = pinned ? localFields[name] : groupBase[name];
+    const names = new Set<string>([...Object.keys(recordFields), ...Object.keys(localFields)]);
+    // 0052 嵌套 stages：字段名展平成 `stages.<phase>` 参与"是否钉住"的比较。
+    const recordStages = (recordFields.stages as Record<string, unknown> | undefined) ?? {};
+    const localStages = (localFields.stages as Record<string, unknown> | undefined) ?? {};
+    if (group === "media_input")
+      for (const phase of new Set([...Object.keys(recordStages), ...Object.keys(localStages)]))
+        names.add(`stages.${phase}`);
+    if (group === "media_input") names.delete("stages");
+    for (const name of names) {
+      const stagePhase =
+        group === "media_input" && name.startsWith("stages.")
+          ? name.slice("stages.".length)
+          : undefined;
+      const recordValue = stagePhase === undefined ? recordFields[name] : recordStages[stagePhase];
+      const localValue = stagePhase === undefined ? localFields[name] : localStages[stagePhase];
+      const recorded = stagePhase === undefined ? name in recordFields : stagePhase in recordStages;
+      const pinned = stagePhase === undefined ? name in localFields : stagePhase in localStages;
+      if (!baseFieldExists(base, group, stagePhase ?? name)) continue;
+      const rawKey = stagePhase === undefined ? `${group}.${name}` : `${group}.${name}`;
+      if (stagePhase === undefined && `${group}.${name}` in editor.rawTexts) continue;
+      if (rawKey in editor.rawTexts && stagePhase === undefined) continue;
+      if (recorded === pinned && (!recorded || sameValue(recordValue, localValue))) continue;
+      const before = recorded ? recordValue : baseFieldValue(base, group, stagePhase ?? name);
+      const after = pinned ? localValue : baseFieldValue(base, group, stagePhase ?? name);
       changes.push({
         kind: "override",
         group: group as QqGroupConfigGroupKey,
         field: name,
-        before: changeValueText(group, name, before),
-        after: changeValueText(group, name, after),
+        before: changeValueText(group, stagePhase ?? name, before),
+        after: changeValueText(group, stagePhase ?? name, after),
       });
     }
   }
@@ -371,8 +511,7 @@ function patchOverrideFields(
 ): QqGroupConfigEditor {
   const key = `${group}.${name}`;
   if (RETIRED_OVERRIDE_FIELDS.has(key)) return editor;
-  const base = baseGroupOf(editor.source.base_scheme, group);
-  if (!base || !(name in base)) return editor;
+  if (!baseFieldExists(editor.source.base_scheme, group, name)) return editor;
   if (group === "sticker_collections") {
     if (value === undefined)
       return {
@@ -389,18 +528,44 @@ function patchOverrideFields(
       rawTexts: withoutRaw(editor.rawTexts, key),
     };
   }
+  // 0052 嵌套 stages：逐字段钉住/取消（字段名支持 `stages.<phase>` 点路径），钉住值进 stages。
+  // undefined＝取消这一个阶段的钉住；布尔以外（非 undefined）的值一律忽略。
+  const mediaField = group === "media_input" ? mediaInputFieldName(name) : undefined;
+  if (mediaField?.kind === "stage") {
+    if (value !== undefined && typeof value !== "boolean") return editor;
+    const without = withoutStageOverride(editor.overrides, mediaField.phase);
+    return {
+      ...editor,
+      overrides:
+        value === undefined ? without : withStageOverride(without, mediaField.phase, value),
+      rawTexts: withoutRaw(editor.rawTexts, key),
+    };
+  }
+  // 0052 可空字段：显式 null（作为值传入）是钉住「原图」，不是取消钉住；undefined 才取消。
+  if (group === "media_input" && MEDIA_INPUT_NULLABLE_FIELDS.has(name) && value === null) {
+    return {
+      ...editor,
+      overrides: withOverride(editor.overrides, group, name, null),
+      rawTexts: withoutRaw(editor.rawTexts, key),
+    };
+  }
   if (value === undefined)
     return {
       ...editor,
       overrides: withoutOverride(editor.overrides, group, name),
       rawTexts: withoutRaw(editor.rawTexts, key),
     };
+  const base = baseGroupOf(editor.source.base_scheme, group) as Record<string, unknown>;
   const baseValue = base[name];
+  // 0052 可空标量：基线是 null（如「原图」）时按数值输入处理——数字原文钉住数值，
+  // 空串/非数字原文按非法原文拦保存；显式 null 值已在上方作为钉住「原图」处理。
+  const nullableNumber =
+    baseValue === null && group === "media_input" && MEDIA_INPUT_NULLABLE_FIELDS.has(name);
   let candidate: unknown;
   if (typeof baseValue === "boolean") {
     if (typeof value !== "boolean") return editor;
     candidate = value;
-  } else if (typeof baseValue === "number") {
+  } else if (typeof baseValue === "number" || nullableNumber) {
     if (typeof value !== "string") return editor;
     // 原文原样留底（不 trim）：空串/非有限数直接按非法原文处理；其余交给共享契约判边界与整数性。
     const text = value;
@@ -492,18 +657,55 @@ export function mergeQqGroupConfigEditor(
     const recordFields = recordBag[group] ?? {};
     const localFields = localBag[group] ?? {};
     const freshFields = freshBag[group] ?? {};
-    for (const name of new Set([
+    const fields = new Set<string>([
       ...Object.keys(recordFields),
       ...Object.keys(localFields),
       ...Object.keys(freshFields),
-    ])) {
-      if (!(name in base) || RETIRED_OVERRIDE_FIELDS.has(`${group}.${name}`)) continue;
-      const localChanged =
-        name in recordFields !== name in localFields ||
-        (name in recordFields && !sameValue(recordFields[name], localFields[name]));
-      const takeFrom = localChanged ? localFields : freshFields;
-      if (name in takeFrom)
-        next[group] = { ...(next[group] ?? {}), [name]: copyValue(takeFrom[name]) };
+    ]);
+    // 0052 嵌套 stages：展平成 `stages.<phase>` 后参与同一条三路合并。
+    const stageBags = [
+      (recordFields.stages as Record<string, unknown> | undefined) ?? {},
+      (localFields.stages as Record<string, unknown> | undefined) ?? {},
+      (freshFields.stages as Record<string, unknown> | undefined) ?? {},
+    ];
+    const stagePhases = new Set<string>(stageBags.flatMap((bag) => Object.keys(bag)));
+    if (group === "media_input") {
+      fields.delete("stages");
+      for (const phase of stagePhases) fields.add(`stages.${phase}`);
+    }
+    const takeInto = (bag: OverridesBag, key: string, value: unknown) => {
+      if (group === "media_input" && key.startsWith("stages.")) {
+        const phase = key.slice("stages.".length);
+        const media = (bag.media_input as Record<string, unknown> | undefined) ?? {};
+        bag.media_input = {
+          ...media,
+          stages: {
+            ...((media.stages as Record<string, unknown> | undefined) ?? {}),
+            [phase]: value,
+          },
+        };
+        return;
+      }
+      bag[group] = { ...(bag[group] ?? {}), [key]: value };
+    };
+    for (const name of fields) {
+      const stageKey =
+        group === "media_input" && name.startsWith("stages.")
+          ? name.slice("stages.".length)
+          : undefined;
+      const recordValue = stageKey === undefined ? recordFields[name] : stageBags[0]?.[stageKey];
+      const localValue = stageKey === undefined ? localFields[name] : stageBags[1]?.[stageKey];
+      const freshValue = stageKey === undefined ? freshFields[name] : stageBags[2]?.[stageKey];
+      const recorded = stageKey === undefined ? name in recordFields : stageKey in stageBags[0];
+      const local = stageKey === undefined ? name in localFields : stageKey in stageBags[1];
+      // 注意：这里不能叫 `fresh`——会遮蔽函数入参的 fresh（最新答案），导致 .base_scheme 读取崩溃。
+      const freshPinned = stageKey === undefined ? name in freshFields : stageKey in stageBags[2];
+      const existsInBase = baseFieldExists(fresh.base_scheme, group, stageKey ?? name);
+      if (!existsInBase || RETIRED_OVERRIDE_FIELDS.has(`${group}.${stageKey ?? name}`)) continue;
+      const localChanged = recorded !== local || (recorded && !sameValue(recordValue, localValue));
+      const takeValue = localChanged ? localValue : freshValue;
+      const present = localChanged ? local : freshPinned;
+      if (present) takeInto(next, name, copyValue(takeValue));
     }
   }
   const userDisabled = editor.disabledCapabilities.filter(

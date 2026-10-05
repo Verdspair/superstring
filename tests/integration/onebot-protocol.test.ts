@@ -84,11 +84,35 @@ describe("OneBot message boundary", () => {
     });
   });
   it("keeps stable IDs when sender display information is absent", () => {
+    // 缺省（sender 未提供）≠ 显式空白：键整个不出现，名称来源标注 local（可用本地有效值）。
     expect(observation({ sender: undefined }).speaker).toEqual({
       kind: "member",
       id: "20002",
       displayName: null,
+      nameSource: "local",
     });
+  });
+  it("treats an overlong wire name as unknown, not as an explicit blank (T03a)", () => {
+    // 64 码点边界不变：超限是"不可核实的值"——按未知处理（键缺省，可沿用本地），不当清空。
+    const result = observation({ sender: { card: "x".repeat(65), nickname: "昵称" } });
+    expect(result.speaker).toEqual({
+      kind: "member",
+      id: "20002",
+      displayName: "昵称",
+      personalNickname: "昵称",
+      nameSource: "wire",
+    });
+    expect("groupCard" in result.speaker).toBe(false);
+  });
+  it("distinguishes an explicit blank nickname (clear) from an absent one (unknown) (T03a)", () => {
+    expect(observation({ sender: { card: "卡", nickname: "   " } }).speaker).toMatchObject({
+      groupCard: "卡",
+      personalNickname: null,
+      displayName: "卡",
+    });
+    const absent = observation({ sender: { card: "卡" } });
+    expect(absent.speaker).toMatchObject({ groupCard: "卡", displayName: "卡" });
+    expect("personalNickname" in absent.speaker).toBe(false);
   });
   it("filters both self-message mechanisms before parsing message segments", () => {
     for (const patch of [{ post_type: "message_sent" }, { user_id: 10001 }]) {
@@ -194,6 +218,37 @@ describe("OneBot message boundary", () => {
       file: "asset.gif",
       url: "https://example.invalid/a",
     });
+  });
+  it("preserves two names and ordered at/reply facts (T03 plan anchor)", () => {
+    const result = normalizeOneBotMessage(
+      {
+        time: 1790920800,
+        self_id: 90001,
+        post_type: "message",
+        message_type: "group",
+        sub_type: "normal",
+        message_id: -102,
+        user_id: 10001,
+        group_id: 30003,
+        sender: { card: "   ", nickname: "阿林" },
+        message: [
+          { type: "reply", data: { id: -101 } },
+          { type: "at", data: { qq: 10002 } },
+          { type: "text", data: { text: "你不是就在南京吗？" } },
+        ],
+      },
+      "90001",
+    );
+    expect(result.kind).toBe("message");
+    if (result.kind !== "message") throw new Error("message expected");
+    expect(result.observation.speaker).toMatchObject({
+      id: "10001",
+      groupCard: null,
+      personalNickname: "阿林",
+      displayName: "阿林",
+    });
+    expect(result.observation.segments.map((p) => p.kind)).toEqual(["reply", "mention", "text"]);
+    expect(result.observation.replyToMessageId).toBe("-101");
   });
   it("does not infer an explicit self mention from at-all or another member", () => {
     expect(

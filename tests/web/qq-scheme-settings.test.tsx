@@ -67,6 +67,22 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     media: "媒体提示词",
     compress: "压缩提示词",
   },
+  // 0052：响应契约收紧后两组必填，夹具照完整响应形状造。
+  message_settings: {
+    reply_mode: "one_then_on_demand",
+    reply_depth: 2,
+    time_display: "hybrid",
+    timezone: "Asia/Shanghai",
+  },
+  media_input: {
+    mode: "native",
+    stages: { decision: true, evaluation: true, generation: true },
+    max_images: 8,
+    ordinary_still_max_dimension: null,
+    expression_max_dimension: 512,
+    expression_frame_count: 3,
+    expression_frame_max_dimension: 512,
+  },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
@@ -334,5 +350,192 @@ describe("Shared scheme studio", () => {
       }),
     );
     expect(fake.updateQqScheme).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 0052（T13）：方案「上下文」新增「消息关系与时间」组，「媒体与表达」新增「图片输入」组。
+   * 全部走同一份草稿与同一保存通道；普通动图不重复持久化（沿用 rhythm 既有真源）。
+   */
+  it("edits message settings (quote mode/depth, time display, timezone) on the context tab", async () => {
+    const { fake } = await renderPage();
+    await task("读取什么");
+    fireEvent.change(screen.getByLabelText("引用展开层数"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("时区"), { target: { value: "Asia/Tokyo" } });
+    fireEvent.change(screen.getByLabelText("引用模式"), { target: { value: "configured_depth" } });
+    expect(store.getState().qqSchemeEditor?.messageSettings).toEqual({
+      reply_mode: "configured_depth",
+      reply_depth: 4,
+      time_display: "hybrid",
+      timezone: "Asia/Tokyo",
+    });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        message_settings: {
+          reply_mode: "configured_depth",
+          reply_depth: 4,
+          time_display: "hybrid",
+          timezone: "Asia/Tokyo",
+        },
+      }),
+    );
+  });
+
+  /**
+   * one_then_on_demand 下层数不参与运行：控件禁用但配置保留（不洗成默认值），
+   * 切回按层数即恢复原值；保存载荷带真实两组值。
+   */
+  it("disables quote depth under on-demand mode, keeps the value and restores it on configured depth", async () => {
+    const { fake } = await renderPage();
+    await task("读取什么");
+    // 夹具默认 one_then_on_demand：层数禁用，但显示已存值。
+    const depth = screen.getByLabelText("引用展开层数") as HTMLInputElement;
+    expect(depth.disabled).toBe(true);
+    expect(depth.value).toBe("2");
+    expect(store.getState().qqSchemeEditor?.messageSettings.reply_depth).toBe(2);
+    // 切到按层数：控件恢复可用，值仍是原来的。
+    fireEvent.change(screen.getByLabelText("引用模式"), {
+      target: { value: "configured_depth" },
+    });
+    expect(depth.disabled).toBe(false);
+    expect(depth.value).toBe("2");
+    fireEvent.change(depth, { target: { value: "5" } });
+    expect(store.getState().qqSchemeEditor?.messageSettings).toEqual({
+      reply_mode: "configured_depth",
+      reply_depth: 5,
+      time_display: "hybrid",
+      timezone: "Asia/Shanghai",
+    });
+    // 切回按需：层数再次禁用，配置不丢。
+    fireEvent.change(screen.getByLabelText("引用模式"), {
+      target: { value: "one_then_on_demand" },
+    });
+    expect(depth.disabled).toBe(true);
+    expect(depth.value).toBe("5");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        message_settings: {
+          reply_mode: "one_then_on_demand",
+          reply_depth: 5,
+          time_display: "hybrid",
+          timezone: "Asia/Shanghai",
+        },
+      }),
+    );
+  });
+
+  it("keeps an invalid timezone raw in the draft and blocks page save, copy and unified save", async () => {
+    const { fake } = await renderPage();
+    await task("读取什么");
+    const input = screen.getByLabelText("时区");
+    fireEvent.change(input, { target: { value: "Mars/Olympus" } });
+    fireEvent.blur(input);
+    // 原文保留在输入框，保存被禁。
+    expect((input as HTMLInputElement).value).toBe("Mars/Olympus");
+    expect((screen.getByRole("button", { name: "保存方案" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("IANA");
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
+    // 统一保存（导航守卫的保存路径）同样被拦。
+    expect(await store.getState().saveQqDrafts()).toBe(false);
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
+    // 复制（create 通道没有服务端兜底）也被拦：UI 层按钮禁用，store 层动作同样拒绝。
+    expect((screen.getByRole("button", { name: "另存为" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(await store.getState().duplicateQqScheme("副本")).toBe(false);
+    expect(fake.createQqScheme).not.toHaveBeenCalled();
+  });
+
+  it("edits media input (mode, stages, max images, specs) on the media tab with null = original", async () => {
+    const { fake } = await renderPage();
+    await task("媒体与表达");
+    // 模式切换。
+    fireEvent.change(screen.getByLabelText("图片输入模式"), { target: { value: "description" } });
+    // 阶段：关掉评估阶段（另两个保持开）。
+    await userEvent.click(screen.getByRole("checkbox", { name: "评估阶段" }));
+    // 图数与规格。
+    fireEvent.change(screen.getByLabelText("每次调用自动图片上限"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("表情静图长边上限"), { target: { value: "256" } });
+    fireEvent.change(screen.getByLabelText("表情动图采样帧数"), { target: { value: "5" } });
+    const editor = () => store.getState().qqSchemeEditor;
+    expect(editor()?.mediaInput.mode).toBe("description");
+    expect(editor()?.mediaInput.stages).toEqual({
+      decision: true,
+      evaluation: false,
+      generation: true,
+    });
+    expect(editor()?.mediaInput.max_images).toBe(4);
+    expect(editor()?.mediaInput.expression_max_dimension).toBe(256);
+    expect(editor()?.mediaInput.expression_frame_count).toBe(5);
+    // 普通静图：原图（null）与数值双向可切，null 由显式选择写入而不是 0。
+    const choice = screen.getByLabelText("普通静图规格");
+    const ordinary = screen.getByLabelText("普通静图长边上限") as HTMLInputElement;
+    expect((choice as HTMLSelectElement).value).toBe("original");
+    expect(ordinary.disabled).toBe(true);
+    fireEvent.change(choice, { target: { value: "limited" } });
+    expect(editor()?.mediaInput.ordinary_still_max_dimension).toBe(64);
+    fireEvent.change(ordinary, { target: { value: "1024" } });
+    expect(editor()?.mediaInput.ordinary_still_max_dimension).toBe(1024);
+    // 切回原图：显式选择写 null（不是 0），数值输入随之禁用。
+    fireEvent.change(choice, { target: { value: "original" } });
+    expect(editor()?.mediaInput.ordinary_still_max_dimension).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        media_input: {
+          mode: "description",
+          stages: { decision: true, evaluation: false, generation: true },
+          max_images: 4,
+          ordinary_still_max_dimension: null,
+          expression_max_dimension: 256,
+          expression_frame_count: 5,
+          expression_frame_max_dimension: 512,
+        },
+      }),
+    );
+    // 普通动图只由 rhythm.media_frame_count 这一个真源决定帧数：同名「动图」帧数输入仅一处
+    // （抽帧张数），表情动图帧数是独立规格、各有明确标签。
+    expect(screen.queryByRole("spinbutton", { name: "表情动图采样帧数" })).toBeTruthy();
+    expect(screen.getAllByRole("spinbutton", { name: "动图抽帧张数" })).toHaveLength(1);
+  });
+
+  it("rejects an ordinary still limit of 0: the raw stays, the scheme value does not move and all saves are blocked", async () => {
+    const { fake } = await renderPage();
+    await task("媒体与表达");
+    // 从原图切到限制长边，再输入 0（0 不在契约 64–2048 内，也不是「原图」的编码）。
+    const choice = screen.getByLabelText("普通静图规格");
+    fireEvent.change(choice, { target: { value: "limited" } });
+    const ordinary = screen.getByLabelText("普通静图长边上限") as HTMLInputElement;
+    fireEvent.change(ordinary, { target: { value: "0" } });
+    // 原文保留在输入框、编辑器不写半截值（保持 64 起步值，不变 null 也不变 0）。
+    expect(ordinary.value).toBe("0");
+    expect(store.getState().qqSchemeEditor?.mediaInput.ordinary_still_max_dimension).toBe(64);
+    fireEvent.blur(ordinary);
+    expect(screen.getByRole("alert").textContent).toContain("64");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
+    expect(await store.getState().saveQqDrafts()).toBe(false);
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
+  });
+
+  it("previews the two new groups with localized labels and on/off stage text", async () => {
+    await renderPage();
+    await task("媒体与表达");
+    await userEvent.click(screen.getByRole("checkbox", { name: "评估阶段" }));
+    fireEvent.click(screen.getByRole("button", { name: "预览变更" }));
+    const dialog = screen.getByRole("dialog");
+    const text = dialog.textContent ?? "";
+    // 人话标签 + 布尔按开/关渲染，不出现机器字段名或 true/false。
+    expect(text).toContain("评估阶段");
+    expect(text).toContain("关");
+    expect(text).not.toContain("media_input");
+    expect(text).not.toContain("true");
+    expect(text).not.toContain("false");
   });
 });

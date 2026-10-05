@@ -147,12 +147,31 @@ describe("QQ scheme routes", () => {
       // 0035: the reply shape rides with the prompts it selects between; a new scheme splits by
       // speaker, because that is the behaviour the user asked for.
       expect(created.reply).toEqual({ split_by_speaker: true });
+      // 0052：两组新设置必须以完整组上线。响应契约收紧后是必填——迁移间隙的 optional 形状
+      // 不再合法，NULL 行由仓储按已批准默认组兜底后输出。
+      expect(created.message_settings).toEqual({
+        reply_mode: "one_then_on_demand",
+        reply_depth: 2,
+        time_display: "hybrid",
+        timezone: "Asia/Shanghai",
+      });
+      expect(created.media_input).toEqual({
+        mode: "native",
+        stages: { decision: true, evaluation: true, generation: true },
+        max_images: 8,
+        ordinary_still_max_dimension: null,
+        expression_max_dimension: 512,
+        expression_frame_count: 3,
+        expression_frame_max_dimension: 512,
+      });
       expect(Object.keys(created).sort()).toEqual([
         "compression",
         "context",
         "created_at",
         "description",
         "id",
+        "media_input",
+        "message_settings",
         "name",
         "output_reserve",
         "prompts",
@@ -404,6 +423,108 @@ describe("QQ scheme routes", () => {
       );
       expect(await listSchemes(h.app)).toHaveLength(1);
       expect((await h.app.request(`/qq/schemes/${free.id}`)).status).toBe(404);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  // 0052/T12：两组设置的 HTTP roundtrip。请求体未知字段被严格拒绝（shape 严格），
+  // create 未提供 → 响应带完整默认组；update 未提供 → 保持现值；引用/时间字段真实保存回读。
+  it("round-trips the message settings and media input groups over HTTP and refuses unknown fields", async () => {
+    const h = setup();
+    try {
+      const created = await createScheme(h.app, { name: "往返方案" });
+      expect(created.message_settings).toEqual({
+        reply_mode: "one_then_on_demand",
+        reply_depth: 2,
+        time_display: "hybrid",
+        timezone: "Asia/Shanghai",
+      });
+      expect(created.media_input.mode).toBe("native");
+      expect(created.media_input.stages).toEqual({
+        decision: true,
+        evaluation: true,
+        generation: true,
+      });
+
+      // 引用（层数 + configured_depth）与时间（完整时间 + 真实时区）真实保存回读。
+      const updated = await updateScheme(h.app, created.id, {
+        name: "往返方案",
+        message_settings: {
+          reply_mode: "configured_depth",
+          reply_depth: 4,
+          time_display: "full",
+          timezone: "Asia/Tokyo",
+        },
+        media_input: {
+          mode: "description",
+          stages: { decision: true, evaluation: false, generation: true },
+          max_images: 4,
+          ordinary_still_max_dimension: 1024,
+          expression_max_dimension: 256,
+          expression_frame_count: 5,
+          expression_frame_max_dimension: 2048,
+        },
+        expected_revision: created.revision,
+      });
+      expect(updated.message_settings).toEqual({
+        reply_mode: "configured_depth",
+        reply_depth: 4,
+        time_display: "full",
+        timezone: "Asia/Tokyo",
+      });
+      expect(updated.media_input).toEqual({
+        mode: "description",
+        stages: { decision: true, evaluation: false, generation: true },
+        max_images: 4,
+        ordinary_still_max_dimension: 1024,
+        expression_max_dimension: 256,
+        expression_frame_count: 5,
+        expression_frame_max_dimension: 2048,
+      });
+      expect(updated.revision).toBe(2);
+
+      // update 未提供 → 保持现值；读回一致。
+      const renamed = await updateScheme(h.app, created.id, {
+        name: "往返方案二",
+        expected_revision: updated.revision,
+      });
+      expect(renamed.message_settings).toEqual(updated.message_settings);
+      expect(renamed.media_input).toEqual(updated.media_input);
+
+      // shape 严格：未知字段（含运行时才有的普通动图派生值与请求侧的垃圾键）整体拒绝，422。
+      const badRequests: unknown[] = [
+        {
+          name: "往返方案二",
+          message_settings: { ...updated.message_settings, extra: true },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "往返方案二",
+          media_input: { ...updated.media_input, ordinary_frame_count: 3 },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "往返方案二",
+          message_settings: { ...updated.message_settings, timezone: "Mars/Olympus" },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "往返方案二",
+          // stages 必须整组：缺 evaluation 的半截组不是「那一阶段不动」。
+          media_input: {
+            ...updated.media_input,
+            stages: { decision: false, generation: false },
+          },
+          expected_revision: renamed.revision,
+        },
+      ];
+      for (const payload of badRequests) {
+        const response = await json(h.app, "PUT", `/qq/schemes/${created.id}`, payload);
+        expect(response.status).toBe(422);
+      }
+      const after = await h.app.request(`/qq/schemes/${created.id}`);
+      expect(await body<QqSchemeResponse>(after)).toEqual(renamed);
     } finally {
       h.business.close();
     }

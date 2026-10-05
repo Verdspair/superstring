@@ -321,9 +321,13 @@ export class KnowledgeOrganizer {
           { role: "user", content: chunk.body },
         ];
         // Include structured-output schema and conservative protocol/safety overhead.
+        // content is string here (text-only leaf); narrow before measuring (T09 union).
         const cost =
-          messages.reduce((sum, message) => sum + utf8Size(message.content) + 8, 2) +
-          utf8Size(JSON.stringify(RESPONSE_SCHEMA));
+          messages.reduce(
+            (sum, message) =>
+              sum + (typeof message.content === "string" ? utf8Size(message.content) : 0) + 8,
+            2,
+          ) + utf8Size(JSON.stringify(RESPONSE_SCHEMA));
         if (output < 128 || cost + output + 256 > capacity)
           throw new OrganizerFailure("KNOWLEDGE_INPUT_TOO_LARGE");
         const text = await this.call(signal, () =>

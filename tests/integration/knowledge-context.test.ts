@@ -50,7 +50,11 @@ beforeEach(() => {
     },
     async complete(call) {
       completeCalls.push(call);
-      if (call.messages[0]?.content.includes("Return exactly one JSON decision"))
+      const decisionContent = call.messages[0]?.content;
+      if (
+        typeof decisionContent === "string" &&
+        decisionContent.includes("Return exactly one JSON decision")
+      )
         return JSON.stringify({
           kind: "final",
           outputs: [{ kind: "generate", targetId: "reply", instructions: "" }],
@@ -115,6 +119,7 @@ interface ObservationData {
 function observations(call: CompleteCall): ObservationData[] {
   return call.messages.flatMap((message) => {
     try {
+      if (typeof message.content !== "string") return [];
       const data = JSON.parse(message.content) as { kind?: string; value?: ObservationData };
       return data.kind === "action_observation" && data.value ? [data.value] : [];
     } catch {
@@ -148,7 +153,14 @@ function installDecisions(script: (call: CompleteCall, index: number) => string)
   const base = gateway.complete.bind(gateway);
   const seen: CompleteCall[] = [];
   gateway.complete = async (call) => {
-    if (!call.messages[0]?.content.includes("Return exactly one JSON decision")) return base(call);
+    const decisionContent = call.messages[0]?.content;
+    if (
+      !(
+        typeof decisionContent === "string" &&
+        decisionContent.includes("Return exactly one JSON decision")
+      )
+    )
+      return base(call);
     seen.push(call);
     return script(call, seen.length);
   };

@@ -12,6 +12,15 @@ export const ModelContentSchema = z.discriminatedUnion("kind", [
     revision: z.string(),
     mimeType: z.string(),
     sha256: z.string(),
+    /**
+     * 可选的准备元数据（0052）：来源引用、宽高与动图帧序号。只扩展 optional 字段——
+     * 既有 vision leaf 只写四个核心字段的用法仍然合法。持久化 part 的红线不变：
+     * 禁止 bytes/base64/URL/路径/凭据字段，字节只在发送边界由 ImageByteResolver 解析。
+     */
+    sourceRef: SourceRefSchema.optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
   }),
 ]);
 export const ModelMessageSchema = z.strictObject({

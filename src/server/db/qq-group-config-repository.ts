@@ -104,6 +104,10 @@ export function readEffectiveQqScheme(orm: Orm, binding: QqBinding): QqSchemeRow
       stickers: merged.stickers,
       prompts: merged.prompts,
       reply: merged.reply,
+      // 0052 的两组随差异落列：runtime 的既有读出口（schemeMessageSettings/schemeMediaInput）
+      // 从这两列解析，没有列覆盖的差异就不会生效。
+      messageSettings: merged.message_settings,
+      mediaInput: merged.media_input,
     }),
   };
 }

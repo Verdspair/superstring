@@ -28,7 +28,7 @@ import { speechExpiresAt } from "../services/qq-retention";
 import { parseQqSpeechKind, type QqSpeechKind } from "../services/qq-speaking-contract";
 import type { QqConversationScope } from "./qq-observation-repository";
 import { readQqRetentionDays } from "./qq-settings-repository";
-import { recordQqSpeech } from "./qq-speech-repository";
+import { cappedSpeechExpiresAt, recordQqSpeech } from "./qq-speech-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -62,6 +62,12 @@ export interface QqSendInput {
    * sticker was sent.
    */
   readonly text: string | null;
+  /**
+   * Narrow internal use (OutboundDelivery's legacy projection): a source expiry that caps —
+   * never extends — the window of this attempt's row and of the speech record written for it.
+   * Absent keeps the plain retention stamp.
+   */
+  readonly sourceExpiresAt?: string | null;
 }
 
 /** Whether the no-reply rule's own record was updated — and if not, why not. */
@@ -109,7 +115,12 @@ export function recordQqSend(
   // platform id on a part the platform never confirmed) is refused before any write.
   const summary = qqSendSummary({ parts });
   const effect = qqSendOutcomeEffect(summary.outcome);
-  const expiresAt = speechExpiresAt(input.sentAtSeconds, retentionDays);
+  // The attempt and the speech record it creates share one window: the retention stamp,
+  // capped — never extended — by an optional source expiry (validated fail-closed inside).
+  const expiresAt = cappedSpeechExpiresAt(
+    speechExpiresAt(input.sentAtSeconds, retentionDays),
+    input.sourceExpiresAt,
+  );
 
   const writeRows = (tx: Orm) => {
     const row = tx
@@ -147,7 +158,17 @@ export function recordQqSend(
     if (effect.entersUnresponded === true) {
       recordQqSpeech(
         tx,
-        { scope: input.scope, kind, spokeAtSeconds: input.sentAtSeconds, text: input.text },
+        {
+          scope: input.scope,
+          kind,
+          spokeAtSeconds: input.sentAtSeconds,
+          text: input.text,
+          // One local fact, one id: the speech record of a delivered send carries the send
+          // ledger's own row id, so a caller can align `legacy_send_id` with the speech
+          // source by exact id instead of matching by text or time.
+          id: row.id,
+          sourceExpiresAt: input.sourceExpiresAt,
+        },
         retentionDays,
       );
     }

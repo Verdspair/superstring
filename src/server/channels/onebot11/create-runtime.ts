@@ -28,7 +28,8 @@ import { qqStickerUsable } from "../../services/qq-sticker-contract";
 import type { QqStickerStore } from "../../services/qq-sticker-store";
 import { OneBot11Adapter } from "./adapter";
 import { BotCompressionQueue } from "./background-compression";
-import { OneBotHost } from "./bot-host";
+import { type BotHostDiagnostic, OneBotHost } from "./bot-host";
+import type { QqMediaInputService } from "./media-input-service";
 
 export interface BotConversationPolicy {
   maxSteps: number;
@@ -53,6 +54,53 @@ export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
 };
 
 /** Production composition of protocol ingress, Agent activation and durable delivery. */
+/**
+ * BotHostDiagnostic → telemetry.record 形状的纯映射（B1）：宿主诊断一律落 bot.host.feedback
+ * span；stage 按既有桶归类（media_mode 属 context 观测面，不新增业务枚举）。details 透传
+ * 宿主 typed 字段并补 feedbackStatus/targetId —— runtime_spans.details 是 scalar record，
+ * 数组须由宿主侧编码（见 bot-host emitMediaMode 的 omission:<n> 固定形状 JSON）。
+ */
+export function mapBotHostDiagnosticTelemetry(event: BotHostDiagnostic): {
+  name: string;
+  metadata: Parameters<RuntimeTelemetry["record"]>[1];
+} {
+  return {
+    name: "bot.host.feedback",
+    metadata: {
+      channel: "onebot11" as const,
+      stage:
+        event.stage === "sticker"
+          ? ("sticker" as const)
+          : event.stage === "reconsider" || event.stage === "media_mode"
+            ? ("context" as const)
+            : event.stage === "output"
+              ? ("delivery" as const)
+              : ("action" as const),
+      status:
+        event.status === "chosen" || event.status === "selected"
+          ? ("completed" as const)
+          : event.status === "skipped" || event.status === "none"
+            ? ("skipped" as const)
+            : event.status === "model_error"
+              ? ("failed" as const)
+              : ["feedback", "pending", "capacity_unavailable", "capacity_exceeded"].includes(
+                    event.status,
+                  )
+                ? ("deferred" as const)
+                : ("observed" as const),
+      code: event.code ?? "BOT_FEEDBACK",
+      conversationId: event.conversationId,
+      runId: event.runId,
+      sourceSeq: event.sourceSeq,
+      details: {
+        ...event.details,
+        feedbackStatus: event.status,
+        targetId: event.targetId ?? null,
+      },
+    },
+  };
+}
+
 export function createOneBotConversationRuntime(options: {
   orm: Orm;
   telemetry?: RuntimeTelemetry;
@@ -74,6 +122,8 @@ export function createOneBotConversationRuntime(options: {
   stickersEnabled?: () => boolean;
   mediaEnabled?: () => boolean;
   mediaAdapter?: (scheme: QqSchemeRow) => QqMediaReadAdapter;
+  /** T11 B：同源组装的媒体准备服务（factory 产物，按方案取 prompt/节奏，与 mediaAdapter 同侧同形）；缺省＝不接自动图。 */
+  mediaInputService?: (scheme: QqSchemeRow) => QqMediaInputService;
 }) {
   const { orm, db, journal } = options;
   const policy = (): BotConversationPolicy => ({
@@ -103,38 +153,8 @@ export function createOneBotConversationRuntime(options: {
     },
     policy,
     onDiagnostic(event) {
-      options.telemetry?.record("bot.host.feedback", {
-        channel: "onebot11",
-        stage:
-          event.stage === "sticker"
-            ? "sticker"
-            : event.stage === "reconsider"
-              ? "context"
-              : event.stage === "output"
-                ? "delivery"
-                : "action",
-        status:
-          event.status === "chosen" || event.status === "selected"
-            ? "completed"
-            : event.status === "skipped" || event.status === "none"
-              ? "skipped"
-              : event.status === "model_error"
-                ? "failed"
-                : ["feedback", "pending", "capacity_unavailable", "capacity_exceeded"].includes(
-                      event.status,
-                    )
-                  ? "deferred"
-                  : "observed",
-        code: event.code ?? "BOT_FEEDBACK",
-        conversationId: event.conversationId,
-        runId: event.runId,
-        sourceSeq: event.sourceSeq,
-        details: {
-          ...event.details,
-          feedbackStatus: event.status,
-          targetId: event.targetId ?? null,
-        },
-      });
+      const mapped = mapBotHostDiagnosticTelemetry(event);
+      options.telemetry?.record(mapped.name, mapped.metadata);
     },
   });
   const delivery = new OutboundDelivery({

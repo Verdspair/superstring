@@ -4,11 +4,17 @@
 import { z } from "zod";
 import { UuidSchema } from "./common";
 import {
+  QQ_MEDIA_INPUT_SCHEME_DEFAULT,
+  QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
   QqBindingResponseSchema,
   type QqBindingTriggers,
   QqBindingTriggersSchema,
   QqSchemeCompressionSchema,
   QqSchemeContextSchema,
+  type QqSchemeMediaInput,
+  QqSchemeMediaInputSchema,
+  type QqSchemeMessageSettings,
+  QqSchemeMessageSettingsSchema,
   QqSchemeOutputReserveSchema,
   QqSchemePromptsSchema,
   QqSchemeReplySchema,
@@ -51,6 +57,8 @@ const Scheme = {
   stickers: QqSchemeStickersSchema.shape,
   prompts: QqSchemePromptsSchema.shape,
   reply: QqSchemeReplySchema.shape,
+  messageSettings: QqSchemeMessageSettingsSchema.shape,
+  mediaInput: QqSchemeMediaInputSchema.shape,
 } as const;
 
 /** 稀疏差异的九个组，逐字段取自现有方案契约；三个状态的 triggers 与绑定镜像同形。 */
@@ -128,9 +136,41 @@ const OverridesShapeBase = z.strictObject({
       split_by_speaker: stripDefault(Scheme.reply.split_by_speaker).optional(),
     })
     .optional(),
+  /** 消息设置组（0052）：逐字段稀疏，缺席＝跟随基础方案。 */
+  message_settings: z
+    .strictObject({
+      reply_mode: Scheme.messageSettings.reply_mode.optional(),
+      reply_depth: Scheme.messageSettings.reply_depth.optional(),
+      time_display: Scheme.messageSettings.time_display.optional(),
+      timezone: Scheme.messageSettings.timezone.optional(),
+    })
+    .optional(),
+  /**
+   * 图片输入组（0052）。stages 必须逐字段覆盖（三个 bool 独立）：浅合并会让只关一个阶段的
+   * 提交把另外两个阶段清成缺省，所以这里把 stages 的每个成员单独做成可选字段。
+   * `ordinary_still_max_dimension: null` 是真实设置值（＝原图），不是「跟随」——跟随只由
+   * 字段缺席表达，所以 nullable 字段用 `.nullable()` 保留 null 语义。
+   */
+  media_input: z
+    .strictObject({
+      mode: Scheme.mediaInput.mode.optional(),
+      stages: z
+        .strictObject({
+          decision: Scheme.mediaInput.stages.shape.decision.optional(),
+          evaluation: Scheme.mediaInput.stages.shape.evaluation.optional(),
+          generation: Scheme.mediaInput.stages.shape.generation.optional(),
+        })
+        .optional(),
+      max_images: Scheme.mediaInput.max_images.optional(),
+      ordinary_still_max_dimension: Scheme.mediaInput.ordinary_still_max_dimension.optional(),
+      expression_max_dimension: Scheme.mediaInput.expression_max_dimension.optional(),
+      expression_frame_count: Scheme.mediaInput.expression_frame_count.optional(),
+      expression_frame_max_dimension: Scheme.mediaInput.expression_frame_max_dimension.optional(),
+    })
+    .optional(),
 });
 
-/** 空组不是覆盖、`triggers` 的 null 成员也不是覆盖，都从结果里去掉；`false`/`0`/空集合是实打实的覆盖。 */
+/** 空组不是覆盖、`triggers` 的 null 成员也不是覆盖、嵌套空 stages 同样不是覆盖，都从结果里去掉；`false`/`0`/空集合是实打实的覆盖。 */
 function normalizeOverrides(
   value: z.infer<typeof OverridesShapeBase>,
 ): z.infer<typeof OverridesShapeBase> {
@@ -141,6 +181,13 @@ function normalizeOverrides(
       ([, member]) => member !== undefined,
     );
     if (key === "triggers") entries = entries.filter(([, member]) => member !== null);
+    // 0052 的 stages 是嵌套稀疏组：成员全空＝没有覆盖，整组去掉，与空组同义。
+    if (key === "media_input") {
+      entries = entries.filter(([, member]) => {
+        if (member === null || typeof member !== "object" || Array.isArray(member)) return true;
+        return Object.keys(member as Record<string, unknown>).length > 0;
+      });
+    }
     if (entries.length === 0) continue;
     next[key] = Object.fromEntries(entries);
   }
@@ -179,6 +226,55 @@ function mergeGroup<T extends object>(base: T, override: Partial<T> | undefined)
   return { ...base, ...defined };
 }
 
+/**
+ * 消息设置组的稀疏合并：本组没有嵌套结构，逐字段覆盖与 mergeGroup 同形。
+ * `null`（如果未来某字段允许）与 `false`/`0` 一样是实打实的覆盖值，不是「跟随」——
+ * 跟随只由字段缺席表达。基础方案缺这组时（0052 迁移落地前的既有方案）按已批准默认值生效，
+ * 生效值永远是完整组。
+ */
+function mergeMessageSettings(
+  base: QqSchemeMessageSettings | undefined,
+  override: Partial<QqSchemeMessageSettings> | undefined,
+): QqSchemeMessageSettings {
+  return mergeGroup(base ?? QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT, override);
+}
+
+/** 图片输入组的稀疏形状：stages 的三个布尔各自可选（这是逐字段跟随语义的类型表达）。 */
+type SparseQqMediaInputOverride = {
+  [K in keyof QqSchemeMediaInput]?: K extends "stages"
+    ? Partial<QqSchemeMediaInput["stages"]>
+    : QqSchemeMediaInput[K];
+};
+
+/**
+ * 图片输入组的稀疏合并（0052）：stages 必须逐字段继承——`{ stages: { evaluation: false } }`
+ * 合并后 decision/generation 保持基础方案的值。任何整组替换（浅合并）都会让未改的阶段丢失，
+ * 所以这里逐字段展开。`ordinary_still_max_dimension: null` 合并后就是 null（原图），
+ * 不会被当成跟随基础方案。基础方案缺这组时（0052 迁移落地前的既有方案）按已批准默认值生效，
+ * 生效值永远是完整组。
+ */
+function mergeMediaInput(
+  base: QqSchemeMediaInput | undefined,
+  override: SparseQqMediaInputOverride | undefined,
+): QqSchemeMediaInput {
+  const effective = base ?? QQ_MEDIA_INPUT_SCHEME_DEFAULT;
+  if (override === undefined) return effective;
+  const { stages: overrideStages, ...restOverride } = override;
+  const mergedStages =
+    overrideStages === undefined
+      ? effective.stages
+      : {
+          decision: overrideStages.decision ?? effective.stages.decision,
+          evaluation: overrideStages.evaluation ?? effective.stages.evaluation,
+          generation: overrideStages.generation ?? effective.stages.generation,
+        };
+  const defined: Partial<QqSchemeMediaInput> = {};
+  for (const [key, value] of Object.entries(restOverride)) {
+    if (value !== undefined) (defined as Record<string, unknown>)[key] = value;
+  }
+  return { ...effective, ...defined, stages: mergedStages };
+}
+
 /** 基础方案 + 本群差异 → 生效方案（纯函数，界面与服务端读路径共用同一套合并语义）。 */
 export function mergeQqGroupScheme(
   base: QqSchemeResponse,
@@ -200,6 +296,8 @@ export function mergeQqGroupScheme(
     prompts: mergeGroup(base.prompts, overrides.prompts),
     reply: mergeGroup(base.reply, overrides.reply),
     sticker_collections: overrides.sticker_collections ?? base.sticker_collections,
+    message_settings: mergeMessageSettings(base.message_settings, overrides.message_settings),
+    media_input: mergeMediaInput(base.media_input, overrides.media_input),
   };
 }
 

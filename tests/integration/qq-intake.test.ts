@@ -916,15 +916,26 @@ describe("the assembled runtime over an injected transport", () => {
       await started;
 
       socket.deliver(wireMessage());
-      // Same identity, different text: still the SAME message, so it is an idempotent
-      // duplicate. The body is not part of the event identity.
+      // Same identity, a different body: a genuine conflict, not an idempotent duplicate.
+      // A reused event key describing different text is refused, and the already-recorded
+      // body must survive the refusal untouched.
       socket.deliver(wireMessage({ message: [{ type: "text", data: { text: "换了内容" } }] }));
-      expect(events).toContainEqual({ kind: "recorded", recorded: false, hasText: false });
+      expect(events).toContainEqual({ kind: "discarded", reason: "duplicate_key_conflict" });
+      // Re-read the stored fact: the conflict must not backfill or rewrite the recorded body.
+      const factsAfterConflict = h.orm.select().from(schema.qqMessageFacts).all();
+      expect(factsAfterConflict).toHaveLength(1);
+      expect(JSON.parse(factsAfterConflict[0].parts)).toEqual([
+        { kind: "text", text: "群友说喜欢猫" },
+      ]);
       // Same identity, different speaker: that is a genuine conflict and must be
       // refused rather than overwrite the recorded provenance.
       socket.deliver(wireMessage({ user_id: 20003 }));
       expect(events).toContainEqual({ kind: "discarded", reason: "duplicate_key_conflict" });
-      // Still ready: the bad message did not take down the transport.
+      // A true identical redelivery — the original packet with the exact same body — is
+      // the idempotent duplicate: not newly recorded, and no text is re-recorded.
+      socket.deliver(wireMessage());
+      expect(events).toContainEqual({ kind: "recorded", recorded: false, hasText: false });
+      // Still ready: the bad messages did not take down the transport.
       expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
       expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(1);
       runtime.stop();

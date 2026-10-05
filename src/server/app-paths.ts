@@ -307,6 +307,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0051_qq_group_agent_config.sql",
     ),
+    qqMessageMultimodalMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0052_qq_message_multimodal.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

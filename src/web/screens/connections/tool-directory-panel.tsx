@@ -135,7 +135,7 @@ export function ToolDirectoryPanel() {
         >
           <option value="all">{t("connections.tools.all")}</option>
           <option value="system">{t("connections.components.system")}</option>
-          <option value="mcp">MCP</option>
+          <option value="mcp">{t("schemes.qq.groupConfig.capability.mcp")}</option>
         </NativeSelect>
       </div>
       {error && (

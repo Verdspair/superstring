@@ -292,7 +292,7 @@ describe("server-shared conversation avatars", () => {
     old.close();
     const h = openBusinessDb({ path: filename });
     handles.push(h);
-    expect(h.db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+    expect(h.db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
     expect(h.db.query("SELECT * FROM conversations").all()).toEqual(prior);
     expect(h.db.query("SELECT COUNT(*) AS n FROM conversation_avatars").get()).toEqual({ n: 0 });
   });

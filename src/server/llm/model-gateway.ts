@@ -27,9 +27,13 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
+import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
 import { INVOKE_BATCH_LIMIT } from "../agent/agent-specs";
+import type { ModelResolvedPrepareInput, ModelResolvedPrepareOutput } from "../agent/model-port";
 import { ModelUnavailableError } from "../errors";
+import { type ChatContentResolver, type ChatMessage, toGatewayMessages } from "./chat-content";
 import {
+  markImageContentRejection,
   type StructuredOutputLevel,
   strictSchemaAccepted,
   structuredOutputKey,
@@ -39,10 +43,7 @@ import {
 } from "./strict-json-schema";
 import { announceToolsFallback, rememberToolsUnavailable, toolsUnavailable } from "./tool-calling";
 
-export interface ChatMessage {
-  role: string;
-  content: string;
-}
+export type { ChatContentPart, ChatContentResolver, ChatMessage } from "./chat-content";
 
 export interface LmStudioConfig {
   baseUrl: string;
@@ -93,6 +94,11 @@ export interface ModelGateway {
   loadedContextCapacity(model: string, options?: { signal?: AbortSignal }): Promise<number | null>;
   probeModelLoaded(): Promise<boolean>;
   complete(options: {
+    /**
+     * 初始 wire 槽（no-hook 路径 = 真实消息）。钩子路径由 ModelPort 受控传 `[]` 占位 +
+     * `preparedFrom`（原始 ModelMessage[]），占位在钩子输出最终 messages 后被替换，永不落 wire。
+     * `prepareWithResolved` 与 `preparedFrom` 必须成对，缺一边是装配错误（fail closed）。
+     */
     messages: ChatMessage[];
     model?: string;
     temperature?: number;
@@ -112,8 +118,33 @@ export interface ModelGateway {
     signal?: AbortSignal;
     onModelResolved?: (model: string) => void;
     onResponseText?: (text: string, complete: boolean) => void;
+    /**
+     * 受信任宿主的同次准备钩子（T10 基础）：actualModel 冻结后、HTTP body 组装前调用一次。
+     * 输入是原始 ModelMessage[]（未转换、只读）；输出的 messages/resolver 决定本 call 最终
+     * 发送内容（在网关内完成 wire 转换，resolver 每次 resolve 仍复验 source guard）。
+     * vision 闸按最终 messages 判定；抛错=请求不发出。schema/tools 受控重试共用同一次钩子
+     * 结果，不重入。
+     */
+    prepareWithResolved?: (input: ModelResolvedPrepareInput) => Promise<ModelResolvedPrepareOutput>;
+    /**
+     * 钩子路径的原始请求载荷：与 `prepareWithResolved` 同进同出，由 ModelPort 填。
+     * 存在时 complete/streamChat 在钩子后自行完成 wire 转换（原 `messages` 必须缺省）。
+     */
+    preparedFrom?: {
+      messages: readonly ModelMessage[];
+      runId?: string;
+      owner?: RunOwner;
+      imageResolver?: ChatContentResolver;
+    };
+    /**
+     * 每次真正发送前的可信宿主复验（fix1）：每次 HTTP 尝试（schema/tools 受控重试各算一次）
+     * 与 stream 发送前各调用一次；抛错=该次尝试不发出（零追加 HTTP）。provider/来源当前性
+     * 由宿主闭包读真值，网关不传旧 route 判定。缺省=原行为。
+     */
+    assertPreparedCurrent?: (input: { model: string }) => void;
   }): Promise<string>;
   streamChat(options: {
+    /** 同 complete 的 `messages`：初始 wire 槽（no-hook = 真实消息；hook 路径 = port 受控 `[]` 占位）。 */
     messages: ChatMessage[];
     model?: string;
     temperature?: number;
@@ -121,6 +152,17 @@ export interface ModelGateway {
     /** Propagated to the underlying fetch so a caller cancellation aborts the stream. */
     signal?: AbortSignal;
     onModelResolved?: (model: string) => void;
+    /** 同 complete：actualModel 冻结后、组 body 前的一次受信准备钩子（原始 ModelMessage[]）。 */
+    prepareWithResolved?: (input: ModelResolvedPrepareInput) => Promise<ModelResolvedPrepareOutput>;
+    /** 同 complete 的 `preparedFrom`：钩子路径的原始请求载荷。 */
+    preparedFrom?: {
+      messages: readonly ModelMessage[];
+      runId?: string;
+      owner?: RunOwner;
+      imageResolver?: ChatContentResolver;
+    };
+    /** 同 complete：每次真正发送前一次的可信宿主复验。 */
+    assertPreparedCurrent?: (input: { model: string }) => void;
   }): AsyncGenerator<string, void, unknown>;
   readonly config: LmStudioConfig;
 }
@@ -219,6 +261,77 @@ const MODEL_AUTH_MESSAGE =
 
 function isAuthRejection(status: number): boolean {
   return status === 401 || status === 403;
+}
+
+/**
+ * 消息里有没有真实的图片 part：只有数组 content 里 `type:"image_url"` 的项算图片。
+ * 数组只含文字项（纯文字数组消息）不是图片，不得触发 vision 闸门。
+ */
+function hasImageParts(messages: readonly ChatMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => (part as { type?: string })?.type === "image_url"),
+  );
+}
+
+/**
+ * 带图请求专属的 requestLifetime：只有真实携带图片 part 的调用才会传 imageRejection——
+ * 图片能力/内容分类（含 markImageContentRejection 标记）以"这次请求里真的有图"为前提，
+ * 纯文字请求的 4xx 不进这个分类，保留原有的形状降级资格。
+ */
+function imageRequestLifetime(
+  timeoutMs: number,
+  caller: AbortSignal | undefined,
+  messages: readonly ChatMessage[],
+  onRejection: (status: number, providerMessage: string) => ModelUnavailableError | null,
+) {
+  if (!hasImageParts(messages)) return requestLifetime(timeoutMs, caller);
+  return requestLifetime(timeoutMs, caller, onRejection);
+}
+
+/**
+ * 服务自己点名「不支持图片**输入能力**」了吗？只认明确的能力拒绝句式：not supported /
+ * unsupported / 不支持 这类词与 image/vision/input 同现。中文只认「不支持/不被允许」——
+ * 「无法处理」在内容失败（解码、损坏）里同样出现，不构成能力证据。413（超长）、429（限流）、
+ * 408（超时）、5xx/鉴权由状态位守住（见 IMAGE_CAPABILITY_STATUSES），不靠正则。
+ */
+const IMAGE_REJECTION_PATTERN =
+  /(?:does\s+not\s+support|not\s+supported|unsupported|is\s+not\s+allowed|not\s+allowed)\s*:?\s*(?:image|vision|multimodal)|(?:image|vision|multimodal)(?:\s+\w+){0,3}?\s+(?:does\s+not\s+support|is\s+not\s+supported|is\s+not\s+allowed|not\s+supported|not\s+allowed|unsupported)|不支持(图片|图像|视觉)|(图片|图像|视觉)(输入|理解)?(不支持|不被允许)/i;
+/**
+ * 内容层面的错误词：格式（format）、尺寸/大小（size/过大/像素）、URL、schema、解码/损坏。
+ * 命中即不是能力声明：换一张合法图片就应能发，不得据此登记负缓存。
+ */
+const IMAGE_CONTENT_ERROR_PATTERN =
+  /format|sizes?|尺寸|大小|过大|pixels?|dimension|resolution|too\s+large|invalid|schema|decode|corrupt|损坏|解码/i;
+
+/**
+ * 允许登记「明确拒绝过图片」负缓存的 HTTP 状态窗：真实 image 请求上的非鉴权 4xx 中，
+ * 只有 400/422 配合明确能力句式才可能是"这个模型不做图片"的稳定回答。408（超时）、413
+ * （超长）、429（限流）是暂时/内容状态——带着能力句式也不是能力证据，401/403/5xx 由
+ * `requestLifetime` 的窗口与 `mapModelError` 守住，都不写 vision 负缓存。
+ */
+const IMAGE_CAPABILITY_STATUSES: ReadonlySet<number> = new Set([400, 422]);
+
+function explicitImageRejection(status: number, providerMessage: string): boolean {
+  if (!IMAGE_CAPABILITY_STATUSES.has(status)) return false;
+  if (!IMAGE_REJECTION_PATTERN.test(providerMessage)) return false;
+  return !IMAGE_CONTENT_ERROR_PATTERN.test(providerMessage);
+}
+
+/**
+ * 图片**内容**层面的拒绝（真实 image 请求上）：provider 的话同时提到图片/视觉与内容错误词
+ * （格式、尺寸、像素、URL、schema、解码、损坏）。这类失败换一张合法图片就应能发——保持
+ * 原 generic code/status，不写负缓存，也没有 tools/schema 降级资格（由
+ * `markImageContentRejection` 标记实现）。只看图片词+内容词的交集，不用全域正则否掉
+ * 真正的 tools/response_format 形状错（那些话里没有图片词）。
+ */
+const IMAGE_CONTEXT_PATTERN = /image|vision|multimodal|图片|图像|视觉/i;
+
+function isImageContentRejection(providerMessage: string): boolean {
+  return (
+    IMAGE_CONTEXT_PATTERN.test(providerMessage) && IMAGE_CONTENT_ERROR_PATTERN.test(providerMessage)
+  );
 }
 
 /** Bearer token for every call, including the capacity probe. */
@@ -390,8 +503,27 @@ export function localhostFetch(url: string | URL, init: RequestInit = {}): Promi
   });
 }
 
-/** A request owns its timeout until body consumption (including streaming) ends. */
-function requestLifetime(timeoutMs: number, caller?: AbortSignal) {
+/** A request owns its timeout until body consumption (including streaming) ends.
+ *
+ * `imageRejection` lets a caller classify the provider's own picture rejection at the
+ * HTTP boundary, BEFORE the generic mapping turns a 400 into MODEL_NOT_LOADED or a
+ * structured/tools fallback consumes extra requests. It is passed only by callers
+ * whose request actually carries image parts, and runs on the non-auth 4xx
+ * window — it can never mask a
+ * source/authorization failure or a timeout. Three outcomes, all decided here:
+ * - a genuine capability rejection (400/422 + the sentence patterns) returns
+ *   MODEL_IMAGE_UNSUPPORTED and the caller remembers the fingerprint;
+ * - an image-content rejection (format/size/URL/schema/decode wording) throws the
+ *   **mapped** error, marked via `markImageContentRejection`: original generic code
+ *   and status survive, no negative cache, and neither the tools retry nor the
+ *   structured-output chain treats it as a shape failure;
+ * - every other in-window failure goes through `mapModelError` unchanged.
+ */
+function requestLifetime(
+  timeoutMs: number,
+  caller?: AbortSignal,
+  imageRejection?: (status: number, providerMessage: string) => ModelUnavailableError | null,
+) {
   const timeout = new AbortController();
   const cleanup = new AbortController();
   const timer = setTimeout(
@@ -405,6 +537,20 @@ function requestLifetime(timeoutMs: number, caller?: AbortSignal) {
       if (caller?.aborted) throw caller.reason ?? error;
       if (error instanceof ModelUnavailableError) throw error;
       if (timeout.signal.aborted) throw mapModelError(timeout.signal.reason);
+      const status = (error as { status?: number } | null)?.status;
+      if (
+        imageRejection !== undefined &&
+        typeof status === "number" &&
+        status >= 400 &&
+        status < 500 &&
+        !isAuthRejection(status)
+      ) {
+        const classified = imageRejection(status, providerReason(error));
+        if (classified !== null) throw classified;
+        const mapped = mapModelError(error);
+        if (isImageContentRejection(providerReason(error))) markImageContentRejection(mapped);
+        throw mapped;
+      }
       throw mapModelError(error);
     },
     close() {
@@ -468,6 +614,21 @@ async function requestJson(
   }
 }
 
+/** `requestJson` with a caller-owned lifetime (used by the image-aware chat path). */
+async function requestJsonWithLifetime(
+  cfg: LmStudioConfig,
+  path: string,
+  init: RequestInit,
+  lifetime: ReturnType<typeof requestLifetime>,
+): Promise<unknown> {
+  try {
+    const response = await request(cfg, path, init, lifetime);
+    return await response.json();
+  } catch (error) {
+    lifetime.rethrow(error);
+  }
+}
+
 /** Minimal SSE/NDJSON line reader over a fetch body. */
 async function* readLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string, void, unknown> {
   const reader = body.getReader();
@@ -509,6 +670,16 @@ export interface ExternalModelRoute {
   readonly contextWindow: number;
   /** 能力声明里的"工具调用"；undefined = 从未声明过能力，维持现状（照发原生 tools）。 */
   readonly toolCalling?: boolean;
+  /**
+   * 能力声明里的"图片输入"三态。undefined = 未声明（不是 false，允许原生尝试）；
+   * false = 发请求前识别为 MODEL_IMAGE_UNSUPPORTED；true = 声明支持。
+   */
+  readonly vision?: boolean;
+  /**
+   * Provider 行修订号：声明/登记变化后，"这个 provider+model 拒绝过图片"的负缓存指纹随之
+   * 失效，不会用旧观察拦新声明。本地路由没有修订号。
+   */
+  readonly providerRevision?: number;
 }
 
 /**
@@ -551,6 +722,50 @@ export function createLmStudioClient(
 
   const routeOfExternal = (model: string): ExternalModelRoute | null =>
     options.externalModel?.(model) ?? null;
+
+  /**
+   * Vision 闸门：只有**声明** vision:false 的模型在发请求前拦下；未声明（undefined）允许
+   * 原生尝试，不猜「含 image 就不支持」。进程级按 provider 修订+服务+模型指纹记住"明确拒绝
+   * 过图片"的服务/模型（见 complete 内 imageRejectedKeys），不回写 provider 持久配置。
+   */
+  const visionRejected = new Map<string, number>();
+  const imageFingerprint = (model: string, route: ExternalModelRoute | null): string =>
+    `${route?.baseUrl ?? config.baseUrl}\u0000${model}`;
+  const imageFingerprintRevision = (route: ExternalModelRoute | null): number =>
+    route?.providerRevision ?? 0;
+  const assertVisionAllowed = (model: string, messages: readonly ChatMessage[]): void => {
+    if (!hasImageParts(messages)) return;
+    const route = routeOfExternal(model);
+    const key = imageFingerprint(model, route);
+    const rejectedAt = visionRejected.get(key);
+    if (
+      route?.vision === false ||
+      (rejectedAt !== undefined && rejectedAt === imageFingerprintRevision(route))
+    ) {
+      throw new ModelUnavailableError(
+        "MODEL_IMAGE_UNSUPPORTED",
+        `当前模型 ${model} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
+      );
+    }
+  };
+
+  /**
+   * 能力维度的图片放行判定（T10 准备钩子用）：与消息无关——只看声明与进程负缓存。
+   * 未声明（undefined）=== true，与明确 vision:false 区分；未知不全拒，最终消息是否真的
+   * 带图由发送前的 assertVisionAllowed 按最终 messages 再拦。
+   */
+  const imagesAllowedFor = (model: string, route: ExternalModelRoute | null): boolean => {
+    if (route?.vision === false) return false;
+    const rejectedAt = visionRejected.get(imageFingerprint(model, route));
+    return !(rejectedAt !== undefined && rejectedAt === imageFingerprintRevision(route));
+  };
+
+  /**
+   * 原始 ModelMessage[] 里有没有图片 part（钩子输入层，wire 转换前判定）。能力已拒时先拦，
+   * 不进入会因缺 resolver 而报来源错误的转换——能力问题不冒充来源问题。
+   */
+  const hasModelImageParts = (messages: readonly ModelMessage[]): boolean =>
+    messages.some((message) => message.content.some((part) => part.kind === "image"));
 
   // The loaded list is cached for a few seconds so one reply's several calls (judge → draft → pick)
   // do not each ask the local service again; short enough that loading a model in LM Studio shows up
@@ -676,6 +891,57 @@ export function createLmStudioClient(
       const isExternal = externalRoute !== null;
       const cfg = routeFor(used);
       const key = structuredOutputKey(cfg.baseUrl, used);
+      // 受信任宿主的同次准备（T10 基础）：actualModel 冻结后、HTTP body 组装前调用一次。
+      // 输入是原始 ModelMessage[]；输出的 messages/resolver 决定最终发送内容，wire 转换在
+      // 这里用最终值完成（resolver 每次 resolve 仍复验 source guard）。vision 闸按最终
+      // messages 判定（钩子已把 disabled 的图摘掉时不再误拦）。钩子抛错=请求不发出
+      // （fail closed，来源/能力问题不降级）。schema/tools 受控重试共用同一次钩子结果：
+      // 重试只降档，不换模型、不重准备。
+      // prepareWithResolved 与 preparedFrom 必须成对（fix2）：缺一边是装配错误，fail closed。
+      // 成对时初始 wire 槽（messages）由钩子输出最终 messages 替换；无钩子路径 messages 照旧。
+      if ((options.prepareWithResolved === undefined) !== (options.preparedFrom === undefined)) {
+        throw new Error("model gateway request needs prepareWithResolved and preparedFrom paired");
+      }
+      let preparedMessages: ChatMessage[] = options.messages;
+      if (options.prepareWithResolved !== undefined && options.preparedFrom !== undefined) {
+        const imagesAllowed = imagesAllowedFor(used, externalRoute);
+        const prepared = await options.prepareWithResolved({
+          model: used,
+          imagesAllowed,
+          messages: options.preparedFrom.messages,
+          signal: options.signal,
+        });
+        options.signal?.throwIfAborted();
+        const finalMessages = prepared.messages ?? options.preparedFrom.messages;
+        // 能力已拒（声明 vision:false 或负缓存）而钩子仍回图：转换前就拦——不取字节、不解码，
+        // 能力问题不冒充来源问题（缺 resolver 的转换错误是另一类缺陷）。
+        if (!imagesAllowed && hasModelImageParts(finalMessages)) {
+          throw new ModelUnavailableError(
+            "MODEL_IMAGE_UNSUPPORTED",
+            `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
+          );
+        }
+        preparedMessages = await toGatewayMessages({
+          messages: finalMessages,
+          ...(options.preparedFrom.runId === undefined
+            ? {}
+            : { runId: options.preparedFrom.runId }),
+          ...(options.preparedFrom.owner === undefined
+            ? {}
+            : { owner: options.preparedFrom.owner }),
+          ...(prepared.imageResolver === undefined
+            ? {}
+            : { imageResolver: prepared.imageResolver }),
+          ...(options.preparedFrom.imageResolver === undefined ||
+          prepared.imageResolver !== undefined
+            ? {}
+            : { imageResolver: options.preparedFrom.imageResolver }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        });
+      }
+      // resolved/fallback 后按实际使用的模型、对最终 messages 拦 vision：回退到文字 local 时
+      // 不再暗发图；钩子已摘图的纯文字请求照常放行。
+      assertVisionAllowed(used, preparedMessages);
       // External providers that proxy OpenAI's strict mode reject an optional property
       // (`required` must list every key). The rewritten schema says the same thing in their
       // dialect — required, but nullable — and this side reads both the same way. The local
@@ -695,9 +961,16 @@ export function createLmStudioClient(
         toolDeclarations.length > 0 &&
         !toolsUnavailable(key);
       const send = async (level: StructuredOutputLevel, withTools: boolean) => {
+        // 每次真正发送前的宿主复验（fix1）：schema/tools 受控重试各算一次尝试；抛错=该次不发。
+        // 顺序：signal → 宿主 guard → 能力现值（现取 route 声明 + 现负缓存指纹，不用旧 route assertion）。
+        options.signal?.throwIfAborted();
+        if (options.assertPreparedCurrent !== undefined) {
+          options.assertPreparedCurrent({ model: used });
+          assertVisionAllowed(used, preparedMessages);
+        }
         const body: Record<string, unknown> = {
           model: used,
-          messages: options.messages,
+          messages: preparedMessages,
           temperature: options.temperature ?? 0.7,
         };
         if (options.maxTokens !== undefined) {
@@ -723,18 +996,43 @@ export function createLmStudioClient(
                   json_schema: { name: "superstring_result", strict: true, schema: outboundSchema },
                 };
         }
-        return (await requestJson(
-          cfg,
-          "/chat/completions",
-          { method: "POST", body: JSON.stringify(body) },
+        // 带图请求在 HTTP 边界先做明确图片拒绝分类（见 imageRequestLifetime）：服务点名
+        // "不支持图片"且状态在能力窗内时直接给 MODEL_IMAGE_UNSUPPORTED 并记住指纹，不进
+        // 通用映射（那里 400 含 model 会被映成 MODEL_NOT_LOADED）。窗内其余 4xx（内容
+        // 格式/尺寸/URL/schema、408/413/429 的能力句式）由 rethrow 打上内容拒绝标记——
+        // 既不写负缓存，也不给 tools/schema 降级资格。纯文字请求不传该回调：文案恰好
+        // 同现图片词的形状拒绝仍沿原 fallback。
+        const lifetime = imageRequestLifetime(
           timeoutMs,
           options.signal,
-        )) as {
-          choices?: Array<{
-            finish_reason?: string | null;
-            message?: { content?: string | null; tool_calls?: unknown };
-          }>;
-        };
+          preparedMessages,
+          (status, reason) => {
+            if (!explicitImageRejection(status, reason)) return null;
+            visionRejected.set(
+              imageFingerprint(used, externalRoute),
+              imageFingerprintRevision(externalRoute),
+            );
+            return new ModelUnavailableError(
+              "MODEL_IMAGE_UNSUPPORTED",
+              `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
+            );
+          },
+        );
+        try {
+          return (await requestJsonWithLifetime(
+            cfg,
+            "/chat/completions",
+            { method: "POST", body: JSON.stringify(body) },
+            lifetime,
+          )) as {
+            choices?: Array<{
+              finish_reason?: string | null;
+              message?: { content?: string | null; tool_calls?: unknown };
+            }>;
+          };
+        } finally {
+          lifetime.close();
+        }
       };
       // 带 tools 的请求被 4xx 拒绝（不是鉴权问题）→ 记忆并去掉 tools 重发一次。撞的是"服务不接受
       // 这个字段"，不是内容问题，所以重发安全；档位按服务+模型记住，后续调用不再白撞。
@@ -808,10 +1106,56 @@ export function createLmStudioClient(
     async *streamChat(options): AsyncGenerator<string, void, unknown> {
       const used = await effectiveModel(options.model || config.model);
       reportResolvedModel(options.onModelResolved, used);
+      // 流式同钩子（T10 基础）：actualModel 冻结后、组 body 前一次受信准备；抛错=流不启动。
+      // wire 转换用最终 messages/resolver 在这里完成（同 complete）。
+      // prepareWithResolved 与 preparedFrom 必须成对（fix2）：缺一边是装配错误，fail closed。
+      if ((options.prepareWithResolved === undefined) !== (options.preparedFrom === undefined)) {
+        throw new Error(
+          "model gateway stream request needs prepareWithResolved and preparedFrom paired",
+        );
+      }
+      let preparedMessages: ChatMessage[] = options.messages;
+      if (options.prepareWithResolved !== undefined && options.preparedFrom !== undefined) {
+        const imagesAllowed = imagesAllowedFor(used, routeOfExternal(used));
+        const prepared = await options.prepareWithResolved({
+          model: used,
+          imagesAllowed,
+          messages: options.preparedFrom.messages,
+          signal: options.signal,
+        });
+        options.signal?.throwIfAborted();
+        const finalMessages = prepared.messages ?? options.preparedFrom.messages;
+        // 同 complete：能力已拒而钩子仍回图，转换前拦截（不取字节、不冒充来源错误）。
+        if (!imagesAllowed && hasModelImageParts(finalMessages)) {
+          throw new ModelUnavailableError(
+            "MODEL_IMAGE_UNSUPPORTED",
+            `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
+          );
+        }
+        preparedMessages = await toGatewayMessages({
+          messages: finalMessages,
+          ...(options.preparedFrom.runId === undefined
+            ? {}
+            : { runId: options.preparedFrom.runId }),
+          ...(options.preparedFrom.owner === undefined
+            ? {}
+            : { owner: options.preparedFrom.owner }),
+          ...(prepared.imageResolver === undefined
+            ? {}
+            : { imageResolver: prepared.imageResolver }),
+          ...(options.preparedFrom.imageResolver === undefined ||
+          prepared.imageResolver !== undefined
+            ? {}
+            : { imageResolver: options.preparedFrom.imageResolver }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        });
+      }
       const cfg = routeFor(used);
+      // 流式同闸：resolved 后回退到文字模型时不再暗发图；vision 闸按最终 messages 判定。
+      assertVisionAllowed(used, preparedMessages);
       const body: Record<string, unknown> = {
         model: used,
-        messages: options.messages,
+        messages: preparedMessages,
         temperature: options.temperature ?? 0.7,
         stream: true,
       };
@@ -820,7 +1164,32 @@ export function createLmStudioClient(
         body.max_tokens = options.maxTokens;
       }
 
-      const lifetime = requestLifetime(timeoutMs, options.signal);
+      const streamRoute = routeOfExternal(used);
+      // 发送前同守卫（fix2 前移）：signal → 宿主 guard → 能力现值判定，全部在 lifetime
+      // （timer）创建之前——guard 抛错时不留任何待清理定时器；仍在 try/rethrow 之外，
+      // 宿主来源/配置当前性失败不进 MODEL_* 传输映射。
+      options.signal?.throwIfAborted();
+      if (options.assertPreparedCurrent !== undefined) {
+        options.assertPreparedCurrent({ model: used });
+        assertVisionAllowed(used, preparedMessages);
+      }
+      // 流式同边界：只有真实带图请求才传图片分类回调；纯文字不进该分类，不标能力。
+      const lifetime = imageRequestLifetime(
+        timeoutMs,
+        options.signal,
+        preparedMessages,
+        (status, reason) => {
+          if (!explicitImageRejection(status, reason)) return null;
+          visionRejected.set(
+            imageFingerprint(used, streamRoute),
+            imageFingerprintRevision(streamRoute),
+          );
+          return new ModelUnavailableError(
+            "MODEL_IMAGE_UNSUPPORTED",
+            `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
+          );
+        },
+      );
       const startedAt = Date.now();
       try {
         const response = await request(

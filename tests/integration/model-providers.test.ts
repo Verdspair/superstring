@@ -90,6 +90,55 @@ describe("model execution capability declarations", () => {
       }).capabilities,
     ).toEqual({ codeExecution: true, toolCalling: false, parallelToolCalls: false });
   });
+
+  it("resolveModelProviderRoute 携带 vision 三态与 provider revision 指纹", async () => {
+    const h = setup();
+    try {
+      await json(h.app, "POST", "/models/providers", {
+        name: "Vis",
+        base_url: "https://vis.invalid/v1",
+        models: [
+          { name: "vis-yes", context_window: 4096, capabilities: { vision: true } },
+          { name: "vis-no", context_window: 4096, capabilities: { vision: false } },
+          { name: "vis-unknown", context_window: 4096 },
+        ],
+      });
+      const yes = resolveModelProviderRoute(h.orm, "vis-yes", h.keyPath);
+      const no = resolveModelProviderRoute(h.orm, "vis-no", h.keyPath);
+      const unknown = resolveModelProviderRoute(h.orm, "vis-unknown", h.keyPath);
+      expect(yes?.vision).toBe(true);
+      expect(yes?.providerRevision).toBe(1);
+      expect(no?.vision).toBe(false);
+      // 未声明不是 false：接口诚实保持"允许尝试"。
+      expect(unknown?.vision).toBeUndefined();
+    } finally {
+      cleanup(h);
+    }
+  });
+
+  it("provider 修订变化使旧的图片拒绝指纹失效：更新声明后不再被旧负缓存拦", async () => {
+    const h = setup();
+    try {
+      const created = await body<ModelProviderResponse>(
+        await json(h.app, "POST", "/models/providers", {
+          name: "Rev",
+          base_url: "https://rev.invalid/v1",
+          models: [{ name: "rev-m", context_window: 4096 }],
+        }),
+      );
+      const first = resolveModelProviderRoute(h.orm, "rev-m", h.keyPath);
+      expect(first?.providerRevision).toBe(1);
+      await json(h.app, "PATCH", `/models/providers/${created.id}`, {
+        models: [{ name: "rev-m", context_window: 4096, capabilities: { vision: true } }],
+        expected_revision: created.revision,
+      });
+      const second = resolveModelProviderRoute(h.orm, "rev-m", h.keyPath);
+      expect(second?.vision).toBe(true);
+      expect(second?.providerRevision).toBe(2);
+    } finally {
+      cleanup(h);
+    }
+  });
 });
 
 describe("配置的模型不可用时的替补", () => {
@@ -257,6 +306,7 @@ describe("外部模型 API", () => {
           baseUrl: "https://api.deepseek.com/v1",
           apiKey: "sk-live",
           contextWindow: 65536,
+          providerRevision: 1,
         });
         expect(resolveModelProviderRoute(h.orm, MODEL, keyPath)).toBeNull();
 

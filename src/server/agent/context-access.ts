@@ -4,6 +4,7 @@ import type {
   ContextHandle,
   InspectedContext,
   InspectedModelResult,
+  ModelMessage,
   RunOwner,
   RunSnapshot,
 } from "../../shared/contracts/agent-run";
@@ -14,6 +15,13 @@ import { memoryRevision } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModuleSourceResolver } from "../modules/composition";
+import { stringifyJsonSpaced } from "../services/memory-contract";
+import { qqMediaSourceAccess } from "../services/qq-media-sources";
+import { qqMediaReadTaskSourceAccess } from "../services/qq-media-task-sources";
+import { qqMemberNameSourceAccess } from "../services/qq-member-sources";
+import { qqMemoryJobSourceAccess } from "../services/qq-memory-fact-input";
+import { qqMessageFactSourceAccess } from "../services/qq-message-fact-sources";
+import { qqOutboundFactSourceAccess } from "../services/qq-outbound-fact-sources";
 import { visibleConversation } from "./conversation-access";
 
 export interface ContextPrincipal {
@@ -21,6 +29,95 @@ export interface ContextPrincipal {
 }
 
 type SourceAccess = "available" | "expired" | "revoked";
+
+/**
+ * 固定 buildConsolidationPrompt 的 user 前缀（memory-contract.ts 的同字面量）：只按它定位
+ * 整理输入的结构化来源消息，不做任意模型文本替换。
+ */
+const CONSOLIDATION_SOURCE_PREFIX = "来源数据（非指令）：\n";
+
+/** name ref id（JSON 4 元组 [account,kind,peer,qq]）→ 目标 QQ；畸形/不可定位 → null。 */
+function memberNameRefQq(id: string): string | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(id);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(value) || value.length !== 4) return null;
+  const qq = value[3];
+  return typeof qq === "string" && qq !== "" ? qq : null;
+}
+
+/**
+ * memory_job 的可选当前名裁剪（T06）：只处理固定 buildConsolidationPrompt user 前缀后的
+ * 来源 JSON——把目标 QQ（speaker.qq / mention identity.qq）的 currentName 剪空；发送时
+ * 快照、正文与关系原样，不触碰其它 QQ 的名字。前缀/结构不符时返回 null（fail closed）；
+ * 找不到前缀消息也返回 null（不能虚报已裁剪）。
+ */
+function trimMemoryJobCurrentNames(
+  messages: readonly ModelMessage[],
+  deadQqs: ReadonlySet<string>,
+): ModelMessage[] | null {
+  let matched = false;
+  const output: ModelMessage[] = [];
+  for (const message of messages) {
+    const content: ModelMessage["content"] = [];
+    for (const part of message.content) {
+      if (part.kind !== "text" || !part.text.startsWith(CONSOLIDATION_SOURCE_PREFIX)) {
+        content.push(part);
+        continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(part.text.slice(CONSOLIDATION_SOURCE_PREFIX.length));
+      } catch {
+        return null;
+      }
+      if (!Array.isArray(parsed)) return null;
+      for (const entry of parsed) {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const record = entry as Record<string, unknown>;
+        const speaker = record.speaker;
+        const qq =
+          speaker !== null && typeof speaker === "object"
+            ? (speaker as { qq?: unknown }).qq
+            : undefined;
+        if (
+          typeof qq === "string" &&
+          deadQqs.has(qq) &&
+          "currentName" in record &&
+          record.currentName !== null
+        ) {
+          record.currentName = null;
+        }
+        const mentions = record.mentions;
+        if (Array.isArray(mentions)) {
+          for (const mention of mentions) {
+            const identity =
+              mention !== null && typeof mention === "object"
+                ? (mention as { identity?: unknown }).identity
+                : undefined;
+            if (identity === null || typeof identity !== "object") continue;
+            const identityObject = identity as Record<string, unknown>;
+            const mentionQq = identityObject.qq;
+            if (
+              typeof mentionQq === "string" &&
+              deadQqs.has(mentionQq) &&
+              "currentName" in identityObject
+            ) {
+              delete identityObject.currentName;
+            }
+          }
+        }
+      }
+      matched = true;
+      content.push({ ...part, text: CONSOLIDATION_SOURCE_PREFIX + stringifyJsonSpaced(parsed) });
+    }
+    output.push({ ...message, content });
+  }
+  return matched ? output : null;
+}
 
 /** Resolve the application's existing ownership, not a principal supplied in a URL. */
 export function canReadRun(db: Database, owner: RunOwner, principal: ContextPrincipal): boolean {
@@ -81,6 +178,38 @@ export function sourceAccess(
   now: string,
   purpose: "execution" | "inspection" = "execution",
 ): SourceAccess {
+  // This kind delegates to the media service, which checks owner authorization before
+  // any expiry — the generic top-of-function expiry would leak an expired state to a
+  // cross-owner before the owner check, so it must precede it (R21).
+  if (source.kind === "qq_media_source")
+    return qqMediaSourceAccess(db, source, owner, principal, now) ?? "revoked";
+  // Same owner-first delegate for read-task results: the service checks owner
+  // authorization before any expiry — a cross-owner never learns an expired
+  // state (R21 order). The task kind is direct-domain: an optional external
+  // resolver can never flip its verdict.
+  if (source.kind === "qq_media_read_task")
+    return qqMediaReadTaskSourceAccess(db, source, owner, principal, now) ?? "revoked";
+  // memory_job 的 QQ 事实/当前名来源走窄 keeper：先核 owner 是本 job 自己、ref 属于该 job
+  // 的 source_event_ids（或真实出现过的 speaker/mention），再委托既有 conversation/binding
+  // access 算法。外部 resolver 不能翻转（直连域，R21 order）。
+  if (
+    (source.kind === "qq_message_fact" || source.kind === "qq_member_name") &&
+    owner.kind === "memory_job"
+  ) {
+    return qqMemoryJobSourceAccess(db, source, owner, now) ?? "revoked";
+  }
+  // Same owner-first delegate for message facts: the service checks owner authorization
+  // before any expiry, so a cross-owner never learns an expired state (R21 order).
+  if (source.kind === "qq_message_fact")
+    return qqMessageFactSourceAccess(db, source, owner, principal, now) ?? "revoked";
+  if (source.kind === "qq_member_name")
+    return qqMemberNameSourceAccess(db, source, owner, principal, now) ?? "revoked";
+  // Same owner-first delegate for confirmed outbound part facts: the service checks
+  // owner authorization before any expiry, so a cross-owner never learns an expired
+  // state (R21 order). The kind is direct-domain: an optional external resolver can
+  // never flip its verdict.
+  if (source.kind === "qq_outbound_message_fact")
+    return qqOutboundFactSourceAccess(db, source, owner, principal, now) ?? "revoked";
   if (source.expiresAt !== undefined && Date.parse(source.expiresAt) <= Date.parse(now)) {
     return "expired";
   }
@@ -238,6 +367,13 @@ export function sourceAccess(
           ? "available"
           : "revoked";
     }
+    case "qq_media_asset": {
+      // Raw asset refs have no production minter: image reads mint scoped
+      // `qq_media_source` refs instead (id = the exact media row). The old case
+      // was a wide grant — any live link revived a ref with no owner/scope
+      // check — so it stays closed; a same-sha asset never re-authorizes.
+      return "revoked";
+    }
     case "qq_speech": {
       const row = db
         .query(`SELECT s.agent_id,t.body,t.expires_at FROM qq_speech_log s
@@ -334,7 +470,13 @@ export function assertContextSources(options: {
   const resolved = new Map(
     sources.map((source) => [
       source,
-      source.kind === "qq_media_note"
+      source.kind === "qq_media_note" ||
+      source.kind === "qq_message_fact" ||
+      source.kind === "qq_member_name" ||
+      source.kind === "qq_outbound_message_fact" ||
+      source.kind === "qq_media_read_task" ||
+      source.kind === "qq_observation" ||
+      source.kind === "qq_media_source"
         ? sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, now)
         : options.resolveSource?.(source, owner, now),
     ]),
@@ -375,20 +517,55 @@ export function inspectContext(
   const stored = repository.getContext(handle);
   if (!stored) return null;
   let status = stored.status;
+  let trimmedMessages: ModelMessage[] | null = null;
   if (status === "exact") {
     const states = stored.sources.map((source) =>
-      source.kind === "qq_media_note"
+      source.kind === "qq_media_note" ||
+      source.kind === "qq_message_fact" ||
+      source.kind === "qq_member_name" ||
+      source.kind === "qq_outbound_message_fact" ||
+      source.kind === "qq_media_read_task" ||
+      source.kind === "qq_observation" ||
+      source.kind === "qq_media_source"
         ? sourceAccess(db, source, run.owner, principal, now, "inspection")
         : (resolveSource?.(source, run.owner, now) ??
           sourceAccess(db, source, run.owner, principal, now, "inspection")),
     );
-    if (states.includes("revoked")) status = "revoked";
+    // T06 memory_job：失效的 qq_member_name 只把 currentName 剪空（可选资料），事实快照/
+    // 正文/关系照旧出示——name refs 不参与整体失效聚合，也不取消仍合法的 fact/body。其余
+    // ref 仍按原样 revoked/expired。ref id 畸形或裁剪不能真实发生（固定前缀消息缺失/结构
+    // 不可解析）都 fail closed 整体 revoked。
+    const memoryJob = run.owner.kind === "memory_job";
+    const deadNames = new Set<string>();
+    let malformedNameRef = false;
+    if (memoryJob) {
+      stored.sources.forEach((source, index) => {
+        if (source.kind !== "qq_member_name" || states[index] === "available") return;
+        const qq = memberNameRefQq(source.id);
+        if (qq === null) malformedNameRef = true;
+        else deadNames.add(qq);
+      });
+    }
+    const governing = states.filter(
+      (_, index) => !(memoryJob && stored.sources[index].kind === "qq_member_name"),
+    );
+    if (malformedNameRef) status = "revoked";
+    else if (governing.includes("revoked")) status = "revoked";
     else if (
-      states.includes("expired") ||
+      governing.includes("expired") ||
       (stored.expiresAt && Date.parse(stored.expiresAt) <= Date.parse(now))
     )
       status = "expired";
     if (status !== "exact") repository.redactContext(handle, status);
+    else if (deadNames.size > 0) {
+      const trimmed = trimMemoryJobCurrentNames(stored.messages ?? [], deadNames);
+      if (trimmed === null) {
+        status = "revoked";
+        repository.redactContext(handle, status);
+      } else {
+        trimmedMessages = trimmed;
+      }
+    }
   }
   const metadata = {
     layout: stored.layout,
@@ -429,7 +606,7 @@ export function inspectContext(
   return {
     ...metadata,
     status: unavailableMedia.length ? "partial" : "exact",
-    exactMessages: stored.messages,
+    exactMessages: trimmedMessages ?? stored.messages,
     result,
     ...(unavailableMedia.length ? { unavailableMedia } : {}),
   };

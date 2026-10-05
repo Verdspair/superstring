@@ -193,6 +193,20 @@ describe("Agent runtime execution traces", () => {
     expect(
       all.find((s) => s.name === "agent.model" && s.details.phase === "vision")!.details.imageCount,
     ).toBe(1);
+    // T14 V4：与 render 同一 visionCostOf 真源的标量投影——有图 unknown、无图精确 0；
+    // unknown 不是 0、不折算 token、不进预算。
+    const visionSpan = all.find((s) => s.name === "agent.model" && s.details.phase === "vision");
+    if (!visionSpan) throw new Error("missing vision span");
+    expect(visionSpan.details.visionCostState).toBe("unknown");
+    expect(visionSpan.details.visionImages).toBe(1);
+    expect(typeof visionSpan.details.visionPixels).toBe("number");
+    const generateSpan = all.find(
+      (s) => s.name === "agent.model" && s.details.phase === "generate",
+    );
+    if (!generateSpan) throw new Error("missing generate span");
+    expect(generateSpan.details.visionCostState).toBe("estimated");
+    expect(generateSpan.details.visionImages).toBe(0);
+    expect(generateSpan.details.visionPixels).toBe(0);
     expect(f.telemetry.parentFor("output_id", result.outputs[0].outputId)).not.toBeNull();
     expect(all.find((s) => s.name === "agent.run" && s.runId === result.runId)).toMatchObject({
       status: "completed",

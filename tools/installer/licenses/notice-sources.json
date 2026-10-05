@@ -122,6 +122,14 @@
       "sha256": "5b3b1f021e060c5794a06701e505d261bfa1bf5de75476e44fff734ae34206b4"
     },
     {
+      "file": "napi-rs-image-NOTICES.txt",
+      "source": "npm:@napi-rs/image@1.15.0/LICENSE reproduced verbatim, plus one package metadata record for the pinned same-version native platform packages",
+      "component": "napi-rs-image",
+      "version": "1.15.0",
+      "license": "MIT; one original text plus one package metadata record for the twelve platform binary packages",
+      "sha256": "5799253aefd655cd517520e1525a8fd623d5836078d568fbddd837c8134809b7"
+    },
+    {
       "file": "production-NOTICES.txt",
       "source": "Original license and NOTICE texts from the pinned production dependency closure",
       "component": "production-dependencies",

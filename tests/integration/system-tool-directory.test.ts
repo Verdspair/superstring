@@ -19,6 +19,7 @@ it("lists real built-in definitions even before an MCP connection is registered"
       "summary.query",
       "summary.read",
       "media.list",
+      "media.read",
       "media.note.read",
       "media.describe",
       "sticker.search",
@@ -83,4 +84,23 @@ it("distinguishes global switches from Agent-scoped reading configuration", () =
     expect(rows.find((row) => row.name === name)?.globalEnabled).toBe(false);
   for (const name of ["memory.query", "knowledge.query", "history.read", "task.read"])
     expect(rows.find((row) => row.name === name)?.globalEnabled).toBe(true);
+});
+
+it("ships the builtin media skill with media.read, questionMessageId guidance, and no permission grant", async () => {
+  const { loadMergedSkillCatalog, readSkillDocument } = await import(
+    "../../src/server/skills/config"
+  );
+  const entry = loadMergedSkillCatalog().skills.find(
+    (skill) => skill.metadata.name === "system-media-reading",
+  );
+  if (!entry) throw new Error("system-media-reading skill is missing from the builtin catalog");
+  expect(entry.origin).toBe("system");
+  const detail = readSkillDocument(entry);
+  expect(detail["allowed-tools"]?.split(" ")).toContain("media.read");
+  expect(detail.description).toContain("questionMessageId");
+  // Markdown source wraps the boundary line; the document semantics are checked
+  // with normalized whitespace, not byte-contiguous generated wording.
+  expect(detail.instructions.replace(/\s+/gu, " ")).toContain(
+    "cannot grant tools or bypass host authorization",
+  );
 });

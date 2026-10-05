@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,39 @@ const packageBin = (name, file) => resolve(dirname(require.resolve(`${name}/pack
 const node = process.execPath;
 const bun = process.env.SUPERSTRING_BUN_EXE ?? resolveProjectBun(root);
 
+// Bun 的测试过滤参数按子串匹配路径，目录参数会连带命中 artifacts 下的历史快照；
+// 这里显式递归收集两个常规测试根下的 Bun 标准测试后缀（bun test 默认识别
+// *.test.{js|jsx|ts|tsx|mjs|cjs|mts|cts}，本树实际只用其中一部分），跳过 artifacts
+// 与 node_modules，加上桌面端两个既有显式文件，以绝对路径作过滤，保证只匹配真实测试文件。
+function collectBunTestFiles(dir) {
+  const found = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== "artifacts" && entry.name !== "node_modules") {
+        found.push(...collectBunTestFiles(full));
+      }
+    } else if (BUN_TEST_SUFFIXES.some((suffix) => entry.name.endsWith(suffix))) found.push(full);
+  }
+  return found;
+}
+const BUN_TEST_SUFFIXES = [
+  ".test.js",
+  ".test.jsx",
+  ".test.ts",
+  ".test.tsx",
+  ".test.mjs",
+  ".test.cjs",
+  ".test.mts",
+  ".test.cts",
+];
+const bunTestFiles = [
+  ...collectBunTestFiles(resolve(root, "tests/integration")),
+  ...collectBunTestFiles(resolve(root, "tests/contracts")),
+  resolve(root, "tests/desktop/backend.test.ts"),
+  resolve(root, "tests/desktop/security.test.ts"),
+];
+
 const checks = [
   ["biome-check", node, [packageBin("@biomejs/biome", "bin/biome"), "check", "."]],
   [
@@ -25,17 +58,7 @@ const checks = [
   // verify-setup.mjs are outside this runner's own checks, so the inventory is asserted here
   // instead of relying on anyone remembering. See the script's header for what it caught.
   ["migration-inventory", bun, ["tools/verify/verify-migration-inventory.mjs"]],
-  [
-    "bun-tests",
-    bun,
-    [
-      "test",
-      "tests/integration",
-      "tests/contracts",
-      "tests/desktop/backend.test.ts",
-      "tests/desktop/security.test.ts",
-    ],
-  ],
+  ["bun-tests", bun, ["test", ...bunTestFiles]],
   [
     "desktop-packaging",
     node,

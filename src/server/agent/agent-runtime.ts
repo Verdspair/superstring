@@ -49,8 +49,18 @@ import {
   type RenderedContext,
   textMessage,
   uniqueSources,
+  visionCostOf,
 } from "./context-engine";
-import { createModelPort, type ModelPort, type TextModelGateway, textMessages } from "./model-port";
+import type { ImageByteResolver } from "./image-byte-resolver";
+import {
+  createModelPort,
+  type ModelPort,
+  type ModelRequest,
+  type ModelResolvedPrepareInput,
+  type ModelResolvedPrepareOutput,
+  type TextModelGateway,
+  textMessages,
+} from "./model-port";
 import { createResearchAction, type ResearchLimits } from "./research-action";
 import { createToolCatalog, type ToolCatalog } from "./tool-catalog";
 
@@ -63,13 +73,27 @@ export interface LeafInput {
   usage?: RunUsage;
   budget?: RunBudget;
   onEvent?: (event: RunEvent) => void | Promise<void>;
-  /** Existing domain parser executes inside the persisted step's success boundary. */
-  validate?: (text: string) => unknown;
+  /**
+   * Existing domain parser executes inside the persisted step's success boundary.
+   * 可信宿主消费可接收同 onModelResolved→resolveStepModel 真源的 resolved 模型名
+   * （第二参，可选）：分类缓存等按实际模型维度的消费必须用它，不用 requested。
+   */
+  validate?: (text: string, meta?: { resolvedModel: string }) => unknown;
 }
 export interface VisionLeafInput extends Omit<LeafInput, "messages"> {
   model: string;
   prompt: string;
   images: readonly VisionImage[];
+}
+export interface MessageLeafInput extends Omit<LeafInput, "messages"> {
+  messages: ModelMessage[];
+  imageResolver?: ImageByteResolver;
+  /** 本入口调用一次；宿主在这里按真实 runId/owner 重新登记 resolver 资产。 */
+  bindRun?(context: ActionContext): void;
+  /** T10 准备钩子（评分叶子等 message leaf）：actualModel 冻结后由网关调用一次。 */
+  prepareWithResolved?: (input: ModelResolvedPrepareInput) => Promise<ModelResolvedPrepareOutput>;
+  /** 每次实际发送前的宿主复验（fix1）；抛错＝该次尝试不发出。 */
+  assertPreparedCurrent?: (input: { readonly model: string }) => void;
 }
 export interface PreparedOutput extends OutputSummary {
   text?: string;
@@ -81,6 +105,18 @@ export interface PreparedOutput extends OutputSummary {
 export interface PreparedGeneration extends AgentGenerationConfig {
   /** Explicit host-provided phase projection from the same authorized context source. */
   context?: RenderedContext;
+  /**
+   * Trusted host declaration (spec §10): a buffered generation that needs machine-readable
+   * classifications in the SAME model call completes once with this response schema instead of
+   * streaming; the runtime strips the envelope and submits the body through the ordinary
+   * output path. Absent (default) keeps the existing streamText behavior byte for byte.
+   * Media-classification consumption happens in the trusted host; the runtime only parses.
+   */
+  responseEnvelope?: {
+    responseSchema: Record<string, unknown>;
+    /** meta.resolvedModel = onModelResolved→resolveStepModel 同真源的实际模型（可信消费用）。 */
+    parse: (raw: string, meta?: { resolvedModel: string }) => { text: string };
+  };
 }
 export interface ConversationInput {
   owner: RunOwner;
@@ -117,6 +153,69 @@ export interface ConversationInput {
     draft: Extract<OutputDraft, { kind: "generate" }>,
     input: { context: RenderedContext; outputId: string; signal: AbortSignal },
   ) => Promise<PreparedGeneration | undefined>;
+  /**
+   * T11 B：主 run 发送边界的图片解析器。可信宿主在本 run/owner 下登记已验证资产；
+   * 生成步把它连同真实 runId/owner 传给端口（native 图 wire 只在发送边界解析字节）。
+   * 缺省 undefined ＝ 无自动图（行为同 A）。
+   */
+  imageResolver?: ImageByteResolver;
+  /**
+   * 规格 §10：本 run 存在待分类 unknown 图时，决策同次响应走内部 envelope schema；
+   * `parse` 由可信宿主提供（白名单校验＋同次分类消费），返回本体 decision 对象。
+   * 缺省＝沿用 AGENT_DECISION_JSON_SCHEMA 原路径（text-only 行为逐字不变）。
+   */
+  /**
+   * 规格 §10：宿主按**当前投影**（每步 re-observe 后可能变化）决定本步决策是否走同次
+   * 分类 envelope——每次决策模型调用前现取；返回 undefined＝该步走原 schema。
+   */
+  decisionEnvelope?: () =>
+    | {
+        responseSchema: Record<string, unknown>;
+        /** meta.resolvedModel = onModelResolved→resolveStepModel 同真源的实际模型（可信消费用）。 */
+        parse: (
+          raw: string,
+          meta?: { resolvedModel: string },
+        ) => ReturnType<typeof parseAgentDecision>;
+      }
+    | undefined;
+  /**
+   * T10 准备钩子（受信任宿主）：actualModel 冻结后、HTTP body 组装前由网关调用一次；
+   * 宿主闭包按相（next=决策、generate=生成）准备最终 messages/resolver。返回 undefined＝
+   * 沿用请求原样。metadata 由闭包自持（白名单落 span），不经网关回传。
+   */
+  prepareWithResolved?: (input: {
+    phase: "next" | "generate";
+    model: string;
+    imagesAllowed: boolean;
+    messages: readonly ModelMessage[];
+    signal?: AbortSignal;
+  }) => Promise<ModelResolvedPrepareOutput | undefined>;
+  /**
+   * 每次真正发送前的可信宿主复验（T10 fix1）：schema/tools 受控重试各算一次实际发送，
+   * stream 发送前各调用一次。宿主闭包沿当前真源复验来源纪元/授权/provider 配置；
+   * 抛错＝该次尝试不发出（零追加 HTTP）。网关不代任何判定。
+   */
+  assertPreparedCurrent?: (input: { readonly model: string }) => void;
+  /**
+   * §9 真实 HTTP unsupported 重试边界（受信任宿主）：一次相调用被精确
+   * MODEL_IMAGE_UNSUPPORTED 拒绝（首逻辑调用，非任务 attempt）后由 runtime 调用一次；
+   * 宿主标该相 fallback 并重备 description 材料，返回替换后的最终 messages；返回 null＝
+   * 不重试（原样抛）。runtime 以返回消息重发同相 complete 恰一次（预算/来源复验仍走
+   * assertPreparedCurrent 与宿主闭包）。
+   */
+  onPhaseMediaUnsupported?: (input: {
+    readonly phase: "next" | "generate";
+    readonly model: string;
+    /** 被拒那次调用的当前请求消息（宿主据此剥离原生图并注入 notes）。 */
+    readonly messages: readonly ModelMessage[];
+    readonly signal?: AbortSignal;
+  }) => Promise<{ readonly messages: readonly ModelMessage[] } | null>;
+  /**
+   * §8.1 current_run_consumed 记账边界（受信任宿主）：一次相模型调用**成功返回**后由 runtime
+   * 调用（sentMediaIds=该次调用真实发送的图像 mediaId 集合）。MODEL_IMAGE_UNSUPPORTED 等失败
+   * 发送不调用。宿主据此记录 native-read proof（gate 解除 legacy 旧失败误挡的唯一依据）。
+   */
+  onModelCallConsumed?: (input: { readonly phase: "next" | "generate" | "leaf" }) => void;
   /** Last observation checkpoint before a final/none decision becomes externally visible. */
   beforeFinal?: (drafts: readonly OutputDraft[], signal: AbortSignal) => Promise<boolean>;
   /** True re-observes; no_output suppresses a buffered plan that has no deliverable parts. */
@@ -180,6 +279,8 @@ interface Running {
   onEvent?: (event: RunEvent) => void | Promise<void>;
   dispose(): void;
   assertActions?: () => void;
+  /** 当前步 onModelResolved 回写后的真实模型（resolveStepModel 同真源；步内消费用）。 */
+  resolvedModel?: string;
 }
 
 /** 调用的稳定签名：键排序后再序列化，用来识别"同一调用被原样重复"。 */
@@ -282,10 +383,63 @@ export class AgentRuntime {
             onResponseText: capture,
           });
           capture(raw, true);
-          await input.validate?.(raw);
+          await input.validate?.(raw, { resolvedModel: active.resolvedModel ?? "" });
           return raw;
         },
       };
+    });
+  }
+
+  // 复用 completeLeafTask 的持久 step/预算/断言边界；resolver 登记只在模型调用前经 bindRun 建立。
+  async completeMessageLeaf(spec: LeafAgentSpec, input: MessageLeafInput): Promise<string> {
+    const active = this.start(spec, input);
+    return this.withRun(active, async () => {
+      try {
+        const messages: ModelMessage[] = [
+          ...(spec.instructions === undefined ? [] : [textMessage("system", spec.instructions)]),
+          ...input.messages,
+        ];
+        return await this.completeLeafTask(active, "leaf", input, () => {
+          input.bindRun?.({
+            owner: input.owner,
+            signal: active.signal,
+            runId: active.runId,
+          });
+          return {
+            messages,
+            invoke: async (capture, onModelResolved) => {
+              const raw = await this.options.model.complete({
+                messages,
+                model: spec.model,
+                temperature: spec.temperature,
+                maxTokens: spec.maxTokens,
+                responseSchema: spec.responseSchema,
+                runId: active.runId,
+                owner: input.owner,
+                ...(input.imageResolver === undefined
+                  ? {}
+                  : { imageResolver: input.imageResolver }),
+                // T10 钩子与每次发送前的宿主复验（评分叶子等 message leaf 同权接入）。
+                ...(input.prepareWithResolved === undefined
+                  ? {}
+                  : { prepareWithResolved: input.prepareWithResolved }),
+                ...(input.assertPreparedCurrent === undefined
+                  ? {}
+                  : { assertPreparedCurrent: input.assertPreparedCurrent }),
+                signal: active.signal,
+                onModelResolved,
+                onResponseText: capture,
+              });
+              capture(raw, true);
+              await input.validate?.(raw, { resolvedModel: active.resolvedModel ?? "" });
+              return raw;
+            },
+          };
+        });
+      } finally {
+        // 运行结束按本 leaf run/owner 释放登记；父 run 与同 run 其它 owner 不受影响（规格 §12）。
+        input.imageResolver?.release(active.runId, input.owner);
+      }
     });
   }
 
@@ -495,6 +649,7 @@ export class AgentRuntime {
       active.assertActions = () => {
         for (const action of usedActions) this.executor.assert(action, actionContext, mode);
       };
+      input.context.bindRun?.(actionContext);
       await this.emit(active, {
         type: "started",
         ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -508,6 +663,9 @@ export class AgentRuntime {
           return action && this.executor.allowed(action, actionContext, mode);
         });
         input.context.configureActions?.(availableActions);
+        // 规格 §10：本步决策的实际响应 schema 选择——投影（read）完成后现取并冻结一次，
+        // 系统声明（render）与实际请求（requestFor）、响应解析共用同一个选择。
+        let decisionEnvelope: ReturnType<NonNullable<ConversationInput["decisionEnvelope"]>>;
         const context = await this.trace(
           active,
           "agent.context",
@@ -518,12 +676,14 @@ export class AgentRuntime {
           async (scope) => {
             const material = await input.context.read({ signal: active.signal, observations });
             active.signal.throwIfAborted();
+            decisionEnvelope = input.decisionEnvelope?.();
             const rendered = this.contextEngine.render(
               { ...spec, availableActions },
               material,
               observations,
               input.authorizedTargets,
               input.outputMode,
+              decisionEnvelope?.responseSchema,
             );
             scope?.update({
               sources: rendered.sources,
@@ -547,12 +707,18 @@ export class AgentRuntime {
           context.sources,
           async (capture, onModelResolved) => {
             let resolved = spec.model ?? this.options.model.defaultModel ?? "?";
-            const raw = await this.options.model.complete({
-              messages: context.messages,
+            // T10/§9 决策相发送（真实 HTTP 服务首拒 unsupported → 宿主标 fallback 重备后
+            // 同相同 complete 重试恰一次；非 unsupported 原样抛）。requestFor(messages) 每次以
+            // 当前 messages 组请求；prepare/schema/tools 重试共用同一次钩子结果与 used。
+            const requestFor = (phaseMessages: readonly ModelMessage[]): ModelRequest => ({
+              messages: phaseMessages,
               model: spec.model,
               temperature: spec.temperature,
               maxTokens: spec.maxTokens ?? spec.limits.outputTokens,
-              responseSchema: AGENT_DECISION_JSON_SCHEMA,
+              responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+              runId: active.runId,
+              owner: input.owner,
+              ...(input.imageResolver === undefined ? {} : { imageResolver: input.imageResolver }),
               // 已广告的动作同时以原生 tools 声明（issue #10）：模型用它表达 invoke，正文只剩
               // final/none。是否真的发送由网关决定——外部路由发，本地服务保持冻结的 JSON 决策。
               tools: availableActions.map((action) => ({
@@ -560,6 +726,20 @@ export class AgentRuntime {
                 description: action.description,
                 parameters: action.parameters,
               })),
+              // T10 准备钩子透传（决策相）：actualModel 冻结后由网关调用；宿主闭包决定最终
+              // messages/resolver，undefined＝原样。metadata 由闭包自持，不经网关回传。
+              ...(input.prepareWithResolved === undefined
+                ? {}
+                : {
+                    prepareWithResolved: async (hook) =>
+                      (await input.prepareWithResolved?.({
+                        ...hook,
+                        phase: "next",
+                      })) ?? {},
+                  }),
+              ...(input.assertPreparedCurrent === undefined
+                ? {}
+                : { assertPreparedCurrent: input.assertPreparedCurrent }),
               signal: active.signal,
               onModelResolved: (model) => {
                 resolved = model;
@@ -567,8 +747,33 @@ export class AgentRuntime {
               },
               onResponseText: capture,
             });
-            capture(raw, true);
+            let raw: string;
             try {
+              raw = await this.options.model.complete(requestFor(context.messages));
+            } catch (error) {
+              if (
+                !(
+                  error instanceof Error &&
+                  (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
+                ) ||
+                input.onPhaseMediaUnsupported === undefined
+              )
+                throw error;
+              const retry = await input.onPhaseMediaUnsupported({
+                phase: "next",
+                model: resolved,
+                messages: context.messages,
+                signal: active.signal,
+              });
+              if (retry === null) throw error;
+              raw = await this.options.model.complete(requestFor(retry.messages));
+            }
+            capture(raw, true);
+            // §8.1：决策相调用成功返回＝本 run 真实消费了请求中的图像 → 通知宿主记账。
+            input.onModelCallConsumed?.({ phase: "next" });
+            try {
+              if (decisionEnvelope)
+                return decisionEnvelope.parse(raw, { resolvedModel: active.resolvedModel ?? "" });
               return parseAgentDecision(raw);
             } catch {
               // 「读不出决策」必须能一眼看出模型回了什么。原文也会随步骤落库
@@ -754,70 +959,195 @@ export class AgentRuntime {
               continue;
             }
             this.checkStepBudget(active, spec);
-            const { generation, generationContext, messages, generationSpec } = await this.trace(
-              active,
-              "agent.context",
-              {
-                stage: "context",
-                outputId,
-                details: { phase: "generate" },
-              },
-              async (scope) => {
-                const prepared = await input.prepareGeneration?.(draft, {
-                  context,
+            const { generation, generationContext, messages, generationSpec, structured } =
+              await this.trace(
+                active,
+                "agent.context",
+                {
+                  stage: "context",
                   outputId,
-                  signal: active.signal,
-                });
-                const generation = { ...spec.generation, ...prepared };
-                const generationContext = prepared?.context ?? context;
-                const messages = this.contextEngine.renderOutput(
-                  { ...spec, generation },
-                  generationContext,
-                  draft,
-                );
-                await input.onContext?.(
-                  { ...generationContext, messages, units: inputUnits(messages) },
-                  { runId: active.runId, phase: "generate" },
-                );
-                scope?.update({
-                  sources: generationContext.sources,
-                  details: {
-                    inputUnits: inputUnits(messages),
-                    messageCount: messages.length,
-                    sourceCount: generationContext.sources.length,
-                  },
-                });
-                const generationSpec: LeafAgentSpec = {
-                  ...spec,
-                  model: generation.model ?? spec.model,
-                  temperature: generation.temperature ?? spec.temperature,
-                  maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
-                  limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
-                };
-                return { generation, generationContext, messages, generationSpec };
-              },
-            );
+                  details: { phase: "generate" },
+                },
+                async (scope) => {
+                  const prepared = await input.prepareGeneration?.(draft, {
+                    context,
+                    outputId,
+                    signal: active.signal,
+                  });
+                  const generation = { ...spec.generation, ...prepared };
+                  // 规格 §10：是否走同次封装在系统声明渲染前冻结——renderOutput 的输出协议
+                  // 声明与 structured complete 的实际 responseSchema 用同一个选择。
+                  const structured =
+                    input.outputMode === "buffered" ? generation.responseEnvelope : undefined;
+                  const generationContext = prepared?.context ?? context;
+                  const messages = this.contextEngine.renderOutput(
+                    { ...spec, generation },
+                    generationContext,
+                    draft,
+                    structured?.responseSchema,
+                  );
+                  await input.onContext?.(
+                    { ...generationContext, messages, units: inputUnits(messages) },
+                    { runId: active.runId, phase: "generate" },
+                  );
+                  scope?.update({
+                    sources: generationContext.sources,
+                    details: {
+                      inputUnits: inputUnits(messages),
+                      messageCount: messages.length,
+                      sourceCount: generationContext.sources.length,
+                    },
+                  });
+                  const generationSpec: LeafAgentSpec = {
+                    ...spec,
+                    model: generation.model ?? spec.model,
+                    temperature: generation.temperature ?? spec.temperature,
+                    maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
+                    limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
+                  };
+                  return { generation, generationContext, messages, generationSpec, structured };
+                },
+              );
             let text = "";
+            // 规格 §10：buffered 且宿主声明"本次生成需要同次机器可读封装"时，走一次结构化
+            // complete 取 envelope，剥离后正文照常提交——不新增第二次模型调用、不落 auxiliary
+            // 阶段；缺省（未声明）与 stream 模式逐字保持原 streamText 行为。
             await this.step(
               active,
               "generate",
               messages,
               generationContext.sources,
               async (capture, onModelResolved) => {
-                for await (const delta of this.options.model.streamText({
-                  messages,
+                if (structured) {
+                  // T10/§9 生成相发送（structured complete）：真实 HTTP 服务首拒
+                  // MODEL_IMAGE_UNSUPPORTED → 宿主标 fallback 重备后同相同 complete 重试
+                  // 恰一次；非 unsupported 原样抛。
+                  const requestFor = (phaseMessages: readonly ModelMessage[]): ModelRequest => ({
+                    messages: phaseMessages,
+                    model: generationSpec.model,
+                    temperature: generationSpec.temperature,
+                    maxTokens: generationSpec.maxTokens,
+                    responseSchema: structured.responseSchema,
+                    runId: active.runId,
+                    owner: input.owner,
+                    ...(input.imageResolver === undefined
+                      ? {}
+                      : { imageResolver: input.imageResolver }),
+                    ...(input.prepareWithResolved === undefined
+                      ? {}
+                      : {
+                          prepareWithResolved: async (hook: ModelResolvedPrepareInput) =>
+                            (await input.prepareWithResolved?.({
+                              ...hook,
+                              phase: "generate",
+                            })) ?? {},
+                        }),
+                    ...(input.assertPreparedCurrent === undefined
+                      ? {}
+                      : { assertPreparedCurrent: input.assertPreparedCurrent }),
+                    signal: active.signal,
+                    onModelResolved,
+                    onResponseText: capture,
+                  });
+                  let raw: string;
+                  try {
+                    raw = await this.options.model.complete(requestFor(messages));
+                  } catch (error) {
+                    if (
+                      !(
+                        error instanceof Error &&
+                        (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
+                      ) ||
+                      input.onPhaseMediaUnsupported === undefined
+                    )
+                      throw error;
+                    const retry = await input.onPhaseMediaUnsupported({
+                      phase: "generate",
+                      model: active.resolvedModel ?? generationSpec.model ?? "",
+                      messages,
+                      signal: active.signal,
+                    });
+                    if (retry === null) throw error;
+                    raw = await this.options.model.complete(requestFor(retry.messages));
+                  }
+                  capture(raw, true);
+                  text = structured.parse(raw, { resolvedModel: active.resolvedModel ?? "" }).text;
+                  if (!unicodeStrip(text) && !generation.allowEmpty)
+                    throw new AgentRuntimeError(
+                      "MODEL_EMPTY_RESPONSE",
+                      "Model returned an empty response",
+                    );
+                  active.signal.throwIfAborted();
+                  // §8.1：生成相调用成功返回 → 通知宿主记账（native proof）。
+                  input.onModelCallConsumed?.({ phase: "generate" });
+                  return text;
+                }
+                // T10/§9 生成相 stream：unsupported 首拒（零 delta）→ 宿主标 fallback 重备
+                // 后同相 stream 重试恰一次；已收到 delta 后的失败不重试。
+                let phaseMessages: readonly ModelMessage[] = messages;
+                const streamRequest = () => ({
+                  messages: phaseMessages,
                   model: generationSpec.model,
                   temperature: generationSpec.temperature,
                   maxTokens: generationSpec.maxTokens,
+                  runId: active.runId,
+                  owner: input.owner,
+                  ...(input.imageResolver === undefined
+                    ? {}
+                    : { imageResolver: input.imageResolver }),
+                  ...(input.prepareWithResolved === undefined
+                    ? {}
+                    : {
+                        prepareWithResolved: async (hook: ModelResolvedPrepareInput) =>
+                          (await input.prepareWithResolved?.({
+                            ...hook,
+                            phase: "generate",
+                          })) ?? {},
+                      }),
+                  ...(input.assertPreparedCurrent === undefined
+                    ? {}
+                    : { assertPreparedCurrent: input.assertPreparedCurrent }),
                   signal: active.signal,
                   onModelResolved,
-                })) {
-                  active.signal.throwIfAborted();
-                  if (!delta) continue;
-                  text += delta;
-                  capture(text);
-                  if (input.outputMode === "stream")
-                    await this.emit(active, { type: "output_delta", outputId, text: delta });
+                });
+                let unsupportedRetry = input.onPhaseMediaUnsupported !== undefined;
+                try {
+                  for await (const delta of this.options.model.streamText(streamRequest())) {
+                    active.signal.throwIfAborted();
+                    if (!delta) continue;
+                    text += delta;
+                    capture(text);
+                    if (input.outputMode === "stream")
+                      await this.emit(active, { type: "output_delta", outputId, text: delta });
+                  }
+                } catch (error) {
+                  // §9：首拒（零 delta）且宿主接了重试边界 → 重备后同相 stream 重试恰一次。
+                  if (
+                    text !== "" ||
+                    !(
+                      error instanceof Error &&
+                      (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
+                    ) ||
+                    !unsupportedRetry
+                  )
+                    throw error;
+                  unsupportedRetry = false;
+                  const retry = await input.onPhaseMediaUnsupported?.({
+                    phase: "generate",
+                    model: active.resolvedModel ?? generationSpec.model ?? "",
+                    messages: phaseMessages,
+                    signal: active.signal,
+                  });
+                  if (retry === null || retry === undefined) throw error;
+                  phaseMessages = retry.messages;
+                  for await (const delta of this.options.model.streamText(streamRequest())) {
+                    active.signal.throwIfAborted();
+                    if (!delta) continue;
+                    text += delta;
+                    capture(text);
+                    if (input.outputMode === "stream")
+                      await this.emit(active, { type: "output_delta", outputId, text: delta });
+                  }
                 }
                 capture(text, true);
                 if (!unicodeStrip(text) && !generation.allowEmpty)
@@ -825,6 +1155,10 @@ export class AgentRuntime {
                     "MODEL_EMPTY_RESPONSE",
                     "Model returned an empty response",
                   );
+                active.signal.throwIfAborted();
+                // §8.1：stream 生成相在完整流结束、abort/empty 检查通过后记账恰一次；
+                // 流中异常、部分 delta 后失败/abort/empty 不允许时不通知。
+                input.onModelCallConsumed?.({ phase: "generate" });
                 return text;
               },
               generationSpec,
@@ -1069,6 +1403,9 @@ export class AgentRuntime {
     const capture = (text: string, complete = false) => {
       output = { text, complete, format: phase === "next" ? "json" : "text" };
     };
+    // T14 观测（已批 V4）：与 render 同一 visionCostOf 真源的三标量投影；unknown 不是 0、
+    // 不折算 token、不进预算——pixels 是准备尺寸的安全边界值，不是计费事实。
+    const visionCost = visionCostOf(messages);
     return this.trace(
       active,
       "agent.model",
@@ -1082,6 +1419,9 @@ export class AgentRuntime {
           modelResolved: phase === "vision",
           requestedModel: stepSpec.model ?? this.options.model.defaultModel ?? "",
           stepNo: active.stepNo,
+          visionCostState: visionCost.state,
+          visionImages: visionCost.images ?? 0,
+          visionPixels: visionCost.pixels ?? 0,
           phase,
           inputUnits: inputUnits(messages),
           messageCount: messages.length,
@@ -1104,6 +1444,8 @@ export class AgentRuntime {
             context: { runId: active.runId, stepId },
           });
           const result = await execute(capture, (model) => {
+            // resolved 真源单点：先写 active（同闭包供步内可信消费读取），再落库。
+            active.resolvedModel = model;
             this.repository.resolveStepModel(stepId, model);
             scope?.update({ model, details: { modelResolved: true } });
           });

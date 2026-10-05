@@ -70,6 +70,22 @@ const scheme: QqSchemeResponse = {
     media: "",
     compress: "",
   },
+  // 0052：响应契约收紧后两组必填，夹具照完整响应形状造。
+  message_settings: {
+    reply_mode: "one_then_on_demand",
+    reply_depth: 2,
+    time_display: "hybrid",
+    timezone: "Asia/Shanghai",
+  },
+  media_input: {
+    mode: "native",
+    stages: { decision: true, evaluation: true, generation: true },
+    max_images: 8,
+    ordinary_still_max_dimension: null,
+    expression_max_dimension: 512,
+    expression_frame_count: 3,
+    expression_frame_max_dimension: 512,
+  },
   revision: 2,
   created_at: NOW,
   updated_at: NOW,

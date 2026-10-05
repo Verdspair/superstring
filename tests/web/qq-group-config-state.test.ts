@@ -2,7 +2,7 @@
 //
 // 这些用例验证的是状态与请求形状，不是浏览器验收：页面接线由 UI 自身负责，fake 通过不代表界面通过。
 
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqBindingResponse, QqSchemeResponse } from "../../src/shared/contracts/qq";
 import {
   type QqGroupConfigResponse,
@@ -14,6 +14,7 @@ import { api, type SuperstringApi } from "../../src/web/api";
 import { qqDraftChanges, settingsHaveDrafts } from "../../src/web/features/qq/draft-state";
 import {
   mergeQqGroupConfigEditor,
+  qqGroupConfigChanges,
   qqGroupConfigDirty,
   qqGroupConfigEditorFrom,
   qqGroupConfigEffectiveScheme,
@@ -74,6 +75,22 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     sticker: "选图提示词",
     media: "媒体提示词",
     compress: "压缩提示词",
+  },
+  // 0052：响应契约收紧后两组必填，夹具照完整响应形状造。
+  message_settings: {
+    reply_mode: "one_then_on_demand",
+    reply_depth: 2,
+    time_display: "hybrid",
+    timezone: "Asia/Shanghai",
+  },
+  media_input: {
+    mode: "native",
+    stages: { decision: true, evaluation: true, generation: true },
+    max_images: 8,
+    ordinary_still_max_dimension: null,
+    expression_max_dimension: 512,
+    expression_frame_count: 3,
+    expression_frame_max_dimension: 512,
   },
   reply: { split_by_speaker: true },
   revision: 3,
@@ -1034,4 +1051,236 @@ it("素材集合整体提交（契约严格形状）；选回基线集合仍是�
     sticker_collections: { collection_ids: [COLLECTION_ID] },
   });
   expect(qqGroupConfigDirty(store.getState().qqGroupConfigEditor)).toBe(false);
+});
+
+// ---- 0052/T12：两组设置进本群草稿 ------------------------------------------------------------
+
+describe("0052 两组进本群稀疏覆盖（T12）", () => {
+  it("stages 逐字段钉住：钉 evaluation:false 不丢 decision/generation 的跟随；阶段整组可同钉", async () => {
+    const save = vi.fn(async (_id: string, body: UpdateQqGroupConfigRequest) => ({
+      ...qqConfig({ revision: 1, overrides: body.overrides }),
+      binding: qqBinding({ revision: 5 }),
+    }));
+    ready(fakeClient({ getQqGroupConfig: async () => qqConfig(), saveQqGroupConfig: save }));
+    await store.getState().selectQqGroupConfig(BINDING_ID);
+    const patch = store.getState().patchQqGroupOverride;
+
+    // stages 逐字段：只钉 evaluation=false。
+    patch("media_input", "stages.evaluation", false);
+    expect(editorOf()?.overrides).toEqual({
+      media_input: { stages: { evaluation: false } },
+    });
+    expect(await store.getState().saveQqGroupConfig()).toBe(true);
+    const sent = save.mock.calls[0][1];
+    expect(sent.overrides).toEqual({ media_input: { stages: { evaluation: false } } });
+    expect(UpdateQqGroupConfigRequestSchema.safeParse(sent).success).toBe(true);
+
+    // 阶段可以独立再钉、独立恢复；undefined 只摘掉这一个阶段的钉住。
+    patch("media_input", "stages.decision", false);
+    expect(editorOf()?.overrides).toEqual({
+      media_input: { stages: { evaluation: false, decision: false } },
+    });
+    patch("media_input", "stages.decision", undefined);
+    expect(editorOf()?.overrides).toEqual({
+      media_input: { stages: { evaluation: false } },
+    });
+    // 整组清空（恢复全部跟随）后 media_input 组消失。
+    patch("media_input", "stages.evaluation", undefined);
+    expect(editorOf()?.overrides).toEqual({});
+    // 取消钉住相对记录（保存后记录里有 evaluation:false 的钉住）是改动：
+    // 比较基准是记录不是基线，与既有「先钉住再取消回到记录同样不算改动」语义一致。
+    expect(qqGroupConfigChanges(editorOf())).toEqual([
+      {
+        kind: "override",
+        group: "media_input",
+        field: "stages.evaluation",
+        before: "false",
+        after: "true",
+      },
+    ]);
+    expect(qqGroupConfigDirty(editorOf())).toBe(true);
+  });
+
+  it("media_input 的标量字段：0/false/null 都是真实钉住值，undefined 才回跟随", async () => {
+    const save = vi.fn(async (_id: string, body: UpdateQqGroupConfigRequest) => ({
+      ...qqConfig({ revision: 1, overrides: body.overrides }),
+      binding: qqBinding({ revision: 5 }),
+    }));
+    ready(fakeClient({ getQqGroupConfig: async () => qqConfig(), saveQqGroupConfig: save }));
+    await store.getState().selectQqGroupConfig(BINDING_ID);
+    const patch = store.getState().patchQqGroupOverride;
+
+    patch("media_input", "mode", "description");
+    patch("media_input", "max_images", "4");
+    patch("media_input", "ordinary_still_max_dimension", ""); // 空原文 → 回跟随？否：非法原文拦保存
+    expect(editorOf()?.rawTexts["media_input.ordinary_still_max_dimension"]).toBe("");
+    expect(editorOf()?.overrides).toEqual({ media_input: { mode: "description", max_images: 4 } });
+    expect(await store.getState().saveQqGroupConfig()).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+
+    // 合法数字：钉住；与基线同值也固定。
+    patch("media_input", "max_images", "8");
+    expect(editorOf()?.overrides.media_input?.max_images).toBe(8);
+    // null（原图）是真实设置值：可钉住、可保存，不是「跟随」。
+    patch("media_input", "ordinary_still_max_dimension", null);
+    expect(editorOf()?.overrides).toEqual({
+      media_input: { mode: "description", max_images: 8, ordinary_still_max_dimension: null },
+    });
+    expect(qqGroupConfigDirty(editorOf())).toBe(true);
+    expect(await store.getState().saveQqGroupConfig()).toBe(true);
+    const sent = save.mock.calls[0][1];
+    expect(sent.overrides).toEqual({
+      media_input: { mode: "description", max_images: 8, ordinary_still_max_dimension: null },
+    });
+    expect(UpdateQqGroupConfigRequestSchema.safeParse(sent).success).toBe(true);
+    // 非法原文清掉后保存成功。
+    expect(editorOf()?.rawTexts).toEqual({});
+  });
+
+  it("message_settings 逐字段钉住；时区非法进 rawTexts 拦保存；非法原文刷新保留", async () => {
+    const save = vi.fn(async (_id: string, body: UpdateQqGroupConfigRequest) => ({
+      ...qqConfig({ revision: 1, overrides: body.overrides }),
+      binding: qqBinding({ revision: 5 }),
+    }));
+    ready(fakeClient({ getQqGroupConfig: async () => qqConfig(), saveQqGroupConfig: save }));
+    await store.getState().selectQqGroupConfig(BINDING_ID);
+    const patch = store.getState().patchQqGroupOverride;
+
+    patch("message_settings", "reply_mode", "configured_depth");
+    patch("message_settings", "reply_depth", "6");
+    patch("message_settings", "timezone", "Not/AZone");
+    expect(editorOf()?.rawTexts).toEqual({ "message_settings.timezone": "Not/AZone" });
+    expect(editorOf()?.overrides).toEqual({
+      message_settings: { reply_mode: "configured_depth", reply_depth: 6 },
+    });
+    expect(await store.getState().saveQqGroupConfig()).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+
+    // 修正为真实 IANA 名称：原文清掉，钉住与基线同值也固定。
+    patch("message_settings", "timezone", "Asia/Shanghai");
+    expect(editorOf()?.rawTexts).toEqual({});
+    expect(editorOf()?.overrides).toEqual({
+      message_settings: {
+        reply_mode: "configured_depth",
+        reply_depth: 6,
+        timezone: "Asia/Shanghai",
+      },
+    });
+    expect(await store.getState().saveQqGroupConfig()).toBe(true);
+    expect(UpdateQqGroupConfigRequestSchema.safeParse(save.mock.calls[0][1]).success).toBe(true);
+
+    // 与基线同值的 reply_mode 也算钉住（显式自定义），undefined 取消。
+    patch("message_settings", "reply_mode", undefined);
+    expect(editorOf()?.overrides).toEqual({
+      message_settings: { reply_depth: 6, timezone: "Asia/Shanghai" },
+    });
+    expect(qqGroupConfigDirty(editorOf())).toBe(true);
+  });
+
+  it("刷新三路合并覆盖两组：本地改过（含取消 stages 单字段）保留，未改字段跟随新答案", async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(
+        qqConfig({
+          overrides: overridesOf({
+            media_input: { stages: { evaluation: false }, max_images: 4 },
+          }),
+          revision: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        qqConfig({
+          binding: qqBinding({ revision: 7 }),
+          base_scheme: qqScheme({ revision: 6 }),
+          overrides: overridesOf({
+            media_input: { max_images: 2 },
+            message_settings: { reply_depth: 4 },
+          }),
+          revision: 2,
+        }),
+      );
+    ready(fakeClient({ getQqGroupConfig: get }));
+    await store.getState().selectQqGroupConfig(BINDING_ID);
+
+    // 本地：改掉已钉住的 max_images；取消 evaluation 的钉住（跟随）。
+    store.getState().patchQqGroupOverride("media_input", "max_images", "5");
+    store.getState().patchQqGroupOverride("media_input", "stages.evaluation", undefined);
+    expect(await store.getState().refreshQqGroupConfig()).toBe(true);
+    // 本地改过的 max_images 保留 5；未动过的 message_settings.reply_depth 跟随新答案；
+    // evaluation 的钉住已取消 → 不复活。
+    expect(editorOf()?.overrides).toEqual({
+      media_input: { max_images: 5 },
+      message_settings: { reply_depth: 4 },
+    });
+    expect(editorOf()?.source.revision).toBe(2);
+  });
+
+  it("统一草稿预览覆盖两组字段的 base→本群值；保存与放弃都覆盖本次改动", async () => {
+    const save = vi.fn(async (_id: string, body: UpdateQqGroupConfigRequest) => ({
+      ...qqConfig({ revision: 1, overrides: body.overrides }),
+      binding: qqBinding({ revision: 5 }),
+    }));
+    ready(fakeClient({ getQqGroupConfig: async () => qqConfig(), saveQqGroupConfig: save }));
+    await store.getState().selectQqGroupConfig(BINDING_ID);
+    store.getState().patchQqGroupOverride("media_input", "max_images", "6");
+    store.getState().patchQqGroupOverride("media_input", "stages.evaluation", false);
+    store.getState().patchQqGroupOverride("message_settings", "timezone", "Asia/Tokyo");
+
+    const row = qqDraftChanges(store.getState()).find((item) =>
+      item.id.startsWith("group-config:"),
+    );
+    expect(row).toBeDefined();
+    const changes = row?.changes ?? [];
+    expect(changes.some((text) => text.includes("6") && text.includes("8"))).toBe(true);
+    // 布尔阶段字段按布尔文案渲染（groupValueText 能解析嵌套 stages 的基线值）：开 → 关。
+    expect(changes.some((text) => text.includes("开") && text.includes("关"))).toBe(true);
+    expect(
+      changes.some((text) => text.includes("Asia/Shanghai") && text.includes("Asia/Tokyo")),
+    ).toBe(true);
+
+    expect(await store.getState().saveQqDrafts()).toBe(true);
+    expect(save).toHaveBeenCalledOnce();
+    expect(qqDraftChanges(store.getState())).toEqual([]);
+
+    // 放弃回到已存记录。
+    store.getState().patchQqGroupOverride("message_settings", "reply_depth", "1");
+    store.getState().discardQqDrafts();
+    expect(qqGroupConfigDirty(store.getState().qqGroupConfigEditor)).toBe(false);
+    expect(store.getState().qqGroupConfigEditor?.overrides).toEqual({
+      media_input: { max_images: 6, stages: { evaluation: false } },
+      message_settings: { timezone: "Asia/Tokyo" },
+    });
+  });
+
+  // T12 fix1：draft-state 的钉住判定/取值要能解析 `stages.<phase>` 点路径到 overrides 的嵌套
+  // 位置（overrides.media_input.stages.<phase>），否则同值钉住的方向文案会反。
+  // T13：draft-state 的 GROUP_FIELD_LABEL_KEYS 已补两组人话标签——stage 行标签从回退键
+  // `media_input.stages.evaluation` 变为本地化文案「评估阶段」（T13b 控件用同一标签）（T12 fix1 报告预告的连带调整）。
+  it("stage 点路径的同值钉住/取消在全局预览里同样用「跟随↔自定义」文案（不读错键）", async () => {
+    ready(fakeClient({ getQqGroupConfig: async () => qqConfig() }));
+    await store.getState().selectQqGroupConfig(BINDING_ID);
+    // 与基线同值（基线 stages.evaluation=true）钉住：方向＝跟随方案 → 本群已自定义。
+    store.getState().patchQqGroupOverride("media_input", "stages.evaluation", true);
+    let row = qqDraftChanges(store.getState()).find((item) => item.id.startsWith("group-config:"));
+    expect(row?.changes).toContain("「评估阶段」：跟随方案 → 本群已自定义");
+
+    // 非同值钉住：布尔基线按「开/关」文案渲染（与标量字段同一 groupValueText 分支）。
+    store.getState().patchQqGroupOverride("media_input", "stages.evaluation", false);
+    row = qqDraftChanges(store.getState()).find((item) => item.id.startsWith("group-config:"));
+    expect(row?.changes).toContain("「评估阶段」：开 → 关");
+
+    // 反向：已存记录里钉着与基线同值，取消钉住 → 自定义回到跟随。
+    ready(
+      fakeClient({
+        getQqGroupConfig: async () =>
+          qqConfig({
+            overrides: overridesOf({ media_input: { stages: { evaluation: true } } }),
+          }),
+      }),
+    );
+    await store.getState().selectQqGroupConfig(BINDING_ID);
+    store.getState().patchQqGroupOverride("media_input", "stages.evaluation", undefined);
+    row = qqDraftChanges(store.getState()).find((item) => item.id.startsWith("group-config:"));
+    expect(row?.changes).toContain("「评估阶段」：本群已自定义 → 跟随方案");
+  });
 });

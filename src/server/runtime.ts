@@ -17,12 +17,17 @@ import {
   createOneBotConversationRuntime,
   DEFAULT_BOT_CONVERSATION_POLICY,
 } from "./channels/onebot11/create-runtime";
+import {
+  createQqMediaInputService,
+  type QqMediaInputService,
+} from "./channels/onebot11/media-input-service";
 import { BotWorker } from "./conversation/bot-worker";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import { AgentTaskRepository } from "./db/agent-task-repository";
 import type { BusinessDbHandle } from "./db/connection";
-import { ConversationEventRepository } from "./db/conversation-event-repository";
+import { bodyRevision, ConversationEventRepository } from "./db/conversation-event-repository";
 import { readModelProviders, resolveModelProviderRoute } from "./db/model-provider-repository";
+import { readOrganizationSettings } from "./db/organization-repository";
 import { schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
 import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import { withCapacityCache } from "./llm/capacity-cache";
@@ -258,6 +263,10 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         apiKey: route.apiKey,
         contextWindow: route.contextWindow,
         ...(capabilities === undefined ? {} : { toolCalling: capabilities.toolCalling }),
+        // 能力三态与修订号透传（T11）：vision 走网关的发前闸（undefined 缺席 ≠ false），
+        // providerRevision 是"拒绝过图片"负缓存的指纹——声明翻转/修订后旧观察不再拦新声明。
+        ...(route.vision === undefined ? {} : { vision: route.vision }),
+        providerRevision: route.providerRevision,
       };
     };
     gateway = options.gateway ?? createLmStudioClient(resolveLmStudioConfig(), { externalModel });
@@ -367,6 +376,36 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
             resolveSource: (request) => qqIntake.resolveMediaSource(request),
           }),
         }),
+      // T11 B 同源注入：媒体准备服务与 mediaAdapter 同侧同源——同一 agentRuntime、同一受控
+      // fetchSource、同一方案 prompt；baselinePolicy 与宿主 createQqMediaTools 的
+      // policyRevision 用同一 bodyRevision(JSON.stringify({prompt,frames,maxDimension}))
+      // 组合串（唯一真源），本层不自算第二套策略键。
+      mediaInputService: (scheme): QqMediaInputService => {
+        const prompt = schemePrompts(scheme).media;
+        const policyRevision = bodyRevision(
+          JSON.stringify({
+            prompt,
+            frames: schemeRhythm(scheme).media_frame_count,
+            maxDimension: schemeRhythm(scheme).media_max_dimension,
+          }),
+        );
+        const purposes = readOrganizationSettings(business.orm);
+        const sourceFetcher = createQqMediaSourceFetcher({
+          resolveSource: (request) => qqIntake.resolveMediaSource(request),
+        });
+        return createQqMediaInputService({
+          store: { db: business.db, orm: business.orm },
+          fetchSource: ({ sourceRef, signal }) =>
+            sourceFetcher({ kind: "image", sourceRef, signal }),
+          agentRuntime,
+          prompt,
+          modelConfig: {
+            visionModelName: purposes.vision_model_name,
+            transcriptionModelName: purposes.transcription_model_name,
+          },
+          baselinePolicy: `baseline/v1/${policyRevision}`,
+        });
+      },
     });
     botWorker =
       options.botWorker ??

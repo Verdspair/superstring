@@ -211,12 +211,16 @@ describe("Web Agent and v2 streaming", () => {
           event.usage.input_units,
         );
       expect(
-        gateway.completeCalls[1]?.messages.some((m) => m.content.includes('"action_observation"')),
+        gateway.completeCalls[1]?.messages.some(
+          (m) => typeof m.content === "string" && m.content.includes('"action_observation"'),
+        ),
       ).toBe(true);
       expect(gateway.streamCalls[0]?.messages.at(-1)?.content).toBe("question");
-      expect(gateway.streamCalls[0]?.messages[0]?.content).not.toContain(
-        "Return exactly one JSON decision",
-      );
+      const streamFirst = gateway.streamCalls[0]?.messages[0]?.content;
+      expect(
+        typeof streamFirst === "string" &&
+          !streamFirst.includes("Return exactly one JSON decision"),
+      ).toBe(true);
       const journal = new ConversationEventRepository(business.db);
       const c = journal.ensureWeb(session.id);
       expect(c?.consumedSeq).toBe(1);

@@ -2,7 +2,7 @@
 // 原文先进 store（合法性由契约判定，非法留 rawTexts 并拦保存），blur 后才提示错误；换基础方案先预览 keep/reset。
 
 import { ChevronLeft } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentKnowledgeReadSettings } from "../../../shared/contracts/knowledge";
 import {
@@ -56,13 +56,14 @@ import { translateNotice } from "../../i18n";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
 import { TRIGGER_LABELS } from "./binding-editor";
+import { QqMessagePreview } from "./qq-message-preview";
 import {
   fieldBounds,
   headroomPercentBounds,
   imageFields,
   localClock,
-  type NumericGroup,
-  numericGroups,
+  type NumberEditorGroup,
+  numberEditorGroups,
   participationFields,
   stickerFields,
   utcMinutes,
@@ -75,8 +76,18 @@ const bagOf = (editor: QqGroupConfigEditor): OverridesBag =>
 const baseGroupOf = (scheme: QqSchemeResponse, group: string): Record<string, unknown> =>
   ((scheme as unknown as Record<string, unknown>)[group] ?? {}) as Record<string, unknown>;
 
-/** 显式自定义＝该字段在稀疏差异里（值可能是 false/0/空集合，仍是实打实的钉住）。 */
+/**
+ * 显式自定义＝该字段在稀疏差异里（值可能是 false/0/null/空集合，仍是实打实的钉住）。
+ * 0052 嵌套 stages：字段名是 `stages.<phase>` 点路径时，真实位置在 `media_input.stages.<phase>`。
+ */
 function overrideOf(editor: QqGroupConfigEditor, group: string, name: string) {
+  if (group === "media_input" && name.startsWith("stages.")) {
+    const phase = name.slice("stages.".length);
+    const stages = bagOf(editor).media_input?.stages as Record<string, unknown> | undefined;
+    if (!stages || !(phase in stages) || stages[phase] === undefined)
+      return { custom: false, value: undefined as unknown };
+    return { custom: true, value: stages[phase] };
+  }
   const fields = bagOf(editor)[group];
   if (!fields || !(name in fields) || fields[name] === undefined)
     return { custom: false, value: undefined as unknown };
@@ -87,23 +98,39 @@ const isCustomField = (editor: QqGroupConfigEditor, group: string, name: string)
   overrideOf(editor, group, name).custom || editor.rawTexts[`${group}.${name}`] !== undefined;
 
 const NUMERIC_GROUP: Record<
-  "rhythm" | "context" | "compression" | "output_reserve" | "stickers",
-  NumericGroup
+  | "rhythm"
+  | "context"
+  | "compression"
+  | "output_reserve"
+  | "stickers"
+  | "message_settings"
+  | "media_input",
+  NumberEditorGroup
 > = {
   rhythm: "rhythm",
   context: "context",
   compression: "compression",
   output_reserve: "outputReserve",
   stickers: "stickers",
+  message_settings: "messageSettings",
+  media_input: "mediaInput",
 };
 
-const numberSchemaOf = (group: NumericGroup, name: string) =>
+const numberSchemaOf = (group: NumberEditorGroup, name: string) =>
   (
-    numericGroups[group].shape as Record<
+    numberEditorGroups[group].shape as Record<
       string,
       { safeParse: (value: unknown) => { success: boolean } } | undefined
     >
   )[name];
+
+/** 契约级数字原文判定（0052 两组共用）：非空且过共享 schema；0 不是 null 原图的编码。 */
+const schemaSafeParse = (group: string, name: string, raw: string): boolean => {
+  const numeric = NUMERIC_GROUP[group as keyof typeof NUMERIC_GROUP];
+  if (!numeric) return false;
+  const schema = numberSchemaOf(numeric, name);
+  return raw.trim() !== "" && !!schema && schema.safeParse(Number(raw)).success;
+};
 
 /** 契约级越界（含装配冗余必须按整数百分比输入）：任何一项存在就禁止保存。 */
 function hasOutOfRangeOverride(editor: QqGroupConfigEditor): boolean {
@@ -127,11 +154,21 @@ function hasOutOfRangeOverride(editor: QqGroupConfigEditor): boolean {
 const percentText = (ratio: number) => `${Number((ratio * 100).toFixed(2))}%`;
 const percentInputText = (ratio: number) => String(Number((ratio * 100).toFixed(2)));
 
-/** 预览用的中性文本：百分比换算，数组顿号连接，其余 String()。 */
-const valueTextOf = (group: string, name: string, value: unknown): string => {
+/** 预览用的中性文本：百分比换算，数组顿号连接，枚举与布尔/原图读人话，其余 String()。 */
+const valueTextOf = (
+  t: (key: string) => string,
+  group: string,
+  name: string,
+  value: unknown,
+): string => {
   if (group === "compression" && name === "headroom_ratio" && typeof value === "number")
     return percentText(value);
+  if (group === "media_input" && name === "ordinary_still_max_dimension" && value === null)
+    return t("connections.ordinaryStillOriginal");
+  const enumLabels = ENUM_OPTION_LABELS[`${group}.${name}`];
+  if (enumLabels && typeof value === "string" && enumLabels[value]) return t(enumLabels[value]);
   if (Array.isArray(value)) return value.map(String).join("、");
+  if (typeof value === "boolean") return t(value ? "connections.on" : "connections.off");
   return String(value);
 };
 
@@ -165,9 +202,40 @@ const FIELD_LABELS: Record<string, string> = {
   "prompts.media": "connections.mediaNoteTask",
   "prompts.compress": "connections.watermarkCompressionTask",
   "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
+  // 0052 两组：与 draft-state 的 GROUP_FIELD_LABEL_KEYS 同一批键。
+  "message_settings.reply_mode": "connections.quoteReplyMode",
+  "message_settings.reply_depth": "connections.quoteDepth",
+  "message_settings.time_display": "connections.timeDisplayMode",
+  "message_settings.timezone": "connections.timezone",
+  "media_input.mode": "connections.imageInputMode",
+  "media_input.stages.decision": "schemes.studio.stageDecision",
+  "media_input.stages.evaluation": "schemes.studio.stageEvaluation",
+  "media_input.stages.generation": "schemes.studio.stageGeneration",
+  "media_input.max_images": "connections.maxAutoImages",
+  "media_input.ordinary_still_max_dimension": "connections.ordinaryStillMaxDimension",
+  "media_input.expression_max_dimension": "connections.expressionStillMaxDimension",
+  "media_input.expression_frame_count": "connections.expressionFrameCount",
+  "media_input.expression_frame_max_dimension": "connections.expressionFrameMaxDimension",
 };
 const labelOf = (group: string, field: string) =>
   FIELD_LABELS[`${group}.${field}`] ?? `${group}.${field}`;
+
+/** 0052 枚举选项的人话标签（载荷原样存契约值，只改显示）。 */
+const ENUM_OPTION_LABELS: Record<string, Record<string, string>> = {
+  "message_settings.reply_mode": {
+    one_then_on_demand: "connections.quoteMode.one_then_on_demand",
+    configured_depth: "connections.quoteMode.configured_depth",
+  },
+  "message_settings.time_display": {
+    full: "connections.timeDisplay.full",
+    full_relative: "connections.timeDisplay.full_relative",
+    hybrid: "connections.timeDisplay.hybrid",
+  },
+  "media_input.mode": {
+    native: "connections.imageMode.native",
+    description: "connections.imageMode.description",
+  },
+};
 
 /** 上层事实：on/off 是真实开关，unread 是还没读到，后三项来自授权与审批现状。 */
 type UpperFact =
@@ -257,7 +325,7 @@ function GroupCard({
   return (
     <Card size="sm" className="min-w-0 gap-0 pt-0">
       <CardHeader className="border-b bg-muted/50">
-        <CardTitle className="text-sm">{t(title)}</CardTitle>
+        <CardTitle className="text-sm">{title}</CardTitle>
         {description && <CardDescription className="text-xs">{t(description)}</CardDescription>}
       </CardHeader>
       <CardContent className="space-y-5 pt-3">{children}</CardContent>
@@ -323,15 +391,25 @@ function NumberField({
   labelKey,
   infoKey,
   percent = false,
+  disabled = false,
 }: {
   editor: QqGroupConfigEditor;
   /** 生效基线的组包；null＝待切换目标还没读到，不显示半截数值。 */
   base: Record<string, unknown> | null;
-  group: "rhythm" | "context" | "compression" | "output_reserve" | "stickers";
+  group:
+    | "rhythm"
+    | "context"
+    | "compression"
+    | "output_reserve"
+    | "stickers"
+    | "message_settings"
+    | "media_input";
   name: string;
   labelKey: string;
   infoKey?: string;
   percent?: boolean;
+  /** one_then_on_demand 的层数不参与运行：禁用输入，但钉住的配置值原样保稿。 */
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
@@ -344,10 +422,12 @@ function NumberField({
   const raw = editor.rawTexts[`${group}.${name}`];
   const schema = numberSchemaOf(numeric, name);
   const bounds = percent ? headroomPercentBounds() : fieldBounds(numeric, name);
-  const pinned = custom ? Number(value) : null;
+  const pinned = custom && value !== null ? Number(value) : null;
   const percentOk = pinned === null || Math.abs(pinned * 100 - Math.round(pinned * 100)) <= 1e-6;
   const outOfRange =
-    custom && (schema?.safeParse(value).success === false || (percent && !percentOk));
+    custom &&
+    value !== null &&
+    (schema?.safeParse(value).success === false || (percent && !percentOk));
   const pinInput = pinned === null ? null : percent ? percentInputText(pinned) : String(pinned);
   const pinNote = pinned === null ? null : percent ? percentText(pinned) : String(pinned);
   const baseInput =
@@ -360,6 +440,7 @@ function NumberField({
         : String(baseValue);
   const display = raw ?? pinInput ?? baseInput ?? "";
   const showInvalid = showError && (raw !== undefined || outOfRange);
+  const numberErrorId = useId();
   return (
     <Field label={labelKey} info={infoKey}>
       <Input
@@ -369,9 +450,10 @@ function NumberField({
         max={bounds.max}
         step={bounds.step}
         data-field={`${group}.${name}`}
-        disabled={saving}
+        disabled={saving || disabled}
         value={display}
         aria-invalid={showInvalid || undefined}
+        aria-describedby={showInvalid ? numberErrorId : undefined}
         onFocus={() => setShowError(false)}
         onBlur={() => setShowError(true)}
         onChange={(e) => {
@@ -393,7 +475,7 @@ function NumberField({
         }}
       />
       {showInvalid && (
-        <p role="alert" className="mt-1 text-xs text-destructive">
+        <p id={numberErrorId} role="alert" className="mt-1 text-xs text-destructive">
           {t("schemes.studio.integerRange", { "0": String(bounds.min), "1": String(bounds.max) })}
         </p>
       )}
@@ -445,6 +527,290 @@ function TimeField({
         onFollow={() => patch("rhythm", name, undefined)}
         onCustom={() => patch("rhythm", name, String(baseValue ?? 0))}
       />
+    </Field>
+  );
+}
+
+/** 0052 枚举字段（引用模式/时间呈现/图片输入模式）：跟随＝不进差异；钉住＝契约原值。 */
+function EnumField({
+  editor,
+  base,
+  group,
+  name,
+  labelKey,
+  infoKey,
+}: {
+  editor: QqGroupConfigEditor;
+  base: Record<string, unknown> | null;
+  group: "message_settings" | "media_input";
+  name: string;
+  labelKey: string;
+  infoKey?: string;
+}) {
+  const { t } = useTranslation();
+  const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
+  const patch = useSuperstringStore((s) => s.patchQqGroupOverride);
+  const { custom, value } = overrideOf(editor, group, name);
+  const baseValue = typeof base?.[name] === "string" ? (base[name] as string) : null;
+  const labels = ENUM_OPTION_LABELS[`${group}.${name}`] ?? {};
+  return (
+    <Field label={labelKey} info={infoKey}>
+      <NativeSelect
+        data-field={`${group}.${name}`}
+        disabled={saving}
+        value={custom ? String(value) : (baseValue ?? "")}
+        onChange={(e) => patch(group, name, e.target.value)}
+      >
+        {!custom && baseValue === null && (
+          <option value="">{t("capabilities.state.unread")}</option>
+        )}
+        {Object.entries(labels).map(([key, labelKey2]) => (
+          <option key={key} value={key}>
+            {t(labelKey2)}
+          </option>
+        ))}
+      </NativeSelect>
+      <FieldState
+        label={t(labelKey)}
+        custom={custom}
+        baseText={baseValue === null ? t("capabilities.state.unread") : t(labels[baseValue] ?? "")}
+        currentText={custom ? t(labels[String(value)] ?? "") : t(labels[baseValue ?? ""] ?? "")}
+        disabled={saving}
+        canCustom={baseValue !== null}
+        onFollow={() => patch(group, name, undefined)}
+        onCustom={() => baseValue !== null && patch(group, name, baseValue)}
+      />
+    </Field>
+  );
+}
+
+/**
+ * 0052 时区：可输入可选择的自由文本。合法 IANA 名称写进 overrides；非法原文留在 rawTexts
+ * 并拦保存（state 层 parseOverrideField 同一共享 schema 拒绝），aria 关联错误，blur 后提示。
+ */
+function TimezoneField({
+  editor,
+  base,
+}: {
+  editor: QqGroupConfigEditor;
+  base: Record<string, unknown> | null;
+}) {
+  const { t } = useTranslation();
+  const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
+  const patch = useSuperstringStore((s) => s.patchQqGroupOverride);
+  const [showError, setShowError] = useState(false);
+  const name = "timezone";
+  const group = "message_settings" as const;
+  const { custom, value } = overrideOf(editor, group, name);
+  const baseValue = typeof base?.[name] === "string" ? (base[name] as string) : null;
+  const raw = editor.rawTexts[`${group}.${name}`];
+  const valid = (text: string) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: text.trim() });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const suggestions = [
+    "Asia/Shanghai",
+    "Asia/Tokyo",
+    "Asia/Hong_Kong",
+    "Asia/Singapore",
+    "Europe/London",
+    "America/New_York",
+    "UTC",
+  ];
+  const display = raw ?? (custom ? String(value) : (baseValue ?? ""));
+  const invalid = raw !== undefined && !valid(raw);
+  const showInvalid = showError && invalid;
+  const errorId = "group-config-timezone-error";
+  return (
+    <Field label="connections.timezone" info="connections.timezoneHint">
+      <div>
+        <Input
+          type="text"
+          list="group-config-timezone-suggestions"
+          data-field={`${group}.${name}`}
+          disabled={saving}
+          value={display}
+          aria-invalid={showInvalid || undefined}
+          aria-describedby={showInvalid ? errorId : undefined}
+          onFocus={() => setShowError(false)}
+          onBlur={() => setShowError(true)}
+          onChange={(e) => {
+            setShowError(false);
+            patch(group, name, e.target.value);
+          }}
+        />
+        <datalist id="group-config-timezone-suggestions">
+          {suggestions.map((zone) => (
+            <option key={zone} value={zone} />
+          ))}
+        </datalist>
+      </div>
+      <FieldState
+        label={t("connections.timezone")}
+        custom={custom}
+        baseText={baseValue ?? t("capabilities.state.unread")}
+        currentText={display}
+        disabled={saving}
+        canCustom={baseValue !== null}
+        onFollow={() => patch(group, name, undefined)}
+        onCustom={() => baseValue !== null && patch(group, name, baseValue)}
+      />
+      {showInvalid && (
+        <p id={errorId} role="alert" className="mt-1 text-xs text-destructive">
+          {t("connections.timezoneInvalid")}
+        </p>
+      )}
+    </Field>
+  );
+}
+
+/**
+ * 0052 嵌套 stages 开关：逐阶段跟随/开/关（全关合法）；字段名是 `stages.<phase>` 点路径，
+ * state 层把它写进 `media_input.stages.<phase>`；同值开也是显式钉住。
+ */
+function StageField({
+  editor,
+  base,
+  phase,
+  labelKey,
+}: {
+  editor: QqGroupConfigEditor;
+  base: Record<string, unknown> | null;
+  phase: "decision" | "evaluation" | "generation";
+  labelKey: string;
+}) {
+  const { t } = useTranslation();
+  const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
+  const patch = useSuperstringStore((s) => s.patchQqGroupOverride);
+  const name = `stages.${phase}`;
+  const { custom, value } = overrideOf(editor, "media_input", name);
+  const baseStages = (base?.stages as Record<string, unknown> | undefined) ?? {};
+  const baseValue = baseStages[phase] === true;
+  const boolText = (flag: boolean) => t(flag ? "connections.on" : "connections.off");
+  return (
+    <Field label={labelKey} info="schemes.studio.stageOffHint">
+      <NativeSelect
+        data-field={`media_input.${name}`}
+        disabled={saving}
+        value={custom ? (value === true ? "on" : "off") : "inherit"}
+        onChange={(e) =>
+          patch(
+            "media_input",
+            name,
+            e.target.value === "inherit" ? undefined : e.target.value === "on",
+          )
+        }
+      >
+        <option value="inherit">{t("connections.followTheScheme")}</option>
+        <option value="on">{t("connections.on")}</option>
+        <option value="off">{t("connections.off")}</option>
+      </NativeSelect>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        {custom
+          ? t("schemes.qq.groupConfig.customValue", {
+              "0": boolText(baseValue),
+              "1": boolText(value === true),
+            })
+          : t("schemes.qq.groupConfig.followsBase", { "0": boolText(baseValue) })}
+      </p>
+    </Field>
+  );
+}
+
+/**
+ * 0052 普通静图规格：显式「原图（null）/限制长边（64–2048）」二选一 + 数值输入。
+ * null 是真实设置值（原图），不是 0；0 及越界数值是非法原文留底拦保存；undefined 才是取消钉住。
+ */
+function OrdinaryStillField({
+  editor,
+  base,
+}: {
+  editor: QqGroupConfigEditor;
+  base: Record<string, unknown> | null;
+}) {
+  const { t } = useTranslation();
+  const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
+  const patch = useSuperstringStore((s) => s.patchQqGroupOverride);
+  const [showError, setShowError] = useState(false);
+  const group = "media_input" as const;
+  const name = "ordinary_still_max_dimension";
+  const { custom, value } = overrideOf(editor, group, name);
+  const baseKnown = base !== null && name in base;
+  const baseValue = baseKnown ? (base[name] as number | null) : null;
+  const raw = editor.rawTexts[`${group}.${name}`];
+  const bounds = fieldBounds("mediaInput", name);
+  const currentValue = custom ? (value as number | null) : (baseValue ?? null);
+  const limited = currentValue !== null;
+  const numericValid = (text: string) =>
+    text.trim() !== "" && schemaSafeParse(group, name, text) && Number(text) !== 0;
+  const display = raw ?? (limited ? String(currentValue) : "");
+  const showInvalid = showError && raw !== undefined && !numericValid(raw);
+  const errorId = "group-config-ordinary-still-error";
+  const choose = (kind: "original" | "limited") => {
+    setShowError(false);
+    if (kind === "original") patch(group, name, null);
+    else if (!limited || currentValue === null) patch(group, name, String(bounds.min ?? 64));
+  };
+  return (
+    // 与方案页同一结构：选择框是 Field 首个控件（标题 htmlFor 关联），数值框各自显式命名。
+    <Field label="connections.ordinaryStillChoice" info="connections.ordinaryStillOriginal">
+      <NativeSelect
+        data-field={`${group}.${name}.choice`}
+        disabled={saving}
+        value={limited ? "limited" : "original"}
+        onChange={(e) => choose(e.target.value === "original" ? "original" : "limited")}
+      >
+        <option value="original">{t("connections.ordinaryStillOriginal")}</option>
+        <option value="limited">{t("connections.ordinaryStillLimited")}</option>
+      </NativeSelect>
+      <Input
+        type="number"
+        min={bounds.min}
+        max={bounds.max}
+        step={bounds.step}
+        data-field={`${group}.${name}`}
+        aria-label={t("connections.ordinaryStillMaxDimension")}
+        disabled={saving || !limited}
+        value={display}
+        aria-invalid={showInvalid || undefined}
+        aria-describedby={showInvalid ? errorId : undefined}
+        onFocus={() => setShowError(false)}
+        onBlur={() => setShowError(true)}
+        onChange={(e) => {
+          setShowError(false);
+          patch(group, name, e.target.value);
+        }}
+      />
+      <FieldState
+        label={t("connections.ordinaryStillMaxDimension")}
+        custom={custom}
+        baseText={
+          baseKnown
+            ? baseValue === null
+              ? t("connections.ordinaryStillOriginal")
+              : String(baseValue)
+            : t("capabilities.state.unread")
+        }
+        currentText={limited ? String(currentValue) : t("connections.ordinaryStillOriginal")}
+        disabled={saving}
+        canCustom={baseKnown}
+        onFollow={() => patch(group, name, undefined)}
+        onCustom={() =>
+          baseKnown && patch(group, name, baseValue === null ? null : String(baseValue))
+        }
+      />
+      {showInvalid && (
+        <p id={errorId} role="alert" className="mt-1 text-xs text-destructive">
+          {t("schemes.studio.integerRange", {
+            "0": String(bounds.min ?? ""),
+            "1": String(bounds.max ?? ""),
+          })}
+        </p>
+      )}
     </Field>
   );
 }
@@ -870,10 +1236,29 @@ function ChangeList({
 }) {
   const { t } = useTranslation();
   // 变更项由 state 模块给出中性文本（布尔是 true/false，钉住/取消的差异见徽标）：
-  // 界面按开关文案显示布尔，钉住状态从草稿的 overrides 存在性现推。
+  // 界面按开关/选项/原图文案显示，钉住状态从草稿的 overrides 存在性现推。
   const changedValueText = (group: string, field: string, raw: string): string => {
-    if (!editor || typeof baseGroupOf(editor.source.base_scheme, group)[field] !== "boolean")
+    if (!editor) return raw;
+    // 0052 嵌套 stages 与 media_input 顶层布尔同样按开/关显示（stages.<phase> 去前缀查基线）。
+    const baseStages = (baseGroupOf(editor.source.base_scheme, group)?.stages ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const stagePhase =
+      group === "media_input" && field.startsWith("stages.")
+        ? field.slice("stages.".length)
+        : undefined;
+    const baseField =
+      baseGroupOf(editor.source.base_scheme, group)[field] ??
+      (stagePhase === undefined ? undefined : baseStages[stagePhase]);
+    if (typeof baseField !== "boolean") {
+      // 0052 枚举与可空原图：预览按选项人话渲染，null 读「原图」。
+      if (group === "media_input" && field === "ordinary_still_max_dimension" && raw === "null")
+        return t("connections.ordinaryStillOriginal");
+      const enumLabels = ENUM_OPTION_LABELS[`${group}.${field}`];
+      if (enumLabels?.[raw]) return t(enumLabels[raw]);
       return raw;
+    }
     if (raw === "true") return t("connections.on");
     if (raw === "false") return t("connections.off");
     return raw;
@@ -955,10 +1340,22 @@ function SchemeSwitchPreview({
   target: QqSchemeResponse | null;
 }) {
   const { t } = useTranslation();
+  // 嵌套 stages 展开成逐阶段叶子行（name=stages.<phase>），不产生 stages 对象父行；
+  // 目标基线读取走同一嵌套路径（overrideOf/ChangeList 同一份语义），不用平铺 baseFields[name]。
   const pins: Array<{ key: string; group: string; name: string; value: unknown }> = [];
-  for (const [group, fields] of Object.entries(bagOf(editor)))
+  for (const [group, fields] of Object.entries(bagOf(editor))) {
+    if (group === "media_input") {
+      const { stages, ...rest } = fields ?? {};
+      for (const [name, value] of Object.entries(rest))
+        pins.push({ key: `media_input.${name}`, group, name, value });
+      for (const [phase, value] of Object.entries((stages as Record<string, unknown>) ?? {}))
+        if (value !== undefined)
+          pins.push({ key: `media_input.stages.${phase}`, group, name: `stages.${phase}`, value });
+      continue;
+    }
     for (const [name, value] of Object.entries(fields ?? {}))
       pins.push({ key: `${group}.${name}`, group, name, value });
+  }
   const raws = Object.entries(editor.rawTexts);
   return (
     <div className="space-y-3">
@@ -972,16 +1369,30 @@ function SchemeSwitchPreview({
       ) : (
         <ul className="space-y-1 text-sm">
           {pins.map((pin) => {
-            const baseFields = target ? baseGroupOf(target, pin.group) : null;
+            // 目标基线同样按嵌套路径取值（stages.<phase> 读 media_input.stages.<phase>）。
+            const stagePhase =
+              pin.group === "media_input" && pin.name.startsWith("stages.")
+                ? pin.name.slice("stages.".length)
+                : undefined;
+            const targetFields = target ? baseGroupOf(target, pin.group) : null;
+            const targetValue =
+              targetFields && stagePhase !== undefined
+                ? (targetFields.stages as Record<string, unknown> | undefined)?.[stagePhase]
+                : targetFields
+                  ? targetFields[pin.name]
+                  : undefined;
             const after =
-              baseFields && pin.name in baseFields
-                ? valueTextOf(pin.group, pin.name, baseFields[pin.name])
+              targetFields &&
+              (stagePhase !== undefined
+                ? targetFields.stages !== undefined && stagePhase in (targetFields.stages as object)
+                : pin.name in targetFields)
+                ? valueTextOf(t, pin.group, pin.name, targetValue)
                 : null;
             return (
               <li key={pin.key} data-switch-row={pin.key} className="break-words">
                 <span>{t(labelOf(pin.group, pin.name))}</span>
                 <span className="text-muted-foreground">{" → "}</span>
-                <span>{valueTextOf(pin.group, pin.name, pin.value)}</span>
+                <span>{valueTextOf(t, pin.group, pin.name, pin.value)}</span>
                 <span className="text-muted-foreground">{" → "}</span>
                 <span>{after ?? t("capabilities.state.unread")}</span>
               </li>
@@ -1027,7 +1438,7 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
   const choiceTarget = choice ? (schemes.find((row) => row.id === choice) ?? null) : null;
   return (
     <GroupCard
-      title="schemes.qq.groupConfig.scheme.title"
+      title={t("schemes.qq.groupConfig.scheme.title")}
       description="schemes.qq.groupConfig.scheme.description"
     >
       <Field label="schemes.qq.groupConfig.scheme.switch">
@@ -1322,7 +1733,7 @@ export function QqGroupConfigPage() {
               </TabsList>
               <TabsContent value="participation" className="m-0 space-y-6">
                 <GroupCard
-                  title="connections.speechTriggers"
+                  title={t("connections.speechTriggers")}
                   description="schemes.studio.triggersHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -1341,7 +1752,7 @@ export function QqGroupConfigPage() {
                   </div>
                 </GroupCard>
                 <GroupCard
-                  title="schemes.studio.rhythmTitle"
+                  title={t("schemes.studio.rhythmTitle")}
                   description="schemes.studio.rhythmHint"
                 >
                   <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
@@ -1361,7 +1772,7 @@ export function QqGroupConfigPage() {
                   </div>
                 </GroupCard>
                 <GroupCard
-                  title="connections.allowedHours"
+                  title={t("connections.allowedHours")}
                   description="connections.useLocalTimeEqualStartAndEndMeansAll"
                 >
                   {visible("rhythm", "active_hours_enabled") && (
@@ -1396,7 +1807,7 @@ export function QqGroupConfigPage() {
                 </GroupCard>
                 {visible("prompts", "judge") && (
                   <GroupCard
-                    title="schemes.studio.judgePrompt"
+                    title={t("schemes.studio.judgePrompt")}
                     description="connections.decideWhetherToSpeak"
                   >
                     <PromptField
@@ -1412,7 +1823,7 @@ export function QqGroupConfigPage() {
               <TabsContent value="response" className="m-0 space-y-6">
                 {visible("reply", "split_by_speaker") && (
                   <GroupCard
-                    title="schemes.studio.replyStructure"
+                    title={t("schemes.studio.replyStructure")}
                     description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
                   >
                     <ThreeStateField
@@ -1425,7 +1836,7 @@ export function QqGroupConfigPage() {
                   </GroupCard>
                 )}
                 <GroupCard
-                  title="schemes.studio.replyTasks"
+                  title={t("schemes.studio.replyTasks")}
                   description="schemes.studio.replyTasksHint"
                 >
                   {visible("prompts", "reply") && (
@@ -1459,8 +1870,50 @@ export function QqGroupConfigPage() {
                 </GroupCard>
               </TabsContent>
               <TabsContent value="context" className="m-0 space-y-6">
+                {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下
+                    层数不参与运行（禁用但配置保留），切回按层数即恢复可编辑。 */}
                 <GroupCard
-                  title="connections.judgementContext"
+                  title={t("schemes.studio.messageRelations")}
+                  description="schemes.studio.messageRelationsHint"
+                >
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    {visible("message_settings", "reply_mode") && (
+                      <EnumField
+                        editor={visibleEditor}
+                        base={baseBag("message_settings")}
+                        group="message_settings"
+                        name="reply_mode"
+                        labelKey="connections.quoteReplyMode"
+                      />
+                    )}
+                    {visible("message_settings", "reply_depth") && (
+                      <NumberField
+                        editor={visibleEditor}
+                        base={baseBag("message_settings")}
+                        group="message_settings"
+                        name="reply_depth"
+                        labelKey="connections.quoteDepth"
+                        infoKey="connections.quoteDepthHint"
+                        disabled={effective?.message_settings.reply_mode === "one_then_on_demand"}
+                      />
+                    )}
+                    {visible("message_settings", "time_display") && (
+                      <EnumField
+                        editor={visibleEditor}
+                        base={baseBag("message_settings")}
+                        group="message_settings"
+                        name="time_display"
+                        labelKey="connections.timeDisplayMode"
+                      />
+                    )}
+                    {visible("message_settings", "timezone") && (
+                      <TimezoneField editor={visibleEditor} base={baseBag("message_settings")} />
+                    )}
+                  </div>
+                  {effective !== null && <QqMessagePreview settings={effective.message_settings} />}
+                </GroupCard>
+                <GroupCard
+                  title={t("connections.judgementContext")}
                   description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -1503,7 +1956,7 @@ export function QqGroupConfigPage() {
                   </div>
                 </GroupCard>
                 <GroupCard
-                  title="connections.replyContext"
+                  title={t("connections.replyContext")}
                   description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -1539,7 +1992,7 @@ export function QqGroupConfigPage() {
                   </div>
                 </GroupCard>
                 <GroupCard
-                  title="connections.compressionAndAssembly"
+                  title={t("connections.compressionAndAssembly")}
                   description="schemes.studio.compressionHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -1596,8 +2049,84 @@ export function QqGroupConfigPage() {
                 </div>
               </TabsContent>
               <TabsContent value="media" className="m-0 space-y-6">
+                {/* 0052 图片输入：模式/逐阶段开关/图数/普通静图规格；普通动图沿用既有
+                    rhythm 帧数与尺寸（下方的 imageFields），不重复存储。 */}
                 <GroupCard
-                  title="schemes.studio.imageParams"
+                  title={t("schemes.studio.imageInput")}
+                  description="schemes.studio.imageInputHint"
+                >
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    {visible("media_input", "mode") && (
+                      <EnumField
+                        editor={visibleEditor}
+                        base={baseBag("media_input")}
+                        group="media_input"
+                        name="mode"
+                        labelKey="connections.imageInputMode"
+                      />
+                    )}
+                    {visible("media_input", "max_images") && (
+                      <NumberField
+                        editor={visibleEditor}
+                        base={baseBag("media_input")}
+                        group="media_input"
+                        name="max_images"
+                        labelKey="connections.maxAutoImages"
+                      />
+                    )}
+                    {visible("media_input", "ordinary_still_max_dimension") && (
+                      <OrdinaryStillField editor={visibleEditor} base={baseBag("media_input")} />
+                    )}
+                    {visible("media_input", "expression_max_dimension") && (
+                      <NumberField
+                        editor={visibleEditor}
+                        base={baseBag("media_input")}
+                        group="media_input"
+                        name="expression_max_dimension"
+                        labelKey="connections.expressionStillMaxDimension"
+                      />
+                    )}
+                    {visible("media_input", "expression_frame_count") && (
+                      <NumberField
+                        editor={visibleEditor}
+                        base={baseBag("media_input")}
+                        group="media_input"
+                        name="expression_frame_count"
+                        labelKey="connections.expressionFrameCount"
+                      />
+                    )}
+                    {visible("media_input", "expression_frame_max_dimension") && (
+                      <NumberField
+                        editor={visibleEditor}
+                        base={baseBag("media_input")}
+                        group="media_input"
+                        name="expression_frame_max_dimension"
+                        labelKey="connections.expressionFrameMaxDimension"
+                      />
+                    )}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {(
+                      [
+                        ["decision", "schemes.studio.stageDecision"],
+                        ["evaluation", "schemes.studio.stageEvaluation"],
+                        ["generation", "schemes.studio.stageGeneration"],
+                      ] as const
+                    )
+                      .filter(([phase]) => visible("media_input", `stages.${phase}`))
+                      .map(([phase, labelKey]) => (
+                        <StageField
+                          key={phase}
+                          editor={visibleEditor}
+                          base={baseBag("media_input")}
+                          phase={phase}
+                          labelKey={labelKey}
+                        />
+                      ))}
+                  </div>
+                </GroupCard>
+                <GroupCard
+                  title={t("schemes.studio.imageParams")}
                   description="schemes.studio.imageParamsHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -1616,7 +2145,7 @@ export function QqGroupConfigPage() {
                   </div>
                 </GroupCard>
                 <GroupCard
-                  title="schemes.studio.stickerParams"
+                  title={t("schemes.studio.stickerParams")}
                   description="schemes.studio.stickerParamsHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -1636,7 +2165,7 @@ export function QqGroupConfigPage() {
                 </GroupCard>
                 {visible("sticker_collections", "collection_ids") && (
                   <GroupCard
-                    title="connections.authorizedCollections"
+                    title={t("connections.authorizedCollections")}
                     description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
                   >
                     <CollectionsField
@@ -1646,7 +2175,7 @@ export function QqGroupConfigPage() {
                   </GroupCard>
                 )}
                 <GroupCard
-                  title="schemes.studio.mediaPrompts"
+                  title={t("schemes.studio.mediaPrompts")}
                   description="schemes.studio.mediaPromptsHint"
                 >
                   {visible("prompts", "sticker") && (
@@ -1673,7 +2202,7 @@ export function QqGroupConfigPage() {
               </TabsContent>
               <TabsContent value="capabilities" className="m-0 space-y-6">
                 <GroupCard
-                  title="schemes.qq.groupConfig.capabilities"
+                  title={t("schemes.qq.groupConfig.capabilities")}
                   description="schemes.qq.groupConfig.capability.description"
                 >
                   <CapabilityList editor={visibleEditor} knowledge={knowledgeRead} />

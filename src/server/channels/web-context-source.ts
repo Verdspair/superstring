@@ -390,6 +390,9 @@ export class WebContextSource implements ConversationContextSource {
       input_units: context.units,
       input_limit,
       remaining: Math.max(0, input_limit - context.units),
+      // T14 观测接线：本层是唯一同时持有真实渲染上下文的组装点，把 engine 已算出的
+      // visionCost 逐字透传（§11：unknown 不是 0，pixels 是准备元数据不是 token）。
+      vision_cost: context.visionCost,
       components: {
         ...usage.components,
         long_term_memory: usage.components.long_term_memory + memoryUnits,

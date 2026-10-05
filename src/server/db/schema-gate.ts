@@ -18,7 +18,7 @@ import path from "node:path";
 import { type BusinessDbHandle, openConnection, toOrmHandle } from "./connection";
 
 /** Ordered resources are also supplied explicitly by installed entrypoints. */
-export const BUSINESS_SCHEMA_VERSION = 51 as const;
+export const BUSINESS_SCHEMA_VERSION = 52 as const;
 export const BUSINESS_MIGRATION_FILES = [
   "0001_initial.sql",
   "0002_knowledge.sql",
@@ -71,8 +71,10 @@ export const BUSINESS_MIGRATION_FILES = [
   "0049_qq_output_reserve_caps.sql",
   "0050_qq_retention_days.sql",
   "0051_qq_group_agent_config.sql",
+  "0052_qq_message_multimodal.sql",
 ] as const;
 export type BusinessMigrationSql = readonly [
+  string,
   string,
   string,
   string,
@@ -195,6 +197,13 @@ export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "agent_tasks",
   "agent_task_calls",
   "qq_group_agent_configs",
+  "qq_message_facts",
+  "qq_outbound_message_facts",
+  "qq_media_assets",
+  "qq_media_asset_sources",
+  "qq_media_variants",
+  "qq_media_classifications",
+  "qq_media_read_tasks",
 ];
 
 function loadMigrationSql(): BusinessMigrationSql {
@@ -251,6 +260,7 @@ function loadMigrationSql(): BusinessMigrationSql {
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[48]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[49]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[50]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[51]), "utf8"),
   ];
 }
 

@@ -188,6 +188,12 @@ export const ModelProviderModelSchema = z.strictObject({
       parallelToolCalls: z.boolean().default(false),
       // Local sandbox opt-in for this model, not a hosted execution capability.
       codeExecution: z.boolean().default(false),
+      /**
+       * 三态（0052）：`true`/`false` 是用户声明；缺席（undefined）表示「未声明」而**不是**
+       * 「不支持」。未声明时保持现状——原生尝试成功后可以把成功事实记录成已知能力
+       * （known capability fact），但绝不改写这里的真实 provider 持久配置。
+       */
+      vision: z.boolean().optional(),
     })
     .optional(),
 });

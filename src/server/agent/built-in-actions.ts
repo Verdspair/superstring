@@ -173,11 +173,20 @@ function textPoints(page: EvidenceTextPage, offset: number, limit: number): stri
   return points;
 }
 
-/** Named read-only evidence domains share paging, authority and accounting semantics. */
-export function createBuiltInActions(
+/**
+ * Named read-only evidence domains share paging, authority and accounting semantics.
+ * The host may additionally seed (register) evidence directly for the current run via
+ * `registerEvidence` — e.g. a quoted message located by trusted host logic — reusing the
+ * same refs/retained-byte caps, budget accounting, release/cancel semantics and paging
+ * as query-disclosed refs. A seeded read never requires a fabricated query call.
+ */
+export function createEvidenceActionSet(
   modules: Record<string, EvidenceQueryModule | undefined>,
   options: EvidenceActionOptions,
-): BuiltInAction[] {
+): {
+  actions: BuiltInAction[];
+  registerEvidence(kind: string, evidence: Evidence, context: ActionContext): string;
+} {
   const runs = new Map<string, RunState>();
   /** 释放某个 (owner, runId) 下的全部运行态；对不存在的范围是空操作。 */
   function releaseRun(scope: Pick<ActionContext, "owner" | "runId">): void {
@@ -258,7 +267,7 @@ export function createBuiltInActions(
     state.signal.throwIfAborted();
   }
 
-  return Object.entries(modules).flatMap(([kind, module]): BuiltInAction[] => {
+  const actions = Object.entries(modules).flatMap(([kind, module]): BuiltInAction[] => {
     if (!module) return [];
     function domainState(state: RunState): DomainState {
       let domain = state.domains.get(kind);
@@ -551,4 +560,45 @@ export function createBuiltInActions(
       },
     ];
   });
+  return {
+    actions,
+    registerEvidence(kind, evidence, context) {
+      const module = modules[kind];
+      if (!module) fail("CONTEXT_INVALID_SELECTION", "未声明的证据域");
+      // Seeding requires a real run namespace: the unnamed (null) namespace is a
+      // synthetic fallback, never a production owner scope for retained refs.
+      if (context.runId === undefined) fail("CONTEXT_INVALID_SELECTION", "缺少本轮运行命名空间");
+      const state = runState(context, true);
+      let domain = state.domains.get(kind);
+      if (!domain) {
+        domain = { bodies: new Map(), cursors: new Map(), spent: 0 };
+        state.domains.set(kind, domain);
+      }
+      // Validate authority, sources and signal with the same check as disclosure; a
+      // rejected seed registers nothing and does not consume run-wide caps.
+      check(state, context, evidence.sources);
+      // Lazy backends strip text at seed time exactly like the query path: retained
+      // state (and its byte accounting) holds a source-bound descriptor, and reads
+      // resolve the real body through module.read. Non-lazy domains keep full text.
+      const text = module.read ? "" : evidence.text;
+      const snapshot = structuredClone({ ...evidence, text });
+      const bytes = estimateTokens(JSON.stringify(snapshot)) + 36;
+      if (state.refs >= MAX_REFS || state.retainedBytes + bytes > MAX_RETAINED_BYTES)
+        fail("CONTEXT_BUDGET_EXCEEDED", "本轮引用或保留容量已达上限");
+      state.refs += 1;
+      state.retainedBytes += bytes;
+      state.evidenceCount += 1;
+      const ref = randomUUID();
+      domain.bodies.set(ref, snapshot);
+      return ref;
+    },
+  };
+}
+
+/** Existing entry point: the same factory, actions only. */
+export function createBuiltInActions(
+  modules: Record<string, EvidenceQueryModule | undefined>,
+  options: EvidenceActionOptions,
+): BuiltInAction[] {
+  return createEvidenceActionSet(modules, options).actions;
 }

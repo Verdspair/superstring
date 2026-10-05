@@ -223,7 +223,8 @@ ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0047_qq_con
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0048_agent_tasks.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0049_qq_output_reserve_caps.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0050_qq_retention_days.sql"), "utf8")}
-${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"), "utf8")}`;
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"), "utf8")}
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0052_qq_message_multimodal.sql"), "utf8")}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };

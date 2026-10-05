@@ -428,6 +428,9 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           outputReserve: body.output_reserve,
           stickers: body.stickers,
           stickerCollections: body.sticker_collections?.collection_ids,
+          // 0052 两组随请求整组透传；未提供时 createQqScheme 在写入侧补已批准默认组。
+          messageSettings: body.message_settings,
+          mediaInput: body.media_input,
         }),
       ),
       201,
@@ -468,6 +471,9 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           stickerCollections: body.sticker_collections?.collection_ids,
           prompts: body.prompts,
           reply: body.reply,
+          // 0052 两组：整组透传，未提供＝updateQqScheme 保持现值。
+          messageSettings: body.message_settings,
+          mediaInput: body.media_input,
           expectedRevision: body.expected_revision,
         }),
       ),

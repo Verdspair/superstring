@@ -33,12 +33,11 @@ import {
 } from "../db/memory-repository";
 import { ownedObservations, type QqEventRow } from "../db/memory-source-repository";
 import { readBindingByConversation } from "../db/qq-binding-repository";
-import { observationText } from "../db/qq-observation-repository";
 import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
-import { memoryEntrySources, observationSourcesForRun, turnSources } from "../modules/provenance";
+import { memoryEntrySources, turnSources } from "../modules/provenance";
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import {
@@ -55,6 +54,13 @@ import {
   suppressionPrompt,
 } from "./memory-contract";
 import { correctionMetadata } from "./memory-revision";
+import {
+  filterLiveNameSources,
+  freezeQqFactScope,
+  loadQqFactInputs,
+  type QqPublication,
+  verifyQqFactInputs,
+} from "./qq-memory-fact-input";
 
 /**
  * Marker for "the caller asked us to stop". The contract signals this with
@@ -93,6 +99,11 @@ export interface MemoryInputs {
   blocked: Array<Record<string, unknown>>;
   sourceRefs: SourceRef[];
   blockedRefs: SourceRef[][];
+  /**
+   * QQ 事实输入的冻结快照（load↔publish 内存传递 + 写进 job.configSnapshot.qq_fact_scope）。
+   * merge/Web 任务无此字段，publication 复验按无操作处理。
+   */
+  publication?: QqPublication;
 }
 
 export class MemoryService {
@@ -359,6 +370,7 @@ export class MemoryService {
       const scopeKeys = snapshot.scope_key === undefined ? undefined : [snapshot.scope_key];
       let sources: Array<Record<string, unknown>>;
       let sourceRefs: SourceRef[];
+      let publication: QqPublication | undefined;
       if (job.kind === "merge") {
         const selected = entries(this.orm, agentId, JSON.parse(job.memoryIds) as string[], {
           scopeKeys,
@@ -376,36 +388,32 @@ export class MemoryService {
           kinds: JSON.parse(entry.kinds),
         }));
       } else if ((snapshot.source_event_ids ?? []).length > 0) {
-        // A QQ conversation cites observations instead of turns. Every event must
-        // still have its text: a body that reached the retention window is not a
-        // source we can summarise, and using only the survivors would attach
-        // provenance for messages that were never read. Fail closed instead.
+        // QQ 文字事实输入（T06）：每个 selected event 走统一事实投影（真 live full facts →
+        // projectQqMessageFacts/projectQqTextRelations）；存在但 expired/unavailable 的 facts
+        // 不回裸 body；SQL 真无 facts 行且 body 仍活才 legacy（不编名字）。scope 经真实
+        // memory_jobs 行 + 当下合法绑定在 load 内冻结进 configSnapshot.qq_fact_scope；重复
+        // load 不覆盖旧 freeze，现值随后每次与冻结 8 字段逐项比对。off→on 仍走既有 cap checkpoint。
         const eventIds = snapshot.source_event_ids ?? [];
         const scopeKey = snapshot.scope_key;
         if (scopeKey === undefined) {
           fail("MEMORY_SOURCE_INVALID", "观察任务缺少记忆范围，不能整理");
         }
-        const bodies = observationText(this.orm, eventIds);
-        const missing = eventIds.filter((id) => !bodies.has(id));
-        if (missing.length > 0) {
-          fail("MEMORY_SOURCE_INVALID", "观察正文已过期或缺失，不能整理为长期记忆");
-        }
-        sourceRefs = observationSourcesForRun(this.orm, eventIds);
+        // ownedObservations 先验：每个 selected event 必须属于本 job 的 scope（agent+键）。
         const events = ownedObservations(this.orm, agentId, eventIds, scopeKey);
-        // 软优先名单要影响整理——名单内的人明确说过、且没有互相矛盾的事实更容易
-        // 被保留。名单取**当下**的绑定（和会话侧同一份事实），不按消息到达时的状态打标签；只标
-        // 成员来源，匿名/系统发言没有号可对。标记只是事实，判断仍以来源内容为准。
-        const important = attentionSpeakerIds(this.orm, events[0]);
-        sources = events.map((event) => ({
-          message_id: event.messageId,
-          speaker_kind: event.speakerKind,
-          speaker_id: event.speakerId,
-          ...(event.speakerId !== null && important.has(event.speakerId)
-            ? { important: true }
-            : {}),
-          occurred_at_seconds: event.occurredAtSeconds,
-          body: bodies.get(event.eventKey) ?? "",
-        }));
+        const frozen = freezeQqFactScope(this.db, agentId, jobId, scopeKey);
+        const loaded = loadQqFactInputs({
+          store: { db: this.db, orm: this.orm },
+          scope: frozen,
+          scopeKey,
+          eventKeys: eventIds,
+          now: nowIso(),
+          important: attentionSpeakerIds(this.orm, events[0]),
+        });
+        sources = loaded.records.map(({ record }) => record);
+        // 必须 sources 精确事实 + body 进 Runtime memory_job run；currentName 独立来源另列
+        // （name refs 可选：startStep 到期帽排除 qq_member_name，不挡仍合法正文）。
+        sourceRefs = [...loaded.factRefs, ...loaded.nameRefs];
+        publication = loaded;
       } else {
         sourceRefs = turnSources(this.orm, JSON.parse(job.turnIds) as string[]);
         sources = sourceData(
@@ -431,6 +439,7 @@ export class MemoryService {
         blocked: blockedWithRefs.map((entry) => entry.value),
         sourceRefs,
         blockedRefs: blockedWithRefs.map((entry) => entry.refs),
+        ...(publication ? { publication } : {}),
       };
     });
 
@@ -462,11 +471,30 @@ export class MemoryService {
       sources: SourceRef[];
       blockedSources: SourceRef[][];
     },
+    publication?: QqPublication,
   ): Promise<MemoryDraft | null> {
     const guard = new QqGroupCapabilityGuard(this.orm);
     // 飞行前冻结本群能力纪元：停用后（哪怕随后恢复）这次结果不得继续调用或发布。
     // standalone worker 不注入中央叶子边界，业务路径按捕获的纪元自足复验。
     const capCheckpoint = guard.assertLeaf(context.owner, "memory.consolidate");
+    // publication 守卫：生成前/后/各 suppression call 前同式复验 facts/body/scope 现值。
+    // name 变化时不使用失效 name 继续调用（name refs 剪除，不整 body）；publication 的
+    // fact/body 复验失败即中止后续模型调用。
+    const verifyPublication = (): void => {
+      if (!publication) return;
+      verifyQqFactInputs({
+        db: this.db,
+        agentId: context.owner.agentId ?? "",
+        jobId: context.owner.id,
+        frozen: publication,
+        now: nowIso(),
+      });
+    };
+    verifyPublication();
+    const liveSources = () =>
+      publication
+        ? filterLiveNameSources(this.db, context.owner, context.sources, nowIso())
+        : context.sources;
     const checkCapture = () => {
       guard.assert(context.owner, "memory_organize");
       if (typeof capCheckpoint === "function") capCheckpoint();
@@ -483,12 +511,13 @@ export class MemoryService {
         messages: buildConsolidationPrompt(kind, config, sources),
         signal,
         owner: context.owner,
-        sources: context.sources,
+        sources: liveSources(),
         validate: parseResult,
       },
     );
     // 飞行后、解析前复验：停用后不再产生后续调用，off→on 的旧纪元结果同样被拒。
     checkCapture();
+    verifyPublication();
     const draft = parseResult(text);
     if (draft === null) return null;
 
@@ -502,6 +531,7 @@ export class MemoryService {
 
     for (let start = 0; start < blocked.length; start += 8) {
       checkCapture();
+      verifyPublication();
       const response = await this.agentRuntime.completeLeaf(
         {
           id: "memory.suppression",
@@ -514,11 +544,12 @@ export class MemoryService {
           messages: suppressionPrompt(draft, blocked.slice(start, start + 8)),
           signal,
           owner: context.owner,
-          sources: [...context.sources, ...context.blockedSources.slice(start, start + 8).flat()],
+          sources: [...liveSources(), ...context.blockedSources.slice(start, start + 8).flat()],
           validate: (text) => SuppressionResultSchema.parse(JSON.parse(text)),
         },
       );
       checkCapture();
+      verifyPublication();
       if (SuppressionResultSchema.parse(JSON.parse(response)).blocked) return null;
     }
     checkCapture();
@@ -669,6 +700,7 @@ export class MemoryService {
           sources: inputs.sourceRefs,
           blockedSources: inputs.blockedRefs,
         },
+        inputs.publication,
       ).then(
         (value) => {
           workDone = true;
@@ -693,6 +725,18 @@ export class MemoryService {
       try {
         immediate(this.db, () => {
           if (typeof publishCheckpoint === "function") publishCheckpoint();
+          // publication 同 tx 复验（publishCheckpoint 之后、publish 之前）：现值须与冻结
+          // 8 字段 scope/fact refs 逐项比对；name refs 不参与本门（可选资料，不取消仍合法
+          // body 的 publication）。merge/Web 任务无 publication，按无操作处理。
+          if (inputs.publication) {
+            verifyQqFactInputs({
+              db: this.db,
+              agentId,
+              jobId,
+              frozen: inputs.publication,
+              now: nowIso(),
+            });
+          }
           publish(this.orm, agentId, jobId, token, draft);
         });
         publication?.end(

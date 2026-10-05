@@ -33,6 +33,25 @@ function conditions(scope: QqConversationScope) {
 }
 
 /**
+ * A row's own retention stamp, capped — never extended — by an optional source expiry (for
+ * instance the outbound intent and outbound fact a projected send came from). The earlier
+ * stamp wins and is used verbatim, not re-derived; a stamp that is not a valid ISO instant
+ * fails closed: the write is refused rather than silently keeping the longer window.
+ */
+export function cappedSpeechExpiresAt(
+  defaultExpiresAt: string,
+  sourceExpiresAt?: string | null,
+): string {
+  if (sourceExpiresAt === undefined || sourceExpiresAt === null) return defaultExpiresAt;
+  const sourceMs = Date.parse(sourceExpiresAt);
+  const defaultMs = Date.parse(defaultExpiresAt);
+  if (Number.isNaN(sourceMs) || Number.isNaN(defaultMs)) {
+    throw new TypeError("Invalid QQ speech record input");
+  }
+  return sourceMs < defaultMs ? sourceExpiresAt : defaultExpiresAt;
+}
+
+/**
  * Record that this assistant spoke in this conversation.
  *
  * Called after a message reaches the platform, because that is when the fact becomes true for
@@ -50,6 +69,14 @@ export function recordQqSpeech(
     kind: QqSpeechKind;
     spokeAtSeconds: number;
     text?: string | null;
+    /**
+     * Narrow internal use (the send path in qq-send-repository): the exact row id to write,
+     * so the speech record of a delivered send shares the send ledger's id and the two can
+     * be aligned without guessing. Omitted — the standalone caller — keeps a fresh UUID.
+     */
+    id?: string;
+    /** Optional source expiry cap, applied through `cappedSpeechExpiresAt`. */
+    sourceExpiresAt?: string | null;
   },
   retentionDays: number = readQqRetentionDays(orm),
 ): QqSpeechRow {
@@ -60,11 +87,14 @@ export function recordQqSpeech(
   if (text !== null && text.trim().length === 0) {
     throw new TypeError("Invalid QQ speech record input");
   }
-  const expiresAt = speechExpiresAt(input.spokeAtSeconds, retentionDays);
+  const expiresAt = cappedSpeechExpiresAt(
+    speechExpiresAt(input.spokeAtSeconds, retentionDays),
+    input.sourceExpiresAt,
+  );
   const row = orm
     .insert(schema.qqSpeechLog)
     .values({
-      id: crypto.randomUUID(),
+      id: input.id ?? crypto.randomUUID(),
       accountId: input.scope.accountId,
       conversationKind: input.scope.conversationKind,
       peerId: input.scope.peerId,

@@ -24,7 +24,9 @@ function setup() {
     loadedContextCapacity: async () => 32768,
     probeModelLoaded: async () => true,
     complete: async (request) => {
-      const data = JSON.parse(request.messages[1].content);
+      const firstRaw = request.messages[1].content;
+      if (typeof firstRaw !== "string") throw new Error("text content expected");
+      const data = JSON.parse(firstRaw);
       return JSON.stringify({
         ids: data.candidates.map((candidate: { id: string }) => candidate.id),
       });

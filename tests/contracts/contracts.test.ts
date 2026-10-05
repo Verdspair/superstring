@@ -941,10 +941,10 @@ describe("Model catalog + error envelope", () => {
 // and
 // These tests pin the corrected 67-code taxonomy so the
 // defect cannot silently return.
-describe("Error code taxonomy (67 codes, api-contract §6.2 v2)", () => {
-  it("contains exactly 67 distinct codes", () => {
-    expect(ERROR_CODES.length).toBe(67);
-    expect(new Set(ERROR_CODES).size).toBe(67);
+describe("Error code taxonomy (68 codes, api-contract §6.2 v2)", () => {
+  it("contains exactly 68 distinct codes", () => {
+    expect(ERROR_CODES.length).toBe(68);
+    expect(new Set(ERROR_CODES).size).toBe(68);
   });
 
   it("includes the previously missing context-builder and repository codes", () => {
@@ -985,6 +985,7 @@ describe("Error code taxonomy (67 codes, api-contract §6.2 v2)", () => {
       "MODEL_OUTPUT_LIMIT",
       "MODEL_FINISH_UNSUPPORTED",
       "MODEL_STREAM_INTERRUPTED",
+      "MODEL_IMAGE_UNSUPPORTED",
     ];
     for (const code of mustHave) {
       expect(ok(ErrorCodeSchema, code)).toBe(true);
@@ -994,8 +995,8 @@ describe("Error code taxonomy (67 codes, api-contract §6.2 v2)", () => {
   it("documents the HTTP status for every HTTP-layer code", () => {
     const jobOnly = new Set<string>(JOB_LEVEL_ERROR_CODES);
     const statusKeys = Object.keys(ERROR_HTTP_STATUS);
-    // 58 HTTP-layer codes = 67 - 1 SSE-only - 2 message-only(new) - 6 job-only
-    expect(statusKeys.length).toBe(58);
+    // 59 HTTP-layer codes = 68 - 1 SSE-only - 2 message-only(new) - 6 job-only
+    expect(statusKeys.length).toBe(59);
     for (const key of statusKeys) {
       expect(jobOnly.has(key)).toBe(false);
     }

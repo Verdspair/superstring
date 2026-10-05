@@ -37,7 +37,16 @@ export type QqSegment =
   | { kind: "mention"; target: string }
   | { kind: "reply"; messageId: string }
   | { kind: "face"; id: string }
-  | { kind: "image" | "record" | "video" | "file"; file?: string; url?: string; name?: string }
+  | {
+      kind: "image" | "record" | "video" | "file";
+      file?: string;
+      url?: string;
+      name?: string;
+      /** 规格 §7.2：market face 三键（emoji_id+emoji_package_id+summary 同现且非空 string）
+       * 是平台可靠表情证据；其余 wire 键（sub_type/subType/key/URL 模式等）不判分类。
+       * 固定枚举值，不携带原始 wire 键。 */
+      categoryEvidence?: "expression";
+    }
   | { kind: "unsupported"; type: string };
 
 export interface QqObservation {
@@ -51,6 +60,17 @@ export interface QqObservation {
     kind: "member" | "anonymous" | "system";
     id: string | null;
     displayName: string | null;
+    /**
+     * 规格 §3.1 的双名字快照。两个字段区分三种状态：
+     *   * `string`＝本次入站原值（trim 后非空）；
+     *   * `null`＝上游**显式**提供但空白（群名片清空语义，不得沿用旧 card）；
+     *   * `undefined`＝上游字段缺省（可用本地有效值并记录来源）。
+     * 显式空白与缺省不能合并成一个值——读取方靠它决定"沿用本地旧值"还是"回退个人昵称"。
+     */
+    groupCard?: string | null;
+    personalNickname?: string | null;
+    /** 显示名的补齐来源：入站原值或本地回退。不混入权限，只作事实标注。 */
+    nameSource?: "wire" | "local";
   };
   segments: QqSegment[];
   /** Plain text only; not a substitute for the ordered, possibly media-only message. */
@@ -83,6 +103,45 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** A name is usable only after trimming; wire length follows the existing 64-code-point rule. */
+const NAME_MAX_CODE_POINTS = 64;
+
+/**
+ * 单个 wire 名字字段的三态（规格 §3.1）：
+ *   * `undefined`＝字段缺省，或值超限不可核实（读取方可按规则取本地有效值）；
+ *   * `null`＝字段到来但空白（显式清空）；
+ *   * `string`＝trim 后的原值。
+ */
+function normalizeWireName(value: string | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  // 空白＝显式清空（null）；超限＝不可核实（按缺省 undefined，保留本地可核实的旧名字）。
+  if (trimmed === "") return null;
+  if ([...trimmed].length > NAME_MAX_CODE_POINTS) return undefined;
+  return trimmed;
+}
+
+/**
+ * 双名字 trim 选择（规格 §3.1）：群名片 trim 非空优先，否则个人昵称 trim 非空，否则没有名字。
+ * `presence` 保留 wire 的"缺省 vs 显式空白"区分：`undefined`＝字段没来（可取本地有效值），
+ * `null`＝字段来了但是空白（显式清空，群名片不得沿用旧值）。
+ * 超过 64 码点的 wire 值**不可核实**：按"缺省"（undefined）处理而不是显式空白——清空会丢掉
+ * 本地可核实的旧名字，超限值只是不能用，不是"用户把名字删了"。
+ */
+function wireNames(sender: { card?: string; nickname?: string } | undefined): {
+  card: string | null | undefined;
+  nickname: string | null | undefined;
+  display: string | null;
+} {
+  const rawCard = sender?.card;
+  const rawNickname = sender?.nickname;
+  // card 字段没来时保留 undefined（缺省）；来了但空白显式置 null（清空）；超限按缺省。
+  const card = normalizeWireName(rawCard);
+  const nickname = normalizeWireName(rawNickname);
+  const display = card ?? nickname ?? null;
+  return { card, nickname, display };
+}
+
 function normalizeSegment(value: z.infer<typeof WireSegment>): QqSegment | null {
   const data = value.data ?? {};
   switch (value.type) {
@@ -112,6 +171,20 @@ function normalizeSegment(value: z.infer<typeof WireSegment>): QqSegment | null 
           if (typeof data[key] !== "string") return null;
           media[key] = data[key];
         }
+      }
+      // 规格 §7.2 平台分类允许清单：NapCat market face 形态（emoji_id+emoji_package_id+
+      // summary 三键同现且均为非空 string，报告 prime-platform-image-hint-plan.md §2/§4）。
+      // 缺一不猜；sub_type/subType 数值跨实现语义不同源，不映射；其余未知键维持丢弃。
+      if (
+        value.type === "image" &&
+        typeof data.emoji_id === "string" &&
+        data.emoji_id.trim() !== "" &&
+        typeof data.emoji_package_id === "string" &&
+        data.emoji_package_id.trim() !== "" &&
+        typeof data.summary === "string" &&
+        data.summary.trim() !== ""
+      ) {
+        media.categoryEvidence = "expression";
       }
       return media;
     }
@@ -150,6 +223,7 @@ export function normalizeOneBotMessage(input: unknown, expectedAccountId: string
   const kind = event.message_type;
   const peerId = kind === "group" ? event.group_id : event.user_id;
   if (!peerId) return { kind: "invalid", reason: "invalid_event" };
+  const names = wireNames(event.sender);
   const speakerKind =
     kind === "group" && event.sub_type === "notice"
       ? "system"
@@ -169,8 +243,17 @@ export function normalizeOneBotMessage(input: unknown, expectedAccountId: string
       speaker: {
         kind: speakerKind,
         id: speakerKind === "member" ? event.user_id : null,
-        displayName:
-          speakerKind === "member" ? event.sender?.card || event.sender?.nickname || null : null,
+        // 双名字快照（规格 §3.1）：群名片与个人昵称分别保留，不再压成一份不可区分的显示名。
+        // 缺省字段的键整个不出现（undefined ≠ null：缺省可取本地有效值，显式空白是清空）。
+        // 匿名/系统发言人没有平台身份，也不携带双名字（明确"匿名，QQ号不可用"，§3.2）。
+        ...(speakerKind === "member" && names.card !== undefined ? { groupCard: names.card } : {}),
+        ...(speakerKind === "member" && names.nickname !== undefined
+          ? { personalNickname: names.nickname }
+          : {}),
+        ...(speakerKind === "member"
+          ? { nameSource: names.display !== null ? ("wire" as const) : ("local" as const) }
+          : {}),
+        displayName: speakerKind === "member" ? names.display : null,
       },
       segments,
       text: segments.flatMap((segment) => (segment.kind === "text" ? [segment.text] : [])).join(""),

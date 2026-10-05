@@ -4,12 +4,18 @@ import { bodyRevision } from "../db/conversation-event-repository";
 import { memoryRevision } from "../db/memory-content-repository";
 import { readQqConversationSummary } from "../db/qq-summary-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
-
+import {
+  qqMessageFactConsumableCap,
+  qqMessageFactSourceRevision,
+  visibleFactState,
+} from "../services/qq-message-fact-sources";
+import { isObservationExpired } from "../services/qq-retention";
 import type {
   BotEvidenceScope,
   ConversationEvidenceScope,
   WebEvidenceScope,
 } from "./conversation-evidence";
+import { evidenceScopeExists } from "./conversation-evidence";
 export type EvidenceDomain = "history" | "summary";
 export interface EvidenceStore {
   db: Database;
@@ -228,7 +234,17 @@ function webSummary(db: Database, scope: WebEvidenceScope, id: string): StoredEv
     [row, links, fixes, parents],
   );
 }
-function inTimeline(db: Database, scope: BotEvidenceScope, kind: string, id: string): boolean {
+/**
+ * Timeline-membership check shared with the QQ message fact projection (T03a): an event
+ * must sit in this conversation's journal with a live inbound/outbound source. Exported
+ * for reuse — projection must not build a second, wider read path.
+ */
+export function inTimeline(
+  db: Database,
+  scope: BotEvidenceScope,
+  kind: string,
+  id: string,
+): boolean {
   return !!db
     .query(`SELECT 1 FROM conversation_events e WHERE e.conversation_id=? AND
     e.kind IN ('inbound','outbound') AND (e.source_kind<>'qq_send' OR EXISTS(
@@ -433,6 +449,42 @@ function botSummary(
     stored,
   );
 }
+const TAGGED_KEY = "qq-message:";
+function taggedRawBody(
+  db: Database,
+  scope: BotEvidenceScope,
+  eventKey: string,
+  now: string,
+): StoredEvidence | null {
+  if (!evidenceScopeExists(db, scope)) return null;
+  const state = visibleFactState(db, scope, eventKey, now);
+  const live =
+    state && !isObservationExpired(state.fact.expiresAt, now) && state.textConsistency === null
+      ? state
+      : null;
+  const body = live ? qqBody(db, scope, "qq_observation", eventKey, now) : null;
+  return live && body
+    ? record(
+        body.text,
+        "引用消息原文",
+        [
+          body.source,
+          {
+            kind: "qq_message_fact",
+            id: eventKey,
+            revision: qqMessageFactSourceRevision(
+              scope,
+              live.fact,
+              live.visibleParts,
+              live.bodyRevisionValue,
+            ),
+            expiresAt: qqMessageFactConsumableCap(db, scope, eventKey, live.fact.expiresAt, now),
+          },
+        ],
+        eventKey,
+      )
+    : null;
+}
 export function loadConversationEvidence(
   store: EvidenceStore,
   scope: ConversationEvidenceScope,
@@ -447,6 +499,10 @@ export function loadConversationEvidence(
         ? webHistory(store.db, scope, key)
         : webSummary(store.db, scope, key);
   if (domain === "history")
-    return typeof key === "number" ? botHistory(store.db, scope, key, now) : null;
+    return typeof key === "number"
+      ? botHistory(store.db, scope, key, now)
+      : key.startsWith(TAGGED_KEY)
+        ? taggedRawBody(store.db, scope, key.slice(TAGGED_KEY.length), now)
+        : null;
   return typeof key === "string" ? botSummary(store, scope, key, now) : null;
 }

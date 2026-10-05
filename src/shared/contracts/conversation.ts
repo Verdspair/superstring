@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { ConversationAvatarSchema } from "./conversation-avatar";
 import { SourceRefSchema } from "./evidence";
+// T13 Step6：事件详情复用 QQ 消息事实的唯一 schema（规格 §6：后台消息详情来自统一事实投影）。
+// 仅 import type 语义之外的 runtime schema 复用；qq-message.ts 不回读本文件，无循环。
+import { QqMessageFactSchema } from "./qq-message";
 
 export const ConversationChannelSchema = z.enum(["web", "onebot11"]);
 export const WakeStatusSchema = z.enum(["pending", "leased", "completed", "no_output", "failed"]);
@@ -68,6 +71,8 @@ export const ConversationEventViewSchema = ConversationEventSchema.extend({
   deliveryStatus: z
     .enum(["planned", "delivering", "confirmed", "failed", "unknown", "stale"])
     .nullable(),
+  /** QQ 事件详情（规格 §6 后台消息详情）：仅授权可读的入站事件携带；缺失即无详情。 */
+  qqMessageFacts: z.array(QqMessageFactSchema).optional(),
 });
 export const ConversationListSchema = z.strictObject({
   items: z.array(ConversationSummarySchema),

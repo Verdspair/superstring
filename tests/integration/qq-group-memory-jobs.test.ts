@@ -5,6 +5,7 @@
 import { describe, expect, it } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { eq } from "drizzle-orm";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { enqueue, entries } from "../../src/server/db/memory-repository";
 import { writeQqGroupAgentConfigRow } from "../../src/server/db/qq-binding-repository";
 import { recordObservation } from "../../src/server/db/qq-observation-intake";
@@ -115,12 +116,16 @@ function setup() {
     heartbeatIntervalMs: 5,
     jobTimeoutMs: 2_000,
   });
-  return { business, orm: business.orm, gateway, service };
+  // load 的真实事实投影要求事件在本会话 journal 里（inTimeline fail closed），
+  // 所以每个绑定都要建立真实 conversation 行，观察记录后 ingest。
+  const journal = new ConversationEventRepository(business.db);
+  return { business, orm: business.orm, db: business.db, gateway, service, journal };
 }
 
 /** A binding row inserted directly; the scheme row above satisfies the table trigger. */
 function insertBinding(
   orm: Orm,
+  journal: ConversationEventRepository,
   id: string,
   peerId: string,
   patch: { paused?: number; agentId?: string } = {},
@@ -145,6 +150,8 @@ function insertBinding(
       updatedAt: now,
     })
     .run();
+  const conversation = journal.ensureOneBot(id);
+  if (!conversation) throw new Error("conversation fixture missing");
 }
 
 /** A second assistant, so a rebind can name a real foreign key. */
@@ -179,7 +186,14 @@ function scopeOf(peerId: string): QqConversationScope {
   };
 }
 
-function observe(orm: Orm, peerId: string, key: string, index: number): void {
+function observe(
+  orm: Orm,
+  journal: ConversationEventRepository,
+  bindingId: string,
+  peerId: string,
+  key: string,
+  index: number,
+): void {
   const observation: QqObservation = {
     accountId: "10001",
     conversation: {
@@ -197,11 +211,19 @@ function observe(orm: Orm, peerId: string, key: string, index: number): void {
     mentionsSelf: false,
   };
   recordObservation(orm, observation, AGENT_ID);
+  // 夹具有效性闸：观察必须真实进入会话 journal；静默 null 会让后续 fail closed 无从定位。
+  const ingested = journal.ingestOneBotEvent(key, bindingId);
+  expect(ingested).not.toBeNull();
 }
 
-function queueGroupJob(orm: Orm, peerId: string, requestKey: string) {
-  observe(orm, peerId, `${requestKey}_0`, 0);
-  const job = enqueueQqMemory(orm, { scope: scopeOf(peerId), requestKey, limit: 1 });
+function queueGroupJob(
+  h: ReturnType<typeof setup>,
+  bindingId: string,
+  peerId: string,
+  requestKey: string,
+) {
+  observe(h.orm, h.journal, bindingId, peerId, `${requestKey}_0`, 0);
+  const job = enqueueQqMemory(h.orm, { scope: scopeOf(peerId), requestKey, limit: 1 });
   if (!job) throw new Error("expected the job to be queued");
   return job;
 }
@@ -264,8 +286,8 @@ describe("QQ 群整理的 worker 边界", () => {
   it("排队中的任务在群暂停后失败，且不开始模型调用", async () => {
     const h = setup();
     try {
-      insertBinding(h.orm, BINDING_X, PEER_X);
-      const job = queueGroupJob(h.orm, PEER_X, "req_paused");
+      insertBinding(h.orm, h.journal, BINDING_X, PEER_X);
+      const job = queueGroupJob(h, BINDING_X, PEER_X, "req_paused");
       pause(h.orm, BINDING_X);
 
       await h.service.runJob(job.id);
@@ -283,8 +305,8 @@ describe("QQ 群整理的 worker 边界", () => {
   it("排队中的任务在本群停用记忆整理后失败，且不开始模型调用", async () => {
     const h = setup();
     try {
-      insertBinding(h.orm, BINDING_X, PEER_X);
-      const job = queueGroupJob(h.orm, PEER_X, "req_disabled");
+      insertBinding(h.orm, h.journal, BINDING_X, PEER_X);
+      const job = queueGroupJob(h, BINDING_X, PEER_X, "req_disabled");
       disableMemoryOrganize(h.orm, BINDING_X);
 
       await h.service.runJob(job.id);
@@ -302,8 +324,8 @@ describe("QQ 群整理的 worker 边界", () => {
   it("已开始的任务在群暂停后照旧完成并发布", async () => {
     const h = setup();
     try {
-      insertBinding(h.orm, BINDING_X, PEER_X);
-      const job = queueGroupJob(h.orm, PEER_X, "req_started_paused");
+      insertBinding(h.orm, h.journal, BINDING_X, PEER_X);
+      const job = queueGroupJob(h, BINDING_X, PEER_X, "req_started_paused");
       h.gateway.replies = ["block"];
 
       const run = h.service.runJob(job.id);
@@ -328,8 +350,8 @@ describe("QQ 群整理的 worker 边界", () => {
   it("已开始的任务在本群停用后不再调用模型，也不发布", async () => {
     const h = setup();
     try {
-      insertBinding(h.orm, BINDING_X, PEER_X);
-      const job = queueGroupJob(h.orm, PEER_X, "req_started_disabled");
+      insertBinding(h.orm, h.journal, BINDING_X, PEER_X);
+      const job = queueGroupJob(h, BINDING_X, PEER_X, "req_started_disabled");
       // 一条同分区的已抑制记忆：旧实现会在这一步发起抑制比较调用，正好用来验证它没发生。
       h.orm
         .insert(schema.memoryEntries)
@@ -373,8 +395,8 @@ describe("QQ 群整理的 worker 边界", () => {
   it("换绑到另一个助手后，旧助手的在飞任务不发布", async () => {
     const h = setup();
     try {
-      insertBinding(h.orm, BINDING_X, PEER_X);
-      const job = queueGroupJob(h.orm, PEER_X, "req_rebind");
+      insertBinding(h.orm, h.journal, BINDING_X, PEER_X);
+      const job = queueGroupJob(h, BINDING_X, PEER_X, "req_rebind");
       addAgent(h.orm, AGENT_B);
       h.gateway.replies = ["block"];
 
@@ -403,8 +425,8 @@ describe("QQ 群整理的 worker 边界", () => {
   it("飞行中停用又恢复：旧纪元的结果仍被拒，不发布记忆", async () => {
     const h = setup();
     try {
-      insertBinding(h.orm, BINDING_X, PEER_X);
-      const job = queueGroupJob(h.orm, PEER_X, "req_off_on");
+      insertBinding(h.orm, h.journal, BINDING_X, PEER_X);
+      const job = queueGroupJob(h, BINDING_X, PEER_X, "req_off_on");
       h.gateway.replies = ["block"];
 
       const run = h.service.runJob(job.id);
@@ -431,8 +453,8 @@ describe("QQ 群整理的 worker 边界", () => {
   it("Web 整理与其他群不受某个群暂停的影响", async () => {
     const h = setup();
     try {
-      insertBinding(h.orm, BINDING_X, PEER_X, { paused: 1 });
-      insertBinding(h.orm, BINDING_Y, PEER_Y);
+      insertBinding(h.orm, h.journal, BINDING_X, PEER_X, { paused: 1 });
+      insertBinding(h.orm, h.journal, BINDING_Y, PEER_Y);
 
       // Web 会话：scope_key 是裸 Agent id，不属于任何群。
       const sessionId = createSession(h.orm, "会话", { modelName: MODEL }).id;
@@ -447,7 +469,7 @@ describe("QQ 群整理的 worker 边界", () => {
       expect(jobById(h.orm, webJob.id).status).toBe("succeeded");
 
       // 另一个未暂停的群照旧开始并发布，不受 PEER_X 的暂停牵连。
-      const groupJob = queueGroupJob(h.orm, PEER_Y, "req_other_group");
+      const groupJob = queueGroupJob(h, BINDING_Y, PEER_Y, "req_other_group");
       h.gateway.replies.push(VALID_DRAFT_JSON);
       await h.service.runJob(groupJob.id);
       expect(jobById(h.orm, groupJob.id).status).toBe("succeeded");

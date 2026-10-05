@@ -8,36 +8,56 @@
 // 应答并记成 auxiliary：它们本来就是可选材料，取不到只该留下诊断，不该打死整轮。
 
 import type { ModelPort, ModelRequest, MultimodalRequest } from "../../src/server/agent/model-port";
+import type { ModelMediaClassification } from "../../src/server/agent/model-response-envelope";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 
 export type ModelStep =
-  | { readonly kind: "none" }
+  | { readonly kind: "none"; readonly media?: readonly ModelMediaClassification[] }
   | {
       readonly kind: "invoke";
       readonly name: string;
       readonly arguments?: Record<string, unknown>;
+      readonly media?: readonly ModelMediaClassification[];
     }
   | {
       readonly kind: "inline";
       readonly targetId: string;
       readonly text: string;
       readonly stickerIds?: readonly string[] | null;
+      readonly media?: readonly ModelMediaClassification[];
     }
   | {
       readonly kind: "generate";
       readonly targetId: string;
       readonly instructions?: string;
       readonly stickerIds?: readonly string[] | null;
+      readonly media?: readonly ModelMediaClassification[];
     }
   | {
       /** 一次决策为多个目标各出一份生成草稿（同一轮里"人人有份"）。 */
       readonly kind: "generate_many";
       readonly targetIds: readonly string[];
       readonly instructions?: string;
+      readonly media?: readonly ModelMediaClassification[];
     }
-  | { readonly kind: "score"; readonly score: number; readonly reason?: string }
-  | { readonly kind: "say"; readonly text: string; readonly onYield?: () => void }
-  | { readonly kind: "raw"; readonly text: string };
+  | {
+      readonly kind: "score";
+      readonly score: number;
+      readonly reason?: string;
+      readonly media?: readonly ModelMediaClassification[];
+    }
+  | {
+      readonly kind: "say";
+      readonly text: string;
+      readonly onYield?: () => void;
+      readonly media?: readonly ModelMediaClassification[];
+    }
+  | {
+      readonly kind: "raw";
+      readonly text: string;
+      /** raw 永不包装（逐字输出用于负测）；字段只为各 variant 形状一致。 */
+      readonly media?: readonly ModelMediaClassification[];
+    };
 
 export const decideNone = (): ModelStep => ({ kind: "none" });
 
@@ -51,22 +71,26 @@ export const decideInline = (
   targetId: string,
   text: string,
   stickerIds?: readonly string[] | null,
+  media?: readonly ModelMediaClassification[],
 ): ModelStep => ({
   kind: "inline",
   targetId,
   text,
   ...(stickerIds === undefined ? {} : { stickerIds }),
+  ...(media === undefined ? {} : { media }),
 });
 
 export const decideGenerate = (
   targetId: string,
   instructions = "respond",
   stickerIds?: readonly string[] | null,
+  media?: readonly ModelMediaClassification[],
 ): ModelStep => ({
   kind: "generate",
   targetId,
   instructions,
   ...(stickerIds === undefined ? {} : { stickerIds }),
+  ...(media === undefined ? {} : { media }),
 });
 
 /** 一次决策为多个目标各出一份生成草稿。 */
@@ -76,10 +100,15 @@ export const decideGenerateMany = (
 ): ModelStep => ({ kind: "generate_many", targetIds, instructions });
 
 /** 判断档的答复；`score` 走 `responseSchema` 里带 score 的那次调用。 */
-export const scoreOf = (score: number, reason?: string): ModelStep => ({
+export const scoreOf = (
+  score: number,
+  reason?: string,
+  media?: readonly ModelMediaClassification[],
+): ModelStep => ({
   kind: "score",
   score,
   ...(reason === undefined ? {} : { reason }),
+  ...(media === undefined ? {} : { media }),
 });
 
 /**
@@ -88,10 +117,15 @@ export const scoreOf = (score: number, reason?: string): ModelStep => ({
  * `onYield` 在流式输出的**第一段之后**执行一次：用来模拟"正文还没写完，群里又来了消息"，
  * 这类时序在真实链路里很常见，而它正好检验"新观测是否真的把这一轮拉回决策"。
  */
-export const say = (text: string, onYield?: () => void): ModelStep => ({
+export const say = (
+  text: string,
+  onYield?: () => void,
+  media?: readonly ModelMediaClassification[],
+): ModelStep => ({
   kind: "say",
   text,
   ...(onYield === undefined ? {} : { onYield }),
+  ...(media === undefined ? {} : { media }),
 });
 
 /** 原样返回的文本：用来构造"形状不对的答复"这类失败场景。 */
@@ -112,9 +146,20 @@ export interface ModelCallRecord {
   readonly text: string;
 }
 
+/** 一次调用的完整原生输入快照：按 phase 记录、整棵深拷贝（含 image part 元数据）。 */
+export interface ModelCallMessages {
+  readonly phase: ModelCallRecord["phase"];
+  readonly messages: ModelMessage[];
+}
+
 export interface ScriptedModel {
   readonly port: ModelPort;
   readonly calls: ModelCallRecord[];
+  /**
+   * 每次 complete/stream 的完整消息深拷贝（structuredClone，含 image part 的来源元数据）。
+   * 不是字节/URL：原生记录的 red line 与 ModelContent 一致——只保 sourceId/revision 等来源事实。
+   */
+  readonly receivedMessages: ModelCallMessages[];
   remaining(): number;
   /** 追加脚本步骤：一轮跑完还要再跑一轮的场景（崩溃重排、二次唤醒）用得上。 */
   push(steps: readonly ModelStep[]): void;
@@ -155,9 +200,85 @@ function schemaHas(request: ModelRequest, key: string): boolean {
   return JSON.stringify(request.responseSchema ?? {}).includes(`"${key}"`);
 }
 
+/**
+ * 同响应封装的 schema 判据（规格 §10）：响应 schema 的**顶层 properties**里明确声明了
+ * `decision`/`scoreResult`/`text` 之一与 `media` 时，桩按对应 envelope 形状答复——形状与
+ * `model-response-envelope` 的现 parser 一一对应（不猜关键词、不看嵌套描述字段）。`raw`
+ * 故障文本照旧逐字输出，不包 envelope 掩盖坏形状；分类是否被接受由消费侧权威解析器裁决，
+ * 桩不自己新增白名单规则。
+ */
+function envelopeOf(request: ModelRequest): "decision" | "scoreResult" | "text" | null {
+  const properties = request.responseSchema?.properties;
+  const names =
+    properties !== null && typeof properties === "object" && !Array.isArray(properties)
+      ? Object.keys(properties as Record<string, unknown>)
+      : [];
+  // decision envelope 的 JSON schema 是 oneOf 决策分支（无顶层 properties）——扫描分支里的
+  // 附属 media 键，形状与 model-response-envelope 的 parser 一一对应，不猜关键词。
+  const branchNames =
+    (request.responseSchema?.oneOf as Record<string, unknown>[] | undefined)?.flatMap((branch) =>
+      branch.properties !== null && typeof branch.properties === "object"
+        ? Object.keys(branch.properties as Record<string, unknown>)
+        : [],
+    ) ?? [];
+  if (!names.includes("media") && !branchNames.includes("media")) return null;
+  if (names.includes("decision") || branchNames.includes("kind")) return "decision";
+  if (names.includes("scoreResult")) return "scoreResult";
+  if (names.includes("text")) return "text";
+  return null;
+}
+
+type DecisionStep = Extract<
+  ModelStep,
+  { kind: "none" | "invoke" | "inline" | "generate" | "generate_many" }
+>;
+
+/** envelope 里 media 未给时输出 `[]`：schema 声明了 media，答复就带上这个键。 */
+function decisionEnvelopeOf(step: DecisionStep, decisionJson: string): string {
+  // envelope 分支经 AgentDecisionSchema 严格校验：outputs 的 stickerIds 是 required（override
+  // 规则）——脚本未给时补 []（明确不选），与 plain 路径 normalizeInvoke 的宽容不同。
+  const withStickerIds = (outputs: readonly Record<string, unknown>[]) =>
+    outputs.map((output) => ({ stickerIds: [], ...output }));
+  const decision = JSON.parse(decisionJson) as Record<string, unknown>;
+  // envelope 分支产出权威形状（AgentDecisionSchema 只认批量 calls，不经 normalizeInvoke）：
+  // 旧单调用 {kind:"invoke",name,arguments} 在这里换成 calls:[{name,arguments}]。
+  // plain 决策（decisionText 原样返回）保持旧单调用形状，由产品链 normalizeInvoke 归一。
+  if (
+    decision.kind === "invoke" &&
+    typeof decision.name === "string" &&
+    !Array.isArray(decision.calls)
+  ) {
+    return JSON.stringify({
+      decision: {
+        kind: "invoke",
+        calls: [{ name: decision.name, arguments: decision.arguments ?? {} }],
+      },
+      media: step.media ?? [],
+    });
+  }
+  if (decision.kind === "final" && Array.isArray(decision.outputs))
+    decision.outputs = withStickerIds(decision.outputs as Record<string, unknown>[]);
+  return JSON.stringify({ decision, media: step.media ?? [] });
+}
+
+function scoreEnvelopeOf(step: Extract<ModelStep, { kind: "score" }>): string {
+  return JSON.stringify({
+    scoreResult: {
+      score: step.score,
+      ...(step.reason === undefined ? {} : { reason: step.reason }),
+    },
+    media: step.media ?? [],
+  });
+}
+
+function textEnvelopeOf(step: Extract<ModelStep, { kind: "say" }>): string {
+  return JSON.stringify({ text: step.text, media: step.media ?? [] });
+}
+
 export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
   const queue = [...steps];
   const calls: ModelCallRecord[] = [];
+  const received: ModelCallMessages[] = [];
   const take = (
     phase: ModelCallRecord["phase"],
     expected: readonly ModelStep["kind"][],
@@ -182,6 +303,11 @@ export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
     head?: string,
     body?: string,
   ): void => {
+    // 每个调用计一次 phase；完整消息整棵深拷贝（图片只有来源元数据，没有 bytes/url）。
+    received.push({
+      phase,
+      messages: structuredClone(request.messages) as ModelMessage[],
+    });
     calls.push({
       phase,
       model: request.model ?? null,
@@ -234,6 +360,15 @@ export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
   };
   const port: ModelPort = {
     async complete(request) {
+      // resolved 真源模拟：与生产网关同语义——模型解析后即回写（默认 request.model）。
+      request.onModelResolved?.(request.model ?? "judge-model");
+      const envelope = envelopeOf(request);
+      if (envelope === "scoreResult") {
+        // 评分同响应封装：仍按 next 计一次、score 步骤只消费一次；raw 照旧逐字输出。
+        record("next", request);
+        const step = take("next", ["score", "raw"]);
+        return step.kind === "score" ? scoreEnvelopeOf(step) : textOf(step);
+      }
       if (schemaHas(request, "score")) {
         record("next", request);
         const step = take("next", ["score", "raw"]);
@@ -244,11 +379,28 @@ export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
             })
           : textOf(step);
       }
-      if (isDecisionRequest(request)) {
+      if (isDecisionRequest(request) || envelope === "decision") {
         record("next", request);
-        return decisionText(
-          take("next", ["none", "invoke", "inline", "generate", "generate_many", "raw"]),
-        );
+        const step = take("next", ["none", "invoke", "inline", "generate", "generate_many", "raw"]);
+        // raw 是故意构造的坏形状：逐字输出，envelope 不包装、不遮丑。
+        if (step.kind === "raw") return step.text;
+        const decisionJson = decisionText(step);
+        return envelope === "decision"
+          ? decisionEnvelopeOf(step as DecisionStep, decisionJson)
+          : decisionJson;
+      }
+      if (envelope === "text") {
+        // 结构化生成 complete（未知分类随同一次调用返回）：计 generate，不落 auxiliary；
+        // 脚本步骤只消费一次。这里没有真实的流式中段，`onYield` 的等价触发点是
+        // **正文产生之后、返回之前**，恰一次（与流式"两段之间"同义，别多消费队列）。
+        record("generate", request);
+        const step = take("generate", ["say", "raw"]);
+        if (step.kind === "raw") return textOf(step);
+        if (step.kind !== "say")
+          throw coded("HARNESS_STEP_MISMATCH", `生成阶段不能消费 ${step.kind} 步骤`);
+        const body = textEnvelopeOf(step);
+        step.onYield?.();
+        return body;
       }
       record("auxiliary", request);
       const next = queue[0];
@@ -286,6 +438,7 @@ export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
   return {
     port,
     calls,
+    receivedMessages: received,
     remaining: () => queue.length,
     push: (steps) => void queue.push(...steps),
   };

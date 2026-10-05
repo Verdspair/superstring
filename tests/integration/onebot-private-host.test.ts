@@ -1992,7 +1992,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(17500 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(19500 - 2048);
           if (++calls === 1)
             return JSON.stringify({
               kind: "invoke",
@@ -2008,7 +2008,7 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    h.gateway.loadedContextCapacity = async () => 17500;
+    h.gateway.loadedContextCapacity = async () => 19500;
     const first = addSticker(h);
     h.db
       .query("UPDATE qq_sticker_assets SET description=? WHERE id=?")
@@ -2039,7 +2039,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(17500 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(19500 - 2048);
           calls++;
           if (calls > 1) {
             const page = stickerObservation(request);
@@ -2063,9 +2063,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    // 显式选择协议（sticker.search 的批调用与工具目录）把固定协议基线抬到 ~12.8k；本用例考的是
-    // 分页，不是容量边界，容量取满足整段装配的最小实测值（生产默认容量远大于此）。
-    h.gateway.loadedContextCapacity = async () => 17500;
+    // 本用例验证分页：容量需容纳当前完整协议，同时仍使大描述超预算、小候选可读。
+    // 19500 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
+    h.gateway.loadedContextCapacity = async () => 19500;
     const anchor = addSticker(h);
     const collections = [collection(h, anchor)];
     setQqStickerEnabled(h.orm, anchor, false);
@@ -2094,7 +2094,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(17500 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(19500 - 2048);
           if (++calls === 1)
             return JSON.stringify({
               kind: "invoke",
@@ -2111,9 +2111,9 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    // 显式选择协议（sticker.search 的批调用与工具目录）把固定协议基线抬到 ~12.8k；本用例考的是
-    // 分页，不是容量边界，容量取满足整段装配的最小实测值（生产默认容量远大于此）。
-    h.gateway.loadedContextCapacity = async () => 17500;
+    // 本用例验证分页：容量需容纳当前完整协议，同时仍使大描述超预算、小候选可读。
+    // 19500 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
+    h.gateway.loadedContextCapacity = async () => 19500;
     const large = addSticker(h);
     editQqSticker(h.orm, large, { description: "详".repeat(2000) });
     h.receive("1");

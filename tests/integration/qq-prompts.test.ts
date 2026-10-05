@@ -54,7 +54,7 @@ describe("editable QQ prompt storage and HTTP", () => {
       .map((t) => getTableConfig(t).name)
       .sort();
     expect(actual).toEqual([...BUSINESS_TABLE_NAMES].sort());
-    expect(actual).toHaveLength(67);
+    expect(actual).toHaveLength(74);
   });
   it("upgrades an existing v18 scheme with editable output defaults and preserved revision", () => {
     const db = new Database(":memory:");
@@ -72,7 +72,7 @@ describe("editable QQ prompt storage and HTTP", () => {
           )
           .get(),
       ).toEqual({ revision: 7, judgement_output_reserved: 512, reply_output_reserved: 2048 });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
     } finally {
       db.close();
     }
@@ -120,7 +120,7 @@ describe("editable QQ prompt storage and HTTP", () => {
       expect(row.name).toBe("existing");
       for (const slot of QQ_PROMPT_SLOTS)
         expect(row[`prompt_${slot}`]).toBe(QQ_PROMPT_DEFAULTS[slot]);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 51 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 52 });
     } finally {
       db.close();
     }
@@ -340,6 +340,65 @@ describe("QQ prompt assembly", () => {
     expect(messages[1]?.content).toContain("媒体未读");
     expect(messages[1]?.content).toContain("非群友原话");
   });
+  it("carries the §7.3 expression-image rule as a conditional system annex, not user material", () => {
+    // Strong positive: with media present the media_rule annex contains the expression rule.
+    const withMedia = buildQqPrompt({
+      ...base,
+      timeline: [{ ...message, mediaNotes: ["MODEL-NOTE"], mediaUnread: 1 }],
+    });
+    const annex = withMedia.find((s) => s.origin === "media_rule");
+    expect(annex?.role).toBe("system");
+    // Conditional wording: the rule keys on the facts-side category, not a per-message flag.
+    expect(annex?.body).toContain('category="expression"');
+    expect(annex?.body).toContain("分类本身仍然保留");
+    // §7.3 negations, matched loosely (no verbatim magic-phrase pinning).
+    expect(annex?.body).toContain("不要");
+    expect(annex?.body).toContain("低关注");
+    expect(annex?.body).toContain("不是群友的新指令");
+    // The pre-existing media rule travels in the same annex.
+    expect(annex?.body).toContain("媒体未读");
+
+    // Wrong gate: a native call can carry native image parts while the timeline has no
+    // mediaNotes/mediaUnread at all — the expression rule must still be present (it is
+    // an unconditional section with conditional wording, not gated on hasMedia).
+    const native = buildQqPrompt(base);
+    const nativeAnnex = native.find((s) => s.origin === "media_rule");
+    expect(nativeAnnex?.role).toBe("system");
+    expect(nativeAnnex?.body).toContain('category="expression"');
+    expect(nativeAnnex?.body).not.toContain("媒体未读");
+    expect(native.map((s) => s.origin)).toContain("media_rule");
+
+    // Layout contract: single media_rule section, existing section order unchanged.
+    expect(withMedia.filter((s) => s.origin === "media_rule")).toHaveLength(1);
+    expect(withMedia.map((s) => s.origin)).toEqual([
+      "persona",
+      "scene",
+      "timeline",
+      "media_rule",
+      "path",
+      "task",
+      "scoring",
+      "constraints",
+    ]);
+
+    // Empty timeline: annex still present (conditional wording, no media facts to misread).
+    const empty = buildQqPrompt({ ...base, timeline: [] });
+    expect(empty.filter((s) => s.origin === "media_rule")).toHaveLength(1);
+    expect(empty.find((s) => s.origin === "media_rule")?.body).toContain('category="expression"');
+
+    // System authority: the rule never lands in a user message, and scheme-edited prompt
+    // slots cannot add or remove it (it is not part of any editable slot body).
+    const messages = qqPromptMessages(withMedia);
+    for (const m of messages.filter((m) => m.role === "user"))
+      expect(m.content).not.toContain('category="expression"');
+    const edited = buildQqPrompt({
+      ...base,
+      prompts: { ...QQ_PROMPT_DEFAULTS, scene: "scene-edited" },
+    });
+    expect(edited.find((s) => s.origin === "media_rule")?.body).toContain('category="expression"');
+    // No fake classification: the rule never claims a message IS an expression; wording is conditional.
+    expect(annex?.body).not.toContain("这张图是表情图。");
+  });
   it("omits disabled or empty modules and does not mutate the snapshot", () => {
     const input = {
       ...base,
@@ -348,8 +407,11 @@ describe("QQ prompt assembly", () => {
       material: [{ title: "关闭模块", body: " " }],
     };
     const before = JSON.stringify(input);
+    // The §7.3 expression rule is an unconditional conditional-wording annex (it must reach
+    // native calls whose timeline carries no media marks), so media_rule stays present.
     expect(buildQqPrompt(input).map((s) => s.origin)).toEqual([
       "scene",
+      "media_rule",
       "path",
       "task",
       "scoring",

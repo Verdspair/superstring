@@ -113,7 +113,13 @@ function setup(input: { watermarkTrigger: number }) {
     probeModelLoaded: async () => true,
     loadedContextCapacity: async () => 65536,
     async complete(request) {
-      const data = JSON.parse(request.messages[1].content);
+      // 网关契约的 wire messages 自 preparedFrom 起可选（钩子路径不传它）。本夹具是无钩子
+      // 的纯文字调用：wire 消息必到，缺了就当场失败，不静默跳过断言。
+      const messages = request.messages;
+      if (messages === undefined) throw new Error("wire messages expected in text fixture");
+      const firstRaw = messages[1].content;
+      if (typeof firstRaw !== "string") throw new Error("text content expected");
+      const data = JSON.parse(firstRaw);
       if (data.events)
         return JSON.stringify({
           facts: data.events.map((event: { id: string; speaker: string }) => ({

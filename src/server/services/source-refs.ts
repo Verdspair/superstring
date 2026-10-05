@@ -5,10 +5,14 @@ export function uniqueSources(sources: readonly SourceRef[]): SourceRef[] {
   for (const source of sources) {
     const key = JSON.stringify([source.kind, source.id, source.revision]);
     const old = result.get(key);
-    result.set(
-      key,
-      old?.expiresAt && (!source.expiresAt || old.expiresAt < source.expiresAt) ? old : source,
-    );
+    if (!old) {
+      result.set(key, source);
+      continue;
+    }
+    const keepOld =
+      !!old.expiresAt &&
+      (!source.expiresAt || Date.parse(old.expiresAt) < Date.parse(source.expiresAt));
+    result.set(key, keepOld ? old : source);
   }
   return [...result.values()];
 }

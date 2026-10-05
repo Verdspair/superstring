@@ -35,19 +35,20 @@ import {
 } from "../../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
-import { invalidSchemeInputs } from "../../features/qq/draft-state";
+import { invalidSchemeInputs, invalidSchemeTimezone } from "../../features/qq/draft-state";
 import { qqSchemeChanges, qqSchemeDirty } from "../../features/qq/types";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { TRIGGER_LABELS } from "./binding-editor";
+import { QqMessagePreview } from "./qq-message-preview";
 import {
   fieldBounds,
   headroomPercentBounds,
   imageFields,
   localClock,
-  type NumericGroup,
-  numericGroups,
+  type NumberEditorGroup,
+  numberEditorGroups,
   participationFields,
   type SchemeTask,
   schemeFieldTask,
@@ -60,6 +61,10 @@ const schemeBooleanFields: ReadonlySet<string> = new Set([
   ...Object.keys(TRIGGER_LABELS).map((key) => `triggers.${key}`),
   "rhythm.active_hours_enabled",
   "reply.split_by_speaker",
+  // 0052 的 stages 布尔同样按开/关渲染（人话，不出现 true/false）。
+  "media_input.stages.decision",
+  "media_input.stages.evaluation",
+  "media_input.stages.generation",
 ]);
 
 const schemeFieldLabels: Readonly<Record<string, string>> = {
@@ -95,6 +100,20 @@ const schemeFieldLabels: Readonly<Record<string, string>> = {
   "prompts.media": "connections.mediaNoteTask",
   "prompts.compress": "connections.watermarkCompressionTask",
   "reply.split_by_speaker": "connections.answerEachSpeakerSeparately",
+  // 0052 两组（与 draft-state 的全局标签映射同批；值行仍按 previewValue 特判）。
+  "message_settings.reply_mode": "connections.quoteReplyMode",
+  "message_settings.reply_depth": "connections.quoteDepth",
+  "message_settings.time_display": "connections.timeDisplayMode",
+  "message_settings.timezone": "connections.timezone",
+  "media_input.mode": "connections.imageInputMode",
+  "media_input.stages.decision": "schemes.studio.stageDecision",
+  "media_input.stages.evaluation": "schemes.studio.stageEvaluation",
+  "media_input.stages.generation": "schemes.studio.stageGeneration",
+  "media_input.max_images": "connections.maxAutoImages",
+  "media_input.ordinary_still_max_dimension": "connections.ordinaryStillMaxDimension",
+  "media_input.expression_max_dimension": "connections.expressionStillMaxDimension",
+  "media_input.expression_frame_count": "connections.expressionFrameCount",
+  "media_input.expression_frame_max_dimension": "connections.expressionFrameMaxDimension",
 };
 
 /**
@@ -114,7 +133,7 @@ function StudioGroup({
   return (
     <Card size="sm" className="min-w-0 gap-0 pt-0">
       <CardHeader className="border-b bg-muted/50">
-        <CardTitle className="text-sm">{t(title)}</CardTitle>
+        <CardTitle className="text-sm">{title}</CardTitle>
         {description && <CardDescription className="text-xs">{t(description)}</CardDescription>}
       </CardHeader>
       <CardContent className="space-y-5 pt-3">{children}</CardContent>
@@ -134,21 +153,42 @@ function schemeCollectionNames(
     .join("、");
 }
 
+/** 枚举选项的中话标签（值原样进入载荷，不在这里改写契约值）。 */
+const schemeEnumLabels: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "message_settings.reply_mode": {
+    one_then_on_demand: "connections.quoteMode.one_then_on_demand",
+    configured_depth: "connections.quoteMode.configured_depth",
+  },
+  "message_settings.time_display": {
+    full: "connections.timeDisplay.full",
+    full_relative: "connections.timeDisplay.full_relative",
+    hybrid: "connections.timeDisplay.hybrid",
+  },
+  "media_input.mode": {
+    native: "connections.imageMode.native",
+    description: "connections.imageMode.description",
+  },
+};
+
 /**
  * 数字输入：原文留在草稿里，只有契约 schema 认可的值才写回方案；无效原文不丢弃、保存被禁用。
  * min/max/step 现读契约（fieldBounds），浏览器拦下的范围就是服务端会拒绝的范围；
  * 错误用 aria-describedby 挂在同一个输入上，另有页脚的「定位」按钮把焦点送回这里。
+ * 0052 的两组编辑器组同样走这里（messageSettings/mediaInput），canonical 键保持 message_settings.<key>。
  */
 function SchemeNumber({
   group,
   name,
   label,
   info,
+  disabled = false,
 }: {
-  group: NumericGroup;
+  group: NumberEditorGroup;
   name: string;
   label: string;
   info?: string;
+  /** 外部条件禁用（如 one_then_on_demand 下的层数）：控件不可改，配置值原样保留。 */
+  disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const {
@@ -164,14 +204,14 @@ function SchemeNumber({
   const errorId = `${inputId}-error`;
   const bounds = fieldBounds(group, name);
   const value = (editor[group] as unknown as Record<string, number>)[name] ?? 0;
-  const schema = (
-    numericGroups[group].shape as Record<
+  const fieldSchema = (
+    numberEditorGroups[group].shape as Record<
       string,
-      { safeParse: (v: unknown) => { success: boolean } }
+      { safeParse: (v: unknown) => { success: boolean } } | undefined
     >
   )[name];
   const valid = (raw: string) =>
-    raw.trim() !== "" && schema?.safeParse(Number(raw)).success === true;
+    raw.trim() !== "" && fieldSchema?.safeParse(Number(raw)).success === true;
   const clear = () => {
     setTexts((old) => {
       const next = { ...old };
@@ -192,7 +232,7 @@ function SchemeNumber({
         min={bounds.min}
         max={bounds.max}
         step={bounds.step}
-        disabled={saving}
+        disabled={saving || disabled}
         value={texts[id] ?? String(value)}
         aria-invalid={!!invalid[id]}
         aria-describedby={invalid[id] ? errorId : undefined}
@@ -214,6 +254,269 @@ function SchemeNumber({
           if (valid(raw)) {
             patch(group, { [name]: Number(raw) });
             clear();
+          } else
+            setInvalid((old) => ({
+              ...old,
+              [id]: t("schemes.studio.integerRange", {
+                "0": String(bounds.min ?? ""),
+                "1": String(bounds.max ?? ""),
+              }),
+            }));
+        }}
+      />
+      {invalid[id] && (
+        <p id={errorId} className="text-xs text-destructive" role="alert">
+          {invalid[id]}
+        </p>
+      )}
+    </Field>
+  );
+}
+
+/** 枚举选择（引用模式/时间模式/图片输入模式）：选项显示人话，载荷原样存契约值。 */
+function SchemeEnum({
+  group,
+  name,
+  label,
+  info,
+}: {
+  group: "messageSettings" | "mediaInput";
+  name: string;
+  label: string;
+  info?: string;
+}) {
+  const { t } = useTranslation();
+  const {
+    qqSchemeEditor: editor,
+    qqSchemeSaving: saving,
+    patchQqSchemeGroup: patch,
+  } = useSuperstringStore();
+  if (!editor) return null;
+  const value = (editor[group] as unknown as Record<string, string>)[name];
+  // 选项标签按 canonical 持久键查（message_settings/media_input），与预览的 field 键一致。
+  const canonicalGroup = group === "messageSettings" ? "message_settings" : "media_input";
+  const labels = schemeEnumLabels[`${canonicalGroup}.${name}`] ?? {};
+  return (
+    <Field label={label} info={info}>
+      <NativeSelect
+        id={`scheme-field-${group}.${name}`}
+        data-field={`${group}.${name}`}
+        disabled={saving}
+        value={value}
+        onChange={(e) => patch(group, { [name]: e.target.value })}
+      >
+        {Object.entries(labels).map(([key, labelKey]) => (
+          <option key={key} value={key}>
+            {t(labelKey)}
+          </option>
+        ))}
+      </NativeSelect>
+    </Field>
+  );
+}
+
+/**
+ * 时区：可输入可选择的自由文本。合法 IANA 名称写进编辑器；非法原文留在 schemeTexts 并
+ * aria 关联错误（invalidSchemeTimezone 拦页内/复制/统一保存），不洗成默认值。
+ */
+function SchemeTimezone({ label }: { label: string }) {
+  const { t } = useTranslation();
+  const {
+    qqSchemeEditor: editor,
+    qqSchemeSaving: saving,
+    patchQqSchemeGroup: patch,
+  } = useSuperstringStore();
+  const [texts, setTexts] = useQqInput("schemeTexts");
+  const [invalid, setInvalid] = useQqInput("schemeInvalid");
+  if (!editor) return null;
+  const id = "message_settings.timezone";
+  const inputId = `scheme-field-${id}`;
+  const errorId = `${inputId}-error`;
+  const raw = texts[id];
+  const valid = (value: string) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: value.trim() });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const suggestions = [
+    "Asia/Shanghai",
+    "Asia/Tokyo",
+    "Asia/Hong_Kong",
+    "Asia/Singapore",
+    "Europe/London",
+    "America/New_York",
+    "UTC",
+  ];
+  return (
+    <Field label={label} info="connections.timezoneHint">
+      <Input
+        id={inputId}
+        type="text"
+        list="scheme-timezone-suggestions"
+        disabled={saving}
+        value={raw ?? editor.messageSettings.timezone}
+        aria-invalid={!!invalid[id]}
+        aria-describedby={invalid[id] ? errorId : undefined}
+        onChange={(e) => {
+          const value = e.target.value;
+          setTexts((old) => ({ ...old, [id]: value }));
+          if (valid(value)) {
+            patch("messageSettings", { timezone: value.trim() });
+            setInvalid((old) => {
+              const next = { ...old };
+              delete next[id];
+              return next;
+            });
+          } else setInvalid((old) => ({ ...old, [id]: t("connections.timezoneInvalid") }));
+        }}
+      />
+      <datalist id="scheme-timezone-suggestions">
+        {suggestions.map((zone) => (
+          <option key={zone} value={zone} />
+        ))}
+      </datalist>
+      {invalid[id] && (
+        <p id={errorId} className="text-xs text-destructive" role="alert">
+          {invalid[id]}
+        </p>
+      )}
+    </Field>
+  );
+}
+
+/** 图片输入的阶段开关：独立三开关，全关合法（图片能力开着但不自动发画面，仅按需）。 */
+function StageSwitch({ phase }: { phase: "decision" | "evaluation" | "generation" }) {
+  const { t } = useTranslation();
+  const { qqSchemeEditor: editor, qqSchemeSaving: saving, patchQqScheme } = useSuperstringStore();
+  if (!editor) return null;
+  const labelKey = `schemes.studio.stage${phase[0].toUpperCase()}${phase.slice(1)}`;
+  const label = t(labelKey);
+  return (
+    <Label className="rounded-lg border p-4">
+      <Checkbox
+        disabled={saving}
+        aria-label={label}
+        checked={editor.mediaInput.stages[phase]}
+        onCheckedChange={(checked) =>
+          patchQqScheme({
+            mediaInput: {
+              ...editor.mediaInput,
+              stages: { ...editor.mediaInput.stages, [phase]: checked === true },
+            },
+          })
+        }
+      />
+      <span className="space-y-1">
+        <span className="block">{label}</span>
+        <span className="block text-xs font-normal leading-5 text-muted-foreground">
+          {t("schemes.studio.stageOffHint")}
+        </span>
+      </span>
+    </Label>
+  );
+}
+
+/**
+ * 普通静图规格：显式「原图 / 限制长边」二选一 + 数值输入。null＝原图是真实设置值，
+ * 不是 0 或缺省——不允许把 0 当成原图（0 不在契约 64–2048 内，会拦保存）。
+ */
+function OrdinaryStillSpec() {
+  const { t } = useTranslation();
+  const {
+    qqSchemeEditor: editor,
+    qqSchemeSaving: saving,
+    patchQqSchemeGroup: patch,
+  } = useSuperstringStore();
+  const [texts, setTexts] = useQqInput("schemeTexts");
+  const [invalid, setInvalid] = useQqInput("schemeInvalid");
+  if (!editor) return null;
+  const name = "ordinary_still_max_dimension";
+  const id = `media_input.${name}`;
+  const inputId = `scheme-field-${id}`;
+  const errorId = `${inputId}-error`;
+  const bounds = fieldBounds("mediaInput", name);
+  const current = editor.mediaInput[name];
+  const raw = texts[id];
+  const valid = (value: string) =>
+    value.trim() !== "" &&
+    /^\d+$/.test(value.trim()) &&
+    Number(value) >= 64 &&
+    Number(value) <= 2048;
+  const choose = (kind: "original" | "limited") => {
+    if (kind === "original") {
+      // 显式原图：写 null，清掉非法原文。
+      patch("mediaInput", { [name]: null });
+      setTexts((old) => {
+        const next = { ...old };
+        delete next[id];
+        return next;
+      });
+      setInvalid((old) => {
+        const next = { ...old };
+        delete next[id];
+        return next;
+      });
+    } else if (current === null) {
+      // 从原图切到限制长边：无先前数值，给契约下限起步（不是 0）。
+      patch("mediaInput", { [name]: 64 });
+    }
+  };
+  return (
+    // Field 的 control 探测取第一个表单子件（选择框），htmlFor 正确挂到它；
+    // 数值框各自带显式 aria-label「长边上限」，两个控件可标注名不同，测试可各自唯一定位。
+    <Field label="connections.ordinaryStillChoice" info="connections.ordinaryStillOriginal">
+      <NativeSelect
+        id={`${inputId}-choice`}
+        data-field={`${id}.choice`}
+        disabled={saving}
+        value={current === null ? "original" : "limited"}
+        onChange={(e) => choose(e.target.value === "original" ? "original" : "limited")}
+      >
+        <option value="original">{t("connections.ordinaryStillOriginal")}</option>
+        <option value="limited">{t("connections.ordinaryStillLimited")}</option>
+      </NativeSelect>
+      <Input
+        id={inputId}
+        type="number"
+        min={bounds.min}
+        max={bounds.max}
+        step={bounds.step}
+        /* 嵌套组合件各自显式命名：数值框用「长边上限」，选择（含 Field 标题）用「规格」。 */
+        aria-label={t("connections.ordinaryStillMaxDimension")}
+        disabled={saving || current === null}
+        value={raw ?? String(current ?? 64)}
+        aria-invalid={!!invalid[id]}
+        aria-describedby={invalid[id] ? errorId : undefined}
+        onChange={(e) => {
+          const value = e.target.value;
+          setTexts((old) => ({ ...old, [id]: value }));
+          if (valid(value)) {
+            patch("mediaInput", { [name]: Number(value) });
+            setInvalid((old) => {
+              const next = { ...old };
+              delete next[id];
+              return next;
+            });
+          }
+        }}
+        onBlur={() => {
+          const value = texts[id];
+          if (value === undefined || current === null) return;
+          if (valid(value)) {
+            patch("mediaInput", { [name]: Number(value) });
+            setInvalid((old) => {
+              const next = { ...old };
+              delete next[id];
+              return next;
+            });
+            setTexts((old) => {
+              const next = { ...old };
+              delete next[id];
+              return next;
+            });
           } else
             setInvalid((old) => ({
               ...old,
@@ -442,9 +745,14 @@ export function SchemeStudio() {
       const minutes = Number(raw);
       return Number.isFinite(minutes) ? localClock(minutes) : raw;
     }
-    return schemeBooleanFields.has(field) && (raw === "true" || raw === "false")
-      ? t(raw === "true" ? "connections.on" : "connections.off")
-      : raw;
+    if (schemeBooleanFields.has(field) && (raw === "true" || raw === "false"))
+      return t(raw === "true" ? "connections.on" : "connections.off");
+    // 0052 枚举：预览按选项人话渲染（null 原图读「原图」，其余数字/文本原样）。
+    const enumLabels = schemeEnumLabels[field];
+    if (enumLabels?.[raw]) return t(enumLabels[raw]);
+    if (field === "media_input.ordinary_still_max_dimension" && raw === "null")
+      return t("connections.ordinaryStillOriginal");
+    return raw;
   };
   const invalidFields = [
     ...new Set([
@@ -631,7 +939,7 @@ export function SchemeStudio() {
                   </Field>
                 </div>
                 <StudioGroup
-                  title="connections.speechTriggers"
+                  title={t("connections.speechTriggers")}
                   description="schemes.studio.triggersHint"
                 >
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -659,7 +967,7 @@ export function SchemeStudio() {
                   </div>
                 </StudioGroup>
                 <StudioGroup
-                  title="schemes.studio.rhythmTitle"
+                  title={t("schemes.studio.rhythmTitle")}
                   description="schemes.studio.rhythmHint"
                 >
                   <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
@@ -675,7 +983,7 @@ export function SchemeStudio() {
                   </div>
                 </StudioGroup>
                 <StudioGroup
-                  title="connections.allowedHours"
+                  title={t("connections.allowedHours")}
                   description="connections.useLocalTimeEqualStartAndEndMeansAll"
                 >
                   <Label>
@@ -722,7 +1030,7 @@ export function SchemeStudio() {
                   </p>
                 </StudioGroup>
                 <StudioGroup
-                  title="schemes.studio.judgePrompt"
+                  title={t("schemes.studio.judgePrompt")}
                   description="connections.decideWhetherToSpeak"
                 >
                   <PromptEditor slot="judge" titleKey="connections.judgementTask" />
@@ -730,7 +1038,7 @@ export function SchemeStudio() {
               </TabsContent>
               <TabsContent value="response" className="m-0 space-y-6">
                 <StudioGroup
-                  title="schemes.studio.replyStructure"
+                  title={t("schemes.studio.replyStructure")}
                   description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
                 >
                   <Label>
@@ -745,7 +1053,7 @@ export function SchemeStudio() {
                   </Label>
                 </StudioGroup>
                 <StudioGroup
-                  title="schemes.studio.replyTasks"
+                  title={t("schemes.studio.replyTasks")}
                   description="schemes.studio.replyTasksHint"
                 >
                   {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
@@ -771,13 +1079,48 @@ export function SchemeStudio() {
                 </StudioGroup>
               </TabsContent>
               <TabsContent value="context" className="m-0 space-y-6">
+                {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
+                    不参与运行（禁用但配置保留），切回按层数即恢复。 */}
+                <StudioGroup
+                  title={t("schemes.studio.messageRelations")}
+                  description="schemes.studio.messageRelationsHint"
+                >
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <SchemeEnum
+                      group="messageSettings"
+                      name="reply_mode"
+                      label="connections.quoteReplyMode"
+                    />
+                    <SchemeNumber
+                      group="messageSettings"
+                      name="reply_depth"
+                      label="connections.quoteDepth"
+                      info="connections.quoteDepthHint"
+                      // one_then_on_demand 下层数不参与运行：禁用但配置保留，切回按层数即恢复。
+                      disabled={editor.messageSettings.reply_mode === "one_then_on_demand"}
+                    />
+                    <SchemeEnum
+                      group="messageSettings"
+                      name="time_display"
+                      label="connections.timeDisplayMode"
+                    />
+                    <SchemeTimezone label="connections.timezone" />
+                  </div>
+                  <QqMessagePreview
+                    settings={
+                      invalidSchemeTimezone(useSuperstringStore.getState()) === null
+                        ? editor.messageSettings
+                        : null
+                    }
+                  />
+                </StudioGroup>
                 {(["judgement", "reply"] as const).map((part) => (
                   <StudioGroup
                     key={part}
                     title={
                       part === "judgement"
-                        ? "connections.judgementContext"
-                        : "connections.replyContext"
+                        ? t("connections.judgementContext")
+                        : t("connections.replyContext")
                     }
                     description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                   >
@@ -823,7 +1166,7 @@ export function SchemeStudio() {
                   </StudioGroup>
                 ))}
                 <StudioGroup
-                  title="connections.compressionAndAssembly"
+                  title={t("connections.compressionAndAssembly")}
                   description="schemes.studio.compressionHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -868,8 +1211,52 @@ export function SchemeStudio() {
                 </div>
               </TabsContent>
               <TabsContent value="media" className="m-0 space-y-6">
+                {/* 0052 图片输入：模式/阶段/图数/规格；普通动图沿用下方既有 rhythm 真源不重复存储。 */}
                 <StudioGroup
-                  title="schemes.studio.imageParams"
+                  title={t("schemes.studio.imageInput")}
+                  description="schemes.studio.imageInputHint"
+                >
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <SchemeEnum
+                      group="mediaInput"
+                      name="mode"
+                      label="connections.imageInputMode"
+                      info={
+                        editor.mediaInput.mode === "description"
+                          ? "connections.imageMode.descriptionHint"
+                          : "connections.imageMode.nativeHint"
+                      }
+                    />
+                    <SchemeNumber
+                      group="mediaInput"
+                      name="max_images"
+                      label="connections.maxAutoImages"
+                    />
+                    <SchemeNumber
+                      group="mediaInput"
+                      name="expression_max_dimension"
+                      label="connections.expressionStillMaxDimension"
+                    />
+                    <OrdinaryStillSpec />
+                    <SchemeNumber
+                      group="mediaInput"
+                      name="expression_frame_count"
+                      label="connections.expressionFrameCount"
+                    />
+                    <SchemeNumber
+                      group="mediaInput"
+                      name="expression_frame_max_dimension"
+                      label="connections.expressionFrameMaxDimension"
+                    />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <StageSwitch phase="decision" />
+                    <StageSwitch phase="evaluation" />
+                    <StageSwitch phase="generation" />
+                  </div>
+                </StudioGroup>
+                <StudioGroup
+                  title={t("schemes.studio.imageParams")}
                   description="schemes.studio.imageParamsHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -879,7 +1266,7 @@ export function SchemeStudio() {
                   </div>
                 </StudioGroup>
                 <StudioGroup
-                  title="schemes.studio.stickerParams"
+                  title={t("schemes.studio.stickerParams")}
                   description="schemes.studio.stickerParamsHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
@@ -889,7 +1276,7 @@ export function SchemeStudio() {
                   </div>
                 </StudioGroup>
                 <StudioGroup
-                  title="connections.authorizedCollections"
+                  title={t("connections.authorizedCollections")}
                   description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
                 >
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -921,7 +1308,7 @@ export function SchemeStudio() {
                   </Button>
                 </StudioGroup>
                 <StudioGroup
-                  title="schemes.studio.mediaPrompts"
+                  title={t("schemes.studio.mediaPrompts")}
                   description="schemes.studio.mediaPromptsHint"
                 >
                   <PromptEditor

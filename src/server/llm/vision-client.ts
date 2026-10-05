@@ -10,7 +10,12 @@
 // always sent (LM Studio rejects unauthenticated calls once it requires a token), the timeout is
 // the config's whole-turn budget, and a non-2xx answer is an error rather than an empty string.
 
-import { DEFAULT_LM_STUDIO_API_KEY, type LmStudioConfig, mapModelError } from "./model-gateway";
+import {
+  DEFAULT_LM_STUDIO_API_KEY,
+  type LmStudioConfig,
+  localhostFetch,
+  mapModelError,
+} from "./model-gateway";
 import {
   type StructuredOutputLevel,
   strictSchemaAccepted,
@@ -71,7 +76,7 @@ export interface VisionExternalRoute {
 /** `fetchImpl` is injected so the request shape can be asserted without a model service. */
 export function createLmStudioVisionClient(
   config: LmStudioConfig,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl?: typeof fetch,
   options: { readonly externalModel?: (model: string) => VisionExternalRoute | null } = {},
 ): VisionClient {
   const routeFor = (model: string): LmStudioConfig => {
@@ -98,6 +103,8 @@ export function createLmStudioVisionClient(
       const external = options.externalModel?.(request.model) ?? null;
       const routed = routeFor(request.model);
       const key = structuredOutputKey(routed.baseUrl, request.model);
+      // 默认走 localhostFetch：本地模型服务不经过 HTTP 代理（与网关同一条规则）。
+      const sendFetch = fetchImpl ?? localhostFetch;
       const send = async (level: StructuredOutputLevel) => {
         const body: Record<string, unknown> = {
           model: request.model,
@@ -126,7 +133,7 @@ export function createLmStudioVisionClient(
         const startedAt = Date.now();
         let response: Response;
         try {
-          response = await fetchImpl(`${routed.baseUrl}/chat/completions`, {
+          response = await sendFetch(`${routed.baseUrl}/chat/completions`, {
             method: "POST",
             headers: {
               "content-type": "application/json",

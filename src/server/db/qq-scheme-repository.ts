@@ -4,11 +4,17 @@
 import { asc, eq } from "drizzle-orm";
 import {
   QQ_COMPRESSION_DEFAULT,
+  QQ_MEDIA_INPUT_SCHEME_DEFAULT,
+  QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
   QQ_MODEL_OUTPUT_RESERVE_DEFAULT,
   QQ_REPLY_DEFAULT,
   QQ_STICKER_DEDUP_DEFAULT,
   type QqSchemeCompression,
   type QqSchemeContext,
+  type QqSchemeMediaInput,
+  QqSchemeMediaInputSchema,
+  type QqSchemeMessageSettings,
+  QqSchemeMessageSettingsSchema,
   type QqSchemeOutputReserve,
   type QqSchemePrompts,
   type QqSchemeReply,
@@ -37,6 +43,7 @@ import {
   parseQqSchemeStickerCollections,
   parseQqSchemeStickers,
 } from "../services/qq-sticker-contract";
+import { stableStringify } from "./json-text";
 import { newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -89,6 +96,17 @@ export interface QqSchemeInput {
    * nobody can reason about, and every slot is non-blank in the schema anyway.
    */
   prompts?: QqSchemePrompts;
+  /**
+   * 消息设置组（0052，规格 §5/§6）：引用模式、层数、时间模式、时区。与其他 JSON 组同一规矩：
+   * 省略＝更新时不动、新建时落已批准默认组（写入侧补默认，不是 NULL）。
+   */
+  messageSettings?: QqSchemeMessageSettings;
+  /**
+   * 图片输入组（0052，规格 §7）：模式、阶段开关、图数与规格。省略＝更新时不动、新建时落
+   * 已批准默认组。`ordinary_still_max_dimension: null` 是「原图」这个真实设置值；普通动图的
+   * 帧数/尺寸不在这组里（rhythm 是唯一真源），故存储时不得复制第二份。
+   */
+  mediaInput?: QqSchemeMediaInput;
 }
 
 /**
@@ -118,8 +136,56 @@ function parseQqSchemeReply(input: unknown): QqSchemeReply {
   return Object.freeze(result.data);
 }
 
+/**
+ * 严格 JSON 列的读取：值以 TEXT 存储（schema 的 json_valid CHECK 只保证合法 JSON object），
+ * 读出口先 JSON.parse 再过契约——组不过契约（含坏 JSON）就抛 TypeError，不把 ZodError 或
+ * 半截对象漏给调用方。
+ */
+function parseJsonColumn(value: string, what: string): unknown {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new TypeError(`Invalid QQ scheme ${what}: not valid JSON`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new TypeError(`Invalid QQ scheme ${what}: not a JSON object`);
+  }
+  return parsed;
+}
+
+function parseQqSchemeMessageSettings(input: unknown): QqSchemeMessageSettings {
+  const result = QqSchemeMessageSettingsSchema.safeParse(input);
+  if (!result.success) throw new TypeError("Invalid QQ scheme message settings");
+  return Object.freeze(result.data);
+}
+
+function parseQqSchemeMediaInput(input: unknown): QqSchemeMediaInput {
+  const result = QqSchemeMediaInputSchema.safeParse(input);
+  if (!result.success) throw new TypeError("Invalid QQ scheme media input");
+  return Object.freeze(result.data);
+}
+
 function replyColumns(reply: QqSchemeReply) {
   return { splitReplyBySpeaker: reply.split_by_speaker ? 1 : 0 };
+}
+
+/**
+ * 消息设置组（0052）。行值是严格 JSON（TEXT 存储，读出口先解析）；NULL（理论上只出现在
+ * 未经写入侧补默认的旧路径）按已批准默认组兜底，与迁移 0052 的回填语义一致。
+ */
+export function schemeMessageSettings(row: QqSchemeRow): QqSchemeMessageSettings {
+  if (row.messageSettings === null) return QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT;
+  return parseQqSchemeMessageSettings(parseJsonColumn(row.messageSettings, "message_settings"));
+}
+
+/**
+ * 图片输入组（0052）。NULL 兜底同上（迁移回填统一 native），普通动图的帧数/尺寸不在这组里，
+ * 仍从 rhythm 的真源读取。
+ */
+export function schemeMediaInput(row: QqSchemeRow): QqSchemeMediaInput {
+  if (row.mediaInput === null) return QQ_MEDIA_INPUT_SCHEME_DEFAULT;
+  return parseQqSchemeMediaInput(parseJsonColumn(row.mediaInput, "media_input"));
 }
 
 function triggerColumns(triggers: QqSpeechTriggers) {
@@ -351,6 +417,14 @@ function promptColumns(prompts: QqSchemePrompts) {
   };
 }
 
+/** 0052 的两组严格 JSON：写入侧整组序列化（stages 整组、null 原图原样），不落半截组。 */
+function messageSettingsColumns(value: QqSchemeMessageSettings) {
+  return { messageSettings: stableStringify(parseQqSchemeMessageSettings(value)) };
+}
+function mediaInputColumns(value: QqSchemeMediaInput) {
+  return { mediaInput: stableStringify(parseQqSchemeMediaInput(value)) };
+}
+
 function samePrompts(left: QqSchemePrompts, right: QqSchemePrompts): boolean {
   // Field-by-field rather than a JSON comparison: the six slots are the contract, and a slot
   // added later must make this function fail to compile rather than pass silently.
@@ -362,6 +436,32 @@ function samePrompts(left: QqSchemePrompts, right: QqSchemePrompts): boolean {
     left.sticker === right.sticker &&
     left.media === right.media &&
     left.compress === right.compress
+  );
+}
+
+/** 0052 两组的逐字段比较：归一化后逐字段，键序差异不算变化（stableStringify 比较同效果，显式逐字段更严）。 */
+function sameMessageSettings(
+  left: QqSchemeMessageSettings,
+  right: QqSchemeMessageSettings,
+): boolean {
+  return (
+    left.reply_mode === right.reply_mode &&
+    left.reply_depth === right.reply_depth &&
+    left.time_display === right.time_display &&
+    left.timezone === right.timezone
+  );
+}
+function sameMediaInput(left: QqSchemeMediaInput, right: QqSchemeMediaInput): boolean {
+  return (
+    left.mode === right.mode &&
+    left.stages.decision === right.stages.decision &&
+    left.stages.evaluation === right.stages.evaluation &&
+    left.stages.generation === right.stages.generation &&
+    left.max_images === right.max_images &&
+    left.ordinary_still_max_dimension === right.ordinary_still_max_dimension &&
+    left.expression_max_dimension === right.expression_max_dimension &&
+    left.expression_frame_count === right.expression_frame_count &&
+    left.expression_frame_max_dimension === right.expression_frame_max_dimension
   );
 }
 
@@ -383,6 +483,8 @@ export function schemeResponse(orm: Orm, row: QqSchemeRow): QqSchemeResponse {
     sticker_collections: { collection_ids: schemeStickerCollectionIds(orm, row.id) },
     prompts: schemePrompts(row),
     reply: schemeReply(row),
+    message_settings: schemeMessageSettings(row),
+    media_input: schemeMediaInput(row),
     revision: row.revision,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
@@ -392,6 +494,7 @@ export function schemeResponse(orm: Orm, row: QqSchemeRow): QqSchemeResponse {
 /**
  * 组值 → 行上对应的列覆盖：本群生效行（基础行 + 覆盖列）唯一组装点。
  * 列名与组的对应关系只维护在这里，调用方拿到的永远是完整组值，不做逐字段的列拼接。
+ * 0052 的两组：调用方（runtime 生效行）传入合并后的完整组，序列化成严格 JSON 列。
  */
 export function schemeColumnsFromGroups(groups: {
   triggers: QqSpeechTriggers;
@@ -402,6 +505,8 @@ export function schemeColumnsFromGroups(groups: {
   stickers: QqSchemeStickers;
   prompts: QqSchemePrompts;
   reply: QqSchemeReply;
+  messageSettings?: QqSchemeMessageSettings;
+  mediaInput?: QqSchemeMediaInput;
 }): Partial<QqSchemeRow> {
   return {
     ...triggerColumns(groups.triggers),
@@ -412,6 +517,8 @@ export function schemeColumnsFromGroups(groups: {
     ...stickerColumns(groups.stickers),
     ...promptColumns(groups.prompts),
     ...replyColumns(groups.reply),
+    ...(groups.messageSettings === undefined ? {} : messageSettingsColumns(groups.messageSettings)),
+    ...(groups.mediaInput === undefined ? {} : mediaInputColumns(groups.mediaInput)),
   };
 }
 
@@ -521,6 +628,9 @@ export function createQqScheme(orm: Orm, input: QqSchemeInput): QqSchemeRow {
           ...stickerColumns(input.stickers ?? QQ_STICKER_DEDUP_DEFAULT),
           ...promptColumns(parseQqSchemePrompts(input.prompts ?? QQ_PROMPT_DEFAULTS)),
           ...replyColumns(parseQqSchemeReply(input.reply ?? QQ_REPLY_DEFAULT)),
+          // 0052 写入侧补默认（T12）：未提供的两组落完整 JSON，而不是靠读取兜底的 NULL。
+          ...messageSettingsColumns(input.messageSettings ?? QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT),
+          ...mediaInputColumns(input.mediaInput ?? QQ_MEDIA_INPUT_SCHEME_DEFAULT),
           createdAt: nowIso(),
           updatedAt: nowIso(),
         })
@@ -580,6 +690,15 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
     input.prompts === undefined ? currentPrompts : parseQqSchemePrompts(input.prompts);
   const currentReply = schemeReply(current);
   const nextReply = input.reply === undefined ? currentReply : parseQqSchemeReply(input.reply);
+  // 0052 两组：未提供＝保持现值（读出口已按默认兜底），整组来或整组不动。
+  const currentMessageSettings = schemeMessageSettings(current);
+  const nextMessageSettings =
+    input.messageSettings === undefined
+      ? currentMessageSettings
+      : parseQqSchemeMessageSettings(input.messageSettings);
+  const currentMediaInput = schemeMediaInput(current);
+  const nextMediaInput =
+    input.mediaInput === undefined ? currentMediaInput : parseQqSchemeMediaInput(input.mediaInput);
   const currentCollectionIds = schemeStickerCollectionIds(orm, id);
   const nextCollectionIds =
     input.stickerCollections === undefined
@@ -599,6 +718,8 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
     sameStickers(currentStickers, nextStickers) &&
     samePrompts(currentPrompts, nextPrompts) &&
     nextReply.split_by_speaker === currentReply.split_by_speaker &&
+    sameMessageSettings(currentMessageSettings, nextMessageSettings) &&
+    sameMediaInput(currentMediaInput, nextMediaInput) &&
     !collectionsChanged
   ) {
     return current;
@@ -618,6 +739,8 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
           ...stickerColumns(nextStickers),
           ...promptColumns(nextPrompts),
           ...replyColumns(nextReply),
+          ...messageSettingsColumns(nextMessageSettings),
+          ...mediaInputColumns(nextMediaInput),
           revision: current.revision + 1,
           updatedAt: nowIso(),
         })

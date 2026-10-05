@@ -166,13 +166,41 @@ export function nextStructuredOutputLevel(
 }
 
 /**
+ * 「请求**内容**被拒」的内部标记：网关在 HTTP 边界认出图片格式/尺寸/URL/schema/解码这类
+ * 内容层面错误时打上（见 model-gateway 的分类器）。它不是错误码，不进信封；唯一读者是
+ * `structuredOutputRejected`——内容问题没有形状降级资格，降级只会原样重传图字节并把该服务
+ * 误记成"不支持 tools/schema"。
+ */
+const IMAGE_CONTENT_REJECTED: unique symbol = Symbol("model.imageContentRejected");
+
+interface ContentMarkedError {
+  [IMAGE_CONTENT_REJECTED]?: boolean;
+}
+
+/** 打标记；非 Error 原样返回（无状态可标，调用方按原路径抛出）。 */
+export function markImageContentRejection(error: unknown): unknown {
+  if (error instanceof Error) (error as Error & ContentMarkedError)[IMAGE_CONTENT_REJECTED] = true;
+  return error;
+}
+
+/** 这个错误被 HTTP 边界标成内容拒绝了吗？ */
+export function imageContentRejection(error: unknown): boolean {
+  return (error as ContentMarkedError | null)?.[IMAGE_CONTENT_REJECTED] === true;
+}
+
+/**
  * 这个失败值得降级吗？只有"请求形状被服务端拒绝"才算。
  *
  * 看 HTTP 状态而不是错误文字：4xx 是服务端在说"这个请求我不接受"，其中 401/403 是凭据问题
  * （降级只会掩盖真正的配置错误）。408（请求超时）与 429（限流）是暂时状态：误当形状拒绝降级，
- * 还会把该服务永久记成"不支持 tools"。
+ * 还会把该服务永久记成"不支持 tools"。413（输入超长）是请求体的问题，不是 schema/tools 的
+ * 形状问题：降级只会把全部图字节最多重传 5 次、再把该服务记成"不支持 tools"——输入超长故障
+ * 如实一次报错（规格 §9），修请求体或换容量，不靠降级重试。
+ * 被网关标成内容拒绝的错误（`markImageContentRejection`）一律没有降级资格：内容问题换一张
+ * 合法图片就该能发，重发同内容只会重传图字节、还会污染 tools/schema 档位。
  */
 export function structuredOutputRejected(error: unknown): boolean {
+  if (imageContentRejection(error)) return false;
   const status = (error as { status?: unknown } | null)?.status;
   return (
     typeof status === "number" &&
@@ -181,6 +209,7 @@ export function structuredOutputRejected(error: unknown): boolean {
     status !== 401 &&
     status !== 403 &&
     status !== 408 &&
+    status !== 413 &&
     status !== 429
   );
 }

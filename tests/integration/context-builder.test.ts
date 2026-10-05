@@ -88,7 +88,11 @@ class ContextGateway implements ModelGateway {
 
   async complete(call: CompleteCall): Promise<string> {
     this.completeCalls.push(call);
-    if (call.messages[0]?.content.includes("Return exactly one JSON decision"))
+    const firstContent = call.messages[0]?.content;
+    if (
+      typeof firstContent === "string" &&
+      firstContent.includes("Return exactly one JSON decision")
+    )
       return JSON.stringify({
         kind: "final",
         outputs: [{ kind: "generate", targetId: "reply", instructions: "" }],
@@ -603,7 +607,9 @@ describe("0.2.1 corrected summary lifecycle", () => {
           );
         const corrected = correct();
         ctx.gateway.completeReply = (call) => {
-          const data = JSON.parse(call.messages[1].content) as { turns: { id: string }[] };
+          const replyRaw = call.messages[1].content;
+          if (typeof replyRaw !== "string") throw new Error("text content expected");
+          const data = JSON.parse(replyRaw) as { turns: { id: string }[] };
           return JSON.stringify({
             facts: keepFact
               ? [
@@ -683,7 +689,9 @@ describe("0.2.1 corrected summary lifecycle", () => {
       };
       ctx.gateway.completeReply = (call) => {
         if (call.responseSchema?.title !== "SummaryResult") return JSON.stringify({ ids: [] });
-        const data = JSON.parse(call.messages[1].content) as {
+        const summaryRaw = call.messages[1].content;
+        if (typeof summaryRaw !== "string") throw new Error("text content expected");
+        const data = JSON.parse(summaryRaw) as {
           turns: Array<{ id: string }>;
           manual_corrections: Array<{ body: string }>;
         };
@@ -737,7 +745,10 @@ describe("0.2.1 corrected summary lifecycle", () => {
       const call = ctx.gateway.completeCalls.find(
         (item) => item.responseSchema?.title === "SummaryResult",
       );
-      expect(JSON.parse(call?.messages[1].content ?? "{}").manual_corrections).toEqual([]);
+      const callRaw = call?.messages[1].content ?? "{}";
+      expect(JSON.parse(typeof callRaw === "string" ? callRaw : "{}").manual_corrections).toEqual(
+        [],
+      );
     } finally {
       ctx.business.close();
     }
@@ -888,6 +899,7 @@ describe("R4 ContextBuilder end-to-end", () => {
         if (call.responseSchema?.title !== "SummaryResult") return JSON.stringify({ ids: [] });
         const message = call.messages.at(-1);
         if (!message) throw new Error("Missing summary input");
+        if (typeof message.content !== "string") throw new Error("text content expected");
         const data = JSON.parse(message.content);
         return JSON.stringify({
           facts: [
@@ -1324,7 +1336,9 @@ describe("R4 ContextBuilder end-to-end", () => {
     const current = activeTurn(ctx.orm, sessionId, "sum-now", "当前问题");
     ctx.gateway.completeReply = (call) => {
       if (String(call.responseSchema?.title) === "SummaryResult") {
-        const data = JSON.parse(call.messages[1].content) as { turns: Array<{ id: string }> };
+        const sumRaw = call.messages[1].content;
+        if (typeof sumRaw !== "string") throw new Error("text content expected");
+        const data = JSON.parse(sumRaw) as { turns: Array<{ id: string }> };
         return JSON.stringify({
           facts: data.turns.length
             ? [
@@ -1613,7 +1627,11 @@ function scriptedGateway(ctx: Setup, responses: string[]) {
   const base = ctx.gateway.complete.bind(ctx.gateway);
   ctx.gateway.complete = async (request) => {
     seen.push(request);
-    if (request.messages[0]?.content.includes("Return exactly one JSON decision"))
+    const decisionContent = request.messages[0]?.content;
+    if (
+      typeof decisionContent === "string" &&
+      decisionContent.includes("Return exactly one JSON decision")
+    )
       return responses.shift() ?? '{"kind":"none"}';
     return base(request);
   };
@@ -1622,6 +1640,7 @@ function scriptedGateway(ctx: Setup, responses: string[]) {
 function actionObservations(request: Parameters<ModelGateway["complete"]>[0]) {
   return request.messages.flatMap((message) => {
     try {
+      if (typeof message.content !== "string") return [];
       const data = JSON.parse(message.content) as { kind?: string; value?: unknown };
       return data.kind === "action_observation"
         ? [

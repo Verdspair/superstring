@@ -3,6 +3,16 @@
 
 import { z } from "zod";
 import { IsoTimestampSchema, nonBlankString, UuidSchema } from "./common";
+import {
+  QQ_MEDIA_INPUT_DEFAULT,
+  type QqMediaInputSettings,
+  QqMediaInputSettingsSchema,
+} from "./qq-media-input";
+import {
+  QQ_MESSAGE_SETTINGS_DEFAULT,
+  type QqMessageSettings,
+  QqMessageSettingsSchema,
+} from "./qq-message";
 
 /**
  * The four independently controllable speech paths, named exactly as the speech contract
@@ -622,6 +632,34 @@ export function qqEffectiveReplyPrompt(reply: string, splitReplyBySpeaker: boole
   return reply === QQ_REPLY_DEFAULT_PROMPT ? qqReplyTaskPrompt(splitReplyBySpeaker) : reply;
 }
 
+/**
+ * 消息关系与时间设置组（规格 §5/§6，0052 批次）：引用模式、层数、时间模式、时区。
+ *
+ * 归 QQ 方案、本群可稀疏覆盖；schema 与默认值都在 `qq-message.ts` 单源维护，这里只是把该组
+ * 挂进方案契约。省略＝新建用默认、更新保持不动（与其他 JSON 组同一语义；列在 T02 迁移落地）。
+ */
+export const QqSchemeMessageSettingsSchema = QqMessageSettingsSchema;
+export type QqSchemeMessageSettings = QqMessageSettings;
+/** 新方案的消息设置初值；与 `qq-message.ts` 的已批准默认值同源。 */
+export const QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT: QqSchemeMessageSettings = Object.freeze({
+  ...QQ_MESSAGE_SETTINGS_DEFAULT,
+});
+
+/**
+ * 图片输入设置组（规格 §7，0052 批次）：模式、三阶段独立开关、图数与规格。
+ *
+ * stages 的三个布尔互相独立、允许全 false（图片能力开但不自动发画面，仅按需），不强迫至少一
+ * 阶段；`ordinary_still_max_dimension: null` 表示原图——它是一个设置值，不是「跟随基础方案」。
+ * schema 与默认值在 `qq-media-input.ts` 单源维护；普通动图的帧数/尺寸不在本组重复存储，
+ * 装配时从既有 `rhythm.media_frame_count` / `media_max_dimension` 真源读取。
+ */
+export const QqSchemeMediaInputSchema = QqMediaInputSettingsSchema;
+export type QqSchemeMediaInput = QqMediaInputSettings;
+/** 新方案的图片输入初值；与 `qq-media-input.ts` 的已批准默认值同源。 */
+export const QQ_MEDIA_INPUT_SCHEME_DEFAULT: QqSchemeMediaInput = Object.freeze({
+  ...QQ_MEDIA_INPUT_DEFAULT,
+});
+
 export const QqSchemeResponseSchema = z.strictObject({
   id: UuidSchema,
   // `nonBlankString` rather than a bare min(1): a name of spaces is not a name, and the
@@ -637,6 +675,14 @@ export const QqSchemeResponseSchema = z.strictObject({
   sticker_collections: QqSchemeStickerCollectionsSchema,
   prompts: QqSchemePromptsSchema,
   reply: QqSchemeReplySchema,
+  /**
+   * 0052 的消息设置组。API 响应必须是完整已解析组：仓储从行数据解析输出，行值为 NULL 时
+   * 按 `QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT` 兜底（与迁移回填语义一致），不存在迁移间隙——
+   * 响应侧没有 optional 的形状。
+   */
+  message_settings: QqSchemeMessageSettingsSchema,
+  /** 0052 的图片输入组。同上：响应侧必填完整组，NULL 行按 `QQ_MEDIA_INPUT_SCHEME_DEFAULT` 兜底。 */
+  media_input: QqSchemeMediaInputSchema,
   revision: z.number().int().positive(),
   created_at: IsoTimestampSchema,
   updated_at: IsoTimestampSchema,
@@ -662,6 +708,10 @@ export const CreateQqSchemeRequestSchema = z.strictObject({
   prompts: QqSchemePromptsSchema.optional(),
   /** 回复的形状（0035）。省略＝新建用默认（按发言人分条）、更新保持不动。 */
   reply: QqSchemeReplySchema.optional(),
+  /** 消息设置组（0052）。省略＝新建用默认（`QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT`）、更新保持不动。 */
+  message_settings: QqSchemeMessageSettingsSchema.optional(),
+  /** 图片输入组（0052）。省略＝新建用默认（`QQ_MEDIA_INPUT_SCHEME_DEFAULT`）、更新保持不动。 */
+  media_input: QqSchemeMediaInputSchema.optional(),
 });
 export type CreateQqSchemeRequest = z.infer<typeof CreateQqSchemeRequestSchema>;
 
@@ -680,6 +730,10 @@ export const UpdateQqSchemeRequestSchema = z.strictObject({
   prompts: QqSchemePromptsSchema.optional(),
   /** 回复的形状（0035）。省略＝不动。 */
   reply: QqSchemeReplySchema.optional(),
+  /** 消息设置组（0052）。省略＝不动。 */
+  message_settings: QqSchemeMessageSettingsSchema.optional(),
+  /** 图片输入组（0052）。省略＝不动。 */
+  media_input: QqSchemeMediaInputSchema.optional(),
   expected_revision: z.number().int().positive(),
 });
 export type UpdateQqSchemeRequest = z.infer<typeof UpdateQqSchemeRequestSchema>;

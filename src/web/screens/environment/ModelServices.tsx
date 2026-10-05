@@ -11,6 +11,7 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
+import { NativeSelect } from "../../components/ui/native-select";
 import {
   Sheet,
   SheetContent,
@@ -413,6 +414,51 @@ export function ModelServices() {
                             />
                           </Field>
                         ))}
+                        <Field label="models.vision" info="models.visionHint">
+                          <NativeSelect
+                            value={
+                              model.capabilities && "vision" in model.capabilities
+                                ? model.capabilities.vision === true
+                                  ? "supported"
+                                  : "unsupported"
+                                : "unknown"
+                            }
+                            disabled={saving}
+                            onChange={(e) =>
+                              setEditor({
+                                ...editor,
+                                models: editor.models.map((item) => {
+                                  if (item.key !== model.key) return item;
+                                  const next = e.target.value;
+                                  if (next === "unknown") {
+                                    // 未声明 ≠ false：选「未声明」只删除 vision 键，
+                                    // 其余能力声明原样保留；删空后回到整体未声明。
+                                    if (!item.capabilities) return item;
+                                    const { vision: _vision, ...rest } = item.capabilities;
+                                    return {
+                                      ...item,
+                                      capabilities: Object.keys(rest).length ? rest : undefined,
+                                    };
+                                  }
+                                  return {
+                                    ...item,
+                                    capabilities: {
+                                      toolCalling: false,
+                                      parallelToolCalls: false,
+                                      codeExecution: false,
+                                      ...item.capabilities,
+                                      vision: next === "supported",
+                                    },
+                                  };
+                                }),
+                              })
+                            }
+                          >
+                            <option value="unknown">{t("models.visionUnknown")}</option>
+                            <option value="supported">{t("models.visionSupported")}</option>
+                            <option value="unsupported">{t("models.visionUnsupported")}</option>
+                          </NativeSelect>
+                        </Field>
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {t(

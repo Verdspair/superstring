@@ -67,6 +67,22 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     media: "媒体提示词",
     compress: "压缩提示词",
   },
+  // 0052：响应契约收紧后两组必填，夹具照完整响应形状造。
+  message_settings: {
+    reply_mode: "one_then_on_demand",
+    reply_depth: 2,
+    time_display: "hybrid",
+    timezone: "Asia/Shanghai",
+  },
+  media_input: {
+    mode: "native",
+    stages: { decision: true, evaluation: true, generation: true },
+    max_images: 8,
+    ordinary_still_max_dimension: null,
+    expression_max_dimension: 512,
+    expression_frame_count: 3,
+    expression_frame_max_dimension: 512,
+  },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
@@ -255,6 +271,13 @@ describe("Scheme studio layout and grouping", () => {
         "scheme-field-context.judgement_window_minutes",
         "scheme-field-context.reply_token_budget",
         "scheme-field-context.reply_window_minutes",
+        // 0052 两组：层数/图数/表情规格与普通静图（其数值输入挂在「限制长边」选择之下）。
+        "scheme-field-mediaInput.expression_frame_count",
+        "scheme-field-mediaInput.expression_frame_max_dimension",
+        "scheme-field-mediaInput.expression_max_dimension",
+        "scheme-field-mediaInput.max_images",
+        "scheme-field-media_input.ordinary_still_max_dimension",
+        "scheme-field-messageSettings.reply_depth",
         "scheme-field-outputReserve.judgement_output_reserved",
         "scheme-field-outputReserve.reply_output_reserved",
         "scheme-field-rhythm.hourly_speech_limit",
@@ -719,6 +742,42 @@ describe("Scheme studio usage and deletion guards", () => {
     );
     await act(async () => {});
     expect(fake.deleteQqScheme).toHaveBeenCalledWith(scheme().id);
+  });
+});
+
+describe("Scheme studio message input preview (T13 Step4)", () => {
+  it("shows a read-only sample on the context tab that follows the draft settings and hides (no forged preview) on an invalid timezone", async () => {
+    await renderStudio();
+    await tab("connections.whatToRead");
+    const previewText = () =>
+      document.querySelector("[data-qq-message-preview] pre")?.textContent ?? "";
+    // 示例按草稿当前设置渲染（默认 hybrid / Asia/Shanghai），且区域只读。
+    expect(previewText()).toContain("now=2026-10-02 00:00:00，timezone=Asia/Shanghai");
+    const block = document.querySelector("[data-qq-message-preview]") as HTMLElement;
+    expect(block.querySelector("input, textarea, select, button")).toBeNull();
+
+    // 草稿变化实时反映：切到完整相对时间、改时区，示例同 renderer 输出联动。
+    const timeSelect = screen.getByLabelText(
+      translate("connections.timeDisplayMode"),
+    ) as HTMLSelectElement;
+    fireEvent.change(timeSelect, { target: { value: "full_relative" } });
+    expect(previewText()).toContain("2026-10-01 23:55:00（5分钟前）");
+    const timezone = screen.getByLabelText(translate("connections.timezone"));
+    fireEvent.change(timezone, { target: { value: "Asia/Tokyo" } });
+    expect(previewText()).toContain("timezone=Asia/Tokyo");
+    expect(previewText()).toContain("now=2026-10-02 01:00:00");
+
+    // 时区原文非法：不伪造预览（无 pre），显示占位说明；保存仍被拦（既有守卫不变）。
+    fireEvent.change(timezone, { target: { value: "Mars/Olympus" } });
+    expect(document.querySelector("[data-qq-message-preview] pre")).toBeNull();
+    expect(screen.getByText(translate("schemes.studio.messagePreviewUnavailable"))).toBeTruthy();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: translate("connections.saveScheme"),
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 });
 

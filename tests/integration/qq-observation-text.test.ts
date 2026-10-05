@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import {
   claim,
   entries,
@@ -94,6 +95,8 @@ function setup() {
   // or generate, so the observed groups must be bound the way production binds them
   // (one shared scheme; account/peer/agent matching the scopes used below).
   const scheme = createQqScheme(business.orm, { name: "观察整理方案" });
+  const journal = new ConversationEventRepository(business.db);
+  const bindingIds: Record<string, string> = {};
   for (const scope of [GROUP_A, GROUP_B]) {
     const created = createQqBinding({
       id: crypto.randomUUID(),
@@ -107,6 +110,10 @@ function setup() {
     });
     if (created.kind !== "saved") throw new Error("expected a saved QQ binding");
     insertQqBinding(business.orm, created.binding);
+    bindingIds[scope.peerId] = created.binding.id;
+    // Production intake ensures the conversation before events are journaled; the
+    // reverse order would let the epoch watermark (MAX qq_events.rowid) swallow them.
+    journal.ensureOneBot(created.binding.id);
   }
   const gateway = new ScriptedGateway();
   const service = new MemoryService({
@@ -117,7 +124,7 @@ function setup() {
     heartbeatIntervalMs: 5,
     jobTimeoutMs: 2_000,
   });
-  return { business, orm: business.orm, sessionId, gateway, service };
+  return { business, orm: business.orm, sessionId, gateway, service, journal, bindingIds };
 }
 type Setup = ReturnType<typeof setup>;
 
@@ -146,6 +153,7 @@ function observe(
     })
     .run();
   storeObservationText(h.orm, { eventKey, body, occurredAtSeconds });
+  h.journal.ingestOneBotEvent(eventKey, h.bindingIds[peerId]);
   return { eventKey, body, occurredAtSeconds };
 }
 
