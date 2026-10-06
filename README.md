@@ -6,228 +6,125 @@
 
 # Superstring
 
-A local Agent workspace for web conversations, QQ groups and private chats, memory, and knowledge.
+本地 Agent 工作区，主要用于日常陪伴与聊天，支持网页对话、QQ 群聊与私聊、记忆、知识库、MCP 工具扩展与技能管理。
+A local Agent workspace primarily for everyday companionship and chat, supporting web conversations, QQ groups and private chats, memory, knowledge, MCP tools, and skills.
 
-**Version:** `0.3.0-beta` — prerelease.
+**版本 / Version:** `0.4.0-alpha-1` — 预发布版 / prerelease.
 
-[English](#english) · [简体中文](#简体中文)
-
-## English
-
-### Conversations, with context
-
-Keep web conversations and connected QQ conversations in one workspace. Choose an Agent, give it an identity and model, and let it use the memories and documents you authorize. Conversation history, settings and imported materials are stored locally; requests sent to an external model provider include the context needed for that request.
-
-Superstring does not bundle model weights or a QQ client, create a cloud account, or synchronize your data to a Superstring cloud service.
-
-![Web conversation with context usage](docs/screenshots/conversation.png)
-
-### QQ groups and private chats
-
-Connect a separately running OneBot 11 WebSocket service, such as NapCat, then bind a group or private chat to an Agent and a named chat scheme.
-
-![Connected QQ conversations and their bindings](docs/screenshots/connections.png)
-
-New messages appear in a bound conversation as they arrive. The workspace listens for a metadata-only notification and refreshes the visible list and the open conversation from the application itself, so an arriving QQ message shows up without a manual refresh while already loaded content and your scroll position stay where they are. Message text is never broadcast; only the fact that something arrived is.
-
-- Control direct responses, follow-up conversation, spontaneous participation and idle-topic initiation independently. A direct response triggers the Agent without an interest-score requirement; the Agent may still choose silence.
-- Set the initiative threshold, quiet periods, cooldown, active hours and reply grouping. The application controls recipients and mentions; a model cannot invent a destination.
-- Edit the scheme's scene, judgement, reply, review, sticker, media and compression prompts. Shared schemes can serve several bindings without sharing their conversation histories.
-- Configure separate judgement and reply windows. Older messages outside the reply window accumulate before compression into bounded context packages; judgement does not consume those packages.
-- A QQ wake-up is no longer refused as over budget when the material it actually assembles fits: the available reference material is now measured against the messages that survived selection, instead of the wider set before it. A conversation that genuinely does not fit is still rejected with the same clear reason.
-- Pause a binding while continuing to observe incoming messages. Inspect why an attempt stayed silent, failed or did not reach confirmed delivery.
-- Give a bound group a display name of your own. A custom name is shown when set, otherwise the group's own QQ name, and otherwise the group number. The group number stays visible on the conversation card, in the conversation header and in its details, so a renamed group is still identifiable.
-
-Each bound group can also be enabled or disabled from its conversation card and from the open group conversation. A disabled group keeps receiving and storing messages, but the Agent stays silent and starts no new model work; summaries and memory organisation already running finish under the existing pause boundary. The controls show why a group cannot speak, such as the global QQ switch being off, a disconnected transport or a disabled Agent.
-
-**Group settings** opens a full settings page for one QQ account, group and Agent. Participation, response, context, media and prompt fields either follow the shared scheme or carry a group-only value; fields left on follow pick up later scheme updates, and saved values stay with that group and Agent, so rebinding does not inherit them and switching back restores them. System capabilities can only be set to "disabled in this group", which immediately constrains later calls and pending results; the page never grants access, and sticker choices can only narrow the collections the base scheme already authorises. Changing the base scheme previews the new base values and asks whether to keep the group values or follow the scheme — capability changes are not reset, and application-level settings such as data retention and model choice are not overridden here. Drafts, save/discard/cancel and conflict handling match scheme editing.
-
-QQ access has its own prerequisites:
-
-1. Install a QQ NT client and log in once. Take the supported QQ version from your OneBot implementation's own release notes ([NapCat releases](https://github.com/NapNeko/NapCatQQ/releases)); the combination validated here is NapCat v4.18.28 with QQ 9.9.26.44343.
-2. Install an OneBot 11 implementation such as [NapCat](https://github.com/NapNeko/NapCatQQ). On Windows its Shell package bundles its own Node.js runtime: unzip it and start `launcher.bat` (`launcher-win10.bat` on Windows 10). The console prints a WebUI address and a one-time password — use them to open the panel.
-3. In that panel, enable a forward WebSocket server and note its address, port and access token. Keep the endpoint and the token private; a connected transport is not a guarantee of delivery.
-4. In Superstring, open **Schemes**, open the QQ application and select **Connection**, then enter that address, port and token. Create a chat scheme and bind the group or private chat to an Agent and the scheme; binding and usage views are part of the scheme details. Enable only the triggers you want; a direct response bypasses interest scoring but the Agent may still choose silence. See that implementation's own installation guide for the current packages and steps.
-
-QQ automation can be affected by platform rules and account restrictions. Superstring does not log into QQ for you. Use an account suitable for testing and keep the OneBot endpoint and access token private.
-
-### Memory, knowledge and media
-
-- Manage long-term memories by Agent and source partition, inspect their sources, and correct or block inaccurate content. QQ memory is isolated by conversation and binding; sharing with your own private chat requires explicit configuration. If a store already uses full-read retrieval, its two full-read parameters stay editable on the same page; ordinary configurations do not add a full-read option.
-- Import UTF-8 text or Markdown into the knowledge library, organize documents into categories, and grant access per Agent. Imported documents are not automatically authorized.
-- Select local or registered OpenAI-compatible models for conversation, judgement, vision, memory and organization tasks. External providers have their own endpoint, credential and declared context window.
-- Describe supported images and sampled animated-image frames with a configured vision model. Import sticker assets, edit their descriptions and tags, review and enable them, then authorize collections for chat schemes.
-- Send text, a sticker, or both. Delivery records distinguish confirmed, partial and unknown outcomes; unknown delivery is not blindly sent again.
-
-Voice transcription, full-video understanding, image generation and arbitrary executable tools are not available in this version.
-
-### Workspace and diagnostics
-
-The navigation is organized as **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library** and **Extensions**, with **Model services** and **Preferences** as separate entrances.
-
-The application warms the data behind its main spaces while it starts, so opening Agents, the knowledge library, memories or Extensions usually shows content straight away instead of an empty first load; the Model services page reuses provider data fetched during startup for its first render, and its existing foreground refresh and connection checks remain. Scheme configuration pages skip needless redraws when unrelated state changes, and memory and summary reading perform fewer duplicate internal queries. A space you leave open for a moment updates quietly in the background rather than blocking you, and any draft you are editing is kept as you typed it. Customize conversation avatars, inspect context usage beside the composer, and browse execution waterfalls with model inputs and outputs when their sources remain authorized.
-
-**Extensions** shows one Tools page listing every registered tool — the built-in system tools and any MCP tools — with its origin, read/write effect, global state and authorisation, and the Skills page lists both your installed skill documents and the guidance bundled with the application. Built-in components are shipped with the application and cannot be deleted or redefined; they grey out only when their global switch is off, never because one assistant lacks a grant. Tools that share a single authorisation resource edit that one grant. System capability pages keep their own functional settings and link to the concrete components they use.
-
-![Execution waterfall with model calls and their evidence](docs/screenshots/runs-detail.png)
-
-English and Simplified Chinese, 16 themes, light/dark/system appearance, keyboard navigation and narrow layouts are supported. The original Superstring logo follows the selected theme throughout the workspace.
-
-### Requirements and installation
-
-Choose an asset for your operating system and architecture from [Releases](https://github.com/Verdspair/superstring/releases). `0.3.0-beta` is a prerelease; back up existing data before upgrading.
-
-| Platform | Packages | Notes |
-|---|---|---|
-| Windows x64 | `superstring-setup-0.3.0-beta.exe` | Choose an installation folder; later installers upgrade the same folder |
-| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Copy the application into Applications; replace it only after quitting. The prerelease macOS packages are ad-hoc signed and not notarized: open them with the Finder **Open** action |
-| Linux glibc, x64 or arm64 | DEB and AppImage | DEB integrates with Debian/Ubuntu; AppImage needs a compatible desktop sandbox and FUSE setup |
-
-Use the files actually attached to the chosen release and verify them with its checksum list. macOS signing status and platform-specific installation guidance are described in [Desktop distributions](docs/reference/desktop.md).
-
-Packaged applications include their runtime. A local model server such as LM Studio, or a configured external OpenAI-compatible provider, is still required for inference.
-
-1. Install and open Superstring.
-2. Open **Model services** and configure your model service and default model roles. The local default endpoint is `http://127.0.0.1:1234/v1`.
-3. Create or select an Agent. Import and authorize any knowledge it should read.
-4. Start a web conversation.
-5. To use QQ: install the QQ NT client and an OneBot 11 implementation such as NapCat, log into QQ, and start its forward WebSocket server — the validated versions, the Windows Shell package and the panel settings are listed under [QQ groups and private chats](#qq-groups-and-private-chats).
-6. Open **Schemes**, open the QQ application and select **Connection**, enter that WebSocket address, port and access token, then bind the group or private chat to an Agent and a chat scheme.
-
-If LM Studio requires an API token, provide `LM_STUDIO_API_KEY` before starting the application. Provider credentials configured through Model services are encrypted on disk; protect the profile and its encryption keys together.
-
-### Data and upgrades
-
-On Windows, conversations and settings live under the installation's `userdata` directory. Native macOS/Linux packages use the operating system's application-data profile. Closing a supported desktop window follows the **background / exit** preference; explicit Quit stops the owned local service.
-
-Before upgrading, fully exit the application and back up the complete data directory. Do not open a migrated database with an older application. See [UPGRADING.md](UPGRADING.md) for the `v0.2.1 → v0.3.0-beta` changes, data paths and rollback procedure.
-
-### Run from source
-
-Install Node.js 22.12.0 or newer and the pinned dependencies:
-
-```sh
-npm ci
-```
-
-Start `start.cmd` on Windows or `./start.sh` on macOS/Linux. Both build the web assets and start the local service; Ctrl+C stops the source launch. For development, run `npm run dev:server` and `npm run dev:web` in separate terminals.
-
-For source-only work, `ELECTRON_SKIP_BINARY_DOWNLOAD=1` skips the Electron runtime download during dependency installation. Native packaging uses the build instructions in [the desktop build README](tools/desktop/build/cross-platform/README.md).
-
-### Documentation
-
-- [Release notes](RELEASE_NOTES.md)
-- [Upgrade guide](UPGRADING.md)
-- [Desktop installation and recovery](docs/reference/desktop.md)
-- [Runtime observability](docs/reference/runtime-observability.md)
-- [Agent runtime](docs/architecture/agent-runtime.md) and [frontend workspaces](docs/architecture/frontend-workspaces.md)
-- [MIT license](LICENSE); third-party license and NOTICE texts accompany packaged dependencies
-
----
+[简体中文](#简体中文) · [English](#english)
 
 ## 简体中文
 
-**版本：** `0.3.0-beta`，预发布版。
-
 ### 有上下文的对话工作区
 
-在同一工作区管理网页对话、QQ 群聊和私聊。选择一个 Agent，配置身份与模型，再按需授权它读取记忆和文档。会话记录、配置和导入资料保存在本机；使用外部模型服务时，该次请求所需的上下文会发送给你配置的服务商。
+在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。
 
-Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号，也不把资料同步到 Superstring 云服务。
+Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号，也不提供 Superstring 云端数据同步服务；会话记录与密钥保存在本地，仅按已授予的权限将必要的上下文与参数发送给已配置的模型服务商或工具服务。
 
-![网页对话与上下文用量](docs/screenshots/conversation.png)
+### 愿景与说明
+
+这是我的个人项目，出发点是实现日常陪伴，一起聊天、一起玩耍。
+
+未来希望它能逐步连接更多游戏与虚拟世界，融入更多互动场景。这是正在探索的长期愿景，当前版本尚未开放外部游戏连接。
+
+目前体验可能不如成熟的同类商业产品。欢迎提出反馈与建议，也请在使用中多一些耐心。
 
 ### QQ 群聊与私聊
 
-连接独立运行的 OneBot 11 WebSocket 服务（例如 NapCat），再将群或私聊绑定到 Agent 和命名聊天方案。
+连接独立运行的 OneBot 11 WebSocket 服务（例如 NapCat），再将群或私聊绑定到 Agent 与聊天方案。
 
-![已连接的 QQ 会话与绑定](docs/screenshots/connections.png)
+新消息到达已绑定的会话时直接显示。工作区监听不含正文的消息通知，由程序自行更新会话列表与当前会话，无需手动刷新页面，已加载的内容与滚动位置保持不变。
 
-新消息到达已绑定的会话时会直接显示出来。工作区只接收不含正文的消息通知，再由程序自行更新可见列表和正在看的会话，因此 QQ 新消息无需手动刷新即可出现，已加载的内容与滚动位置保持不动。通知里不含消息正文，只包含「有消息到达」这一事实。
-
-- 独立控制直接回应、连续交谈、自主接话和冷场发起。直接回应不要求兴趣评分，但 Agent 仍可选择沉默。
+- 独立控制直接回应、连续交谈、自主接话和冷场发起四种模式。直接回应不要求兴趣评分，Agent 仍可选择沉默。
 - 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。收件人和提及由程序确定，模型不能自行指定任意目标。
-- 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用方案，不会因此共享会话历史。
-- 分别配置判断和回复窗口。回复窗口外的旧消息达到水位后压成有限数量的上下文包；判断档不读取这些包。
-- QQ 唤醒时实际装配得下就不再被判为超预算：可用资料现在按筛选后真正保留的消息计算，而不是按筛选前的更大范围计算。确实装不下的会话仍会按同样明确的原因拒绝。
-- 暂停绑定后继续观察新消息，并在执行记录里查看本轮为何沉默、失败或尚未确认送达。
-- 可以给已绑定的群起一个自己的显示名。设了自定义名称就用它，否则用 QQ 原群名，都没有则显示群号。群号在会话卡片、会话顶部和详情里始终可见，改了名字也认得出是哪个群。
+- 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用同一方案，不会因此共享会话历史。
+- 分别配置判断和回复窗口。超出回复窗口的消息进入水位缓冲，达到阈值后在后台任务队列压缩为上下文包；判断阶段不读取这些包。
+- QQ 群名称与用户自定义备注名解耦独立保存。设置自定义备注时优先显示备注，未设置时显示 QQ 原群名，均无则显示群号；支持群名预加载，更换绑定或助手不会丢失备注名。
+- 支持在会话卡片和群会话顶部随时启用或停用群发言。停用后群消息照常接收保存，Agent 不发言且不产生新模型任务。
 
-每个已绑定群还可以在会话卡片和打开的群会话顶部启用或停用。停用后群消息照常接收保存，但 Agent 不发言、不新增模型任务；已在运行的摘要与记忆整理按既有暂停边界完成。控件会如实显示群不能发言的原因，例如 QQ 总开关关闭、连接未就绪或 Agent 已停用。
+**本群配置**为单个 QQ 账号 × 群 × Agent 提供独立设置页。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用 12 项系统能力，停用即时生效，切换时旧证据永久失效。
 
-**本群配置**为单个 QQ 账号 × 群 × Agent 打开完整设置页。参与、回应、上下文、媒体与提示词各项要么跟随共享方案（之后的基础方案更新继续生效）、要么保存为本群值；值归属于该群与该 Agent——改绑不继承，切回时恢复。系统能力只能设为「本群停用」，停用立即约束后续调用与未提交结果；本页不会授予访问，素材集合也只能收窄基础方案已授权的集合。更换基础方案会先预览新基础值，并询问保留本群值还是全部跟随——能力停用项不随之重置，数据保留、模型选择等应用级设置不在本页覆盖。草稿、保存/放弃/取消与冲突处理与方案编辑一致。
+QQ 接入前置步骤与运行要求：
 
-QQ 接入有自己的前置条件：
+1. 安装 QQ NT 客户端并登录。QQ 需保持登录在线；QQ 与 OneBot 实现的版本配套以上游说明为准（见 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases)；NapCat v4.18.28 与 QQ 9.9.26.44343 为过去曾验证过的组合，非官方支持列表或最新测试结论）。
+2. 安装 OneBot 11 实现（例如 [NapCat](https://github.com/NapNeko/NapCatQQ) 作为已验证参考，程序不排斥其他 OneBot 11 实现，但不保证全部兼容）。以 NapCat Shell 包为例：在 Windows 上解压并运行 `launcher.bat`（Windows 10 运行 `launcher-win10.bat`），按控制台输出打开 WebUI 面板。
+3. QQ 客户端与 NapCat 各自保持常驻运行。在 NapCat WebUI 中确认 QQ 处于登录在线状态，开启**正向 WebSocket 服务端**并设置访问令牌，记录连接地址与端口（WebUI 能打开不代表 QQ 已登录或 WebSocket 服务已就绪）。
+4. 在 Superstring 的**方案**页进入 QQ 连接设置，填写 WebSocket 地址（同机部署填 `ws://127.0.0.1:端口/`，跨机部署填实际可达地址）、访问令牌与 Agent 账号（填写机器人 QQ 号，非 Superstring 助手 ID），勾选「启用 QQ」并保存；再将群或私聊绑定到 Agent 与方案。
 
-1. 安装 QQ NT 客户端并登录一次。支持的 QQ 版本以上游实现自己的版本说明为准（见 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases)）；本版验证过的组合是 NapCat v4.18.28 ＋ QQ 9.9.26.44343。
-2. 安装 OneBot 11 实现（例如 [NapCat](https://github.com/NapNeko/NapCatQQ)）。Windows 上其 Shell 包自带 Node.js 运行时：解压后运行 `launcher.bat`（Windows 10 用 `launcher-win10.bat`），控制台会打印面板（WebUI）地址与一次性密码，用它打开面板。
-3. 在面板里开启**正向 WebSocket 服务端**，记下地址、端口与访问令牌；端点和令牌都要妥善保管，连接就绪不等于消息一定送达。
-4. 回到 Superstring，在**方案**页打开 QQ 应用、进入**连接** Tab，填入该地址、端口与访问令牌；再新建聊天方案，把群或私聊绑定到 Agent 与方案，绑定与使用情况在方案详情中管理；只开启需要的触发，直接回应无需兴趣评分，但 Agent 仍可选择沉默。当前版本与安装步骤以该实现自己的安装文档为准。
+运行与连接说明：
+- Superstring 作为客户端主动连接上游 OneBot 正向 WebSocket 服务，不内置、不拉起，也不停止 QQ 或 NapCat 进程。QQ 客户端与 NapCat 需在后台独立保持运行。
+- Superstring 不代登录 QQ，自动化受到平台规则与账号状态约束，建议使用测试账号并妥善保管端点与凭据。
+- 连接就绪不代表消息一定送达；连接断开时保持 QQ 与 NapCat 正常运行，程序会间隔重试连接，不承诺立即恢复连接或补发遗漏回复。
 
-QQ 自动化可能受到平台规则与账号限制影响。Superstring 不代登录 QQ；建议使用适合测试的账号，并妥善保管 OneBot 端点与访问凭据。
+### 多模态与媒体处理
 
-### 记忆、知识与媒体
+- **图片输入双模式**：支持原生图片输入（`native`）与文本描述（`description`）双模式。原生模式将图片直接传入支持图片的模型；描述模式调用已配置的视觉模型提取文字描述。可在决策、评估与生成三阶段独立控制图片输入；不支持原生图片的模型可使用描述模式，模型明确报错不支持图片时也会回退提取描述并记录负缓存（非所有网络错误均自动回退）。
+- **图片缓存与准备**：图片资产按范围缓存，支持预生成多分辨率副本与动图抽帧；入站媒体改为按需读取，减少无效资源消耗。
+- **结构化回复引用**：记录多部件消息事实与回复引用链（`reply_to_message_id`），支持按需多层引用；成员记录区分群名片与个人昵称，标注来源属于平台原始上报还是本地目录记录。
+- **表情素材管理**：导入表情素材，编辑说明与标签，经检查启用后授权给方案；支持文字、表情或图文混合回复。
+- **输出预留上限放宽**：方案判断与回复输出预留上限放宽至 32768，适应长输出调用；默认值保持 512 与 2048 不变。
+- **QQ 数据保留期限**：新增 QQ 数据保留期限设置（1–3650 天，默认 14 天），覆盖消息正文、媒体阅读记录、助手发言、发送台账与昵称。到期内容不可读；物理清理需在存储面板中手动预览确认。运行追踪的保留天数在「系统能力 → 执行限制」中独立配置，两者互不影响。
 
-- 按 Agent 和来源分区管理长期记忆，查看出处，纠正或屏蔽错误内容。QQ 记忆按会话与绑定隔离；与本人私聊共享需要显式配置。已使用全量读取的存量配置仍可在同一页面编辑两个全量读取参数；普通配置不会新增全量读取选项。
-- 导入 UTF-8 文本或 Markdown 到知识库，分类管理并逐个授权 Agent；导入不等于授权。
-- 为对话、判断、视觉、记忆和整理等用途选择本地模型或登记的 OpenAI 兼容模型。外部服务分别保存端点、凭据和声明的上下文容量。
-- 使用已配置的视觉模型描述受支持的图片与动图抽帧。导入表情素材、编辑说明和标签，经检查启用后，将集合授权给聊天方案。
-- 支持文字、表情或混合输出；送达记录区分已确认、部分完成与未知，不对未知送达盲目重发。
+### 统一 Agent 内核、扩展与工具
 
-本版不提供语音转写、完整视频理解、AI 绘图或任意可执行工具。
+导航包含**对话、Agent、系统能力、方案、资料、扩展** 6 个主入口，另设**模型服务**与**偏好**入口。
 
-### 工作区与诊断
+- **工作区整合**：对话工作区整合消息、运行观测与任务三页签，支持在当前会话与全局范围之间切换。
+- **扩展与 MCP 客户端**：在「扩展 → 工具」中查看已注册的系统工具与外部 MCP 工具；支持通过 stdio、HTTP 与 SSE 连接外部 Model Context Protocol 服务，登记的服务默认未启用，支持配置超时与结果限额；环境变量凭据仅保存变量名。
+- **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 4 个系统技能（证据读取、媒体读取、任务执行、网络研究）。
+- **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
+- **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
+- **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
+- **执行检查**：通过执行瀑布查看模型输入与输出，区分模型生成完成与平台确认送达。
 
-导航按**对话、Agent、系统能力、方案、资料、扩展**组织，另设**模型服务**与**偏好**入口。
+### 记忆与知识库
 
-启动过程中会顺便预热主要工作区所需的数据，因此打开 Agent、知识库、记忆或扩展时通常直接看到内容，而不是先空一下再加载；模型服务页首屏复用启动时已取得的模型服务清单，并保留原有前台刷新与连接检查。方案配置页面在无关状态变化时避免多余重绘；记忆与摘要读取减少重复内部查询。页面停留一会儿会在后台安静更新，不会打断你；正在编辑的草稿按你输入的样子保留。可自定义会话头像、在输入框旁检查上下文用量，并通过执行瀑布查看来源仍有效且授权可读的模型输入与输出。
+- 按 Agent 和来源分区管理长期记忆，查看出处并纠正或屏蔽内容。QQ 记忆按会话与绑定隔离，与本人私聊共享需显式配置。
+- 导入 UTF-8 文本或 Markdown 到知识库，分类管理并逐个授权 Agent；导入不等于自动授权。
+- 为对话、判断、视觉、记忆与整理等用途独立选择本地模型或外部 OpenAI 兼容模型外部服务分别保存端点、加密凭据与声明的能力。
 
-**扩展**中的「工具」页统一列出全部已注册工具——内置系统工具与 MCP 工具——逐项标注来源、读写、全局状态与授权；「技能」页同时列出你安装的技能文档与随应用提供的使用指南。内置组件随应用提供，不能删除或修改定义；只有全局开关关闭时才会灰显，不会因为某个助手缺少授权而变灰。共用同一授权资源的工具只编辑那一份授权。系统能力页保留各自的功能配置，并提供到具体所用组件的跳转。
+当前版本不提供语音转写、完整视频理解、AI 绘图或未受控的多 Agent 协作。
 
-![执行瀑布：模型调用与证据](docs/screenshots/runs-detail.png)
+### 运行要求与安装部署
 
-支持简体中文与 English、16 种主题、浅色／深色／跟随系统、键盘导航及窄屏布局；原版 Superstring logo 在工作区内随主题配色。
+从 [Releases 页面](https://github.com/Verdspair/superstring/releases)选择对应版本实际附带的架构文件。`0.4.0-alpha-1` 为预发布版，升级前请先备份数据。
 
-### 运行要求与安装
-
-从[版本页面](https://github.com/Verdspair/superstring/releases)选择对应系统与架构的文件。`0.3.0-beta` 是预发布版，升级前请先备份数据。
-
-| 平台 | 安装形式 | 说明 |
+| 平台 | 支持的分发形式 | 说明 |
 |---|---|---|
-| Windows x64 | `superstring-setup-0.3.0-beta.exe` | 可选安装目录，新版安装器覆盖同一目录升级 |
-| macOS 13+，Apple Silicon／Intel | 对应架构的 DMG、ZIP | 将应用复制到 Applications，替换前完整退出；本预发布版的 macOS 包为临时签名、未公证，首次打开请用访达的「打开」放行 |
-| Linux glibc，x64／arm64 | DEB、AppImage | Debian/Ubuntu 可使用 DEB；AppImage 需要兼容的桌面沙箱与 FUSE 环境 |
+| Windows x64 | 安装程序（`.exe`） | 可选安装目录，新版安装程序覆盖同一目录升级；数据保存在 `userdata` |
+| macOS 13+，Apple Silicon／Intel | 架构对应的 DMG、ZIP | 若所选发布附带构件，复制到 Applications，替换前完整退出；签名与公证说明见[桌面发行说明](docs/reference/desktop.md) |
+| Linux glibc，x64／arm64 | DEB、AppImage | 若所选发布附带构件，Debian/Ubuntu 使用 DEB 包；AppImage 需要桌面沙箱与 FUSE 支持 |
 
-以所选版本实际附带的文件为准，并用同版校验清单核对。macOS 的签名状态与各平台安装方式见[桌面发行说明](docs/reference/desktop.md)。
+安装文件以对应 Release 页面实际附带的构件为准，请使用随发布的校验清单核对。macOS 签名状态与各平台安装细节见[桌面发行说明](docs/reference/desktop.md)。
 
-安装包自带运行时，但模型推理仍需要 LM Studio 等本地服务或已配置的外部 OpenAI 兼容服务。
+应用安装包包含运行环境。模型推理需要 LM Studio 等本地服务或配置的外部 OpenAI 兼容服务。
 
 1. 安装并打开 Superstring。
-2. 到**模型服务**配置服务端点与各用途默认模型；本地默认地址为 `http://127.0.0.1:1234/v1`。
+2. 打开**模型服务**配置端点与各用途模型；本地默认端点为 `http://127.0.0.1:1234/v1`。使用原生图片输入需确认模型实际支持图片输入，并检查其视觉能力声明：未声明时程序仍会尝试发送原生图片；模型明确拒绝图片时会自动回退文本描述并记录负缓存（非所有网络错误均自动回退）；若模型不支持图片，请明确声明关闭视觉能力或选用文本描述模式，请勿对不支持的模型虚标支持。使用代码沙箱需服务明确声明代码执行能力。
 3. 创建或选择 Agent，导入并授权所需知识。
 4. 新建网页对话即可开始使用。
-5. 要接入 QQ：安装 QQ NT 客户端与 OneBot 11 实现（例如 NapCat），登录 QQ，并开启其正向 WebSocket 服务端——已验证的版本组合、Windows Shell 包与面板设置见上文「QQ 群聊与私聊」。
-6. 在**方案**页打开 QQ 应用、进入**连接** Tab，填入该 WebSocket 的地址、端口与访问令牌，再把群或私聊绑定到 Agent 与聊天方案。
+5. 接入 QQ：安装 QQ NT 与 OneBot 11 服务（如 NapCat），登录 QQ 并保持后台运行，在 NapCat 面板开启正向 WebSocket 服务端并保持常驻。
+6. 在**方案**页进入 QQ 连接设置，填入 WebSocket 地址、访问令牌与 Agent 账号（机器人 QQ 号），开启「启用 QQ」，再将群或私聊绑定到 Agent 与方案。
 
-LM Studio 开启鉴权时，启动前设置 `LM_STUDIO_API_KEY`。通过模型服务页保存的外部凭据以加密形式落盘，备份时应将资料目录与密钥一同保管。
+LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务凭据在本地加密存储，备份时需将资料目录与密钥一同保管。
 
 ### 数据与升级
 
-Windows 的会话与配置位于安装目录的 `userdata`；原生 macOS/Linux 安装包使用系统应用数据目录。支持的桌面窗口关闭时遵循**后台运行／退出**偏好，明确退出应用会停止其管理的本地服务。
+Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。桌面窗口关闭遵循**后台运行／退出**偏好，明确退出会停止其管理的本地服务。
 
-升级前完整退出并备份整个数据目录；不要用旧程序直接打开已经迁移的新库。`v0.2.1 → v0.3.0-beta` 的变化、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完整退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
-安装 Node.js 22.12.0 或更高版本，再安装固定依赖：
+安装 Node.js 22.12.0 或更高版本，然后安装固定依赖：
 
 ```sh
 npm ci
 ```
 
-Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`；入口会构建前端并启动本地服务，Ctrl+C 停止。开发时可在两个终端分别运行 `npm run dev:server` 与 `npm run dev:web`。
+Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建前端资源并启动本地服务，使用 Ctrl+C 停止。开发调试可在两个终端分别运行 `npm run dev:server` 与 `npm run dev:web`。
 
-仅做源码开发时，可在安装依赖前设置 `ELECTRON_SKIP_BINARY_DOWNLOAD=1` 跳过 Electron 运行文件下载。原生打包见[桌面构建 README](tools/desktop/build/cross-platform/README.md)。
+服务默认绑定 `127.0.0.1:17861`，端口被占用时桌面模式支持自动回退可用端口。
 
 ### 文档
 
@@ -235,13 +132,137 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`；入口会构建�
 - [升级指南](UPGRADING.md)
 - [桌面安装与恢复](docs/reference/desktop.md)
 - [运行观测](docs/reference/runtime-observability.md)
-- [Agent 内核](docs/architecture/agent-runtime.md)与[前端工作区](docs/architecture/frontend-workspaces.md)
-- [MIT 许可](LICENSE)；打包依赖附带各自的许可与 NOTICE 原文
+- [Agent 内核架构](docs/architecture/agent-runtime.md)与[前端工作区架构](docs/architecture/frontend-workspaces.md)
+- [MIT 许可证](LICENSE)；依赖项附带各自的许可证与 NOTICE 原文
 
 ---
 
-## Thanks / 致谢
+## English
 
-Thanks to [nkanf-dev](https://github.com/nkanf-dev) for refactoring and optimizing the front-end and back-end workflows and interface while preserving existing functionality, for his multi-platform support (macOS/Linux source launch and native desktop distributions), and for the early and ongoing discussions that shaped the project's direction — see the [pull request history](https://github.com/Verdspair/superstring/pulls).
+### Conversations, with context
 
-感谢 [nkanf-dev](https://github.com/nkanf-dev)：在保留原有功能的前提下，重构并优化了前后端流程与界面，贡献了多平台支持（macOS/Linux 源码启动与原生桌面分发），并在项目早期及后续开发中共同讨论、确定了项目的发展方向（详见 [PR 记录](https://github.com/Verdspair/superstring/pulls)）。
+Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context.
+
+Superstring does not bundle model weights or a QQ client, does not require a cloud account, and does not provide a Superstring cloud sync service. Conversation records and credentials remain local, sending only authorized context and arguments to your configured model providers and tool services.
+
+### Vision and notes
+
+This is my personal project, started with the goal of providing everyday companionship—chatting and playing together.
+
+Looking ahead, I hope it can gradually connect with more games and virtual worlds to join in more shared experiences. This is a long-term vision under exploration; the current release does not integrate with external games.
+
+The current experience may not match mature commercial alternatives. Feedback is welcome, and your patience is greatly appreciated.
+
+### QQ groups and private chats
+
+Connect a standalone OneBot 11 WebSocket service (such as NapCat), then bind a group or private chat to an Agent and a chat scheme.
+
+New messages in bound conversations appear automatically. The workspace listens for notifications containing only arrival metadata, updating conversation lists and open views without requiring manual page refreshes or shifting scroll positions.
+
+- Control direct responses, follow-up conversation, spontaneous participation, and idle-topic initiation independently. Direct responses bypass interest scoring, while the Agent may still choose silence.
+- Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. The application enforces recipients and mentions; models cannot invent destinations.
+- Edit scheme prompts across scene, judgement, reply, review, sticker, media, and compression roles. Multiple bindings can share schemes without sharing conversation history.
+- Configure separate judgement and reply windows. Messages outside the reply window enter a watermark buffer and are compressed into context packages in a background task queue; judgement does not consume these packages.
+- Decouple original QQ group names from custom aliases. Custom aliases take precedence with fallback to group names; rebinding does not overwrite aliases, and group names support preloading.
+- Enable or disable group participation directly from conversation cards or conversation headers. Disabled groups continue to receive and store messages while the Agent stays silent without starting model tasks.
+
+**Group settings** provides a dedicated configuration page for each QQ account × group × Agent pair. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. Up to 12 system capabilities can be disabled per group with immediate fail-closed enforcement, permanently invalidating earlier evidence.
+
+Prerequisites and operational notes for QQ integration:
+
+1. Install and log into a QQ NT client. QQ must remain logged in and online. Version compatibility between QQ and the OneBot implementation follows upstream documentation ([NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases); NapCat v4.18.28 with QQ 9.9.26.44343 is a previously validated combination, not an official support list or recent verification result).
+2. Install an OneBot 11 implementation (such as [NapCat](https://github.com/NapNeko/NapCatQQ) as a validated example; other OneBot 11 implementations are not excluded, but universal compatibility is not guaranteed). Taking the NapCat Shell package as an example: extract it on Windows, run `launcher.bat` (`launcher-win10.bat` on Windows 10), and open the WebUI panel printed in the console.
+3. Keep the QQ client and NapCat running independently in the background. In the NapCat WebUI, confirm that QQ remains logged in, enable a **forward WebSocket server**, configure an access token, and record the address and port (opening the WebUI panel does not mean QQ is online or the WebSocket server is ready).
+4. In Superstring, open **Schemes**, navigate to QQ connection settings, and enter the WebSocket address (e.g. `ws://127.0.0.1:port/` for local deployment, or an accessible network address for cross-machine setups), access token, and Agent account (enter the bot's QQ number, not the Superstring assistant ID). Check **Enable QQ** and save; then bind groups or private chats to an Agent and a scheme.
+
+Operational details:
+- Superstring acts as a client connecting to an upstream OneBot forward WebSocket service. It does not bundle, launch, or stop QQ or NapCat processes. Both QQ and NapCat must run independently in the background.
+- Superstring does not handle QQ login. Automation is subject to platform and account policies; use a dedicated test account and protect your endpoints and credentials.
+- An active connection does not guarantee message delivery. If the connection drops while QQ and NapCat remain running, the application retries periodically, but does not guarantee immediate reconnection or backfilled replies.
+
+### Multimodal and media processing
+
+- **Dual-mode image input**: Choose between native multimodal input (`native`) and text description extraction (`description`). Native mode passes images directly to image-capable models; description mode extracts text descriptions using a configured vision model. Image inputs are toggled independently across decision, evaluation, and generation stages; models lacking native image support should use description mode, and explicit model rejection triggers fallback to descriptions with in-process negative caching (general network failures do not trigger fallback).
+- **Image caching and preparation**: Scoped asset caches store multi-resolution variants and animated GIF frames; inbound media switches to on-demand reading, reducing unnecessary processing.
+- **Structured reply quotes**: Multi-part message facts track structured reply quote chains (`reply_to_message_id`) with multi-level quoting. Member records distinguish group cards from personal nicknames, tracking platform wire events versus local directory sources.
+- **Sticker management**: Import sticker collections, manage tags and descriptions, and authorize collections for chat schemes; supports text, sticker, or combined responses.
+- **Expanded output reserve caps**: Scheme judgement and reply output reserve limits expand to 32768, accommodating long outputs from thinking models; defaults remain 512 and 2048.
+- **QQ data retention**: Configurable retention period (1–3650 days, default 14 days) covering message text, media reading notes, assistant speech, send ledgers, and nicknames. Expired content becomes unreadable; physical deletion requires manual user preview and confirmation in the storage panel. Telemetry trace retention is configured independently under System capabilities → Execution limits.
+
+### Unified Agent core, extensions, and tools
+
+The interface provides six primary sections: **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library**, and **Extensions**, along with entrances for **Model services** and **Preferences**.
+
+- **Workspace tabs**: The conversation workspace integrates Messages, Runs, and Tasks tabs, switchable between conversation and global scopes.
+- **Extensions & MCP client**: View registered built-in and external MCP tools under Extensions → Tools; connect to external Model Context Protocol services over stdio, HTTP, and SSE; registered servers are disabled by default, with configurable timeouts and result caps; environment credentials store variable names only.
+- **Skills catalog**: View installed skill documentation and four bundled system skills (evidence reading, media reading, task execution, web research) under Extensions → Skills.
+- **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.
+- **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
+- **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
+- **Execution inspection**: Browse execution waterfalls to inspect model inputs and outputs, distinguishing model generation from confirmed platform delivery.
+
+### Memory and knowledge library
+
+- Manage long-term memories partitioned by Agent and source, inspect references, and correct or block inaccurate content. QQ memory is isolated by conversation, and sharing with personal private chats requires explicit configuration.
+- Import UTF-8 text or Markdown into the knowledge library, organize documents into categories, and grant access per Agent; importing does not grant automatic access.
+- Select local or external OpenAI-compatible models for conversation, judgement, vision, memory, and organization roles. External providers maintain endpoints, encrypted credentials, and declared capabilities.
+
+Speech transcription, full-video understanding, image generation, and arbitrary unconstrained multi-agent collaboration are not available in this release.
+
+### Requirements and installation
+
+Download assets attached to the target release from [Releases](https://github.com/Verdspair/superstring/releases). `0.4.0-alpha-1` is a prerelease; back up existing data before upgrading.
+
+| Platform | Supported distribution formats | Notes |
+|---|---|---|
+| Windows x64 | Installer (`.exe`) | Choose an installation directory; future installers upgrade the same directory; data lives in `userdata` |
+| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | If assets are attached to the release, copy to Applications and quit running instances before replacing; see [Desktop distributions](docs/reference/desktop.md) for signing details |
+| Linux glibc, x64 or arm64 | DEB and AppImage | If assets are attached to the release, DEB integrates with Debian/Ubuntu; AppImage requires desktop sandbox and FUSE support |
+
+Use files actually attached to the selected release and verify them against its checksum list. macOS signing status and platform details are documented in [Desktop distributions](docs/reference/desktop.md).
+
+Application packages bundle their runtime. Inference requires a local server such as LM Studio or an external OpenAI-compatible provider.
+
+1. Install and launch Superstring.
+2. In **Model services**, configure endpoints and default models. The default local endpoint is `http://127.0.0.1:1234/v1`. To use native image input, confirm that the model actually supports images and review its vision declaration: undeclared models will still attempt native delivery; when a model explicitly rejects images, the host falls back to text descriptions and caches the failure for the current process (network failures do not trigger fallback); if a model lacks vision capabilities, explicitly disable vision or select description mode rather than falsely declaring support. Programmatic tool calling requires an explicit code execution declaration.
+3. Create or select an Agent, then import and authorize necessary knowledge.
+4. Start a web conversation.
+5. To connect QQ: install QQ NT and an OneBot 11 service (such as NapCat), keep QQ logged in and running, and enable a forward WebSocket server in the NapCat panel.
+6. Under **Schemes**, configure QQ connection details (WebSocket address, access token, and bot QQ number), turn on **Enable QQ**, and bind groups or private chats to an Agent and a scheme.
+
+If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider credentials are encrypted on disk; store the profile and encryption keys together.
+
+### Data and upgrades
+
+On Windows, conversations and settings live under the installation's `userdata` directory. Native macOS/Linux packages use system application data profiles. Closing desktop windows follows the **background / exit** preference, and an explicit Quit stops managed local services.
+
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+
+### Run from source
+
+Install Node.js 22.12.0 or newer and pinned dependencies:
+
+```sh
+npm ci
+```
+
+Run `start.cmd` on Windows or `./start.sh` on macOS/Linux. Both build frontend assets and launch the local service; stop with Ctrl+C. For development, run `npm run dev:server` and `npm run dev:web` in separate terminals.
+
+Services bind to `127.0.0.1:17861` by default, with automatic fallback to available ports in desktop mode when occupied.
+
+### Documentation
+
+- [Release notes](RELEASE_NOTES.md)
+- [Upgrade guide](UPGRADING.md)
+- [Desktop installation and recovery](docs/reference/desktop.md)
+- [Runtime observability](docs/reference/runtime-observability.md)
+- [Agent runtime architecture](docs/architecture/agent-runtime.md) and [Frontend workspace architecture](docs/architecture/frontend-workspaces.md)
+- [MIT license](LICENSE); third-party license and NOTICE texts accompany packaged dependencies
+
+---
+
+## 致谢 / Thanks
+
+感谢 [nkanf-dev](https://github.com/nkanf-dev)：在保留原有功能的前提下，重构并优化了前后端流程与界面，贡献了多平台支持（macOS/Linux 源码启动与原生桌面分发），并在项目早期及后续开发中共同讨论、确定了项目的发展方向（见 [PR 记录](https://github.com/Verdspair/superstring/pulls)）；还为开发与测试提供了算力支持。没有这份支持，项目很难走到现在。
+
+Thanks to [nkanf-dev](https://github.com/nkanf-dev) for refactoring and optimizing the front-end and back-end workflows and interface while preserving existing functionality, contributing multi-platform support (macOS/Linux source launch and native desktop distributions), discussing and shaping the project's direction during early and ongoing development (see the [pull request history](https://github.com/Verdspair/superstring/pulls)), and providing compute support for development and testing. Without this support, the project could hardly have reached its current stage.

@@ -1,34 +1,16 @@
-// T15 表情规则 / 不可读动画：真实 OneBot 宿主整链（矩阵 id 26 与 33 的宿主面）。
+// 表情规则 / 不可读动画：真实 OneBot 宿主整链。
 //
-// 上位依据：
-//   * 规格 dev/docs/superpowers/specs/2026-10-02-qq-message-context-multimodal-design.md
-//     §7.2（分类与证据来源）、§7.3（表情图规则与 face 原位）、§7.4（输入规格表与"不能把静态帧
-//     冒充已按 3 帧理解"）、§7.5（超限取舍与本轮不可读出口）、§10（wire 上不放裸字节/URL）、
-//     §14.1（验收）；
-//   * 计划 dev/docs/superpowers/plans/2026-10-02-qq-message-context-multimodal-plan.md §T15；
-//   * 矩阵 artifacts/validation/qq-message-multimodal-20261002/functional-matrix.ts 的
-//     id 26（expressionhint512/lowcontext；negativeEvidence：格式/动图/小尺寸/带字不得单独证明
-//     表情类别）与 id 33（unsupportedanimunknown；negativeEvidence：不得把静态帧冒充已按 3 帧
-//     理解、不得擅自新增解码器）。**本文件不 import artifacts**（tests/ 整体进发布导出面，
-//     测试反向依赖 artifacts 会让发布测试树断依赖）；编号在文件头与块标题逐条注明，报告侧按
-//     同一编号对账。
-//
-// 与既有 slice 的分工（不重复、不抢写）：
-//   * tests/integration/qq-multimodal-image-shape-e2e.test.ts（P3，含 [S26_1]/[S33_1]）本文件不改；
-//   * tests/integration/qq-multimodal-media-fault-e2e.test.ts（P4，矩阵 id 35–40）本文件不改；
-//   * tests/harness/* 与产品代码本文件零改动。
-//
-// 本文件只补两块**宿主整链**证据（同编号的服务级/decoder 级面由 P3/P4 已覆盖）：
+// 两块宿主整链证据：
 //   * [S26_2] 真实 market-face 三键 wire → 事实侧 category=expression → 真 HTTP body 上看得见
 //     512 长边的表情副本；条件式表情规则段**无条件**进 system（native 轮无 mediaNotes/无
-//     mediaUnread 时也在）；本轮不新增任何分类相关模型调用；模型输入里不出现数值 attention 字段
+//     mediaUnread 时也在）；不新增任何分类相关模型调用；模型输入里不出现数值 attention 字段
 //     （只是"无该字段"的传输面证据，不承诺任何模型行为质量）。
 //   * [S33_2] 同一条 focus 消息里一个**真正不可读**的动画（真 APNG 字节）＋一张合法静图：动画只
 //     落 qq_media_unreadable（data_only、逐字带 mediaId/messageId/reason），零 variant、零 image
 //     part、零首帧字节上 wire；合法静图照常按普通规格（原图）上 wire；两段 image part 的消息关系
 //     与窗口文字都保留，整轮照常回复成功。
 //
-// 四条硬纪律（逐条对应实现）：
+// 硬纪律：
 //   1. 真实 wire：模型只经产品真实端口（createModelPort + createLmStudioClient）打**本文件自建**
 //      owned loopback（127.0.0.1、port 0、await listening 后取端口、finally close）。不手建
 //      ModelPort、不 stringify(request) 假 wire、不用 web 端口或 17861、不接真实模型服务。

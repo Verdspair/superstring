@@ -1,12 +1,4 @@
-// T15 补块 slice：引用/窗口/时间（矩阵 id 13–21，id 22 时间模式补强）。
-//
-// 上位依据：原计划 docs/superpowers/plans/2026-10-02-qq-message-context-multimodal-plan.md §T15
-// Step1 逐字 13–21、原规格 §4.3/§4.4/§5、批次独立审
-// artifacts/validation/qq-message-multimodal-20261002/resume-t15-matrix-review.md（含
-// resume-t15-matrix-review/panel-B.md 的 P2 分区补块任务）。
-//
-// 独占范围：本文件是本 slice 唯一产物。只读既有测试/产品/夹具，不改
-// qq-message-multimodal-e2e.test.ts、tests/harness/*、产品代码、runner、functional-matrix.json。
+// 引用/窗口/时间整链强测试。
 //
 // 红线：整链一律走真实 OneBot→宿主→AgentRuntime（createOneBotHarness + scriptedModel），
 // 不建第二 harness/第二模型链、不 import artifacts/、不假装 provider、不读真实数据/密钥。

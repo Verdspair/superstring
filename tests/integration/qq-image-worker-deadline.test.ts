@@ -1,14 +1,9 @@
-// T14 Z2 (prime-t14-deadline): one real-wall-clock attempt at the production 30 s deadline
-// in `runQqImagePreparation` (spec §11 open experiment, checkpoint step ④, plan §4 of
-// briefs/prime-t14-remaining-plan.md). Evidence for this attempt lives in
-// artifacts/validation/qq-message-multimodal-20261002/prime-t14-deadline/.
+// One real-wall-clock attempt at the production 30 s deadline in `runQqImagePreparation`.
 //
-// What this test claims, exactly:
+// What this test claims:
 //   * a sustained LEGAL GIF (fixed 512x256 canvas, constant-size frame blocks spliced by
 //     block concat — never a width*height*frames*4 allocation) drives the real production
-//     worker host with a compute-dominated run measured at ~0.82 ms per frame in the SAME
-//     process (see prime-t14-deadline/calibrate-50k.log: 4 disposal modes, 50 000 frames,
-//     ~41 s each, RSS <= 237 MiB);
+//     worker host with a compute-dominated run;
 //   * if the run does NOT settle before the production 30 s timer, the failure must be the
 //     deadline branch itself: reason "decode_failed", detail "QQ image decode deadline
 //     exceeded", after which the worker is terminated and exits and NO message is ever
@@ -16,18 +11,14 @@
 //
 // What this test does NOT claim:
 //   * that "compute is running" was signalled by the worker — the worker protocol has no
-//     such message (calibration shows 0 mid-run messages); "compute-dominated" is a
-//     calibration-extrapolated wall-clock share, not a protocol signal;
+//     such message;
 //   * anything about the decoded-pixel numeric cap — that remains an open user decision and
 //     no numeric assertion is introduced here.
 //
-// Three-way exit rules (plan §4): if the input completes before 30 s, the test records the
-// wall clock, does NOT assert the deadline branch, and the batch report marks this attempt
-// not-proved for the deadline branch — the attempt is NOT retried with a larger input inside
-// this test (changing the resource bound is a new approved dispatch). Any other failure is a
-// real failure with the full log preserved.
+// If the input completes before 30 s, the test records the wall clock and does NOT assert
+// the deadline branch: early completion is not evidence for the deadline branch.
 //
-// Resource bounds for THIS test (experiment self-limits, not product caps):
+// Resource bounds for THIS test (test self-limits, not product caps):
 //   encoded <= 32 MiB (product 64 MiB cap untouched, never asserted);
 //   canvas 512*256*4 = 512 KiB, disposal-2 frames only (no disposal-3 snapshot doubling);
 //   test timeout 90 s bounds the whole run; no service, no port, no real data.

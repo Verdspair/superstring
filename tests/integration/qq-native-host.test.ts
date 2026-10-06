@@ -1,9 +1,8 @@
-// T11 A 组最小闭环（briefs/prime-t11-integration-plan.md §5.1）：
+// 最小闭环：
 //   1. 无图直连回复保持既有形状（决策→生成，评分不出现）；
 //   2. 主动路径评分走原生消息叶子（completeMessageLeaf）：许可通过后生成，calls=3；
 //   3. agent-runtime buffered structured-complete hook：宿主声明 responseEnvelope 时一次
 //      complete 取 envelope，剥离正文照常提交；streamText 不被调用；phase 记 generate。
-// 图片接线（native media service、Step5a 真登记、58 矩阵其余项）属 B 组，另测。
 import { afterEach, describe, expect, it } from "bun:test";
 import { AgentRuntime, type PreparedGeneration } from "../../src/server/agent/agent-runtime";
 import { textMessage } from "../../src/server/agent/context-engine";
@@ -684,22 +683,7 @@ it("decision envelope classification is consumed with the resolved model name", 
     decideGenerate("10001", "回答当前消息的图片问题", [], [{ mediaId, category: "ordinary" }]),
     say("图片里是猫"),
   ]);
-  try {
-    await h.activate("direct_reply");
-  } catch (error) {
-    require("node:fs").writeFileSync(
-      "artifacts/validation/qq-message-multimodal-20261002/t11d-dbg2.json",
-      JSON.stringify({
-        err: String(error),
-        steps: h.db
-          .query("SELECT phase, status, error_code FROM agent_steps ORDER BY started_at")
-          .all(),
-        classifications: h.db.query("SELECT * FROM qq_media_classifications").all(),
-        notes: h.db.query("SELECT id, event_key FROM qq_media_notes").all(),
-      }),
-    );
-    throw error;
-  }
+  await h.activate("direct_reply");
   await h.deliver();
   const rows = h.db
     .query("SELECT model_name, category, evidence FROM qq_media_classifications")

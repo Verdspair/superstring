@@ -1,10 +1,8 @@
-// T11 D2：QQ 事实/引用/时间/媒体上下文整合强测试。
+// QQ 事实/引用/时间/媒体上下文整合强测试。
 //
-// 上位依据：specs/2026-10-02-qq-message-context-multimodal-design.md §3–§5/§7.1/§4.3/§4.4、
-// plans/…-plan.md T11 Step2–Step4、briefs/prime-t11-integration-plan.md §3/§4。
 // 全部用例走现有 OneBot harness 生产链（createOneBotHarness + scriptedModel），不复制第二条
 // 模型链、不造假 service；每次断言都带精确的模型调用 phase 序列与发送条数。
-// 判定按规格终态断言；产品未落地处 RED 如实留证（见批次报告 prime-t11-d2-tests.md）。
+// 判定按规格终态断言。
 
 import { afterEach, expect, it } from "bun:test";
 import { saveQqConversationSummary } from "../../src/server/db/qq-summary-repository";

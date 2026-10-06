@@ -1,21 +1,4 @@
-// T15 补块 P3（矩阵 id 25/26/28/29/30/31/32/33）：图片形状整链验证 —— 真实平台 wire 到模型 wire。
-//
-// 上位依据：
-//   * 规格 dev/docs/superpowers/specs/2026-10-02-qq-message-context-multimodal-design.md
-//     §7.1（默认与自动范围）、§7.2（分类与证据来源）、§7.3（表情规则与 face 原位）、
-//     §7.4（输入规格表与"不能把静态帧冒充已按 3 帧理解"）、§7.5（超限取舍）、§14.1（验收）；
-//   * 计划 dev/docs/superpowers/plans/2026-10-02-qq-message-context-multimodal-plan.md §T15；
-//   * 矩阵定义 artifacts/validation/qq-message-multimodal-20261002/functional-matrix.ts 的
-//     id 25/26/28/29/30/31/32/33（含每条 negativeEvidence）。**本文件不 import artifacts**：
-//     tests/ 整体进发布导出面，测试反向依赖 artifacts 会让发布测试树断依赖。编号与断言
-//     在文件头逐条注明，报告侧按同一编号对账。
-//
-// 与既有 slice 的分工（不重复、不抢写）：
-//   * tests/integration/qq-message-multimodal-e2e.test.ts（独立文件，本文件只读其结果口径）
-//     （含既有 [S25]/[S27]/[S34] 块），本文件不改它；
-//   * tests/integration/qq-multimodal-initiative-delivery-e2e.test.ts（id 48–53），本文件不改它；
-//   * tests/harness/* 与 qq-media-projection/media-input-service 等既有测试本文件一律不改；
-//   * 产品代码本文件零改动——未落地处如实 RED 或 not_executed，不靠改生产代码让测试变绿。
+// 图片形状整链验证：真实平台 wire 到模型 wire。
 //
 // 红线：
 //   * 全链走真实 OneBot → IntakeHost → AgentRuntime（createOneBotHarness + scriptedModel），
@@ -23,9 +6,9 @@
 //     而不是往 DB 里塞 category；
 //   * 不读真实 data/local/artifacts/state、不联网、不触 17861、不启停服务；
 //   * 模型可见的 image part 只有来源元数据（sourceId/revision/mimeType/sha256/尺寸/frameIndex），
-//     每个整链块都断 wire 里**没有** bytes/base64/data/url（规格 §10 红线）。
+//     每个整链块都断 wire 里**没有** bytes/base64/data/url。
 //
-// 各块与矩阵编号的对应（标题统一 S<id>_<序号>）：
+// 各块设计（标题统一 S<id>_<序号>）：
 //   [S25_1] native ordinary image 三相整链：三阶段各一次、同一 mediaId/sha、原图字节、
 //           asset sha、call=3、无第 4 次分类调用
 //   [S25_2] native ordinary image **真实 HTTP wire**（createLmStudioClient + createModelPort +
@@ -36,7 +19,7 @@
 //   [S26_1] 平台 market face 三键 → expression 证据 → 512 规格 + 表情只用文本角色无数值 attention
 //           + 未知提示（仅 summary）不能猜表情
 //   [S28_1] 明确细问表情升普通规格（按需服务 prepareByMediaId + detail 问题锚，**辅助**块）。
-//   [S28_2] 真实 host 工具链（T11 writer 修复题锚 internal/platform 域后授权补块）：
+//   [S28_2] 真实 host 工具链：
 //           media.list → media.read(questionMessageId=focus 平台 ID) → native detail 按
 //           ordinary 规格准备 → 模型下一步看到 ordinary 规格元数据；分类不改变。
 //   [S28_3] 拒绝对照：questionMessageId 指向无关消息（非 focus、非 focus 直接引用目标）→
