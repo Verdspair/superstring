@@ -5,7 +5,7 @@
 // 搜索/类型筛选/最近消息；目录读失败可重试；连接页刷新重读设置与状态、失败不重复提示；
 // 抽屉刷新保存基线：409 后草稿保留并以新 revision 重试，刷新失败不改草稿基线。
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
@@ -230,6 +230,18 @@ afterEach(() => {
 });
 
 describe("使用会话绑定视图", () => {
+  it("用键盘关闭绑定抽屉后焦点回到管理按钮", async () => {
+    await renderBoards({
+      listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
+    });
+    const trigger = screen.getByRole("button", { name: ui("connections.manage") });
+    trigger.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
   it("只列本方案的绑定，管理入口打开 BindingEditor 且不写任何绑定", async () => {
     const { fake } = await renderBoards({
       listQqBindings: vi
@@ -988,4 +1000,39 @@ describe("性能阶段补测：窄订阅行为保持（FE-P1）", () => {
     expect(screen.getByText("30003")).toBeTruthy();
     expect(screen.getByText("30004")).toBeTruthy();
   });
+});
+
+it("绑定抽屉四组平铺：各组标题就位，保存控件归属各自保存域", async () => {
+  await renderBoards({
+    listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
+  });
+  await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+  const sheet = screen.getByRole("dialog");
+  // 四组标题（locale 缺键守卫：键未落地时本用例如实红，不拿键名当通过）。
+  const titles = [
+    "schemes.bindings.assignment.title",
+    "schemes.bindings.triggers.title",
+    "connections.importantPeople",
+    "connections.memoryOrganising",
+  ].map((key) => ({ key, text: ui(key) }));
+  for (const { key, text } of titles) {
+    if (key.startsWith("schemes.bindings.")) {
+      expect(text).not.toBe(key); // Gemini locale 落地后才绿；不加 fallback 默认串
+    }
+    expect(within(sheet).getByText(text)).toBeTruthy();
+  }
+  // 保存控件归属：保存绑定在绑定关系卡；保存名单在重要人物卡；保存批次在记忆整理卡。
+  const assignmentCard = within(sheet)
+    .getByText(ui("schemes.bindings.assignment.title"))
+    .closest('[data-slot="card"]') as HTMLElement;
+  expect(
+    within(assignmentCard).getByRole("button", { name: ui("connections.saveBinding") }),
+  ).toBeTruthy();
+  const triggersCard = within(sheet)
+    .getByText(ui("schemes.bindings.triggers.title"))
+    .closest('[data-slot="card"]') as HTMLElement;
+  expect(
+    within(triggersCard).queryByRole("button", { name: ui("connections.saveBinding") }),
+  ).toBeNull();
+  expect(within(triggersCard).getAllByRole("combobox").length).toBe(4);
 });

@@ -1,5 +1,4 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqBindingResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
@@ -110,6 +109,8 @@ function client(
     silentBinding?: boolean;
     /** 记忆整理（语义保留）：绑定会话的批大小与等待观察数。 */
     memory?: { batchSize: number | null; pending: number };
+    /** 本人身份卡：机器人账号未设置时给原因说明（账号决定可编辑性）。 */
+    accountSet?: boolean;
   } = {},
   overrides: Partial<typeof api> = {},
 ) {
@@ -126,9 +127,11 @@ function client(
   };
   return {
     ...api,
-    getQqSettings: vi
-      .fn()
-      .mockResolvedValue({ ...settings, enabled: options.enabled ?? settings.enabled }),
+    getQqSettings: vi.fn().mockResolvedValue({
+      ...settings,
+      enabled: options.enabled ?? settings.enabled,
+      account_id: (options.accountSet ?? true) ? settings.account_id : null,
+    }),
     getQqOwner: vi
       .fn()
       .mockResolvedValue({ configured: false, account_id: null, peer_id: null, revision: null }),
@@ -281,7 +284,7 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
   it("replaces the attention list as one revisioned value", async () => {
     const fake = await renderBindings({ bound: true });
     await openManage();
-    await userEvent.click(screen.getByRole("tab", { name: "重要的人" }));
+    // 四组平铺后无内层 Tab：重要人物卡直出。
     fireEvent.change(screen.getByLabelText("重要的人模式"), { target: { value: "hard" } });
     fireEvent.change(screen.getByLabelText("重要的人名单"), { target: { value: "123, 456" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存名单" })));
@@ -294,9 +297,92 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
   it("keeps the binding memory controls on the editor's memory tab", async () => {
     await renderBindings({ bound: true });
     await openManage();
-    await userEvent.click(screen.getByRole("tab", { name: "记忆整理" }));
+    // 四组平铺后无内层 Tab：记忆整理卡直出。
     expect(screen.getByText("待整理 0 条")).toBeTruthy();
     expect(screen.getByLabelText("自动整理批次（留空关闭）")).toBeTruthy();
     expect(screen.getByRole("button", { name: "保存批次" })).toBeTruthy();
+  });
+});
+
+describe("QQ connection page (本人身份依赖机器人账号)", () => {
+  const renderConnection = async (
+    options: Parameters<typeof client>[0] = {},
+    overrides: Partial<typeof api> = {},
+  ) => {
+    const fake = client(options, overrides);
+    store.getState().resetForTests(fake);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-connection",
+    });
+    render(<SchemesWorkspace />);
+    await act(async () => {});
+    return fake;
+  };
+
+  it("explains why the owner identity cannot be edited until the bot account is set", async () => {
+    await renderConnection({ accountSet: false });
+    // locale 键必须真实存在（缺键时 i18n.t 回显键名，不算通过）。
+    const reason = i18n.t("connections.owner.accountRequired");
+    expect(reason).not.toBe("connections.owner.accountRequired");
+    expect(screen.getByText(reason)).toBeTruthy();
+    const input = screen.getByLabelText(i18n.t("connections.owner.title")) as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    // 原因与用法提示都挂到输入框的可访问描述上（aria-describedby 真实关联）。
+    const described = (input.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ");
+    expect(described).toContain(i18n.t("connections.owner.hint"));
+    expect(described).toContain(i18n.t("connections.owner.accountRequired"));
+  });
+
+  it("groups the immediate switch, the explicit access save and the independent owner card", async () => {
+    await renderConnection({ accountSet: true });
+    // 即时参与开关自成一卡：开关与它的标题同卡，不与显式保存组混在一起。
+    const enabled = screen.getByRole("checkbox", { name: i18n.t("connections.enableQq") });
+    const switchCard = enabled.closest('[data-slot="card"]');
+    expect(switchCard?.textContent).toContain(i18n.t("connections.participateInExternalChats"));
+    expect(switchCard?.textContent).not.toContain(i18n.t("connections.saveAccessSettings"));
+    // 账号/端点/令牌与「保存接入设置」同卡：显式保存域收尾于本组。
+    const accessCard = screen
+      .getByLabelText(i18n.t("connections.assistantAccount"))
+      .closest('[data-slot="card"]');
+    expect(accessCard?.textContent).toContain(i18n.t("connections.websocketAddress"));
+    expect(accessCard?.textContent).toContain(i18n.t("connections.accessToken"));
+    expect(
+      within(accessCard as HTMLElement).getByRole("button", {
+        name: i18n.t("connections.saveAccessSettings"),
+      }),
+    ).toBeTruthy();
+    // 本人身份是独立保存卡：保存本人身份不在接入卡里。
+    const ownerCard = screen
+      .getByLabelText(i18n.t("connections.owner.title"))
+      .closest('[data-slot="card"]');
+    expect(ownerCard).not.toBe(accessCard);
+    expect(
+      within(ownerCard as HTMLElement).getByRole("button", {
+        name: i18n.t("connections.owner.save"),
+      }),
+    ).toBeTruthy();
+  });
+
+  it("keeps the owner identity editable once the bot account is set", async () => {
+    await renderConnection({ accountSet: true });
+    const reason = i18n.t("connections.owner.accountRequired");
+    expect(reason).not.toBe("connections.owner.accountRequired");
+    expect(screen.queryByText(reason)).toBeNull();
+    const input = screen.getByLabelText(i18n.t("connections.owner.title")) as HTMLInputElement;
+    expect(input.disabled).toBe(false);
+    // 账号已设：只挂用法提示，不挂原因。
+    const described = (input.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent ?? "")
+      .join(" ");
+    expect(described).toContain(i18n.t("connections.owner.hint"));
+    expect(described).not.toContain(i18n.t("connections.owner.accountRequired"));
   });
 });

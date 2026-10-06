@@ -517,3 +517,56 @@ describe("QQ cleanup workspace", () => {
     expect(store.getState().qqStorageCleanupResult).toBeNull();
   });
 });
+
+describe("QQ storage task areas (保留/清理/用量与运行)", () => {
+  it("keeps retention save in its own area and the cleanup entry in the cleanup area", async () => {
+    const { container } = await renderPage();
+    // 保留政策：保存钮与其标题同区；不含清理入口。
+    const retention = screen
+      .getByText(translate("connections.storage.manage.retentionTitle"))
+      .closest('[data-slot="card"]') as HTMLElement;
+    expect(
+      within(retention).getByRole("button", {
+        name: translate("connections.storage.manage.saveRetention"),
+      }),
+    ).toBeTruthy();
+    expect(retention.textContent).not.toContain(
+      translate("connections.storage.manage.cleanCategory"),
+    );
+    // 清理工作区：整类清理入口与其标题同卡；不含保留保存钮。
+    const cleanup = screen
+      .getByText(translate("connections.storage.manage.cleanupTitle"))
+      .closest('[data-slot="card"]') as HTMLElement;
+    expect(
+      within(cleanup).getByRole("button", {
+        name: translate("connections.storage.manage.cleanCategory"),
+      }),
+    ).toBeTruthy();
+    expect(cleanup.textContent).not.toContain(
+      translate("connections.storage.manage.saveRetention"),
+    );
+    // 用量与运行：六类统计与调度裁决同区（同卡），裁决保留日期化逐会话事实。
+    const sweepHeading = screen.getByText(translate("connections.storage.sweep"));
+    const summaryCard = sweepHeading.closest('[data-slot="card"]') as HTMLElement;
+    expect(summaryCard.textContent).toContain(translate("connections.storage.observations"));
+    expect(within(summaryCard).getByText("群 30003")).toBeTruthy();
+    // 页面根没有横向 max-w。
+    expect((container.firstElementChild as HTMLElement).className).not.toMatch(/max-w-/);
+  });
+});
+
+describe("QQ storage table containment (窄屏表内滚动)", () => {
+  it("keeps both metadata tables scrolling inside their own container at 320px", async () => {
+    const { container } = await renderPage();
+    // 数据表与裁决表各自横向滚动，不把整页撑出 320px。
+    const tables = Array.from(container.querySelectorAll("table"));
+    expect(tables.length).toBe(2);
+    for (const table of tables) {
+      const wrapper = table.closest("div");
+      expect(wrapper?.classList.contains("overflow-x-auto")).toBe(true);
+    }
+    // 页面根不引入横向溢出（px-4 全宽、无 max-w）。
+    const inventory = container.firstElementChild as HTMLElement;
+    expect(inventory.className).not.toMatch(/max-w-/);
+  });
+});

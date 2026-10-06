@@ -2,6 +2,7 @@
 // 字段文案键、枚举选项键、触发器文案、能力文案。screens 与 features 的 dirty/预览展示都从这里消费。
 // 依赖方向：screens -> features 合法；本模块绝不 import screens 或 UI 组件。
 
+import type { QqSchemePrompts } from "../../../shared/contracts/qq";
 import type { QqGroupCapability } from "../../../shared/contracts/qq-group-config";
 
 export const TRIGGER_LABELS = {
@@ -37,6 +38,14 @@ export const participationFields = [
     "connections.quietRoomThresholdMinutes",
     "connections.theConversationCountsAsQuietOnlyAfterThisLong",
   ],
+] as const;
+
+/**
+ * 回复方式组的节奏类数字字段：与 participationFields 同形，供新分组视图消费。
+ * max_recompute_count 是"同一回话目标的回复草稿再生成次数"（1 + 该值；见 bot-host generationLimit），
+ * 属回复方式，不是主动发言的评分门槛。
+ */
+export const responseFields = [
   [
     "max_recompute_count",
     "connections.maximumRecomputes",
@@ -69,7 +78,9 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   ...Object.fromEntries(
     Object.entries(TRIGGER_LABELS).map(([key, label]) => [`triggers.${key}`, label]),
   ),
-  ...Object.fromEntries(participationFields.map(([name, label]) => [`rhythm.${name}`, label])),
+  ...Object.fromEntries(
+    [...participationFields, ...responseFields].map(([name, label]) => [`rhythm.${name}`, label]),
+  ),
   ...Object.fromEntries(
     [...stickerFields, ...imageFields].map(([group, name, label]) => [`${group}.${name}`, label]),
   ),
@@ -111,6 +122,78 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   "media_input.expression_frame_count": "connections.expressionFrameCount",
   "media_input.expression_frame_max_dimension": "connections.expressionFrameMaxDimension",
 };
+
+/**
+ * 方案配置的六个目的分组（共享方案与本群覆盖共用同一份 id 与文案键）。
+ * id 是稳定的 section key（用于错误定位映射与展示导航）；labelKey 只指向界面文案，
+ * 由 locale 单一作者维护。SchemeTask 类型由这里的 id 列表派生，不另抄第二份 id 清单。
+ */
+export const QQ_SCHEME_SECTIONS = [
+  { id: "participation", labelKey: "schemes.sections.participation" },
+  { id: "response", labelKey: "schemes.sections.response" },
+  { id: "context_reading", labelKey: "schemes.sections.contextReading" },
+  { id: "history_compression", labelKey: "schemes.sections.historyCompression" },
+  { id: "image_understanding", labelKey: "schemes.sections.imageUnderstanding" },
+  { id: "sticker_sending", labelKey: "schemes.sections.stickerSending" },
+] as const;
+export type QqSchemeSection = (typeof QQ_SCHEME_SECTIONS)[number]["id"];
+
+/** rhythm 组内按字段名分流的分组：节奏类属发言时机，媒体/表情类各自成组。 */
+const rhythmSectionByName: Readonly<Record<string, QqSchemeSection>> = {
+  ...Object.fromEntries(participationFields.map(([name]) => [name, "participation"])),
+  ...Object.fromEntries(responseFields.map(([name]) => [name, "response"])),
+  ...Object.fromEntries(
+    imageFields
+      .filter(([group]) => group === "rhythm")
+      .map(([, name]) => [name, "image_understanding"]),
+  ),
+  ...Object.fromEntries(
+    stickerFields
+      .filter(([group]) => group === "rhythm")
+      .map(([, name]) => [name, "sticker_sending"]),
+  ),
+  active_hours_enabled: "participation",
+  active_hours_start_minutes: "participation",
+  active_hours_end_minutes: "participation",
+};
+
+/** 提示词槽位 → 分组：各自独立任务指导，不是固定流水线阶段。 */
+const promptSectionBySlot: Readonly<Record<keyof QqSchemePrompts, QqSchemeSection>> = {
+  scene: "response",
+  judge: "participation",
+  reply: "response",
+  review: "response",
+  compress: "history_compression",
+  sticker: "sticker_sending",
+  media: "image_understanding",
+};
+
+/** 编辑器 camelCase 组名 → 契约 canonical 组名；错误定位同时接受两种写法。 */
+const groupAliases: Readonly<Record<string, string>> = {
+  outputReserve: "output_reserve",
+  messageSettings: "message_settings",
+  mediaInput: "media_input",
+};
+
+/**
+ * 字段 → 分组（field→section 的唯一真源）。接受 canonical 持久键与编辑器 camelCase 别名，
+ * 供错误定位（无效数字所在分组）与展示导航共用；未识别字段回落到参与组，不在这里抛错。
+ */
+export function qqSchemeFieldSection(field: string): QqSchemeSection {
+  const [rawGroup, ...rest] = field.split(".");
+  const group = groupAliases[rawGroup] ?? rawGroup;
+  const name = rest.join(".");
+  if (group === "triggers") return "participation";
+  if (group === "rhythm") return rhythmSectionByName[name] ?? "participation";
+  if (group === "context" || group === "output_reserve" || group === "message_settings")
+    return "context_reading";
+  if (group === "compression") return "history_compression";
+  if (group === "stickers" || group === "sticker_collections") return "sticker_sending";
+  if (group === "reply") return "response";
+  if (group === "prompts") return promptSectionBySlot[name as keyof QqSchemePrompts] ?? "response";
+  if (group === "media_input") return "image_understanding";
+  return "participation";
+}
 
 export const QQ_SCHEME_ENUM_OPTION_LABELS: Readonly<
   Record<string, Readonly<Record<string, string>>>

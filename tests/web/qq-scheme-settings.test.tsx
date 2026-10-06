@@ -148,13 +148,13 @@ describe("Shared scheme studio", () => {
   it("shares one versioned draft across participation, reply, context and media tasks", async () => {
     const { fake } = await renderPage();
     fireEvent.change(screen.getByLabelText("合并窗口（秒）"), { target: { value: "15" } });
-    await task("如何回应");
+    await task("回复方式");
     fireEvent.change(screen.getByLabelText("场景与行为"), { target: { value: "New scene" } });
-    await task("读取什么");
+    await task("消息读取");
     fireEvent.change(screen.getByLabelText("回复：预算（估算字节）"), {
       target: { value: "7000" },
     });
-    await task("媒体与表达");
+    await task("表情发送");
     await userEvent.click(screen.getByRole("checkbox", { name: /日常/ }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
     expect(fake.updateQqScheme).toHaveBeenCalledWith(
@@ -237,7 +237,7 @@ describe("Shared scheme studio", () => {
           scheme({ prompts: { ...scheme().prompts, reply: QQ_REPLY_DEFAULT_PROMPT } }),
         ]),
     });
-    await task("如何回应");
+    await task("回复方式");
     const prompt = screen.getByLabelText("当前生效的回复任务") as HTMLTextAreaElement;
     expect(prompt.readOnly).toBe(false);
     // 未改过：跟随开关（方案里 split_by_speaker 默认开）。
@@ -263,7 +263,7 @@ describe("Shared scheme studio", () => {
    */
   it("edits the compression and assembly group, entering the headroom as a percent", async () => {
     const { fake } = await renderPage();
-    await task("读取什么");
+    await task("历史压缩");
     fireEvent.change(screen.getByLabelText("水位触发条数"), { target: { value: "50" } });
     fireEvent.change(screen.getByLabelText("水位包上限"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("装配冗余百分比"), { target: { value: "10" } });
@@ -322,7 +322,7 @@ describe("Shared scheme studio", () => {
         }),
       ],
     });
-    await task("读取什么");
+    await task("消息读取");
     // 那一栏仍在原位，但不再是可输入的字段（只读显示绑定助手的值）。
     expect(screen.queryByRole("spinbutton", { name: "回复：最近条数" })).toBeNull();
     expect(screen.getByText("12")).toBeTruthy();
@@ -358,7 +358,7 @@ describe("Shared scheme studio", () => {
    */
   it("edits message settings (quote mode/depth, time display, timezone) on the context tab", async () => {
     const { fake } = await renderPage();
-    await task("读取什么");
+    await task("消息读取");
     fireEvent.change(screen.getByLabelText("引用展开层数"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("时区"), { target: { value: "Asia/Tokyo" } });
     fireEvent.change(screen.getByLabelText("引用模式"), { target: { value: "configured_depth" } });
@@ -388,7 +388,7 @@ describe("Shared scheme studio", () => {
    */
   it("disables quote depth under on-demand mode, keeps the value and restores it on configured depth", async () => {
     const { fake } = await renderPage();
-    await task("读取什么");
+    await task("消息读取");
     // 夹具默认 one_then_on_demand：层数禁用，但显示已存值。
     const depth = screen.getByLabelText("引用展开层数") as HTMLInputElement;
     expect(depth.disabled).toBe(true);
@@ -429,7 +429,7 @@ describe("Shared scheme studio", () => {
 
   it("keeps an invalid timezone raw in the draft and blocks page save, copy and unified save", async () => {
     const { fake } = await renderPage();
-    await task("读取什么");
+    await task("消息读取");
     const input = screen.getByLabelText("时区");
     fireEvent.change(input, { target: { value: "Mars/Olympus" } });
     fireEvent.blur(input);
@@ -453,7 +453,7 @@ describe("Shared scheme studio", () => {
 
   it("edits media input (mode, stages, max images, specs) on the media tab with null = original", async () => {
     const { fake } = await renderPage();
-    await task("媒体与表达");
+    await task("图片理解");
     // 模式切换。
     fireEvent.change(screen.getByLabelText("图片输入模式"), { target: { value: "description" } });
     // 阶段：关掉评估阶段（另两个保持开）。
@@ -507,7 +507,7 @@ describe("Shared scheme studio", () => {
 
   it("rejects an ordinary still limit of 0: the raw stays, the scheme value does not move and all saves are blocked", async () => {
     const { fake } = await renderPage();
-    await task("媒体与表达");
+    await task("图片理解");
     // 从原图切到限制长边，再输入 0（0 不在契约 64–2048 内，也不是「原图」的编码）。
     const choice = screen.getByLabelText("普通静图规格");
     fireEvent.change(choice, { target: { value: "limited" } });
@@ -526,7 +526,7 @@ describe("Shared scheme studio", () => {
 
   it("previews the two new groups with localized labels and on/off stage text", async () => {
     await renderPage();
-    await task("媒体与表达");
+    await task("图片理解");
     await userEvent.click(screen.getByRole("checkbox", { name: "评估阶段" }));
     fireEvent.click(screen.getByRole("button", { name: "预览变更" }));
     const dialog = screen.getByRole("dialog");

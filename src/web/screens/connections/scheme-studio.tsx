@@ -2,7 +2,11 @@ import { Copy, Crosshair, FileDiff, Plus, RefreshCw, Save, Trash2 } from "lucide
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import { type QqSchemePrompts, qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
+import {
+  QQ_REPLY_DEFAULT_PROMPT,
+  type QqSchemePrompts,
+  qqEffectiveReplyPrompt,
+} from "../../../shared/contracts/qq";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Button } from "../../components/ui/button";
@@ -35,6 +39,8 @@ import {
   participationFields,
   QQ_SCHEME_ENUM_OPTION_LABELS,
   QQ_SCHEME_FIELD_LABELS,
+  QQ_SCHEME_SECTIONS,
+  responseFields,
   stickerFields,
   TRIGGER_LABELS,
 } from "../../features/qq/scheme-field-metadata";
@@ -699,10 +705,6 @@ export function SchemeStudio() {
     state.qqSchemeUsage && state.qqSchemeUsage.schemeId === editor?.source.id
       ? state.qqSchemeUsage.bindings
       : null;
-  const usageText =
-    selectedUsage === null
-      ? t("connections.unknown")
-      : t("connections.usedByValueConversations", { "0": selectedUsage });
   const effectiveTab = editor ? task : "participation";
   const namingName = naming?.kind === "copy" ? copyName : newName;
   // 命名确认：新建且草稿已改时先问草稿去向；放弃继续会保留原草稿直到创建成功（失败不丢草稿与名称）。
@@ -743,32 +745,6 @@ export function SchemeStudio() {
             </option>
           ))}
         </NativeSelect>
-        <Button
-          variant="outline"
-          size="sm"
-          data-scheme-usage
-          disabled={!editor || busy}
-          onClick={() => state.requestQqSchemeNavigation(editor?.source.id ?? "", "bindings")}
-        >
-          {usageText}
-        </Button>
-        {editor && selectedUsage === null && (
-          <>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              onClick={() => void state.loadQqSchemes()}
-            >
-              {t("capabilities.retry")}
-            </Button>
-            {state.qqSchemeUsageError && (
-              <span className="text-xs text-destructive">
-                {translateNotice(state.qqSchemeUsageError)}
-              </span>
-            )}
-          </>
-        )}
         <div className="ml-auto flex flex-wrap items-center gap-1">
           <Button
             variant="ghost"
@@ -806,16 +782,6 @@ export function SchemeStudio() {
           >
             <Trash2 />
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy || invalid || !changes.length || !editor?.name.trim()}
-            onClick={() => void state.saveQqScheme()}
-          >
-            <Save />
-            {/* 与页脚「保存方案」同源同范围；页首用短标签，避免两个同名按钮让读屏与测试无法区分。 */}
-            {t("workspace.save")}
-          </Button>
         </div>
         {editor && selectedUsage !== 0 && (
           <p className="w-full text-xs text-muted-foreground">
@@ -842,35 +808,39 @@ export function SchemeStudio() {
         <Tabs
           value={effectiveTab}
           onValueChange={(value) => setTask(value as SchemeTask)}
-          className="min-h-0 flex-1 gap-0"
+          className="flex min-h-0 flex-1 flex-col gap-0"
         >
           <div className="border-b px-4 py-3">
-            <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
-              <TabsTrigger value="participation">{t("connections.whenToParticipate")}</TabsTrigger>
-              <TabsTrigger value="response">{t("connections.howToRespond")}</TabsTrigger>
-              <TabsTrigger value="context">{t("connections.whatToRead")}</TabsTrigger>
-              <TabsTrigger value="media">{t("connections.mediaAndExpression")}</TabsTrigger>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field label="connections.schemeName">
+                <Input
+                  value={editor.name}
+                  disabled={saving}
+                  onChange={(e) => state.patchQqScheme({ name: e.target.value })}
+                />
+              </Field>
+              <Field label="connections.description">
+                <Input
+                  value={editor.description}
+                  disabled={saving}
+                  onChange={(e) => state.patchQqScheme({ description: e.target.value })}
+                />
+              </Field>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">{t("schemes.sharedScopeNote")}</p>
+          </div>
+          <div className="border-b px-4 py-3">
+            <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:h-auto [&_[role=tab]]:whitespace-normal">
+              {QQ_SCHEME_SECTIONS.map((section) => (
+                <TabsTrigger key={section.id} value={section.id}>
+                  {t(section.labelKey)}
+                </TabsTrigger>
+              ))}
             </TabsList>
           </div>
           <ScrollArea className="min-h-0 flex-1">
             <div className="min-w-0 space-y-6 px-4 py-6">
               <TabsContent value="participation" className="m-0 space-y-6">
-                <div className="grid gap-5 sm:grid-cols-2">
-                  <Field label="connections.schemeName">
-                    <Input
-                      value={editor.name}
-                      disabled={saving}
-                      onChange={(e) => state.patchQqScheme({ name: e.target.value })}
-                    />
-                  </Field>
-                  <Field label="connections.description">
-                    <Input
-                      value={editor.description}
-                      disabled={saving}
-                      onChange={(e) => state.patchQqScheme({ description: e.target.value })}
-                    />
-                  </Field>
-                </div>
                 <SchemeFieldCard
                   title={t("connections.speechTriggers")}
                   description="schemes.studio.triggersHint"
@@ -989,12 +959,24 @@ export function SchemeStudio() {
                   title={t("schemes.studio.replyTasks")}
                   description="schemes.studio.replyTasksHint"
                 >
+                  <PromptEditor
+                    slot="scene"
+                    titleKey="connections.sceneAndBehaviour"
+                    hint="schemes.studio.sceneGlobalNote"
+                  />
                   {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
                       一改就写进方案的 prompt_reply，服务端取的是同一个函数的结果。 */}
                   <Field
                     label="connections.effectiveReplyTask"
                     info="connections.editTheReplyTaskItWinsOverTheSwitch"
                   >
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        {editor.prompts.reply === QQ_REPLY_DEFAULT_PROMPT
+                          ? t("schemes.studio.replyPromptDerived")
+                          : t("schemes.studio.replyPromptCustom")}
+                      </span>
+                    </div>
                     <Textarea
                       className="min-h-36 font-mono text-xs leading-6"
                       disabled={saving}
@@ -1007,11 +989,21 @@ export function SchemeStudio() {
                       }
                     />
                   </Field>
-                  <PromptEditor slot="scene" titleKey="connections.sceneAndBehaviour" />
+                  <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                    {responseFields.map(([name, label, info]) => (
+                      <SchemeNumber
+                        key={name}
+                        group="rhythm"
+                        name={name}
+                        label={label}
+                        info={info}
+                      />
+                    ))}
+                  </div>
                   <PromptEditor slot="review" titleKey="connections.reviewTask" />
                 </SchemeFieldCard>
               </TabsContent>
-              <TabsContent value="context" className="m-0 space-y-6">
+              <TabsContent value="context_reading" className="m-0 space-y-6">
                 {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
                     不参与运行（禁用但配置保留），切回按层数即恢复。 */}
                 <SchemeFieldCard
@@ -1098,6 +1090,23 @@ export function SchemeStudio() {
                     </div>
                   </SchemeFieldCard>
                 ))}
+                <div className="rounded-lg bg-muted p-5 text-sm leading-6">
+                  <h3 className="font-medium">
+                    {t("connections.bindingsDetermineTheMaterialScope")}
+                  </h3>
+                  <p className="mt-2 text-muted-foreground">
+                    {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
+                  </p>
+                  <Button
+                    className="mt-3"
+                    variant="outline"
+                    onClick={() => state.openSettingsRoute("knowledge-config")}
+                  >
+                    {t("connections.manageKnowledge")}
+                  </Button>
+                </div>
+              </TabsContent>
+              <TabsContent value="history_compression" className="m-0 space-y-6">
                 <SchemeFieldCard
                   title={t("connections.compressionAndAssembly")}
                   description="schemes.studio.compressionHint"
@@ -1127,23 +1136,8 @@ export function SchemeStudio() {
                     hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
                   />
                 </SchemeFieldCard>
-                <div className="rounded-lg bg-muted p-5 text-sm leading-6">
-                  <h3 className="font-medium">
-                    {t("connections.bindingsDetermineTheMaterialScope")}
-                  </h3>
-                  <p className="mt-2 text-muted-foreground">
-                    {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
-                  </p>
-                  <Button
-                    className="mt-3"
-                    variant="outline"
-                    onClick={() => state.openSettingsRoute("knowledge-config")}
-                  >
-                    {t("connections.manageKnowledge")}
-                  </Button>
-                </div>
               </TabsContent>
-              <TabsContent value="media" className="m-0 space-y-6">
+              <TabsContent value="image_understanding" className="m-0 space-y-6">
                 {/* 0052 图片输入：模式/阶段/图数/规格；普通动图沿用下方既有 rhythm 真源不重复存储。 */}
                 <SchemeFieldCard
                   title={t("schemes.studio.imageInput")}
@@ -1199,6 +1193,18 @@ export function SchemeStudio() {
                   </div>
                 </SchemeFieldCard>
                 <SchemeFieldCard
+                  title={t("connections.mediaNoteTask")}
+                  description="connections.describeWhatThePictureOrVoiceActuallyContains"
+                >
+                  <PromptEditor
+                    slot="media"
+                    titleKey="connections.mediaNoteTask"
+                    hint="connections.describeWhatThePictureOrVoiceActuallyContains"
+                  />
+                </SchemeFieldCard>
+              </TabsContent>
+              <TabsContent value="sticker_sending" className="m-0 space-y-6">
+                <SchemeFieldCard
                   title={t("schemes.studio.stickerParams")}
                   description="schemes.studio.stickerParamsHint"
                 >
@@ -1241,18 +1247,13 @@ export function SchemeStudio() {
                   </Button>
                 </SchemeFieldCard>
                 <SchemeFieldCard
-                  title={t("schemes.studio.mediaPrompts")}
-                  description="schemes.studio.mediaPromptsHint"
+                  title={t("connections.stickerTask")}
+                  description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
                 >
                   <PromptEditor
                     slot="sticker"
                     titleKey="connections.stickerTask"
                     hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                  />
-                  <PromptEditor
-                    slot="media"
-                    titleKey="connections.mediaNoteTask"
-                    hint="connections.describeWhatThePictureOrVoiceActuallyContains"
                   />
                 </SchemeFieldCard>
               </TabsContent>

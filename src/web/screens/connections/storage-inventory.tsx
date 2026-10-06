@@ -16,6 +16,13 @@ import { Field } from "../../components/form-field";
 import { AlertDialogFooter } from "../../components/ui/alert-dialog";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
@@ -62,44 +69,46 @@ function StorageRetentionCard() {
   const dirty = qqStorageDaysChanged(value.days, value.source.retention_days);
   const invalid = draft !== null && !qqStorageDaysValid(value.days);
   return (
-    <section className="space-y-4 rounded-lg border p-4">
-      <div className="space-y-1">
-        <h3 className="font-medium">{t("connections.storage.manage.retentionTitle")}</h3>
-        <p className="text-xs text-muted-foreground">
-          {t("connections.storage.manage.retentionNote")}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {t("connections.storage.manage.manualNote")}
-        </p>
-      </div>
-      <Field
-        label="connections.storage.manage.retentionDays"
-        info="connections.storage.manage.retentionDaysInfo"
-      >
-        <Input
-          className="w-32"
-          inputMode="numeric"
-          value={value.days}
-          disabled={saving}
-          aria-invalid={invalid || undefined}
-          onChange={(event) => setDraft({ source: value.source, days: event.target.value })}
-        />
-      </Field>
-      {invalid && (
-        <p role="alert" className="text-xs text-destructive">
-          {t("connections.storage.manage.retentionInvalid")}
-        </p>
-      )}
-      <Button
-        disabled={saving || !dirty}
-        onClick={() =>
-          void save().then((ok) => {
-            if (ok) setDraft(null);
-          })
-        }
-      >
-        {t("connections.storage.manage.saveRetention")}
-      </Button>
+    <section>
+      <Card size="sm">
+        <CardHeader>
+          <CardTitle>{t("connections.storage.manage.retentionTitle")}</CardTitle>
+          <CardDescription>{t("connections.storage.manage.retentionNote")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            {t("connections.storage.manage.manualNote")}
+          </p>
+          <Field
+            label="connections.storage.manage.retentionDays"
+            info="connections.storage.manage.retentionDaysInfo"
+          >
+            <Input
+              className="w-32"
+              inputMode="numeric"
+              value={value.days}
+              disabled={saving}
+              aria-invalid={invalid || undefined}
+              onChange={(event) => setDraft({ source: value.source, days: event.target.value })}
+            />
+          </Field>
+          {invalid && (
+            <p role="alert" className="text-xs text-destructive">
+              {t("connections.storage.manage.retentionInvalid")}
+            </p>
+          )}
+          <Button
+            disabled={saving || !dirty}
+            onClick={() =>
+              void save().then((ok) => {
+                if (ok) setDraft(null);
+              })
+            }
+          >
+            {t("connections.storage.manage.saveRetention")}
+          </Button>
+        </CardContent>
+      </Card>
     </section>
   );
 }
@@ -259,301 +268,314 @@ export function StorageInventory() {
         </Button>
       </div>
       <StorageRetentionCard />
-      <section className="space-y-4">
-        <div className="space-y-1">
-          <h3 className="font-semibold">{t("connections.storage.manage.cleanupTitle")}</h3>
-          <p className="text-xs text-muted-foreground">
-            {t("connections.storage.manage.metaNote")}
-          </p>
-        </div>
-        <Tabs
-          value={category}
-          onValueChange={(next) => switchCategory(next as QqStorageCategory)}
-          className="min-w-0 max-w-full"
-        >
-          <TabsList
-            aria-label={t("connections.storage.manage.categoryLabel")}
-            className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal"
-          >
-            {CATEGORIES.map((value) => (
-              <TabsTrigger key={value} value={value} disabled={saving}>
-                {t(`connections.storage.removed.${value}`)}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <div className="flex flex-wrap items-end gap-3">
-          <Field label="connections.storage.manage.statusLabel">
-            <NativeSelect
-              className="w-32"
-              value={status}
-              disabled={saving}
-              onChange={(event) => switchStatus(event.target.value as QqStorageStatusFilter)}
+      <section>
+        <Card size="sm">
+          <CardHeader>
+            <CardTitle>{t("connections.storage.manage.cleanupTitle")}</CardTitle>
+            <CardDescription>{t("connections.storage.manage.metaNote")}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Tabs
+              value={category}
+              onValueChange={(next) => switchCategory(next as QqStorageCategory)}
+              className="min-w-0 max-w-full"
             >
-              {STATUS_FILTERS.map((value) => (
-                <option key={value} value={value}>
-                  {t(statusLabels[value])}
-                </option>
-              ))}
-            </NativeSelect>
-          </Field>
-          <Field label="connections.storage.manage.kindLabel">
-            <NativeSelect
-              className="w-32"
-              value={kind}
-              disabled={saving}
-              onChange={(event) => switchKind(event.target.value as QqConversationKind | "")}
-            >
-              <option value="">{t("connections.storage.manage.kindAny")}</option>
-              <option value="group">{t("connections.kind.group")}</option>
-              <option value="private">{t("connections.kind.private")}</option>
-            </NativeSelect>
-          </Field>
-          <Field label="connections.storage.manage.peerFilter">
-            <Input
-              className="w-48"
-              value={peerInput}
-              disabled={saving}
-              onChange={(event) => setPeerInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  applyPeer();
-                }
-              }}
-            />
-          </Field>
-          <Button variant="outline" disabled={saving} onClick={applyPeer}>
-            {t("connections.storage.manage.apply")}
-          </Button>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            disabled={saving || selected.length === 0}
-            onClick={openSelectionPreview}
-          >
-            <Trash2 />
-            {t("connections.storage.manage.cleanSelected")}
-          </Button>
-          <Button variant="outline" disabled={saving} onClick={openCategoryPreview}>
-            <Trash2 />
-            {t("connections.storage.manage.cleanCategory")}
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            {t("connections.storage.manage.selectedCount", { "0": selected.length })}
-          </span>
-        </div>
-        {itemsError && (
-          <div
-            className="flex flex-wrap items-center gap-2 text-sm text-destructive"
-            aria-live="polite"
-          >
-            <span>{t("connections.storage.manage.itemsError", { "0": itemsError })}</span>
-            <Button
-              variant="outline"
-              disabled={itemsLoading}
-              onClick={() => setReloadTick((value) => value + 1)}
-            >
-              {t("capabilities.retry")}
-            </Button>
-          </div>
-        )}
-        {itemsLoading && !items.length && (
-          <p className="text-sm text-muted-foreground">{t("connections.common.loading")}</p>
-        )}
-        {!itemsLoading && !itemsError && items.length === 0 && (
-          <p className="text-sm text-muted-foreground">{t("connections.storage.manage.empty")}</p>
-        )}
-        {items.length > 0 && (
-          <>
-            <div className="rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-8">
-                      <span className="sr-only">{t("connections.storage.manage.select")}</span>
-                    </TableHead>
-                    <TableHead>{t("connections.storage.sweep.peer")}</TableHead>
-                    <TableHead>{t("connections.storage.manage.columnAgent")}</TableHead>
-                    <TableHead>{t("connections.storage.manage.columnStatus")}</TableHead>
-                    <TableHead>{t("connections.storage.manage.createdAt")}</TableHead>
-                    <TableHead>{t("connections.storage.manage.expiresAt")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((item) => (
-                    <TableRow key={`${item.category}:${item.id}`}>
-                      <TableCell>
-                        {item.expired ? (
-                          <Checkbox
-                            checked={selected.includes(item.id)}
-                            disabled={!qqStorageItemCleanable(item) || saving}
-                            aria-label={t("connections.storage.manage.selectRow", {
-                              "0": item.id,
-                            })}
-                            onCheckedChange={(next) => toggleSelected(item.id, next === true)}
-                          />
-                        ) : (
-                          <span aria-hidden="true" className="text-muted-foreground">
-                            —
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {t(`connections.kind.${item.kind}`)} {item.peer_id}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">{item.agent_id ?? "—"}</TableCell>
-                      <TableCell>
-                        {item.expired ? (
-                          <Badge variant="outline">
-                            {t("connections.storage.nicknames.expired")}
-                          </Badge>
-                        ) : (
-                          t("connections.storage.manage.statusLive")
-                        )}
-                        {item.protected && (
-                          <Badge
-                            variant="secondary"
-                            title={t("connections.storage.manage.protectedHint")}
-                          >
-                            {t("connections.storage.manage.protected")}
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs">{instant(item.created_at)}</TableCell>
-                      <TableCell className="text-xs">{instant(item.expires_at)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-              <span>{t("connections.storage.manage.total", { "0": total })}</span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  disabled={position === 0 || itemsLoading || saving}
-                  onClick={goPrev}
-                >
-                  {t("connections.storage.manage.previousPage")}
-                </Button>
-                <Button
-                  variant="outline"
-                  disabled={!nextCursor || itemsLoading || saving}
-                  onClick={goNext}
-                >
-                  {t("connections.storage.manage.nextPage")}
-                </Button>
-              </div>
-            </div>
-          </>
-        )}
-      </section>
-      {data && (
-        <>
-          <div className="grid gap-4 md:grid-cols-3">
-            {groups.map((group) => (
-              <section key={group.key} className="space-y-3 rounded-lg border p-4">
-                <h3 className="font-medium">{t(`connections.storage.${group.key}`)}</h3>
-                <dl className="space-y-2">
-                  {Object.entries(group.values).map(([key, value]) => (
-                    <div className="flex justify-between gap-3 text-sm" key={key}>
-                      <dt className="text-muted-foreground">
-                        {t(`connections.storage.${group.key}.${key}`)}
-                      </dt>
-                      <dd className="font-mono tabular-nums">{number.format(value)}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </section>
-            ))}
-          </div>
-          <section className="space-y-3">
-            <h3 className="font-semibold">{t("connections.storage.runtime")}</h3>
-            <div className="grid gap-3 sm:grid-cols-3">
-              {data.agent_runtime &&
-                Object.entries(data.agent_runtime).map(([key, value]) => (
-                  <div
-                    className="flex items-center justify-between rounded-md bg-muted px-4 py-3 text-sm"
-                    key={key}
-                  >
-                    <span>{t(`connections.storage.runtime.${key}`)}</span>
-                    <Badge variant="outline">{number.format(value)}</Badge>
-                  </div>
-                ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {t("connections.storage.dispatch", {
-                "0": data.dispatch.candidates,
-                "1": data.dispatch.ready_now,
-                "2": t(
-                  data.dispatch.lease_held
-                    ? "connections.storage.leased"
-                    : "connections.storage.idle",
-                ),
-              })}
-            </p>
-          </section>
-          <section className="space-y-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h3 className="font-semibold">{t("connections.storage.sweep")}</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t("connections.storage.lastSweep", {
-                    "0": date(data.sweep.last_swept_at_seconds),
-                    "1": data.sweep.tracked,
-                  })}
-                </p>
-              </div>
-              {/* 深链只在运行观测里，这里保留一个入口而不复制追踪详情。 */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  useSuperstringStore.getState().requestConversationView("activity", "global")
-                }
+              <TabsList
+                aria-label={t("connections.storage.manage.categoryLabel")}
+                className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal"
               >
-                {t("connections.storage.viewTraces")}
+                {CATEGORIES.map((value) => (
+                  <TabsTrigger key={value} value={value} disabled={saving}>
+                    {t(`connections.storage.removed.${value}`)}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+            <div className="flex flex-wrap items-end gap-3">
+              <Field label="connections.storage.manage.statusLabel">
+                <NativeSelect
+                  className="w-32"
+                  value={status}
+                  disabled={saving}
+                  onChange={(event) => switchStatus(event.target.value as QqStorageStatusFilter)}
+                >
+                  {STATUS_FILTERS.map((value) => (
+                    <option key={value} value={value}>
+                      {t(statusLabels[value])}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </Field>
+              <Field label="connections.storage.manage.kindLabel">
+                <NativeSelect
+                  className="w-32"
+                  value={kind}
+                  disabled={saving}
+                  onChange={(event) => switchKind(event.target.value as QqConversationKind | "")}
+                >
+                  <option value="">{t("connections.storage.manage.kindAny")}</option>
+                  <option value="group">{t("connections.kind.group")}</option>
+                  <option value="private">{t("connections.kind.private")}</option>
+                </NativeSelect>
+              </Field>
+              <Field label="connections.storage.manage.peerFilter">
+                <Input
+                  className="w-48"
+                  value={peerInput}
+                  disabled={saving}
+                  onChange={(event) => setPeerInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      applyPeer();
+                    }
+                  }}
+                />
+              </Field>
+              <Button variant="outline" disabled={saving} onClick={applyPeer}>
+                {t("connections.storage.manage.apply")}
               </Button>
             </div>
-            <div className="rounded-lg border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    {["peer", "decision", "observed", "ready", "checked"].map((key) => (
-                      <TableHead key={key}>{t(`connections.storage.sweep.${key}`)}</TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.sweep.entries.map((entry) => (
-                    <TableRow key={`${entry.kind}:${entry.peer_id}`}>
-                      <TableCell>
-                        {t(`connections.kind.${entry.kind}`)} {entry.peer_id}
-                      </TableCell>
-                      <TableCell>
-                        {entry.outcome === "skipped"
-                          ? t(`connections.sweep.${entry.reason}`)
-                          : t("connections.sweep.queued")}
-                      </TableCell>
-                      <TableCell>{date(entry.observed_at_seconds)}</TableCell>
-                      <TableCell>{date(entry.ready_at_seconds)}</TableCell>
-                      <TableCell>{date(entry.decided_at_seconds)}</TableCell>
-                    </TableRow>
-                  ))}
-                  {!data.sweep.entries.length && (
-                    <TableRow>
-                      <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                        {t("connections.storage.noSweep")}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                disabled={saving || selected.length === 0}
+                onClick={openSelectionPreview}
+              >
+                <Trash2 />
+                {t("connections.storage.manage.cleanSelected")}
+              </Button>
+              <Button variant="outline" disabled={saving} onClick={openCategoryPreview}>
+                <Trash2 />
+                {t("connections.storage.manage.cleanCategory")}
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                {t("connections.storage.manage.selectedCount", { "0": selected.length })}
+              </span>
             </div>
-          </section>
-        </>
+            {itemsError && (
+              <div
+                className="flex flex-wrap items-center gap-2 text-sm text-destructive"
+                aria-live="polite"
+              >
+                <span>{t("connections.storage.manage.itemsError", { "0": itemsError })}</span>
+                <Button
+                  variant="outline"
+                  disabled={itemsLoading}
+                  onClick={() => setReloadTick((value) => value + 1)}
+                >
+                  {t("capabilities.retry")}
+                </Button>
+              </div>
+            )}
+            {itemsLoading && !items.length && (
+              <p className="text-sm text-muted-foreground">{t("connections.common.loading")}</p>
+            )}
+            {!itemsLoading && !itemsError && items.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                {t("connections.storage.manage.empty")}
+              </p>
+            )}
+            {items.length > 0 && (
+              <>
+                <div className="overflow-x-auto rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-8">
+                          <span className="sr-only">{t("connections.storage.manage.select")}</span>
+                        </TableHead>
+                        <TableHead>{t("connections.storage.sweep.peer")}</TableHead>
+                        <TableHead>{t("connections.storage.manage.columnAgent")}</TableHead>
+                        <TableHead>{t("connections.storage.manage.columnStatus")}</TableHead>
+                        <TableHead>{t("connections.storage.manage.createdAt")}</TableHead>
+                        <TableHead>{t("connections.storage.manage.expiresAt")}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {items.map((item) => (
+                        <TableRow key={`${item.category}:${item.id}`}>
+                          <TableCell>
+                            {item.expired ? (
+                              <Checkbox
+                                checked={selected.includes(item.id)}
+                                disabled={!qqStorageItemCleanable(item) || saving}
+                                aria-label={t("connections.storage.manage.selectRow", {
+                                  "0": item.id,
+                                })}
+                                onCheckedChange={(next) => toggleSelected(item.id, next === true)}
+                              />
+                            ) : (
+                              <span aria-hidden="true" className="text-muted-foreground">
+                                —
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {t(`connections.kind.${item.kind}`)} {item.peer_id}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {item.agent_id ?? "—"}
+                          </TableCell>
+                          <TableCell>
+                            {item.expired ? (
+                              <Badge variant="outline">
+                                {t("connections.storage.nicknames.expired")}
+                              </Badge>
+                            ) : (
+                              t("connections.storage.manage.statusLive")
+                            )}
+                            {item.protected && (
+                              <Badge
+                                variant="secondary"
+                                title={t("connections.storage.manage.protectedHint")}
+                              >
+                                {t("connections.storage.manage.protected")}
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-xs">{instant(item.created_at)}</TableCell>
+                          <TableCell className="text-xs">{instant(item.expires_at)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>{t("connections.storage.manage.total", { "0": total })}</span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={position === 0 || itemsLoading || saving}
+                      onClick={goPrev}
+                    >
+                      {t("connections.storage.manage.previousPage")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={!nextCursor || itemsLoading || saving}
+                      onClick={goNext}
+                    >
+                      {t("connections.storage.manage.nextPage")}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+      {data && (
+        <section>
+          <Card size="sm">
+            <CardContent className="space-y-6 pt-(--card-spacing)">
+              <div className="grid gap-4 sm:grid-cols-2">
+                {groups.map((group) => (
+                  <section key={group.key} className="space-y-3 rounded-lg border p-4">
+                    <h3 className="font-medium">{t(`connections.storage.${group.key}`)}</h3>
+                    <dl className="space-y-2">
+                      {Object.entries(group.values).map(([key, value]) => (
+                        <div className="flex justify-between gap-3 text-sm" key={key}>
+                          <dt className="text-muted-foreground">
+                            {t(`connections.storage.${group.key}.${key}`)}
+                          </dt>
+                          <dd className="font-mono tabular-nums">{number.format(value)}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                ))}
+              </div>
+              <section className="space-y-3">
+                <h3 className="font-semibold">{t("connections.storage.runtime")}</h3>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {data.agent_runtime &&
+                    Object.entries(data.agent_runtime).map(([key, value]) => (
+                      <div
+                        className="flex items-center justify-between rounded-md bg-muted px-4 py-3 text-sm"
+                        key={key}
+                      >
+                        <span>{t(`connections.storage.runtime.${key}`)}</span>
+                        <Badge variant="outline">{number.format(value)}</Badge>
+                      </div>
+                    ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {t("connections.storage.dispatch", {
+                    "0": data.dispatch.candidates,
+                    "1": data.dispatch.ready_now,
+                    "2": t(
+                      data.dispatch.lease_held
+                        ? "connections.storage.leased"
+                        : "connections.storage.idle",
+                    ),
+                  })}
+                </p>
+              </section>
+              <section className="space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold">{t("connections.storage.sweep")}</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t("connections.storage.lastSweep", {
+                        "0": date(data.sweep.last_swept_at_seconds),
+                        "1": data.sweep.tracked,
+                      })}
+                    </p>
+                  </div>
+                  {/* 深链只在运行观测里，这里保留一个入口而不复制追踪详情。 */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      useSuperstringStore.getState().requestConversationView("activity", "global")
+                    }
+                  >
+                    {t("connections.storage.viewTraces")}
+                  </Button>
+                </div>
+                <div className="overflow-x-auto rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        {["peer", "decision", "observed", "ready", "checked"].map((key) => (
+                          <TableHead key={key}>{t(`connections.storage.sweep.${key}`)}</TableHead>
+                        ))}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {data.sweep.entries.map((entry) => (
+                        <TableRow key={`${entry.kind}:${entry.peer_id}`}>
+                          <TableCell>
+                            {t(`connections.kind.${entry.kind}`)} {entry.peer_id}
+                          </TableCell>
+                          <TableCell>
+                            {entry.outcome === "skipped"
+                              ? t(`connections.sweep.${entry.reason}`)
+                              : t("connections.sweep.queued")}
+                          </TableCell>
+                          <TableCell>{date(entry.observed_at_seconds)}</TableCell>
+                          <TableCell>{date(entry.ready_at_seconds)}</TableCell>
+                          <TableCell>{date(entry.decided_at_seconds)}</TableCell>
+                        </TableRow>
+                      ))}
+                      {!data.sweep.entries.length && (
+                        <TableRow>
+                          <TableCell
+                            colSpan={5}
+                            className="py-10 text-center text-muted-foreground"
+                          >
+                            {t("connections.storage.noSweep")}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </section>
+            </CardContent>
+          </Card>
+        </section>
       )}
       {cleanupOpen && (
         <AlertDialog

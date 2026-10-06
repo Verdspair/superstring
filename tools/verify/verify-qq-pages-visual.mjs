@@ -28,6 +28,7 @@
 // subset (unknown IDs fail). SUPERSTRING_VISUAL_THEME_PAGE defaults to tool-grants and must be
 // selected; a focused batch can use execution-ledger or scheme-bindings without changing defaults.
 // --ui-frozen records before/after source hashes and rejects HMR or changes during the matrix.
+// qq-group-config opens from a QQ group's "本群配置" control (real entry, no synthetic route).
 // Conversation coverage IDs: conversation-{web|qq}-messages and
 // conversation-{web|qq}-{activity|tasks}-{current|global}; select only seeded fixture channels.
 // Defaults to bundled Chromium; optionally set SUPERSTRING_VISUAL_BROWSER_CHANNEL=msedge
@@ -256,7 +257,7 @@ const ALL_PAGES = [
     en: ["Materials", "Sticker library"],
     probe: null,
   },
-  // 方案目录保持目录；详情先选方案，再验证方案设置/使用会话与原四参数页签。
+  // 方案目录保持目录；详情先选方案，再验证方案设置/使用会话两 view，以及设置内六目的分组。
   {
     id: "scheme-library",
     labelKeys: ["workspace.schemes"],
@@ -276,11 +277,14 @@ const ALL_PAGES = [
     probe: null,
     pick: ['[data-scheme-app-open="qq"]', "[data-scheme-open]"],
     schemeView: "settings",
+    // 六目的分组（发言时机/回复方式/消息读取/历史压缩/图片理解/表情发送）取代旧四参数 Tab。
     finalTabKeys: [
-      "connections.whenToParticipate",
-      "connections.howToRespond",
-      "connections.whatToRead",
-      "connections.mediaAndExpression",
+      "schemes.sections.participation",
+      "schemes.sections.response",
+      "schemes.sections.contextReading",
+      "schemes.sections.historyCompression",
+      "schemes.sections.imageUnderstanding",
+      "schemes.sections.stickerSending",
     ],
   },
   {
@@ -297,6 +301,24 @@ const ALL_PAGES = [
     pick: '[data-scheme-app-open="qq"]',
     qqAppTab: "storage",
     probe: null,
+  },
+  // 本群配置（qq-group-config）只从真实入口进入：QQ 群的「本群控制」控件里的「本群配置」按钮
+  // （QqGroupControls → openQqGroupConfig，走统一导航守卫）。不新造路由、不直连内部状态。
+  {
+    id: "qq-group-config",
+    labelKeys: ["workspace.conversations"],
+    conversation: "qq",
+    groupConfig: true,
+    probe: null,
+    finalTabKeys: [
+      "schemes.sections.participation",
+      "schemes.sections.response",
+      "schemes.sections.contextReading",
+      "schemes.sections.historyCompression",
+      "schemes.sections.imageUnderstanding",
+      "schemes.sections.stickerSending",
+      "schemes.qq.groupConfig.capabilities",
+    ],
   },
   { id: "long-memory", zh: ["资料", "记忆"], en: ["Materials", "Memory"], probe: null },
   // 资料里的知识库配置页（文档页），挂在「资料」分区下。
@@ -344,6 +366,14 @@ for (const entry of PAGES) {
   assert(
     entry.qqAppTab === undefined || ["schemes", "connection", "storage"].includes(entry.qqAppTab),
     `${entry.id}: invalid QQ app tab`,
+  );
+  assert(
+    entry.groupConfig === undefined || entry.groupConfig === true,
+    `${entry.id}: invalid groupConfig flag`,
+  );
+  assert(
+    entry.groupConfig !== true || entry.conversation === "qq",
+    `${entry.id}: groupConfig needs a QQ conversation pick`,
   );
   assert(
     entry.extension === undefined || ["mcp", "skills", "grants"].includes(entry.extension),
@@ -912,6 +942,23 @@ async function openPage(page, entry, locale) {
     await assertScope(page, entry.scope, locale);
   }
   if (entry.view) await waitConversationView(page, entry, locale);
+  // 本群配置：只走真实入口——QQ 群的「本群控制」里的「本群配置」按钮（openQqGroupConfig 经导航守卫）。
+  if (entry.groupConfig) {
+    const controls = page.getByRole("group", {
+      name: t(locale, "schemes.qq.groupConfig.controls.label"),
+      exact: true,
+    });
+    await controls.first().waitFor({ state: "visible", timeout: 15000 });
+    const configure = controls.first().getByRole("button", {
+      name: t(locale, "schemes.qq.groupConfig.controls.configure"),
+      exact: true,
+    });
+    await waitEnabled(page, configure);
+    await configure.click();
+    await page
+      .getByRole("heading", { name: t(locale, "schemes.qq.groupConfigTitle"), exact: true })
+      .waitFor({ state: "visible", timeout: 15000 });
+  }
   if (entry.schemeView) await waitSchemeView(page, navigation.schemeId, entry.schemeView, locale);
   if (entry.qqAppTab) navigation.qqApp = await waitQqApp(page, entry.qqAppTab, locale);
   if (entry.extension) await waitExtensions(page, entry, locale);
@@ -1525,9 +1572,67 @@ try {
           },
         });
         console.log(`[PASS] ${name}`);
-        // 方案设置保留四参数 Tab；绑定详情覆盖两个任务 Tab。切换前后均校验实际内容和
+        // 本群配置：逐一切六分组 + 第七「本群能力」页签，只校验活动 tabpanel 的内容；
+        // 不走 waitSchemeView（那是详情 settings/bindings 两 view 的锚点，本页没有该选择器）。
+        if (entry.finalTabKeys !== undefined && entry.groupConfig === true) {
+          for (const [index, tabKey] of entry.finalTabKeys.entries()) {
+            const tabName = t(locale, tabKey);
+            const tabCheck = `${name}-tab-${index + 1}`;
+            hygiene.reset();
+            active = { name: tabCheck, page, hygiene };
+            await page.getByRole("tab", { name: tabName, exact: true }).click();
+            await page
+              .getByRole("tab", { name: tabName, exact: true, selected: true })
+              .waitFor({ timeout: 15000 });
+            const tabProbe = '[role="tabpanel"][data-state="active"]';
+            await page.waitForSelector(tabProbe, { timeout: 15000 });
+            const tabMetrics = await inspect(page, tabProbe);
+            active.metrics = tabMetrics;
+            assert(
+              tabMetrics.scrollWidth <= viewport.width,
+              `${tabCheck}: horizontal overflow (${tabMetrics.scrollWidth} > ${viewport.width})`,
+            );
+            assert(tabMetrics.textLength > 40, `${tabCheck}: tab content is empty`);
+            assert(tabMetrics.probePresent, `${tabCheck}: missing ${tabProbe}`);
+            assert(
+              tabMetrics.theme === "slate" && tabMetrics.mode === "light",
+              `${tabCheck}: appearance not applied`,
+            );
+            assert(
+              hygiene.consoleErrors.length === 0,
+              `${tabCheck}: console error (${hygiene.consoleErrors[0]})`,
+            );
+            assert(
+              hygiene.failedRequests.length === 0,
+              `${tabCheck}: failed request (${hygiene.failedRequests[0]})`,
+            );
+            assert(
+              hygiene.externalRequests.length === 0,
+              `${tabCheck}: off-origin request (${hygiene.externalRequests[0]})`,
+            );
+            if (viewport.width === 1440 || (viewport.width < 400 && locale === "zh-CN")) {
+              const file = `qq-pages-${slug(tabCheck)}.png`;
+              await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+              screenshots.push(file);
+            }
+            results.push({
+              name: tabCheck,
+              passed: true,
+              tab: tabName,
+              schemeView: "group-config",
+              metrics: tabMetrics,
+              hygiene: {
+                consoleErrors: hygiene.consoleErrors.length,
+                failedRequests: hygiene.failedRequests.length,
+                externalRequests: hygiene.externalRequests.length,
+              },
+            });
+            console.log(`[PASS] ${tabCheck} (${tabName})`);
+          }
+        }
+        // 方案设置六分组 Tab；绑定详情覆盖 settings/bindings 两个 view。切换前后均校验实际内容与
         // picked scheme ID；隐藏的旧编辑器/只有标题的读取态不能替代已加载的绑定看板。
-        if (entry.finalTabKeys !== undefined) {
+        if (entry.finalTabKeys !== undefined && entry.groupConfig !== true) {
           for (const [index, tabKey] of entry.finalTabKeys.entries()) {
             const tabName = t(locale, tabKey);
             const tabCheck = `${name}-tab-${index + 1}`;

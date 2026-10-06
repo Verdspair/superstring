@@ -375,16 +375,21 @@ it("脏草稿选择放弃修改并继续：直接创建并把编辑器换成新�
 it("详情两种任务视图：默认方案设置，切到使用会话再回来不丢整案草稿", async () => {
   await renderDetail();
   const settingsTab = screen.getByRole("tab", { name: translate("schemes.bindings.viewSettings") });
-  const bindingsTab = screen.getByRole("tab", { name: translate("schemes.bindings.viewBindings") });
+  // bindings 触发器现含 usage 计数（外层承接），按前缀定位。
+  const bindingsTab = screen.getByRole("tab", {
+    name: new RegExp(`^${translate("schemes.bindings.viewBindings")}`),
+  });
   expect(settingsTab.getAttribute("aria-selected")).toBe("true");
-  // 方案设置里的原四 Tab 仍在原位。
-  for (const tabKey of [
-    "connections.whenToParticipate",
-    "connections.howToRespond",
-    "connections.whatToRead",
-    "connections.mediaAndExpression",
+  // 方案设置里的六组 section 仍在原位（新分组）。
+  for (const sectionKey of [
+    "schemes.sections.participation",
+    "schemes.sections.response",
+    "schemes.sections.contextReading",
+    "schemes.sections.historyCompression",
+    "schemes.sections.imageUnderstanding",
+    "schemes.sections.stickerSending",
   ])
-    expect(screen.getByRole("tab", { name: translate(tabKey) })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: translate(sectionKey) })).toBeTruthy();
 
   // 有未保存草稿时切视图不触发保存/放弃三选，草稿原文保留。
   const editor = qqSchemeEditorFrom(scheme());
@@ -401,21 +406,51 @@ it("详情两种任务视图：默认方案设置，切到使用会话再回来�
   expect(store.getState().qqSchemeEditor?.name).toBe("改过的名字");
 });
 
-it("详情用法计数点击直达使用会话，不再开只读弹窗", async () => {
+it("详情用法计数由外层使用会话 Tab 承接：计数可见、点击直达、不再开只读弹窗", async () => {
   await renderDetail();
-  const usage = document.querySelector("[data-scheme-usage]") as HTMLButtonElement;
-  expect(usage.textContent).toBe(translate("connections.usedByValueConversations", "0"));
-  fireEvent.click(usage);
+  // data-scheme-usage 语义入口移到外层 Tab 触发器；匹配编辑对象时计数=0。
+  const usage = document.querySelector("[data-scheme-usage]") as HTMLElement;
+  expect(usage.textContent).toContain(translate("schemes.usageCount", "0"));
+  // Radix Tab 以真实指针事件激活（与既有 tab 切换用例一致），不用合成 click。
+  await userEvent.click(usage);
   await act(async () => {});
   expect(store.getState().qqSchemeView).toBe("bindings");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-it("目录提供全局会话绑定入口，落到与详情使用会话同一绑定视图", async () => {
+it("usage 读取失败时不把未知当 0：显示未知与重试，重试重读 usage", async () => {
+  const usage = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("离线"))
+    .mockResolvedValue({ scheme_id: SCHEME_A, bindings: 0 });
+  await renderDetail({ getQqSchemeUsage: usage });
+  // 首读失败 → 未知行 + 重试（原 studio 内层行为等价迁移到外层），未知绝不是 0。
+  expect(screen.getByText(translate("schemes.usageUnknown"))).toBeTruthy();
+  expect(screen.queryByText(translate("schemes.usageCount", "0"))).toBeNull();
+  // 协同编辑期 studio 内层 retry 尚未移除（Gemini lane）：外层未知行的重试按容器定位，点击即重读 usage。
+  const unknownRow = screen
+    .getByText(translate("schemes.usageUnknown"))
+    .closest("span") as HTMLElement;
+  fireEvent.click(
+    within(unknownRow).getByRole("button", { name: translate("capabilities.retry") }),
+  );
+  await act(async () => {});
+  expect(usage).toHaveBeenCalledTimes(2);
+  // 重试成功后计数出现在外层 Tab 上。
+  expect(document.querySelector("[data-scheme-usage]")?.textContent).toContain(
+    translate("schemes.usageCount", "0"),
+  );
+});
+
+it("目录提供全局会话绑定次级入口（工具条小按钮），落到与详情使用会话同一绑定视图", async () => {
   await renderDirectory();
-  expect(screen.getByText(translate("schemes.bindings.entryHint"))).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: translate("schemes.bindings.entry") }));
+  const entry = screen.getByRole("button", { name: translate("schemes.bindings.entry") });
+  // 次级按钮：发现性说明随 title 提示，不再占大横幅。
+  expect(entry.getAttribute("title")).toBe(translate("schemes.bindings.entryHint"));
+  fireEvent.click(entry);
   expect(store.getState().settingsRoute).toBe("scheme-bindings");
+  // 大横幅容器不再存在。
+  expect(screen.queryByText(translate("schemes.bindings.entryHint"))).toBeNull();
 });
 
 it("QQ 标题与同排连接/数据同为 outline 32px 入口，忙碌禁用与连接目标不变", async () => {

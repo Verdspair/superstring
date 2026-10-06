@@ -232,8 +232,8 @@ it("显式钉住与基线同值也保留；钉住从基线初始化，装配冗�
   fireEvent.change(hourlyState, { target: { value: "follow" } });
   expect(editorOf()?.overrides).toEqual({ rhythm: { merge_window_seconds: 30 } });
 
-  // 装配冗余钉住初始化成整数百分比（0.05 → 输入 5）。
-  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  // 装配冗余钉住初始化成整数百分比（0.05 → 输入 5）。压缩装配归「历史压缩」组。
+  await userEvent.click(screen.getByRole("tab", { name: "历史压缩" }));
   const headroomState = fieldOf(view, "compression.headroom_ratio").getByRole(
     "combobox",
   ) as HTMLSelectElement;
@@ -584,7 +584,7 @@ it("变更预览：布尔显示为开/关、不暴露 true/false 与机器字段
 
 it("0052 新两组接入：枚举/数字/时区与嵌套 stages 钉住进真实 store 载荷，follow 才取消", async () => {
   const view = await renderPage();
-  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  await userEvent.click(screen.getByRole("tab", { name: "消息读取" }));
 
   const depth = view.container.querySelector(
     'input[data-field="message_settings.reply_depth"]',
@@ -614,8 +614,8 @@ it("0052 新两组接入：枚举/数字/时区与嵌套 stages 钉住进真实 
   fireEvent.change(timezone, { target: { value: "Asia/Tokyo" } });
   expect(editorOf()?.overrides.message_settings).toMatchObject({ timezone: "Asia/Tokyo" });
 
-  // 嵌套 stages：媒体页签里逐阶段钉住；follow 只取消这一个阶段。
-  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  // 嵌套 stages：图片理解组里逐阶段钉住；follow 只取消这一个阶段。
+  await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
   const mode = view.container.querySelector(
     'select[data-field="media_input.mode"]',
   ) as HTMLSelectElement;
@@ -643,7 +643,7 @@ it("0052 新两组接入：枚举/数字/时区与嵌套 stages 钉住进真实 
 
 it("普通静图规格：null 是显式钉住原图（与基线同值也 dirty）、0 拒绝留原文拦保存、follow 才取消", async () => {
   const view = await renderPage();
-  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
   const choice = view.container.querySelector(
     'select[data-field="media_input.ordinary_still_max_dimension.choice"]',
   ) as HTMLSelectElement;
@@ -680,7 +680,7 @@ it("普通静图规格：null 是显式钉住原图（与基线同值也 dirty�
 
 it("非法时区保稿并拒保存、修正后可保存；one_then_on_demand 层数禁用但保稿，切回按层数恢复可编辑", async () => {
   const view = await renderPage();
-  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  await userEvent.click(screen.getByRole("tab", { name: "消息读取" }));
   const timezone = view.container.querySelector(
     'input[data-field="message_settings.timezone"]',
   ) as HTMLInputElement;
@@ -719,7 +719,7 @@ it("非法时区保稿并拒保存、修正后可保存；one_then_on_demand 层
 it("刷新保稿：0052 新两组本地钉住按三路合并保留，不被服务端旧值回退", async () => {
   const read = vi.fn(async () => qqConfig());
   const view = await renderPage({ getQqGroupConfig: read });
-  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  await userEvent.click(screen.getByRole("tab", { name: "消息读取" }));
   act(() => {
     store.getState().patchQqGroupOverride("media_input", "mode", "description");
     store.getState().patchQqGroupOverride("message_settings", "reply_depth", "3");
@@ -773,7 +773,7 @@ it("换方案预览：嵌套 stage 展开成逐阶段人话行、目标基线走
   const { fake, container } = await renderPage({
     listQqSchemes: vi.fn(async () => [qqScheme(), target]),
   });
-  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
   const stage = container.querySelector(
     'select[data-field="media_input.stages.evaluation"]',
   ) as HTMLSelectElement;
@@ -834,7 +834,7 @@ it("数字字段错误提示有 id 且输入框 aria-describedby 指向该真实
 
 it("普通静图规格：Field 标题以 htmlFor 关联选择框，数值框独立 aria-label 且错误 describedby 指真实 DOM", async () => {
   const view = await renderPage();
-  await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+  await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
   const choice = view.container.querySelector(
     'select[data-field="media_input.ordinary_still_max_dimension.choice"]',
   ) as HTMLSelectElement;
@@ -858,7 +858,7 @@ it("普通静图规格：Field 标题以 htmlFor 关联选择框，数值框独�
 
 it("模型输入示例按生效值渲染，随本群时区改写与恢复跟随更新且只读", async () => {
   const view = await renderPage();
-  await userEvent.click(screen.getByRole("tab", { name: "读取什么" }));
+  await userEvent.click(screen.getByRole("tab", { name: "消息读取" }));
   // 基础方案默认 hybrid/Asia/Shanghai：示例存在且只读，头部是该时区与冻结 now。
   const preview = () =>
     view.container.querySelector("[data-qq-message-preview] pre")?.textContent ?? "";
@@ -956,4 +956,22 @@ describe("性能阶段补测：窄订阅行为保持（FE-P1, group-config）", 
     fireEvent.change(mergeInput, { target: { value: "33" } });
     expect(editorOf()?.overrides).toEqual({ rhythm: { merge_window_seconds: 33 } });
   });
+});
+
+it("回复方式组的 max_recompute_count（再生成预算）可钉住进本群覆盖，follow 取消；字段在 response 分组渲染", async () => {
+  const view = await renderPage();
+  // 回复方式组：max_recompute_count 由 responseFields 渲染（不再是参与组的主动门槛）。
+  await userEvent.click(screen.getByRole("tab", { name: "回复方式" }));
+  const recompute = view.container.querySelector(
+    'input[data-field="rhythm.max_recompute_count"]',
+  ) as HTMLInputElement;
+  expect(recompute).toBeTruthy();
+  const state = fieldOf(view, "rhythm.max_recompute_count").getByRole(
+    "combobox",
+  ) as HTMLSelectElement;
+  fireEvent.change(state, { target: { value: "custom" } });
+  expect((recompute as HTMLInputElement).value).toBe("1");
+  expect(editorOf()?.overrides).toEqual({ rhythm: { max_recompute_count: 1 } });
+  fireEvent.change(state, { target: { value: "follow" } });
+  expect(editorOf()?.overrides).toEqual({});
 });

@@ -1,5 +1,5 @@
 import { ChevronLeft, Plus, RefreshCw, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type { QqBindingResponse, QqConversationListItem } from "../../../shared/contracts/qq";
@@ -317,6 +317,7 @@ export function SchemeBindingsView({
   const { loadQqBindingDirectory, qqBindingsLoaded, qqBindingsLoading, qqBindingsError } = state;
   const [pickedScheme, setPickedScheme] = useState<string | null>(null);
   const [editing, setEditing] = useState<QqBindingResponse | null>(null);
+  const editorTrigger = useRef<HTMLButtonElement | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<"all" | "group" | "private">("all");
@@ -422,10 +423,13 @@ export function SchemeBindingsView({
         </Field>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        <p className="min-w-52 flex-1 text-sm text-muted-foreground">
-          {t("schemes.bindings.boardHint")}
-        </p>
-        <Button disabled={busy || !effectiveId} onClick={() => setAddOpen(true)}>
+        <Button
+          disabled={busy || !effectiveId}
+          onClick={(event) => {
+            editorTrigger.current = event.currentTarget;
+            setAddOpen(true);
+          }}
+        >
           <Plus />
           {t("schemes.bindings.add")}
         </Button>
@@ -433,8 +437,6 @@ export function SchemeBindingsView({
           <RefreshCw />
           {t("schemes.bindings.refresh")}
         </Button>
-      </div>
-      <div className="flex flex-wrap items-center gap-3">
         <div className="relative min-w-52 max-w-md flex-1">
           <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
           <Input
@@ -455,6 +457,9 @@ export function SchemeBindingsView({
           <option value="group">{t("connections.group")}</option>
           <option value="private">{t("connections.privateChat")}</option>
         </NativeSelect>
+        <p className="min-w-52 flex-1 text-sm text-muted-foreground">
+          {t("schemes.bindings.boardHint")}
+        </p>
       </div>
       {visible.length ? (
         <ul className="space-y-2">
@@ -502,7 +507,10 @@ export function SchemeBindingsView({
                     size="sm"
                     className="min-h-8 whitespace-normal"
                     disabled={busy}
-                    onClick={() => setEditing(binding)}
+                    onClick={(event) => {
+                      editorTrigger.current = event.currentTarget;
+                      setEditing(binding);
+                    }}
                   >
                     {t("connections.manage")}
                   </Button>
@@ -533,6 +541,10 @@ export function SchemeBindingsView({
           conversation={conversationOf(editingBinding, state.qqConversations)}
           binding={editingBinding}
           onClose={() => setEditing(null)}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            editorTrigger.current?.focus();
+          }}
         />
       )}
     </div>

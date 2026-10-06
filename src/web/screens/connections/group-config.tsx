@@ -52,6 +52,8 @@ import {
   QQ_GROUP_CAPABILITY_LABELS,
   QQ_SCHEME_ENUM_OPTION_LABELS,
   QQ_SCHEME_FIELD_LABELS,
+  QQ_SCHEME_SECTIONS,
+  responseFields,
   stickerFields,
   TRIGGER_LABELS,
 } from "../../features/qq/scheme-field-metadata";
@@ -1446,6 +1448,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
       openQqGroupConfig: s.openQqGroupConfig,
       patchQqGroupConfigScheme: s.patchQqGroupConfigScheme,
       refreshQqGroupConfig: s.refreshQqGroupConfig,
+      openSettingsRoute: s.openSettingsRoute,
       requestConversationNavigation: s.requestConversationNavigation,
       saveQqGroupConfig: s.saveQqGroupConfig,
     })),
@@ -1640,12 +1643,11 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             </div>
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal">
-                <TabsTrigger value="participation">
-                  {t("connections.whenToParticipate")}
-                </TabsTrigger>
-                <TabsTrigger value="response">{t("connections.howToRespond")}</TabsTrigger>
-                <TabsTrigger value="context">{t("connections.whatToRead")}</TabsTrigger>
-                <TabsTrigger value="media">{t("connections.mediaAndExpression")}</TabsTrigger>
+                {QQ_SCHEME_SECTIONS.map((section) => (
+                  <TabsTrigger key={section.id} value={section.id}>
+                    {t(section.labelKey)}
+                  </TabsTrigger>
+                ))}
                 <TabsTrigger value="capabilities">
                   {t("schemes.qq.groupConfig.capabilities")}
                 </TabsTrigger>
@@ -1786,9 +1788,24 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       labelKey="connections.reviewTask"
                     />
                   )}
+                  <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                    {responseFields
+                      .filter(([name]) => visible("rhythm", name))
+                      .map(([name, label, info]) => (
+                        <NumberField
+                          key={name}
+                          editor={visibleEditor}
+                          base={baseBag("rhythm")}
+                          group="rhythm"
+                          name={name}
+                          labelKey={label}
+                          infoKey={info}
+                        />
+                      ))}
+                  </div>
                 </SchemeFieldCard>
               </TabsContent>
-              <TabsContent value="context" className="m-0 space-y-6">
+              <TabsContent value="context_reading" className="m-0 space-y-6">
                 {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下
                     层数不参与运行（禁用但配置保留），切回按层数即恢复可编辑。 */}
                 <SchemeFieldCard
@@ -1910,6 +1927,24 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                     )}
                   </div>
                 </SchemeFieldCard>
+                {/* 知识/记忆资料范围说明与跳转留在消息读取组（父验收决定 1）。 */}
+                <div className="rounded-lg bg-muted p-5 text-sm leading-6">
+                  <h3 className="font-medium">
+                    {t("connections.bindingsDetermineTheMaterialScope")}
+                  </h3>
+                  <p className="mt-2 text-muted-foreground">
+                    {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
+                  </p>
+                  <Button
+                    className="mt-3"
+                    variant="outline"
+                    onClick={() => state.openSettingsRoute("knowledge-config")}
+                  >
+                    {t("connections.manageKnowledge")}
+                  </Button>
+                </div>
+              </TabsContent>
+              <TabsContent value="history_compression" className="m-0 space-y-6">
                 <SchemeFieldCard
                   title={t("connections.compressionAndAssembly")}
                   description="schemes.studio.compressionHint"
@@ -1958,16 +1993,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                     />
                   )}
                 </SchemeFieldCard>
-                <div className="rounded-lg bg-muted p-5 text-sm leading-6">
-                  <h3 className="font-medium">
-                    {t("connections.bindingsDetermineTheMaterialScope")}
-                  </h3>
-                  <p className="mt-2 text-muted-foreground">
-                    {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
-                  </p>
-                </div>
               </TabsContent>
-              <TabsContent value="media" className="m-0 space-y-6">
+              <TabsContent value="image_understanding" className="m-0 space-y-6">
                 {/* 0052 图片输入：模式/逐阶段开关/图数/普通静图规格；普通动图沿用既有
                     rhythm 帧数与尺寸（下方的 imageFields），不重复存储。 */}
                 <SchemeFieldCard
@@ -2064,6 +2091,23 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   </div>
                 </SchemeFieldCard>
                 <SchemeFieldCard
+                  title={t("connections.mediaNoteTask")}
+                  description="connections.describeWhatThePictureOrVoiceActuallyContains"
+                >
+                  {visible("prompts", "media") && (
+                    <PromptField
+                      editor={visibleEditor}
+                      base={baseScheme}
+                      effective={effective}
+                      slot="media"
+                      labelKey="connections.mediaNoteTask"
+                      hintKey="connections.describeWhatThePictureOrVoiceActuallyContains"
+                    />
+                  )}
+                </SchemeFieldCard>
+              </TabsContent>
+              <TabsContent value="sticker_sending" className="m-0 space-y-6">
+                <SchemeFieldCard
                   title={t("schemes.studio.stickerParams")}
                   description="schemes.studio.stickerParamsHint"
                 >
@@ -2094,8 +2138,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   </SchemeFieldCard>
                 )}
                 <SchemeFieldCard
-                  title={t("schemes.studio.mediaPrompts")}
-                  description="schemes.studio.mediaPromptsHint"
+                  title={t("connections.stickerTask")}
+                  description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
                 >
                   {visible("prompts", "sticker") && (
                     <PromptField
@@ -2105,16 +2149,6 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       slot="sticker"
                       labelKey="connections.stickerTask"
                       hintKey="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                    />
-                  )}
-                  {visible("prompts", "media") && (
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="media"
-                      labelKey="connections.mediaNoteTask"
-                      hintKey="connections.describeWhatThePictureOrVoiceActuallyContains"
                     />
                   )}
                 </SchemeFieldCard>

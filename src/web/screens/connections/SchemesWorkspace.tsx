@@ -189,6 +189,16 @@ export function SchemeDirectory({
           <RefreshCw />
           {t("schemes.refresh")}
         </Button>
+        {/* 初次操作的发现性：次级入口落到与详情「使用会话」同一绑定视图，不占大横幅。 */}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          title={t("schemes.bindings.entryHint")}
+          onClick={() => s.openSettingsRoute("scheme-bindings")}
+        >
+          {t("schemes.bindings.entry")}
+        </Button>
         {appId && (
           <Button disabled={busy} onClick={openNaming}>
             <Plus />
@@ -212,20 +222,6 @@ export function SchemeDirectory({
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
-        {/* 初次操作的发现性：先看说明，再经全局「会话绑定」落到与详情「使用会话」同一视图。 */}
-        <div className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border px-4 py-3">
-          <p className="min-w-52 flex-1 text-sm text-muted-foreground">
-            {t("schemes.bindings.entryHint")}
-          </p>
-          <Button
-            variant="outline"
-            className="h-auto min-h-8 max-w-full whitespace-normal break-words"
-            disabled={busy}
-            onClick={() => s.openSettingsRoute("scheme-bindings")}
-          >
-            {t("schemes.bindings.entry")}
-          </Button>
-        </div>
         {apps.map((app) => {
           const allRows = schemeRowsOf(s, app);
           const visibleRows = visibleOf(app);
@@ -415,6 +411,11 @@ function SchemeDetail({ app }: { app: SchemeAppEntry }) {
   const busy = s.qqSchemeSaving || s.qqAccessSaving || s.qqSchemesLoading;
   const view: "settings" | "bindings" = s.qqSchemeView === "bindings" ? "bindings" : "settings";
   const schemeId = s.qqSchemeEditor?.source.id ?? null;
+  // usage 由外层承接（studio 不再重复）：匹配编辑对象才显示数量，未读/失配=未知，绝不当 0。
+  const usage =
+    s.qqSchemeUsage && schemeId && s.qqSchemeUsage.schemeId === schemeId
+      ? s.qqSchemeUsage.bindings
+      : null;
   const back = () => s.openSettingsRoute("scheme-library");
   const switchView = (next: string) => {
     if (!schemeId) return;
@@ -480,11 +481,32 @@ function SchemeDetail({ app }: { app: SchemeAppEntry }) {
             <TabsTrigger value="settings" disabled={busy}>
               {t("schemes.bindings.viewSettings")}
             </TabsTrigger>
-            <TabsTrigger value="bindings" disabled={busy}>
+            <TabsTrigger value="bindings" disabled={busy} data-scheme-usage>
               {t("schemes.bindings.viewBindings")}
+              {usage !== null && (
+                <span className="ml-1 text-xs text-muted-foreground">
+                  {t("schemes.usageCount", { "0": usage })}
+                </span>
+              )}
             </TabsTrigger>
           </TabsList>
         </Tabs>
+        {usage === null && schemeId && (
+          <span className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+            {t("schemes.usageUnknown")}
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => void s.loadQqSchemes()}
+            >
+              {t("capabilities.retry")}
+            </Button>
+            {s.qqSchemeUsageError && (
+              <span className="text-destructive">{translateNotice(s.qqSchemeUsageError)}</span>
+            )}
+          </span>
+        )}
       </header>
       <div
         hidden={view !== "settings" && !!schemeId}

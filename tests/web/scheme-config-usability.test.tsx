@@ -124,7 +124,9 @@ const previewCells = (dialog: HTMLElement, label: string) =>
 
 async function expectPreviewFollowsTheForm() {
   await renderPage();
-  await userEvent.click(screen.getByRole("tab", { name: translate("connections.whatToRead") }));
+  await userEvent.click(
+    screen.getByRole("tab", { name: translate("schemes.sections.historyCompression") }),
+  );
   const headroom = screen.getByLabelText(
     translate("connections.assemblyHeadroomPercent"),
   ) as HTMLInputElement;
@@ -132,7 +134,7 @@ async function expectPreviewFollowsTheForm() {
   fireEvent.change(headroom, { target: { value: "10" } });
   expect(store.getState().qqSchemeEditor?.compression.headroom_ratio).toBe(0.1);
   await userEvent.click(
-    screen.getByRole("tab", { name: translate("connections.whenToParticipate") }),
+    screen.getByRole("tab", { name: translate("schemes.sections.participation") }),
   );
   await userEvent.click(
     screen.getByRole("checkbox", { name: translate("connections.allowedHours") }),
@@ -150,7 +152,7 @@ async function expectPreviewFollowsTheForm() {
   fireEvent.change(end, { target: { value: "21:45" } });
   const endAfter = end.value;
   expect(endAfter).not.toBe(endBefore);
-  await userEvent.click(screen.getByRole("tab", { name: translate("connections.howToRespond") }));
+  await userEvent.click(screen.getByRole("tab", { name: translate("schemes.sections.response") }));
   fireEvent.change(screen.getByLabelText(translate("connections.sceneAndBehaviour")), {
     target: { value: "0.05/true/开/关" },
   });
@@ -204,7 +206,7 @@ describe("Scheme change preview usability", () => {
     await renderPage();
     await userEvent.click(screen.getByRole("checkbox", { name: /^直接回应/ }));
     fireEvent.change(screen.getByLabelText("说明"), { target: { value: "true" } });
-    await userEvent.click(screen.getByRole("tab", { name: "如何回应" }));
+    await userEvent.click(screen.getByRole("tab", { name: "回复方式" }));
     fireEvent.change(screen.getByLabelText("场景与行为"), { target: { value: "开/关/true" } });
     fireEvent.click(screen.getByRole("button", { name: "预览变更" }));
     const dialog = screen.getByRole("dialog");
@@ -219,7 +221,7 @@ describe("Scheme change preview usability", () => {
     selectLocale("en");
     await renderPage();
     await userEvent.click(screen.getByRole("checkbox", { name: /^Direct replies/ }));
-    await userEvent.click(screen.getByRole("tab", { name: "How to respond" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Reply style" }));
     fireEvent.change(screen.getByLabelText("Scene and behaviour"), { target: { value: "true" } });
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
     const dialog = screen.getByRole("dialog");
@@ -239,7 +241,7 @@ describe("Scheme change preview usability", () => {
           scheme({ sticker_collections: { collection_ids: [COLLECTION, UNKNOWN_COLLECTION] } }),
         ]),
     });
-    await userEvent.click(screen.getByRole("tab", { name: "媒体与表达" }));
+    await userEvent.click(screen.getByRole("tab", { name: "表情发送" }));
     await userEvent.click(screen.getByRole("checkbox", { name: /^日常/ }));
     fireEvent.click(screen.getByRole("button", { name: "预览变更" }));
     const dialog = screen.getByRole("dialog");
@@ -282,13 +284,17 @@ describe("Scheme change preview usability", () => {
   it("keeps every prompt slot editable and carries all of them in the save payload", async () => {
     const { fake } = await renderPage();
     const slots: [string, string, string][] = [
-      ["connections.whenToParticipate", "connections.judgementTask", "judge-edited"],
-      ["connections.howToRespond", "connections.effectiveReplyTask", "reply-edited"],
-      ["connections.howToRespond", "connections.sceneAndBehaviour", "scene-edited"],
-      ["connections.howToRespond", "connections.reviewTask", "review-edited"],
-      ["connections.whatToRead", "connections.watermarkCompressionTask", "compress-edited"],
-      ["connections.mediaAndExpression", "connections.stickerTask", "sticker-edited"],
-      ["connections.mediaAndExpression", "connections.mediaNoteTask", "media-edited"],
+      ["schemes.sections.participation", "connections.judgementTask", "judge-edited"],
+      ["schemes.sections.response", "connections.effectiveReplyTask", "reply-edited"],
+      ["schemes.sections.response", "connections.sceneAndBehaviour", "scene-edited"],
+      ["schemes.sections.response", "connections.reviewTask", "review-edited"],
+      [
+        "schemes.sections.historyCompression",
+        "connections.watermarkCompressionTask",
+        "compress-edited",
+      ],
+      ["schemes.sections.stickerSending", "connections.stickerTask", "sticker-edited"],
+      ["schemes.sections.imageUnderstanding", "connections.mediaNoteTask", "media-edited"],
     ];
     for (const [tabKey, labelKey, value] of slots) {
       await userEvent.click(screen.getByRole("tab", { name: translate(tabKey) }));

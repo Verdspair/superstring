@@ -9,11 +9,16 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
-import { QqBindingResponseSchema, type QqSchemeResponse } from "../../src/shared/contracts/qq";
+import {
+  QQ_REPLY_DEFAULT_PROMPT,
+  QqBindingResponseSchema,
+  type QqSchemeResponse,
+} from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
 import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
 import { selectLocale, translate } from "../../src/web/i18n";
 import { BindingEditor } from "../../src/web/screens/connections/binding-editor";
+import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
 
@@ -195,18 +200,22 @@ afterEach(() => {
 });
 
 describe("Scheme studio layout and grouping", () => {
-  it("spreads across the workspace width, wraps the four tabs and bands every in-page group", async () => {
+  it("spreads across the workspace width, wraps the six tabs and bands every in-page group", async () => {
     await renderStudio();
     expect(document.querySelector(".max-w-5xl")).toBeNull();
     expect(screen.getAllByRole("tab").map((node) => node.textContent)).toEqual([
-      translate("connections.whenToParticipate"),
-      translate("connections.howToRespond"),
-      translate("connections.whatToRead"),
-      translate("connections.mediaAndExpression"),
+      translate("schemes.sections.participation"),
+      translate("schemes.sections.response"),
+      translate("schemes.sections.contextReading"),
+      translate("schemes.sections.historyCompression"),
+      translate("schemes.sections.imageUnderstanding"),
+      translate("schemes.sections.stickerSending"),
     ]);
     const tablist = screen.getByRole("tablist");
     expect(tablist.className).toContain("flex-wrap");
     expect(tablist.className).toContain("max-w-full");
+    expect(tablist.className).toContain("[&_[role=tab]]:min-h-8");
+    expect(tablist.className).toContain("[&_[role=tab]]:whitespace-normal");
     // 页脚在文档流里收尾，不覆盖表单。
     const footer = screen
       .getByRole("button", { name: translate("connections.saveScheme") })
@@ -216,7 +225,7 @@ describe("Scheme studio layout and grouping", () => {
 
     for (const [tabKey, titles] of [
       [
-        "connections.whenToParticipate",
+        "schemes.sections.participation",
         [
           "connections.speechTriggers",
           "schemes.studio.rhythmTitle",
@@ -224,22 +233,26 @@ describe("Scheme studio layout and grouping", () => {
           "schemes.studio.judgePrompt",
         ],
       ],
-      ["connections.howToRespond", ["schemes.studio.replyStructure", "schemes.studio.replyTasks"]],
+      ["schemes.sections.response", ["schemes.studio.replyStructure", "schemes.studio.replyTasks"]],
       [
-        "connections.whatToRead",
+        "schemes.sections.contextReading",
         [
+          "schemes.studio.messageRelations",
           "connections.judgementContext",
           "connections.replyContext",
-          "connections.compressionAndAssembly",
         ],
       ],
+      ["schemes.sections.historyCompression", ["connections.compressionAndAssembly"]],
       [
-        "connections.mediaAndExpression",
+        "schemes.sections.imageUnderstanding",
+        ["schemes.studio.imageInput", "schemes.studio.imageParams", "connections.mediaNoteTask"],
+      ],
+      [
+        "schemes.sections.stickerSending",
         [
-          "schemes.studio.imageParams",
           "schemes.studio.stickerParams",
           "connections.authorizedCollections",
-          "schemes.studio.mediaPrompts",
+          "connections.stickerTask",
         ],
       ],
     ] as [string, string[]][]) {
@@ -252,10 +265,12 @@ describe("Scheme studio layout and grouping", () => {
     await renderStudio();
     const ids = new Set<string>();
     for (const tabKey of [
-      "connections.whenToParticipate",
-      "connections.howToRespond",
-      "connections.whatToRead",
-      "connections.mediaAndExpression",
+      "schemes.sections.participation",
+      "schemes.sections.response",
+      "schemes.sections.contextReading",
+      "schemes.sections.historyCompression",
+      "schemes.sections.imageUnderstanding",
+      "schemes.sections.stickerSending",
     ]) {
       await tab(tabKey);
       for (const input of document.querySelectorAll<HTMLInputElement>('input[type="number"]'))
@@ -298,10 +313,23 @@ describe("Scheme studio layout and grouping", () => {
     expect(ids.has("scheme-field-rhythm.judgement_interval_turns")).toBe(false);
     expect(ids.has("scheme-field-context.reply_message_limit")).toBe(false);
     // 回复档条数仍在原位，只是跟随绑定助手（只读展示）。
-    await tab("connections.whatToRead");
+    await tab("schemes.sections.contextReading");
     expect(
       screen.queryByRole("spinbutton", { name: translate("connections.replyRecentMessages") }),
     ).toBeNull();
+  });
+
+  it("renders derived vs custom reply task status badge and bound turns read-only copy", async () => {
+    await renderStudio();
+    await tab("schemes.sections.response");
+    expect(screen.getByText(translate("schemes.studio.replyPromptCustom"))).toBeTruthy();
+    const replyInput = screen.getByLabelText(translate("connections.effectiveReplyTask"));
+    fireEvent.change(replyInput, { target: { value: QQ_REPLY_DEFAULT_PROMPT } });
+    expect(screen.getByText(translate("schemes.studio.replyPromptDerived"))).toBeTruthy();
+
+    await tab("schemes.sections.contextReading");
+    expect(screen.getByText(translate("connections.replyRecentMessages"))).toBeTruthy();
+    expect(screen.getByText(translate("connections.noConversationUsesThisSchemeYet"))).toBeTruthy();
   });
 });
 
@@ -310,20 +338,22 @@ describe("Scheme studio numeric inputs", () => {
     await renderStudio();
     const merge = byId("rhythm.merge_window_seconds");
     expect([merge.min, merge.max, merge.step]).toEqual(["0", "300", "1"]);
-    await tab("connections.whatToRead");
+    await tab("schemes.sections.contextReading");
     const budget = byId("context.reply_token_budget");
     expect([budget.min, budget.max, budget.step]).toEqual(["256", "16384", "1"]);
+    await tab("schemes.sections.historyCompression");
     const headroom = byId("compression.headroom_ratio");
     expect([headroom.min, headroom.max, headroom.step]).toEqual(["0", "50", "1"]);
-    await tab("connections.mediaAndExpression");
+    await tab("schemes.sections.imageUnderstanding");
     const frames = byId("rhythm.media_frame_count");
     expect([frames.min, frames.max, frames.step]).toEqual(["1", "10", "1"]);
     const dimension = byId("rhythm.media_max_dimension");
     expect([dimension.min, dimension.max, dimension.step]).toEqual(["64", "2048", "1"]);
+    await tab("schemes.sections.stickerSending");
     const repeat = byId("stickers.sticker_min_repeat_minutes");
     expect([repeat.min, repeat.max, repeat.step]).toEqual(["0", "1440", "1"]);
 
-    await tab("connections.whenToParticipate");
+    await tab("schemes.sections.participation");
     const mergeAgain = byId("rhythm.merge_window_seconds");
     fireEvent.change(mergeAgain, { target: { value: "" } });
     fireEvent.blur(mergeAgain);
@@ -344,7 +374,7 @@ describe("Scheme studio numeric inputs", () => {
 
   it("keeps raw invalid text, links the error to its input, and locates it on the right tab", async () => {
     await renderStudio();
-    await tab("connections.mediaAndExpression");
+    await tab("schemes.sections.imageUnderstanding");
     const frames = byId("rhythm.media_frame_count");
     fireEvent.change(frames, { target: { value: "99" } });
     fireEvent.blur(frames);
@@ -356,14 +386,14 @@ describe("Scheme studio numeric inputs", () => {
     expect(frames.getAttribute("aria-invalid")).toBe("true");
 
     // 切走后错误不在眼前，页脚的「定位无效项」把它带回正确的页签并聚焦。
-    await tab("connections.whenToParticipate");
+    await tab("schemes.sections.participation");
     await userEvent.click(
       screen.getByRole("button", { name: translate("schemes.studio.locateInvalid") }),
     );
     await nextFrame();
     expect(
       screen
-        .getByRole("tab", { name: translate("connections.mediaAndExpression") })
+        .getByRole("tab", { name: translate("schemes.sections.imageUnderstanding") })
         .getAttribute("aria-selected"),
     ).toBe("true");
     expect(document.activeElement).toBe(byId("rhythm.media_frame_count"));
@@ -371,20 +401,19 @@ describe("Scheme studio numeric inputs", () => {
 });
 
 describe("Scheme studio save paths", () => {
-  it("saves the whole scheme from both the header and the footer, with only one 保存方案 button", async () => {
+  it("saves the whole scheme from the footer, with only one 保存方案 button and no header save", async () => {
     const { fake } = await renderStudio();
     const footerSave = screen.getByRole("button", { name: translate("connections.saveScheme") });
-    const headerSave = screen.getByRole("button", { name: translate("workspace.save") });
     expect(
       screen.getAllByRole("button", { name: translate("connections.saveScheme") }),
     ).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: translate("workspace.save") })).toHaveLength(1);
-    expect((headerSave as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: translate("workspace.save") })).toBeNull();
+    expect((footerSave as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText(translate("connections.mergeWindowSeconds")), {
       target: { value: "15" },
     });
-    expect((headerSave as HTMLButtonElement).disabled).toBe(false);
-    await act(async () => fireEvent.click(headerSave));
+    expect((footerSave as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => fireEvent.click(footerSave));
     expect(fake.updateQqScheme).toHaveBeenCalledWith(
       scheme().id,
       expect.objectContaining({
@@ -400,7 +429,7 @@ describe("Scheme studio save paths", () => {
         prompts: expect.objectContaining({ scene: "场景提示词" }),
       }),
     );
-    // 页脚同源：同一动作、同一范围，只是入口不同。
+    // 页脚同源：修改说明后再次保存，验证 CAS 修订号递增为 4。
     fireEvent.change(screen.getByLabelText(translate("connections.description")), {
       target: { value: "更安静" },
     });
@@ -678,20 +707,18 @@ describe("Scheme studio usage and deletion guards", () => {
       name: translate("connections.deleteScheme"),
     }) as HTMLButtonElement;
     expect(remove.disabled).toBe(true);
-    expect(screen.getByText(translate("connections.usedByValueConversations", "2"))).toBeTruthy();
-    expect(screen.getByText(/仍被 2 个会话使用/)).toBeTruthy();
+    expect(screen.getByText(translate("schemes.studio.inUseCannotDelete", "2"))).toBeTruthy();
     fireEvent.click(remove);
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(fake.deleteQqScheme).not.toHaveBeenCalled();
   });
 
-  it("treats an unknown usage count as unknown: retry it and keep deletion off", async () => {
+  it("treats an unknown usage count as unknown: explains cannot delete and keeps deletion off", async () => {
     const usage = vi
       .fn()
       .mockRejectedValueOnce(new Error("离线"))
       .mockResolvedValue({ scheme_id: scheme().id, bindings: 0 });
     await renderStudio({ getQqSchemeUsage: usage });
-    expect(screen.getByText(translate("connections.unknown"))).toBeTruthy();
     expect(screen.getByText(translate("schemes.studio.usageUnknownCannotDelete"))).toBeTruthy();
     expect(
       (
@@ -700,23 +727,20 @@ describe("Scheme studio usage and deletion guards", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
-    await userEvent.click(screen.getByRole("button", { name: translate("capabilities.retry") }));
-    await act(async () => {});
-    expect(usage).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(translate("connections.usedByValueConversations", "0"))).toBeTruthy();
-    expect(
-      (
-        screen.getByRole("button", {
-          name: translate("connections.deleteScheme"),
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(false);
   });
 
   it("用法计数点击把详情切到使用会话视图，不开只读弹窗也不写绑定", async () => {
-    const { fake } = await renderStudio();
-    const usage = document.querySelector("[data-scheme-usage]") as HTMLButtonElement;
-    expect(usage.textContent).toBe(translate("connections.usedByValueConversations", "0"));
+    const fake = client();
+    store.getState().resetForTests(fake);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-scheme-config",
+    });
+    render(<SchemesWorkspace />);
+    await act(async () => {});
+    const usage = document.querySelector("[data-scheme-usage]") as HTMLElement;
+    expect(usage).toBeTruthy();
     await userEvent.click(usage);
     await act(async () => {});
     expect(store.getState().qqSchemeView).toBe("bindings");
@@ -748,7 +772,7 @@ describe("Scheme studio usage and deletion guards", () => {
 describe("Scheme studio message input preview (T13 Step4)", () => {
   it("shows a read-only sample on the context tab that follows the draft settings and hides (no forged preview) on an invalid timezone", async () => {
     await renderStudio();
-    await tab("connections.whatToRead");
+    await tab("schemes.sections.contextReading");
     const previewText = () =>
       document.querySelector("[data-qq-message-preview] pre")?.textContent ?? "";
     // 示例按草稿当前设置渲染（默认 hybrid / Asia/Shanghai），且区域只读。

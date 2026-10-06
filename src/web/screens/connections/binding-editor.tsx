@@ -29,13 +29,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../../components/ui/sheet";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { parseAttentionMembers } from "../../features/qq/draft-state";
 import { QQ_SCHEME_FIELD_LABELS, TRIGGER_LABELS } from "../../features/qq/scheme-field-metadata";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { msg, translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { BindingMemoryControls } from "../library/BindingMemoryControls";
+import { SchemeFieldCard } from "./scheme-field-shared";
 
 /** 预览值的中性文本：数组按集合去序、装配冗余按百分比，其余 String()。 */
 const schemeChangeValueText = (group: string, name: string, value: unknown): string =>
@@ -126,14 +126,15 @@ export function BindingEditor({
   conversation,
   binding,
   onClose,
+  onCloseAutoFocus,
 }: {
   conversation: QqConversationListItem;
   binding: QqBindingResponse | null;
   onClose: () => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const { t } = useTranslation();
   const state = useSuperstringStore();
-  const [tab, setTab] = useState("participation");
   const [choices, setChoices] = useQqInput("choices");
   const [attention, setAttention] = useQqInput("attention");
   const key = binding?.id ?? `${conversation.kind}:${conversation.peer_id}`;
@@ -238,7 +239,10 @@ export function BindingEditor({
         if (!open && !saving) onClose();
       }}
     >
-      <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+      <SheetContent
+        className="w-full overflow-y-auto sm:max-w-xl"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <SheetHeader className="border-b pb-6">
           <SheetTitle>
             {t(conversation.kind === "group" ? "connections.group" : "connections.privateChat")}{" "}
@@ -257,89 +261,93 @@ export function BindingEditor({
               {translateNotice(state.feedback)}
             </p>
           )}
-          <Assignment
-            agentId={choice.agentId}
-            schemeId={choice.schemeId}
-            onChange={(patch) => setChoices((old) => ({ ...old, [key]: { ...choice, ...patch } }))}
-          />
-          {/* 编辑方案直达的是共享方案本体：文案先说明会影响使用它的会话。 */}
-          <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">
-              {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                disabled={saving || state.qqSchemeSaving || !choice.schemeId}
-                onClick={() => state.requestQqSchemeNavigation(choice.schemeId, "settings")}
-              >
-                {t("schemes.studio.editScheme")}
-              </Button>
-              {binding?.kind === "group" && (
+          <SchemeFieldCard
+            title={t("schemes.bindings.assignment.title")}
+            description="schemes.bindings.assignment.hint"
+          >
+            <Assignment
+              agentId={choice.agentId}
+              schemeId={choice.schemeId}
+              onChange={(patch) =>
+                setChoices((old) => ({ ...old, [key]: { ...choice, ...patch } }))
+              }
+            />
+            {/* 编辑方案直达的是共享方案本体：文案先说明会影响使用它的会话。 */}
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
+              </p>
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
-                  disabled={saving || state.qqGroupConfigSaving}
-                  onClick={() => state.openQqGroupConfig(binding.id)}
+                  disabled={saving || state.qqSchemeSaving || !choice.schemeId}
+                  onClick={() => state.requestQqSchemeNavigation(choice.schemeId, "settings")}
                 >
-                  {t("schemes.qq.groupConfig.controls.configure")}
+                  {t("schemes.studio.editScheme")}
+                </Button>
+                {binding?.kind === "group" && (
+                  <Button
+                    variant="outline"
+                    disabled={saving || state.qqGroupConfigSaving}
+                    onClick={() => state.openQqGroupConfig(binding.id)}
+                  >
+                    {t("schemes.qq.groupConfig.controls.configure")}
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                disabled={
+                  saving ||
+                  state.qqGroupConfigSaving ||
+                  previewBusy ||
+                  !choice.agentId ||
+                  !choice.schemeId
+                }
+                onClick={() => void save()}
+              >
+                {t(binding ? "connections.saveBinding" : "connections.bind")}
+              </Button>
+              {binding && (
+                <Button
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() =>
+                    void state.updateQqBindingRow(binding, { paused: !binding.paused })
+                  }
+                >
+                  {t(binding.paused ? "connections.resume" : "connections.pauseSpeech")}
+                </Button>
+              )}
+              {/* 冲突（409）后显式刷新保存基线：合并本绑定草稿、推进 revision，不提交不改业务默认。 */}
+              {binding && (
+                <Button
+                  variant="outline"
+                  disabled={
+                    saving ||
+                    state.qqSchemeSaving ||
+                    state.qqMemoryBatchSaving ||
+                    state.qqBindingsLoading
+                  }
+                  onClick={() => void state.loadQqBindingDirectory(binding.id)}
+                >
+                  {t("capabilities.resources.refreshBaseline")}
                 </Button>
               )}
             </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              disabled={
-                saving ||
-                state.qqGroupConfigSaving ||
-                previewBusy ||
-                !choice.agentId ||
-                !choice.schemeId
-              }
-              onClick={() => void save()}
-            >
-              {t(binding ? "connections.saveBinding" : "connections.bind")}
-            </Button>
-            {binding && (
-              <Button
-                variant="outline"
-                disabled={saving}
-                onClick={() => void state.updateQqBindingRow(binding, { paused: !binding.paused })}
-              >
-                {t(binding.paused ? "connections.resume" : "connections.pauseSpeech")}
-              </Button>
-            )}
-            {/* 冲突（409）后显式刷新保存基线：合并本绑定草稿、推进 revision，不提交不改业务默认。 */}
-            {binding && (
-              <Button
-                variant="outline"
-                disabled={
-                  saving ||
-                  state.qqSchemeSaving ||
-                  state.qqMemoryBatchSaving ||
-                  state.qqBindingsLoading
-                }
-                onClick={() => void state.loadQqBindingDirectory(binding.id)}
-              >
-                {t("capabilities.resources.refreshBaseline")}
-              </Button>
-            )}
-          </div>
+          </SchemeFieldCard>
           {previewError && (
             <p role="alert" className="text-sm text-destructive">
               {translateNotice(previewError)}
             </p>
           )}
           {binding && (
-            <Tabs value={tab} onValueChange={setTab}>
-              <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal">
-                <TabsTrigger value="participation">{t("connections.participation")}</TabsTrigger>
-                <TabsTrigger value="attention">{t("connections.importantPeople")}</TabsTrigger>
-                <TabsTrigger value="memory">{t("connections.memoryOrganising")}</TabsTrigger>
-              </TabsList>
-              <TabsContent value="participation" className="space-y-5 pt-5">
-                <p className="text-sm text-muted-foreground">
-                  {t("connections.theseOverridesApplyOnlyToThisConversationDetailedParameters")}
-                </p>
+            <>
+              <SchemeFieldCard
+                title={t("schemes.bindings.triggers.title")}
+                description="schemes.bindings.triggers.hint"
+              >
                 {Object.entries(TRIGGER_LABELS).map(([key, label]) => {
                   const trigger = key as keyof typeof TRIGGER_LABELS;
                   const value = binding.triggers[trigger];
@@ -365,8 +373,11 @@ export function BindingEditor({
                     </Field>
                   );
                 })}
-              </TabsContent>
-              <TabsContent value="attention" className="space-y-5 pt-5">
+              </SchemeFieldCard>
+              <SchemeFieldCard
+                title={t("connections.importantPeople")}
+                description="schemes.bindings.attention.hint"
+              >
                 {attentionValue && (
                   <>
                     <Field label="connections.attentionMode">
@@ -432,8 +443,11 @@ export function BindingEditor({
                     </Button>
                   </>
                 )}
-              </TabsContent>
-              <TabsContent value="memory" className="space-y-5 pt-5">
+              </SchemeFieldCard>
+              <SchemeFieldCard
+                title={t("connections.memoryOrganising")}
+                description="schemes.bindings.memory.hint"
+              >
                 <BindingMemoryControls
                   binding={{ ...binding, enabled: state.qqSettings?.enabled === true }}
                   pending={binding.pending_observations}
@@ -449,8 +463,8 @@ export function BindingEditor({
                 >
                   {t("connections.goToLongTermMemory")}
                 </Button>
-              </TabsContent>
-            </Tabs>
+              </SchemeFieldCard>
+            </>
           )}
           {preview && (
             <Dialog

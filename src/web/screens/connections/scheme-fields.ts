@@ -1,4 +1,3 @@
-import type { QqSchemePrompts } from "../../../shared/contracts/qq";
 import {
   QqSchemeCompressionSchema,
   QqSchemeContextSchema,
@@ -8,7 +7,10 @@ import {
   QqSchemeRhythmSchema,
   QqSchemeStickersSchema,
 } from "../../../shared/contracts/qq";
-import { imageFields, stickerFields } from "../../features/qq/scheme-field-metadata";
+import {
+  type QQ_SCHEME_SECTIONS,
+  qqSchemeFieldSection,
+} from "../../features/qq/scheme-field-metadata";
 
 export const numericGroups = {
   rhythm: QqSchemeRhythmSchema,
@@ -27,8 +29,11 @@ export const numberEditorGroups = {
 /** 0052 数字栏所在的编辑器组（与 numericGroups 同一用法；可空长边字段由页面特判 null 原图）。 */
 export type NumberEditorGroup = keyof typeof numberEditorGroups;
 
-/** The four editing tasks of the studio; a field's task is also the tab its error is fixed on. */
-export type SchemeTask = "participation" | "response" | "context" | "media";
+/**
+ * The section a field lives in; a field's section is where its error gets located.
+ * Derived from `QQ_SCHEME_SECTIONS` so the id list has one owner (the QQ metadata module).
+ */
+export type SchemeTask = (typeof QQ_SCHEME_SECTIONS)[number]["id"];
 
 /**
  * 每个数字输入框的 min/max/step 都从契约 schema 现读，不在这里另抄一份边界：
@@ -70,42 +75,13 @@ export function headroomPercentBounds() {
   return { min: Math.round((min ?? 0) * 100), max: Math.round((max ?? 0.5) * 100), step: 1 };
 }
 
-const promptTasks: Record<keyof QqSchemePrompts, SchemeTask> = {
-  scene: "response",
-  judge: "participation",
-  reply: "response",
-  review: "response",
-  compress: "context",
-  sticker: "media",
-  media: "media",
-};
-const mediaRhythmNames = new Set<string>(
-  [...stickerFields, ...imageFields]
-    .filter(([group]) => group === "rhythm")
-    .map(([, name]) => name),
-);
-
 /**
- * 一个字段在哪个页签编辑——用来在保存前把无效数字所在的页签先切出来并聚焦。
- * 0052 的两组进既有四 Tab：消息设置归「读取什么」（context），图片输入归「媒体与表达」（media）。
+ * 一个字段属于哪个配置分组——用来在保存前把无效数字所在的分组先切出来并聚焦。
+ * field→section 的唯一真源在 `features/qq/scheme-field-metadata`；这里只做转发，
+ * 接受 canonical 持久键与编辑器 camelCase 别名（outputReserve/messageSettings/mediaInput）。
  */
 export function schemeFieldTask(field: string): SchemeTask {
-  const [group, name] = field.split(".");
-  if (group === "message_settings") return "context";
-  if (group === "media_input") return "media";
-  if (group === "rhythm") return mediaRhythmNames.has(name) ? "media" : "participation";
-  if (group === "stickers") return "media";
-  if (
-    group === "compression" ||
-    group === "context" ||
-    group === "output_reserve" ||
-    group === "outputReserve"
-  )
-    return "context";
-  if (group === "prompts") return promptTasks[name as keyof QqSchemePrompts] ?? "response";
-  if (field === "reply.split_by_speaker") return "response";
-  if (field === "sticker_collections.collection_ids") return "media";
-  return "participation";
+  return qqSchemeFieldSection(field);
 }
 
 /** Stored minutes are UTC; editing and previews use the user's local clock. */
