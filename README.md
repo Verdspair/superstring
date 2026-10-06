@@ -87,15 +87,15 @@ QQ 接入前置步骤与运行要求：
 
 ### 运行要求与安装部署
 
-从 [Releases 页面](https://github.com/Verdspair/superstring/releases)选择对应版本实际附带的架构文件。`0.4.0-alpha-1` 为预发布版，升级前请先备份数据。
+从 [v0.4.0-alpha-1 Release 页面](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1)下载各平台安装包与校验清单（`SHA256SUMS`）。`0.4.0-alpha-1` 为预发布版，升级前请先备份数据。
 
 | 平台 | 支持的分发形式 | 说明 |
 |---|---|---|
 | Windows x64 | 安装程序（`.exe`） | 可选安装目录，新版安装程序覆盖同一目录升级；数据保存在 `userdata` |
-| macOS 13+，Apple Silicon／Intel | 架构对应的 DMG、ZIP | 若所选发布附带构件，复制到 Applications，替换前完整退出；签名与公证说明见[桌面发行说明](docs/reference/desktop.md) |
-| Linux glibc，x64／arm64 | DEB、AppImage | 若所选发布附带构件，Debian/Ubuntu 使用 DEB 包；AppImage 需要桌面沙箱与 FUSE 支持 |
+| macOS 13+，Apple Silicon／Intel | 架构对应的 DMG、ZIP | 已随本次发布提供；macOS 为临时签名（ad-hoc signed，未公证），首次运行请右键「打开」；详情见[桌面发行说明](docs/reference/desktop.md) |
+| Linux glibc，x64／arm64 | DEB、AppImage | 已随本次发布提供；Debian/Ubuntu 使用 DEB 包；AppImage 需要桌面沙箱与 FUSE 支持 |
 
-安装文件以对应 Release 页面实际附带的构件为准，请使用随发布的校验清单核对。macOS 签名状态与各平台安装细节见[桌面发行说明](docs/reference/desktop.md)。
+安装文件以对应 Release 页面实际附带的构件为准，请使用随发布的校验清单（`SHA256SUMS`）核对。macOS 签名状态与各平台安装细节见[桌面发行说明](docs/reference/desktop.md)。
 
 应用安装包包含运行环境。模型推理需要 LM Studio 等本地服务或配置的外部 OpenAI 兼容服务。
 
@@ -211,15 +211,15 @@ Speech transcription, full-video understanding, image generation, and arbitrary 
 
 ### Requirements and installation
 
-Download assets attached to the target release from [Releases](https://github.com/Verdspair/superstring/releases). `0.4.0-alpha-1` is a prerelease; back up existing data before upgrading.
+Download distribution assets and the checksum list (`SHA256SUMS`) from [v0.4.0-alpha-1 Releases](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1). `0.4.0-alpha-1` is a prerelease; back up existing data before upgrading.
 
 | Platform | Supported distribution formats | Notes |
 |---|---|---|
 | Windows x64 | Installer (`.exe`) | Choose an installation directory; future installers upgrade the same directory; data lives in `userdata` |
-| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | If assets are attached to the release, copy to Applications and quit running instances before replacing; see [Desktop distributions](docs/reference/desktop.md) for signing details |
-| Linux glibc, x64 or arm64 | DEB and AppImage | If assets are attached to the release, DEB integrates with Debian/Ubuntu; AppImage requires desktop sandbox and FUSE support |
+| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Attached to this release; packages are ad-hoc signed, not notarized (right-click Open on first launch); see [Desktop distributions](docs/reference/desktop.md) for details |
+| Linux glibc, x64 or arm64 | DEB and AppImage | Attached to this release; DEB integrates with Debian/Ubuntu; AppImage requires desktop sandbox and FUSE support |
 
-Use files actually attached to the selected release and verify them against its checksum list. macOS signing status and platform details are documented in [Desktop distributions](docs/reference/desktop.md).
+Use files actually attached to the selected release and verify them against its checksum list (`SHA256SUMS`). macOS signing status and platform details are documented in [Desktop distributions](docs/reference/desktop.md).
 
 Application packages bundle their runtime. Inference requires a local server such as LM Studio or an external OpenAI-compatible provider.
 

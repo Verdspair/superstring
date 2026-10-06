@@ -58,7 +58,7 @@
 
 ##### macOS 与 Linux
 
-若所选发布附带对应系统与芯片架构的文件，下载后替换应用前必须先完整退出旧版本。原生配置文件保存在系统应用数据目录，不会自动导入源码目录数据。平台安装指南、签名公证细节与沙箱要求见[桌面发行说明](docs/reference/desktop.md)。
+0.4.0-alpha-1 已随本次 Release 提供各系统架构安装包（Windows 安装程序、macOS DMG/ZIP 与 Linux DEB/AppImage 及校验清单 `SHA256SUMS`）。下载后替换应用前必须先完整退出旧版本。原生配置文件保存在系统应用数据目录，不会自动导入源码目录数据。平台安装指南、签名公证细节与沙箱要求见[桌面发行说明](docs/reference/desktop.md)。
 
 ##### 源码启动
 
@@ -140,7 +140,7 @@ Run the installer for your target release and select your existing installation 
 
 ##### macOS and Linux
 
-If assets are attached to the chosen release for your operating system and CPU architecture, fully exit the application before replacing the app or package. Native profiles use system application data paths and do not migrate data from source checkouts. See [Desktop distributions](docs/reference/desktop.md) for sandbox requirements, signing, and notarization details.
+Release 0.4.0-alpha-1 attaches distribution assets for each supported system and architecture (Windows installer, macOS DMG/ZIP, Linux DEB/AppImage, and `SHA256SUMS`). Fully exit the application before replacing the app or package. Native profiles use system application data paths and do not migrate data from source checkouts. See [Desktop distributions](docs/reference/desktop.md) for sandbox requirements, signing, and notarization details.
 
 ##### Source Launch
 
