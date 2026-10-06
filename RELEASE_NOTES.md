@@ -4,7 +4,7 @@
 
 ## 简体中文
 
-本次预发布版本引入 MCP 外部服务接入、标准技能目录、QQ 消息原生图片输入与结构化回复引用、本群独立配置覆盖，以及持久化任务状态机与本地审批机制。以下变更直接对比已发布的 **v0.3.0-beta**。
+本版本引入 MCP 外部服务接入、标准技能目录、QQ 消息原生图片输入与结构化回复引用、本群独立配置覆盖，以及持久化任务状态机与本地审批机制。以下变更直接对比已发布的 **v0.3.0-beta**。
 
 ### 外部扩展、技能与程序化工具调用
 
@@ -47,7 +47,7 @@
 
 ## English
 
-This prerelease introduces external Model Context Protocol (MCP) integrations, standard skills, native image input and structured reply quoting for QQ messages, per-group configuration overrides, and a durable task state machine with local approval controls. Changes below compare directly with published **v0.3.0-beta**.
+This release introduces external Model Context Protocol (MCP) integrations, standard skills, native image input and structured reply quoting for QQ messages, per-group configuration overrides, and a durable task state machine with local approval controls. Changes below compare directly with published **v0.3.0-beta**.
 
 ### External Extensions, Skills, and Programmatic Tool Calling
 

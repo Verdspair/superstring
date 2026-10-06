@@ -4,7 +4,7 @@
 
 ## 简体中文
 
-**版本：** `0.4.0-alpha-1`，预发布版。**对比基线：** 已发布 `v0.3.0-beta`。
+**版本：** `0.4.0-alpha-1`。**对比基线：** 已发布 `v0.3.0-beta`。
 
 ### 相对 v0.3.0-beta 的变化
 
@@ -86,7 +86,7 @@
 
 ## English
 
-**Version:** `0.4.0-alpha-1` — prerelease. **Comparison baseline:** published `v0.3.0-beta`.
+**Version:** `0.4.0-alpha-1`. **Comparison baseline:** published `v0.3.0-beta`.
 
 ### What changes from v0.3.0-beta
 

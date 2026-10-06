@@ -9,7 +9,7 @@
 本地 Agent 工作区，主要用于日常陪伴与聊天，支持网页对话、QQ 群聊与私聊、记忆、知识库、MCP 工具扩展与技能管理。
 A local Agent workspace primarily for everyday companionship and chat, supporting web conversations, QQ groups and private chats, memory, knowledge, MCP tools, and skills.
 
-**版本 / Version:** `0.4.0-alpha-1` — 预发布版 / prerelease.
+**版本 / Version:** `0.4.0-alpha-1`
 
 [简体中文](#简体中文) · [English](#english)
 
@@ -87,7 +87,7 @@ QQ 接入前置步骤与运行要求：
 
 ### 运行要求与安装部署
 
-从 [v0.4.0-alpha-1 Release 页面](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1)下载各平台安装包与校验清单（`SHA256SUMS`）。`0.4.0-alpha-1` 为预发布版，升级前请先备份数据。
+从 [v0.4.0-alpha-1 Release 页面](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1)下载各平台安装包与校验清单（`SHA256SUMS`）。升级前请先备份数据。
 
 | 平台 | 支持的分发形式 | 说明 |
 |---|---|---|
@@ -211,7 +211,7 @@ Speech transcription, full-video understanding, image generation, and arbitrary 
 
 ### Requirements and installation
 
-Download distribution assets and the checksum list (`SHA256SUMS`) from [v0.4.0-alpha-1 Releases](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1). `0.4.0-alpha-1` is a prerelease; back up existing data before upgrading.
+Download distribution assets and the checksum list (`SHA256SUMS`) from [v0.4.0-alpha-1 Releases](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1). Back up existing data before upgrading.
 
 | Platform | Supported distribution formats | Notes |
 |---|---|---|
