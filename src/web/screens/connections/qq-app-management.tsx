@@ -9,14 +9,16 @@ import { useSuperstringStore } from "../../store";
 import { StorageInventory } from "./storage-inventory";
 import { TransportSettings } from "./transport-settings";
 
-export type QqAppView = "schemes" | "connection" | "data";
+export type QqAppView = "schemes" | "groups" | "connection" | "data";
 
 export function QqAppManagement({
   view,
   schemesView,
+  groupsView,
 }: {
   view: QqAppView;
   schemesView?: ReactNode;
+  groupsView?: ReactNode;
 }) {
   const { t } = useTranslation();
   const s = useSuperstringStore();
@@ -24,7 +26,13 @@ export function QqAppManagement({
   const back = () => s.openSettingsRoute("scheme-library");
   const openView = (next: string) =>
     s.openSettingsRoute(
-      next === "connection" ? "qq-connection" : next === "data" ? "qq-storage" : "qq-app-schemes",
+      next === "groups"
+        ? "qq-app-groups"
+        : next === "connection"
+          ? "qq-connection"
+          : next === "data"
+            ? "qq-storage"
+            : "qq-app-schemes",
     );
   return (
     <section
@@ -48,6 +56,9 @@ export function QqAppManagement({
             <TabsTrigger value="schemes" disabled={busy}>
               {t("workspace.schemes")}
             </TabsTrigger>
+            <TabsTrigger value="groups" disabled={busy}>
+              {t("schemes.qq.groupConfigTitle")}
+            </TabsTrigger>
             <TabsTrigger value="connection" disabled={busy}>
               {t("connections.transportPage.tab")}
             </TabsTrigger>
@@ -57,12 +68,12 @@ export function QqAppManagement({
           </TabsList>
         </Tabs>
       </header>
-      {view !== "schemes" && (
+      {view !== "schemes" && view !== "groups" && (
         <p className="border-b px-4 py-2 text-xs text-muted-foreground">
           {t("schemes.qq.scopeNote")}
         </p>
       )}
-      {view !== "schemes" && (s.error || s.feedback) && (
+      {view !== "schemes" && view !== "groups" && (s.error || s.feedback) && (
         <div className="border-b px-4 py-2">
           {s.error ? (
             <p role="alert" className="text-sm text-destructive">
@@ -76,6 +87,7 @@ export function QqAppManagement({
         </div>
       )}
       {view === "schemes" && <div className="flex min-h-0 flex-1 flex-col">{schemesView}</div>}
+      {view === "groups" && <div className="flex min-h-0 flex-1 flex-col">{groupsView}</div>}
       {view === "connection" && <QqConnectionTab />}
       {view === "data" && (
         <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>

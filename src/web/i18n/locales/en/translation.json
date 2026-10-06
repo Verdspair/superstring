@@ -1978,5 +1978,12 @@
   "schemes.bindings.triggers.title": "Participation rules",
   "schemes.bindings.triggers.hint": "These four triggers apply only to this conversation and are saved immediately. Adjust detailed settings in the group configuration or shared scheme.",
   "schemes.bindings.attention.hint": "Save the mode and member list for this conversation only.",
-  "schemes.bindings.memory.hint": "Save the automatic batch size separately. Organise now starts a one-off job without saving pending batch-size edits."
+  "schemes.bindings.memory.hint": "Save the automatic batch size separately. Organise now starts a one-off job without saving pending batch-size edits.",
+  "schemes.qq.groups.search": "Search groups",
+  "schemes.qq.groups.searchPlaceholder": "Search by group title, group number, account, scheme, or agent…",
+  "schemes.qq.groups.emptyNote": "No bound QQ groups yet. Bind an agent and a scheme first to configure groups independently.",
+  "schemes.qq.groups.noMatch": "No matching QQ groups found.",
+  "schemes.qq.groups.backToDirectory": "Back to group list",
+  "schemes.qq.groups.switchGroup": "Switch group",
+  "schemes.qq.groups.viewConversation": "View conversation"
 }

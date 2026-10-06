@@ -1,7 +1,7 @@
 // 本群配置页：QQ 群相对基础方案的逐字段稀疏改写 + 本群能力停用，只写本群这一层。
 // 原文先进 store（合法性由契约判定，非法留 rawTexts 并拦保存），blur 后才提示错误；换基础方案先预览 keep/reset。
 
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, MessageSquare } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -46,6 +46,7 @@ import {
   qqGroupConfigEffectiveScheme,
   qqGroupConfigHasInvalidInputs,
 } from "../../features/qq/group-config-state";
+import { projectQqGroupRows } from "../../features/qq/group-directory";
 import {
   imageFields,
   participationFields,
@@ -1435,6 +1436,8 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
       agents: s.agents,
       error: s.error,
       feedback: s.feedback,
+      qqBindings: s.qqBindings,
+      qqBindingsLoaded: s.qqBindingsLoaded,
       qqGroupConfigBindingId: s.qqGroupConfigBindingId,
       qqGroupConfigEditor: s.qqGroupConfigEditor,
       qqGroupConfigLoading: s.qqGroupConfigLoading,
@@ -1444,6 +1447,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
       // 动作引用稳定。
       apiClient: s.apiClient,
       discardQqGroupConfigChanges: s.discardQqGroupConfigChanges,
+      loadQqBindings: s.loadQqBindings,
       openChat: s.openChat,
       openQqGroupConfig: s.openQqGroupConfig,
       patchQqGroupConfigScheme: s.patchQqGroupConfigScheme,
@@ -1469,6 +1473,13 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
     enabled: knowledgeAgentId !== "",
     paused: !active,
   });
+
+  useEffect(() => {
+    if (!state.qqBindingsLoaded) {
+      void state.loadQqBindings();
+    }
+  }, [state.qqBindingsLoaded, state.loadQqBindings]);
+
   const [tab, setTab] = useState("participation");
   const [onlyCustom, setOnlyCustom] = useState(false);
   const [preview, setPreview] = useState(false);
@@ -1518,17 +1529,26 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
   const visible = (group: string, name: string) =>
     !onlyCustom || (!!visibleEditor && isCustomField(visibleEditor, group, name));
   const back = () => {
-    if (summary) void state.requestConversationNavigation(summary.id);
-    else state.openChat();
+    state.openSettingsRoute("qq-app-groups");
   };
   const baseName = baseScheme ? baseScheme.name : (visibleEditor?.schemeId ?? "");
+  const otherGroups = useMemo(() => {
+    if (!state.qqBindingsLoaded) return [];
+    return projectQqGroupRows({
+      qqBindings: state.qqBindings,
+      qqSchemes: state.qqSchemes,
+      agents: state.agents,
+      summaryById: state.summaryById,
+    });
+  }, [state.qqBindingsLoaded, state.qqBindings, state.qqSchemes, state.agents, state.summaryById]);
+
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label={t("schemes.qq.groupConfigTitle")}>
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label={t("schemes.qq.groupConfig.backToChat")}
+          aria-label={t("schemes.qq.groups.backToDirectory")}
           onClick={back}
         >
           <ChevronLeft />
@@ -1554,21 +1574,49 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             <span>
               · {t("schemes.qq.groupConfig.baseScheme")} {baseName}
             </span>
+            {otherGroups.length > 1 && (
+              <NativeSelect
+                className="h-auto min-h-8 text-xs"
+                value={visibleEditor.source.binding.id}
+                aria-label={t("schemes.qq.groups.switchGroup")}
+                disabled={saving || state.qqGroupConfigLoading}
+                onChange={(event) => state.openQqGroupConfig(event.target.value)}
+              >
+                {otherGroups.map((g) => (
+                  <option key={g.bindingId} value={g.bindingId}>
+                    {`${g.title ? `${g.title} (${g.peerId})` : g.peerId} · ${g.accountId}`}
+                  </option>
+                ))}
+              </NativeSelect>
+            )}
           </div>
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
-          disabled={saving || state.qqGroupConfigLoading}
-          onClick={() => {
-            void state.refreshQqGroupConfig();
-            // 显式刷新同时推进知识查询的已保存状态，不留在旧读取上。
-            knowledgeRead.refresh();
-          }}
-        >
-          {t("capabilities.resources.refreshBaseline")}
-        </Button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {summary && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+              onClick={() => void state.requestConversationNavigation(summary.id)}
+            >
+              <MessageSquare className="size-3.5" />
+              {t("schemes.qq.groups.viewConversation")}
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+            disabled={saving || state.qqGroupConfigLoading}
+            onClick={() => {
+              void state.refreshQqGroupConfig();
+              // 显式刷新同时推进知识查询的已保存状态，不留在旧读取上。
+              knowledgeRead.refresh();
+            }}
+          >
+            {t("capabilities.resources.refreshBaseline")}
+          </Button>
+        </div>
       </header>
       {visibleEditor?.identityConflict && (
         <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-xs">

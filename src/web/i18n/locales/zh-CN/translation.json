@@ -1978,5 +1978,12 @@
   "schemes.bindings.triggers.title": "参与方式",
   "schemes.bindings.triggers.hint": "这四种触发方式只作用于本会话，选择后立即保存。详细参数在本群配置或共享方案中调整。",
   "schemes.bindings.attention.hint": "名单与模式在本会话独立保存，不影响其他会话。",
-  "schemes.bindings.memory.hint": "自动整理批次需单独保存；立即整理会创建一次整理任务，不会保存未提交的批次修改。"
+  "schemes.bindings.memory.hint": "自动整理批次需单独保存；立即整理会创建一次整理任务，不会保存未提交的批次修改。",
+  "schemes.qq.groups.search": "搜索群",
+  "schemes.qq.groups.searchPlaceholder": "按群名称、群号、账号、方案或 Agent 搜索…",
+  "schemes.qq.groups.emptyNote": "还没有已绑定的 QQ 群。先绑定 Agent 和方案，群即可在此独立配置。",
+  "schemes.qq.groups.noMatch": "没有符合搜索条件的 QQ 群。",
+  "schemes.qq.groups.backToDirectory": "返回群列表",
+  "schemes.qq.groups.switchGroup": "切换群",
+  "schemes.qq.groups.viewConversation": "查看会话"
 }

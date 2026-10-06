@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqBindingResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
@@ -305,6 +306,31 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
 });
 
 describe("QQ connection page (本人身份依赖机器人账号)", () => {
+  it("QQ 应用任务导航统一为方案/本群配置/连接/数据与保留；本群配置直达群目录", async () => {
+    await renderConnection();
+    const shell = screen.getByLabelText(i18n.t("schemes.qq.appTitle"));
+    const tabNames = within(shell)
+      .getAllByRole("tab")
+      .map((tab) => tab.textContent);
+    expect(tabNames).toEqual([
+      i18n.t("workspace.schemes"),
+      i18n.t("schemes.qq.groupConfigTitle"),
+      i18n.t("connections.transportPage.tab"),
+      i18n.t("connections.dataRetention"),
+    ]);
+    expect(
+      within(shell)
+        .getByRole("tab", { name: i18n.t("connections.transportPage.tab") })
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    // Radix Tab 以真实指针事件激活，不用合成 click。
+    await userEvent.click(
+      within(shell).getByRole("tab", { name: i18n.t("schemes.qq.groupConfigTitle") }),
+    );
+    await act(async () => {});
+    expect(store.getState().settingsRoute).toBe("qq-app-groups");
+  });
+
   const renderConnection = async (
     options: Parameters<typeof client>[0] = {},
     overrides: Partial<typeof api> = {},

@@ -881,7 +881,7 @@ it("模型输入示例按生效值渲染，随本群时区改写与恢复跟随�
   expect(preview()).toContain("timezone=Asia/Shanghai");
 });
 
-it("返回会话只认同一绑定、同一助手的摘要；页脚保存按钮允许换行且不矮于 32px", async () => {
+it("页首返回群目录；查看会话是显式按钮且只认同一绑定、同一助手的摘要", async () => {
   const view = await renderPage();
   const nav = vi.fn(async () => {});
   const openChat = vi.fn();
@@ -906,12 +906,19 @@ it("返回会话只认同一绑定、同一助手的摘要；页脚保存按钮�
     });
   });
 
+  // 页首左侧返回动作落到群目录。
   fireEvent.click(view.container.querySelector("header button") as HTMLElement);
+  expect(store.getState().settingsRoute).toBe("qq-app-groups");
+
+  // 查看会话是显式按钮：目标只落在同一绑定、同一助手的摘要上。
+  const header = view.container.querySelector("header") as HTMLElement;
+  const viewButton = () => within(header).getByRole("button", { name: "查看会话" });
+  fireEvent.click(viewButton());
   expect(nav).toHaveBeenCalledWith("right");
   expect(nav).not.toHaveBeenCalledWith("wrong");
   expect(openChat).not.toHaveBeenCalled();
 
-  // 只剩旧助手的摘要时宁可回总入口，也不进错会话。
+  // 只剩旧助手的摘要：不渲染按钮，也没有 openChat 兜底假目标。
   act(() =>
     store.setState({
       summaryById: {
@@ -924,13 +931,58 @@ it("返回会话只认同一绑定、同一助手的摘要；页脚保存按钮�
       },
     }),
   );
-  fireEvent.click(view.container.querySelector("header button") as HTMLElement);
-  expect(openChat).toHaveBeenCalledTimes(1);
+  expect(within(header).queryByRole("button", { name: "查看会话" })).toBeNull();
+  expect(openChat).not.toHaveBeenCalled();
+  // 没有新导航：只有第一阶段的合法 "right" 那一次。
   expect(nav).toHaveBeenCalledTimes(1);
 
   const save = saveButtonOf(view);
   expect(save.className).toContain("min-h-8");
   expect(save.className).toContain("whitespace-normal");
+});
+
+it("页首选群器列出全部已绑定群（同绑定摘要标题+群号），换群走统一守卫；取消保留原草稿", async () => {
+  const view = await renderPage();
+  const otherId = "77777777-7777-4777-8777-777777777777";
+  const otherBinding = { ...qqBinding(), id: otherId, peer_id: "987654321" };
+  act(() => {
+    store.setState({
+      // 选群器共用目录投影：目录必须处于已预热（loaded）状态。
+      qqBindings: [qqBinding(), otherBinding],
+      qqBindingsLoaded: true,
+      summaryById: {
+        s1: {
+          id: "s1",
+          sourceId: BINDING_ID,
+          agentId: AGENT_ID,
+          title: "本群会话",
+        } as unknown as ConversationSummary,
+      },
+    });
+  });
+  const header = view.container.querySelector("header") as HTMLElement;
+  const switcher = within(header).getByLabelText("切换群") as HTMLSelectElement;
+  const optionTexts = () => [...switcher.options].map((option) => option.textContent);
+  expect(optionTexts().join("\n")).toContain("本群会话 (123456789)");
+  expect(optionTexts().join("\n")).toContain("987654321");
+
+  // 换群同样过统一守卫：草稿未决不换编辑器，确认框挂着待选目标。
+  const mergeInput = view.container.querySelector(
+    'input[data-field="rhythm.merge_window_seconds"]',
+  ) as HTMLInputElement;
+  fireEvent.change(mergeInput, { target: { value: "33" } });
+  expect(editorOf()?.overrides).toEqual({ rhythm: { merge_window_seconds: 33 } });
+  fireEvent.change(switcher, { target: { value: otherId } });
+  await act(async () => {});
+  expect(store.getState().navigationConfirmOpen).toBe(true);
+  expect(store.getState().pendingNavigation).toMatchObject({
+    kind: "group-config",
+    bindingId: otherId,
+  });
+  act(() => store.getState().cancelPendingNavigation());
+  expect(editorOf()?.source.binding.id).toBe(BINDING_ID);
+  expect(store.getState().qqGroupConfigBindingId).toBe(BINDING_ID);
+  expect(store.getState().navigationConfirmOpen).toBe(false);
 });
 
 describe("性能阶段补测：窄订阅行为保持（FE-P1, group-config）", () => {

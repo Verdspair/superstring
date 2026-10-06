@@ -29,6 +29,7 @@ import {
 import type { SettingsRoute } from "../../workspace/settings-routes";
 import { QqGroupConfigPage } from "./group-config";
 import { QqAppManagement, type QqAppView } from "./qq-app-management";
+import { QqGroupDirectory } from "./qq-group-directory";
 import { SchemeBindingsPage, SchemeBindingsView } from "./scheme-bindings";
 import { SchemeStudio } from "./scheme-studio";
 
@@ -250,6 +251,14 @@ export function SchemeDirectory({
                   <p className="text-xs text-muted-foreground">{t(app.descriptionKey)}</p>
                   {app.management && (
                     <div className="ml-auto flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="outline"
+                        className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+                        disabled={busy}
+                        onClick={() => goAppRoute(app.management?.groups)}
+                      >
+                        {t("schemes.qq.groupConfigTitle")}
+                      </Button>
                       <Button
                         variant="outline"
                         className="h-auto min-h-8 max-w-full whitespace-normal break-words"
@@ -529,6 +538,7 @@ function SchemeDetail({ app }: { app: SchemeAppEntry }) {
 
 function qqAppView(route: string, settingsView: string): QqAppView | null {
   if (route === "qq-app-schemes") return "schemes";
+  if (route === "qq-app-groups" || route === "qq-group-config") return "groups";
   if (route === "qq-connection") return "connection";
   if (route === "qq-storage") return "data";
   return settingsView === "operating-mode" ? "connection" : null;
@@ -538,14 +548,21 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute);
   const settingsView = useSuperstringStore((s) => s.settingsView);
   if (route === "scheme-bindings") return <SchemeBindingsPage />;
-  // 本群配置：仅本群作用域（不是基础方案/全局编辑），打开的绑定 id 由导航守卫带入。
-  if (route === "qq-group-config") return <QqGroupConfigPage active={active} />;
   const appView = qqAppView(route, settingsView);
   if (appView)
     return (
       <QqAppManagement
         view={appView}
         schemesView={appView === "schemes" ? <SchemeDirectory appId="qq" /> : null}
+        groupsView={
+          appView === "groups" ? (
+            route === "qq-group-config" ? (
+              <QqGroupConfigPage active={active} />
+            ) : (
+              <QqGroupDirectory />
+            )
+          ) : null
+        }
       />
     );
   const app = route === "scheme-library" ? null : schemeAppByRoute(route);

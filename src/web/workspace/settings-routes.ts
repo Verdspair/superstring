@@ -57,6 +57,12 @@ export const SETTINGS_ROUTES = [
     note: "schemes.qq.description",
   },
   {
+    id: "qq-app-groups",
+    title: "schemes.qq.groupConfigTitle",
+    state: "transition",
+    note: "schemes.qq.groupConfigNote",
+  },
+  {
     id: "qq-connection",
     title: "schemes.qq.connectionTitle",
     state: "transition",

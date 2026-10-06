@@ -211,10 +211,11 @@ afterEach(() => {
 });
 
 describe("QQ app management shell", () => {
-  it("keeps the three tasks on one app page and filters the directory to QQ only", async () => {
+  it("keeps the four tasks on one app page and filters the directory to QQ only", async () => {
     const fake = await renderApp("qq-app-schemes");
     expect(screen.getAllByRole("tab").map((node) => node.textContent)).toEqual([
       translate("workspace.schemes"),
+      translate("schemes.qq.groupConfigTitle"),
       translate("connections.transportPage.tab"),
       translate("connections.dataRetention"),
     ]);
@@ -235,8 +236,13 @@ describe("QQ app management shell", () => {
     expect(fake.getQqSettings).not.toHaveBeenCalled();
   });
 
-  it("switches between the three tasks by route and shows the scope note there", async () => {
+  it("switches between the four tasks by route and shows the scope note there", async () => {
     await renderApp("qq-app-schemes");
+    await userEvent.click(
+      screen.getByRole("tab", { name: translate("schemes.qq.groupConfigTitle") }),
+    );
+    await act(async () => {});
+    expect(store.getState().settingsRoute).toBe("qq-app-groups");
     await userEvent.click(
       screen.getByRole("tab", { name: translate("connections.transportPage.tab") }),
     );
@@ -282,7 +288,11 @@ describe("QQ app management shell", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
-    for (const name of ["workspace.schemes", "connections.dataRetention"]) {
+    for (const name of [
+      "workspace.schemes",
+      "schemes.qq.groupConfigTitle",
+      "connections.dataRetention",
+    ]) {
       expect(
         (screen.getByRole("tab", { name: translate(name) }) as HTMLButtonElement).disabled,
       ).toBe(true);
@@ -492,7 +502,11 @@ describe("QQ app data & retention", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
-    for (const name of ["workspace.schemes", "connections.transportPage.tab"]) {
+    for (const name of [
+      "workspace.schemes",
+      "schemes.qq.groupConfigTitle",
+      "connections.transportPage.tab",
+    ]) {
       expect(
         (screen.getByRole("tab", { name: translate(name) }) as HTMLButtonElement).disabled,
       ).toBe(true);

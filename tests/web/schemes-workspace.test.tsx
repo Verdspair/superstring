@@ -453,14 +453,15 @@ it("目录提供全局会话绑定次级入口（工具条小按钮），落到�
   expect(screen.queryByText(translate("schemes.bindings.entryHint"))).toBeNull();
 });
 
-it("QQ 标题与同排连接/数据同为 outline 32px 入口，忙碌禁用与连接目标不变", async () => {
+it("QQ 标题与本群配置/连接/数据同为 outline 32px 入口，忙碌禁用与各目标不变", async () => {
   await renderDirectory();
   const title = screen.getByRole("button", { name: "QQ" });
+  const groups = screen.getByRole("button", { name: "本群配置" });
   const connection = screen.getByRole("button", { name: "连接" });
   const data = screen.getByRole("button", { name: "数据与保留" });
-  // 标题入口保留打开应用管理的属性，与连接/数据同为 outline 默认尺寸（min-h-8=32px）。
+  // 标题入口保留打开应用管理的属性，与本群配置/连接/数据同为 outline 默认尺寸（min-h-8=32px）。
   expect(title.getAttribute("data-scheme-app-open")).toBe("qq");
-  for (const button of [title, connection, data]) {
+  for (const button of [title, groups, connection, data]) {
     expect(button.getAttribute("data-variant")).toBe("outline");
     expect(button.getAttribute("data-size")).toBe("default");
     expect(button.className).toContain("h-auto");
@@ -468,14 +469,15 @@ it("QQ 标题与同排连接/数据同为 outline 32px 入口，忙碌禁用与�
     expect(button.className).toContain("whitespace-normal");
     expect(button.className).not.toContain("h-7");
   }
-  // 忙碌时三个入口与同页操作一起禁用。
+  // 忙碌时四个入口与同页操作一起禁用。
   act(() => store.setState({ qqSchemeSaving: true }));
-  for (const button of [title, connection, data]) {
+  for (const button of [title, groups, connection, data]) {
     expect((button as HTMLButtonElement).disabled).toBe(true);
   }
   act(() => store.setState({ qqSchemeSaving: false }));
-  fireEvent.click(connection);
-  expect(store.getState().settingsRoute).toBe("qq-connection");
+  // 点击后应用目录卸载、本目录入口随之消失；连接目标由「应用管理直达连接」用例承接。
+  fireEvent.click(groups);
+  expect(store.getState().settingsRoute).toBe("qq-app-groups");
 });
 
 it("进入 QQ 应用管理后目录只留 QQ，不再重复捷径入口", async () => {
@@ -485,6 +487,7 @@ it("进入 QQ 应用管理后目录只留 QQ，不再重复捷径入口", async 
   await act(async () => {});
   expect(screen.queryByLabelText(translate("schemes.appFilter"))).toBeNull();
   expect(screen.queryByRole("button", { name: "数据与保留" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "本群配置" })).toBeNull();
   expect(screen.getByText("默认方案")).toBeTruthy();
 });
 
