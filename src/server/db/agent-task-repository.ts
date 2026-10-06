@@ -8,6 +8,7 @@ import type {
   TaskSummary,
 } from "../../shared/contracts/agent-task";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import { publishConversationChange } from "../conversation/conversation-changes";
 import { DEFAULT_USER_ID } from "./repositories";
 
 type TaskRow = {
@@ -106,6 +107,14 @@ type TaskPayloadStorageRow = {
 };
 export class AgentTaskRepository {
   constructor(readonly db: Database) {}
+
+  /** Task state changes notify the owning conversation through the existing hub. */
+  private notifyTask(id: string): void {
+    const row = this.db.query("SELECT conversation_id FROM agent_tasks WHERE id=?").get(id) as {
+      conversation_id: string;
+    } | null;
+    if (row) publishConversationChange(this.db, row.conversation_id);
+  }
   get(id: string): AgentTask | null {
     const row = this.db.query("SELECT * FROM agent_tasks WHERE id=?").get(id) as TaskRow | null;
     if (!row) return null;
@@ -236,6 +245,7 @@ export class AgentTaskRepository {
               call.effect,
               JSON.stringify(call.arguments),
             );
+        this.notifyTask(id);
         return this.get(id) as AgentTask;
       })
       .immediate();
@@ -267,6 +277,7 @@ export class AgentTaskRepository {
             "UPDATE agent_tasks SET status='running',lease_token=?,lease_expires_at=?,updated_at=? WHERE id=?",
           )
           .run(randomUUID(), new Date(Date.parse(at) + leaseMs).toISOString(), at, row.id);
+        this.notifyTask(row.id);
         return this.get(row.id);
       })
       .immediate();
@@ -333,6 +344,7 @@ export class AgentTaskRepository {
         this.db
           .query("UPDATE agent_tasks SET status='waiting_tool',updated_at=? WHERE id=?")
           .run(at, id);
+        this.notifyTask(id);
       })
       .immediate();
   }
@@ -360,6 +372,7 @@ export class AgentTaskRepository {
             "UPDATE agent_tasks SET status='running',sources=?,updated_at=?,expires_at=MIN(expires_at,COALESCE(?,expires_at)) WHERE id=?",
           )
           .run(JSON.stringify(sources), at, expiry ?? null, id);
+        this.notifyTask(id);
       })
       .immediate();
   }
@@ -369,6 +382,7 @@ export class AgentTaskRepository {
         "UPDATE agent_tasks SET status=?,lease_token=NULL,lease_expires_at=NULL,updated_at=?,error_code=? WHERE id=?",
       )
       .run(status, at, code ?? null, id);
+    this.notifyTask(id);
   }
   interrupt(id: string, at: string, status: "failed" | "cancelled", code: string): void {
     this.db

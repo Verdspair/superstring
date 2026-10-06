@@ -22,6 +22,8 @@ import {
   lastActionObservation,
   mediaReadFailureThenSupplement,
   memoryCorrection,
+  mixedSilentAndSpeaking,
+  multipleSilentBelowThreshold,
   multipleSpeakers,
   newMessageDuringGeneration,
   pausedConversation,
@@ -150,6 +152,62 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
     expect(metric.error).toBeNull();
     expect(h.outbox.list({})).toHaveLength(0);
     expect(h.sent).toHaveLength(0);
+    // 许可被拒＝故意不开口，唤醒记录同样要静默（no_output／无错误码），不能显示成"处理失败"。
+    const wake = h.db
+      .query("SELECT status,error_code FROM wake_signals WHERE cause='chiming_in'")
+      .get() as { status: string; error_code: string | null };
+    expect(wake.status).toBe("no_output");
+    expect(wake.error_code).toBeNull();
+  });
+
+  it("多人都未达门槛：每个成熟机会都被结算，唤醒都不是失败，第二轮不再重复判断", async () => {
+    const { status, harness: h } = await multipleSilentBelowThreshold();
+
+    expect(status).toBe("no_output");
+    expect(h.outbox.list({})).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+    // 都静默＝都不是失败；且两个已成熟参与者都应在本轮结算（无遗留 pending）。
+    const wakes = h.db
+      .query(
+        "SELECT status,error_code FROM wake_signals WHERE cause='chiming_in' ORDER BY through_seq",
+      )
+      .all() as { status: string; error_code: string | null }[];
+    expect(wakes).toHaveLength(2);
+    for (const wake of wakes) {
+      expect(wake.status).toBe("no_output");
+      expect(wake.error_code).toBeNull();
+    }
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM wake_signals WHERE status='pending'").get(),
+    ).toEqual({
+      n: 0,
+    });
+    // 机会都已结算：第二轮没有可领的机会，也不该再花任何模型调用。
+    const callsAfterFirst = h.model?.calls.length ?? 0;
+    const second = await h.activate("chiming_in");
+    expect(second).toBeNull();
+    expect(h.model?.calls.length ?? 0).toBe(callsAfterFirst);
+  });
+
+  it("混合结果：一人开口一人未达门槛，整轮 completed，静默目标的唤醒仍不记失败", async () => {
+    const { status, harness: h } = await mixedSilentAndSpeaking();
+
+    expect(status).toBe("completed");
+    expect(h.sent).toHaveLength(1);
+    // 开口目标的唤醒是 completed；被门槛挡下的目标同样是静默，不是"处理失败"。
+    const bySeq = h.db
+      .query(
+        "SELECT through_seq,status,error_code FROM wake_signals WHERE cause='chiming_in' ORDER BY through_seq",
+      )
+      .all() as { through_seq: number; status: string; error_code: string | null }[];
+    expect(bySeq).toHaveLength(2);
+    // 整轮 completed：开口目标唤醒随之 completed；被门槛挡下的目标**不是失败**、无错误码。
+    // （混合轮的终态只有一个 status，静默目标因此与开口目标同标 completed——关键不变量是
+    // "永不 failed、永不带资格错误码"；纯静默轮的终态是 no_output，见上一条用例。）
+    for (const wake of bySeq) {
+      expect(wake.error_code).toBeNull();
+      expect(wake.status).not.toBe("failed");
+    }
   });
 
   it("被 @ 之后他人插话：这一轮仍然回被叫到的人", async () => {

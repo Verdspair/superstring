@@ -157,6 +157,10 @@ const QQ_TEXT_ENVELOPE_SCHEMA = {
     media: { type: "array", items: { type: "object" } },
   },
 };
+
+// 运行时与唤醒结算共用静默拒绝码，避免把未发言记为失败。
+// 媒体读取失败仍由提交前复验抛错。
+const QQ_SILENT_BLOCK_CODES = ["INITIATIVE_NOT_ELIGIBLE", "MEDIA_READ_FAILED"] as const;
 export interface BotHostDiagnostic {
   runId?: string;
   conversationId: string;
@@ -1716,7 +1720,7 @@ export class OneBotHost {
         // 许可不通过（低于门槛）＝静默结束，不是整轮失败：见计划 §4.1 与 P0 基线里的那条待改进。
         // 许可被拒＝这一轮不开口（静默结束）；"模型犯错"类的 blocked 码不在此列，照旧失败。
         // 许可的时效由既有机制保证：相关变化会让这一轮重新观察（`refresh`），`assertCurrent` 再兜一层。
-        silentBlockCodes: ["INITIATIVE_NOT_ELIGIBLE", "MEDIA_READ_FAILED"],
+        silentBlockCodes: QQ_SILENT_BLOCK_CODES,
         signal,
         onEvent(event) {
           if (event.type === "started") {
@@ -2109,11 +2113,17 @@ export class OneBotHost {
                   .filter((output) => output.status === "prepared")
                   .map((output) => output.targetId),
               );
+              // 静默目标仍需结算已观察的参与者机会。
               const failedTargets = new Map(
                 outputs
                   .filter(
                     (output) =>
-                      output.status !== "prepared" && !deliveredTargets.has(output.targetId),
+                      output.status !== "prepared" &&
+                      !deliveredTargets.has(output.targetId) &&
+                      !(
+                        output.status === "blocked" &&
+                        QQ_SILENT_BLOCK_CODES.some((code) => code === output.code)
+                      ),
                   )
                   .map((output) => [output.targetId, output.code ?? "AGENT_OUTPUT_FAILED"]),
               );

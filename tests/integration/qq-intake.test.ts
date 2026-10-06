@@ -54,7 +54,7 @@ const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const MODEL = "qwen/qwen3-4b-2507";
 const BINDING_ID = "11111111-1111-4111-8111-111111111111";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
-const NOW_SECONDS = Math.floor(Date.parse("2026-09-22T12:00:00.000Z") / 1000);
+const NOW_SECONDS = Math.floor(Date.now() / 1000);
 const TOKEN = "synthetic-token";
 /** The three OneBot 11 source actions an automatic read would have sent. */
 const MEDIA_ACTIONS: readonly string[] = ["get_image", "get_record", "get_file"];

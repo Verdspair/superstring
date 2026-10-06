@@ -106,7 +106,8 @@ export function RunAttempts({ ownerKind, ownerId }: { ownerKind: string; ownerId
     (signal: AbortSignal) => api.listRuns(ownerKind, ownerId, signal),
     [api, ownerKind, ownerId],
   );
-  const { data, error, loading, refresh } = useLiveResource(read);
+  const conversationScope = ownerKind === "conversation" ? { conversationId: ownerId } : undefined;
+  const { data, error, loading, refresh } = useLiveResource(read, { conversationScope });
   const runs = [...(data?.runs ?? [])].sort(
       (a, b) => b.startedAt.localeCompare(a.startedAt) || a.runId.localeCompare(b.runId),
     ),
@@ -157,7 +158,10 @@ export function RunWorkspace({ runId }: { runId: string }) {
     },
     [api, runId, receive],
   );
-  const { data, loading, error, refresh } = useLiveResource(read);
+  const owner = live?.snapshot?.owner;
+  const conversationScope =
+    owner?.kind === "conversation" ? { conversationId: owner.id } : undefined;
+  const { data, loading, error, refresh } = useLiveResource(read, { conversationScope });
   const run = data
     ? {
         ...data,

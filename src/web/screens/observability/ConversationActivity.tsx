@@ -114,6 +114,7 @@ export function ConversationRuntimeSummary({
   const { data, error, loading, refresh } = useLiveResource(read, {
     paused: paused || !active,
     enabled: active,
+    conversationScope: { conversationId },
   });
   const lastRefreshSignal = useRef(0);
   const notify = useRef(onState);

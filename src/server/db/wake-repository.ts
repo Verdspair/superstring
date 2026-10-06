@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { WakeSignal } from "../../shared/contracts/conversation";
+import { publishConversationChange } from "../conversation/conversation-changes";
 import { ConversationEventRepository } from "./conversation-event-repository";
 
 /** 确定性失败：重排不会改变结果，直接判失败。 */
@@ -250,6 +251,7 @@ export class WakeRepository {
             "UPDATE wake_signals SET status='leased',lease_token=?,lease_expires_at=?,attempts=attempts+1 WHERE id=? AND status='pending'",
           )
           .run(token, new Date(Date.parse(input.at) + input.leaseMs).toISOString(), r.id);
+        publishConversationChange(this.db, r.conversation_id);
         return this.get(r.id);
       })
       .immediate();
@@ -304,6 +306,7 @@ export class WakeRepository {
           WHERE id=? AND conversation_id=? AND cause=? AND status='pending' AND through_seq=? AND ready_at<=?`)
             .run(status, at, item.id, r.conversationId, r.cause, item.throughSeq, at);
         }
+        publishConversationChange(this.db, r.conversationId);
       })
       .immediate();
   }
@@ -317,6 +320,8 @@ export class WakeRepository {
       )
       .run(readyAt, id, token).changes;
     if (deferred === 0) throw new Error("WAKE_LEASE_LOST");
+    const row = this.get(id);
+    if (row) publishConversationChange(this.db, row.conversationId);
   }
   fail(
     id: string,
@@ -340,6 +345,7 @@ export class WakeRepository {
         id,
         token,
       ).changes;
+    if (failed > 0) publishConversationChange(this.db, r.conversationId);
     return failed > 0;
   }
   recover(input: { at: string; maxAttempts: number; retryDelayMs: number }): number {

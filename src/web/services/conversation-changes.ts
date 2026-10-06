@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { ConversationChangeEvent, SuperstringApi } from "../api";
 import { useSuperstringStore } from "../store";
 
@@ -144,4 +145,38 @@ export function resetConversationChangesForTests(): void {
     activeSubscription = null;
   }
   listeners.clear();
+}
+
+export interface ConversationSubscriptionOptions {
+  conversationId?: string;
+  enabled?: boolean;
+  paused?: boolean;
+}
+
+/**
+ * Filtered SSE change subscription helper.
+ * Gates on enabled/paused and document visibility; trailing revalidation is owned
+ * by the caller's read task state.
+ */
+export function useConversationChangeSubscription(
+  onInvalidate: () => void,
+  { conversationId, enabled = true, paused = false }: ConversationSubscriptionOptions = {},
+): void {
+  const onInvalidateRef = useRef(onInvalidate);
+  onInvalidateRef.current = onInvalidate;
+
+  useEffect(() => {
+    if (!enabled || paused) return;
+
+    return addConversationChangeListener((event) => {
+      if (document.visibilityState === "hidden") return;
+      const matches =
+        event.event === "ready" ||
+        (event.event === "conversation_changed" &&
+          (!conversationId || event.conversationId === conversationId));
+      if (matches) {
+        onInvalidateRef.current();
+      }
+    });
+  }, [conversationId, enabled, paused]);
 }

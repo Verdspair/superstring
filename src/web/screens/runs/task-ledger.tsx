@@ -28,6 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
+import { addConversationChangeListener } from "../../services/conversation-changes";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
@@ -96,17 +97,67 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
     setDraft(lockedFilters);
     setFilters(lockedFilters);
   }, [conversationId, lockedFilters]);
+  const pendingRevalidate = useRef(false);
+  const detailRef = useRef<TaskDetail | null>(null);
+  detailRef.current = detail;
+  const listRef = useRef<TaskList | null>(null);
+  listRef.current = list;
+
+  const errorSource = useRef<"list" | "detail" | null>(null);
+
+  const cancelPending = useCallback(() => {
+    pending.current?.cancel();
+    pending.current = null;
+    pendingRevalidate.current = false;
+    setLoading(false);
+  }, []);
+
+  const refreshDetail = useCallback(() => {
+    const currentDetail = detailRef.current;
+    if (!currentDetail) return;
+    pendingDetail.current?.cancel();
+    pendingDetail.current = null;
+    pendingDetail.current = startRead((signal) => apiClient.getTask(currentDetail.id, signal), {
+      success: (next) => {
+        setDetail((prev) => (prev?.id === next.id ? next : prev));
+        if (errorSource.current === "detail") {
+          errorSource.current = null;
+          setError("");
+        }
+      },
+      failure: (caught) => {
+        setDetail(null);
+        errorSource.current = "detail";
+        setError(errorText(caught));
+      },
+      settled: () => {
+        pendingDetail.current = null;
+      },
+    });
+  }, [apiClient]);
+
   const load = useCallback(
-    (cursor?: string) => {
+    (cursor?: string, clear = false) => {
       const scopedConversationId = conversationId ?? filters.conversationId;
-      pending.current?.cancel();
+      if (pending.current) {
+        if (!clear && !cursor) {
+          pendingRevalidate.current = true;
+          return;
+        }
+        cancelPending();
+      }
       setLoading(true);
-      // A new filter generation starts from an empty first page, so pages of two filter sets
-      // never sit side by side; "load more" keeps appending to the current cursor chain.
-      if (!cursor) setList(null);
+      // A new filter generation clears the first page; event-driven reloads preserve content
+      if (!cursor && clear) setList(null);
+      // The server caps one page at 200; a background refresh re-reads the loaded range
+      // page by page (50 per page along the current cursor) and stops early when the
+      // server reports no more rows, instead of one over-limit request. A cleared filter
+      // or a load-more click reads exactly one 50-row page.
+      const loadedCount = listRef.current?.items.length ?? 0;
+      const target = clear || cursor ? 0 : Math.max(0, loadedCount - 50);
       pending.current = startRead(
-        (signal) =>
-          apiClient.listTasks(
+        async (signal) => {
+          let page = await apiClient.listTasks(
             {
               ...(filters.status ? { status: filters.status } : {}),
               ...(filters.agentId ? { agentId: filters.agentId } : {}),
@@ -116,28 +167,101 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
               limit: 50,
             },
             signal,
-          ),
+          );
+          if (cursor || clear) return page;
+          let items = [...page.items];
+          while (!signal.aborted && page.hasMore && page.nextCursor && items.length < target + 50) {
+            page = await apiClient.listTasks(
+              {
+                ...(filters.status ? { status: filters.status } : {}),
+                ...(filters.agentId ? { agentId: filters.agentId } : {}),
+                ...(scopedConversationId ? { conversationId: scopedConversationId } : {}),
+                ...(filters.originRunId ? { originRunId: filters.originRunId } : {}),
+                cursor: page.nextCursor,
+                limit: 50,
+              },
+              signal,
+            );
+            items = [...items, ...page.items];
+          }
+          return { ...page, items };
+        },
         {
           success: (page) => {
-            setList((previous) =>
-              cursor && previous ? { ...page, items: [...previous.items, ...page.items] } : page,
+            // The last page's nextCursor/hasMore are authoritative for everything read.
+            setList(
+              cursor && listRef.current
+                ? { ...page, items: [...listRef.current.items, ...page.items] }
+                : page,
             );
-            setError("");
+            if (errorSource.current !== "detail") setError("");
           },
-          failure: (caught) => setError(errorText(caught)),
-          settled: () => setLoading(false),
+          failure: (caught) => {
+            errorSource.current = "list";
+            setError(errorText(caught));
+          },
+          settled: () => {
+            setLoading(false);
+            pending.current = null;
+            if (pendingRevalidate.current) {
+              pendingRevalidate.current = false;
+              if (document.visibilityState !== "hidden") {
+                load(undefined, false);
+              }
+            }
+          },
         },
       );
     },
-    [apiClient, filters, conversationId],
+    [apiClient, filters, conversationId, cancelPending],
   );
+
   useEffect(() => {
-    load();
+    load(undefined, true);
     return () => {
-      pending.current?.cancel();
+      cancelPending();
       pendingDetail.current?.cancel();
+      pendingDetail.current = null;
     };
-  }, [load]);
+  }, [load, cancelPending]);
+
+  useEffect(() => {
+    let pendingHidden = false;
+    const targetConversationId = conversationId ?? filters.conversationId;
+    const unsubscribe = addConversationChangeListener((event) => {
+      const matches =
+        event.event === "ready" ||
+        (event.event === "conversation_changed" &&
+          (!targetConversationId || event.conversationId === targetConversationId));
+      if (!matches) return;
+      if (document.visibilityState === "hidden") {
+        pendingHidden = true;
+        return;
+      }
+      load(undefined, false);
+      if (
+        detailRef.current &&
+        (!event.conversationId || detailRef.current.conversationId === event.conversationId)
+      ) {
+        refreshDetail();
+      }
+    });
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden" && pendingHidden) {
+        pendingHidden = false;
+        load(undefined, false);
+        if (detailRef.current) {
+          refreshDetail();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      unsubscribe();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [conversationId, filters.conversationId, load, refreshDetail]);
+
   const updateDraft = <K extends keyof FilterDraft>(key: K, value: FilterDraft[K]) =>
     setDraft((previous) => ({ ...previous, [key]: value }));
   const applyFilters = () =>
@@ -148,10 +272,14 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
   };
   const openDetail = (id: string) => {
     pendingDetail.current?.cancel();
+    pendingDetail.current = null;
     setError("");
     pendingDetail.current = startRead((signal) => apiClient.getTask(id, signal), {
       success: setDetail,
       failure: (caught) => setError(errorText(caught)),
+      settled: () => {
+        pendingDetail.current = null;
+      },
     });
   };
   const decide = async (approve: boolean) => {

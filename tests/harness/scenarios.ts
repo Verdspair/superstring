@@ -257,6 +257,42 @@ export async function multipleSpeakers(): Promise<ScenarioRun> {
   return snapshot("多人同时说话", harness, statusOf(result));
 }
 
+/**
+ * 多人同时说话、**都未达门槛**：所有人都被程序挡下（静默），唤醒不该被记成失败，
+ * 其他已成熟参与者的机会也该在本轮一并结算（不留 pending、下轮不再重判）。
+ */
+export async function multipleSilentBelowThreshold(): Promise<ScenarioRun> {
+  const harness = createOneBotHarness({
+    mergeWindowSeconds: 2,
+    model: [decideGenerateMany(["20002", "20003"]), scoreOf(1), scoreOf(1)],
+  });
+  harness.receive({ id: "1", speaker: "20002", text: "随意说说甲" });
+  harness.advance(1);
+  harness.receive({ id: "2", speaker: "20003", text: "随意说说乙" });
+  harness.advance(3);
+  const result = await harness.activate("chiming_in");
+  await harness.deliver();
+  return snapshot("多人都未达门槛且沉默", harness, statusOf(result));
+}
+
+/**
+ * 混合结果：一人达门槛开口、一人未达门槛被挡下。整轮是 `completed`，但**被挡下的那个目标**
+ * 只是故意不开口——它的唤醒语义仍是静默，不该被按目标结算成失败；开口的目标照常。
+ */
+export async function mixedSilentAndSpeaking(): Promise<ScenarioRun> {
+  const harness = createOneBotHarness({
+    mergeWindowSeconds: 2,
+    model: [decideGenerateMany(["20002", "20003"]), scoreOf(9), say("回甲"), scoreOf(1)],
+  });
+  harness.receive({ id: "1", speaker: "20002", text: "甲的问题" });
+  harness.advance(1);
+  harness.receive({ id: "2", speaker: "20003", text: "乙的问题" });
+  harness.advance(3);
+  const result = await harness.activate("chiming_in");
+  await harness.deliver();
+  return snapshot("混合：一人开口一人未达门槛", harness, statusOf(result));
+}
+
 /** 会话暂停：零模型调用、不产生唤醒。 */
 export async function pausedConversation(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({ model: [decideNone()] });
@@ -520,6 +556,8 @@ export const ALL_SCENARIOS: readonly (() => Promise<ScenarioRun>)[] = Object.fre
   addressedThenInterrupted,
   multipleSpeakers,
   pausedConversation,
+  multipleSilentBelowThreshold,
+  mixedSilentAndSpeaking,
   idleTopic,
   newMessageDuringGeneration,
   pendingIntentSurvivesRestart,

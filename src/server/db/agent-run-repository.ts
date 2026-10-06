@@ -12,6 +12,7 @@ import type {
   StoredContext,
 } from "../../shared/contracts/agent-run";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import { publishConversationChange } from "../conversation/conversation-changes";
 import { estimateTokens } from "../services/token-estimate";
 import { DEFAULT_USER_ID } from "./repositories";
 
@@ -124,6 +125,19 @@ function contextScope(userId: string): { where: string; params: string[] } {
 export class AgentRunRepository {
   constructor(private readonly db: Database) {}
 
+  /** Owner -> conversation fact: same mapping as CONTEXT_ROW_SELECT; no synthetic ids. */
+  private conversationOfRun(runId: string): string | null {
+    const row = this.db
+      .query(
+        `SELECT CASE WHEN r.owner_kind='conversation' THEN r.owner_id
+        WHEN r.owner_kind='web_turn' THEN (SELECT c2.id FROM conversations c2 JOIN turns t2 ON t2.session_id=c2.source_id
+          WHERE t2.id=r.owner_id AND c2.channel='web' LIMIT 1) END AS conversationId
+        FROM agent_runs r WHERE r.run_id=?`,
+      )
+      .get(runId) as { conversationId: string | null } | null;
+    return row?.conversationId ?? null;
+  }
+
   /** Restart retires inference attempts; owning job/session workers decide whether to retry. */
   recoverInterrupted(at = new Date().toISOString()): number {
     return this.db.transaction(() => {
@@ -168,10 +182,14 @@ export class AgentRunRepository {
 
   setStatus(runId: string, status: RunStatus, at: string, errorCode: string | null = null): void {
     const terminal = ["completed", "no_output", "failed", "cancelled"].includes(status);
-    this.db
+    const changed = this.db
       .query(`UPDATE agent_runs SET status=?, ended_at=?, error_code=?
       WHERE run_id=? AND ended_at IS NULL`)
-      .run(status, terminal ? at : null, errorCode, runId);
+      .run(status, terminal ? at : null, errorCode, runId).changes;
+    if (changed > 0) {
+      const conversationId = this.conversationOfRun(runId);
+      if (conversationId) publishConversationChange(this.db, conversationId);
+    }
   }
 
   startStep(input: {
@@ -277,6 +295,12 @@ export class AgentRunRepository {
       this.db
         .query("INSERT INTO run_events(run_id,seq,type,at,payload) VALUES (?,?,?,?,?)")
         .run(runId, value.seq, value.type, at, JSON.stringify(durable));
+      // Semantic run events notify the conversation hub; stream-only frames (output_delta,
+      // context_usage) must not fan out a refresh per chunk.
+      if (value.type !== "output_delta" && value.type !== "context_usage") {
+        const conversationId = value.conversationId ?? this.conversationOfRun(runId);
+        if (conversationId) publishConversationChange(this.db, conversationId);
+      }
       return value;
     })();
   }

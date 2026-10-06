@@ -48,7 +48,7 @@ const MODEL = "qwen/qwen3-4b-2507";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Deterministic clock so "two weeks" is an assertion, not a hope. */
-const NOW_MS = Date.parse("2026-09-22T12:00:00.000Z");
+const NOW_MS = Math.floor(Date.now() / 1000) * 1000;
 const NOW_SECONDS = Math.floor(NOW_MS / 1000);
 const NOW = `${new Date(NOW_MS).toISOString().slice(0, 19)}.000000Z`;
 

@@ -29,7 +29,7 @@ const MODEL = "qwen/qwen3-4b-2507";
 const BINDING_A = "11111111-1111-4111-8111-111111111111";
 const BINDING_B = "33333333-3333-4333-8333-333333333333";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
-const NOW_SECONDS = Math.floor(Date.parse("2026-09-22T12:00:00.000Z") / 1000);
+const NOW_SECONDS = Math.floor(Date.now() / 1000);
 
 const GROUP_A: QqConversationIdentity = {
   accountId: "10001",

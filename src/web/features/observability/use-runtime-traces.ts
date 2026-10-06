@@ -5,6 +5,7 @@ import type {
   RuntimeTraceDetail,
   RuntimeTracesPage,
 } from "../../../shared/contracts/runtime-observability";
+import { useConversationChangeSubscription } from "../../services/conversation-changes";
 import {
   loadTracesCache,
   removeTracesCache,
@@ -42,10 +43,14 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
   const appliedFilters = useMemo(() => JSON.parse(key) as RuntimeSpanFilters, [key]);
 
   const scopeRef = useRef({ api, appliedFilters });
+  const pendingRevalidate = useRef(false);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   const cancel = useCallback(() => {
     pending.current?.cancel();
     pending.current = null;
+    pendingRevalidate.current = false;
     setLoading(false);
   }, []);
 
@@ -92,7 +97,11 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
 
   const load = useCallback(
     (kind: "background" | "refresh" | "older" = "background") => {
-      if (!active || pending.current) return;
+      if (!active) return;
+      if (pending.current) {
+        pendingRevalidate.current = true;
+        return;
+      }
       const boundary = oldest.current;
       const initial = boundary === 0;
       setLoading(true);
@@ -147,6 +156,12 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
           settled: () => {
             pending.current = null;
             setLoading(false);
+            if (pendingRevalidate.current) {
+              pendingRevalidate.current = false;
+              if (document.visibilityState !== "hidden" && !pausedRef.current && active) {
+                load("background");
+              }
+            }
           },
         },
       );
@@ -160,6 +175,11 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
     enabled: active,
     retainOnBlur: true,
     onSuspend: cancel,
+  });
+  useConversationChangeSubscription(background, {
+    conversationId: appliedFilters.conversationId,
+    enabled: active,
+    paused,
   });
 
   return {
