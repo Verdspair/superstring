@@ -348,8 +348,10 @@ describe("stable assistant history and activation isolation", () => {
     updateQqSettings(h.orm, { accountId: "100", enabled: true, expectedRevision: 1 });
     h.incoming("old-input");
     const oldRun = h.snapshot(a1);
-    const planned = h.delivery(a1, oldRun.runId);
-    const interrupted = h.delivery(a1, oldRun.runId, 1);
+    // 同会话因果序：in-flight 的必须是最早（ordinal 0）那条，后面的只能是等待中的 planned；
+    // 否则 claimPart 会按因果序拒绝后到 in-flight 的领取，recover 就看不到 sending 部件。
+    const interrupted = h.delivery(a1, oldRun.runId);
+    const planned = h.delivery(a1, oldRun.runId, 1);
     h.outbox.claimPart(interrupted.id, h.at);
     const authorizeSnapshot = (id: string) => {
       const binding = readQqBinding(h.orm, h.bindingId)!;

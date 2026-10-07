@@ -55,6 +55,11 @@ export class WakeScheduler {
       telemetry?: RuntimeTelemetry;
       policy: () => WakeSchedulerPolicy;
       activate: (wake: WakeSignal, signal: AbortSignal) => Promise<unknown>;
+      /**
+       * 领取前的资源闸（如模型名额提示）。返回 false 的机会保持 pending，不烧 attempts——
+       * 释放名额的订阅方负责再唤醒 worker，由下一轮复查。这是提示，不是第二准入。
+       */
+      resourceGate?: (wake: WakeSignal) => boolean;
       now?: () => string;
       onError?: (error: unknown, wake: WakeSignal) => void;
     },
@@ -115,11 +120,28 @@ export class WakeScheduler {
           parent: this.options.telemetry.parentFor("wake_id", previous.id) ?? undefined,
         });
       }
-      const wake = this.options.repository.claim({
-        at: now(),
-        leaseMs: policy.leaseMs,
-        globalConcurrency: policy.globalConcurrency,
-      });
+      // 资源闸在领取前检查：按 peek 顺序取第一个资源允许的机会，用它自己的 id 原子领取。
+      // 一个繁忙服务不能挡住后面空闲服务的机会（无 HOL）；被闸住的机会留在队列里，
+      // 不产生一次 attempts 或失败结算。
+      const gate = this.options.resourceGate;
+      let wake: WakeSignal | null;
+      if (gate) {
+        const chosen =
+          this.options.repository.pendingCandidates({ at: now() }).find((c) => gate(c)) ?? null;
+        if (!chosen) return { started: false };
+        wake = this.options.repository.claim({
+          at: now(),
+          leaseMs: policy.leaseMs,
+          globalConcurrency: policy.globalConcurrency,
+          wakeId: chosen.id,
+        });
+      } else {
+        wake = this.options.repository.claim({
+          at: now(),
+          leaseMs: policy.leaseMs,
+          globalConcurrency: policy.globalConcurrency,
+        });
+      }
       if (!wake) return { started: false };
       const conversation = this.options.repository.db
         .query("SELECT agent_id FROM conversations WHERE id=?")

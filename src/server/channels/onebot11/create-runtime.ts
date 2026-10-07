@@ -124,6 +124,8 @@ export function createOneBotConversationRuntime(options: {
   mediaAdapter?: (scheme: QqSchemeRow) => QqMediaReadAdapter;
   /** T11 B：同源组装的媒体准备服务（factory 产物，按方案取 prompt/节奏，与 mediaAdapter 同侧同形）；缺省＝不接自动图。 */
   mediaInputService?: (scheme: QqSchemeRow) => QqMediaInputService;
+  /** 执行/权限配置保存成功（CAS 通过）后的通知：投递车道据此按新上限重新准入；缺省＝不订阅。 */
+  onPolicyChange?: (listener: () => void) => () => void;
 }) {
   const { orm, db, journal } = options;
   const policy = (): BotConversationPolicy => ({
@@ -163,6 +165,8 @@ export function createOneBotConversationRuntime(options: {
     telemetry: options.telemetry,
     journal,
     port: options.port,
+    // 发送车道＝既有 QQ wake 并发资源（不是模型帽）：每次准入现读 policy()，调低后不再按旧值放行。
+    deliveryConcurrency: () => policy().globalConcurrency,
     stickerFile: qqStickerFileReference(orm, options.store),
     stickerAvailable(stickerId, target, at) {
       const binding = readQqBinding(orm, target.bindingId);
@@ -325,6 +329,9 @@ export function createOneBotConversationRuntime(options: {
       }
     },
   });
+  // 配置保存成功（CAS 通过）后唤醒投放车道按当前上限复核：调高立即 drain，无定时器轮询。
+  // 与模型准入共用同一权限保存通知源；进程级长期订阅，无卸载生命周期。
+  options.onPolicyChange?.(() => delivery.notifyPolicyChange());
   const scheduler = new WakeScheduler({
     repository: wakes,
     telemetry: options.telemetry,

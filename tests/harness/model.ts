@@ -25,6 +25,8 @@ export type ModelStep =
       readonly text: string;
       readonly stickerIds?: readonly string[] | null;
       readonly media?: readonly ModelMediaClassification[];
+      /** 显式 @ 的成员号；宿主编码为 at 段，不给＝不 @（无 auto-at）。 */
+      readonly mentions?: readonly string[];
     }
   | {
       readonly kind: "generate";
@@ -32,12 +34,28 @@ export type ModelStep =
       readonly instructions?: string;
       readonly stickerIds?: readonly string[] | null;
       readonly media?: readonly ModelMediaClassification[];
+      readonly mentions?: readonly string[];
     }
   | {
       /** 一次决策为多个目标各出一份生成草稿（同一轮里"人人有份"）。 */
       readonly kind: "generate_many";
       readonly targetIds: readonly string[];
       readonly instructions?: string;
+      readonly media?: readonly ModelMediaClassification[];
+    }
+  | {
+      /**
+       * 阶段一批量评分（QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA 的答复）：逐候选
+       * {targetId,score,intent,sourceSeqs}。引用/覆盖是否属实由宿主核验——桩只按批准协议
+       * 输出形状，不复刻生产的 range 校验与缓存。
+       */
+      readonly kind: "batch";
+      readonly evaluations: readonly {
+        readonly targetId: string;
+        readonly score: number;
+        readonly intent: string;
+        readonly sourceSeqs: readonly number[];
+      }[];
       readonly media?: readonly ModelMediaClassification[];
     }
   | {
@@ -72,12 +90,14 @@ export const decideInline = (
   text: string,
   stickerIds?: readonly string[] | null,
   media?: readonly ModelMediaClassification[],
+  mentions?: readonly string[],
 ): ModelStep => ({
   kind: "inline",
   targetId,
   text,
   ...(stickerIds === undefined ? {} : { stickerIds }),
   ...(media === undefined ? {} : { media }),
+  ...(mentions === undefined ? {} : { mentions }),
 });
 
 export const decideGenerate = (
@@ -85,12 +105,14 @@ export const decideGenerate = (
   instructions = "respond",
   stickerIds?: readonly string[] | null,
   media?: readonly ModelMediaClassification[],
+  mentions?: readonly string[],
 ): ModelStep => ({
   kind: "generate",
   targetId,
   instructions,
   ...(stickerIds === undefined ? {} : { stickerIds }),
   ...(media === undefined ? {} : { media }),
+  ...(mentions === undefined ? {} : { mentions }),
 });
 
 /** 一次决策为多个目标各出一份生成草稿。 */
@@ -98,6 +120,16 @@ export const decideGenerateMany = (
   targetIds: readonly string[],
   instructions = "respond",
 ): ModelStep => ({ kind: "generate_many", targetIds, instructions });
+
+/** 阶段一批量评分的答复：每个本批冻结候选一项，逐字按批准协议形状输出。 */
+export const batchScore = (
+  evaluations: readonly {
+    targetId: string;
+    score: number;
+    intent: string;
+    sourceSeqs: readonly number[];
+  }[],
+): ModelStep => ({ kind: "batch", evaluations });
 
 /** 判断档的答复；`score` 走 `responseSchema` 里带 score 的那次调用。 */
 export const scoreOf = (
@@ -331,6 +363,7 @@ export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
             targetId: step.targetId,
             text: step.text,
             ...(step.stickerIds === undefined ? {} : { stickerIds: step.stickerIds }),
+            ...(step.mentions === undefined ? {} : { mentionIds: step.mentions }),
           },
         ],
       });
@@ -343,6 +376,7 @@ export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
             targetId: step.targetId,
             instructions: step.instructions ?? "respond",
             ...(step.stickerIds === undefined ? {} : { stickerIds: step.stickerIds }),
+            ...(step.mentions === undefined ? {} : { mentionIds: step.mentions }),
           },
         ],
       });
@@ -368,6 +402,14 @@ export function scriptedModel(steps: readonly ModelStep[]): ScriptedModel {
         record("next", request);
         const step = take("next", ["score", "raw"]);
         return step.kind === "score" ? scoreEnvelopeOf(step) : textOf(step);
+      }
+      if (schemaHas(request, "evaluations")) {
+        // 阶段一批量评分：纯 JSON 答复（无 envelope 包装）；raw 照旧逐字输出做负测。
+        record("next", request);
+        const step = take("next", ["batch", "raw"]);
+        return step.kind === "batch"
+          ? JSON.stringify({ evaluations: step.evaluations })
+          : textOf(step);
       }
       if (schemaHas(request, "score")) {
         record("next", request);

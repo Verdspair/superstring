@@ -12,7 +12,7 @@
 // Atomicity: every read-decide-write sequence runs inside `BEGIN IMMEDIATE` on this
 // single-writer local database, so two processes cannot both observe a free lease.
 
-import { asc, desc, eq, notInArray } from "drizzle-orm";
+import { asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import {
   QQ_SWEEP_VERDICT_LIMIT,
@@ -655,9 +655,12 @@ const SweepVerdictSchema = z
  * Replace the stored verdicts with the ones this pass reached.
  *
  * One transaction for the whole pass: the rows of conversations the sweep no longer walks (unbound
- * or rebound away) are dropped, and every conversation it did walk gets its row rewritten — so the
- * table describes the CURRENT set of bound conversations and nothing else. A conversation that
- * leaves never keeps a reason behind for a user to read as live.
+ * or rebound away) are dropped, and a conversation it did walk is compared with the row already
+ * stored. A verdict whose identity and clocks are unchanged keeps its row, a changed verdict is
+ * rewritten, and a new one is inserted — so the table describes the CURRENT set of bound
+ * conversations and nothing else, without churning rows that did not move. The pass still stamps
+ * `decided_at_seconds` on every walked row (a single-column update when only the clock moved),
+ * because the storage summary dates the last sweep by the newest one.
  */
 export function recordQqSweepVerdicts(
   orm: Orm,
@@ -673,13 +676,20 @@ export function recordQqSweepVerdicts(
   const value = parsed.data;
   orm.transaction(
     (tx) => {
-      const keys = value.verdicts.map((verdict) => verdict.conversationKey);
-      // `NOT IN ()` is not valid SQL, so "nothing is bound" is its own statement rather than an
-      // empty list handed to the same predicate.
-      if (keys.length === 0) tx.delete(schema.qqSweepVerdicts).run();
-      else
+      const existing = new Map(
+        tx
+          .select()
+          .from(schema.qqSweepVerdicts)
+          .all()
+          .map((row) => [row.conversationKey, row]),
+      );
+      const keys = new Set(value.verdicts.map((verdict) => verdict.conversationKey));
+      const dropped = [...existing.keys()].filter((key) => !keys.has(key));
+      // The common idle pass drops nothing, so it issues no delete at all instead of a `NOT IN ()`
+      // that SQLite cannot parse; a row is only removed once its conversation actually left.
+      if (dropped.length > 0)
         tx.delete(schema.qqSweepVerdicts)
-          .where(notInArray(schema.qqSweepVerdicts.conversationKey, keys))
+          .where(inArray(schema.qqSweepVerdicts.conversationKey, dropped))
           .run();
       for (const verdict of value.verdicts) {
         const row = {
@@ -691,13 +701,35 @@ export function recordQqSweepVerdicts(
           readyAtSeconds: verdict.readyAtSeconds,
           decidedAtSeconds: value.nowSeconds,
         };
-        tx.insert(schema.qqSweepVerdicts)
-          .values({ conversationKey: verdict.conversationKey, ...row })
-          .onConflictDoUpdate({
-            target: schema.qqSweepVerdicts.conversationKey,
-            set: row,
-          })
-          .run();
+        const stored = existing.get(verdict.conversationKey);
+        if (stored === undefined) {
+          tx.insert(schema.qqSweepVerdicts)
+            .values({ conversationKey: verdict.conversationKey, ...row })
+            .onConflictDoUpdate({
+              target: schema.qqSweepVerdicts.conversationKey,
+              set: row,
+            })
+            .run();
+          continue;
+        }
+        const unchanged =
+          stored.conversationKind === row.conversationKind &&
+          stored.peerId === row.peerId &&
+          stored.outcome === row.outcome &&
+          stored.reason === row.reason &&
+          stored.observedAtSeconds === row.observedAtSeconds &&
+          stored.readyAtSeconds === row.readyAtSeconds;
+        if (!unchanged) {
+          tx.update(schema.qqSweepVerdicts)
+            .set(row)
+            .where(eq(schema.qqSweepVerdicts.conversationKey, verdict.conversationKey))
+            .run();
+        } else if (stored.decidedAtSeconds !== value.nowSeconds) {
+          tx.update(schema.qqSweepVerdicts)
+            .set({ decidedAtSeconds: value.nowSeconds })
+            .where(eq(schema.qqSweepVerdicts.conversationKey, verdict.conversationKey))
+            .run();
+        }
       }
     },
     { behavior: "immediate" },

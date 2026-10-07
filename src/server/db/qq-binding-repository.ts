@@ -12,6 +12,7 @@
 import { and, eq } from "drizzle-orm";
 import type { QqBindingResponse, QqBindingTriggers } from "../../shared/contracts/qq";
 import {
+  isBothTrueInteractionPair,
   isEmptyQqGroupOverrides,
   normalizeQqGroupCapabilities,
   QQ_GROUP_TRIGGERS_FOLLOW,
@@ -25,7 +26,7 @@ import type { QqBinding, QqConversationIdentity } from "../services/qq-binding-c
 import { parseQqBinding, qqConversationScope } from "../services/qq-binding-contract";
 import { stableStringify } from "./json-text";
 import { pendingObservationCount } from "./qq-observation-repository";
-import { schemeStickerCollectionIds } from "./qq-scheme-repository";
+import { readQqScheme, schemeStickerCollectionIds, schemeTriggers } from "./qq-scheme-repository";
 import { newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
@@ -236,6 +237,7 @@ export function insertQqBinding(orm: Orm, binding: QqBinding): QqBinding {
 export function saveQqBinding(orm: Orm, args: SaveQqBindingArgs): QqBinding {
   const before = readQqBinding(orm, args.binding.id);
   if (before === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
+  assertBindingInteractionPair(orm, before, args.binding);
   if (!needsGroupEffects(before, args.binding)) return saveQqBindingRow(orm, args);
   return orm.transaction(
     (tx) => {
@@ -257,7 +259,39 @@ export function saveQqBindingRow(orm: Orm, args: SaveQqBindingArgs): QqBinding {
   if (current.revision !== args.expectedRevision) {
     fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");
   }
+  assertBindingInteractionPair(orm, current, args.binding);
   return writeQqBindingRow(orm, args.binding, args.expectedRevision);
+}
+
+/**
+ * 模式互斥的绑定保存边界（原始组合校验，不用 legacy 归一后的读值）：
+ *  - 请求显式把两个开关同时写成 true —— 原始拒绝；
+ *  - 触发器或基础方案变化后，raw 组合解析出的生效对双 true（如 follow_up=true 且方案
+ *    chiming_in=true）—— 拒绝。
+ * 读取路径的 legacy 双 true 解释（chiming_in 优先）不在写边界重演，也不强迫无关保存
+ * 先归一历史行。
+ */
+function assertBindingInteractionPair(orm: Orm, before: QqBinding, next: QqBinding): void {
+  // 只有连续/自主这对开关本身变化、或换了基础方案才进入互斥校验；direct_reply/
+  // idle_topic 的单独变更不是 pair 修改，legacy raw 双 true 的无关保存不强迫归一。
+  const pairMoved =
+    before.triggers.follow_up !== next.triggers.follow_up ||
+    before.triggers.chiming_in !== next.triggers.chiming_in ||
+    before.schemeId !== next.schemeId;
+  if (!pairMoved) return;
+  if (isBothTrueInteractionPair(next.triggers)) {
+    fail("MEMORY_SOURCE_INVALID", "连续交谈与自主接话互斥，开启一项时另一项必须关闭");
+  }
+  const scheme = readQqScheme(orm, next.schemeId);
+  if (scheme === null) return;
+  const base = schemeTriggers(scheme);
+  const rawEffective = {
+    follow_up: next.triggers.follow_up ?? base.follow_up,
+    chiming_in: next.triggers.chiming_in ?? base.chiming_in,
+  };
+  if (isBothTrueInteractionPair(rawEffective)) {
+    fail("MEMORY_SOURCE_INVALID", "连续交谈与自主接话互斥，开启一项时另一项必须关闭");
+  }
 }
 
 /** The row write itself; the read revision travels into the WHERE clause, and an unchanged save writes nothing. */

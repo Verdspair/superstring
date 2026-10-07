@@ -28,6 +28,10 @@ export function createSkillActions(root?: string): BuiltInAction[] {
   const catalog = loadMergedSkillCatalog(root);
   if (!catalog.skills.length) return [];
   const revision = catalogRevision(catalog);
+  // 首轮即可发现的授权目录：name/description 元数据进动作描述，正文仍按需 skill.read 复验。
+  const catalogSummary = catalog.skills
+    .map((skill) => `${skill.metadata.name}: ${skill.metadata.description}`)
+    .join("\n");
   const consumed = new Set<SkillEntry>();
   /** Consumed resources keyed by dir+path, holding the revision the model actually saw. */
   const consumedResources = new Map<
@@ -61,8 +65,7 @@ export function createSkillActions(root?: string): BuiltInAction[] {
       assertAvailable,
       description: {
         name: "skill.catalog",
-        description:
-          "List installed skill names and descriptions. Read a selected skill's SKILL.md before following its guidance.",
+        description: `Installed skills, one per line as name: description; read a chosen skill's SKILL.md before following its guidance.\n${catalogSummary}`,
         capability: "skill.read",
         effect: "read",
         parameters: z.toJSONSchema(EmptySchema),

@@ -62,6 +62,9 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
+    initiative_batch_target_count: 15,
+    initiative_batch_jitter_count: 5,
+    initiative_queue_on_busy: true,
   },
   context: {
     judgement_message_limit: 20,
@@ -1035,4 +1038,44 @@ it("绑定抽屉四组平铺：各组标题就位，保存控件归属各自保�
     within(triggersCard).queryByRole("button", { name: ui("connections.saveBinding") }),
   ).toBeNull();
   expect(within(triggersCard).getAllByRole("combobox").length).toBe(4);
+});
+
+it("绑定抽屉触发器开启互斥且成对恢复继承", async () => {
+  const updateRow = vi.fn().mockResolvedValue({
+    ...bindingOf(SCHEME_A, BINDING_A, "30003"),
+    revision: 5,
+  });
+  await renderBoards({
+    listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
+    updateQqBinding: updateRow,
+  });
+  await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+  const sheet = screen.getByRole("dialog");
+  const triggersCard = within(sheet)
+    .getByText(ui("schemes.bindings.triggers.title"))
+    .closest('[data-slot="card"]') as HTMLElement;
+
+  const followUpSelect = within(triggersCard).getByLabelText(
+    ui("connections.switchForValue", { "0": ui("connections.ongoingConversation") }),
+  ) as HTMLSelectElement;
+
+  await act(async () => {
+    fireEvent.change(followUpSelect, { target: { value: "on" } });
+  });
+  expect(updateRow).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      triggers: expect.objectContaining({ follow_up: true, chiming_in: false }),
+    }),
+  );
+
+  await act(async () => {
+    fireEvent.change(followUpSelect, { target: { value: "inherit" } });
+  });
+  expect(updateRow).toHaveBeenLastCalledWith(
+    expect.anything(),
+    expect.objectContaining({
+      triggers: expect.objectContaining({ follow_up: null, chiming_in: null }),
+    }),
+  );
 });

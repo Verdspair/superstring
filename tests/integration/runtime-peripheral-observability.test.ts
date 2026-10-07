@@ -88,7 +88,13 @@ function bot(h: ReturnType<typeof setup>, group = false, enabled = true) {
   const scheme = createQqScheme(h.orm, {
     name: "synthetic",
     triggers: { direct_reply: enabled, follow_up: false, chiming_in: enabled, idle_topic: false },
-    rhythm: { ...QQ_RHYTHM_DEFAULT, merge_window_seconds: 0 },
+    // 自主批次用 X1/Y0 小批合法配置：单条消息即可成批，夹具不必凑 15 条旧口径。
+    rhythm: {
+      ...QQ_RHYTHM_DEFAULT,
+      merge_window_seconds: 0,
+      initiative_batch_target_count: 1,
+      initiative_batch_jitter_count: 0,
+    },
     reply: { split_by_speaker: false },
   });
   const id = crypto.randomUUID(),

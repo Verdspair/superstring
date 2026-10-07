@@ -29,7 +29,7 @@ function setup(options: { schemeTriggers?: Partial<Record<string, boolean>> } = 
     triggers: {
       direct_reply: true,
       follow_up: true,
-      chiming_in: true,
+      chiming_in: false,
       idle_topic: true,
       ...options.schemeTriggers,
     },

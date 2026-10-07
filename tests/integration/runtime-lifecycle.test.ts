@@ -205,7 +205,8 @@ describe("application runtime lifecycle", () => {
           ),
         ),
       );
-      expect(peak).toBe(1);
+      // 模型并发缺省 4、同服务 2：只覆盖会话策略不动模型名额，两个任务同服务可真实重叠。
+      expect(peak).toBe(2);
     } finally {
       await runtime.stop();
     }

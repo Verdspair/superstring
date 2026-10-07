@@ -68,6 +68,7 @@ import {
 const schemeBooleanFields: ReadonlySet<string> = new Set([
   ...Object.keys(TRIGGER_LABELS).map((key) => `triggers.${key}`),
   "rhythm.active_hours_enabled",
+  "rhythm.initiative_queue_on_busy",
   "reply.split_by_speaker",
   // 0052 的 stages 布尔同样按开/关渲染（人话，不出现 true/false）。
   "media_input.stages.decision",
@@ -851,9 +852,21 @@ export function SchemeStudio() {
                         <Checkbox
                           disabled={saving}
                           checked={editor.triggers[key as keyof typeof TRIGGER_LABELS]}
-                          onCheckedChange={(value) =>
-                            state.patchQqSchemeGroup("triggers", { [key]: value === true })
-                          }
+                          onCheckedChange={(value) => {
+                            if (key === "follow_up" && value === true) {
+                              state.patchQqSchemeGroup("triggers", {
+                                follow_up: true,
+                                chiming_in: false,
+                              });
+                            } else if (key === "chiming_in" && value === true) {
+                              state.patchQqSchemeGroup("triggers", {
+                                chiming_in: true,
+                                follow_up: false,
+                              });
+                            } else {
+                              state.patchQqSchemeGroup("triggers", { [key]: value === true });
+                            }
+                          }}
                         />
                         <span className="space-y-1">
                           <span className="block">{t(label)}</span>
@@ -868,6 +881,14 @@ export function SchemeStudio() {
                       </Label>
                     ))}
                   </div>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    {t("connections.triggersMutualExclusionHint")}
+                  </p>
+                  {editor.triggers.follow_up && editor.triggers.chiming_in && (
+                    <div className="mt-3 rounded-md bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
+                      {t("connections.legacyChimingInPrecedenceNotice")}
+                    </div>
+                  )}
                 </SchemeFieldCard>
                 <SchemeFieldCard
                   title={t("schemes.studio.rhythmTitle")}
@@ -883,6 +904,23 @@ export function SchemeStudio() {
                         info={info}
                       />
                     ))}
+                    <Label className="flex items-start gap-3 rounded-lg border p-4 sm:col-span-2">
+                      <Checkbox
+                        disabled={saving}
+                        checked={editor.rhythm.initiative_queue_on_busy}
+                        onCheckedChange={(checked) =>
+                          state.patchQqSchemeGroup("rhythm", {
+                            initiative_queue_on_busy: checked === true,
+                          })
+                        }
+                      />
+                      <span className="space-y-1">
+                        <span className="block">{t("connections.initiativeQueueOnBusy")}</span>
+                        <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                          {t("connections.initiativeQueueOnBusyHint")}
+                        </span>
+                      </span>
+                    </Label>
                   </div>
                 </SchemeFieldCard>
                 <SchemeFieldCard

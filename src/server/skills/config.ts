@@ -30,6 +30,7 @@ import systemEvidenceReading from "./builtin/system-evidence-reading/SKILL.md" w
   type: "text",
 };
 import systemMediaReading from "./builtin/system-media-reading/SKILL.md" with { type: "text" };
+import systemQqReply from "./builtin/system-qq-reply/SKILL.md" with { type: "text" };
 import systemTaskExecution from "./builtin/system-task-execution/SKILL.md" with { type: "text" };
 import systemWebResearch from "./builtin/system-web-research/SKILL.md" with { type: "text" };
 
@@ -266,6 +267,7 @@ function requireDir(skill: SkillEntry): string {
 const SYSTEM_DOCUMENTS: Record<string, string> = {
   "system-evidence-reading": systemEvidenceReading,
   "system-media-reading": systemMediaReading,
+  "system-qq-reply": systemQqReply,
   "system-task-execution": systemTaskExecution,
   "system-web-research": systemWebResearch,
 };

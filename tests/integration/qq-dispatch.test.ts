@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1174,6 +1174,248 @@ describe("why a conversation stayed silent is written down", () => {
           .run(base.conversationKey, now),
       ).toThrow();
       expect(readQqSweepVerdicts(h.orm)).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+/**
+ * Captures the SQL a pass prepares, so a case can assert the SHAPE of what it wrote rather than
+ * only the rows it left behind. The repository reaches SQLite through bun:sqlite's `prepare`, which
+ * is also the seam the product's own query spy uses. Only the verdict table's statements are kept.
+ */
+function verdictStatements(h: ReturnType<typeof setup>["h"]) {
+  const trace = spyOn(h.db, "prepare");
+  return {
+    sql: () =>
+      (trace.mock.calls as unknown as [string, ...unknown[]][])
+        .map((call) => String(call[0]).replace(/\s+/g, " ").trim())
+        .filter((statement) => statement.includes("qq_sweep_verdicts")),
+    clear: () => {
+      trace.mockClear();
+    },
+    restore: () => {
+      trace.mockRestore();
+    },
+  };
+}
+
+// S4: the sweep writes the DIFF, not the whole table. A pass that reaches the same verdicts must
+// not delete-and-rewrite every row; only a verdict that moved, or the pass clock, is written.
+describe("a sweep writes only what moved", () => {
+  it("keeps a conversation's verdict and only refreshes the pass clock", () => {
+    const { h } = setup();
+    try {
+      const at = now + 14 * 60;
+      sweepQqIdleTopics(h.orm, { nowSeconds: at });
+      const [before] = readQqSweepVerdicts(h.orm);
+      expect(before).toMatchObject({ outcome: "skipped", reason: "not_quiet_yet" });
+      const trace = verdictStatements(h);
+      try {
+        const next = at + 5;
+        sweepQqIdleTopics(h.orm, { nowSeconds: next });
+        const statements = trace.sql();
+        // One read, then the single-column clock update: no delete, no insert, and no full-row
+        // rewrite anywhere.
+        expect(statements.filter((s) => s.startsWith("delete"))).toEqual([]);
+        expect(statements.filter((s) => s.startsWith("insert"))).toEqual([]);
+        expect(statements.filter((s) => s.startsWith('update "qq_sweep_verdicts"'))).toEqual([
+          'update "qq_sweep_verdicts" set "decided_at_seconds" = ? where "qq_sweep_verdicts"."conversation_key" = ?',
+        ]);
+        expect(statements.filter((s) => s.startsWith("select"))).toHaveLength(1);
+        const [after] = readQqSweepVerdicts(h.orm);
+        expect(after).toEqual({ ...before, decidedAtSeconds: next });
+        // Last-swept reads the newest decided_at_seconds, so the pass stays real-time instead of
+        // freezing at the moment the verdict last changed.
+        expect(readQqSweepVerdicts(h.orm)[0]?.decidedAtSeconds).toBe(next);
+      } finally {
+        trace.restore();
+      }
+    } finally {
+      h.close();
+    }
+  });
+
+  it("issues no write at all when the pass and its verdicts are identical", () => {
+    const { h } = setup();
+    try {
+      const at = now + 14 * 60;
+      const verdict = {
+        conversationKey: JSON.stringify(["qq", "10001", "group", "30003"]),
+        kind: "group" as const,
+        peerId: "30003",
+        outcome: "skipped" as const,
+        reason: "not_quiet_yet" as const,
+        observedAtSeconds: now - 40,
+        readyAtSeconds: now + 860,
+      };
+      recordQqSweepVerdicts(h.orm, { nowSeconds: at, verdicts: [verdict] });
+      const trace = verdictStatements(h);
+      try {
+        const totalChanges = () =>
+          (h.db.query("SELECT total_changes() AS n").get() as { n: number }).n;
+        const before = totalChanges();
+        recordQqSweepVerdicts(h.orm, { nowSeconds: at, verdicts: [verdict] });
+        expect(trace.sql().filter((s) => !s.startsWith("select"))).toEqual([]);
+        // total_changes() would also count a delete that matched no row, so a zero delta is the
+        // strongest form of "this pass wrote nothing".
+        expect(totalChanges() - before).toBe(0);
+        expect(readQqSweepVerdicts(h.orm)).toEqual([
+          expect.objectContaining({ decidedAtSeconds: at }),
+        ]);
+      } finally {
+        trace.restore();
+      }
+    } finally {
+      h.close();
+    }
+  });
+
+  it("rewrites a verdict whose reason and clocks changed", () => {
+    const { h } = setup();
+    try {
+      const base = {
+        conversationKey: JSON.stringify(["qq", "10001", "group", "30003"]),
+        kind: "group" as const,
+        peerId: "30003",
+      };
+      recordQqSweepVerdicts(h.orm, {
+        nowSeconds: now,
+        verdicts: [
+          {
+            ...base,
+            outcome: "skipped",
+            reason: "not_quiet_yet",
+            observedAtSeconds: now - 40,
+            readyAtSeconds: now + 860,
+          },
+        ],
+      });
+      const trace = verdictStatements(h);
+      try {
+        recordQqSweepVerdicts(h.orm, {
+          nowSeconds: now + 1,
+          verdicts: [
+            {
+              ...base,
+              outcome: "skipped",
+              reason: "cooling_down",
+              observedAtSeconds: now - 10,
+              readyAtSeconds: now + 900,
+            },
+          ],
+        });
+        const statements = trace.sql();
+        expect(statements.filter((s) => s.startsWith("insert"))).toEqual([]);
+        expect(statements.filter((s) => s.startsWith("delete"))).toEqual([]);
+        const updates = statements.filter((s) => s.startsWith('update "qq_sweep_verdicts"'));
+        expect(updates).toHaveLength(1);
+        // A changed verdict rewrites the row, not only the clock column.
+        expect(updates[0]).toContain('"reason" = ?');
+        expect(updates[0]).toContain('"decided_at_seconds" = ?');
+        expect(readQqSweepVerdicts(h.orm)[0]).toMatchObject({
+          outcome: "skipped",
+          reason: "cooling_down",
+          observedAtSeconds: now - 10,
+          readyAtSeconds: now + 900,
+          decidedAtSeconds: now + 1,
+        });
+      } finally {
+        trace.restore();
+      }
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps the other conversations' rows when one is unbound and rebound", () => {
+    const { h, scheme } = setup({ peers: ["30003", "30004"] });
+    try {
+      const early = now + 14 * 60;
+      sweepQqIdleTopics(h.orm, { nowSeconds: early });
+      const readRows = () => new Map(readQqSweepVerdicts(h.orm).map((row) => [row.peerId, row]));
+      const rowFor = (rows: ReturnType<typeof readRows>, peerId: string) => {
+        const row = rows.get(peerId);
+        if (row === undefined) throw new Error(`no verdict row for ${peerId}`);
+        return row;
+      };
+      const before = readRows();
+      expect([...before.keys()].sort()).toEqual(["30003", "30004"]);
+      const trace = verdictStatements(h);
+      try {
+        // Unbinding one group removes exactly its row; the untouched group only refreshes its clock.
+        h.orm.delete(schema.qqBindings).where(eq(schema.qqBindings.peerId, "30004")).run();
+        sweepQqIdleTopics(h.orm, { nowSeconds: early + 1 });
+        const afterUnbind = trace.sql();
+        expect(afterUnbind.filter((s) => s.startsWith("delete"))).toHaveLength(1);
+        expect(afterUnbind.filter((s) => s.startsWith("insert"))).toEqual([]);
+        expect(afterUnbind.filter((s) => s.startsWith('update "qq_sweep_verdicts"'))).toHaveLength(
+          1,
+        );
+        expect([...readRows().keys()]).toEqual(["30003"]);
+        expect(rowFor(readRows(), "30003")).toEqual({
+          ...rowFor(before, "30003"),
+          decidedAtSeconds: early + 1,
+        });
+        // Re-binding the same peer comes back as a fresh verdict, and the other group is still only
+        // clock-refreshed: one conversation leaving cannot disturb its neighbours.
+        h.orm
+          .insert(schema.qqBindings)
+          .values({
+            id: otherBindingId,
+            accountId: "10001",
+            conversationKind: "group",
+            peerId: "30004",
+            agentId,
+            schemeId: scheme.id,
+            paused: 0,
+            shareWebMemory: 0,
+            memoryBatchSize: null,
+            ownerIdentityRevision: null,
+            revision: 1,
+            authorityRevision: 1,
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+          })
+          .run();
+        trace.clear();
+        sweepQqIdleTopics(h.orm, { nowSeconds: early + 2 });
+        const afterRebind = trace.sql();
+        expect(afterRebind.filter((s) => s.startsWith("delete"))).toEqual([]);
+        expect(afterRebind.filter((s) => s.startsWith("insert"))).toHaveLength(1);
+        expect(afterRebind.filter((s) => s.startsWith('update "qq_sweep_verdicts"'))).toHaveLength(
+          1,
+        );
+        expect([...readRows().keys()].sort()).toEqual(["30003", "30004"]);
+        expect(rowFor(readRows(), "30003")).toEqual({
+          ...rowFor(before, "30003"),
+          decidedAtSeconds: early + 2,
+        });
+        expect(rowFor(readRows(), "30004")).toEqual({
+          ...rowFor(before, "30004"),
+          decidedAtSeconds: early + 2,
+        });
+        // A skipped verdict still has to name its reason, including on the fresh-insert path.
+        expect(() =>
+          recordQqSweepVerdicts(h.orm, {
+            nowSeconds: early + 3,
+            verdicts: [
+              {
+                conversationKey: JSON.stringify(["qq", "10001", "group", "30005"]),
+                kind: "group",
+                peerId: "30005",
+                outcome: "skipped",
+                reason: null,
+                observedAtSeconds: null,
+                readyAtSeconds: null,
+              },
+            ],
+          }),
+        ).toThrow(TypeError);
+      } finally {
+        trace.restore();
+      }
     } finally {
       h.close();
     }

@@ -87,6 +87,14 @@ const OverridesShapeBase = z.strictObject({
       media_supplement_window_minutes: Scheme.rhythm.media_supplement_window_minutes.optional(),
       media_frame_count: Scheme.rhythm.media_frame_count.optional(),
       media_max_dimension: Scheme.rhythm.media_max_dimension.optional(),
+      // 0054 的三个批量字段同样逐字段覆盖；带默认值的走 stripDefault，缺席＝跟随基础方案。
+      initiative_batch_target_count: stripDefault(
+        Scheme.rhythm.initiative_batch_target_count,
+      ).optional(),
+      initiative_batch_jitter_count: stripDefault(
+        Scheme.rhythm.initiative_batch_jitter_count,
+      ).optional(),
+      initiative_queue_on_busy: stripDefault(Scheme.rhythm.initiative_queue_on_busy).optional(),
     })
     .optional(),
   context: z
@@ -210,6 +218,41 @@ export function isEmptyQqGroupOverrides(overrides: QqGroupSchemeOverrides): bool
   return Object.keys(overrides).length === 0;
 }
 
+/** continuous 与 chiming_in 的生效组合。双 true 只可能是历史存量，读侧按 chiming_in 优先解释。 */
+export interface QqEffectiveInteractionPair {
+  continuous: boolean;
+  chimingIn: boolean;
+}
+
+/**
+ * 三层组合出 continuous（连续交谈）与 chiming_in（自主接话）的生效对：
+ * 基础方案 → 绑定 nullable 覆盖 → 本群 sparse triggers 差异。nullable 的语义是
+ * 「跟随上一层」，所以逐层覆盖非 null 值。
+ *
+ * 存量双 true（用户决策 4C）在这里成对解释——chiming_in 生效、continuous 不生效，
+ * 不在读取路径报错或静默改写真实配置；新写入的 both-true 由保存边界拒绝。
+ */
+export function resolveQqInteractionPair(input: {
+  scheme: { follow_up: boolean; chiming_in: boolean };
+  binding: { follow_up: boolean | null; chiming_in: boolean | null };
+  group?: { follow_up: boolean | null; chiming_in: boolean | null };
+}): QqEffectiveInteractionPair {
+  const followUp = input.group?.follow_up ?? input.binding.follow_up ?? input.scheme.follow_up;
+  const chimingIn = input.group?.chiming_in ?? input.binding.chiming_in ?? input.scheme.chiming_in;
+  // 旧双真读作"只自主"；两个都关（或都被 null 链解析成关）也是合法状态。
+  return chimingIn && followUp
+    ? { continuous: false, chimingIn: true }
+    : { continuous: followUp, chimingIn };
+}
+
+/** 新写入的 triggers 是否双 true；保存边界用，读取路径不用。 */
+export function isBothTrueInteractionPair(input: {
+  follow_up: boolean | null;
+  chiming_in: boolean | null;
+}): boolean {
+  return input.follow_up === true && input.chiming_in === true;
+}
+
 /** 能力停用是集合：去重并排序，同一集合的两种顺序不算变化、不重复写库。 */
 export function normalizeQqGroupCapabilities(
   capabilities: readonly QqGroupCapability[],
@@ -280,12 +323,21 @@ export function mergeQqGroupScheme(
   base: QqSchemeResponse,
   overrides: QqGroupSchemeOverrides,
 ): QqSchemeResponse {
+  // 生效触发器成对归一：独立 ?? 组合可能得到双 true（存量方案的 raw 形态），
+  // effective 值必须按 chiming_in 优先解释，与 effectiveQqTriggers 同一归一口径。
+  const pair = resolveQqInteractionPair({
+    scheme: { follow_up: base.triggers.follow_up, chiming_in: base.triggers.chiming_in },
+    binding: {
+      follow_up: overrides.triggers?.follow_up ?? null,
+      chiming_in: overrides.triggers?.chiming_in ?? null,
+    },
+  });
   return {
     ...base,
     triggers: {
       direct_reply: overrides.triggers?.direct_reply ?? base.triggers.direct_reply,
-      follow_up: overrides.triggers?.follow_up ?? base.triggers.follow_up,
-      chiming_in: overrides.triggers?.chiming_in ?? base.triggers.chiming_in,
+      follow_up: pair.continuous,
+      chiming_in: pair.chimingIn,
       idle_topic: overrides.triggers?.idle_topic ?? base.triggers.idle_topic,
     },
     rhythm: mergeGroup(base.rhythm, overrides.rhythm),

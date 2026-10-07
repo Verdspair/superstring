@@ -1303,6 +1303,11 @@ export const qqSchemes = sqliteTable(
     // 表的真实顺序一致。值的有效性由共享契约在仓储读取时验证；CHECK 只保证 JSON object。
     messageSettings: text("message_settings"),
     mediaInput: text("media_input"),
+    // 0054：自主接话的批量参数。X 是计数区间 [X−Y, X+Y] 的中心、Y 是半径，所以关系约束只有
+    // Y<X；与 hourly_speech_limit 是两种资源，不借它的 500 上限。queue 默认 ON。
+    initiativeBatchTargetCount: integer("initiative_batch_target_count").notNull().default(15),
+    initiativeBatchJitterCount: integer("initiative_batch_jitter_count").notNull().default(5),
+    initiativeQueueOnBusy: integer("initiative_queue_on_busy").notNull().default(1),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
@@ -1382,6 +1387,14 @@ export const qqSchemes = sqliteTable(
       "qq_scheme_reply_token_budget",
       sql`${t.replyTokenBudget} >= 256 AND ${t.replyTokenBudget} <= 16384`,
     ),
+    // 0054：批量参数只有关系约束（Y<X），X 正整数、Y 非负——与 hourly_speech_limit
+    // 是两种资源，不借它的数值上限。
+    check("qq_scheme_initiative_batch_target_count", sql`${t.initiativeBatchTargetCount} >= 1`),
+    check(
+      "qq_scheme_initiative_batch_jitter_count",
+      sql`${t.initiativeBatchJitterCount} >= 0 AND ${t.initiativeBatchJitterCount} < ${t.initiativeBatchTargetCount}`,
+    ),
+    check("qq_scheme_initiative_queue_on_busy", sql`${t.initiativeQueueOnBusy} IN (0, 1)`),
     // A prompt must be non-blank and bounded. Blank is not "no preference" — it is a model
     // with no instruction, which is why the request layer uses `nonBlankString` too and why
     // clearing a field by accident cannot silently drop a rule. The 16000 ceiling matches the
@@ -1680,6 +1693,9 @@ export const conversations = sqliteTable("conversations", {
   sourceWatermark: integer("source_watermark").notNull().default(0),
   nextSeq: integer("next_seq").notNull().default(1),
   consumedSeq: integer("consumed_seq").notNull().default(0),
+  // 0054：自主接话的持久观察边界。direct 的 consumed_seq 不能代替它——两条路径各自推进，
+  // 互不吞并；条数永远从边界与事件事实派生，不另存冗余 count。
+  chimingInObservedSeq: integer("chiming_in_observed_seq").notNull().default(0),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   closedAt: text("closed_at"),

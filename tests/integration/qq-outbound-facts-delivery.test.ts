@@ -18,6 +18,7 @@ import {
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import type { OneBotSendRequest } from "../../src/server/services/onebot-connection";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -56,7 +57,11 @@ function setup() {
   };
   const commitIntent = (
     intentId: string,
-    parts: ({ kind: "text"; text: string } | { kind: "sticker"; stickerId: string })[],
+    parts: (
+      | { kind: "text"; text: string; mentions?: readonly string[] }
+      | { kind: "sticker"; stickerId: string }
+    )[],
+    targetOverrides: Partial<OutboundTarget> = {},
   ) => {
     new AgentRunRepository(h.db).createRun({
       runId: `run-${intentId}`,
@@ -70,7 +75,7 @@ function setup() {
       runId: `run-${intentId}`,
       conversationId: conversation.id,
       ordinal: 0,
-      target,
+      target: { ...target, ...targetOverrides },
       speechKind: "direct_reply",
       sourceThroughSeq: 0,
       deliverBy: later,
@@ -262,5 +267,150 @@ describe("OutboundDelivery platform part confirmation mapping", () => {
     await delivery.deliver(intent.id);
     expect(sends).toBe(2);
     expect(outboundParts(h.db, intent.id)).toBeNull();
+  });
+});
+
+describe("the durable path encodes explicit mentions only", () => {
+  it("encodes the part's explicit mention ids as at segments and does not auto-at the target participant", async () => {
+    const { h, journal, outbox, commitIntent } = setup();
+    const intent = commitIntent(
+      "intent-mentions-explicit",
+      [{ kind: "text", text: "你们俩看这个", mentions: ["20002", "30003"] }],
+      { participantId: "20001" },
+    );
+    // 新协议部件确实把结构化 mentions 写进 payload（空数组也一样，不能缺键）。
+    expect(JSON.parse(outbox.parts(intent.id)[0]!.payload!)).toEqual({
+      text: "你们俩看这个",
+      mentions: ["20002", "30003"],
+    });
+    const requests: OneBotSendRequest[] = [];
+    const delivery = new OutboundDelivery({
+      orm: h.orm,
+      repository: outbox,
+      journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      now: () => now,
+      port: {
+        async send(request) {
+          requests.push(request);
+          return { kind: "confirmed", messageId: `plat-${requests.length}` };
+        },
+      },
+    });
+    await delivery.deliver(intent.id);
+    // Explicit mentions become real at segments after the body; the intent's participantId never
+    // adds an automatic @ on its own.
+    expect(requests).toEqual([
+      {
+        kind: "group",
+        peerId: "30003",
+        message: [
+          { type: "text", data: { text: "你们俩看这个" } },
+          { type: "at", data: { qq: "20002" } },
+          { type: "at", data: { qq: "30003" } },
+        ],
+      },
+    ]);
+  });
+
+  it("sends a new part's body literally, even when it still spells a CQ at-code", async () => {
+    const { h, journal, outbox, commitIntent } = setup();
+    const intent = commitIntent("intent-cq-literal", [
+      { kind: "text", text: "[CQ:at,qq=20002] 在吗", mentions: [] },
+    ]);
+    expect(JSON.parse(outbox.parts(intent.id)[0]!.payload!)).toEqual({
+      text: "[CQ:at,qq=20002] 在吗",
+      mentions: [],
+    });
+    const requests: OneBotSendRequest[] = [];
+    const delivery = new OutboundDelivery({
+      orm: h.orm,
+      repository: outbox,
+      journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      now: () => now,
+      port: {
+        async send(request) {
+          requests.push(request);
+          return { kind: "confirmed", messageId: `plat-${requests.length}` };
+        },
+      },
+    });
+    await delivery.deliver(intent.id);
+    expect(requests).toEqual([
+      {
+        kind: "group",
+        peerId: "30003",
+        message: [{ type: "text", data: { text: "[CQ:at,qq=20002] 在吗" } }],
+      },
+    ]);
+  });
+
+  it("replays a legacy part (committed without mentions) on its own wire: subject CQ at plus the ordinal-0 recipient", async () => {
+    const { h, journal, outbox, commitIntent } = setup();
+    // 变更前的提交没有 mentions 键：落库保持原样，读回时按当时的编解码还原，不按新规则重解释。
+    const intent = commitIntent(
+      "intent-legacy-wire",
+      [{ kind: "text", text: "[CQ:at,qq=20002] 刚才那句我同意" }],
+      { participantId: "20001" },
+    );
+    expect(JSON.parse(outbox.parts(intent.id)[0]!.payload!)).toEqual({
+      text: "[CQ:at,qq=20002] 刚才那句我同意",
+    });
+    const requests: OneBotSendRequest[] = [];
+    const delivery = new OutboundDelivery({
+      orm: h.orm,
+      repository: outbox,
+      journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      now: () => now,
+      port: {
+        async send(request) {
+          requests.push(request);
+          return { kind: "confirmed", messageId: `plat-${requests.length}` };
+        },
+      },
+    });
+    await delivery.deliver(intent.id);
+    expect(requests).toEqual([
+      {
+        kind: "group",
+        peerId: "30003",
+        message: [
+          { type: "at", data: { qq: "20001" } },
+          { type: "at", data: { qq: "20002" } },
+          { type: "text", data: { text: " 刚才那句我同意" } },
+        ],
+      },
+    ]);
+  });
+
+  it("refuses a non-numeric structured mention id instead of sending a guessed target", async () => {
+    const { h, journal, outbox, commitIntent } = setup();
+    const intent = commitIntent("intent-mention-invalid", [
+      { kind: "text", text: "在的", mentions: ["all"] },
+    ]);
+    const requests: OneBotSendRequest[] = [];
+    const delivery = new OutboundDelivery({
+      orm: h.orm,
+      repository: outbox,
+      journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      now: () => now,
+      port: {
+        async send(request) {
+          requests.push(request);
+          return { kind: "confirmed", messageId: "plat-1" };
+        },
+      },
+    });
+    await delivery.deliver(intent.id);
+    // 报错发生在编码处：没有任何请求发出，部件留给原有恢复语义（unknown），不静默少 @ 一个人。
+    expect(requests).toEqual([]);
+    expect(outbox.get(intent.id)!.parts.map((part) => part.status)).toEqual(["unknown"]);
   });
 });

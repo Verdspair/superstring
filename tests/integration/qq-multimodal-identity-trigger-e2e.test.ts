@@ -36,7 +36,7 @@ import { readQqMemberNames } from "../../src/server/db/qq-member-repository";
 import { DEFAULT_AGENT_ID } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { resolveQqDisplayName } from "../../src/server/services/qq-message-renderer";
-import { decideGenerate, say, scoreOf } from "../harness/model";
+import { batchScore, decideGenerate, say, scoreOf } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 
 afterEach(() => {
@@ -207,11 +207,10 @@ function factNameRow(
   );
 }
 
-/** 发送面真收件人（at 段里的第一个 QQ 号；没有程序收件人时为 null）。 */
+/** 发送面真收件人（结构化协议下 at 段排在正文之后；没有程序收件人时为 null）。 */
 function sendRecipient(h: OneBotHarness): string | null {
-  const first = h.sent[0]?.message?.[0];
-  if (first?.type !== "at") return null;
-  return String(first.data.qq);
+  const at = h.sent[0]?.message.find((segment) => segment.type === "at");
+  return at?.type === "at" ? at.data.qq : null;
 }
 
 const FULL_TIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/;
@@ -518,7 +517,7 @@ it("[S09_1] @他人在原位：平台 at 段按 wire 顺序原位重放，正文
   const h = createOneBotHarness({
     accountId: "90001",
     member: "10001",
-    model: [decideGenerate("20002", "回答", []), say("合成回复正文")],
+    model: [decideGenerate("20002", "回答", [], undefined, ["20002"]), say("合成回复正文")],
   });
   h.receive({
     id: "-751",
@@ -554,11 +553,23 @@ it("[S09_1] @他人在原位：平台 at 段按 wire 顺序原位重放，正文
   const literal = createOneBotHarness({
     accountId: "90001",
     member: "10001",
-    model: [decideGenerate("20002", "回答", []), scoreOf(6), say("接话正文")],
+    initiativeMinScore: 6,
+    // 阶段一批量评分的候选数收窄 X1/Y0：未点名的群消息走真实 chiming_in 唤醒。
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   literal.receive({ id: "-752", speaker: "20002", text: "@20004 在吗" });
   literal.advance(31);
   expect(statusOf(await literal.activate("direct_reply"))).toBe("missing");
+  // 新 chiming_in 形状：阶段一批量评分（phase=next）→ 回复决策 → 生成。
+  literal.model?.push([
+    batchScore([
+      { targetId: "20002", score: 6, intent: "想接话", sourceSeqs: [literal.lastEventSeq] },
+    ]),
+    decideGenerate("20002", "回答", [], undefined, ["20002"]),
+    say("接话正文"),
+  ]);
   const literalAddressing = addressingOf(literal, "-752");
   expect(literalAddressing?.reasons).toEqual([]);
   expect(literalAddressing?.mentionIds).toEqual([]);
@@ -577,11 +588,20 @@ it("[S10_1] @全体成员不得被当作 @助手：只有 all 时 addressing 为
     accountId: "90001",
     member: "10001",
     initiativeMinScore: 6,
-    model: [decideGenerate("20002", "回答", []), scoreOf(6), say("合成回复正文")],
+    // @all-only 消息不进合格接话计数：局部节奏收窄 X1/Y0，让真实 chiming_in 唤醒在本夹具触发。
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   // 只有 @全体，没有 @助手（不给 addressed）。
   h.receive({ id: "-761", speaker: "20002", text: "大家好", mentions: ["all"] });
   h.advance(31);
+  // 新 chiming_in 形状：阶段一批量评分（phase=next）→ 回复决策 → 生成。
+  h.model?.push([
+    batchScore([{ targetId: "20002", score: 6, intent: "想接话", sourceSeqs: [h.lastEventSeq] }]),
+    decideGenerate("20002", "回答", [], undefined, ["20002"]),
+    say("合成回复正文"),
+  ]);
   expect(statusOf(await h.activate("chiming_in"))).toBe("completed");
   await h.deliver();
   expect(phases(h)).toEqual(["next", "next", "generate"]);
@@ -613,7 +633,7 @@ it("[S11_1] @self 真触发，且关闭直接回应后该条零模型调用（@�
   const direct = createOneBotHarness({
     accountId: "90001",
     member: "10001",
-    model: [decideGenerate("20002", "回答", []), say("合成回复正文")],
+    model: [decideGenerate("20002", "回答", [], undefined, ["20002"]), say("合成回复正文")],
   });
   direct.receive({ id: "-771", speaker: "20002", text: "在吗", addressed: true });
   await direct.activate("direct_reply");
@@ -660,7 +680,7 @@ it("[S12_1] 回复他人：真实 addressing 不含 reply_to_agent，原文经�
     member: "10001",
     messageSettings: { reply_mode: "configured_depth", reply_depth: 2 },
     initiativeMinScore: 6,
-    model: [decideGenerate("20003", "回答引用", []), scoreOf(6), say("合成回复正文")],
+    model: [],
   });
   h.receive({ id: "-781", speaker: "20002", text: "根消息原文BODY12", groupCard: "小周" });
   for (let index = 0; index < 26; index++) {
@@ -676,6 +696,16 @@ it("[S12_1] 回复他人：真实 addressing 不含 reply_to_agent，原文经�
     replyTo: "-781",
   });
   h.advance(31);
+  // 新 chiming_in 形状：阶段一批量评分（phase=next，逐候选完整 evaluations）→ 回复决策 → 生成。
+  h.model?.push([
+    // 非分发言人房间：本批冻结候选与参与者不同，按真实 qq_batch_targets 逐人输出全部 evaluations
+    // （本轮冻结集合只有 20003 一个候选，不能固定猜 20002）。
+    batchScore([
+      { targetId: "20003", score: 6, intent: "回复他人想接话", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("20003", "打算接话", [], undefined, ["20003"]),
+    say("合成回复正文"),
+  ]);
   expect(statusOf(await h.activate("chiming_in"))).toBe("completed");
   await h.deliver();
   expect(phases(h)).toEqual(["next", "next", "generate"]);

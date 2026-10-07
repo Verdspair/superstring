@@ -18,6 +18,7 @@ import {
   qqGroupConfigDirty,
   qqGroupConfigEditorFrom,
   qqGroupConfigEffectiveScheme,
+  qqGroupConfigHasInvalidInputs,
 } from "../../src/web/features/qq/group-config-state";
 import { hasUnsavedDrafts } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -55,6 +56,9 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
+    initiative_batch_target_count: 15,
+    initiative_batch_jitter_count: 5,
+    initiative_queue_on_busy: true,
   },
   context: {
     judgement_message_limit: 20,
@@ -1283,5 +1287,117 @@ describe("0052 两组进本群稀疏覆盖（T12）", () => {
     store.getState().patchQqGroupOverride("media_input", "stages.evaluation", undefined);
     row = qqDraftChanges(store.getState()).find((item) => item.id.startsWith("group-config:"));
     expect(row?.changes).toContain("「评估阶段」：本群已自定义 → 跟随方案");
+  });
+
+  describe("QQ 交互流互斥与节奏扩展（0054）", () => {
+    it("连续交谈与自主接话开启互斥：开启 follow_up 自动置 chiming_in 为 false", async () => {
+      ready(fakeClient({ getQqGroupConfig: async () => qqConfig() }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      store.getState().patchQqGroupOverride("triggers", "follow_up", true);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.follow_up).toBe(true);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.chiming_in).toBe(false);
+
+      // 开启 chiming_in 自动置 follow_up 为 false
+      store.getState().patchQqGroupOverride("triggers", "chiming_in", true);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.chiming_in).toBe(true);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.follow_up).toBe(false);
+
+      // 允许两者皆 false
+      store.getState().patchQqGroupOverride("triggers", "chiming_in", false);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.chiming_in).toBe(false);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.follow_up).toBe(false);
+    });
+
+    it("触发器恢复继承成对：取消 follow_up 覆盖同时取消 chiming_in 覆盖", async () => {
+      ready(fakeClient({ getQqGroupConfig: async () => qqConfig() }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      store.getState().patchQqGroupOverride("triggers", "follow_up", true);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers).toEqual({
+        follow_up: true,
+        chiming_in: false,
+      });
+      // 取消继承一个，两项成对恢复继承
+      store.getState().patchQqGroupOverride("triggers", "follow_up", undefined);
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.follow_up).toBeUndefined();
+      expect(store.getState().qqGroupConfigEditor?.overrides.triggers?.chiming_in).toBeUndefined();
+    });
+
+    it("节奏字段 Y < X 校验：浮动消息数大于等于目标消息数时判定为无效输入", async () => {
+      ready(fakeClient({ getQqGroupConfig: async () => qqConfig() }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      store.getState().patchQqGroupOverride("rhythm", "initiative_batch_target_count", "10");
+      store.getState().patchQqGroupOverride("rhythm", "initiative_batch_jitter_count", "10");
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(true);
+
+      // 修复为 Y < X 时恢复为有效输入
+      store.getState().patchQqGroupOverride("rhythm", "initiative_batch_jitter_count", "5");
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(false);
+    });
+
+    it("换方案 keep 时按目标方案节奏校验：原方案 X=10 overrides Y=20，切换到目标方案 X=30 变为合法", async () => {
+      const scheme10 = qqScheme({
+        id: BASE_SCHEME_ID,
+        rhythm: {
+          ...qqScheme().rhythm,
+          initiative_batch_target_count: 10,
+          initiative_batch_jitter_count: 5,
+        },
+      });
+      const scheme30 = qqScheme({
+        id: TARGET_SCHEME_ID,
+        rhythm: {
+          ...qqScheme().rhythm,
+          initiative_batch_target_count: 30,
+          initiative_batch_jitter_count: 5,
+        },
+      });
+      ready(
+        fakeClient({
+          getQqGroupConfig: async () => qqConfig({ base_scheme: scheme10 }),
+          listQqSchemes: async () => [scheme10, scheme30],
+        }),
+      );
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      store.getState().patchQqGroupOverride("rhythm", "initiative_batch_jitter_count", "20");
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(true);
+
+      store.getState().patchQqGroupConfigScheme(TARGET_SCHEME_ID, "keep");
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor, scheme30)).toBe(
+        false,
+      );
+    });
+
+    it("换方案 keep 时按目标方案节奏校验：原方案 X=30 overrides Y=20 合法，切换到目标方案 X=10 时判定为非法", async () => {
+      const scheme30 = qqScheme({
+        id: BASE_SCHEME_ID,
+        rhythm: {
+          ...qqScheme().rhythm,
+          initiative_batch_target_count: 30,
+          initiative_batch_jitter_count: 5,
+        },
+      });
+      const scheme10 = qqScheme({
+        id: TARGET_SCHEME_ID,
+        rhythm: {
+          ...qqScheme().rhythm,
+          initiative_batch_target_count: 10,
+          initiative_batch_jitter_count: 5,
+        },
+      });
+      ready(
+        fakeClient({
+          getQqGroupConfig: async () => qqConfig({ base_scheme: scheme30 }),
+          listQqSchemes: async () => [scheme30, scheme10],
+        }),
+      );
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      store.getState().patchQqGroupOverride("rhythm", "initiative_batch_jitter_count", "20");
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(false);
+
+      store.getState().patchQqGroupConfigScheme(TARGET_SCHEME_ID, "keep");
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor, scheme10)).toBe(
+        true,
+      );
+    });
   });
 });

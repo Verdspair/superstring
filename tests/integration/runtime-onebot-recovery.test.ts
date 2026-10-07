@@ -43,7 +43,9 @@ function setup(kind: "group" | "private") {
     complete: async () =>
       JSON.stringify({
         kind: "final",
-        outputs: [{ kind: "generate", targetId: "20002", instructions: "answer" }],
+        outputs: [
+          { kind: "generate", targetId: "20002", instructions: "answer", mentionIds: ["20002"] },
+        ],
       }),
     async *streamChat() {
       yield "reply";
@@ -174,13 +176,17 @@ it("stale group recovery keeps the original recipient despite newer unrelated me
   const old = await h.staleIntent();
   await h.runtime.botWorker.runCycle();
   expect(h.sends).toHaveLength(1);
+  // 结构化协议：正文在前，@ 段来自模型给的结构化 mention；正文不再补旧的前导空格。
   expect(h.sends[0]).toMatchObject({
+    kind: "group",
+    peerId: "30003",
     message: [
+      { type: "text", data: { text: "reply" } },
       { type: "at", data: { qq: "20002" } },
-      // `@` 与后面那句话之间补一个空格。
-      { type: "text", data: { text: " reply" } },
     ],
   });
+  // 逻辑目标仍是原来的 20002：新来的无关成员输入 20003 不偷走收件人。
+  expect(h.outbox.get(old.id)?.target).toEqual({ peerId: "30003", participantId: "20002" });
   const wake = h.db
     .query("SELECT through_seq FROM wake_signals WHERE dedupe_key=?")
     .get(`stale:${old.id}`) as { through_seq: number };

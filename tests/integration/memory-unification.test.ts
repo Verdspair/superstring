@@ -42,7 +42,7 @@ function setup() {
   updateQqSettings(h.orm, { enabled: true, accountId: "10001", expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
     name: "test",
-    triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
+    triggers: { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: true },
   });
   const result = createQqBinding({
     id: crypto.randomUUID(),

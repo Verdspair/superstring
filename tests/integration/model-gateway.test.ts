@@ -21,19 +21,7 @@ import {
 let server: Server;
 let port = 0;
 
-const saved = {
-  HTTP_PROXY: process.env.HTTP_PROXY,
-  HTTPS_PROXY: process.env.HTTPS_PROXY,
-  NO_PROXY: process.env.NO_PROXY,
-  no_proxy: process.env.no_proxy,
-};
-
 beforeAll(async () => {
-  process.env.HTTP_PROXY = "http://127.0.0.1:1"; // dead: nothing listening
-  process.env.HTTPS_PROXY = "http://127.0.0.1:1";
-  delete process.env.NO_PROXY;
-  delete process.env.no_proxy;
-
   server = http.createServer((req, res) => {
     if (req.url?.startsWith("/v1/models")) {
       res.writeHead(200, { "content-type": "application/json" });
@@ -57,15 +45,45 @@ beforeAll(async () => {
 
 afterAll(() => {
   server?.close();
-  if (saved.HTTP_PROXY === undefined) delete process.env.HTTP_PROXY;
-  else process.env.HTTP_PROXY = saved.HTTP_PROXY;
-  if (saved.HTTPS_PROXY === undefined) delete process.env.HTTPS_PROXY;
-  else process.env.HTTPS_PROXY = saved.HTTPS_PROXY;
-  if (saved.NO_PROXY) process.env.NO_PROXY = saved.NO_PROXY;
-  else delete process.env.NO_PROXY;
-  if (saved.no_proxy) process.env.no_proxy = saved.no_proxy;
-  else delete process.env.no_proxy;
 });
+
+// Bun caches its global fetch dispatcher process-wide: pointing HTTP_PROXY at a
+// dead proxy in this process leaks into unrelated loopback tests that run later
+// in the same `bun test` run, even after the env is restored. So each proxy
+// regression runs its real assertions in a fresh child process that carries the
+// dead proxy in its own env; this process never mutates its proxy env.
+const PROXY_CHILD_FLAG = "MODEL_GATEWAY_PROXY_CHILD";
+
+async function withDeadProxy(name: string, run: () => Promise<void>): Promise<void> {
+  if (process.env[PROXY_CHILD_FLAG] === "1") {
+    await run(); // dead proxy already present in this child's own env
+    return;
+  }
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  env.HTTP_PROXY = "http://127.0.0.1:1"; // dead: nothing listening
+  env.HTTPS_PROXY = "http://127.0.0.1:1";
+  delete env.NO_PROXY;
+  delete env.no_proxy;
+  env[PROXY_CHILD_FLAG] = "1";
+  const child = Bun.spawn([process.execPath, "test", __filename, "-t", name], {
+    cwd: process.cwd(),
+    env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`proxy regression child failed (exit ${exitCode})\n${stdout}\n${stderr}`);
+  }
+}
 
 const client = () =>
   createLmStudioClient({
@@ -76,22 +94,39 @@ const client = () =>
 
 describe("model gateway bypasses HTTP_PROXY for loopback", () => {
   it("listModels reaches the loopback stub despite a dead HTTP_PROXY", async () => {
-    const models = await client().listModels();
-    expect(models).toContain("test/model");
+    await withDeadProxy(
+      "listModels reaches the loopback stub despite a dead HTTP_PROXY",
+      async () => {
+        const models = await client().listModels();
+        expect(models).toContain("test/model");
+      },
+    );
   });
 
   it("streamChat reaches the loopback stub despite a dead HTTP_PROXY", async () => {
-    const chunks: string[] = [];
-    for await (const c of client().streamChat({ messages: [{ role: "user", content: "hi" }] })) {
-      chunks.push(c);
-    }
-    expect(chunks.join("")).toBe("hi");
+    await withDeadProxy(
+      "streamChat reaches the loopback stub despite a dead HTTP_PROXY",
+      async () => {
+        const chunks: string[] = [];
+        for await (const c of client().streamChat({
+          messages: [{ role: "user", content: "hi" }],
+        })) {
+          chunks.push(c);
+        }
+        expect(chunks.join("")).toBe("hi");
+      },
+    );
   });
 
   it("loadedContextCapacity reaches the loopback stub despite a dead HTTP_PROXY", async () => {
     // stub returns 404 for /api/v1/models -> null capacity (must reach stub, not proxy)
-    const cap = await client().loadedContextCapacity("test/model");
-    expect(cap).toBeNull();
+    await withDeadProxy(
+      "loadedContextCapacity reaches the loopback stub despite a dead HTTP_PROXY",
+      async () => {
+        const cap = await client().loadedContextCapacity("test/model");
+        expect(cap).toBeNull();
+      },
+    );
   });
 });
 

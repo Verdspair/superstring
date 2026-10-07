@@ -39,8 +39,13 @@ export interface QqOutboundFactPartState {
   platformMessageId: string;
   payload: string;
   payloadText: string | null;
+  /**
+   * 文本部件 payload 的结构化 mention（新协议）；`null` 表示旧部件，线上段按正文 CQ 与
+   * 程序收件人还原。它进 revision：被改动即视为来源漂移，读取与复验一起拒绝。
+   */
+  payloadMentions: readonly string[] | null;
   finishedAt: string;
-  /** 程序生成的收件人（target.participantId）——只有合法纯数字才算，与发送通路同判。 */
+  /** 程序生成的收件人（target.participantId）——只有旧部件才作为线上 `@` 使用，与发送同判。 */
   targetParticipantId: string | null;
   journalSeq: number;
   journalEventKey: string;
@@ -193,11 +198,20 @@ export function visibleQqOutboundFactPartState(
   const payload = parseJsonObject(row.payload);
   if (!payload) return null;
   let payloadText: string | null = null;
+  let payloadMentions: readonly string[] | null = null;
   if (row.partKind === "text") {
     const text = payload.text;
     if (typeof text !== "string") return null;
     if (entry.text !== text) return null;
     payloadText = text;
+    // 形状即协议：缺失＝旧部件按正文 CQ 还原；存在时必须是合法成员号的数组（空数组合法，
+    // 表示新提交的"不 @ 任何人"）。任何别的形状一律拒绝，不给伪造的线上段留余地。
+    const mentions = payload.mentions;
+    if (mentions !== undefined) {
+      if (!Array.isArray(mentions)) return null;
+      if (mentions.some((id) => typeof id !== "string" || !/^\d+$/.test(id))) return null;
+      payloadMentions = mentions as readonly string[];
+    }
   } else {
     // A sticker proves existence only; the image content is never interpreted here.
     if (typeof payload.stickerId !== "string" || payload.stickerId === "") return null;
@@ -233,6 +247,7 @@ export function visibleQqOutboundFactPartState(
     platformMessageId: row.platformMessageId,
     payload: row.payload,
     payloadText,
+    payloadMentions,
     finishedAt: row.finishedAt,
     // 与发送通路同一口径：ordinal 0 才带程序收件人，且只认合法纯数字
     // （qqTextSegments 的 mention 形状检查）；sticker 部件按实际线上无 at。
@@ -284,6 +299,7 @@ export function qqOutboundFactSourceRevision(
         state.partStatus,
         state.platformMessageId,
         state.payload,
+        state.payloadMentions,
         state.finishedAt,
         state.intentExpiresAt,
         state.factExpiresAt,

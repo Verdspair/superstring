@@ -18,7 +18,10 @@ import {
   type QqSchemeResponse,
   qqEffectiveReplyPrompt,
 } from "../../../shared/contracts/qq";
-import type { QqGroupCapability } from "../../../shared/contracts/qq-group-config";
+import {
+  type QqGroupCapability,
+  resolveQqInteractionPair,
+} from "../../../shared/contracts/qq-group-config";
 import { AlertDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
@@ -738,6 +741,34 @@ function ThreeStateField({
       ? t("capabilities.state.unread")
       : t(baseValue ? "connections.on" : "connections.off");
   const boolText = (flag: boolean) => t(flag ? "connections.on" : "connections.off");
+
+  const schemeTriggers =
+    group === "triggers" && base !== null
+      ? {
+          follow_up: (base as Record<string, unknown>).follow_up === true,
+          chiming_in: (base as Record<string, unknown>).chiming_in === true,
+        }
+      : editor.source.base_scheme.triggers;
+  const effectivePair =
+    group === "triggers"
+      ? resolveQqInteractionPair({
+          scheme: schemeTriggers,
+          binding: editor.source.binding.triggers,
+          group: editor.overrides.triggers
+            ? {
+                follow_up: editor.overrides.triggers.follow_up ?? null,
+                chiming_in: editor.overrides.triggers.chiming_in ?? null,
+              }
+            : undefined,
+        })
+      : null;
+  const isSuppressedFollowUp =
+    group === "triggers" &&
+    name === "follow_up" &&
+    effectivePair?.chimingIn === true &&
+    effectivePair?.continuous === false &&
+    (custom ? value === true : baseValue === true);
+
   return (
     <Field label={labelKey} info={infoKey}>
       <NativeSelect
@@ -753,12 +784,14 @@ function ThreeStateField({
         <option value="off">{t("connections.off")}</option>
       </NativeSelect>
       <p className="mt-1.5 text-xs text-muted-foreground">
-        {custom
-          ? t("schemes.qq.groupConfig.customValue", {
-              "0": baseText,
-              "1": boolText(value === true),
-            })
-          : t("schemes.qq.groupConfig.followsBase", { "0": baseText })}
+        {isSuppressedFollowUp
+          ? t("connections.legacyChimingInPrecedenceNotice")
+          : custom
+            ? t("schemes.qq.groupConfig.customValue", {
+                "0": baseText,
+                "1": boolText(value === true),
+              })
+            : t("schemes.qq.groupConfig.followsBase", { "0": baseText })}
       </p>
     </Field>
   );
@@ -1492,16 +1525,18 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
     () => (visibleEditor ? hasOutOfRangeOverride(visibleEditor) : false),
     [visibleEditor],
   );
-  const invalid = !!visibleEditor && (qqGroupConfigHasInvalidInputs(visibleEditor) || rangeInvalid);
-  const dirty = !!visibleEditor && qqGroupConfigDirty(visibleEditor);
-  // 绑定身份已改：旧草稿没有合法的保存对象，保存一律禁用，只能放弃后显式重开。
-  const conflicted = !!visibleEditor?.identityConflict;
-  const saving = state.qqGroupConfigSaving;
   // 目标基线＝待切换方案（在已读列表里）否则打开时的基线；目标没读到就不假装知道基础值。
   const pendingTarget =
     visibleEditor && visibleEditor.schemeId !== undefined
       ? (state.qqSchemes.find((row) => row.id === visibleEditor.schemeId) ?? null)
       : undefined;
+  const invalid =
+    !!visibleEditor &&
+    (qqGroupConfigHasInvalidInputs(visibleEditor, pendingTarget ?? undefined) || rangeInvalid);
+  const dirty = !!visibleEditor && qqGroupConfigDirty(visibleEditor);
+  // 绑定身份已改：旧草稿没有合法的保存对象，保存一律禁用，只能放弃后显式重开。
+  const conflicted = !!visibleEditor?.identityConflict;
+  const saving = state.qqGroupConfigSaving;
   const baseScheme = visibleEditor
     ? pendingTarget === undefined
       ? visibleEditor.source.base_scheme
@@ -1738,6 +1773,18 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                           infoKey={info}
                         />
                       ))}
+                    {visible("rhythm", "initiative_queue_on_busy") && (
+                      <div className="sm:col-span-2">
+                        <ThreeStateField
+                          editor={visibleEditor}
+                          base={baseBag("rhythm")}
+                          group="rhythm"
+                          name="initiative_queue_on_busy"
+                          labelKey="connections.initiativeQueueOnBusy"
+                          infoKey="connections.initiativeQueueOnBusyHint"
+                        />
+                      </div>
+                    )}
                   </div>
                 </SchemeFieldCard>
                 <SchemeFieldCard

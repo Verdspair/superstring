@@ -319,6 +319,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0053_qq_group_names.sql",
     ),
+    qqInitiativeBatchesMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0054_qq_initiative_batches.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

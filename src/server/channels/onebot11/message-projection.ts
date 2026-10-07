@@ -36,21 +36,28 @@ export {
 
 /**
  * The actual wire segments for one confirmed text part, rebuilt with the same pure
- * encoder the send path used (program recipient on ordinal 0 + real CQ-at conversion);
- * the mapping to fact parts is mechanical: text→text, at→mention.
+ * encoder the send path used; the mapping to fact parts is mechanical: text→text,
+ * at→mention. The encoder itself decides between the structured protocol (payload
+ * mentions, no automatic recipient) and the legacy wire (body CQ + program recipient on
+ * ordinal 0), so a historical part is never re-interpreted under the new rules.
  */
 function outboundWireParts(state: {
   partKind: string;
   payloadText: string | null;
+  payloadMentions: readonly string[] | null;
   partOrdinal: number;
   targetParticipantId: string | null;
 }): QqMessagePart[] {
   if (state.partKind !== "text" || state.payloadText === null) {
     return [{ kind: "unavailable", type: "sticker" }];
   }
-  const mention = state.partOrdinal === 0 ? (state.targetParticipantId ?? null) : null;
+  const legacyRecipient = state.partOrdinal === 0 ? (state.targetParticipantId ?? null) : null;
+  const payload =
+    state.payloadMentions === null
+      ? { text: state.payloadText }
+      : { text: state.payloadText, mentions: state.payloadMentions };
   const parts: QqMessagePart[] = [];
-  for (const segment of qqTextSegments(state.payloadText, mention)) {
+  for (const segment of qqTextSegments(payload, legacyRecipient)) {
     if (segment.type === "text") parts.push({ kind: "text", text: segment.data.text });
     else if (segment.type === "at") parts.push({ kind: "mention", qq: segment.data.qq });
   }

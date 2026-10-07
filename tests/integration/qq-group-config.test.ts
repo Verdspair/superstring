@@ -13,6 +13,7 @@ import {
   parseQqGroupAgentConfigRow,
   readQqBinding,
   readQqGroupConfigRow,
+  saveQqBinding,
 } from "../../src/server/db/qq-binding-repository";
 import {
   readEffectiveQqScheme,
@@ -31,7 +32,11 @@ import { DEFAULT_AGENT_ID, ensureDefaults, type Orm } from "../../src/server/db/
 import * as schema from "../../src/server/db/schema";
 import { BUSINESS_MIGRATION_FILES, ensureBusinessSchema } from "../../src/server/db/schema-gate";
 import { createAgent } from "../../src/server/services/agent-service";
-import { createQqBinding } from "../../src/server/services/qq-binding-contract";
+import {
+  createQqBinding,
+  type QqBinding,
+  updateQqBinding,
+} from "../../src/server/services/qq-binding-contract";
 import {
   type QqGroupCapability,
   QqGroupCapabilitySchema,
@@ -665,7 +670,7 @@ describe("0051 迁移：老开关列搬进记录且仍是布尔形态", () => {
         PRAGMA user_version=50;
       `);
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 53 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
 
       const orm = toOrmHandle(db).orm;
       const row = readQqGroupConfigRow(orm, "grp-1", "agent-1");
@@ -1079,5 +1084,93 @@ describe("本群覆盖 0052 的两组设置（T12）", () => {
       time_display: "hybrid",
       timezone: "Asia/Shanghai",
     });
+  });
+});
+
+describe("模式互斥：legacy 双 true 绑定的保存边界", () => {
+  it("仅改 idle_topic 的无关保存保留 raw 双 true；显式 pair 双 true 写拒绝；非 pair 变更放行", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const file of BUSINESS_MIGRATION_FILES.slice(0, 50)) {
+        db.exec(
+          readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
+        );
+      }
+      const SCHEME = "20000000-0000-4000-8000-000000000054";
+      const BINDING = "30000000-0000-4000-8000-000000000054";
+      const AGENT = "10000000-0000-4000-8000-000000000054";
+      db.exec(`
+        INSERT INTO qq_schemes (id, name, revision, created_at, updated_at)
+          VALUES ('${SCHEME}', '存量方案', 1, 'then', 'then');
+        INSERT INTO qq_bindings
+          (id, account_id, conversation_kind, peer_id, agent_id, scheme_id,
+           trigger_direct_reply, trigger_follow_up, trigger_chiming_in, trigger_idle_topic,
+           revision, authority_revision, created_at, updated_at)
+          VALUES ('${BINDING}', '10001', 'group', '30001', '${AGENT}', '${SCHEME}',
+            1, 1, 1, 0, 1, 1, 'then', 'then');
+        PRAGMA user_version=50;
+      `);
+      ensureBusinessSchema(db);
+      const orm = toOrmHandle(db).orm;
+      const before = readQqBinding(orm, BINDING);
+      expect(before).not.toBeNull();
+      const legacy = required(before);
+      // raw 双 true 存量。
+      expect(legacy.triggers.follow_up).toBe(true);
+      expect(legacy.triggers.chiming_in).toBe(true);
+
+      // 真实保存入口 = 合同 updateQqBinding + 仓储 saveQqBinding。
+      const save = (current: QqBinding, patch: Record<string, unknown>) => {
+        const result = updateQqBinding(current, patch, current.revision);
+        if (result.kind !== "saved") throw new Error("unexpected conflict");
+        saveQqBinding(orm, { binding: result.binding, expectedRevision: current.revision });
+        return required(readQqBinding(orm, BINDING));
+      };
+
+      // 存量行上改 idle/direct 必须携带整组 triggers（whole-group travels），而整组里
+      // 的 pair 是 raw 双 true → 显式补丁携带双 true 被拒；这类行只能先经 UI 解析 pair
+      // 或不带 triggers 补丁做无关保存（pause）。这是父裁定的显式重写即拒的直接推论。
+      expect(() => save(legacy, { triggers: { ...legacy.triggers, idle_topic: true } })).toThrow(
+        "连续交谈与自主接话互斥",
+      );
+
+      // 不带 triggers 补丁的无关保存（paused 翻转）→ 放行，raw 列保持。
+      const afterPause = save(legacy, { paused: !legacy.paused });
+      expect(afterPause.triggers.follow_up).toBe(true);
+      expect(afterPause.triggers.chiming_in).toBe(true);
+      expect(afterPause.paused).toBe(!legacy.paused);
+
+      // 先合法退出双 true：显式关闭 chiming_in（开启连续、关闭自主）。
+      const afterOff = save(afterPause, {
+        triggers: { ...afterPause.triggers, chiming_in: false },
+      });
+      expect(afterOff.triggers.chiming_in).toBe(false);
+      expect(afterOff.triggers.follow_up).toBe(true);
+
+      // 再显式写回双 true（新写引入冲突）→ 拒绝。
+      expect(() =>
+        save(afterOff, {
+          triggers: { ...afterOff.triggers, chiming_in: true },
+        }),
+      ).toThrow("连续交谈与自主接话互斥");
+
+      // 存量双 true 行上显式重写相同双 true 值：同样是显式 pair 补丁 → 拒绝。
+      const afterRewrite = save(afterOff, {
+        triggers: { ...afterOff.triggers, chiming_in: true, follow_up: false },
+      });
+      expect(() =>
+        save(
+          {
+            ...afterRewrite,
+            triggers: { ...afterRewrite.triggers, chiming_in: true, follow_up: true },
+          },
+          {
+            triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: false },
+          },
+        ),
+      ).toThrow("连续交谈与自主接话互斥");
+    } finally {
+      db.close();
+    }
   });
 });

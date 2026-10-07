@@ -60,6 +60,8 @@ export const ContextMessageSchema = z
     /** How many of this message's media are still unread. Must not be claimed as understood. */
     mediaUnread: z.number().int().nonnegative(),
     sources: z.array(SourceRefSchema).optional(),
+    /** Server-only 载体键（宿主视图簿记）：把选中消息对回 journal 载体用，绝不渲染、不是模型可引用来源。 */
+    carrierEventKey: z.string().min(1).optional(),
   })
   .superRefine((message, ctx) => {
     // The same rule the observation tables enforce: a member is identified by a number, an

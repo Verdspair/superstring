@@ -6,6 +6,11 @@ import { z } from "zod";
 
 const outputBase = {
   targetId: z.string().min(1),
+  /** 要显式 @ 的成员 ID；正文里的 CQ 码不参与编码，只作文字展示。 */
+  mentionIds: z
+    .array(z.string().min(1))
+    .optional()
+    .describe("@ member IDs; the host encodes them as `at` segments."),
   stickerIds: z
     .array(z.string().min(1))
     .nullable()
@@ -14,15 +19,23 @@ const outputBase = {
       "Both output kinds: []=no sticker; [id]=one sticker ID disclosed by this run's sticker.search (or an ID of this run's pending plan). A sticker host with candidates requires this choice; omit only where the channel has no sticker decision to make.",
     ),
 };
+/** 正文已就绪的草稿；终局输出与 `speech.reply` 参数共用这一个形状。 */
+export const InlineOutputDraftSchema = z.strictObject({
+  ...outputBase,
+  kind: z.literal("inline"),
+  text: z.string(),
+});
 export const OutputDraftSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    ...outputBase,
-    kind: z.literal("inline"),
-    text: z.string(),
-  }),
+  InlineOutputDraftSchema,
   z.strictObject({ ...outputBase, kind: z.literal("generate"), instructions: z.string() }),
 ]);
+export type InlineOutputDraft = z.infer<typeof InlineOutputDraftSchema>;
 export type OutputDraft = z.infer<typeof OutputDraftSchema>;
+/** `speech.reply` 的参数：每项对应一个逻辑目标，允许多项。 */
+export const SpeechReplyArgumentsSchema = z.strictObject({
+  outputs: z.array(InlineOutputDraftSchema).min(1),
+});
+export type SpeechReplyArguments = z.infer<typeof SpeechReplyArgumentsSchema>;
 /**
  * 一次工具调用。`effect` 由**动作自己**声明（不写在协议里）：只读的可以并行，有副作用的必须串行
  * 且按模型给的顺序——调度只认这一处声明，不在执行器里按名字硬编码。

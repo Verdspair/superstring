@@ -208,6 +208,50 @@ export class WakeRepository {
       ) as Row | null;
     return row ? map(row) : null;
   }
+  /**
+   * All claimable pending wakes at `at` in peek()'s order: ready, open onebot11
+   * conversations, none held in the conversation. The caller (scheduler) walks the
+   * list and claims the first candidate its resource gates allow, so one busy
+   * service does not stop the queue behind it. No paging: the pending set of
+   * claimable wakes is small and bounded by real conversations.
+   */
+  pendingCandidates(input: { at: string }): WakeSignal[] {
+    const rows = this.db
+      .query(
+        `SELECT w.* FROM wake_signals w JOIN conversations c ON c.id=w.conversation_id WHERE w.status='pending' AND w.ready_at<=? AND c.closed_at IS NULL AND c.channel='onebot11' AND NOT EXISTS(SELECT 1 FROM wake_signals held WHERE held.conversation_id=w.conversation_id AND held.status='leased') ORDER BY w.priority DESC,w.created_at DESC,w.conversation_id,w.through_seq DESC,w.id DESC`,
+      )
+      .all(input.at) as Row[];
+    return rows.map(map);
+  }
+
+  /**
+   * Settle an unclaimed pending opportunity to the existing no_output terminal with a
+   * cause-specific reason (e.g. the busy upper bound skipped the batch). No lease and
+   * no attempt is involved — the wake was never dispatched to a model. `throughSeq`
+   * must not fall behind the wake's own source bound. Runs inside the caller's
+   * settlement transaction; returns false when the wake is no longer pending.
+   */
+  skipPending(id: string, input: { at: string; throughSeq: number; errorCode: string }): boolean {
+    if (!Number.isSafeInteger(input.throughSeq) || input.throughSeq < 0) {
+      throw new Error("CONVERSATION_SEQUENCE_INVALID");
+    }
+    const r = this.get(id);
+    if (!r || r.status !== "pending") return false;
+    if (input.throughSeq < r.throughSeq) throw new Error("CONVERSATION_SEQUENCE_INVALID");
+    // The settled row carries the boundary actually skipped, not just the coalesced
+    // scope at enqueue time, so source-order readers never read it as "older sources
+    // only". The caller (D1) re-selects the current pending row inside its own
+    // settlement transaction, so the two cannot race.
+    const settled = this.db
+      .query(
+        "UPDATE wake_signals SET status='no_output',error_code=?,completed_at=?,through_seq=? WHERE id=? AND status='pending'",
+      )
+      .run(input.errorCode, input.at, input.throughSeq, id).changes;
+    if (settled === 0) return false;
+    publishConversationChange(this.db, r.conversationId);
+    return true;
+  }
+
   claim(input: {
     at: string;
     leaseMs: number;

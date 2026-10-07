@@ -349,7 +349,11 @@ async function startProvider(options: { initial: ProviderAnswer }): Promise<Prov
       const faultHitsPhase =
         chatAnswer.status >= 400 &&
         chatAnswer.faultPhase === "evaluation" &&
-        !(declaredProps.includes("scoreResult") || declaredProps.includes("score"));
+        !(
+          declaredProps.includes("scoreResult") ||
+          declaredProps.includes("score") ||
+          declaredProps.includes("evaluations")
+        );
       if (faultHitsPhase) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
@@ -457,7 +461,8 @@ function declaredOutputProps(body: Record<string, unknown>): string[] {
 function requestPhase(body: Record<string, unknown>, model: string): WireRequest["phase"] {
   if (model === VISION_MODEL) return "vision";
   const props = declaredOutputProps(body);
-  if (props.includes("scoreResult") || props.includes("score")) return "evaluation";
+  if (props.includes("scoreResult") || props.includes("score") || props.includes("evaluations"))
+    return "evaluation";
   if (props.includes("text")) return "generation";
   if (
     props.includes("decision") ||
@@ -475,6 +480,45 @@ function requestPhase(body: Record<string, unknown>, model: string): WireRequest
  */
 function providerAnswer(body: Record<string, unknown>, decisions: number): string {
   const props = declaredOutputProps(body);
+  if (props.includes("evaluations")) {
+    // 批评分协议：目标与可引用 seq 真正从请求里的 qq_batch_targets data dump 读回（不猜）。
+    const targets: Array<{ targetId: string; sourceSeqs: number[] }> = [];
+    const messages = (body.messages as { role?: string; content?: unknown }[]) ?? [];
+    for (const message of messages) {
+      const content = message.content;
+      const texts =
+        typeof content === "string"
+          ? [content]
+          : Array.isArray(content)
+            ? content.map((part) =>
+                part !== null && typeof part === "object" && "text" in part
+                  ? String((part as { text: unknown }).text)
+                  : "",
+              )
+            : [];
+      for (const text of texts) {
+        const trimmed = text.trim();
+        if (!trimmed.startsWith("{") || !trimmed.includes('"qq_batch_targets"')) continue;
+        try {
+          const dump = JSON.parse(trimmed) as {
+            targets?: Array<{ targetId: string; sourceSeqs: number[] }>;
+          };
+          for (const target of dump.targets ?? [])
+            targets.push({ targetId: target.targetId, sourceSeqs: [...target.sourceSeqs] });
+        } catch {
+          // 解不开的 dump 不伪造：宿主按目标缺失协议报错留现场。
+        }
+      }
+    }
+    return JSON.stringify({
+      evaluations: targets.map((target) => ({
+        targetId: target.targetId,
+        score: 6,
+        intent: "想看看这张图",
+        sourceSeqs: target.sourceSeqs,
+      })),
+    });
+  }
   if (props.includes("scoreResult"))
     return JSON.stringify({ scoreResult: { score: 6 }, media: [] });
   if (props.includes("text")) return JSON.stringify({ text: "一张合成的灰蓝色方块图", media: [] });
@@ -644,6 +688,9 @@ function createFaultHarness(input: {
 }) {
   return createOneBotHarness({
     conversationModel: "reply-model",
+    // 自主小批 X1Y0（方案同配置入口）：本文件只测媒体故障面，收窄计数门槛让 wake 触发。
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
     model: realPort(input.stub, {
       ...(input.visionDeclared === undefined ? {} : { vision: input.visionDeclared }),
       ...(input.providerRevision === undefined ? {} : { providerRevision: input.providerRevision }),

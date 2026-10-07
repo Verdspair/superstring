@@ -31,11 +31,16 @@ const mediaModeSpans = (h: OneBotHarness): Record<string, unknown>[] =>
 const hasImagePart = (request: ModelRequest): boolean =>
   request.messages.some((message) => message.content.some((part) => part.kind === "image"));
 
-type SchemaKind = "score" | "decision-envelope" | "decision" | "text-envelope" | "other";
+type SchemaKind = "batch" | "score" | "decision-envelope" | "decision" | "text-envelope" | "other";
+
+const BATCH_EVALUATION = JSON.stringify({
+  evaluations: [{ targetId: "10001", score: 6, intent: "看图说话", sourceSeqs: [] }],
+});
 
 const classifySchema = (request: ModelRequest): SchemaKind => {
   const schema = (request.responseSchema ?? {}) as Record<string, unknown>;
   const props = (schema.properties ?? {}) as Record<string, unknown>;
+  if (props.evaluations !== undefined) return "batch";
   if (props.score !== undefined && schema.oneOf === undefined) return "score";
   if (props.scoreResult !== undefined) return "score";
   if (schema.oneOf !== undefined) {
@@ -71,6 +76,8 @@ const fallbackHarness = (
     mediaInput: { mode: "native" },
     imageBytes: { "focus-image": png() },
     judgementModelName: "judge-model",
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
     model: {
       complete,
       async *streamText() {
@@ -96,7 +103,7 @@ it("real MODEL_IMAGE_UNSUPPORTED falls back to description once and the mode met
       request.onModelResolved?.(resolved);
       request.assertPreparedCurrent?.({ model: resolved });
       const kind = classifySchema(request);
-      if (kind === "score") {
+      if (kind === "batch") {
         scoreAttempts += 1;
         if (scoreAttempts === 1) {
           // 第一次评分材料带原生图 part → 网关能力闸精确拒绝（零 HTTP）。
@@ -105,7 +112,7 @@ it("real MODEL_IMAGE_UNSUPPORTED falls back to description once and the mode met
         }
         // fallback 后重建的评分材料：不再有任何 image part（description notes 取代）。
         expect(hasImagePart(request)).toBe(false);
-        return JSON.stringify({ score: 6 });
+        return BATCH_EVALUATION;
       }
       // 决策调用：unknown 图在位时走 envelope schema（{decision, media}）；text-only 决策走
       // 原 schema；生成相 unknown 图走一次 {text, media} structured complete。各按本体契约返回。
@@ -181,7 +188,7 @@ it("a non-unsupported model failure never degrades to description", async () => 
   const { harness: h, descriptionReads } = fallbackHarness(
     async (request) => {
       const kind = classifySchema(request);
-      if (kind === "score") {
+      if (kind === "batch") {
         // 一般故障同样发生在带图评分材料上，但绝不触发 description 降级。
         expect(hasImagePart(request)).toBe(true);
         throw new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", "本地模型服务暂不可用");
@@ -233,6 +240,11 @@ it("decision-phase first HTTP unsupported rejects then description retry supplie
       const resolved = request.model ?? "judge-model";
       request.onModelResolved?.(resolved);
       const kind = classifySchema(request);
+      if (kind === "batch") {
+        // 阶段一评分＝current batch schema 的那一次判断调用（旧 speech score 叶子已移除）。
+        scored += 1;
+        return BATCH_EVALUATION;
+      }
       if (kind === "decision" || kind === "decision-envelope") resolvedDecisionModel = resolved;
       if (kind === "decision" || kind === "decision-envelope") {
         decisionAttempts.push({ hasImage: hasImagePart(request) });
@@ -309,6 +321,7 @@ it("generation-phase first HTTP unsupported rejects then description retry suppl
       const resolved = request.model ?? "judge-model";
       request.onModelResolved?.(resolved);
       const kind = classifySchema(request);
+      if (kind === "batch") return BATCH_EVALUATION;
       if (kind === "text-envelope") resolvedGenerationModel = resolved;
       if (kind === "text-envelope") {
         generateAttempts.push({ hasImage: hasImagePart(request) });

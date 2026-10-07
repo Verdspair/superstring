@@ -37,7 +37,7 @@ import { readQqMediaTaskOnce } from "../../src/server/services/qq-media-reader";
 import { createQqMediaSourceRef } from "../../src/server/services/qq-media-sources";
 import type { QqConversationScope } from "../../src/shared/contracts/qq-message";
 import type { QqConversationKind } from "../../src/shared/contracts/qq-storage";
-import { decideGenerate, say, scoreOf } from "../harness/model";
+import { batchScore, decideGenerate, say } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 
 afterEach(() => {
@@ -462,7 +462,9 @@ it("[S25] a native ordinary image flows through all three real phases with sourc
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "l25-image": bytes },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-341",
@@ -471,10 +473,17 @@ it("[S25] a native ordinary image flows through all three real phases with sourc
     groupCard: "阿林",
     image: "l25-image",
   });
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想回答图片问题", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", []),
+    say("合成回复正文"),
+  ]);
   h.advance(31);
   await h.activate("chiming_in");
   await h.deliver();
-  // 三相各一次：决策/评分/生成——不新增固定分类调用。
+  // 批评分/回复决策/生成各一次——不新增固定分类调用。
   expect(h.model?.calls.length).toBe(3);
   expect(phases(h)).toEqual(["next", "next", "generate"]);
   // 三相原生输入都携带同一张图（来源元数据）。
@@ -500,14 +509,19 @@ it("[S27] an unknown image is classified in the same call via the score envelope
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "l27-image": png() },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", [])],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({ id: "-361", speaker: "10001", text: "这张图片里有什么？", image: "l27-image" });
   h.advance(31);
-  // 评分相 unknown 图 → 宿主换 envelope；模型分类指向真实发送 mediaId。
+  // unknown 图随批评分相真实发出；模型分类经回复决策信封（当前相真实 schema）指向真实发送 mediaId。
   const mediaId = (h.db.query("SELECT id FROM qq_media_notes LIMIT 1").get() as { id: string }).id;
   h.model?.push([
-    scoreOf(6, undefined, [{ mediaId, category: "expression" }]),
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想回答图片问题", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", [], [{ mediaId, category: "expression" }]),
     say("合成回复正文"),
   ]);
   await h.activate("chiming_in");
@@ -519,8 +533,8 @@ it("[S27] an unknown image is classified in the same call via the score envelope
     .all() as { model_name: string; category: string; evidence: string }[];
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ category: "expression", evidence: "model" });
-  // 主动路径槽键 = 评分相 resolved（判断模型 judge-model），不是 requested 串。
-  expect(rows[0]?.model_name).toBe("judge-model");
+  // 分类槽键 = 当前相（回复决策信封）真实 resolved（会话模型 reply-model），不是 requested 串。
+  expect(rows[0]?.model_name).toBe("reply-model");
   expect(h.sent).toHaveLength(1);
 });
 
@@ -533,12 +547,20 @@ it("[S34] no independent classify calls: an unknown image adds zero extra model 
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "l34-image": png() },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", [])],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({ id: "-451", speaker: "10001", text: "这张图片里有什么？", image: "l34-image" });
   h.advance(31);
   const mediaId = (h.db.query("SELECT id FROM qq_media_notes LIMIT 1").get() as { id: string }).id;
-  h.model?.push([scoreOf(6, undefined, [{ mediaId, category: "ordinary" }]), say("合成回复正文")]);
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想回答图片问题", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", [], [{ mediaId, category: "ordinary" }]),
+    say("合成回复正文"),
+  ]);
   await h.activate("chiming_in");
   await h.deliver();
   // 决策/评分/生成恰三次：同次分类不新增第 4 次固定分类调用（call counter 强断言）。
@@ -556,19 +578,30 @@ it("[S35] disabling one media stage affects only that phase; the others keep the
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native", stages: { evaluation: false } },
     imageBytes: { "l35-image": png() },
-    model: [decideGenerate("10001", "回答", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({ id: "-461", speaker: "10001", text: "这张图片里有什么？", image: "l35-image" });
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想回答图片问题", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "回答", []),
+    say("合成回复正文"),
+  ]);
   h.advance(31);
   await h.activate("chiming_in");
   await h.deliver();
   expect(h.model?.calls.length).toBe(3);
-  // 评分相无图；决策与生成两相照常带图（只关本阶段）。
-  const scoreCall = h.model?.receivedMessages[1];
+  // 批评分相无图；回复决策与生成两相照常带图（只关本阶段）。
+  const evaluationCall = h.model?.receivedMessages[0];
   expect(
-    scoreCall?.messages.some((message) => message.content.some((part) => part.kind === "image")),
+    evaluationCall?.messages.some((message) =>
+      message.content.some((part) => part.kind === "image"),
+    ),
   ).toBe(false);
-  expect(imageParts(h, 0)).toBe(1);
+  expect(imageParts(h, 1)).toBe(1);
   expect(imageParts(h, 2)).toBe(1);
   expect(h.sent).toHaveLength(1);
 });
@@ -592,13 +625,21 @@ it("[S48_S49] direct reply path has zero score calls; initiative score 5 stays s
     accountId: "90001",
     member: "10001",
     initiativeMinScore: 6,
-    model: [decideGenerate("10001", "打算说点什么", []), scoreOf(5)],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   quiet.receive({ id: "-162", speaker: "10001", text: "随便聊聊" });
+  quiet.model?.push([
+    batchScore([
+      { targetId: "10001", score: 5, intent: "随便聊聊", sourceSeqs: [quiet.lastEventSeq] },
+    ]),
+  ]);
   quiet.advance(31);
   const quietResult = await quiet.activate("chiming_in");
   await quiet.deliver();
-  expect(phases(quiet)).toEqual(["next", "next"]);
+  // 恰一次批评分调用；许可被拒后不得再进回复/生成。
+  expect(phases(quiet)).toEqual(["next"]);
   expect(statusOf(quietResult)).toBe("no_output");
   expect(quiet.sent).toHaveLength(0);
   expect(quiet.outbox.list({ conversationId: quiet.conversationId })).toHaveLength(0);
@@ -609,9 +650,18 @@ it("[S48_S49] direct reply path has zero score calls; initiative score 5 stays s
     accountId: "90001",
     member: "10001",
     initiativeMinScore: 6,
-    model: [decideGenerate("10001", "打算说点什么", []), scoreOf(6), say("主动回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   speak.receive({ id: "-163", speaker: "10001", text: "有人知道这个吗" });
+  speak.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想接话回答", sourceSeqs: [speak.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "打算说点什么", []),
+    say("主动回复正文"),
+  ]);
   speak.advance(31);
   const speakResult = await speak.activate("chiming_in");
   await speak.deliver();

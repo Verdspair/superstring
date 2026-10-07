@@ -1,8 +1,14 @@
 import { expect, it } from "bun:test";
+import { z } from "zod";
+import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
 import {
   AGENT_DECISION_JSON_SCHEMA,
+  type InlineOutputDraft,
+  InlineOutputDraftSchema,
   parseAgentDecision,
   readJsonBody,
+  type SpeechReplyArguments,
+  SpeechReplyArgumentsSchema,
 } from "../../src/shared/contracts/agent-output";
 
 type JsonSchema = {
@@ -123,4 +129,53 @@ it("requests an explicit sticker decision from structured providers while accept
       expect(decision.kind).toBe("final");
     }
   }
+});
+
+it("shares one inline draft shape between final outputs and the speech.reply terminal action", () => {
+  // final 输出与 speech.reply 参数共用同一个 inline 草稿 schema。
+  const draft: InlineOutputDraft = {
+    kind: "inline",
+    targetId: "allowed",
+    text: "back",
+    mentionIds: ["10001"],
+    stickerIds: [],
+  };
+  expect(InlineOutputDraftSchema.parse(draft)).toEqual(draft);
+  // mentionIds 可选；给了就是非空字符串数组。
+  expect(InlineOutputDraftSchema.parse({ kind: "inline", targetId: "t", text: "x" })).toEqual({
+    kind: "inline",
+    targetId: "t",
+    text: "x",
+  });
+  expect(() =>
+    InlineOutputDraftSchema.parse({ kind: "inline", targetId: "t", text: "x", mentionIds: [""] }),
+  ).toThrow();
+  const decision = parseAgentDecision(JSON.stringify({ kind: "final", outputs: [draft] }));
+  expect(decision).toEqual({ kind: "final", outputs: [draft] });
+});
+
+it("speech.reply carries one or more inline drafts through the same schema", () => {
+  // 多项 outputs：每个逻辑目标一项，可覆盖多家。
+  const batch: SpeechReplyArguments = {
+    outputs: [
+      { kind: "inline", targetId: "t1", text: "a" },
+      { kind: "inline", targetId: "t2", text: "b", mentionIds: ["10001"], stickerIds: null },
+    ],
+  };
+  expect(SpeechReplyArgumentsSchema.parse(batch)).toEqual(batch);
+  // 至少一条；targetId/text 必填。
+  expect(() => SpeechReplyArgumentsSchema.parse({ outputs: [] })).toThrow();
+  expect(() =>
+    SpeechReplyArgumentsSchema.parse({ outputs: [{ kind: "inline", text: "a" }] }),
+  ).toThrow();
+  // 只接受 inline（正文已就绪）。
+  expect(() =>
+    SpeechReplyArgumentsSchema.parse({
+      outputs: [{ kind: "generate", targetId: "t", instructions: "i" }],
+    }),
+  ).toThrow();
+  // parameters 与 schema 同源；终结动作按写处理。
+  expect(SPEECH_REPLY_DESCRIPTION.name).toBe("speech.reply");
+  expect(SPEECH_REPLY_DESCRIPTION.effect).toBe("write");
+  expect(SPEECH_REPLY_DESCRIPTION.parameters).toEqual(z.toJSONSchema(SpeechReplyArgumentsSchema));
 });

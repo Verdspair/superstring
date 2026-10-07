@@ -45,6 +45,9 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
+    initiative_batch_target_count: 15,
+    initiative_batch_jitter_count: 5,
+    initiative_queue_on_busy: true,
   },
   context: {
     judgement_message_limit: 20,
@@ -537,5 +540,48 @@ describe("Shared scheme studio", () => {
     expect(text).not.toContain("media_input");
     expect(text).not.toContain("true");
     expect(text).not.toContain("false");
+  });
+
+  it("enforces mutual exclusivity between ongoing conversation and chiming in", async () => {
+    await renderPage();
+    await task("发言时机");
+    const followUp = screen.getByRole("checkbox", { name: /^连续交谈/ });
+    const chimingIn = screen.getByRole("checkbox", { name: /^自主接话/ });
+
+    // 默认方案中 chiming_in 为 true, follow_up 为 false
+    expect(chimingIn.getAttribute("aria-checked")).toBe("true");
+    expect(followUp.getAttribute("aria-checked")).toBe("false");
+
+    // 勾选连续交谈：自主接话自动关闭
+    await userEvent.click(followUp);
+    expect(followUp.getAttribute("aria-checked")).toBe("true");
+    expect(chimingIn.getAttribute("aria-checked")).toBe("false");
+    expect(store.getState().qqSchemeEditor?.triggers.follow_up).toBe(true);
+    expect(store.getState().qqSchemeEditor?.triggers.chiming_in).toBe(false);
+
+    // 勾选自主接话：连续交谈自动关闭
+    await userEvent.click(chimingIn);
+    expect(chimingIn.getAttribute("aria-checked")).toBe("true");
+    expect(followUp.getAttribute("aria-checked")).toBe("false");
+    expect(store.getState().qqSchemeEditor?.triggers.chiming_in).toBe(true);
+    expect(store.getState().qqSchemeEditor?.triggers.follow_up).toBe(false);
+  });
+
+  it("blocks saving when rhythm jitter count is greater than or equal to target count", async () => {
+    const { fake } = await renderPage();
+    await task("发言时机");
+    const targetInput = screen.getByLabelText("目标消息数") as HTMLInputElement;
+    const jitterInput = screen.getByLabelText("浮动消息数") as HTMLInputElement;
+
+    fireEvent.change(targetInput, { target: { value: "10" } });
+    fireEvent.change(jitterInput, { target: { value: "10" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
+    expect(await store.getState().saveQqDrafts()).toBe(false);
+
+    // 修正为 jitter < target (5 < 10) 后允许保存
+    fireEvent.change(jitterInput, { target: { value: "5" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalled();
   });
 });

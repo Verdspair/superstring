@@ -113,22 +113,38 @@ export class FilePermissionStore implements PermissionStore {
 }
 
 export class PermissionService {
+  /** 策略保存后的变更订阅：写入已经成功，订阅回调的异常不能反过来让保存失败。 */
+  private readonly policyListeners = new Set<() => void>();
   constructor(private readonly store: PermissionStore) {}
   snapshot(): PermissionSnapshot {
     return this.store.read();
   }
   replace(expectedRevision: string, policy: PermissionPolicy): PermissionSnapshot {
-    return this.store.replace(expectedRevision, policy);
+    const snapshot = this.store.replace(expectedRevision, policy);
+    for (const listener of [...this.policyListeners]) {
+      try {
+        listener();
+      } catch {
+        console.warn("permission policy listener failed");
+      }
+    }
+    return snapshot;
+  }
+  /** 订阅策略保存；返回退订。CAS 失败时 replace() 抛错，不触发通知。 */
+  subscribe(listener: () => void): () => void {
+    this.policyListeners.add(listener);
+    return () => this.policyListeners.delete(listener);
+  }
+  private grantRevision(policy: PermissionPolicy, requirement: PermissionRequirement): string {
+    const grant = policy.grants.find((entry) => entry.resource === requirement.resource);
+    if (!grant) throw new PermissionError("PERMISSION_DENIED");
+    return createHash("sha256").update(JSON.stringify(grant)).digest("hex");
   }
   source(requirement: PermissionRequirement): SourceRef {
-    const grant = this.store
-      .read()
-      .policy.grants.find((entry) => entry.resource === requirement.resource);
-    if (!grant) throw new PermissionError("PERMISSION_DENIED");
     return {
       kind: "tool_permission",
       id: requirement.resource,
-      revision: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+      revision: this.grantRevision(this.store.read().policy, requirement),
     };
   }
   sourceAccess(source: SourceRef, owner: RunOwner): "available" | "revoked" | undefined {
@@ -146,11 +162,17 @@ export class PermissionService {
       ? "available"
       : "revoked";
   }
-  approvalKey(requirement: PermissionRequirement, owner: RunOwner): string {
-    const source = this.source(requirement);
+  private approvalKeyFromPolicy(
+    policy: PermissionPolicy,
+    requirement: PermissionRequirement,
+    owner: RunOwner,
+  ): string {
     return createHash("sha256")
-      .update(JSON.stringify([requirement, owner, source.revision]))
+      .update(JSON.stringify([requirement, owner, this.grantRevision(policy, requirement)]))
       .digest("hex");
+  }
+  approvalKey(requirement: PermissionRequirement, owner: RunOwner): string {
+    return this.approvalKeyFromPolicy(this.store.read().policy, requirement, owner);
   }
   decide(
     requirement: PermissionRequirement | undefined,
@@ -160,14 +182,25 @@ export class PermissionService {
     sandboxCallable: boolean,
     approvalKey?: string,
   ): PermissionDecision {
+    if (!requirement)
+      return evaluatePermission(
+        { version: 1, grants: [] },
+        undefined,
+        owner,
+        mode,
+        effect,
+        sandboxCallable,
+      );
+    // 同一入场边界只取一次策略快照：批准键与权限判定必须用同一份 policy。
+    const policy = this.store.read().policy;
     return evaluatePermission(
-      requirement ? this.store.read().policy : { version: 1, grants: [] },
+      policy,
       requirement,
       owner,
       mode,
       effect,
       sandboxCallable,
-      !!(requirement && approvalKey && approvalKey === this.approvalKey(requirement, owner)),
+      !!(approvalKey && approvalKey === this.approvalKeyFromPolicy(policy, requirement, owner)),
     );
   }
   assert(

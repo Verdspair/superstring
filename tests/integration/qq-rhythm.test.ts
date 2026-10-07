@@ -86,6 +86,9 @@ describe("the decided defaults", () => {
       merge_window_seconds: 30,
       reply_cooldown_seconds: 10,
       hourly_speech_limit: 200,
+      initiative_batch_target_count: 15,
+      initiative_batch_jitter_count: 5,
+      initiative_queue_on_busy: true,
       // 0034 (user decision 2026-09-25): the interest score the judge must reach.
       initiative_min_score: 6,
       // 0036: 每 X 条群友消息才真跑一次判断（间隔内复用上次读数）。
@@ -117,6 +120,13 @@ describe("the decided defaults", () => {
       parseQqSchemeRhythm({ ...QQ_RHYTHM_DEFAULT, active_hours_start_minutes: 1440 }),
     ).toThrow(TypeError);
     expect(() => parseQqSchemeRhythm({ ...QQ_RHYTHM_DEFAULT, extra: 1 })).toThrow(TypeError);
+    expect(() =>
+      parseQqSchemeRhythm({
+        ...QQ_RHYTHM_DEFAULT,
+        initiative_batch_target_count: 5,
+        initiative_batch_jitter_count: 5,
+      }),
+    ).toThrow(TypeError);
   });
 
   it("names the paths the time gates apply to", () => {

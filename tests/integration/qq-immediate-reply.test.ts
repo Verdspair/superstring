@@ -34,7 +34,7 @@ const now = 2_000_000_000;
 const stage = { counts: ["confirmed"] as const, isAvailable: () => false };
 
 /** One account, one scheme with every trigger on, one bound group, one bound private chat. */
-function setup(options: { directReply?: boolean } = {}) {
+function setup(options: { directReply?: boolean; followUp?: boolean } = {}) {
   const h = cloneBusinessDb();
   ensureDefaults(h.orm, "synthetic-model");
   updateQqSettings(h.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
@@ -42,8 +42,8 @@ function setup(options: { directReply?: boolean } = {}) {
     name: "synthetic",
     triggers: {
       direct_reply: options.directReply ?? true,
-      follow_up: true,
-      chiming_in: true,
+      follow_up: options.followUp ?? false,
+      chiming_in: false,
       idle_topic: true,
     },
   });
@@ -244,7 +244,7 @@ describe("直接回应", () => {
 
 describe("连续交谈", () => {
   it("continues an exchange a partner picked up after the assistant spoke", async () => {
-    const { h } = setup();
+    const { h } = setup({ followUp: true });
     try {
       ownSpeech(h.orm, now - 60);
       event(h.orm, "evt-after", now - 10);

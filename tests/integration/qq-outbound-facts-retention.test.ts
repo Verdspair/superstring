@@ -39,7 +39,7 @@ function setup() {
   return h;
 }
 
-function bind(h: ReturnType<typeof setup>, id: string) {
+function bind(h: ReturnType<typeof setup>, id: string, peerId = "30003") {
   h.db
     .query(
       "INSERT OR IGNORE INTO qq_schemes(id,name,created_at,updated_at) VALUES('scheme','scheme',?,?)",
@@ -49,7 +49,7 @@ function bind(h: ReturnType<typeof setup>, id: string) {
     .query(
       "INSERT INTO qq_bindings(id,account_id,conversation_kind,peer_id,agent_id,scheme_id,created_at,updated_at) VALUES(?,?,?,?,?,'scheme',?,?)",
     )
-    .run(id, "90001", "group", "30003", DEFAULT_AGENT_ID, now, now);
+    .run(id, "90001", "group", peerId, DEFAULT_AGENT_ID, now, now);
   const journal = new ConversationEventRepository(h.db);
   const conversation = journal.ensureOneBot(id);
   if (!conversation) throw new Error("binding conversation missing");
@@ -283,9 +283,12 @@ describe("outbound fact retention protection", () => {
       if (!claim) throw new Error("claim missing");
       expect(claim.part.status).toBe("sending");
 
+      // 同一 conversation 的因果 claim 会挡住后面的 intent，未知态改用独立会话隔离——
+      // 两个会话之间不存在先后，各自照常领取。
+      const { conversation: unknownConversation } = bind(h, "binding-parts-unknown", "30005");
       // fail-closed：part unknown 而意图账本被标成已结算的分歧态（真实路径会把 intent 同步
       // 成 unknown；这里手工错开两者），仍按真实 part 账本保护。
-      commitIntent(h, outbox, conversation, "intent-unknown");
+      commitIntent(h, outbox, unknownConversation, "intent-unknown");
       recordFact(h, "intent-unknown");
       const unknownClaim = outbox.claimPart("intent-unknown", now);
       if (!unknownClaim) throw new Error("unknown claim missing");
@@ -349,7 +352,10 @@ describe("outbound fact retention protection", () => {
       const outbox = new OutboundIntentRepository(h.db);
       commitIntent(h, outbox, conversation, "intent-protected");
       recordFact(h, "intent-protected");
-      commitIntent(h, outbox, conversation, "intent-unrelated");
+      // 被保护的 intent 会挡住同一 conversation 的后一个 planned；unrelated 放独立会话，
+      // 才能真正投递并到期删除，验证保护范围不越界到别的会话。
+      const { conversation: unrelatedConversation } = bind(h, "binding-mixed-unrelated", "30006");
+      commitIntent(h, outbox, unrelatedConversation, "intent-unrelated");
       recordFact(h, "intent-unrelated");
       for (;;) {
         const claim = outbox.claimPart("intent-unrelated", now);
@@ -699,13 +705,15 @@ describe("outbound fact retention protection", () => {
       commitPartIntent(h, outbox, conversation, "intent-neg-foreign", ["f1", "f2"]);
       recordFact(h, "intent-neg-target");
       recordFact(h, "intent-neg-foreign");
-      await deliver(h, journal, outbox, "intent-neg-target", [
-        { kind: "confirmed", messageId: "-9401" },
-        { kind: "confirmed", messageId: "-9402" },
-      ]);
+      // 同 conversation 按 created_at→output_ordinal→id 定因果序：foreign 的 id 更早，
+      // 先结算它 target 才能领取，不能两个 planned 并列并发发。
       await deliver(h, journal, outbox, "intent-neg-foreign", [
         { kind: "confirmed", messageId: "-9403" },
         { kind: "confirmed", messageId: "-9404" },
+      ]);
+      await deliver(h, journal, outbox, "intent-neg-target", [
+        { kind: "confirmed", messageId: "-9401" },
+        { kind: "confirmed", messageId: "-9402" },
       ]);
       const exact = mintedPartRef(h, conversation, "-9401");
       const foreign = mintedPartRef(h, conversation, "-9403");

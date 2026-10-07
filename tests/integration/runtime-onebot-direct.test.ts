@@ -7,6 +7,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 import type { QqIntakeRuntime } from "../../src/server/services/qq-intake";
+import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 
 it("production composition shares Web/Bot Agent runtime and dispatches private input exactly once", async () => {
   const business = openBusinessDb();
@@ -68,7 +69,9 @@ it("production composition shares Web/Bot Agent runtime and dispatches private i
     const scheme = createQqScheme(business.orm, {
       name: "private",
       reply: { split_by_speaker: false },
-      triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
+      triggers: { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: true },
+      // 夹具直插事件走 scanImmediate 恢复路径：merge 窗口归零让唤醒在本轮可领。
+      rhythm: { ...QQ_RHYTHM_DEFAULT, merge_window_seconds: 0 },
     });
     const now = new Date().toISOString(),
       nowSeconds = Math.floor(Date.now() / 1000);

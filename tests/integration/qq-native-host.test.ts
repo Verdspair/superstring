@@ -9,7 +9,15 @@ import { textMessage } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
-import { decideGenerate, type ScriptedModel, say, scoreOf, scriptedModel } from "../harness/model";
+import {
+  batchScore,
+  decideGenerate,
+  decideInline,
+  type ScriptedModel,
+  say,
+  scoreOf,
+  scriptedModel,
+} from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 
 afterEach(() => {
@@ -32,15 +40,24 @@ it("initiative scoring runs as a native-message leaf and a passing licence opens
   const h = createOneBotHarness({
     accountId: "90001",
     member: "10001",
-    model: [decideGenerate("10001", "打算说点什么", []), scoreOf(6), say("主动回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({ id: "-102", speaker: "10001", text: "随便聊聊", groupCard: "阿林" });
   h.advance(31);
+  // 阶段一批量评分（首 call，评分叶子，phase 仍 next）→ 回复决策 → 生成：精确三轮，无 auxiliary。
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想主动接话", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "打算说点什么", []),
+    say("主动回复正文"),
+  ]);
   await h.activate("chiming_in");
   await h.deliver();
-  // 决策 → 评分（native message leaf，phase 仍 next）→ 生成：精确三轮，无 auxiliary。
   expect(h.model?.calls.map((call) => call.phase)).toEqual(["next", "next", "generate"]);
-  expect(h.model?.calls[1]?.schema).toBe(true);
+  expect(h.model?.calls[0]?.schema).toBe(true);
   expect(h.sent).toHaveLength(1);
   expect(h.model?.receivedMessages[1]?.messages.at(-1)?.content).toEqual(
     expect.arrayContaining([expect.objectContaining({ kind: "text" })]),
@@ -187,7 +204,9 @@ it("native focus image flows through all three real phases (plan T11 Step2 golde
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "synthetic-image": png },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-103",
@@ -198,6 +217,19 @@ it("native focus image flows through all three real phases (plan T11 Step2 golde
     image: "synthetic-image",
   });
   h.advance(31);
+  // 阶段一批量评分（首 call）→ 回复决策 → 生成：三个真实 phase。
+  h.model?.push([
+    batchScore([
+      {
+        targetId: "10001",
+        score: 6,
+        intent: "回答当前消息的图片问题",
+        sourceSeqs: [h.lastEventSeq],
+      },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", []),
+    say("合成回复正文"),
+  ]);
   await h.activate("chiming_in");
   await h.deliver();
   expect(h.model?.calls.length).toBe(3);
@@ -230,7 +262,9 @@ it("evaluation stage off keeps decision/generation images but the score leaf see
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native", stages: { evaluation: false } },
     imageBytes: { "synthetic-image": png },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-104",
@@ -239,10 +273,23 @@ it("evaluation stage off keeps decision/generation images but the score leaf see
     image: "synthetic-image",
   });
   h.advance(31);
+  h.model?.push([
+    batchScore([
+      {
+        targetId: "10001",
+        score: 6,
+        intent: "回答当前消息的图片问题",
+        sourceSeqs: [h.lastEventSeq],
+      },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", []),
+    say("合成回复正文"),
+  ]);
   await h.activate("chiming_in");
   await h.deliver();
   expect(h.model?.calls.length).toBe(3);
-  const scoreCall = h.model?.receivedMessages[1];
+  // 评分叶子（evaluation 相，首 call）关闭上图：该相原生输入无 image part。
+  const scoreCall = h.model?.receivedMessages[0];
   expect(scoreCall?.phase).toBe("next");
   expect(
     scoreCall?.messages.some((message) => message.content.some((part) => part.kind === "image")),
@@ -266,7 +313,9 @@ it("cross-leaf handle borrowing is refused while a valid scope re-registration r
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "synthetic-image": png },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-105",
@@ -275,6 +324,18 @@ it("cross-leaf handle borrowing is refused while a valid scope re-registration r
     image: "synthetic-image",
   });
   h.advance(31);
+  h.model?.push([
+    batchScore([
+      {
+        targetId: "10001",
+        score: 6,
+        intent: "回答当前消息的图片问题",
+        sourceSeqs: [h.lastEventSeq],
+      },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", []),
+    say("合成回复正文"),
+  ]);
   await h.activate("chiming_in");
   await h.deliver();
   // 三相全绿本身证明"有效 scope 重登记"（评分叶子从已验证 asset 重登记并成功解析）。
@@ -298,27 +359,19 @@ it("aborted activation writes zero media cache rows and publishes nothing", asyn
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "synthetic-image": png },
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
     model: {
-      // 真实 abort 源：决策模型调用**返回后**（评分相 prepare 之前）中止调用方 signal——
+      // 真实 abort 源：首个模型调用（阶段一批量评分，评分叶子）**返回前**用调用方 signal 中止——
       // 与生产 scheduler 同为 caller-signal 取消，不是测试自造的异常路径。
       async complete(request) {
-        if (JSON.stringify(request.messages[0]).includes("Return exactly one JSON decision")) {
-          // 宿主决策 envelope schema（oneOf 分支带 media）→ 桩按 envelope 形状答复。
-          const envelope = JSON.stringify(request.responseSchema ?? {}).includes("media")
-            ? JSON.stringify({
-                decision: {
-                  kind: "final",
-                  outputs: [
-                    { kind: "generate", targetId: "10001", instructions: "answer", stickerIds: [] },
-                  ],
-                },
-                media: [],
-              })
-            : '{"kind":"final","outputs":[{"kind":"generate","targetId":"10001","instructions":"answer"}]}';
+        if (JSON.stringify(request.responseSchema ?? {}).includes("evaluations")) {
           controller.abort();
-          return envelope;
+          return JSON.stringify({
+            evaluations: [{ targetId: "10001", score: 6, intent: "answer", sourceSeqs: [] }],
+          });
         }
-        throw new Error("HARNESS_STEP_MISMATCH: aborted before scoring");
+        throw new Error("HARNESS_STEP_MISMATCH: aborted before reply prepare");
       },
       async *streamText() {
         yield "不该到达";
@@ -369,7 +422,13 @@ it("abort before the run reaches prepare writes zero media cache and publishes n
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "synthetic-image": png },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [
+      batchScore([{ targetId: "10001", score: 6, intent: "answer", sourceSeqs: [] }]),
+      decideGenerate("10001", "回答当前消息的图片问题", []),
+      say("合成回复正文"),
+    ],
   });
   h.receive({
     id: "-107",
@@ -390,7 +449,7 @@ it("abort before the run reaches prepare writes zero media cache and publishes n
 
 // ---- T11 新小单元：同次分类消费（decision/score/generation envelope）与 Step5a 跨 leaf 伪句柄 ----
 
-it("score envelope classification is consumed into the classification cache", async () => {
+it("initiative reply decision envelope classification is consumed into the classification cache", async () => {
   const png = encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(64), 8, 8);
   const h = createOneBotHarness({
     accountId: "90001",
@@ -400,7 +459,9 @@ it("score envelope classification is consumed into the classification cache", as
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "synthetic-image": png },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", [])],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-108",
@@ -409,10 +470,19 @@ it("score envelope classification is consumed into the classification cache", as
     image: "synthetic-image",
   });
   h.advance(31);
-  // 评分相存在 unknown 图 → 宿主换 envelope schema；模型分类指向真实发送 mediaId。
+  // 首 call 是阶段一批量评分（无 media 面）；unknown 图在回复决策相仍未知 → 决策换 envelope
+  // schema，模型分类指向真实发送 mediaId，同次消费落缓存。
   const mediaId = (h.db.query("SELECT id FROM qq_media_notes LIMIT 1").get() as { id: string }).id;
   h.model?.push([
-    scoreOf(6, undefined, [{ mediaId, category: "expression" }]),
+    batchScore([
+      {
+        targetId: "10001",
+        score: 6,
+        intent: "回答当前消息的图片问题",
+        sourceSeqs: [h.lastEventSeq],
+      },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", [], [{ mediaId, category: "expression" }]),
     say("合成回复正文"),
   ]);
   await h.activate("chiming_in");
@@ -438,7 +508,9 @@ it("generation envelope classification is consumed in the same call without extr
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "synthetic-image": png },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", [])],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-109",
@@ -448,14 +520,22 @@ it("generation envelope classification is consumed in the same call without extr
   });
   h.advance(31);
   const mediaId = (h.db.query("SELECT id FROM qq_media_notes LIMIT 1").get() as { id: string }).id;
-  // 评分相给 none 分类（模型本轮判不出）→ 生成相 unknown 仍在 → 生成走 envelope，say 步带分类。
+  // 决策相不分类（空 media）→ 生成相 unknown 仍在 → 生成走 envelope，say 步带分类。
   h.model?.push([
-    scoreOf(6, undefined, []),
+    batchScore([
+      {
+        targetId: "10001",
+        score: 6,
+        intent: "回答当前消息的图片问题",
+        sourceSeqs: [h.lastEventSeq],
+      },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", []),
     say("合成回复正文", undefined, [{ mediaId, category: "ordinary" }]),
   ]);
   await h.activate("chiming_in");
   await h.deliver();
-  // 决策/评分/生成精确三次：同次分类不新增第 4 次调用。
+  // 评分/决策/生成精确三次：同次分类不新增第 4 次调用。
   expect(h.model?.calls.length).toBe(3);
   const rows = h.db.query("SELECT category, evidence FROM qq_media_classifications").all() as {
     category: string;
@@ -509,7 +589,13 @@ it("mid-fetch abort writes zero cache rows while the paired un-aborted run publi
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "synthetic-image": png },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [
+      batchScore([{ targetId: "10001", score: 6, intent: "answer", sourceSeqs: [] }]),
+      decideGenerate("10001", "回答当前消息的图片问题", []),
+      say("合成回复正文"),
+    ],
   });
   ok.receive({
     id: "-110",
@@ -544,7 +630,13 @@ it("mid-fetch abort writes zero cache rows while the paired un-aborted run publi
       });
       if (controller.signal.aborted) throw new Error("HARNESS_FETCH_ABORTED");
     },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [
+      batchScore([{ targetId: "10001", score: 6, intent: "answer", sourceSeqs: [] }]),
+      decideGenerate("10001", "回答当前消息的图片问题", []),
+      say("合成回复正文"),
+    ],
   });
   h.receive({ id: "-111", speaker: "10001", text: "这张图片里有什么？", image: "synthetic-image" });
   h.advance(31);
@@ -552,7 +644,7 @@ it("mid-fetch abort writes zero cache rows while the paired un-aborted run publi
   if (!wake) throw new Error("wake not ready");
   let midRunError: unknown = null;
   try {
-    // 决策模型调用后中止：prepare 的 fetch 门已在决策相 prepare 中触发并挂起 → 中段取消。
+    // 阶段一批量评分相 prepare 的 fetch 门已触发并挂起 → 首 call 边界即中段取消。
     await h.host.activate(wake, controller.signal);
   } catch (error) {
     midRunError = error;
@@ -569,8 +661,9 @@ it("mid-fetch abort writes zero cache rows while the paired un-aborted run publi
 
 it("same material keeps identical scoring input; mode change changes it (paired digest proxy)", async () => {
   const png = encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(64), 8, 8);
-  // digest 输入的宿主可观测代理：评分相消息剥去 per-run 身份（mediaId/sourceId/revision）
-  // 后比较——同材料同模式结构逐字段一致；模式变化改变结构（native 图 part ↔ description notes）。
+  // digest 输入的宿主可观测代理：阶段一批量评分（首 call）消息剥去 per-run 身份
+  // （mediaId/sourceId/revision）后比较——同材料同模式结构逐字段一致；模式变化改变结构
+  // （native 图 part ↔ description notes）。评分本身是首个模型调用，不再有"先写意图再评分"。
   // （stateDigest 本体含每消息身份修订，跨夹具不可逐字节相等；同轮内命中由宿主 licenses 语义保证。）
   // 端口**刻意不含 completeMultimodal**：脚本端口自带该方法会顶掉夹具的默认视觉桩
   // （tests/harness/onebot.ts），description 侧的视觉叶子就会去消费一个不存在的 vision
@@ -579,8 +672,8 @@ it("same material keeps identical scoring input; mode change changes it (paired 
   // 默认桩服务（同一 seed 材料，故同模式两次必须逐字节相等）。
   const build = (mediaInput: { mode: "native" } | { mode: "description" }) => {
     const scripted = scriptedModel([
+      batchScore([{ targetId: "10001", score: 6, intent: "看图说话", sourceSeqs: [] }]),
       decideGenerate("10001", "打算说点什么", []),
-      scoreOf(6),
       say("合成回复正文"),
     ]);
     const harness = createOneBotHarness({
@@ -591,6 +684,8 @@ it("same material keeps identical scoring input; mode change changes it (paired 
       mergeWindowSeconds: 0,
       mediaInput,
       imageBytes: { "synthetic-image": png },
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
       model: {
         complete: (request) => scripted.port.complete(request),
         streamText: (request) => scripted.port.streamText(request),
@@ -598,20 +693,10 @@ it("same material keeps identical scoring input; mode change changes it (paired 
     });
     return { harness, scripted };
   };
-  const scoreInputSnapshot = (scripted: ReturnType<typeof scriptedModel>) => {
-    const score = scripted.receivedMessages.find(
-      (call) =>
-        call.phase === "next" &&
-        call.messages
-          .at(-1)
-          ?.content.some((p) => p.kind === "text" && p.text.includes("本次打算说")),
-    );
-    // qq_message_facts 段是嵌套 JSON 字符串（内嵌 mediaId 等身份）；同材料跨夹具比对时
-    // 归一所有 per-run 身份（uuid；事件键是确定性内容键，保持原样）。
-    return JSON.stringify(score?.messages ?? [], (key, value) =>
+  const scoreInputSnapshot = (scripted: ReturnType<typeof scriptedModel>) =>
+    JSON.stringify(scripted.receivedMessages[0]?.messages ?? [], (key, value) =>
       key === "sourceId" || key === "revision" ? "<id>" : value,
     ).replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "<id>");
-  };
   // 同材料同模式（两次独立夹具、同一输入）：评分材料（digest 输入的宿主可观测代理）逐字节一致。
   const a = build({ mode: "native" });
   a.harness.receive({
@@ -817,7 +902,7 @@ describe("T11 final exit coverage", () => {
       // 主动机会走真实 idle_topic 扫描（15 分钟静默门槛，advance 16 分钟后 sweep 排程）。
       // 不把私聊三相强塞 direct。
       triggers: { direct_reply: false },
-      model: [decideGenerate("20002", "打算说点什么", []), scoreOf(6), say("主动回复正文")],
+      model: [],
     });
     h.receive({
       id: "-202",
@@ -828,19 +913,25 @@ describe("T11 final exit coverage", () => {
     h.advance(16 * 60);
     const sweep = h.sweep();
     expect(sweep.scheduled).toHaveLength(1);
+    // 阶段一批量评分（首 call，评分叶子；idle_topic 面向整间会话，targetId 取 peerId）→
+    // 回复首 call 直接出正文：精确两相（§2.5 精简，非固定三次）。
+    h.model?.push([
+      batchScore([
+        { targetId: "20002", score: 6, intent: "冷场想开个话题", sourceSeqs: [h.lastEventSeq] },
+      ]),
+      decideInline("20002", "主动回复正文"),
+    ]);
     await h.activate("idle_topic");
     await h.deliver();
-    // 决策 → 评分叶子（真实评分相，带 score schema）→ 生成：精确三相。
-    expect(h.model?.calls.map((call) => call.phase)).toEqual(["next", "next", "generate"]);
-    expect(h.model?.calls[1]?.schema).toBe(true);
+    expect(h.model?.calls.map((call) => call.phase)).toEqual(["next", "next"]);
+    expect(h.model?.calls[0]?.schema).toBe(true);
     // idle_topic 没有"应回应消息"（§7.1）：图材料真实在同一 scope（media note 已登记），
-    // 但不自动上图——三相 wire 零 image part，不是把 direct 的焦点图强搬过来。
+    // 但不自动上图——两相 wire 零 image part，不是把 direct 的焦点图强搬过来。
     expect((h.db.query("SELECT COUNT(*) AS n FROM qq_media_notes").get() as { n: number }).n).toBe(
       1,
     );
     expect(wireImages(h, 0)).toHaveLength(0);
     expect(wireImages(h, 1)).toHaveLength(0);
-    expect(wireImages(h, 2)).toHaveLength(0);
     expect(h.sent).toHaveLength(1);
   });
 
@@ -912,9 +1003,9 @@ describe("T11 final exit coverage", () => {
 
   it("group initiative scoring at the default threshold: score 5 stays truly silent while score 6 sends once", async () => {
     const png = encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(64), 8, 8);
-    // 参数对照：图／关系材料相同 scope，两个夹具脚本仅 score 一步不同；
-    // 门槛沿用方案默认 initiative_min_score=6（不改 default）。
-    const build = (score: number) =>
+    // 参数对照：图／关系材料相同 scope，两个夹具脚本仅评分一步不同；
+    // 门槛沿用方案默认 initiative_min_score=6（不改 default）；计数门槛局部置 1/0 让单条消息成批。
+    const build = () =>
       createOneBotHarness({
         accountId: "90001",
         member: "10001",
@@ -922,13 +1013,11 @@ describe("T11 final exit coverage", () => {
         mergeWindowSeconds: 0,
         mediaInput: { mode: "native" },
         imageBytes: { "synthetic-image": png },
-        model: [
-          decideGenerate("10001", "回答当前消息的图片问题", []),
-          scoreOf(score),
-          say("合成回复正文"),
-        ],
+        initiativeBatchTargetCount: 1,
+        initiativeBatchJitterCount: 0,
+        model: [],
       });
-    const receiveFocus = (harness: OneBotHarness, id: string) => {
+    const receiveFocus = (harness: OneBotHarness, id: string, score: number) => {
       harness.receive({
         id,
         speaker: "10001",
@@ -937,33 +1026,43 @@ describe("T11 final exit coverage", () => {
         imageHint: { ...MARKET_FACE_HINT },
       });
       harness.advance(31);
+      harness.model?.push([
+        batchScore([
+          {
+            targetId: "10001",
+            score,
+            intent: "回答当前消息的图片问题",
+            sourceSeqs: [harness.lastEventSeq],
+          },
+        ]),
+        decideGenerate("10001", "回答当前消息的图片问题", []),
+        say("合成回复正文"),
+      ]);
     };
-    // score 5 < 默认门槛 6：真实无输出——评分叶子已真实跑过（决策不是 none 伪静默），
-    // 但零生成、零发送；脚本里的 say 步原样剩下（remaining=1 证明没被消耗）。
-    const quiet = build(5);
-    receiveFocus(quiet, "-205");
+    // score 5 < 默认门槛 6：真实无输出——评分叶子已真实跑过（不是 none 伪静默），但零回复、
+    // 零发送；脚本里的决策/生成步原样剩下（remaining=2 证明没被消耗）。
+    const quiet = build();
+    receiveFocus(quiet, "-205", 5);
     const blocked = await quiet.activate("chiming_in");
     expect((blocked as { status?: string } | null)?.status).toBe("no_output");
-    expect(quiet.model?.calls.map((call) => call.phase)).toEqual(["next", "next"]);
-    // 评分叶子（evaluation 相）与决策相带同一张图的同一 media 身份（focus 真实供图）。
-    const quietDecisionImages = wireImages(quiet, 0);
-    expect(quietDecisionImages).toHaveLength(1);
-    expect(wireImages(quiet, 1)).toEqual(quietDecisionImages);
+    expect(quiet.model?.calls.map((call) => call.phase)).toEqual(["next"]);
+    // 评分叶子（evaluation 相，首 call）带图；低于门槛不派发回复。
+    expect(wireImages(quiet, 0)).toHaveLength(1);
     expect(quiet.model?.calls.every((call) => call.phase !== "generate")).toBe(true);
-    expect(quiet.model?.remaining()).toBe(1);
+    expect(quiet.model?.remaining()).toBe(2);
     expect(quiet.sent).toHaveLength(0);
     quiet.close();
     // score 6 达默认门槛：真生成、恰一发送，三相计数源＝calls。
-    const loud = build(6);
-    receiveFocus(loud, "-206");
+    const loud = build();
+    receiveFocus(loud, "-206", 6);
     await loud.activate("chiming_in");
     await loud.deliver();
     expect(loud.model?.calls.length).toBe(3);
     expect(loud.model?.calls.map((call) => call.phase)).toEqual(["next", "next", "generate"]);
-    const loudDecisionImages = wireImages(loud, 0);
-    expect(loudDecisionImages).toHaveLength(1);
-    expect(wireImages(loud, 1)).toEqual(loudDecisionImages);
-    expect(wireImages(loud, 2)).toEqual(loudDecisionImages);
+    const loudEvaluationImages = wireImages(loud, 0);
+    expect(loudEvaluationImages).toHaveLength(1);
+    expect(wireImages(loud, 1)).toEqual(loudEvaluationImages);
+    expect(wireImages(loud, 2)).toEqual(loudEvaluationImages);
     expect(loud.sent).toHaveLength(1);
   });
 });

@@ -44,7 +44,7 @@ function setup(
   const scheme = createQqScheme(h.orm, {
     name: "test",
     reply: { split_by_speaker: false },
-    triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
+    triggers: { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: true },
   });
   h.orm
     .insert(schema.qqBindings)
@@ -244,7 +244,10 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(h.requests.slice(0, 2).every((request) => (request.tools ?? []).length > 0)).toBe(true);
     expect(h.requests.at(-1)!.tools ?? []).toHaveLength(0);
     expect(selectorRuns(h)).toBe(0);
-    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "你好" }, { stickerId: id }]);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([
+      { text: "你好", mentions: [] },
+      { stickerId: id },
+    ]);
   });
   it("sends a text-only reply for an explicit empty choice in one decision with no search", async () => {
     let calls = 0;
@@ -268,7 +271,7 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(calls).toBe(1);
     expect(h.requests).toHaveLength(1);
     expect(selectorRuns(h)).toBe(0);
-    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "不用表情" }]);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "不用表情", mentions: [] }]);
   });
   it("asks once more with bounded feedback when a draft with candidates omits the choice", async () => {
     let calls = 0,
@@ -306,7 +309,7 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(calls).toBe(2);
     expect(generations).toBe(0);
     expect(h.requests).toHaveLength(2);
-    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "好的" }]);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "好的", mentions: [] }]);
   });
   it("bounds repeated omission at the configured step budget instead of looping forever", async () => {
     let calls = 0;
@@ -408,8 +411,11 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(calls).toBe(5);
     const intents = h.outbox.list({});
     expect(intents).toHaveLength(2);
-    expect(payloads(h, intents[0]!.id)).toEqual([{ text: "第一轮" }]);
-    expect(payloads(h, intents[1]!.id)).toEqual([{ text: "第二轮" }, { stickerId: id }]);
+    expect(payloads(h, intents[0]!.id)).toEqual([{ text: "第一轮", mentions: [] }]);
+    expect(payloads(h, intents[1]!.id)).toEqual([
+      { text: "第二轮", mentions: [] },
+      { stickerId: id },
+    ]);
   });
   it("refuses an id that fell into the repeat interval before the pick was staged", async () => {
     let calls = 0;
@@ -463,7 +469,7 @@ describe("explicit sticker tools without an auto selector", () => {
     h.receive("1", "来张图");
     expect((await activate(h)).status).toBe("completed");
     expect(calls).toBe(3);
-    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "那算了" }]);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "那算了", mentions: [] }]);
     expect(JSON.stringify(h.outbox.list({}))).not.toContain(id);
   });
   it("supports an explicit sticker-only reply", async () => {
@@ -512,7 +518,7 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(calls).toBe(1);
     expect(tools[0]).not.toContain("sticker.search");
     expect(selectorRuns(h)).toBe(0);
-    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "普通回复" }]);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "普通回复", mentions: [] }]);
   });
   it("treats an enabled module without candidates as no sticker decision", async () => {
     let calls = 0;
@@ -526,7 +532,7 @@ describe("explicit sticker tools without an auto selector", () => {
     expect((await activate(h)).status).toBe("completed");
     expect(calls).toBe(1);
     expect(selectorRuns(h)).toBe(0);
-    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "没有图也回复" }]);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "没有图也回复", mentions: [] }]);
     expect(
       h.db.query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id=?").get(specId),
     ).toMatchObject({ n: 1 });

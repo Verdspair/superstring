@@ -371,6 +371,32 @@ export class ConversationEventRepository {
           : null,
     };
   }
+  /**
+   * 自主接话的持久观察边界（0054）。direct 推进的 consumed_seq 不能代替它：两条路径
+   * 各自推进、互不吞并，自主批次的条数从这个边界与事件事实派生。单调推进，不回退。
+   */
+  chimingInObservedSeq(conversationId: string): number {
+    const row = this.db
+      .query("SELECT chiming_in_observed_seq AS seq FROM conversations WHERE id=?")
+      .get(conversationId) as { seq: number } | undefined;
+    return row?.seq ?? 0;
+  }
+
+  /**
+   * 推进自主观察边界。不开启自身事务：调用方（机会结算）把它写进同一个 IMMEDIATE
+   * 事务，边界与该次结算的其余事实同生同灭。
+   */
+  advanceChimingInObservedSeq(conversationId: string, throughSeq: number): void {
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) {
+      throw new Error("CONVERSATION_SEQUENCE_INVALID");
+    }
+    this.db
+      .query(
+        "UPDATE conversations SET chiming_in_observed_seq=MAX(chiming_in_observed_seq,?) WHERE id=?",
+      )
+      .run(throughSeq, conversationId);
+  }
+
   /** Internal wake/delivery activity cannot advance an Agent's source observation bound. */
   sourceThroughSeq(conversationId: string): number {
     return (

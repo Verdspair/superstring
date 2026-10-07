@@ -102,6 +102,17 @@ function quoteRoots(h: OneBotHarness, index: number): QuoteRoot[] | null {
   return parsed.roots;
 }
 
+/** 本轮焦点行（facts 信封里的 focus= 行；解不出即 null）。 */
+function focusOf(h: OneBotHarness, index: number): { triggerMessageIds: string[] } | null {
+  for (const segment of factsSegments(callText(h, index))) {
+    for (const line of segment.split("\n")) {
+      if (line.startsWith("focus="))
+        return JSON.parse(line.slice(6)) as { triggerMessageIds: string[] };
+    }
+  }
+  return null;
+}
+
 /** 段原文（断言「引用区不携带正文」「正文只在窗口段」时需要）。 */
 function quoteSegmentText(h: OneBotHarness, index: number): string {
   const text = callText(h, index);
@@ -742,32 +753,38 @@ it("[S16_1] configured_depth=8 expands the chain exactly to depth 8 and stops", 
 
   const roots = quoteRoots(h, 0);
   expect(roots).not.toBeNull();
-  // 正：深度阶梯自洽——第 8 层恰为链上第 8 跳，且最大深度恰为配置值 8。
-  const byDepth = new Map<number, string[]>();
-  for (const root of roots ?? []) {
-    byDepth.set(root.depth, [...(byDepth.get(root.depth) ?? []), root.platformMessageId ?? ""]);
+  // 从本轮焦点出发，沿「上一步 target == 下一步 from」投影出唯一一条引用链（reference 即平台消息 ID）。
+  // reply window 可能展开多根，全局 byDepth 图会被别的根覆盖，必须以焦点链为准逐跳筛。
+  const focus = focusOf(h, 0);
+  const byFrom = new Map((roots ?? []).map((root) => [root.from, root]));
+  const chain: { depth: number; platformMessageId: string }[] = [];
+  let cursor = focus?.triggerMessageIds[0] ?? "";
+  for (let guard = 0; guard < 64 && byFrom.has(cursor); guard += 1) {
+    const root = byFrom.get(cursor);
+    if (!root) break;
+    chain.push({ depth: root.depth, platformMessageId: root.platformMessageId ?? "" });
+    cursor = root.target;
   }
-  expect(Math.max(...(byDepth.keys() ?? [0]))).toBe(8);
-  // 深度阶梯的**完整有序 golden**（实测冻结，链长 14、焦点引链尾 ids[13]）：
-  // 窗口占最近 6 条链消息（ids[8..13]）⇒ depth1 的窗外目标从 ids[7] 起算，
-  // 于是 depth d（d≥2）落在 ids[15 - d - 2] …… 即 d=2→ids[9]、d=8→ids[3]。
-  // 逐条钉死，避免只断一个点而让中间层漂移（原块就是这样没约束住行为）。
+  // 深度阶梯自洽：该链 depth 1..8 连续，最大深度恰为配置值 8。
+  expect(chain.map((entry) => entry.depth)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  // 焦点引链尾 ids[15]：depth d 投影出 ids[16-d]（d=1→-716 … d=8→-709），逐条钉死。
   const ladder: [number, string][] = [
-    [2, ids[9] ?? "none"],
-    [3, ids[8] ?? "none"],
-    [4, ids[7] ?? "none"],
-    [5, ids[6] ?? "none"],
-    [6, ids[5] ?? "none"],
-    [7, ids[4] ?? "none"],
-    [8, ids[3] ?? "none"],
+    [1, ids[15] ?? "none"],
+    [2, ids[14] ?? "none"],
+    [3, ids[13] ?? "none"],
+    [4, ids[12] ?? "none"],
+    [5, ids[11] ?? "none"],
+    [6, ids[10] ?? "none"],
+    [7, ids[9] ?? "none"],
+    [8, ids[8] ?? "none"],
   ];
   for (const [depth, platformId] of ladder) {
-    expect(byDepth.get(depth) ?? []).toContain(platformId);
+    expect(chain.find((entry) => entry.depth === depth)?.platformMessageId).toBe(platformId);
   }
-  // 强负（可失败）：第 9 层及更早（ids[2]/ids[1]/ids[0]）**不得**出现在任何一根里。
+  // 强负（可失败）：越过深度上限的链层（ids[7]）及更早（ids[6..0]）**不得**出现在任何一根里。
   // 放开深度上限即失败——这就是「custom 8 depth」的真边界。
   const allIds = new Set((roots ?? []).map((root) => root.platformMessageId));
-  for (const index of [2, 1, 0]) {
+  for (let index = 7; index >= 0; index -= 1) {
     expect(allIds.has(ids[index] ?? "none")).toBe(false);
   }
   // 强负（可失败，「同一消息最多供一次正文」）：被展开的每一层正文在消息事实段恰好一次
@@ -800,13 +817,14 @@ it("[S16_2] reply_depth=1 keeps only the first layer and reads no deeper", async
   expect(roots.length).toBeGreaterThan(0);
   // 强负（可失败）：没有任何 depth≥2 的根。
   expect(roots.some((root) => root.depth >= 2)).toBe(false);
-  // 强负（可失败）：深度上限 1 ⇒ 窗外那些链层正文**一次都不供**
+  // 强负（可失败）：深度上限 1 ⇒ 更深链层正文**一次都不供**
   // （depth=8 时它们各自供一次；这里全为 0，证明配置值真的裁住了展开）。
-  for (let layer = 1; layer <= 9; layer += 1) {
+  for (let layer = 1; layer <= 15; layer += 1) {
     expect(occurrences(allText(h), `MARK${layer}END`)).toBe(0);
   }
-  // 窗内层（最近 6 条）照常供一次——不因裁深度丢窗口消息。判据同 §4.3：整次调用内恰一份。
-  expect(bodyCopiesIn(h, 0, `MARK14END`)).toBe(1);
+  // 直接引用的那一层（焦点回复的链尾 ids[15]）照常供一次——不因裁深度丢直接引用。
+  // 判据同 §4.3：整次调用内恰一份。
+  expect(bodyCopiesIn(h, 0, "MARK16END")).toBe(1);
 });
 
 // ============================================================================

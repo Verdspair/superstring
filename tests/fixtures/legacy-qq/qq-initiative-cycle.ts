@@ -197,7 +197,11 @@ async function prepareOneReply(
     if (preflight.kind === "checks_passed") {
       return {
         kind: "draft",
-        draft: { opening, pending, plan: planQqPreparedReply(orm, pending, stage) },
+        draft: {
+          opening,
+          pending,
+          plan: planQqPreparedReply(orm, { ...pending, mentionIds: [] }, stage),
+        },
       };
     }
     const review = await reviewQqSupplement(orm, gateway, pending, nowSeconds);

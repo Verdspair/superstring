@@ -319,6 +319,7 @@ export function planQqPreparedReply(
       candidates: [],
       minRepeatSeconds: null,
       avoidRecent: false,
+      mentions: prepared.mentionIds,
     });
   }
   const selection = qqStickerSelectionForScheme(orm, {
@@ -345,5 +346,6 @@ export function planQqPreparedReply(
     candidates: candidate === undefined ? [] : [candidate],
     minRepeatSeconds: selection.minRepeatSeconds,
     avoidRecent: selection.avoidRecent,
+    mentions: prepared.mentionIds,
   });
 }

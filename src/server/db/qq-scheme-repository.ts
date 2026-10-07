@@ -26,6 +26,7 @@ import {
   type QqSchemeStickers,
   type QqSpeechTriggers,
 } from "../../shared/contracts/qq";
+import { resolveQqInteractionPair } from "../../shared/contracts/qq-group-config";
 import { fail } from "../errors";
 import type { QqBinding } from "../services/qq-binding-contract";
 import {
@@ -222,13 +223,21 @@ export function effectiveQqTriggers(
   scheme: QqSchemeRow,
 ): QqSpeechTriggers {
   const base = schemeTriggers(scheme);
-  if (binding === null) return base;
   const pick = (override: boolean | null, fallback: boolean) => override ?? fallback;
+  // 连续/自主的生效对统一走 resolveQqInteractionPair：方案自身或组合出的存量双 true
+  // 都按 chiming_in 优先解释，无绑定与有绑定走同一归一。
+  const pair = resolveQqInteractionPair({
+    scheme: { follow_up: base.follow_up, chiming_in: base.chiming_in },
+    binding:
+      binding === null
+        ? { follow_up: null, chiming_in: null }
+        : { follow_up: binding.triggers.follow_up, chiming_in: binding.triggers.chiming_in },
+  });
   return Object.freeze({
-    direct_reply: pick(binding.triggers.direct_reply, base.direct_reply),
-    follow_up: pick(binding.triggers.follow_up, base.follow_up),
-    chiming_in: pick(binding.triggers.chiming_in, base.chiming_in),
-    idle_topic: pick(binding.triggers.idle_topic, base.idle_topic),
+    direct_reply: pick(binding?.triggers.direct_reply ?? null, base.direct_reply),
+    follow_up: pair.continuous,
+    chiming_in: pair.chimingIn,
+    idle_topic: pick(binding?.triggers.idle_topic ?? null, base.idle_topic),
   });
 }
 
@@ -248,6 +257,9 @@ export function schemeRhythm(row: QqSchemeRow): QqSchemeRhythm {
     media_supplement_window_minutes: row.mediaSupplementWindowMinutes,
     media_frame_count: row.mediaFrameCount,
     media_max_dimension: row.mediaMaxDimension,
+    initiative_batch_target_count: row.initiativeBatchTargetCount,
+    initiative_batch_jitter_count: row.initiativeBatchJitterCount,
+    initiative_queue_on_busy: row.initiativeQueueOnBusy === 1,
   });
 }
 
@@ -267,6 +279,9 @@ function rhythmColumns(rhythm: QqSchemeRhythm) {
     mediaSupplementWindowMinutes: rhythm.media_supplement_window_minutes,
     mediaFrameCount: rhythm.media_frame_count,
     mediaMaxDimension: rhythm.media_max_dimension,
+    initiativeBatchTargetCount: rhythm.initiative_batch_target_count,
+    initiativeBatchJitterCount: rhythm.initiative_batch_jitter_count,
+    initiativeQueueOnBusy: rhythm.initiative_queue_on_busy ? 1 : 0,
   };
 }
 
@@ -289,7 +304,10 @@ function sameRhythm(left: QqSchemeRhythm, right: QqSchemeRhythm): boolean {
     // like a no-op, and the page then reports "saved" over a write that never happened (P5o).
     left.media_supplement_window_minutes === right.media_supplement_window_minutes &&
     left.media_frame_count === right.media_frame_count &&
-    left.media_max_dimension === right.media_max_dimension
+    left.media_max_dimension === right.media_max_dimension &&
+    left.initiative_batch_target_count === right.initiative_batch_target_count &&
+    left.initiative_batch_jitter_count === right.initiative_batch_jitter_count &&
+    left.initiative_queue_on_busy === right.initiative_queue_on_busy
   );
 }
 
@@ -601,8 +619,20 @@ export function readQqScheme(orm: Orm, id: string): QqSchemeRow | null {
  * duplicate is reported as a state conflict rather than surfacing a raw constraint error,
  * because the user's fix is to rename.
  */
+/**
+ * 方案自身的显式触发器写入（新建/更新共用）拒绝双 true：连续交谈与自主接话互斥，
+ * 开启一项必须显式关闭另一项。存量 raw 双 true 的读取走 effectiveQqTriggers 的归一，
+ * 不经这里。
+ */
+function assertSchemeInteractionPair(triggers: QqSpeechTriggers): void {
+  if (triggers.follow_up && triggers.chiming_in) {
+    fail("MEMORY_SOURCE_INVALID", "连续交谈与自主接话互斥，开启一项时另一项必须关闭");
+  }
+}
+
 export function createQqScheme(orm: Orm, input: QqSchemeInput): QqSchemeRow {
   const name = normalizeName(input.name);
+  assertSchemeInteractionPair(input.triggers ?? QQ_SPEECH_TRIGGERS_DEFAULT);
   const existing = orm
     .select({ id: schema.qqSchemes.id })
     .from(schema.qqSchemes)
@@ -667,6 +697,7 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
   const currentTriggers = schemeTriggers(current);
   const nextTriggers =
     input.triggers === undefined ? currentTriggers : parseQqSpeechTriggers(input.triggers);
+  assertSchemeInteractionPair(nextTriggers);
   const currentRhythm = schemeRhythm(current);
   const nextRhythm = input.rhythm === undefined ? currentRhythm : parseQqSchemeRhythm(input.rhythm);
   const currentContext = schemeContext(current);

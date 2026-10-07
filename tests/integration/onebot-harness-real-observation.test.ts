@@ -18,13 +18,13 @@ import { saveQqConversationSummary } from "../../src/server/db/qq-summary-reposi
 import { DEFAULT_AGENT_ID, DEFAULT_USER_ID } from "../../src/server/db/repositories";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
 import {
+  batchScore,
   decideGenerate,
   decideInline,
   decideInvoke,
   decideNone,
   type ModelStep,
   say,
-  scoreOf,
   scriptedModel,
 } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
@@ -157,7 +157,13 @@ describe("harness real telemetry", () => {
       onDiagnostic: (event) => {
         seen.push(`${event.stage}/${event.status}`);
       },
-      model: [decideGenerate("10001", "回答图片问题", []), scoreOf(6), say("观测回复正文")],
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
+      model: [
+        batchScore([{ targetId: "10001", score: 6, intent: "回答图片问题", sourceSeqs: [] }]),
+        decideGenerate("10001", "回答图片问题", []),
+        say("观测回复正文"),
+      ],
     });
     try {
       expect(h.telemetry).not.toBeNull();
@@ -226,9 +232,11 @@ describe("harness vision leaf", () => {
       imageBytes: { "leaf-image": png() },
       vision: ["视觉叶子合成描述"],
       // 视觉由夹具**默认桩**服务（端口刻意不含 completeMultimodal，见 portWithoutVision）。
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
       model: portWithoutVision([
+        batchScore([{ targetId: "10001", score: 6, intent: "回答图片问题", sourceSeqs: [] }]),
         decideGenerate("10001", "回答图片问题", []),
-        scoreOf(6),
         say("描述链回复正文"),
       ]),
     });
@@ -277,8 +285,15 @@ describe("harness vision leaf", () => {
       mediaInput: { mode: "description" },
       imageBytes: { "leaf-image": png() },
       // 端口自带 completeMultimodal（既有写法）：必须优先于夹具默认桩。
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
       model: {
-        complete: async () => "",
+        complete: async (request) =>
+          JSON.stringify(request.responseSchema ?? {}).includes("evaluations")
+            ? JSON.stringify({
+                evaluations: [{ targetId: "10001", score: 6, intent: "看图", sourceSeqs: [] }],
+              })
+            : "",
         async *streamText() {
           yield "";
         },
@@ -319,7 +334,13 @@ describe("harness vision leaf", () => {
       mediaInput: { mode: "native" },
       imageBytes: { "leaf-image": png() },
       vision: ["原生不该用到"],
-      model: [decideGenerate("10001", "回答图片问题", []), scoreOf(6), say("原生回复正文")],
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
+      model: [
+        batchScore([{ targetId: "10001", score: 6, intent: "回答图片问题", sourceSeqs: [] }]),
+        decideGenerate("10001", "回答图片问题", []),
+        say("原生回复正文"),
+      ],
     });
     try {
       h.receive({ id: "-1", speaker: "10001", text: "看图", image: "leaf-image" });

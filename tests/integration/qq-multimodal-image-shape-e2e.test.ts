@@ -68,7 +68,7 @@ import type {
   QqMessagePart,
 } from "../../src/shared/contracts/qq-message";
 import { createEphemeralAgentRuntime } from "../harness/ephemeral-runtime";
-import { decideGenerate, decideInline, decideInvoke, say, scoreOf } from "../harness/model";
+import { batchScore, decideGenerate, decideInline, decideInvoke, say } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 import { driveToolFirst } from "../harness/scenarios";
 
@@ -240,7 +240,9 @@ it("[S25_1] a native ordinary image flows the real platform wire through all thr
     mediaInput: { mode: "native" },
     imageBytes: { "s25-image": bytes },
     fetchHook: fetches.hook,
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-901",
@@ -249,11 +251,18 @@ it("[S25_1] a native ordinary image flows the real platform wire through all thr
     groupCard: "阿林",
     image: "s25-image",
   });
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想回答图片问题", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", []),
+    say("合成回复正文"),
+  ]);
   h.advance(31);
   await h.activate("chiming_in");
   await h.deliver();
 
-  // 三相各一次：决策/评分/生成——不新增固定分类调用（矩阵 negativeEvidence：call=3、无第 4 次）。
+  // 批评分/回复决策/生成各一次——不新增固定分类调用（矩阵 negativeEvidence：call=3、无第 4 次）。
   expect(h.model?.calls.length).toBe(3);
   expect(phases(h)).toEqual(["next", "next", "generate"]);
   expect(h.sent).toHaveLength(1);
@@ -308,6 +317,8 @@ it("[S25_2] the native decision/score/generation calls reach real HTTP with the 
       mediaInput: { mode: "native" },
       imageBytes: { "s25w-image": bytes },
       fetchHook: fetches.hook,
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
       model: createModelPort({ gateway }),
     });
     try {
@@ -323,7 +334,7 @@ it("[S25_2] the native decision/score/generation calls reach real HTTP with the 
       await h.deliver();
       expect(h.sent).toHaveLength(1);
 
-      // 决策/评分/生成三相各一条真实 HTTP 调用。
+      // 批评分/回复决策/生成三相各一条真实 HTTP 调用。
       expect(captures).toHaveLength(3);
       const bodies = captures.map(
         (raw) =>
@@ -335,14 +346,17 @@ it("[S25_2] the native decision/score/generation calls reach real HTTP with the 
           },
       );
       const schemaOf = (body: (typeof bodies)[number]) => body.response_format?.json_schema?.schema;
-      const phaseOf = (body: (typeof bodies)[number]): "decision" | "score" | "text" => {
+      const phaseOf = (
+        body: (typeof bodies)[number],
+      ): "decision" | "evaluation" | "score" | "text" => {
         const schema = schemaOf(body);
-        if ((schema?.properties as Record<string, unknown> | undefined)?.scoreResult)
-          return "score";
-        if ((schema?.properties as Record<string, unknown> | undefined)?.text) return "text";
+        const props = schema?.properties as Record<string, unknown> | undefined;
+        if (props?.evaluations) return "evaluation";
+        if (props?.scoreResult) return "score";
+        if (props?.text) return "text";
         return "decision";
       };
-      expect(bodies.map(phaseOf)).toEqual(["decision", "score", "text"]);
+      expect(bodies.map(phaseOf)).toEqual(["evaluation", "decision", "text"]);
 
       let sawImage = false;
       for (const body of bodies) {
@@ -366,10 +380,15 @@ it("[S25_2] the native decision/score/generation calls reach real HTTP with the 
       }
       expect(sawImage).toBe(true);
 
-      // 声明形状（本地路由）：决策带 response_format json_schema（oneOf 决策分支）、无 native tools。
-      const decisionSchema = schemaOf(bodies[0] ?? {}) as { oneOf?: unknown } | undefined;
-      expect(Array.isArray(decisionSchema?.oneOf)).toBe(true);
+      // 声明形状（本地路由）：批评分带 evaluations schema、回复决策带 oneOf 决策分支，均无 native tools。
+      const evaluationSchema = schemaOf(bodies[0] ?? {}) as {
+        properties?: Record<string, unknown>;
+      };
+      expect(evaluationSchema?.properties?.evaluations).toBeDefined();
       expect(bodies[0]?.tools).toBeUndefined();
+      const decisionSchema = schemaOf(bodies[1] ?? {}) as { oneOf?: unknown } | undefined;
+      expect(Array.isArray(decisionSchema?.oneOf)).toBe(true);
+      expect(bodies[1]?.tools).toBeUndefined();
 
       // 来源真落库：一个 asset，sha 等于受控字节 sha；一次真实取字节（后两相走缓存）。
       expect(fetches.count).toBe(1);
@@ -504,6 +523,7 @@ async function startCaptureLoopback(captures: string[]): Promise<{ server: Serve
 
 function loopbackReply(parsed: {
   response_format?: { json_schema?: { schema?: Record<string, unknown> } };
+  messages?: Array<{ role: string; content: unknown }>;
 }): string {
   const schema = parsed.response_format?.json_schema?.schema as
     | {
@@ -513,6 +533,43 @@ function loopbackReply(parsed: {
     | undefined;
   const properties = schema?.properties;
   const oneOf = schema?.oneOf;
+  if (properties?.evaluations !== undefined) {
+    // 批评分协议：目标与可引用 seq 真正从请求里的 qq_batch_targets data dump 读回（不猜）。
+    const targets: Array<{ targetId: string; sourceSeqs: number[] }> = [];
+    for (const message of parsed.messages ?? []) {
+      const texts =
+        typeof message.content === "string"
+          ? [message.content]
+          : Array.isArray(message.content)
+            ? message.content.map((part) =>
+                part !== null && typeof part === "object" && "text" in part
+                  ? String((part as { text: unknown }).text)
+                  : "",
+              )
+            : [];
+      for (const text of texts) {
+        const trimmed = text.trim();
+        if (!trimmed.startsWith("{") || !trimmed.includes('"qq_batch_targets"')) continue;
+        try {
+          const dump = JSON.parse(trimmed) as {
+            targets?: Array<{ targetId: string; sourceSeqs: number[] }>;
+          };
+          for (const target of dump.targets ?? [])
+            targets.push({ targetId: target.targetId, sourceSeqs: [...target.sourceSeqs] });
+        } catch {
+          // 解不开的 dump 不伪造：targets 保持为空，宿主按目标缺失协议报错留现场。
+        }
+      }
+    }
+    return JSON.stringify({
+      evaluations: targets.map((target) => ({
+        targetId: target.targetId,
+        score: 6,
+        intent: "想回答图片问题",
+        sourceSeqs: target.sourceSeqs,
+      })),
+    });
+  }
   if (properties?.scoreResult !== undefined) {
     return JSON.stringify({ scoreResult: { score: 6 }, media: [] });
   }
@@ -559,7 +616,9 @@ it("[S26_1] a real market-face wire segment is the platform expression evidence 
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "s26-face": bytes },
-    model: [decideGenerate("10001", "看看这个表情", []), scoreOf(6), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({
     id: "-911",
@@ -569,6 +628,13 @@ it("[S26_1] a real market-face wire segment is the platform expression evidence 
     image: "s26-face",
     imageHint: { ...MARKET_FACE },
   });
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想接这个表情的话", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "看看这个表情", []),
+    say("合成回复正文"),
+  ]);
   h.advance(31);
   await h.activate("chiming_in");
   await h.deliver();
@@ -601,7 +667,9 @@ it("[S26_1] a real market-face wire segment is the platform expression evidence 
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "s26-plain": plain },
-    model: [decideGenerate("10001", "看看这张图", []), scoreOf(6), say("合成回复正文二")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h2.receive({
     id: "-912",
@@ -612,6 +680,13 @@ it("[S26_1] a real market-face wire segment is the platform expression evidence 
     // 只有 summary（带字）——不构成三键，不得判表情。
     imageHint: { summary: "[萌宠]", key: "synthetic-secret-key", sub_type: 1, type: "flash" },
   });
+  h2.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想问这张图", sourceSeqs: [h2.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "看看这张图", []),
+    say("合成回复正文二"),
+  ]);
   h2.advance(31);
   await h2.activate("chiming_in");
   await h2.deliver();

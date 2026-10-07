@@ -342,6 +342,27 @@ export interface BotContextSourceOptions {
     classificationGate?: () => string | null;
   };
 }
+/**
+ * 一个发送边界的媒体状态：决策相一份，每个并行生成目标各一份。除投影/fallback 外，还冻结
+ * 该边界准备时所用的回复档视图与媒体输入——重备只在这份冻结状态上重渲染媒体。
+ */
+export interface MediaPhaseState {
+  readonly media: Map<QqImagePhase, QqMediaProjection>;
+  readonly fallback: Map<QqImagePhase, string>;
+  /** 该边界准备时捕获的回复档视图（生成目标用）；未捕获＝回退到共享视图。 */
+  view?: View;
+  /**
+   * 该边界准备时冻结的媒体输入：focus（本目标的问题锚）、已读 detail mediaId、以及
+   * classificationGate 当时的值。重备时用冻结值，不读共享 live 状态（兄弟目标消费不改变本目标）。
+   */
+  mediaInput?: {
+    /** 冻结的 focus（本目标问题锚）。 */
+    focus: ReturnType<NonNullable<BotContextSourceOptions["mediaInput"]>["focus"]>;
+    detailMediaIds: ReadonlySet<string> | undefined;
+    classificationGate: string | null | undefined;
+  };
+}
+
 interface View {
   material: ContextMaterial;
   selection: QqContextSelection;
@@ -349,6 +370,8 @@ interface View {
   /** D2 S4b：本档窗口事实投影与回复展开（一次构建、各相复用，登记只发生一次）。 */
   replyFacts: readonly QqMessageFact[];
   replyExpansion: QqFullReplyProjection;
+  /** 本档实际选中消息的载体键（按发言人分组，run 私有簿记；纯图行无正文 ref 也在此）。 */
+  selectedEventKeysBySpeaker: ReadonlyMap<string | null, readonly string[]>;
 }
 
 /** One authorized context owner with explicit decision/reply projections for every Bot topology. */
@@ -369,14 +392,14 @@ export class BotContextSource {
   private readonly reservations = new ReservationLedger();
   private sequence = 0;
   private pendingPlan?: { value: unknown; sources: SourceRef[] };
+  /** 阶段一批量评分对每个达标目标的意图（data_only 材料，不进指令协议）。 */
+  private batchIntents?: { value: unknown; sources: SourceRef[] };
   private retrievalFailures: { name: string; code: string; observedSeq: number }[] = [];
-  /** 各相最近一次媒体投影（宿主在发送边界按它登记字节；无媒体接线时恒空）。 */
-  private readonly phaseMedia = new Map<QqImagePhase, QqMediaProjection>();
   /**
-   * §9 显式 fallback 状态：宿主捕到精确 MODEL_IMAGE_UNSUPPORTED 后按相请求 description 备用；
-   * 该相下次 preparePhaseMedia 走 describeAfterUnsupported（requestedMode 仍 native）。
+   * 媒体相状态按**发送边界**隔离：决策相与每个并行生成目标各有一份投影/fallback 表，
+   * 互不覆写（规格 §3.2 target snapshot）。默认边界供决策相与单目标路径使用。
    */
-  private readonly phaseFallback = new Map<QqImagePhase, string>();
+  private readonly boundary: MediaPhaseState = { media: new Map(), fallback: new Map() };
   private runId?: string;
   constructor(private readonly options: BotContextSourceOptions) {
     const o = options;
@@ -537,6 +560,14 @@ export class BotContextSource {
       this.views.get("reply")?.selection ?? this.views.get(this.options.decisionTier)?.selection
     );
   }
+  /** 发布闸用：本 run 实际选中材料里各发言人消息的载体键（视图内冻结映射，不另查窗）。 */
+  selectedEventKeys(speakerId: string | null): readonly string[] {
+    const view = this.views.get("reply") ?? this.views.get(this.options.decisionTier);
+    const bySpeaker = view?.selectedEventKeysBySpeaker;
+    if (!bySpeaker) return [];
+    if (speakerId !== null) return bySpeaker.get(speakerId) ?? [];
+    return [...new Set([...bySpeaker.values()].flat())];
+  }
   get sources(): SourceRef[] {
     return uniqueSources(
       [...this.views.values()]
@@ -544,6 +575,7 @@ export class BotContextSource {
         .concat(
           this.observations.flatMap((observation) => observation.sources),
           this.pendingPlan?.sources ?? [],
+          this.batchIntents?.sources ?? [],
         ),
     );
   }
@@ -554,14 +586,35 @@ export class BotContextSource {
     this.views.clear();
     this.reservations.clear();
   }
+  /**
+   * 阶段二材料：阶段一逐 target 判定的意图（host-owned data_only），只进材料、不进指令协议。
+   * 达标目标的回复 run 据此知道"这一轮各自打算说什么"，不需要再写一次意图。
+   */
+  setBatchIntents(value: unknown, sources: readonly SourceRef[]): void {
+    this.assertSources(sources);
+    this.batchIntents = { value: structuredClone(value), sources: uniqueSources(sources) };
+    this.views.clear();
+    this.reservations.clear();
+  }
   private withPendingPlan(material: ContextMaterial): ContextMaterial {
-    if (!this.pendingPlan && !this.retrievalFailures.length) return material;
+    if (!this.pendingPlan && !this.batchIntents && !this.retrievalFailures.length) return material;
     const pending = [...(material.pending ?? [])];
     if (this.pendingPlan)
       pending.push(
         textMessage(
           "user",
           contextDumps({ kind: "pending_plan", trust: "data_only", value: this.pendingPlan.value }),
+        ),
+      );
+    if (this.batchIntents)
+      pending.push(
+        textMessage(
+          "user",
+          contextDumps({
+            kind: "qq_batch_intents",
+            trust: "data_only",
+            intents: this.batchIntents.value,
+          }),
         ),
       );
     if (this.retrievalFailures.length)
@@ -578,7 +631,11 @@ export class BotContextSource {
     return {
       ...material,
       pending,
-      sources: uniqueSources([...(material.sources ?? []), ...(this.pendingPlan?.sources ?? [])]),
+      sources: uniqueSources([
+        ...(material.sources ?? []),
+        ...(this.pendingPlan?.sources ?? []),
+        ...(this.batchIntents?.sources ?? []),
+      ]),
     };
   }
   /** Only a newly observed event changes the cached initial material; unchanged model steps reuse it. */
@@ -590,6 +647,63 @@ export class BotContextSource {
   }
   configureActions(actions: AgentSpec["availableActions"]): void {
     this.options.spec.availableActions = actions;
+  }
+  /**
+   * 宿主换相（同一 source 顺序复用）：阶段一批量评分用判断档材料，达标后的回复 run 用回复档与
+   * 回复 spec。视图按 tier 分桶缓存，换档自然另取；不新开第二 source 压低重复压缩。
+   */
+  setRun(spec: AgentSpec, decisionTier: QqContextTier): void {
+    this.options.spec = spec;
+    this.options.decisionTier = decisionTier;
+  }
+  /** 评分相媒体准备先于叶子 bindRun：宿主把 source 绑到真实父批 run（runTaskGroup 已创建的 id），投影按该 run 记账。 */
+  bindRunId(runId: string): void {
+    this.runId = runId;
+  }
+  /**
+   * 早提交批次（C2 host factory）：为一个达标目标建 **独立 run 状态**的会话 source。
+   *
+   * 只共享父已渲染的**不可变**材料/视图快照（view 按值浅拷贝；media 投影/fallback 为 Map 条目
+   * 级副本，投影对象本身只读共享——重备按整体替换，不就地改共享对象）
+   * 与 service/repo/guard/额度；不重跑 capture/render、不重复水位压缩（compressionJob 不复制）。
+   * run 级可变状态——spec、decisionTier、targets、视图缓存、观测、预留、媒体边界、runId、
+   * availableActions——各自独立，互不覆写（规格 §3.2 target snapshot）。
+   */
+  childReplySession(input: {
+    spec: AgentSpec;
+    targets: readonly BotContextTarget[];
+    decisionTier: QqContextTier;
+    /** 本目标自己的意图（data_only 材料）：绝不把整批意图带进单目标子 run。 */
+    batchIntents: { value: unknown; sources: readonly SourceRef[] };
+    onRead?: (observedSeq: number) => void;
+    /** 本 run 的媒体钩子（detailMediaIds/classificationGate 等），缺省继承父 options。 */
+    mediaInput?: BotContextSourceOptions["mediaInput"];
+    onDiagnostic?: BotContextSourceOptions["onDiagnostic"];
+  }): BotContextSource {
+    const child = new BotContextSource({
+      ...this.options,
+      spec: input.spec,
+      decisionTier: input.decisionTier,
+      targets: () => input.targets,
+      ...(input.onRead === undefined ? {} : { onRead: input.onRead }),
+      ...(input.mediaInput === undefined ? {} : { mediaInput: input.mediaInput }),
+      ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
+    });
+    for (const [tier, view] of this.views) child.views.set(tier, { ...view });
+    child.sequence = this.sequence;
+    // 数组按值复制：子 run 追加失败项不写回父（retrievalFailures 是可变 run 级状态）。
+    child.retrievalFailures = [...this.retrievalFailures];
+    for (const [key, value] of this.capacities) child.capacities.set(key, value);
+    for (const [phase, projection] of this.boundary.media)
+      child.boundary.media.set(phase, projection);
+    for (const [phase, reason] of this.boundary.fallback)
+      child.boundary.fallback.set(phase, reason);
+    if (this.boundary.view) child.boundary.view = { ...this.boundary.view };
+    child.batchIntents = {
+      value: structuredClone(input.batchIntents.value),
+      sources: uniqueSources(input.batchIntents.sources),
+    };
+    return child;
   }
   async read(input: {
     signal: AbortSignal;
@@ -632,14 +746,49 @@ export class BotContextSource {
   }
   async prepareGeneration(
     draft: Extract<OutputDraft, { kind: "generate" }>,
-    input: { context: RenderedContext; outputId: string; signal: AbortSignal },
+    input: {
+      context: RenderedContext;
+      outputId: string;
+      signal: AbortSignal;
+      /** 本目标的媒体相位边界；缺省＝共享边界（单目标路径）。并行时宿主每目标取一份。 */
+      boundary?: MediaPhaseState;
+    },
   ): Promise<PreparedGeneration> {
     this.assertCurrent();
     const target = this.options.targets().find((target) => target.id === draft.targetId);
     if (!target) fail("CONTEXT_SOURCE_INVALID", "回复目标不再受权");
+    const boundary = input.boundary ?? this.boundary;
     const view = await this.view("reply", input.signal);
+    // 宿主给了边界＝并行目标：把本次准备用的回复档视图冻结进该边界，后续该目标的
+    // resolved/fallback 重备只在这份视图上重新渲染媒体，不重建/清空共享视图。
+    const mediaOptions = this.options.mediaInput;
+    if (input.boundary && mediaOptions?.capabilityEnabled === true) {
+      input.boundary.view = view;
+      // 冻结本目标的媒体输入：focus 是本目标的问题锚，detailIds 是本目标准备时的已读图集合，
+      // gate 是当时 model route 归属。兄弟目标的后续消费/读取不改变这里。
+      const focus = mediaOptions.focus();
+      const detailIds = mediaOptions.detailMediaIds?.();
+      input.boundary.mediaInput = {
+        // 冻结副本：live 对象/集合后续变化（兄弟目标新读图、focus 结构被复用改写）不得改变本目标。
+        focus: {
+          triggerMessageIds: [...focus.triggerMessageIds],
+          responseMessageIds: [...focus.responseMessageIds],
+          responseQqs: [...focus.responseQqs],
+          assistantQq: focus.assistantQq,
+        },
+        detailMediaIds: detailIds === undefined ? undefined : new Set(detailIds),
+        classificationGate: mediaOptions.classificationGate?.() ?? null,
+      };
+    } else if (input.boundary) {
+      input.boundary.view = view;
+    }
     // 生成相自动图（§9）：相位关闭→全零投影；未知分类同次封装由宿主声明（responseEnvelope）。
-    const generationMedia = await this.preparePhaseMedia("generation", input.signal);
+    const generationMedia = await this.preparePhaseMedia(
+      "generation",
+      input.signal,
+      undefined,
+      boundary,
+    );
     const generationMaterial = generationMedia
       ? {
           ...view.material,
@@ -663,6 +812,160 @@ export class BotContextSource {
       context,
     };
   }
+  /**
+   * 本批冻结窗口里**真实成员入站事件**的 seq → 冻结来源引用。模型给出的 sourceSeqs 只能引用
+   * 这里出现过的 seq；引用不授予权限，真实授权仍由宿主在发送边界复验。
+   */
+  /**
+   * 本批可引用的**冻结来源**：从 cause 游标 `chimingInObservedSeq` 到本 wake `throughSeq`
+   * 之间的真实成员入站事件 seq → qq_event 引用（引用不授权）。不是"窗口保留的全部 seq"，
+   * 也不是"最新 source"——只有这一冻结范围里的 seq 可被模型引用。
+   */
+  private frozenMemberSourceSeqs(throughSeq: number): Map<number, SourceRef> {
+    const boundary = this.options.journal.chimingInObservedSeq(this.options.conversationId);
+    const rows = this.options.db
+      .query(
+        `SELECT seq,event_key FROM conversation_events
+         WHERE conversation_id=? AND kind='inbound' AND source_kind='qq_event'
+           AND seq>? AND seq<=?
+         ORDER BY seq`,
+      )
+      .all(this.options.conversationId, boundary, throughSeq) as {
+      seq: number;
+      event_key: string;
+    }[];
+    const refs = new Map<number, SourceRef>();
+    for (const row of rows)
+      refs.set(row.seq, { kind: "qq_event", id: row.event_key, revision: "frozen" });
+    return refs;
+  }
+
+  /**
+   * 阶段一批量评分：**一次**判断调用对整批候选逐人给出 {score,intent,sourceSeqs}（规格 §2.2）。
+   * 复用判断档视图与评分相媒体，与单目标 prepareEvaluation 同一材料来源；只把目标集折叠进
+   * 一次渲染/一次叶子调用。返回宿主按 D 的 batch schema 发 responseSchema 所需的消息。
+   */
+  async prepareBatchEvaluation(input: {
+    signal: AbortSignal;
+    targets: readonly BotContextTarget[];
+    /** 本批冻结范围上界（= 本 wake 的 throughSeq）；来源引用只在此范围内。 */
+    throughSeq: number;
+  }): Promise<{
+    model: string;
+    messages: ModelMessage[];
+    sources: SourceRef[];
+    inputUnits: number;
+    /** 本批冻结候选 id → 目标；宿主据此校验 evaluations 的一一对应。 */
+    targets: readonly BotContextTarget[];
+    /** 本批可引用的真实成员事件 seq → 冻结来源引用（引用不授予权限）。 */
+    memberSourceSeqs: ReadonlyMap<number, SourceRef>;
+    /** 本批评分材料的稳定摘要（许可绑定它；材料变→旧许可失效）。 */
+    stateDigest: string;
+    /** 本批评分相可用的容量上限（cap，非成本）；叶子 limits 用它，不用 renderedCost。 */
+    limit: number;
+  }> {
+    input.signal.throwIfAborted();
+    this.assertCurrent();
+    // 本批观察基准＝冻结上界 wake.throughSeq。批量评分先建判断档视图却不经 read()，不在此确立基准
+    // 就一直是 0，同批回复子 run 会把冻结前的原入站事件当成新观察（多余重观察轮）。冻结之后新到
+    // 的事件 seq 更大，refresh 仍会检出并复验未提交目标。子 source 按值复制本基准，不重算。
+    this.sequence = Math.max(this.sequence, input.throughSeq);
+    for (const target of input.targets) {
+      if (
+        !this.options
+          .targets()
+          .some(
+            (candidate) => candidate.id === target.id && candidate.speakerId === target.speakerId,
+          )
+      )
+        fail("CONTEXT_SOURCE_INVALID", "评分目标不再受权");
+    }
+    const view = await this.view("judgement", input.signal);
+    const evaluationMedia = await this.preparePhaseMedia("evaluation", input.signal);
+    const evaluationMaterial = evaluationMedia
+      ? {
+          ...view.material,
+          pending: [...(view.material.pending ?? []), ...evaluationMedia.messages],
+          sources: uniqueSources([...(view.material.sources ?? []), ...evaluationMedia.sources]),
+        }
+      : view.material;
+    const rendered = this.engine.render(
+      this.options.spec,
+      this.withPendingPlan(evaluationMaterial),
+      this.observations,
+      this.targetIds(),
+    );
+    const messages = this.evaluationMessages(
+      evaluationMaterial,
+      this.observations,
+      undefined,
+      view.selection.messages,
+      undefined,
+    );
+    // 本批候选目标（data_only，非指令）：模型按这些 id 逐人给分；缺一即协议错误。
+    const memberSourceSeqs = this.frozenMemberSourceSeqs(input.throughSeq);
+    messages.push(
+      textMessage(
+        "user",
+        contextDumps({
+          kind: "qq_batch_targets",
+          trust: "data_only",
+          targets: input.targets.map((target) => ({
+            targetId: target.id,
+            speakerId: target.speakerId,
+            sourceSeqs: [...memberSourceSeqs.keys()],
+          })),
+        }),
+      ),
+    );
+    const units = inputUnits(messages) + scoreProtocolUnits(this.options);
+    if (units > view.limit) {
+      const model = this.options.spec.model ?? this.options.runtime.model_name;
+      this.options.onDiagnostic?.({
+        kind: "context_budget_exceeded",
+        code: "CONTEXT_BUDGET_EXCEEDED",
+        stage: "evaluation_fit",
+        tier: "judgement",
+        model,
+        capacity: this.cachedCapacity(model) ?? null,
+        ceiling: view.limit,
+        renderedCost: units,
+        roomFor: view.limit - units,
+      });
+      fail("CONTEXT_BUDGET_EXCEEDED", "批量评分上下文及结构化输出协议超过模型容量");
+    }
+    this.assertSources(rendered.sources);
+    input.signal.throwIfAborted();
+    const imageParts = rendered.messages.flatMap((message) =>
+      message.content.flatMap((part) => (part.kind === "image" ? [part] : [])),
+    );
+    const factRevisions = view.selection.messages.flatMap((message) =>
+      (message.sources ?? []).map((source) => [source.kind, source.id, source.revision] as const),
+    );
+    const stateDigest = createHash("sha256")
+      .update(
+        JSON.stringify([
+          this.options.scheme.revision,
+          input.targets.map((target) => target.id),
+          rendered.messages,
+          factRevisions,
+          imageParts.map((part) => [part.sourceId, part.revision, part.sha256]),
+        ]),
+      )
+      .digest("hex");
+    return {
+      model: this.options.spec.model ?? this.options.runtime.model_name,
+      messages,
+      sources: rendered.sources,
+      inputUnits: units,
+      targets: input.targets,
+      /** 本批冻结窗口的真实成员入站事件 seq → 冻结来源引用（宿主据此校验模型的 sourceSeqs）。 */
+      memberSourceSeqs,
+      stateDigest,
+      limit: view.limit,
+    };
+  }
+
   /** A score leaf uses the same phase material/observations; only its trusted output protocol differs. */
   async prepareEvaluation(input: {
     signal: AbortSignal;
@@ -834,8 +1137,16 @@ ${intent.trim()}`,
     this.runOwner = context.owner;
   }
   /** 宿主发送边界读取：本相已准备的媒体投影（无接线或未准备时 undefined）。 */
-  mediaProjection(phase: QqImagePhase): QqMediaProjection | undefined {
-    return this.phaseMedia.get(phase);
+  mediaProjection(
+    phase: QqImagePhase,
+    boundary: MediaPhaseState = this.boundary,
+  ): QqMediaProjection | undefined {
+    return boundary.media.get(phase);
+  }
+  /** 为一个生成目标开一条独立媒体相位边界。 */
+
+  targetScope(view?: View): MediaPhaseState {
+    return { media: new Map(), fallback: new Map(), ...(view === undefined ? {} : { view }) };
   }
   /**
    * §9 显式 fallback 请求（宿主在精确 isModelImageUnsupportedError 后调用）：只接受
@@ -843,22 +1154,32 @@ ${intent.trim()}`,
    * 该相媒体投影作废并触发视图重建——重评/重渲不再携带原生 image part，改走
    * describeAfterUnsupported 的 description notes（reason 随 diagnose 观测面持久）。
    */
-  requestMediaFallback(phase: QqImagePhase, reason: "model_image_unsupported"): void {
+  requestMediaFallback(
+    phase: QqImagePhase,
+    reason: "model_image_unsupported",
+    boundary: MediaPhaseState = this.boundary,
+  ): void {
     this.assertCurrent();
-    this.phaseFallback.set(phase, reason);
-    this.phaseMedia.delete(phase);
-    this.views.clear();
-    this.compressionJob = undefined;
-    this.reservations.clear();
+    boundary.fallback.set(phase, reason);
+    boundary.media.delete(phase);
+    // 只有决策相（共享边界）的 fallback 会重建共享视图/作废压缩与预留；生成目标的边界持有
+    // 已冻结的回复档视图，只看它自己的投影，不清共享状态。
+    if (boundary === this.boundary) {
+      this.views.clear();
+      this.compressionJob = undefined;
+      this.reservations.clear();
+    }
   }
   /**
    * 相模型调用的档位上限（宿主在准备钩子里做最终预算复验用）：decision=决策档视图上限，
-   * generation=回复档视图上限。视图未建＝undefined（宿主按无上限处理）。
+   * generation=回复档视图上限（目标边界＝其冻结视图上限）。视图未建＝undefined。
    */
-  phaseUnitsCeiling(phase: "decision" | "generation"): number | undefined {
-    return (
-      phase === "decision" ? this.views.get(this.options.decisionTier) : this.views.get("reply")
-    )?.limit;
+  phaseUnitsCeiling(
+    phase: "decision" | "generation",
+    boundary: MediaPhaseState = this.boundary,
+  ): number | undefined {
+    if (phase === "decision") return this.views.get(this.options.decisionTier)?.limit;
+    return (boundary.view ?? this.views.get("reply"))?.limit;
   }
   /**
    * §9 fallback 后按相重备媒体（宿主钩子在能力拒绝时调用）：preparePhaseMedia 的
@@ -868,13 +1189,13 @@ ${intent.trim()}`,
   async repreparePhaseMedia(
     phase: QqImagePhase,
     signal: AbortSignal,
+    boundary: MediaPhaseState = this.boundary,
   ): Promise<QqMediaProjection | undefined> {
     this.assertCurrent();
-    // 相档视图先重建（fallback 清空过视图）：facts/selection 是 describe 选取的真实输入。
-    const tier = qqPhaseTier(phase, this.options.decisionTier);
-    await this.view(tier, signal);
-    const result = await this.preparePhaseMedia(phase, signal);
-    return result === null ? undefined : this.phaseMedia.get(phase);
+    // 目标边界已冻结自己的视图：重备只在那份视图上重渲染媒体，不重建共享视图。
+    if (!boundary.view) await this.view(qqPhaseTier(phase, this.options.decisionTier), signal);
+    const result = await this.preparePhaseMedia(phase, signal, undefined, boundary);
+    return result === null ? undefined : boundary.media.get(phase);
   }
   /**
    * T10/§7.2：以 actualModel（used）重备指定相媒体并激活分类回读真源。钩子闭包在
@@ -886,13 +1207,13 @@ ${intent.trim()}`,
     phase: QqImagePhase,
     model: string,
     signal: AbortSignal,
+    boundary: MediaPhaseState = this.boundary,
   ): Promise<QqMediaProjection | undefined> {
     this.assertCurrent();
-    // 相档视图先重建（fallback 清空过视图）：facts/selection 是 describe 选取的真实输入。
-    const tier = qqPhaseTier(phase, this.options.decisionTier);
-    await this.view(tier, signal);
-    const result = await this.preparePhaseMedia(phase, signal, model);
-    return result === null ? undefined : this.phaseMedia.get(phase);
+    // 目标边界已冻结自己的视图：按真实 resolved 重备媒体只在那份视图上，不重建共享视图。
+    if (!boundary.view) await this.view(qqPhaseTier(phase, this.options.decisionTier), signal);
+    const result = await this.preparePhaseMedia(phase, signal, model, boundary);
+    return result === null ? undefined : boundary.media.get(phase);
   }
   /**
    * 一相自动图的统一投影（T11 Step4/Step5/Step6）：capability/stage 双闸由服务自身执行
@@ -904,6 +1225,7 @@ ${intent.trim()}`,
     phase: QqImagePhase,
     signal: AbortSignal,
     modelOverride?: string,
+    boundary: MediaPhaseState = this.boundary,
   ): Promise<{
     messages: ModelMessage[];
     sources: SourceRef[];
@@ -924,13 +1246,22 @@ ${intent.trim()}`,
     // D2 S4b：本相窗口事实投影与回复展开已在对应档 view() 构建时算好并缓存
     // （真实 load/register/fits 只发生一次，同一 registry/refs≤512/2MiB/预算计量）；
     // 这里只复用，不重复登记。自动范围仍由 selector 按 focus/direct 判定。
-    const phaseView = this.views.get(qqPhaseTier(phase, this.options.decisionTier));
+    // 生成目标用自己冻结的回复档视图；决策相仍读共享视图。
+    const phaseTier = qqPhaseTier(phase, this.options.decisionTier);
+    const phaseView =
+      phaseTier === "reply" && boundary.view ? boundary.view : this.views.get(phaseTier);
     const facts = phaseView?.replyFacts ?? [];
     const replies = phaseView?.replyExpansion ?? { roots: [], sources: [] };
+    // 本相 mediaId 快照：一次取定，供 baseInput、requestedImages 过滤与 omissions 共用同一份
+    // （目标边界读冻结集合，否则读 live）。不在这里冻结就会"传进去是冻结、过滤还读 shared live"。
+    const detailIds = boundary.mediaInput
+      ? boundary.mediaInput.detailMediaIds
+      : media.detailMediaIds?.();
     const baseInput = {
       scope,
       phase,
-      focus: media.focus(),
+      // 冻结存在＝完全按冻结值（含"当时无锚"）；无冻结（决策相/单目标）才现取。
+      focus: boundary.mediaInput ? boundary.mediaInput.focus : media.focus(),
       facts,
       replies,
       settings: media.settings,
@@ -944,9 +1275,10 @@ ${intent.trim()}`,
       capabilityEnabled: media.capabilityEnabled,
       owner: this.owner,
       // 本 run 已明确读取的 mediaId（media.read 成功记账）：细问升普通规格 + explicit 桶。
-      detailMediaIds: media.detailMediaIds?.(),
+      // 目标边界用**本函数一次的 snapshot**（下方 detailIds），过滤/取舍与传给服务的是同一份。
+      detailMediaIds: detailIds,
     };
-    const fallbackReason = this.phaseFallback.get(phase);
+    const fallbackReason = boundary.fallback.get(phase);
     const projection = fallbackReason
       ? // §9 显式备用：requestedMode 保持 native、actualMode=description；只有精确
         // MODEL_IMAGE_UNSUPPORTED 能到这里（宿主 isModelImageUnsupportedError 窄判别），
@@ -961,12 +1293,13 @@ ${intent.trim()}`,
           ...baseInput,
           ...(media.classificationPolicy === undefined
             ? {}
-            : (media.classificationGate?.() ?? null) ===
+            : (boundary.mediaInput
+                  ? boundary.mediaInput.classificationGate
+                  : (media.classificationGate?.() ?? null)) ===
                 (modelOverride ?? this.options.spec.model ?? this.options.runtime.model_name)
               ? { classificationPolicy: media.classificationPolicy }
               : {}),
         });
-    const detailIds = media.detailMediaIds?.();
     const requestedImages =
       detailIds && detailIds.size > 0
         ? projection.images.filter((image) => detailIds.has(image.mediaId))
@@ -999,7 +1332,7 @@ ${intent.trim()}`,
       }
     }
     const suppliedProjection = { ...projection, images, omissions };
-    this.phaseMedia.set(phase, suppliedProjection);
+    boundary.media.set(phase, suppliedProjection);
     const messages: ModelMessage[] = [];
     if (suppliedProjection.images.length > 0)
       messages.push({
@@ -1287,14 +1620,20 @@ ${intent.trim()}`,
       peerId: o.binding.peerId,
       agentId: o.binding.agentId,
     };
+    // 载体键随选材冻结：观察行的真实 eventKey 作为 server-only carrier 字段穿过两次
+    // zod parse 进 selection（run 私有簿记，非模型 SourceRef，渲染不输出）。
+    const observedRows = conversationMessagesSince(o.orm, scope, {
+      sinceSeconds,
+      limit: fetchLimit,
+      includeSources: true,
+      includeMediaNotes: false,
+      now: readAt,
+    });
     const timeline = qqBuildTimeline({
-      messages: conversationMessagesSince(o.orm, scope, {
-        sinceSeconds,
-        limit: fetchLimit,
-        includeSources: true,
-        includeMediaNotes: false,
-        now: readAt,
-      }).map(({ eventKey: _key, ...message }) => message),
+      messages: observedRows.map(({ eventKey, ...message }) => ({
+        ...message,
+        carrierEventKey: eventKey,
+      })),
       ownSpeech: [
         ...ownSpeechSince(o.orm, scope, {
           sinceSeconds,
@@ -2064,7 +2403,22 @@ ${intent.trim()}`,
     }
     signal.throwIfAborted();
     this.assertSources(material.sources ?? []);
-    const view: View = { material, selection, limit: ceiling, replyFacts, replyExpansion };
+    const selectedEventKeysBySpeaker = new Map<string | null, string[]>();
+    for (const message of selection.messages) {
+      if (message.speaker === "assistant" || message.carrierEventKey === undefined) continue;
+      const group = selectedEventKeysBySpeaker.get(message.speakerId);
+      if (group === undefined)
+        selectedEventKeysBySpeaker.set(message.speakerId, [message.carrierEventKey]);
+      else if (!group.includes(message.carrierEventKey)) group.push(message.carrierEventKey);
+    }
+    const view: View = {
+      material,
+      selection,
+      limit: ceiling,
+      replyFacts,
+      replyExpansion,
+      selectedEventKeysBySpeaker,
+    };
     this.views.set(tier, view);
     this.assertCurrent();
     return view;

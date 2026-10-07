@@ -850,7 +850,7 @@ describe("skill source references", () => {
     expect(catalog.sources.filter((source) => source.id === "demo")).toEqual([
       { kind: "skill_document", id: "demo", revision },
     ]);
-    expect(catalog.sources).toHaveLength(5);
+    expect(catalog.sources).toHaveLength(6);
     const read = await h.executor.execute(
       actionNamed(actions, "skill.read"),
       { name: "demo" },

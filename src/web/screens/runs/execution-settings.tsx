@@ -252,6 +252,18 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
             />
           </Field>
         ))}
+        {section === "loop" && draft?.loopModelConcurrency === "1" && (
+          <p className="text-xs text-muted-foreground sm:col-span-2">
+            {t("connections.execution.loopModelSerialNotice")}
+          </p>
+        )}
+        {section === "loop" &&
+          draft?.loopProviderConcurrency === "1" &&
+          draft?.loopModelConcurrency !== "1" && (
+            <p className="text-xs text-muted-foreground sm:col-span-2">
+              {t("connections.execution.loopProviderSerialNotice")}
+            </p>
+          )}
       </CardContent>
     </Card>
   );

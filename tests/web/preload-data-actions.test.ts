@@ -33,6 +33,9 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
+    initiative_batch_target_count: 15,
+    initiative_batch_jitter_count: 5,
+    initiative_queue_on_busy: true,
   },
   context: {
     judgement_message_limit: 20,

@@ -623,3 +623,88 @@ export function qqJudgeOutcome(raw: string): QqJudgeOutcome {
 export function qqJudgeAllowsSpeech(outcome: QqJudgeOutcome, minScore: number): boolean {
   return outcome.kind === "scored" && outcome.score >= minScore;
 }
+
+// ---- the stage-one batch judgement: one call, one verdict per target ----------------------
+
+/**
+ * 一次调用对整批候选逐人给出判断的响应 schema（宿主按它发 responseSchema）。
+ *
+ * 与单个判断的 `QQ_JUDGEMENT_RESPONSE_SCHEMA` 同一打分口径，只是把"每人一次"折叠成
+ * `evaluations` 数组：每项带目标（按发言人分的目标 id）、0–10 兴趣分、意图描述和引用的来源
+ * 消息 seq。引用与目标覆盖是否属实由宿主核验——schema 只约束形状。
+ */
+export const QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  required: ["evaluations"],
+  properties: {
+    evaluations: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["targetId", "score", "intent", "sourceSeqs"],
+        properties: {
+          targetId: { type: "string", minLength: 1 },
+          score: { type: "integer", minimum: 0, maximum: 10 },
+          intent: { type: "string" },
+          sourceSeqs: {
+            type: "array",
+            items: { type: "integer", minimum: 1 },
+          },
+        },
+      },
+    },
+  },
+});
+
+/** 一个候选目标在本批判断里的结论。引用是否属实、目标是否在候选集里由宿主核验。 */
+export interface QqBatchEvaluation {
+  readonly targetId: string;
+  readonly score: number;
+  readonly intent: string;
+  readonly sourceSeqs: readonly number[];
+}
+
+export type QqBatchJudgementOutcome =
+  | { readonly kind: "evaluations"; readonly evaluations: readonly QqBatchEvaluation[] }
+  /** 整个回答读不出协议形状：协议错误，不是低分，也不该被当成沉默吞掉。 */
+  | { readonly kind: "unreadable" };
+
+const BatchEvaluationSchema = z.strictObject({
+  targetId: z.string().min(1),
+  score: z.number().int().min(0).max(10),
+  intent: z.string(),
+  sourceSeqs: z.array(z.number().int().min(1)),
+});
+const BatchJudgementSchema = z.strictObject({
+  evaluations: z.array(BatchEvaluationSchema).min(1),
+});
+
+/**
+ * Read a batch judgement answer with the same reading rule as the single verdict: one complete
+ * fenced wrapper is transport packaging, anything else strict. An unreadable answer is a protocol
+ * error the caller must settle as one — it is never a licence to speak and never a low score.
+ */
+export function parseQqBatchJudgement(raw: string): QqBatchJudgementOutcome {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readJsonBody(raw));
+  } catch {
+    return { kind: "unreadable" };
+  }
+  const result = BatchJudgementSchema.safeParse(parsed);
+  if (!result.success) return { kind: "unreadable" };
+  const evaluations = Object.freeze(
+    result.data.evaluations.map((entry) =>
+      Object.freeze({
+        targetId: entry.targetId,
+        score: entry.score,
+        intent: entry.intent,
+        sourceSeqs: Object.freeze([...entry.sourceSeqs]),
+      }),
+    ),
+  );
+  return { kind: "evaluations", evaluations };
+}

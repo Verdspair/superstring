@@ -105,7 +105,7 @@ describe("context limit caps (0047)", () => {
         "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,judgement_message_limit,reply_message_limit) VALUES ('old','旧方案',3,'then','then',137,321)",
       );
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 53 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
       expect(
         db
           .query(
@@ -188,6 +188,10 @@ describe("scheme identity", () => {
         // 0052 的两组严格 JSON 设置；SQLite 只能追加，排在表尾。
         "message_settings",
         "media_input",
+        // 0054 自主接话的批量参数。
+        "initiative_batch_target_count",
+        "initiative_batch_jitter_count",
+        "initiative_queue_on_busy",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -224,6 +228,9 @@ describe("scheme identity", () => {
         media_supplement_window_minutes: 10,
         media_frame_count: 3,
         media_max_dimension: 512,
+        initiative_batch_target_count: 15,
+        initiative_batch_jitter_count: 5,
+        initiative_queue_on_busy: true,
       });
       // The context tiers are the third decided group (P3b-2), on the same terms.
       expect(schemeContext(created)).toEqual(QQ_CONTEXT_DEFAULT);
@@ -768,6 +775,53 @@ describe("message settings and media input groups (0052/T12)", () => {
       expect(schemeRhythm(custom).media_max_dimension).toBe(1024);
       // Changing the rhythm values did not grow a media_input field.
       expect(schemeMediaInput(custom)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
+    } finally {
+      h.business.close();
+    }
+  });
+});
+
+describe("模式互斥：方案自身的显式触发器写入", () => {
+  it("createQqScheme 拒绝双 true", () => {
+    const h = setup();
+    try {
+      expect(() =>
+        createQqScheme(h.orm, {
+          name: "双开方案",
+          triggers: { direct_reply: false, follow_up: true, chiming_in: true, idle_topic: false },
+        }),
+      ).toThrow("连续交谈与自主接话互斥");
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("updateQqScheme 显式双 true 拒绝；存量双 true 方案无关保存与显式合法改写不受影响", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: "默认方案",
+          triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: false },
+          expectedRevision: created.revision,
+        }),
+      ).toThrow("连续交谈与自主接话互斥");
+      // 单独改 description 的无关保存（触发器不动）不进互斥校验。
+      const saved = updateQqScheme(h.orm, created.id, {
+        name: "默认方案",
+        description: "只改说明",
+        expectedRevision: created.revision,
+      });
+      expect(saved.description).toBe("只改说明");
+      // 开启一项并显式关闭另一项：合法。
+      const legal = updateQqScheme(h.orm, created.id, {
+        name: "默认方案",
+        triggers: { direct_reply: true, follow_up: true, chiming_in: false, idle_topic: false },
+        expectedRevision: saved.revision,
+      });
+      expect(legal.triggerChimingIn).toBe(0);
+      expect(legal.triggerFollowUp).toBe(1);
     } finally {
       h.business.close();
     }

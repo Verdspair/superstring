@@ -9,6 +9,7 @@ import {
   BotContextSource,
   type BotContextSourceOptions,
 } from "../../src/server/channels/onebot11/context-source";
+import type { QqMediaInputService } from "../../src/server/channels/onebot11/media-input-service";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
@@ -44,6 +45,7 @@ import { QQ_MEDIA_RULE } from "../../src/server/services/qq-prompt-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RuntimeConfig } from "../../src/shared/contracts";
 import { QQ_COMPRESSION_DEFAULT } from "../../src/shared/contracts/qq";
+import { QQ_MEDIA_INPUT_DEFAULT } from "../../src/shared/contracts/qq-media-input";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -149,7 +151,7 @@ function setup(
   };
   const diagnostics: unknown[] = [];
   /** 一轮一个实例（真实宿主也是这样）：测试需要"下一轮"时另起一个，验证跨轮复用走的是存储。 */
-  const buildSource = () =>
+  const buildSource = (overrides: Partial<BotContextSourceOptions> = {}) =>
     new BotContextSource({
       ...h,
       gateway,
@@ -176,6 +178,7 @@ function setup(
       budget: input.budget,
       now: () => now,
       onDiagnostic: (event) => diagnostics.push(event),
+      ...overrides,
     });
   const source = buildSource();
   spec.availableActions = source.actions.map((action) => action.description);
@@ -1496,7 +1499,8 @@ describe("shared Bot context source", () => {
       id: crypto.randomUUID(),
       name: "speech.evaluate",
       arguments: {},
-      value: { verdict: `v${index}`, note: "y".repeat(2400) },
+      // decision schema 现含 mentionIds，每步协议开销变大；观测略缩仍能顶穿该档上限。
+      value: { verdict: `v${index}`, note: "y".repeat(2200) },
       sources: [],
     }));
     const material = await h.source.read({ signal: new AbortController().signal, observations });
@@ -1512,6 +1516,110 @@ describe("shared Bot context source", () => {
     );
     expect(fits({ status: "available", items: [], nextCursor: null }, [])).toBe(true);
   });
+
+  it("keeps a sibling target's frozen media state when another target falls back", async () => {
+    // 生产 BotContextSource：注入 mediaInput 服务；两个生成目标各取一条独立边界。
+    const focusShape = (id: string) => ({
+      triggerMessageIds: [id],
+      responseMessageIds: [id],
+      responseQqs: ["20002"],
+      assistantQq: "10001",
+    });
+    let focusNow = focusShape("focus-a");
+    let gateNow: string | null = "model-a";
+    const liveDetail = new Set<string>(["a1"]);
+    const baseFactsSeen: { focus: unknown; detailIds: unknown }[] = [];
+    const projection = {
+      phase: "generation" as const,
+      requestedMode: "native" as const,
+      actualMode: "native" as const,
+      images: [],
+      notes: [],
+      omissions: [],
+      sources: [],
+    };
+    const h = setup({ tokenBudget: 16384 });
+    const sharedViewLimit = await (async () => {
+      const scratch = h.newSource();
+      await scratch.read(readInput());
+      return scratch.phaseUnitsCeiling("generation");
+    })();
+    // 记录每次投影调用收到的 focus/detailIds，验证目标边界重备只读自己的冻结副本。
+    const service: Pick<
+      QqMediaInputService,
+      "prepareQqMediaProjection" | "describeAfterUnsupported" | "prepareByMediaId"
+    > = {
+      async prepareByMediaId() {
+        throw new Error("not used by this target-isolation case");
+      },
+      async prepareQqMediaProjection(input) {
+        baseFactsSeen.push({ focus: input.focus, detailIds: input.detailMediaIds });
+        return projection;
+      },
+      async describeAfterUnsupported(input) {
+        baseFactsSeen.push({ focus: input.focus, detailIds: input.detailMediaIds });
+        return { ...projection, actualMode: "description" as const };
+      },
+    };
+    const source = h.newSource({
+      mediaInput: {
+        service,
+        settings: {
+          ...QQ_MEDIA_INPUT_DEFAULT,
+          ordinary_frame_count: 3,
+          ordinary_frame_max_dimension: 512,
+        },
+        capabilityEnabled: true,
+        focus: () => focusNow,
+        detailMediaIds: () => liveDetail,
+        classificationGate: () => gateNow,
+      },
+    });
+    // 宿主在首次 read 前 bindRun（runId 真源）；无 runId 时 preparePhaseMedia 不接自动图。
+    source.bindRun({
+      owner: { kind: "test", id: "iso" },
+      signal: readInput().signal,
+      runId: "run-iso",
+    });
+    await source.read(readInput());
+    const context = {
+      messages: [],
+      sources: [],
+      units: 0,
+      visionCost: { state: "estimated" as const, images: 0, pixels: 0 },
+    };
+    const boundaryA = source.targetScope();
+    await source.prepareGeneration(
+      { kind: "generate", targetId: "alice", instructions: "a" },
+      { context, outputId: "a", signal: readInput().signal, boundary: boundaryA },
+    );
+    // A 冻结后：共享输入切到 B 值，且 live detail 集合被改（模拟兄弟随后读图）。
+    focusNow = focusShape("focus-b");
+    gateNow = "model-b";
+    liveDetail.add("b2");
+    const boundaryB = source.targetScope();
+    await source.prepareGeneration(
+      { kind: "generate", targetId: "bob", instructions: "b" },
+      { context, outputId: "b", signal: readInput().signal, boundary: boundaryB },
+    );
+    // 实际触发 A 的 fallback（unsupported）：重备只读 A 的冻结 focus/detailIds。
+    source.requestMediaFallback("generation", "model_image_unsupported", boundaryA);
+    boundaryA.fallback.delete("generation");
+    const seenBefore = baseFactsSeen.length;
+    await source.repreparePhaseMedia("generation", readInput().signal, boundaryA);
+    const lastA = baseFactsSeen.at(-1)!;
+    expect(lastA.focus).toEqual(focusShape("focus-a"));
+    expect([...(lastA.detailIds as Set<string>)]).toEqual(["a1"]);
+    expect(baseFactsSeen.length).toBeGreaterThan(seenBefore);
+    // A 重备不改 B 的冻结视图/限额；共享视图限额也不变。
+    expect(boundaryB.mediaInput?.focus).toEqual(focusShape("focus-b"));
+    expect(boundaryB.view?.limit).toBe(boundaryA.view?.limit);
+    expect(source.phaseUnitsCeiling("generation")).toBe(sharedViewLimit);
+    // 边界各自的投影表独立。
+    expect(boundaryA.media).not.toBe(boundaryB.media);
+    void context;
+  });
+
   /**
    * 漂移 A：同一批里的多个只读资料工具并发跑时，每个 fit 只看得到"上一轮已提交的 observations"。
    * 各自单独放得下、合起来超过下一步上限 → 下一步渲染时整轮 `AGENT_CONTEXT_LIMIT`。

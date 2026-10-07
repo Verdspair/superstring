@@ -20,6 +20,7 @@ import {
   idleTopic,
   knowledgeRevocation,
   lastActionObservation,
+  mediaReadFailureImageOnly,
   mediaReadFailureThenSupplement,
   memoryCorrection,
   mixedSilentAndSpeaking,
@@ -63,11 +64,12 @@ function runObservations(h: OneBotHarness, run: RunSnapshot): ActionObservation[
 }
 
 describe("P0 场景基线：OneBot 整链（离线）", () => {
-  it("私聊直接回应：一次决策 + 一次生成，回复发给对方且不加 @", async () => {
+  it("私聊直接回应：首 call 直接出正文，回复发给对方且不加 @", async () => {
     const { status, harness: h } = await privateDirectReply();
 
     expect(status).toBe("completed");
-    expect(h.model?.calls.map((call) => call.phase)).toEqual(["next", "generate"]);
+    // 直接回应首 call 直接出正文（规格 §2.4）：无前置意图轮、无独立生成调用。
+    expect(h.model?.calls.map((call) => call.phase)).toEqual(["next"]);
     expect(h.sent).toEqual([
       {
         kind: "private",
@@ -82,13 +84,15 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
 
     expect(status).toBe("completed");
     expect(h.outbox.list({})[0]?.target).toEqual({ peerId: "30003", participantId: "20002" });
+    // @ 段只来自脚本显式 mentionIds（无 auto-at）；正文逐字发送、在前，at 段按 mentions 追加在后
+    // （D2 结构化出站线上语义）。
     expect(h.sent).toEqual([
       {
         kind: "group",
         peerId: "30003",
         message: [
+          { type: "text", data: { text: "收到 马上看" } },
           { type: "at", data: { qq: "20002" } },
-          { type: "text", data: { text: " 收到 马上看" } },
         ],
       },
     ]);
@@ -106,24 +110,24 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
     ]);
   });
 
-  it("自主接话达门槛：意图 → 程序触发许可 → 写正文（评分与决策用判断模型）", async () => {
+  it("自主接话达门槛：一次批评分 → 达标目标回复子 run 首 call 出正文（评分用判断模型）", async () => {
     const { status, harness: h } = await chimingInAboveThreshold();
 
     expect(status).toBe("completed");
-    // 0.4.0 P4 §4.1：模型只产出意图（一次决策），评分由程序在写正文前发出，正文用会话模型。
+    // 规格 §2.2：阶段一一次批评分（判断模型），达标目标进回复子 run，首 call 直接出正文。
     expect(h.model?.calls.map((call) => `${call.phase}:${call.model}`)).toEqual([
       "next:judge-model",
-      "next:judge-model",
-      "generate:reply-model",
+      "next:reply-model",
     ]);
     expect(h.model?.remaining()).toBe(0);
+    // 与直接回应同一编码器：正文逐字在前，at 按 mentionIds 后置（D2 结构化出站）。
     expect(h.sent).toEqual([
       {
         kind: "group",
         peerId: "30003",
         message: [
+          { type: "text", data: { text: "这个我知道" } },
           { type: "at", data: { qq: "20002" } },
-          { type: "text", data: { text: " 这个我知道" } },
         ],
       },
     ]);
@@ -166,13 +170,13 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
     expect(status).toBe("no_output");
     expect(h.outbox.list({})).toHaveLength(0);
     expect(h.sent).toHaveLength(0);
-    // 都静默＝都不是失败；且两个已成熟参与者都应在本轮结算（无遗留 pending）。
+    // 都静默＝都不是失败；本批是**一次**会话级机会（规格 §2.2），完整低分判断后结算为 no_output。
     const wakes = h.db
       .query(
         "SELECT status,error_code FROM wake_signals WHERE cause='chiming_in' ORDER BY through_seq",
       )
       .all() as { status: string; error_code: string | null }[];
-    expect(wakes).toHaveLength(2);
+    expect(wakes).toHaveLength(1);
     for (const wake of wakes) {
       expect(wake.status).toBe("no_output");
       expect(wake.error_code).toBeNull();
@@ -194,16 +198,14 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
 
     expect(status).toBe("completed");
     expect(h.sent).toHaveLength(1);
-    // 开口目标的唤醒是 completed；被门槛挡下的目标同样是静默，不是"处理失败"。
+    // 本批是一次会话级机会（规格 §2.2）：达标目标由各自回复子 run 结算，未达标者不派发。
+    // 关键不变量不变：机会终态不因低分目标带资格错误码、不标 failed。
     const bySeq = h.db
       .query(
         "SELECT through_seq,status,error_code FROM wake_signals WHERE cause='chiming_in' ORDER BY through_seq",
       )
       .all() as { through_seq: number; status: string; error_code: string | null }[];
-    expect(bySeq).toHaveLength(2);
-    // 整轮 completed：开口目标唤醒随之 completed；被门槛挡下的目标**不是失败**、无错误码。
-    // （混合轮的终态只有一个 status，静默目标因此与开口目标同标 completed——关键不变量是
-    // "永不 failed、永不带资格错误码"；纯静默轮的终态是 no_output，见上一条用例。）
+    expect(bySeq).toHaveLength(1);
     for (const wake of bySeq) {
       expect(wake.error_code).toBeNull();
       expect(wake.status).not.toBe("failed");
@@ -215,7 +217,9 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
 
     expect(status).toBe("completed");
     expect(h.outbox.list({})[0]?.target).toEqual({ peerId: "30003", participantId: "20002" });
-    expect(h.sent[0]?.message[0]).toEqual({ type: "at", data: { qq: "20002" } });
+    // at 来自显式 mentionIds、追加在正文之后（D2 结构化出站）。
+    expect(h.sent[0]?.message.at(-1)).toEqual({ type: "at", data: { qq: "20002" } });
+    expect(h.sent[0]?.message[0]?.type).toBe("text");
   });
 
   it("多人同时说话：逐人评分、逐人回复", async () => {
@@ -226,10 +230,21 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
       "20002",
       "20003",
     ]);
-    expect(h.sent.map((request) => request.message[0])).toEqual([
-      { type: "at", data: { qq: "20002" } },
-      { type: "at", data: { qq: "20003" } },
-    ]);
+    // 跨 target 允许按完成先后早发（规格 §4）：按 target/内容键断言，不锁完成顺序；
+    // 每 target 正文对应其显式 mentionIds，单条消息内部件序保持（正文前、at 后）。
+    const replies = new Map(
+      h.sent.map((request) => {
+        const at = request.message.find((part) => part.type === "at");
+        const text = request.message.find((part) => part.type === "text");
+        return [at?.data?.qq, text?.data?.text];
+      }),
+    );
+    expect(h.sent).toHaveLength(2);
+    expect(replies.get("20002")).toBe("回甲");
+    expect(replies.get("20003")).toBe("回乙");
+    for (const request of h.sent) {
+      expect(request.message.map((part) => part.type)).toEqual(["text", "at"]);
+    }
   });
 
   it("会话暂停：零模型调用、不产生唤醒", async () => {
@@ -264,13 +279,14 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
       "next",
       "generate",
     ]);
+    // @ 只来自显式 mentionIds；正文逐字在前，at 段按 D2 结构化出站后置。
     expect(h.sent).toEqual([
       {
         kind: "group",
         peerId: "30003",
         message: [
+          { type: "text", data: { text: "第二版" } },
           { type: "at", data: { qq: "20002" } },
-          { type: "text", data: { text: " 第二版" } },
         ],
       },
     ]);
@@ -307,16 +323,31 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
     // ③ 第二轮直接回应：list→describe→note.read 的说明进了模型上下文，收口一条 @。
     expect(status).toBe("completed");
     expect(mainRuns(h).some((run) => fullContextText(h, run).includes("图里是一只猫"))).toBe(true);
+    // 与本文件其余 wire 断言同一编码器：正文逐字在前，at 按 mentionIds 后置（D2 结构化出站）。
     expect(h.sent).toEqual([
       {
         kind: "group",
         peerId: "30003",
         message: [
+          { type: "text", data: { text: "看到了，是只猫" } },
           { type: "at", data: { qq: "20002" } },
-          { type: "text", data: { text: " 看到了，是只猫" } },
         ],
       },
     ]);
+  });
+
+  it("同秒同人两真纯图（无 text 段）一败一成：失败图阻发布，MEDIA_READ_FAILED，零出站零发送", async () => {
+    const { status, metric, harness: h } = await mediaReadFailureImageOnly();
+
+    expect(metric.error).toBe("MEDIA_READ_FAILED");
+    expect(status).toBe("failed");
+    const blockedRun = h.runs
+      .listRuns({ ownerKind: "conversation", ownerId: h.conversationId })
+      .find((run) => run.errorCode === "MEDIA_READ_FAILED");
+    if (blockedRun === undefined) throw new Error("缺少被媒体闸门挡下的运行");
+    expect(h.outbox.list({})).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+    expect(h.visionCalls).toHaveLength(2);
   });
 
   it("记忆更正后旧正文不可复活：显式 query→read 取正文，更正后只剩新正文，旧引用整轮硬失败", async () => {

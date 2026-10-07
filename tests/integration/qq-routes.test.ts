@@ -119,6 +119,9 @@ describe("QQ scheme routes", () => {
         media_supplement_window_minutes: 10,
         media_frame_count: 3,
         media_max_dimension: 512,
+        initiative_batch_target_count: 15,
+        initiative_batch_jitter_count: 5,
+        initiative_queue_on_busy: true,
       });
       // The second decided group: what the judgement and the reply each get to see.
       expect(created.context).toEqual({

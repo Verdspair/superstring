@@ -314,6 +314,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         );
         return provider ? `provider:${provider.id}` : "local";
       },
+      // 执行配置保存成功后的 drain：订阅权限保存通知，唤醒准入队列重判；CAS 失败不触发。
+      onPolicyChange: (listener) => permissions.subscribe(listener),
     });
     const journal = new ConversationEventRepository(business.db);
     journal.backfill();
@@ -367,6 +369,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       tasks,
       stickersEnabled: () => execution().modules.qqStickers,
       mediaEnabled: () => execution().modules.qqMedia,
+      // 配置保存通知：投递车道按新发送上限 drain（与模型准入同一订阅源）。
+      onPolicyChange: (listener) => permissions.subscribe(listener),
       mediaAdapter: (scheme) =>
         createQqMediaAdapter({
           prompt: schemePrompts(scheme).media,

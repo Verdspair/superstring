@@ -275,15 +275,19 @@ describe("offline QQ judgement preparation", () => {
     const h = setup();
     try {
       // P5s: the two REPLY paths prepare here too — they share the switch/pause/agent gates and
-      // skip the initiative-only ones (merge window, cooldown, hourly cap). This fixture starts
-      // with both reply triggers OFF (a new scheme is quiet by design), so they are turned on
-      // first; the point is that the paths are ACCEPTED here at all.
-      h.orm.update(schema.qqSchemes).set({ triggerDirectReply: 1, triggerFollowUp: 1 }).run();
-      // A minute later the merge window has passed, so the three paths whose remaining gates are
+      // skip the initiative-only ones (merge window, cooldown, hourly cap). 写入侧双真互斥后，
+      // 各路径按自己的合法基态开：direct/follow 一态（chiming 关），chiming 另一态（follow 关）。
+      h.orm
+        .update(schema.qqSchemes)
+        .set({ triggerDirectReply: 1, triggerFollowUp: 1, triggerChimingIn: 0 })
+        .run();
+      // A minute later the merge window has passed, so the paths whose remaining gates are
       // satisfied prepare; the difference between reply and initiative paths is pinned in the next
       // test.
-      for (const path of ["direct_reply", "follow_up", "chiming_in"])
+      for (const path of ["direct_reply", "follow_up"])
         expect(prepareQqJudgement(h.orm, request(path, now + 60)).kind).toBe("prepared");
+      h.orm.update(schema.qqSchemes).set({ triggerFollowUp: 0, triggerChimingIn: 1 }).run();
+      expect(prepareQqJudgement(h.orm, request("chiming_in", now + 60)).kind).toBe("prepared");
       // An opener additionally needs the room to have gone quiet, so it prepares a quarter of an
       // hour later — through the same entry.
       expect(prepareQqJudgement(h.orm, request("idle_topic", now + 16 * 60)).kind).toBe("prepared");
@@ -299,7 +303,10 @@ describe("offline QQ judgement preparation", () => {
       // The batch window exists to collect messages before JUDGING an initiative. Someone talking
       // TO the assistant is not that case: an @ must prepare (and be answered) right away, which is
       // exactly why the immediate paths run through this entry with the initiative gates skipped.
-      h.orm.update(schema.qqSchemes).set({ triggerDirectReply: 1, triggerFollowUp: 1 }).run();
+      h.orm
+        .update(schema.qqSchemes)
+        .set({ triggerDirectReply: 1, triggerChimingIn: 1, triggerFollowUp: 0 })
+        .run();
       h.orm.update(schema.qqEvents).set({ occurredAtSeconds: now }).run();
       expect(prepareQqJudgement(h.orm, request())).toEqual({
         kind: "blocked",
@@ -307,6 +314,8 @@ describe("offline QQ judgement preparation", () => {
         readyAtSeconds: expect.any(Number),
       });
       expect(prepareQqJudgement(h.orm, request("direct_reply")).kind).toBe("prepared");
+      // continuous 按自己的合法基态开：必回路径不吃合并窗口。
+      h.orm.update(schema.qqSchemes).set({ triggerChimingIn: 0, triggerFollowUp: 1 }).run();
       expect(prepareQqJudgement(h.orm, request("follow_up")).kind).toBe("prepared");
     } finally {
       h.close();
@@ -1597,12 +1606,18 @@ describe("media that was attempted and never read ", () => {
   it("still answers when it is the one being addressed", () => {
     const h = setup();
     try {
-      h.orm.update(schema.qqSchemes).set({ triggerDirectReply: 1, triggerFollowUp: 1 }).run();
+      // 合法基态开 direct/follow（chiming 关）：回应路径不被读不出的图按住。
+      h.orm
+        .update(schema.qqSchemes)
+        .set({ triggerDirectReply: 1, triggerFollowUp: 1, triggerChimingIn: 0 })
+        .run();
       attemptedImage(h.orm, "latest");
       // Being called is someone else's question, not her initiative: a picture she could not read
       // must not turn an @ into silence.
       for (const path of ["direct_reply", "follow_up"])
         expect(prepareQqJudgement(h.orm, request(path)).kind).toBe("prepared");
+      // 自主基态（follow 关）里那张图仍然按住自主接话。
+      h.orm.update(schema.qqSchemes).set({ triggerFollowUp: 0, triggerChimingIn: 1 }).run();
       expect(prepareQqJudgement(h.orm, request("chiming_in"))).toEqual({
         kind: "blocked",
         reason: "media_read_failed",

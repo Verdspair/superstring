@@ -162,7 +162,7 @@ export async function runQqImmediateReplyCycle(
       () => {
         const verdict = checkQqTextPreflight(orm, prepared, stage);
         if (verdict.kind === "checks_passed") {
-          const plan = planQqPreparedReply(orm, prepared, stage);
+          const plan = planQqPreparedReply(orm, { ...prepared, mentionIds: [] }, stage);
           authorizedPlan = plan.kind === "planned" ? plan : null;
         }
         return verdict;
@@ -294,7 +294,9 @@ export async function runQqDispatchCycle(
             blockedReason = blockedReason ?? verdict.reason;
             continue;
           }
-          const plan = sendable(planQqPreparedReply(orm, draft.pending, stage));
+          const plan = sendable(
+            planQqPreparedReply(orm, { ...draft.pending, mentionIds: [] }, stage),
+          );
           if (plan === null) {
             blockedReason = blockedReason ?? "empty_reply";
             continue;

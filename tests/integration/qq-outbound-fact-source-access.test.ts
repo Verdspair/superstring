@@ -87,7 +87,10 @@ function setup() {
   });
   const commitIntent = (
     intentId: string,
-    parts: ({ kind: "text"; text: string } | { kind: "sticker"; stickerId: string })[],
+    parts: (
+      | { kind: "text"; text: string; mentions?: readonly string[] }
+      | { kind: "sticker"; stickerId: string }
+    )[],
     targetOverrides: Partial<OutboundTarget> = {},
   ) => {
     new AgentRunRepository(h.db).createRun({
@@ -759,8 +762,8 @@ describe("qq_outbound_message_fact scoped read", () => {
   });
 });
 
-describe("outbound projection replays the real send wire (program at + CQ at)", () => {
-  it("projection parts/mentions equal the actual captured send segments in order", async () => {
+describe("outbound projection: legacy wire replay and the structured protocol stay distinct", () => {
+  it("a legacy part (no mentions) replays its own wire: program recipient first, body CQ at in order", async () => {
     const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
     try {
       const intent = commitIntent(
@@ -823,6 +826,95 @@ describe("outbound projection replays the real send wire (program at + CQ at)", 
       expect(
         sourceAccess(h.db, outboundRefOf(second), ownerFor(scope, "conversation"), principal, now),
       ).toBe("available");
+    } finally {
+      h.close();
+    }
+  });
+
+  it("a structured new part sends its body literally and only its explicit mentions, and the projection agrees", async () => {
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const intent = commitIntent(
+        "intent-scope-structured",
+        [{ kind: "text", text: "你们看 [CQ:at,qq=30001] 这个", mentions: ["20002"] }],
+        { participantId: "20003" },
+      );
+      seedFacts(intent.id);
+      const captured = await deliverCaptured(h, journal, outbox, intent.id, [
+        { kind: "confirmed", messageId: "-8200" },
+      ]);
+      // 正文按字面（CQ 不再解释），收件人 participantId 不再自动 @，唯一的 at 是显式 mention。
+      expect(captured[0]?.request.message).toEqual([
+        { type: "text", data: { text: "你们看 [CQ:at,qq=30001] 这个" } },
+        { type: "at", data: { qq: "20002" } },
+      ]);
+      const scope = liveScope(h, conversation);
+      const fact = loadQqOutboundMessageFact(h, scope, "-8200", now);
+      if (!fact) throw new Error("structured part fact missing");
+      expect(fact.parts).toEqual([
+        { kind: "text", text: "你们看 [CQ:at,qq=30001] 这个" },
+        { kind: "mention", qq: "20002" },
+      ]);
+      expect(fact.mentions).toEqual([{ qq: "20002", identity: null }]);
+      expect(
+        sourceAccess(h.db, outboundRefOf(fact), ownerFor(scope, "conversation"), principal, now),
+      ).toBe("available");
+    } finally {
+      h.close();
+    }
+  });
+
+  it("rewriting a text part's mentions is a payload drift: the old ref is revoked, not silently replayed", async () => {
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const intent = commitIntent(
+        "intent-scope-mention-drift",
+        [{ kind: "text", text: "在的", mentions: ["20002"] }],
+        { participantId: "20003" },
+      );
+      seedFacts(intent.id);
+      await deliverCaptured(h, journal, outbox, intent.id, [
+        { kind: "confirmed", messageId: "-8300" },
+      ]);
+      const scope = liveScope(h, conversation);
+      const owner = ownerFor(scope, "conversation");
+      const before = loadQqOutboundMessageFact(h, scope, "-8300", now);
+      if (!before) throw new Error("fact missing before drift");
+      const ref = outboundRefOf(before);
+      expect(sourceAccess(h.db, ref, owner, principal, now)).toBe("available");
+      // 破坏性负例：payload 的 mentions 被改写（正文没变）。
+      h.db
+        .query("UPDATE outbound_parts SET payload=? WHERE intent_id=? AND ordinal=0")
+        .run(JSON.stringify({ text: "在的", mentions: ["99999"] }), intent.id);
+      // 已冻结的 ref 复验为 revoked：旧线上事实不再可读，也不按新 payload 悄悄改写。
+      expect(sourceAccess(h.db, ref, owner, principal, now)).toBe("revoked");
+      // 重新定位读到的是当前 payload 的新事实（新 revision），不是那份被冻结的旧编码。
+      const after = loadQqOutboundMessageFact(h, scope, "-8300", now);
+      if (!after) throw new Error("fact missing after drift");
+      expect(after.mentions).toEqual([{ qq: "99999", identity: null }]);
+      expect(outboundRefOf(after).revision).not.toBe(ref.revision);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("an invalid structured mention id on the read side refuses the fact instead of fabricating an at", async () => {
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const intent = commitIntent(
+        "intent-scope-bad-mention",
+        [{ kind: "text", text: "在的", mentions: ["20002"] }],
+        { participantId: "20003" },
+      );
+      seedFacts(intent.id);
+      await deliverCaptured(h, journal, outbox, intent.id, [
+        { kind: "confirmed", messageId: "-8400" },
+      ]);
+      h.db
+        .query("UPDATE outbound_parts SET payload=? WHERE intent_id=? AND ordinal=0")
+        .run(JSON.stringify({ text: "在的", mentions: ["all"] }), intent.id);
+      const scope = liveScope(h, conversation);
+      expect(loadQqOutboundMessageFact(h, scope, "-8400", now)).toBeNull();
     } finally {
       h.close();
     }

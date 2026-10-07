@@ -36,52 +36,68 @@ export type QqSpeechTriggers = z.infer<typeof QqSpeechTriggersSchema>;
  * same numbers the table's CHECK constraints enforce — if the two ever disagree, a scheme
  * the API accepts would be refused by the database, so they are kept in step by tests.
  */
-export const QqSchemeRhythmSchema = z.strictObject({
-  /** Let consecutive messages accumulate this long before judging; 0 = judge each at once. */
-  merge_window_seconds: z.number().int().min(0).max(300),
-  /** Minimum gap between two unprompted utterances. Direct replies are exempt (user decision). */
-  reply_cooldown_seconds: z.number().int().min(1).max(600),
-  /** Cap on unprompted utterances per rolling hour. Direct replies are exempt. */
-  hourly_speech_limit: z.number().int().min(1).max(500),
-  /**
-   * The judge answers one initiative question with an interest score (0–10, §5.2's 接话倾向 made
-   * countable), and this is the number that score has to reach before the assistant speaks. The
-   * user asked for it on 2026-09-25 after finding "most messages get a reply" impossible to tune:
-   * the score decides *this message*, the threshold decides *how eager she is*, and both
-   * unprompted paths (自主接话, 冷场发起) share it because they share the judgement.
-   *
-   * 0 = "any readable score speaks" — the noisiest setting, not "judgement off". Direct replies,
-   * continuations and being answered do not pass through the judgement and ignore this number.
-   */
-  initiative_min_score: z.number().int().min(0).max(10),
-  /**
-   * 每多少条群友消息才真跑一次判断（0036，）。判断问的是"此刻这间会话值不值得开口"，
-   * 短时间内答案几乎不变，所以没到间隔就直接拿最近一次分数比门槛，省一次模型调用。1＝来一条新的
-   * 群友消息就问一次（与改动前最接近）；同一批消息重复判断时仍然复用。只作用于两条主动路径：
-   * 直接回应与连续交谈从来不跑判断。
-   */
-  judgement_interval_turns: z.number().int().min(1).max(50),
-  /** How quiet a conversation must already be before opening a topic into it. */
-  idle_quiet_minutes: z.number().int().min(1).max(1000),
-  /** Whether the allowed-hours window applies at all; off by default, i.e. no limit. */
-  active_hours_enabled: z.boolean(),
-  /** Minutes since local midnight. Read only while `active_hours_enabled`. */
-  active_hours_start_minutes: z.number().int().min(0).max(1439),
-  active_hours_end_minutes: z.number().int().min(0).max(1439),
-  /** §5.1: at most one recompute by default; 0 turns recomputing off entirely. */
-  max_recompute_count: z.number().int().min(0).max(2),
-  /** §8.1-4: stickers per reply. */
-  max_sticker_count: z.number().int().min(1).max(3),
-  /** §7.1's 可改 sampling: frames taken from an animation, and the long edge they are scaled to. */
-  media_frame_count: z.number().int().min(1).max(10),
-  media_max_dimension: z.number().int().min(64).max(2048),
-  /**
-   * §7.1's wait for a related supplement after a failed addressed media read. The user decided
-   * (2026-09-24) that "related" means the SAME SPEAKER within this window, and that the number is
-   * editable with a 10-minute default. 0 = do not wait (the first read still happens).
-   */
-  media_supplement_window_minutes: z.number().int().min(0).max(1440),
-});
+export const QqSchemeRhythmSchema = z
+  .strictObject({
+    /** Let consecutive messages accumulate this long before judging; 0 = judge each at once. */
+    merge_window_seconds: z.number().int().min(0).max(300),
+    /** Minimum gap between two unprompted utterances. Direct replies are exempt (user decision). */
+    reply_cooldown_seconds: z.number().int().min(1).max(600),
+    /** Cap on unprompted utterances per rolling hour. Direct replies are exempt. */
+    hourly_speech_limit: z.number().int().min(1).max(500),
+    /**
+     * The judge answers one initiative question with an interest score (0–10, §5.2's 接话倾向 made
+     * countable), and this is the number that score has to reach before the assistant speaks. The
+     * user asked for it on 2026-09-25 after finding "most messages get a reply" impossible to tune:
+     * the score decides *this message*, the threshold decides *how eager she is*, and both
+     * unprompted paths (自主接话, 冷场发起) share it because they share the judgement.
+     *
+     * 0 = "any readable score speaks" — the noisiest setting, not "judgement off". Direct replies,
+     * continuations and being answered do not pass through the judgement and ignore this number.
+     */
+    initiative_min_score: z.number().int().min(0).max(10),
+    /**
+     * 每多少条群友消息才真跑一次判断（0036，）。判断问的是"此刻这间会话值不值得开口"，
+     * 短时间内答案几乎不变，所以没到间隔就直接拿最近一次分数比门槛，省一次模型调用。1＝来一条新的
+     * 群友消息就问一次（与改动前最接近）；同一批消息重复判断时仍然复用。只作用于两条主动路径：
+     * 直接回应与连续交谈从来不跑判断。
+     */
+    judgement_interval_turns: z.number().int().min(1).max(50),
+    /** How quiet a conversation must already be before opening a topic into it. */
+    idle_quiet_minutes: z.number().int().min(1).max(1000),
+    /** Whether the allowed-hours window applies at all; off by default, i.e. no limit. */
+    active_hours_enabled: z.boolean(),
+    /** Minutes since local midnight. Read only while `active_hours_enabled`. */
+    active_hours_start_minutes: z.number().int().min(0).max(1439),
+    active_hours_end_minutes: z.number().int().min(0).max(1439),
+    /** §5.1: at most one recompute by default; 0 turns recomputing off entirely. */
+    max_recompute_count: z.number().int().min(0).max(2),
+    /** §8.1-4: stickers per reply. */
+    max_sticker_count: z.number().int().min(1).max(3),
+    /** §7.1's 可改 sampling: frames taken from an animation, and the long edge they are scaled to. */
+    media_frame_count: z.number().int().min(1).max(10),
+    media_max_dimension: z.number().int().min(64).max(2048),
+    /**
+     * 自主接话的批量参数（0054，用户定值 X15/Y5/queue ON）：合格成员消息计数进入
+     * [X−Y, X+Y] 区间即择机派发，X 是区间中心、Y 是抖动半径，所以 Y 必须小于 X。
+     * 计数与每小时的发言上限是两种资源，这里的边界只有"正整数 / 非负整数 / Y<X"这条关系，
+     * 不借用 hourly_speech_limit 的 500 上限。
+     */
+    initiative_batch_target_count: z.number().int().min(1),
+    initiative_batch_jitter_count: z.number().int().min(0),
+    /** 达到 X+Y 上界仍无模型名额时：true 保留一个合并机会，false 跳过本批并显式记录。 */
+    initiative_queue_on_busy: z.boolean(),
+    /**
+     * §7.1's wait for a related supplement after a failed addressed media read. The user decided
+     * (2026-09-24) that "related" means the SAME SPEAKER within this window, and that the number is
+     * editable with a 10-minute default. 0 = do not wait (the first read still happens).
+     */
+    media_supplement_window_minutes: z.number().int().min(0).max(1440),
+  })
+  // Y is a radius around X, so Y === X would collapse the window's lower edge to zero; the
+  // 0054 CHECK enforces the same relation so a row the API accepts cannot be refused by the DB.
+  .refine((rhythm) => rhythm.initiative_batch_jitter_count < rhythm.initiative_batch_target_count, {
+    message: "initiative_batch_jitter_count 必须小于 initiative_batch_target_count",
+  });
 export type QqSchemeRhythm = z.infer<typeof QqSchemeRhythmSchema>;
 
 /**

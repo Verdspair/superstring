@@ -12,12 +12,15 @@ flowchart TD
   Host --> Runtime[AgentRuntime]
   Runtime --> Action[Available actions]
   Action --> Modules[Memory and knowledge query/read modules]
-  Runtime --> Draft[Response intent or direct draft]
-  Draft --> Permit[Host-triggered initiative permission]
-  Permit --> Body[Authorized response body]
-  Body --> Check[Current source and binding check]
+  Runtime --> Direct[Direct reply: first call full reply]
+  Runtime --> Batch[Initiative batch: one score and intent call]
+  Batch -->|threshold pass| Reply[Per-target reply tasks]
+  Batch -->|malformed verdict or model failure| Failed[Whole batch visible failure]
+  Direct --> Reply
+  Reply --> Check[Current source and binding check]
   Check -->|new relevant input| Context
-  Check -->|commit| Outbox[Output intent and delivery]
+  Check -->|minimal checks| Early[Per-target early commit]
+  Early --> Outbox[Output intent and delivery]
   Outbox --> Queue[Background compression queue]
   Queue --> Compress[ConversationCompressor leaf]
   Compress -->|authority check and CAS| Packages
@@ -25,15 +28,24 @@ flowchart TD
 
 ## Behavior and configuration
 
-The Agent can invoke an action, propose a response, or stop without output. For initiative paths the host evaluates the intent before independent body generation, retaining the configured score prompt, threshold and judgement projection. A denied permission ends silently; an unreadable judgement verdict fails the round as a visible failure instead of being reported as silence. The Agent can choose none without a score call; scoring is host-triggered rather than an advertised action.
+Agent 可以调用动作、产出输出或停止不发言。QQ 会话有四种模式。直接回应（群 @ 或引用、私聊）进入工具可用的回复任务，首次模型调用即携带完整回复材料，没有独立意图轮；模型仍可按需调用工具，合法 `none` 仍然可能。连续交谈按稳定发言人 ID 的独立滚动窗口合并消息，窗口到期必回：合并只用于连续模式，没有评分或意图调用，他人消息不会顺延某发言人的窗口。连续交谈与自主接话在同一生效归属下互斥，开启其一自动关闭另一项；历史存量两者同真按自主接话优先生效，新显式同真配置被拒绝。
+自主接话把落在配置 [X−Y, X+Y] 区间内的消息交给一次批量评分调用，一次返回每个候选目标的评分、意图描述与来源引用；宿主按配置门槛过滤，没有独立意图决策轮。判定格式错误或模型调用失败是整批可见失败并按异常记录——整批失败不会被当作低分，也不静默吞掉已观察消息；回复生成阶段的失败仍按目标隔离。批次用自己的持久观察边界计数，与全局消费序号无关；上界繁忙策略默认在并发占满时保留一个合并机会，关闭则跳过该批并记录原因。
+冷场发起从会话级静默基础出发，用一次判断调用取得本会话评分与话题意图再进入回复任务；不消费连续合并窗口，也不消费自主消息计数。评分门槛与回复判定文案保持其配置角色。技能目录首轮只暴露简短 name/description 元数据，正文按需加载；加载指导不是权限授予。
+The Agent can invoke an action, produce output, or stop without output. QQ conversations run in four modes. A direct reply — group @ or quote, private message — enters a tool-capable reply task whose first model call already carries full reply materials; there is no separate intent round, the model may still call tools when needed, and a legitimate `none` remains possible. Continuous conversation merges each speaker's messages on an independent rolling window keyed by the stable person ID and must reply when that window matures: merging applies only to continuous mode, there is no score or intent call, and other speakers' messages never postpone a speaker's window. Continuous and autonomous modes are mutually exclusive under one effective owner — enabling one turns the other off; legacy stored both-true configurations keep autonomous precedence, and new explicit both-true writes are rejected.
+Autonomous initiative puts messages counted in the configured [X−Y, X+Y] band into one batch scoring call that returns a score, an intent description and source references for every candidate target at once; the host filters by the configured threshold and there is no separate intent-decision round. A malformed verdict or a failed model call is a visible batch failure recorded as an exception — the whole batch fails, it is not read as low scores, and it does not silently consume the observed messages; failures during reply generation stay isolated per target. The batch counts messages against its own persisted observation boundary, independent of the global consumed sequence, and an upper-bound busy policy either keeps one merged opportunity while the model concurrency cap is full (default) or skips the batch with a logged reason.
+Idle topic starts from one conversation-level quiet basis and uses a single judge call for the conversation's score and topic intent before the reply task; it consumes neither the continuous merge window nor the autonomous message counts. Score thresholds and reply judgement text keep their configured roles. Skill catalogs expose short name/description metadata in the first round and load bodies on demand; loading guidance is not a permission grant.
 
 Shared schemes remain shared configuration. Scene, judge, reply, review, sticker, media and compression text retain their roles. An unedited reply task is derived from the per-speaker setting; a saved custom task takes precedence. Review text guides the Agent after new input; it does not introduce a second fixed review loop.
 
-Disabling per-speaker replies allows one logical output for the conversation. Enabling it allows one per authorized target. A logical output can still contain transport parts. Platform IDs, recipient mentions and sticker transport payloads are constructed by the host/sender, not accepted as model-authored routing.
+拆分按模式区分：连续交谈按稳定发言人 ID 回复每个到期发言人；自主批按回复拆分设置——开启时每个达标目标各一个回复任务，关闭时整间会话一个聚合逻辑回复、完整覆盖全部达标意图而非只取最高分；冷场面向整间会话的一个逻辑目标；直接回应沿用既有按发言人设置。是否 @ 由模型决定：输出协议对每个新文本部件携带结构化 mentions 列表（不 @ 时为空数组），宿主把授权稳定 ID 编码为 `at` 段，正文中的 CQ 码按字面文本处理，伪造或未授权的成员由宿主拒绝；表情发送载荷仍由程序构造。
+
+Disabling per-speaker replies allows one logical output for the conversation. Enabling it allows one per authorized target. A logical output can still contain transport parts. Splitting is per-mode: continuous conversation replies to each matured speaker by stable person ID, an autonomous batch follows the reply-split setting — split on creates one reply task per qualifying target, split off creates one aggregate logical reply for the room that covers every qualifying intent, never only the highest-scored one — idle topic replies to the conversation as one logical target, and direct replies follow the existing per-speaker setting. Whether to mention a recipient is the model's choice: the output protocol carries a structured mentions list per new text part (empty when none is wanted), and the host encodes authorized stable IDs into `at` segments; message bodies keep CQ codes as literal text, and forged or unauthorized members are rejected by the host. Sticker transport payloads are constructed by the host/sender, not accepted as model-authored routing.
 
 When relevant input arrives during generation, the host exposes source-bound pending_plan data and re-observes the conversation. The Agent can retain, edit or discard the previous draft. max_recompute_count limits additional independent generate calls per target; it does not forbid inline revision or force a stale draft to be sent. The overall step budget remains separate.
 
-One target's score or generation failure need not discard another target's successful output. Cancellation, lost ownership and revoked sources terminate their work. An entirely failed generation is a failed run, not intentional silence, and does not acknowledge the input as successfully consumed.
+批量评分失败按整批一次可见失败结算；回复阶段失败按目标隔离，不影响其他目标已提交的输出。每个目标通过最小程序化检查即提交，不等整批收口；父 run 跟踪全部目标到 prepared/committed/failed/cancelled 并在全部结算后释放生成资源；delivered/unknown 属出站层平台回执，父 run 不等待平台回执结束。中断批次用稳定键恢复并复验当前来源与绑定有效性，不重新生成也不重发已提交内容。取消、失去归属与来源撤权终止其工作；完全失败的生成是失败运行而非有意沉默，也不把输入记作已成功消费。
+
+A batch scoring failure fails the whole batch as one visible failure; reply-stage failures stay isolated per target and need not discard another target's already-committed output. Each target commits as soon as its minimal programmatic checks pass, without waiting for the batch to settle; the parent run tracks every target to prepared, committed, failed or cancelled and releases generation resources once all targets settle; delivered and unknown outcomes belong to the outbound layer's platform receipts, so the parent run does not wait for the platform. An interrupted batch resumes with stable intent keys, re-verifying current source and binding validity instead of regenerating or resending committed work. Cancellation, lost ownership and revoked sources terminate their work. An entirely failed generation is a failed run, not intentional silence, and does not acknowledge the input as successfully consumed.
 
 ## Group enablement and group-scoped values
 
@@ -77,7 +89,9 @@ Stickers use `sticker.search` followed by an explicit `stickerIds: [id]` or `sti
 
 ## Scheduling and diagnostics
 
-WakeScheduler owns durable opportunities and leases. OneBot ingress owns protocol normalization; the host owns the current binding, targets and output transaction. Production workers use bounded cross-conversation lanes while database leases exclude concurrent activation of the same conversation. Model concurrency is limited separately; background compression has its own cancellable single-flight queue.
+默认并发（整机 4、单供应商 2）是代码内调度候选，不是实测硬件最优；派发在同一准入点要求全局与目标供应商名额同时可用，显式配置值不会被静默覆盖。
+
+WakeScheduler owns durable opportunities and leases. OneBot ingress owns protocol normalization; the host owns the current binding, targets and output transaction. Production workers use bounded cross-conversation lanes while database leases exclude concurrent activation of the same conversation. Model concurrency is limited separately: dispatch requires both the global and the target provider slot at one admission point, and the code-level defaults (four whole-machine, two per provider) are scheduling candidates, not measured hardware optima; explicit configuration values are never silently overridden. Background compression has its own cancellable single-flight queue.
 
 The frontend groups navigation into conversations, Agents, system capabilities, schemes, the Library and Extensions, with model services and preferences as separate entries, while retaining the existing mode and configuration capabilities. Schemes are organized by application; QQ group and private conversations share the same scheme space, and connection bindings link directly to the scheme they use. Conversation history, run inspection and delivery states are separate projections. Advanced diagnostics do not turn model completion into a delivery confirmation; unknown delivery remains unresolved until reconciled.
 

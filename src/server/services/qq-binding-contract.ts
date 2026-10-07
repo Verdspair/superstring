@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { UuidSchema } from "../../shared/contracts/common";
 import { QQ_ATTENTION_MEMBER_LIMIT } from "../../shared/contracts/qq";
+import { isBothTrueInteractionPair } from "../../shared/contracts/qq-group-config";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import { normalizeOneBotAccountId, type QqObservation } from "./onebot-protocol";
 
@@ -313,6 +314,9 @@ export function createQqBinding(
   owner: QqOwnerIdentity | null = null,
 ): QqBindingSave {
   const value = parse(CreateSchema, input);
+  if (value.triggers !== undefined && isBothTrueInteractionPair(value.triggers)) {
+    throw new TypeError("连续交谈与自主接话互斥，开启一项时另一项必须关闭");
+  }
   const identity = ownerOrNull(owner);
   if (value.shareWebMemory) {
     const denied = grantDenial(value, identity);
@@ -340,6 +344,11 @@ export function updateQqBinding(
 ): QqBindingSave {
   const binding = parse(BindingSchema, current);
   const patch = parse(PatchSchema, input);
+  // 显式补丁携带双 true 即拒（包括与存量 raw 相同值的重写）；存量行的无关保存
+  // 不带 triggers 补丁，不经过这里，raw 列保持。
+  if (patch.triggers !== undefined && isBothTrueInteractionPair(patch.triggers)) {
+    throw new TypeError("连续交谈与自主接话互斥，开启一项时另一项必须关闭");
+  }
   const identity = ownerOrNull(owner);
   if (binding.revision !== parse(Revision, expectedRevision)) return { kind: "conflict" };
   const agentId = patch.agentId ?? binding.agentId;

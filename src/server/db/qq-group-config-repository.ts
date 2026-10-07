@@ -3,7 +3,9 @@
 // 共享契约里的 `mergeQqGroupScheme`）；写路径整份提交，在一个 IMMEDIATE 事务里做四重比较交换：
 // 绑定修订、当前 Agent 身份、目标基础方案修订、配置修订；没有内容变化不写库、不涨修订。
 
+import { type QqSchemeRhythm, QqSchemeRhythmSchema } from "../../shared/contracts/qq";
 import {
+  isBothTrueInteractionPair,
   mergeQqGroupScheme,
   normalizeQqGroupCapabilities,
   type QqGroupCapability,
@@ -34,7 +36,9 @@ import {
   readQqScheme,
   schemeColumnsFromGroups,
   schemeResponse,
+  schemeRhythm,
   schemeStickerCollectionIds,
+  schemeTriggers,
 } from "./qq-scheme-repository";
 import type { Orm } from "./repositories";
 
@@ -177,6 +181,26 @@ function sameCollectionIds(
   return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
+/**
+ * 差异里的批量参数组合后仍须满足节奏契约：只改 Y（或只改 X）时，另一个值取当前
+ * 基础方案的现值参与校验，不拿缺省 15/5 假判。用 Zod 的关系 refine 在合并后的
+ * 完整 rhythm 上跑一次，失败按既有 repo 错误映射返回。
+ */
+function assertQqGroupBatchRelation(base: QqSchemeRhythm, overrides: QqGroupSchemeOverrides): void {
+  if (
+    overrides.rhythm?.initiative_batch_target_count === undefined &&
+    overrides.rhythm?.initiative_batch_jitter_count === undefined
+  ) {
+    return;
+  }
+  const merged = QqSchemeRhythmSchema.safeParse({
+    ...base,
+    ...overrides.rhythm,
+  });
+  if (merged.success) return;
+  fail("MEMORY_SOURCE_INVALID", "自主接话的计数区间为[X-Y,X+Y]，要求Y<X");
+}
+
 /** 选择没变就不校验（可能已超界，运行时按交集生效）；这次真的换了选择才要求落在授权之内。 */
 function assertQqGroupStickerSelection(
   orm: Orm,
@@ -238,8 +262,27 @@ export function updateQqGroupConfig(
       // 其余情况提交的差异就是目标值。
       const overrides: QqGroupSchemeOverrides =
         payload.scheme_change === "reset" ? {} : normalizeStickerOverride(payload.overrides);
+      assertQqGroupBatchRelation(schemeRhythm(scheme), overrides);
       const capabilities = normalizeQqGroupCapabilities(payload.disabled_capabilities);
       assertQqGroupStickerSelection(tx, schemeId, current.overrides, overrides);
+
+      // 模式互斥在保存边界一次校验，用 raw 组合而不是 legacy 归一后的读值：
+      // 差异显式双 true 直接拒绝；否则把差异覆盖到基础方案上解析出 raw 生效对，
+      // 双 true（如 follow_up=true 且方案 chiming_in=true）同样拒绝。读取路径的
+      // legacy 双 true 解释（chiming_in 优先）不在写边界重演。
+      if (
+        overrides.triggers?.follow_up !== undefined ||
+        overrides.triggers?.chiming_in !== undefined
+      ) {
+        const base = schemeTriggers(scheme);
+        const rawEffective = {
+          follow_up: overrides.triggers.follow_up ?? base.follow_up,
+          chiming_in: overrides.triggers.chiming_in ?? base.chiming_in,
+        };
+        if (isBothTrueInteractionPair(rawEffective)) {
+          fail("MEMORY_SOURCE_INVALID", "连续交谈与自主接话互斥，开启一项时另一项必须关闭");
+        }
+      }
 
       // 记录是唯一来源，绑定四列跟随：只有真的不同才写绑定（no-op 不涨修订）。
       const mirror = triggersFromOverrides(overrides);

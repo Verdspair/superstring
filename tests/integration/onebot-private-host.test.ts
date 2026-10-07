@@ -72,7 +72,8 @@ function setup(
   const scheme = createQqScheme(h.orm, {
     name: "test",
     reply: { split_by_speaker: false },
-    triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
+    // 连续与自主互斥（保存边界拒绝双 true）；私聊恒 direct，这里只保 direct/idle 开。
+    triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: true },
   });
   h.orm
     .insert(schema.qqBindings)
@@ -278,8 +279,8 @@ describe("OneBot private common host", () => {
     const intents = h.outbox.list({ conversationId: conversation.id });
     expect(intents).toHaveLength(1);
     expect(h.outbox.parts(intents[0]!.id).map((p) => JSON.parse(p.payload!))).toEqual([
-      { text: "first" },
-      { text: "second" },
+      { text: "first", mentions: [] },
+      { text: "second", mentions: [] },
     ]);
     expect(h.journal.get(conversation.id)!.consumedSeq).toBe(1);
     expect(h.db.query("SELECT * FROM qq_send_log").all()).toEqual([]);
@@ -452,6 +453,7 @@ describe("OneBot private common host", () => {
     expect(h.outbox.list({})).toHaveLength(1);
     expect(JSON.parse(h.outbox.parts(h.outbox.list({})[0]!.id)[0]!.payload!)).toEqual({
       text: "new draft",
+      mentions: [],
     });
   });
   it("group-only legacy selection cannot consume a private wake", () => {
@@ -1208,14 +1210,12 @@ describe("private feature preservation", () => {
       },
     });
     await delivery.deliver(intent.id);
+    // 新协议：文本部件带结构化 mentions（提交路径已写），正文里的 CQ 码只作文本展示，不再二次拆成 at 段。
     expect(requests).toEqual([
       {
         kind: "private",
         peerId: "20002",
-        message: [
-          { type: "at", data: { qq: "20002" } },
-          { type: "text", data: { text: " hello" } },
-        ],
+        message: [{ type: "text", data: { text: "[CQ:at,qq=20002] hello" } }],
       },
     ]);
     expect(h.outbox.get(intent.id)!.parts.map((p) => p.status)).toEqual(["confirmed", "not_sent"]);
@@ -1224,7 +1224,7 @@ describe("private feature preservation", () => {
 
 describe("private initiative and cancellation", () => {
   it.each(["off", "full_body"])(
-    "uses the global judgement model and respects %s in the score context",
+    "uses the global judgement model for the initiative score and reads knowledge/memory in the reply for %s",
     async (mode) => {
       let judgement: ModelRequest | undefined;
       const main: ModelRequest[] = [];
@@ -1234,9 +1234,12 @@ describe("private initiative and cancellation", () => {
             | Record<string, unknown>
             | undefined;
           if (properties?.ids) throw new Error("selector protocol is no longer expected");
-          if (properties?.score) {
+          if (properties?.evaluations) {
             judgement = request;
-            return '{"score":0}';
+            // 新协议：主动批次一次批量评分；本私聊窗口只有一个目标 20002，score 0 低于门槛＝静默。
+            return JSON.stringify({
+              evaluations: [{ targetId: "20002", score: 9, intent: "topic", sourceSeqs: [] }],
+            });
           }
           main.push(request);
           if (main.length === 1) {
@@ -1297,26 +1300,40 @@ describe("private initiative and cancellation", () => {
         priority: 0,
       });
       const result = await activate(h);
-      expect(result.status).toBe("no_output");
-      expect(main).toHaveLength(mode === "off" ? 3 : 5);
+      expect(result.status).toBe("completed");
+      const scoreRow = h.db
+        .query(
+          "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.initiative.evaluate_batch'",
+        )
+        .get() as { source_refs: string } | null;
+      const replyRow = h.db
+        .query(
+          "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.main' ORDER BY c.rowid DESC LIMIT 1",
+        )
+        .get() as { source_refs: string } | null;
+      const kindsOf = (row: { source_refs: string } | null) =>
+        row ? (JSON.parse(row.source_refs) as { kind: string }[]).map((r) => r.kind) : null;
+      // 新协议：私聊主动接话阶段一＝一次批量评分（首 call），用全局判断模型；冻结批材料只含会话观察，
+      // 知识/记忆正文不预取（初始零资料，必须显式 query/read）。
       expect(judgement?.model).toBe("global-judge");
-      const text = JSON.stringify(judgement?.messages);
-      expect(text).toContain("apples knowledge line");
-      expect(text.includes("apples are green")).toBe(mode !== "off");
+      const scoreText = JSON.stringify(judgement?.messages);
+      expect(scoreText).not.toContain("apples knowledge line");
+      expect(scoreText).not.toContain("apples are green");
+      const scoreKinds = kindsOf(scoreRow)!;
+      expect(scoreKinds).toContain("qq_observation");
+      expect(scoreKinds).not.toContain("knowledge_document");
+      expect(scoreKinds).not.toContain("memory");
+      // 评分达标 → tool-capable 回复任务：显式 query/read 把知识/记忆带入回复上下文；off/full_body 决定是否读记忆。
+      expect(main).toHaveLength(mode === "off" ? 3 : 5);
       for (const request of main) {
         expect(request.model).not.toBe("memory-selector");
         expect(
           (request.responseSchema?.properties as Record<string, unknown> | undefined)?.ids,
         ).toBeUndefined();
       }
-      expect(h.outbox.list({})).toEqual([]);
-      const sources = h.db
-        .query(
-          "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id JOIN agent_runs r ON r.run_id=s.run_id WHERE r.spec_id='onebot.initiative.evaluate'",
-        )
-        .get() as { source_refs: string };
-      const refs = JSON.parse(sources.source_refs) as { kind: string; id: string }[];
-      expect(refs.map((ref) => ref.kind)).toEqual(
+      expect(h.outbox.list({})).toHaveLength(1);
+      const replyKinds = kindsOf(replyRow)!;
+      expect(replyKinds).toEqual(
         expect.arrayContaining([
           ...(mode === "off" ? [] : ["memory"]),
           "knowledge_document",
@@ -1324,11 +1341,12 @@ describe("private initiative and cancellation", () => {
           "qq_observation",
         ]),
       );
-      expect(refs).toContainEqual(
+      const replyRefs = JSON.parse(replyRow!.source_refs) as { kind: string; id: string }[];
+      expect(replyRefs).toContainEqual(
         expect.objectContaining({ kind: "knowledge_document", id: doc.id }),
       );
       if (mode !== "off")
-        expect(refs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
+        expect(replyRefs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
     },
   );
   it("cancellation during generation records a cancelled run without advancing source cursor", async () => {
@@ -1776,8 +1794,8 @@ describe("model-visible sticker contract", () => {
           .map((part) => JSON.parse(part.payload!));
         expect(parts).toEqual(
           scenario.correction === "search"
-            ? [{ text: "你好" }, { stickerId: id }]
-            : [{ text: "你好" }],
+            ? [{ text: "你好", mentions: [] }, { stickerId: id }]
+            : [{ text: "你好", mentions: [] }],
         );
         expect(calls).toBe(
           scenario.correction === "search" ? 3 : scenario.correction === "empty" ? 2 : 1,
@@ -1904,7 +1922,7 @@ describe("model-visible sticker contract", () => {
     expect(calls).toBe(3);
     const intent = h.outbox.list({})[0]!;
     expect(h.outbox.parts(intent.id).map((part) => JSON.parse(part.payload!))).toEqual([
-      { text: "你好" },
+      { text: "你好", mentions: [] },
       { stickerId: id },
     ]);
     const target = JSON.parse(h.outbox.row(intent.id)!.target);
@@ -1992,7 +2010,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(19500 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(32768 - 2048);
           if (++calls === 1)
             return JSON.stringify({
               kind: "invoke",
@@ -2008,7 +2026,7 @@ describe("sticker search context and permissions", () => {
       },
       { stickersAvailable: true },
     );
-    h.gateway.loadedContextCapacity = async () => 19500;
+    h.gateway.loadedContextCapacity = async () => 32768;
     const first = addSticker(h);
     h.db
       .query("UPDATE qq_sticker_assets SET description=? WHERE id=?")
@@ -2039,7 +2057,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(19500 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(22528 - 2048);
           calls++;
           if (calls > 1) {
             const page = stickerObservation(request);
@@ -2064,8 +2082,8 @@ describe("sticker search context and permissions", () => {
       { stickersAvailable: true },
     );
     // 本用例验证分页：容量需容纳当前完整协议，同时仍使大描述超预算、小候选可读。
-    // 19500 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
-    h.gateway.loadedContextCapacity = async () => 19500;
+    // 22528 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
+    h.gateway.loadedContextCapacity = async () => 22528;
     const anchor = addSticker(h);
     const collections = [collection(h, anchor)];
     setQqStickerEnabled(h.orm, anchor, false);
@@ -2094,7 +2112,7 @@ describe("sticker search context and permissions", () => {
     const h = setup(
       {
         complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(19500 - 2048);
+          expect(inputUnits(request.messages)).toBeLessThanOrEqual(21500 - 2048);
           if (++calls === 1)
             return JSON.stringify({
               kind: "invoke",
@@ -2112,8 +2130,8 @@ describe("sticker search context and permissions", () => {
       { stickersAvailable: true },
     );
     // 本用例验证分页：容量需容纳当前完整协议，同时仍使大描述超预算、小候选可读。
-    // 19500 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
-    h.gateway.loadedContextCapacity = async () => 19500;
+    // 21500 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
+    h.gateway.loadedContextCapacity = async () => 21500;
     const large = addSticker(h);
     editQqSticker(h.orm, large, { description: "详".repeat(2000) });
     h.receive("1");
@@ -2287,3 +2305,31 @@ for (const mode of ["throw", "reject"] as const) {
     expect(h.outbox.list({})).toHaveLength(1);
   });
 }
+
+describe("private direct terminal reply", () => {
+  it("commits the body from a first-call speech.reply without a generation step or second call", async () => {
+    let calls = 0;
+    const model = {
+      async complete() {
+        calls++;
+        return JSON.stringify({
+          kind: "invoke",
+          name: "speech.reply",
+          arguments: { outputs: [{ kind: "inline", targetId: "20002", text: "hi" }] },
+        });
+      },
+      async *streamText() {
+        yield "should-not-stream";
+      },
+    };
+    const h = setup(model as never);
+    h.receive("1");
+    const result = await activate(h);
+    expect(result.status).toBe("completed");
+    expect(calls).toBe(1);
+    const intent = h.outbox.list({})[0]!;
+    expect(intent.parts.map((p) => p.kind)).toEqual(["text"]);
+    // 私聊没有结构化 mention：text 部件按当期编解码还原。
+    expect(h.outbox.get(intent.id)!.ordinal).toBe(0);
+  });
+});

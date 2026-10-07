@@ -19,6 +19,16 @@ export const participationFields = [
     "connections.theJudgementScoreMustReachThisThresholdBeforeSpeaking",
   ],
   [
+    "initiative_batch_target_count",
+    "connections.initiativeBatchTargetCount",
+    "connections.initiativeBatchTargetCountHint",
+  ],
+  [
+    "initiative_batch_jitter_count",
+    "connections.initiativeBatchJitterCount",
+    "connections.initiativeBatchJitterCountHint",
+  ],
+  [
     "merge_window_seconds",
     "connections.mergeWindowSeconds",
     "connections.messagesAreMergedBySpeakerMeasuredFromTheirLast",
@@ -87,6 +97,7 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   "rhythm.active_hours_enabled": "connections.allowedHours",
   "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
   "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
+  "rhythm.initiative_queue_on_busy": "connections.initiativeQueueOnBusy",
   "context.judgement_message_limit": "connections.judgementRecentMessages",
   "context.judgement_window_minutes": "connections.judgementTimeWindowMinutes",
   "context.judgement_token_budget": "connections.judgementBudgetEstimatedBytes",
@@ -155,6 +166,7 @@ const rhythmSectionByName: Readonly<Record<string, QqSchemeSection>> = {
   active_hours_enabled: "participation",
   active_hours_start_minutes: "participation",
   active_hours_end_minutes: "participation",
+  initiative_queue_on_busy: "participation",
 };
 
 /** 提示词槽位 → 分组：各自独立任务指导，不是固定流水线阶段。 */

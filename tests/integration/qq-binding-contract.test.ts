@@ -437,3 +437,35 @@ describe("independent QQ observation provenance", () => {
     expect(() => qqObservationSource(binding({ kind: "private" }), event)).toThrow();
   });
 });
+
+describe("模式互斥：绑定合同的显式 triggers 写入", () => {
+  it("createQqBinding 显式双 true 拒绝；缺省（全跟随）不受影响", () => {
+    expect(() =>
+      createQqBinding(
+        input({
+          triggers: { direct_reply: null, follow_up: true, chiming_in: true, idle_topic: null },
+        }),
+      ),
+    ).toThrow("连续交谈与自主接话互斥");
+    const fresh = saved(createQqBinding(input()));
+    expect(fresh.triggers.follow_up).toBeNull();
+    expect(fresh.triggers.chiming_in).toBeNull();
+  });
+
+  it("updateQqBinding 显式补丁携带双 true 拒绝（含与存量相同值）；无 triggers 补丁放行", () => {
+    // 存量 raw 双 true 行不能经由合同新建（create 已拒），作为 legacy fixture 直接构造。
+    const legacy: QqBinding = {
+      ...saved(createQqBinding(input())),
+      triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: false },
+    };
+    // 存量 raw 双 true；补丁重写相同双 true → 拒。
+    expect(() => update(legacy, { triggers: { ...legacy.triggers } })).toThrow(
+      "连续交谈与自主接话互斥",
+    );
+    // 无 triggers 补丁（paused 翻转）→ 放行。
+    const savedPatch = update(legacy, { paused: true });
+    expect(savedPatch.triggers.follow_up).toBe(true);
+    expect(savedPatch.triggers.chiming_in).toBe(true);
+    expect(savedPatch.paused).toBe(true);
+  });
+});

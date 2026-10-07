@@ -361,4 +361,17 @@ describe("execution settings layout and usability", () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(scroll).toHaveBeenLastCalledWith({ block: "center" });
   });
+
+  it("renders concurrency serial notice when modelConcurrency or providerConcurrency is 1", async () => {
+    await renderSettings({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+    });
+    expect(screen.getByText("当前整机模型并发设为 1，所有服务合计串行")).toBeTruthy();
+
+    const modelInput = screen.getByLabelText("模型调用上限（整机）") as HTMLInputElement;
+    fireEvent.change(modelInput, { target: { value: "4" } });
+    expect(
+      screen.getByText("当前单服务并发设为 1，同服务内部调用串行；不同服务在整机上限内仍可并行"),
+    ).toBeTruthy();
+  });
 });

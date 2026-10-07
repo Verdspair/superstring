@@ -4,8 +4,13 @@
 // undefined 一条路；非法输入原文进 rawTexts 并拦住保存；保存是一次三段比较交换；显式刷新按
 // "本地改没改过"三路合并（没改跟新答案、改过含删除保留），绑定身份变化只保旧草稿并标记冲突。
 
-import type { QqBindingResponse, QqSchemeResponse } from "../../../shared/contracts/qq";
 import {
+  type QqBindingResponse,
+  type QqSchemeResponse,
+  QqSchemeRhythmSchema,
+} from "../../../shared/contracts/qq";
+import {
+  isBothTrueInteractionPair,
   mergeQqGroupScheme,
   type QqGroupCapability,
   type QqGroupConfigResponse,
@@ -499,8 +504,27 @@ export function qqGroupConfigDirty(editor: QqGroupConfigEditor | null): boolean 
 }
 
 /** 非法输入未修正前不允许保存（统一保存与页内保存共用同一条判定）。 */
-export function qqGroupConfigHasInvalidInputs(editor: QqGroupConfigEditor | null): boolean {
-  return !!editor && Object.keys(editor.rawTexts).length > 0;
+export function qqGroupConfigHasInvalidInputs(
+  editor: QqGroupConfigEditor | null,
+  targetScheme?: QqSchemeResponse,
+): boolean {
+  if (!editor) return false;
+  if (Object.keys(editor.rawTexts).length > 0) return true;
+  // 按合并后的节奏校验数值边界，支持传入待切换的目标方案。
+  const effective = qqGroupConfigEffectiveScheme(editor, targetScheme);
+  if (!effective || !QqSchemeRhythmSchema.safeParse(effective.rhythm).success) {
+    return true;
+  }
+  // 显式 overrides 中 triggers 禁止双 true
+  if (
+    isBothTrueInteractionPair({
+      follow_up: editor.overrides.triggers?.follow_up ?? null,
+      chiming_in: editor.overrides.triggers?.chiming_in ?? null,
+    })
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function patchOverrideFields(
@@ -549,12 +573,20 @@ function patchOverrideFields(
       rawTexts: withoutRaw(editor.rawTexts, key),
     };
   }
-  if (value === undefined)
+  if (value === undefined) {
+    let nextOverrides = withoutOverride(editor.overrides, group, name);
+    let nextRaw = withoutRaw(editor.rawTexts, key);
+    if (group === "triggers" && (name === "follow_up" || name === "chiming_in")) {
+      const other = name === "follow_up" ? "chiming_in" : "follow_up";
+      nextOverrides = withoutOverride(nextOverrides, "triggers", other);
+      nextRaw = withoutRaw(nextRaw, `triggers.${other}`);
+    }
     return {
       ...editor,
-      overrides: withoutOverride(editor.overrides, group, name),
-      rawTexts: withoutRaw(editor.rawTexts, key),
+      overrides: nextOverrides,
+      rawTexts: nextRaw,
     };
+  }
   const base = baseGroupOf(editor.source.base_scheme, group) as Record<string, unknown>;
   const baseValue = base[name];
   // 0052 可空标量：基线是 null（如「原图」）时按数值输入处理——数字原文钉住数值，
@@ -600,10 +632,21 @@ function patchOverrideFields(
       rawTexts: { ...editor.rawTexts, [key]: typeof value === "string" ? value : valueText(value) },
     };
   }
+  let nextOverrides = withOverride(editor.overrides, group, name, parsed.value);
+  let nextRaw = withoutRaw(editor.rawTexts, key);
+  if (
+    group === "triggers" &&
+    (name === "follow_up" || name === "chiming_in") &&
+    parsed.value === true
+  ) {
+    const other = name === "follow_up" ? "chiming_in" : "follow_up";
+    nextOverrides = withOverride(nextOverrides, "triggers", other, false);
+    nextRaw = withoutRaw(nextRaw, `triggers.${other}`);
+  }
   return {
     ...editor,
-    overrides: withOverride(editor.overrides, group, name, parsed.value),
-    rawTexts: withoutRaw(editor.rawTexts, key),
+    overrides: nextOverrides,
+    rawTexts: nextRaw,
   };
 }
 
@@ -972,24 +1015,25 @@ export function createQqGroupConfigActions(
       const state = get();
       const editor = state.qqGroupConfigEditor;
       if (!editor || state.qqGroupConfigSaving) return false;
-      if (qqGroupConfigHasInvalidInputs(editor)) {
+      const switching =
+        editor.schemeId !== undefined && editor.schemeId !== editor.source.base_scheme.id;
+      let targetScheme: QqSchemeResponse | undefined;
+      let expectedSchemeRevision = editor.source.base_scheme.revision;
+      if (switching) {
+        // expected_scheme_revision 指目标基线：换基线时是目标方案的 revision，不是旧基线的。
+        targetScheme = state.qqSchemes.find((row) => row.id === editor.schemeId);
+        if (!targetScheme) {
+          set({ error: msg("操作失败，请重试。"), feedback: "" });
+          return false;
+        }
+        expectedSchemeRevision = targetScheme.revision;
+      }
+      if (qqGroupConfigHasInvalidInputs(editor, targetScheme)) {
         set({ error: msg("请先修正方案中的无效数字，再保存。"), feedback: "" });
         return false;
       }
       // 与其它草稿保存同一习惯：没有改动就不发空 PUT，也不动任何基线。
       if (!qqGroupConfigDirty(editor)) return true;
-      const switching =
-        editor.schemeId !== undefined && editor.schemeId !== editor.source.base_scheme.id;
-      let expectedSchemeRevision = editor.source.base_scheme.revision;
-      if (switching) {
-        // expected_scheme_revision 指目标基线：换基线时是目标方案的 revision，不是旧基线的。
-        const target = state.qqSchemes.find((row) => row.id === editor.schemeId);
-        if (!target) {
-          set({ error: msg("操作失败，请重试。"), feedback: "" });
-          return false;
-        }
-        expectedSchemeRevision = target.revision;
-      }
       const input: UpdateQqGroupConfigRequest = {
         // Agent 身份取自打开时的绑定快照：绑定被改绑后这里仍是旧 Agent，服务端据此判冲突。
         agent_id: editor.source.binding.agent_id,

@@ -86,7 +86,8 @@ export type SendOutcome = "confirmed" | "failed" | "unknown" | "not_sent";
 export interface ReceiveInput {
   /** 平台消息 id（去重键的一部分）。 */
   readonly id: string;
-  readonly text?: string;
+  /** null＝省略 text 段（真纯图 wire）；undefined＝维持既有 "hello" 缺省。 */
+  readonly text?: string | null;
   /** 群聊里是发言人；私聊可省略（默认用 peer）。 */
   readonly speaker?: string;
   /** 明确 @ 本账号（私聊不需要）。 */
@@ -123,6 +124,14 @@ export interface OneBotHarnessOptions {
   readonly maxRecomputeCount?: number;
   /** 主动发言门槛；默认沿用方案默认（6）。 */
   readonly initiativeMinScore?: number;
+  /**
+   * 自主接话节奏三参数（方案 rhythm 的纯测试入口）：缺省沿用方案默认（15/5/ON），
+   * 不在夹具里特判产品行为。只有不测计数门槛的宿主行为用例才显式收窄（如 1/0），
+   * 计数门槛用例使用默认值或明确指定的参数。
+   */
+  readonly initiativeBatchTargetCount?: number;
+  readonly initiativeBatchJitterCount?: number;
+  readonly initiativeQueueOnBusy?: boolean;
   /**
    * P7/S55：接线生产 BotCompressionQueue（与 create-runtime 同一构造，无第二链）。true 时
    * 宿主 enqueue 的压缩任务进入真实队列，测试用 `h.compressionRunOnce()` 手动消费（不自动
@@ -307,9 +316,12 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
           } as QqSchemeMediaInput,
         }),
     reply: { split_by_speaker: options.splitBySpeaker ?? true },
+    // 触发器默认是一对合法组合（连续与自主互斥，方案保存契约拒绝双 true）：默认自主开、
+    // 连续关，测连续交谈的用例显式传 follow_up:true / chiming_in:false。调用方显式传双 true
+    // 不在这里静默归一——让 createQqScheme 的互斥校验按真实契约抛错，不靠旧双真读取归一伪造合法保存。
     triggers: {
       direct_reply: options.triggers?.direct_reply ?? true,
-      follow_up: options.triggers?.follow_up ?? true,
+      follow_up: options.triggers?.follow_up ?? false,
       chiming_in: options.triggers?.chiming_in ?? true,
       idle_topic: options.triggers?.idle_topic ?? true,
     },
@@ -320,6 +332,12 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       ...(options.initiativeMinScore === undefined
         ? {}
         : { initiative_min_score: options.initiativeMinScore }),
+      initiative_batch_target_count:
+        options.initiativeBatchTargetCount ?? QQ_RHYTHM_DEFAULT.initiative_batch_target_count,
+      initiative_batch_jitter_count:
+        options.initiativeBatchJitterCount ?? QQ_RHYTHM_DEFAULT.initiative_batch_jitter_count,
+      initiative_queue_on_busy:
+        options.initiativeQueueOnBusy ?? QQ_RHYTHM_DEFAULT.initiative_queue_on_busy,
     },
   });
   const bindingId = "11111111-1111-4111-8111-111111111111";
@@ -652,7 +670,7 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
           ...(input.image
             ? [{ type: "image", data: { file: input.image, ...(input.imageHint ?? {}) } }]
             : []),
-          { type: "text", data: { text: input.text ?? "hello" } },
+          ...(input.text === null ? [] : [{ type: "text", data: { text: input.text ?? "hello" } }]),
         ],
         // 双昵称快照（规格 §3.1）：undefined＝wire 缺省（键不出现），空串＝显式清空；
         // omitPersonalNickname=true＝nickname 键整个不出现（匿名/缺名场景，不拿 QQ 号冒名）。
@@ -679,15 +697,11 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       });
       const conversation = journal.ensureOneBot(bindingId);
       if (conversation) {
-        const row = db
-          .query(
-            "SELECT seq FROM conversation_events WHERE conversation_id=? AND event_key=? ORDER BY seq DESC LIMIT 1",
-          )
-          .get(
-            conversation.id,
-            normalized.kind === "message" ? normalized.observation.eventKey : "",
-          ) as { seq: number } | null;
-        if (row) lastSeq = row.seq;
+        // 入站事件的存储键由 intake 组装（带渠道前缀），夹具不重建键：按 kind=inbound
+        // 取 lastSeq 之后最新落库的一条，就是本次 receive 的消息。
+        const fresh = journal.eventsAfter(conversation.id, lastSeq, 20).items;
+        const inbound = [...fresh].reverse().find((entry) => entry.kind === "inbound");
+        if (inbound) lastSeq = inbound.seq;
       }
       return recorded;
     },

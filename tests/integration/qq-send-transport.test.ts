@@ -19,6 +19,7 @@ import type {
   OneBotSendResult,
 } from "../../src/server/services/onebot-connection";
 import type { QqPlannedOutput } from "../../src/server/services/qq-output-plan";
+import { qqTextSegments } from "../../src/server/services/qq-send-transport";
 import { sendQqPreparedReply } from "../fixtures/legacy-qq/qq-send-transport";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
@@ -471,5 +472,35 @@ describe("the send port's shape", () => {
       message: [{ type: "text", data: { text: "在的" } }],
     };
     expect(request.kind).toBe("private");
+  });
+});
+
+describe("qqTextSegments: two wire semantics (structured mentions vs legacy part)", () => {
+  it("sends a new part's body literally, even when it still spells a CQ at-code", () => {
+    const segments = qqTextSegments({ text: "[CQ:at,qq=20002] 在吗", mentions: [] });
+    expect(segments).toEqual([{ type: "text", data: { text: "[CQ:at,qq=20002] 在吗" } }]);
+  });
+
+  it("encodes structured mention ids as at segments after the body, and never the old program recipient", () => {
+    const segments = qqTextSegments({ text: "你们看这个", mentions: ["20002", "30003"] }, "20001");
+    expect(segments).toEqual([
+      { type: "text", data: { text: "你们看这个" } },
+      { type: "at", data: { qq: "20002" } },
+      { type: "at", data: { qq: "30003" } },
+    ]);
+  });
+
+  it("throws a protocol error on a non-numeric mention id instead of inventing or dropping a target", () => {
+    expect(() => qqTextSegments({ text: "在的", mentions: ["all"] })).toThrow(TypeError);
+    expect(() => qqTextSegments({ text: "在的", mentions: [""] })).toThrow(TypeError);
+  });
+
+  it("replays a legacy part (no mentions) on its own wire: subject CQ at plus the ordinal-0 recipient", () => {
+    const segments = qqTextSegments({ text: "[CQ:at,qq=20002] 刚才那句我同意" }, "20001");
+    expect(segments).toEqual([
+      { type: "at", data: { qq: "20001" } },
+      { type: "at", data: { qq: "20002" } },
+      { type: "text", data: { text: " 刚才那句我同意" } },
+    ]);
   });
 });

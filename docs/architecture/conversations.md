@@ -24,6 +24,8 @@ flowchart LR
 - A successful local run can commit output intent before the network sends. Local completion is not confirmation of delivery.
 - Unsent, failed and unknown parts remain distinct. A crash during sending becomes unknown; it is not automatically resent.
 - Independent target failures remain visible without dropping successful targets. A completely failed generation is not no_output.
+- Each reply target commits to the outbox independently once its minimal programmatic checks pass, inside the parent run; the parent run tracks every target to sent, failed or cancelled, and a committed target is never regenerated or resent because a sibling failed. A half-committed batch resumes with stable intent keys after re-verifying current source and binding validity.
+- Delivery keeps causal order within one target across its windows; different targets and conversations send concurrently under the existing sender claim, and unknown delivery outcomes stay unresolved instead of being replayed.
 - A logical reply may contain several transport parts. Disabling per-speaker replies permits one logical output, not multiple independent replies.
 
 ## Stable assistant history

@@ -250,7 +250,8 @@ function compressionGroup() {
   const scheme = createQqScheme(orm, {
     name: "compress-group",
     reply: { split_by_speaker: true },
-    triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: true },
+    // 本夹具只走直接回应入站与后台压缩边界；连续/自主不在此测，显式关（互斥契约拒绝双 true）。
+    triggers: { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: true },
   });
   orm
     .insert(schema.qqBindings)
@@ -380,7 +381,12 @@ function compressionGroup() {
 describe("本群生效方案真的进入运行时取值面", () => {
   it("场景提示词、节奏与上下文预算按本群差异生效，合并窗口改变唤醒就绪时刻", async () => {
     const scene = "GROUP-SCENE-MARKER-4101";
-    const h = createOneBotHarness({ model: [decideInline("20002", "在的", [])] });
+    // 合并窗口专供连续交谈（自主接话只看计数门槛，不再消费该参数）：本例显式走连续模式，
+    // 验证本群 rhythm 差异里的 merge_window_seconds 真的进入唤醒就绪时刻。
+    const h = createOneBotHarness({
+      model: [decideInline("20002", "在的", [])],
+      triggers: { follow_up: true, chiming_in: false },
+    });
     setGroupConfig(h.orm, h.bindingId, {
       overrides: {
         prompts: { scene },
@@ -398,7 +404,7 @@ describe("本群生效方案真的进入运行时取值面", () => {
     expect(schemeRhythm(base).merge_window_seconds).toBe(2);
     expect(schemeContext(effective).reply_token_budget).toBe(12_345);
 
-    // 非即时路径（自主接话）的合并窗口取本群生效值：30 秒内领不到，30 秒后可领。
+    // 连续交谈按人滚动：窗口取本群生效值，30 秒内领不到，30 秒后可领。
     h.receive({ id: "1", speaker: "20002", text: "随便说说" });
     const wantAt = (seconds: number) => new Date((h.clock.seconds + seconds) * 1000).toISOString();
     expect(h.wakes.peek({ at: wantAt(5) })).toBeNull();
@@ -482,8 +488,10 @@ describe("系统能力中途停用", () => {
     expect(h.sent).toHaveLength(0);
 
     // 下一轮：目录里已经不再出现记忆工具，模型提出调用也立不住。
+    // 第一轮失败的唤醒按夹具重试策略进入 15s 退避，同人新消息按 latest 并入该 pending 机会，
+    // 所以时钟要推过退避点才领得到（ready_at = 失败时刻 + retryDelayMs）。
     scripted.push([decideInvoke("memory.query", { query: "订单金额" })]);
-    h.advance(3);
+    h.advance(16);
     h.receive({ id: "2", speaker: "20002", addressed: true, text: "再查一次" });
     let second: string | undefined;
     try {

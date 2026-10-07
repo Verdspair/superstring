@@ -1,8 +1,9 @@
-import type {
-  QqBindingResponse,
-  QqConversationListItem,
-  QqSettingsResponse,
-  QqStickerCollectionResponse,
+import {
+  type QqBindingResponse,
+  type QqConversationListItem,
+  QqSchemeRhythmSchema,
+  type QqSettingsResponse,
+  type QqStickerCollectionResponse,
 } from "../../../shared/contracts/qq";
 import { QqMediaInputSettingsSchema } from "../../../shared/contracts/qq-media-input";
 import { QqMessageSettingsSchema } from "../../../shared/contracts/qq-message";
@@ -249,7 +250,21 @@ export function invalidSchemeInputs(state: SuperstringState) {
   });
   // 编辑器终验并入同一返回：非法原文与越界 editor 值都拦页保存/复制/统一保存/导航确认。
   const seen = new Set(rawRows.map(([field]) => field));
-  return [...rawRows, ...invalidSchemeEditorGroups(editor).filter(([field]) => !seen.has(field))];
+  const finalRows = [
+    ...rawRows,
+    ...invalidSchemeEditorGroups(editor).filter(([field]) => !seen.has(field)),
+  ];
+  if (editor) {
+    if (!QqSchemeRhythmSchema.safeParse(editor.rhythm).success) {
+      if (!seen.has("rhythm.initiative_batch_jitter_count")) {
+        finalRows.push([
+          "rhythm.initiative_batch_jitter_count",
+          String(editor.rhythm.initiative_batch_jitter_count),
+        ]);
+      }
+    }
+  }
+  return finalRows;
 }
 /**
  * 0052 时区是自由文本输入（可输可选）：不靠「原文 == 编辑器当前值」的字符串相等跳过校验——
@@ -527,7 +542,12 @@ export function createQqDraftActions(
         return false;
       }
       // 本群配置的非法数字与方案同一条前置：修正前统一保存不写任何一步。
-      if (qqGroupConfigHasInvalidInputs(get().qqGroupConfigEditor)) {
+      const groupEditor = get().qqGroupConfigEditor;
+      const targetScheme =
+        groupEditor?.schemeId !== undefined
+          ? get().qqSchemes.find((s) => s.id === groupEditor.schemeId)
+          : undefined;
+      if (qqGroupConfigHasInvalidInputs(groupEditor, targetScheme)) {
         set({ error: msg("请先修正方案中的无效数字，再保存。") });
         return false;
       }

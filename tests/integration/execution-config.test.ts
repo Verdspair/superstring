@@ -8,7 +8,7 @@ import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { createCodeMode } from "../../src/server/agent/code-mode";
 import {
-  createModelCallLimiter,
+  createModelAdmission,
   createModelPort,
   type TextModelGateway,
 } from "../../src/server/agent/model-port";
@@ -58,7 +58,14 @@ describe("execution configuration", () => {
       tasks: { concurrency: 2, retentionHours: 24, leaseSeconds: 30, pollMs: 500 },
       researchLimits: { maxPerRun: 2, maxSteps: 6, deadlineMs: 60_000, maxConclusionChars: 4_000 },
       codeLimits: { concurrency: 3 },
-      loop: { maxSteps: 16, readBatch: 3, noProgress: 3, concurrency: 4, modelConcurrency: 1 },
+      loop: {
+        maxSteps: 16,
+        readBatch: 3,
+        noProgress: 3,
+        concurrency: 4,
+        modelConcurrency: 4,
+        providerConcurrency: 2,
+      },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
     });
     for (const invalid of [
@@ -476,10 +483,10 @@ describe("execution configuration", () => {
 
   it("re-reads the model call limit on every acquisition", async () => {
     let limit = 1;
-    const limiter = createModelCallLimiter(() => limit);
-    const first = await limiter.acquire();
+    const admission = createModelAdmission({ total: () => limit });
+    const first = await admission.acquire(undefined);
     let entered = false;
-    const second = limiter.acquire().then((release) => {
+    const second = admission.acquire(undefined).then((release) => {
       entered = true;
       return release;
     });
@@ -490,10 +497,11 @@ describe("execution configuration", () => {
     expect(entered).toBe(true);
     release();
     limit = 2;
-    const a = await limiter.acquire();
-    const b = await limiter.acquire();
-    expect(limiter.limit()).toBe(2);
+    const a = await admission.acquire(undefined);
+    const b = await admission.acquire(undefined);
+    expect(admission.available()).toBe(false);
     a();
     b();
+    expect(admission.available()).toBe(true);
   });
 });

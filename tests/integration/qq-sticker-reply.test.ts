@@ -232,7 +232,7 @@ describe("the reply picks at most one sticker from what is usable now", () => {
         kind: "planned",
         shape: "mixed",
         parts: [
-          { kind: "text", text: "你好呀" },
+          { kind: "text", text: "你好呀", mentions: [] },
           { kind: "sticker", stickerId: loudSticker },
         ],
         requestedStickers: 1,
@@ -258,7 +258,7 @@ describe("the reply picks at most one sticker from what is usable now", () => {
       expect(captured.plan).toEqual({
         kind: "planned",
         shape: "text_only",
-        parts: [{ kind: "text", text: "只有文字" }],
+        parts: [{ kind: "text", text: "只有文字", mentions: [] }],
         requestedStickers: 0,
         chosenStickerIds: [],
         rejected: [],
@@ -293,7 +293,7 @@ describe("the reply picks at most one sticker from what is usable now", () => {
       expect(captured.plan).toEqual({
         kind: "planned",
         shape: "text_only",
-        parts: [{ kind: "text", text: "只有文字" }],
+        parts: [{ kind: "text", text: "只有文字", mentions: [] }],
         requestedStickers: 0,
         chosenStickerIds: [],
         rejected: [],
@@ -416,7 +416,7 @@ describe("the reply picks at most one sticker from what is usable now", () => {
       expect(captured.plan).toEqual({
         kind: "planned",
         shape: "text_only",
-        parts: [{ kind: "text", text: "只有文字" }],
+        parts: [{ kind: "text", text: "只有文字", mentions: [] }],
         requestedStickers: 1,
         chosenStickerIds: [],
         rejected: [],
@@ -501,7 +501,7 @@ describe("the reply picks at most one sticker from what is usable now", () => {
         kind: "planned",
         shape: "mixed",
         parts: [
-          { kind: "text", text: "只有文字" },
+          { kind: "text", text: "只有文字", mentions: [] },
           { kind: "sticker", stickerId: quietSticker },
         ],
         requestedStickers: 1,

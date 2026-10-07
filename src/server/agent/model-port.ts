@@ -85,6 +85,11 @@ export interface ModelPort {
   complete(request: ModelRequest): Promise<string>;
   streamText(request: ModelRequest): AsyncGenerator<string, void, unknown>;
   completeMultimodal(request: MultimodalRequest): Promise<string>;
+  /**
+   * 准入观察面（只读提示，不预留、不代替 acquire）；由 `createModelPort` 装配，
+   * 手工构造的夹具可省略。
+   */
+  readonly admission?: ModelAdmission;
 }
 export type TextModelGateway = Pick<ModelGateway, "complete"> &
   Partial<Pick<ModelGateway, "streamChat" | "config">>;
@@ -122,55 +127,127 @@ async function gatewayMessagesAsync(
 }
 
 /**
- * 同时最多几条模型调用。它是**进程级**的闸，不区分服务：本地模型服务通常只该有一条在飞
- * （排队比并发更快，也不折腾显存），登记的外部服务可以调大。
- *
- * 放在端口层而不是各调用点，是因为"能不能同时发"是传输事实，不是业务判断；将来按服务分级
- * （见 0.4.0 计划的 Provider 限额）也只需换一个实现，不动上层。
+ * 模型准入：整机总帽与服务帽同时可用才占名额，等待服务名额时不占整机名额。放在端口层
+ * 是因为"能不能同时发"是传输事实；`available()` 只是当前提示，不预留、不构成派发保证，
+ * 真正占名额只有 `acquire()`。变更通知在状态落定后同步触发，供 worker 唤醒后复查。
  */
-export interface ModelCallLimiter {
-  acquire(signal?: AbortSignal): Promise<() => void>;
-  /** 当前生效上限——传函数时每次 acquire 重新读取，改配置对新调用生效。 */
-  readonly limit: () => number;
+export interface ModelAdmission {
+  available(model?: string): boolean;
+  /** 返回退订；订阅随进程存活（准入实例无 dispose 语义）。 */
+  subscribe(listener: () => void): () => void;
 }
 
-export function createModelCallLimiter(limit: number | (() => number)): ModelCallLimiter {
-  const limitOf =
-    typeof limit === "function"
-      ? () => Math.max(1, Math.floor(limit()))
-      : () => {
-          if (!Number.isSafeInteger(limit) || limit < 1)
-            throw new Error("MODEL_CALL_LIMIT_INVALID");
-          return limit;
-        };
-  let active = 0;
-  const waiting: (() => void)[] = [];
-  const release = () => {
-    const next = waiting.shift();
-    if (next) next();
-    else active -= 1;
+export interface ManagedModelAdmission extends ModelAdmission {
+  /** 两个名额同时可用才 resolve 释放函数；等待中取消按 signal.reason reject 并摘队。 */
+  acquire(model: string | undefined, signal?: AbortSignal): Promise<() => void>;
+  /** 上限被外部改写后重新判定并唤醒等待队列；无定时轮询。 */
+  refresh(): void;
+}
+
+export function createModelAdmission(options: {
+  total?: number | (() => number);
+  perProvider?: number | (() => number);
+  providerKey?: (model: string | undefined) => string;
+}): ManagedModelAdmission {
+  const limitOf = (limit: number | (() => number) | undefined): (() => number) => {
+    if (limit === undefined) return () => Number.POSITIVE_INFINITY;
+    if (typeof limit === "function")
+      return () => {
+        const value = Math.floor(limit());
+        if (!Number.isSafeInteger(value) || value < 1) throw new Error("MODEL_LIMIT_INVALID");
+        return value;
+      };
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("MODEL_LIMIT_INVALID");
+    return () => limit;
+  };
+  const totalOf = limitOf(options.total);
+  const providerOf = limitOf(options.perProvider);
+  const keyOf = (model: string | undefined) => options.providerKey?.(model) ?? "all";
+  let activeTotal = 0;
+  const activeByProvider = new Map<string, number>();
+  /** 单一 FIFO：保持到达序；释放时从队首扫描，跳过暂时不可用的服务以推进空闲服务。 */
+  const waiting: { key: string; enter: () => void; abort: () => void }[] = [];
+  const listeners = new Set<() => void>();
+  // 通知只是"状态已变"的信号：回调异常不改变名额状态（占位/释放已生效），只记一行诊断。
+  // 订阅者按 trusted 处理——回调里不做准入决策，只唤醒自己的 worker 再复查。
+  const notify = () => {
+    for (const listener of [...listeners]) {
+      try {
+        listener();
+      } catch {
+        console.warn("model admission listener failed");
+      }
+    }
+  };
+  const hasRoom = (key: string): boolean =>
+    activeTotal < totalOf() && (activeByProvider.get(key) ?? 0) < providerOf();
+  /** 授予后统一再扫一遍队列：一次 release/refresh 可以推进多个等待者，直到无空位。 */
+  const drain = () => {
+    for (let index = 0; index < waiting.length; ) {
+      const entry = waiting[index];
+      if (!hasRoom(entry.key)) {
+        index += 1;
+        continue;
+      }
+      waiting.splice(index, 1);
+      entry.enter();
+    }
+  };
+  const acquire = (model: string | undefined, signal?: AbortSignal): Promise<() => void> => {
+    signal?.throwIfAborted();
+    const key = keyOf(model);
+    if (hasRoom(key)) {
+      activeTotal += 1;
+      activeByProvider.set(key, (activeByProvider.get(key) ?? 0) + 1);
+      notify();
+      let released = false;
+      return Promise.resolve(() => {
+        if (released) return;
+        released = true;
+        activeTotal -= 1;
+        activeByProvider.set(key, (activeByProvider.get(key) ?? 0) - 1);
+        drain();
+        notify();
+      });
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const entry = { key, abort: () => {}, enter: () => {} };
+      entry.enter = () => {
+        signal?.removeEventListener("abort", entry.abort);
+        activeTotal += 1;
+        activeByProvider.set(key, (activeByProvider.get(key) ?? 0) + 1);
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          activeTotal -= 1;
+          activeByProvider.set(key, (activeByProvider.get(key) ?? 0) - 1);
+          drain();
+          notify();
+        });
+      };
+      entry.abort = () => {
+        const index = waiting.indexOf(entry);
+        if (index >= 0) waiting.splice(index, 1);
+        reject(signal?.reason);
+      };
+      waiting.push(entry);
+      signal?.addEventListener("abort", entry.abort, { once: true });
+      notify();
+    });
   };
   return {
-    limit: limitOf,
-    async acquire(signal) {
-      signal?.throwIfAborted();
-      if (active < limitOf()) {
-        active += 1;
-        return release;
-      }
-      return new Promise<() => void>((resolve, reject) => {
-        const enter = () => {
-          signal?.removeEventListener("abort", abort);
-          resolve(release);
-        };
-        const abort = () => {
-          const index = waiting.indexOf(enter);
-          if (index >= 0) waiting.splice(index, 1);
-          reject(signal?.reason);
-        };
-        waiting.push(enter);
-        signal?.addEventListener("abort", abort, { once: true });
-      });
+    acquire,
+    refresh() {
+      drain();
+      notify();
+    },
+    available(model) {
+      return hasRoom(keyOf(model));
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }
@@ -178,9 +255,8 @@ export function createModelCallLimiter(limit: number | (() => number)): ModelCal
 /**
  * Keeps existing routing, strict-schema fallback, interruption and output-limit behavior.
  *
- * 两道并发闸：整机上限（`modelCallConcurrency`）先拿，按服务分级的池（`providerConcurrency`
- * × `providerKey`）后拿。服务级只可能在整机帽之下收紧，不可能靠调大它超过整机上限——
- * 而且整机帽省略时就是旧行为（不限），不由本函数另加默认。
+ * 准入交给 `createModelAdmission`：`modelCallConcurrency` 是整机帽，`providerConcurrency`
+ * × `providerKey` 是服务帽；两者都省略即旧行为（不限），不由本函数另加默认。
  */
 export function createModelPort(options: {
   gateway?: TextModelGateway;
@@ -191,45 +267,29 @@ export function createModelPort(options: {
   providerConcurrency?: number | (() => number);
   /** 模型名 → 服务键；同一键共享一个名额池。省略＝全部模型共用一个池。 */
   providerKey?: (model: string | undefined) => string;
+  /**
+   * 配置保存后的 drain 通知源。生产装配每进程一个 port，订阅与进程同寿命，因此这里
+   * 丢弃注册返回的退订函数（不构造按 run 销毁的 dispose 语义）；回调内只做 refresh。
+   */
+  onPolicyChange?: (listener: () => void) => () => void;
 }): ModelPort {
-  const limiter =
-    options.modelCallConcurrency === undefined
-      ? null
-      : createModelCallLimiter(options.modelCallConcurrency);
-  const providerLimiters = new Map<string, ModelCallLimiter>();
-  const providerLimiter = (model: string | undefined): ModelCallLimiter | null => {
-    if (options.providerConcurrency === undefined) return null;
-    const key = options.providerKey?.(model) ?? "all";
-    let limiter = providerLimiters.get(key);
-    if (!limiter) {
-      limiter = createModelCallLimiter(options.providerConcurrency);
-      providerLimiters.set(key, limiter);
-    }
-    return limiter;
-  };
-  /** 先整机后服务；中途失败把已拿到的名额还回去。 */
-  const acquire = async (model: string | undefined, signal?: AbortSignal) => {
-    const releases: (() => void)[] = [];
-    try {
-      if (limiter) releases.unshift(await limiter.acquire(signal));
-      const perProvider = providerLimiter(model);
-      if (perProvider) releases.unshift(await perProvider.acquire(signal));
-    } catch (error) {
-      for (const release of releases) release();
-      throw error;
-    }
-    return () => {
-      for (const release of releases) release();
-    };
-  };
+  const admission = createModelAdmission({
+    total: options.modelCallConcurrency,
+    perProvider: options.providerConcurrency,
+    providerKey: options.providerKey,
+  });
+  // 上限被保存改写后由外部调用：重判等待队列并唤醒（无定时轮询）。
+  options.onPolicyChange?.(() => admission.refresh());
+  const constrained =
+    options.modelCallConcurrency !== undefined || options.providerConcurrency !== undefined;
   const guarded = async <T>(
     run: () => Promise<T>,
     model: string | undefined,
     signal?: AbortSignal,
   ): Promise<T> => {
     signal?.throwIfAborted();
-    if (limiter === null && options.providerConcurrency === undefined) return run();
-    const release = await acquire(model, signal);
+    if (!constrained) return run();
+    const release = await admission.acquire(model, signal);
     try {
       signal?.throwIfAborted();
       return await run();
@@ -239,6 +299,7 @@ export function createModelPort(options: {
   };
   return {
     defaultModel: options.gateway?.config?.model,
+    admission,
     async complete(request) {
       const gateway = options.gateway;
       if (!gateway) throw new Error("Text model gateway is not configured");
@@ -276,10 +337,7 @@ export function createModelPort(options: {
       if (!options.gateway?.streamChat)
         throw new Error("Streaming text model gateway is not configured");
       // 流式调用整段占名额：否则"并发 1"会在第一条还没读完时放进第二条。
-      const release =
-        limiter === null && options.providerConcurrency === undefined
-          ? null
-          : await acquire(request.model, request.signal);
+      const release = constrained ? await admission.acquire(request.model, request.signal) : null;
       try {
         request.signal?.throwIfAborted();
         // 准备钩子路径（T10）：同 complete——原始消息走 preparedFrom，转换在钩子后按最终值完成。

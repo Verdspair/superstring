@@ -8,7 +8,7 @@ import { afterEach, expect, it } from "bun:test";
 import { saveQqConversationSummary } from "../../src/server/db/qq-summary-repository";
 import { DEFAULT_AGENT_ID } from "../../src/server/db/repositories";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
-import { decideGenerate, decideInline, decideInvoke, say } from "../harness/model";
+import { batchScore, decideGenerate, decideInline, decideInvoke, say } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 
 afterEach(() => {
@@ -594,27 +594,33 @@ const seedSummary = (h: OneBotHarness, marker: string): void => {
 };
 
 it("group judgement phase never sees watermark packages while the private reply phase does", async () => {
-  // 群聊：决策档 = judgement → 不装摘要包（生成相是回复档，不在本断言面）。
+  // 群聊：主动判断档（阶段一批量评分是首 call，judgement 档）→ 不装摘要包（回复相是回复档，
+  // 不在本断言面）。
   const group = createOneBotHarness({
     accountId: "90001",
     member: "10001",
-    model: [decideGenerate("20002", "回答", []), say("合成回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [
+      batchScore([{ targetId: "20002", score: 6, intent: "回答", sourceSeqs: [] }]),
+      decideGenerate("20002", "回答", []),
+      say("合成回复正文"),
+    ],
   });
   seedSummary(group, "水位包标记PACKAGETEXT");
   group.receive({
     id: "-701",
     speaker: "20002",
     text: "普通聊天",
-    addressed: true,
     groupCard: "阿林",
   });
-  await group.activate("direct_reply");
+  await group.activate("chiming_in");
   await group.deliver();
-  expect(phaseList(group)).toEqual(["next", "generate"]);
+  expect(phaseList(group)).toEqual(["next", "next", "generate"]);
   expect(group.sent).toHaveLength(1);
-  const groupDecision = callText(group, 0);
-  expect(groupDecision).not.toContain("水位包标记PACKAGETEXT");
-  expect(groupDecision).not.toContain("qq_context_packages");
+  const groupJudgement = callText(group, 0);
+  expect(groupJudgement).not.toContain("水位包标记PACKAGETEXT");
+  expect(groupJudgement).not.toContain("qq_context_packages");
   group.close();
 
   // 私聊：决策档 = reply → 已存包按装配规则进入输入。

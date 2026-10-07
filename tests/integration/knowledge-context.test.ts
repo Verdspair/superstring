@@ -456,8 +456,8 @@ describe("authorized knowledge context", () => {
     const retry = await (await send(keyA)).text();
     expect(retry).toContain("done");
     expect(decisionsB).toHaveLength(2);
-    // 冻结快照仍广告知识工具：重试没有改用「现行已关闭」的配置。
-    expect(decisionsB[0]?.messages[0]?.content).toContain("knowledge.query");
+    // 冻结快照仍广告知识工具：重试没有改用「现行已关闭」的配置（按真实 advertised action 断言）。
+    expect(decisionsB[0]?.messages[0]?.content).toContain('"name":"knowledge.query"');
     const retryDecision = decisionsB[1];
     if (!retryDecision) throw new Error("missing retry decision request");
     expect(observation(retryDecision, "knowledge.query")?.value).toMatchObject({
@@ -476,7 +476,10 @@ describe("authorized knowledge context", () => {
     };
     expect(await (await send(crypto.randomUUID())).text()).toContain("done");
     expect(decisionsC1).toHaveLength(1);
-    expect(decisionsC1[0]?.messages[0]?.content).not.toContain("knowledge.query");
+    // 关闭读取后 knowledge.* 不得出现在真实 advertised action 列表里；system 引导文本
+    // （system-evidence-reading）可以仍提到动作名——那只是 skill metadata，不是授予。
+    expect(decisionsC1[0]?.messages[0]?.content).not.toContain('"name":"knowledge.query"');
+    expect(decisionsC1[0]?.messages[0]?.content).not.toContain('"name":"knowledge.read"');
     expect(JSON.stringify(streamCalls.at(-1))).not.toContain("42.5");
 
     // 4) 新请求按新授权：重新授权后资料重新可读，并随观测进入生成输入。

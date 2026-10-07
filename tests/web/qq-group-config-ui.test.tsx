@@ -52,6 +52,9 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
+    initiative_batch_target_count: 15,
+    initiative_batch_jitter_count: 5,
+    initiative_queue_on_busy: true,
   },
   context: {
     judgement_message_limit: 20,
@@ -1026,4 +1029,65 @@ it("回复方式组的 max_recompute_count（再生成预算）可钉住进本�
   expect(editorOf()?.overrides).toEqual({ rhythm: { max_recompute_count: 1 } });
   fireEvent.change(state, { target: { value: "follow" } });
   expect(editorOf()?.overrides).toEqual({});
+});
+
+it("renders rhythm batch fields and queue on busy three-state override in participation group", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "发言时机" }));
+
+  // initiative_queue_on_busy 作为三态开关
+  const queueSelect = view.container.querySelector(
+    'select[data-field="rhythm.initiative_queue_on_busy"]',
+  ) as HTMLSelectElement;
+  expect(queueSelect).toBeTruthy();
+  expect(queueSelect.value).toBe("inherit");
+
+  // 切换为自定义开启
+  fireEvent.change(queueSelect, { target: { value: "on" } });
+  expect(editorOf()?.overrides.rhythm?.initiative_queue_on_busy).toBe(true);
+
+  // 切换为跟随方案
+  fireEvent.change(queueSelect, { target: { value: "inherit" } });
+  expect(editorOf()?.overrides.rhythm?.initiative_queue_on_busy).toBeUndefined();
+
+  // 目标消息数与浮动消息数数字输入框就位
+  const targetInput = view.container.querySelector(
+    'input[data-field="rhythm.initiative_batch_target_count"]',
+  ) as HTMLInputElement;
+  const jitterInput = view.container.querySelector(
+    'input[data-field="rhythm.initiative_batch_jitter_count"]',
+  ) as HTMLInputElement;
+  expect(targetInput).toBeTruthy();
+  expect(jitterInput).toBeTruthy();
+});
+
+it("enforces mutual exclusivity between follow_up and chiming_in switches in group config", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "发言时机" }));
+
+  const followUpSelect = view.container.querySelector(
+    'select[data-field="triggers.follow_up"]',
+  ) as HTMLSelectElement;
+  const chimingInSelect = view.container.querySelector(
+    'select[data-field="triggers.chiming_in"]',
+  ) as HTMLSelectElement;
+
+  // 开启连续交谈：自动将自主接话置为 off
+  fireEvent.change(followUpSelect, { target: { value: "on" } });
+  expect(editorOf()?.overrides.triggers).toEqual({
+    follow_up: true,
+    chiming_in: false,
+  });
+
+  // 开启自主接话：自动将连续交谈置为 off
+  fireEvent.change(chimingInSelect, { target: { value: "on" } });
+  expect(editorOf()?.overrides.triggers).toEqual({
+    follow_up: false,
+    chiming_in: true,
+  });
+
+  // 恢复跟随：成对恢复
+  fireEvent.change(chimingInSelect, { target: { value: "inherit" } });
+  expect(editorOf()?.overrides.triggers?.follow_up).toBeUndefined();
+  expect(editorOf()?.overrides.triggers?.chiming_in).toBeUndefined();
 });

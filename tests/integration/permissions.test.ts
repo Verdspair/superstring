@@ -13,6 +13,7 @@ import { permissionRoutes } from "../../src/server/api/permissions";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { DEFAULT_USER_ID } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import type { PermissionStore } from "../../src/server/permissions/service";
 import {
   evaluatePermission,
   FilePermissionStore,
@@ -65,6 +66,18 @@ const allow = (resource = requirement.resource) => ({
   version: 1 as const,
   grants: [{ resource, approved: false, directories: [] }],
 });
+
+class CountingStore implements PermissionStore {
+  reads = 0;
+  constructor(private readonly inner: PermissionStore) {}
+  read() {
+    this.reads += 1;
+    return this.inner.read();
+  }
+  replace(expectedRevision: string, policy: PermissionPolicy) {
+    return this.inner.replace(expectedRevision, policy);
+  }
+}
 
 describe("shared permission policy", () => {
   it("checks actor scope, effect, approval version and directory grants without broad fallbacks", () => {
@@ -428,6 +441,35 @@ describe("shared permission policy", () => {
     expect(repository.getContext(handle)?.messages).toBeNull();
   });
 
+  it("notifies policy subscribers once per successful save and never on a CAS failure", () => {
+    const h = setup();
+    let notifications = 0;
+    const unsubscribe = h.service.subscribe(() => {
+      notifications += 1;
+    });
+    h.replace(allow());
+    expect(notifications).toBe(1);
+    h.replace({ version: 1, grants: [] });
+    expect(notifications).toBe(2);
+    expect(() => h.service.replace("", { version: 1, grants: [] })).toThrow(
+      "PERMISSION_POLICY_CONFLICT",
+    );
+    expect(notifications).toBe(2);
+    unsubscribe();
+    h.replace(allow());
+    expect(notifications).toBe(2);
+  });
+
+  it("keeps a successful save successful when a subscriber throws", () => {
+    const h = setup();
+    h.service.subscribe(() => {
+      throw new Error("listener boom");
+    });
+    const saved = h.replace(allow());
+    expect(saved.revision).not.toBe("");
+    expect(h.service.snapshot().policy.grants).toHaveLength(1);
+  });
+
   it("exposes management separately from agent actions with schema, origin and revision checks", async () => {
     const h = setup();
     const app = new Hono();
@@ -480,5 +522,88 @@ describe("shared permission policy", () => {
         })
       ).status,
     ).toBe(422);
+  });
+
+  it("reads one policy snapshot per decision entrance and keeps approval and revocation semantics", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "permissions-counter-"));
+    dirs.push(dir);
+    const store = new CountingStore(new FilePermissionStore(path.join(dir, "permissions.json")));
+    const service = new PermissionService(store);
+    const req: PermissionRequirement = {
+      resource: "mcp.notes.read",
+      revision: "one",
+      approvalRequired: false,
+    };
+    const gated: PermissionRequirement = {
+      resource: "mcp.notes.read",
+      revision: "one",
+      approvalRequired: true,
+    };
+    const policy: PermissionPolicy = {
+      version: 1,
+      grants: [{ resource: "mcp.notes.read", revision: "one", approved: false, directories: [] }],
+    };
+    service.replace(service.snapshot().revision, policy);
+    store.reads = 0;
+
+    // undefined requirement never touches the store
+    expect(service.decide(undefined, owner, "direct", "read", false)).toEqual({ allowed: true });
+    expect(store.reads).toBe(0);
+
+    // one entrance snapshot: a supplied matching key costs a single read
+    const key = service.approvalKey(req, owner);
+    store.reads = 0;
+    expect(service.decide(req, owner, "direct", "read", false, key)).toEqual({ allowed: true });
+    expect(store.reads).toBe(1);
+    expect(
+      service.decide(gated, owner, "direct", "read", false, service.approvalKey(gated, owner)),
+    ).toEqual({ allowed: true });
+    store.reads = 0;
+    expect(service.decide(gated, owner, "direct", "read", false, "not-the-key")).toEqual({
+      allowed: false,
+      code: "PERMISSION_APPROVAL_REQUIRED",
+    });
+    expect(store.reads).toBe(1);
+
+    // caller pattern approvalKey() + decide() now reads twice (it used to read three times)
+    store.reads = 0;
+    const callerKey = service.approvalKey(req, owner);
+    service.decide(req, owner, "direct", "read", false, callerKey);
+    expect(store.reads).toBe(2);
+
+    // assert keeps the old hard failure and stays a single-read entrance
+    const assertKey = service.approvalKey(gated, owner);
+    store.reads = 0;
+    expect(() => service.assert(gated, owner, "direct", "read", false, assertKey)).not.toThrow();
+    expect(store.reads).toBe(1);
+    expect(() => service.assert(gated, owner, "direct", "read", false)).toThrow(
+      "PERMISSION_APPROVAL_REQUIRED",
+    );
+
+    // a missing grant still surfaces PERMISSION_DENIED to approval-key callers
+    const missing: PermissionRequirement = {
+      resource: "mcp.absent.read",
+      revision: "x",
+      approvalRequired: false,
+    };
+    expect(() => service.decide(missing, owner, "direct", "read", false, "any")).toThrow(
+      "PERMISSION_DENIED",
+    );
+    expect(service.decide(missing, owner, "direct", "read", false)).toEqual({
+      allowed: false,
+      code: "PERMISSION_DENIED",
+    });
+
+    // revision mismatch is still rejected against the same snapshot
+    expect(service.decide({ ...req, revision: "two" }, owner, "direct", "read", false)).toEqual({
+      allowed: false,
+      code: "PERMISSION_REVISION_CHANGED",
+    });
+
+    // sourceAccess stays live: it must see a later revocation
+    const source = service.source(req);
+    expect(service.sourceAccess(source, owner)).toBe("available");
+    service.replace(service.snapshot().revision, { version: 1, grants: [] });
+    expect(service.sourceAccess(source, owner)).toBe("revoked");
   });
 });

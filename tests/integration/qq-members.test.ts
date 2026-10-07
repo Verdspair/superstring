@@ -539,7 +539,8 @@ describe("legacy display name in the live snapshot path (F3)", () => {
           nickname: "旧显示",
           firstSeenAtSeconds: at,
           lastSeenAtSeconds: at,
-          expiresAt: memberExpiresAt(at),
+          // legacy 行必须仍活在本轮窗口内（默认 14 天窗口会随真实时钟到期），显式给上限保留期。
+          expiresAt: memberExpiresAt(at, 3650),
           nameState: "legacy",
           groupCard: null,
           personalNickname: null,

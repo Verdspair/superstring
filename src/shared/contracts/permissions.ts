@@ -47,10 +47,16 @@ export const ExecutionLoopLimitsSchema = z.strictObject({
   noProgress: z.number().int().min(3).max(10).default(3),
   /** QQ 跨会话唤醒并发（会话内恒为串行，由数据库租约保证）。 */
   concurrency: z.number().int().min(1).max(16).default(4),
-  /** 进程级模型调用上限（所有服务合计）。 */
-  modelConcurrency: z.number().int().min(1).max(16).default(1),
-  /** 每个服务单独的并发上限：只会在整机帽之下收紧，不能靠它超过整机上限。 */
-  providerConcurrency: z.number().int().min(1).max(16).default(1),
+  /**
+   * 进程级模型调用上限（所有服务合计），也是自主接话的 z。缺省 4：给多服务留余量，
+   * 同服务真实重叠仍由 providerConcurrency 约束；已存显式值（含 1）一律保留。
+   */
+  modelConcurrency: z.number().int().min(1).max(16).default(4),
+  /**
+   * 每个服务单独的并发上限：与整机帽同时可用才派发，只会在整机帽之下收紧。
+   * 缺省 2：同一服务允许一次真实请求重叠；已存显式值（含 1）保留。
+   */
+  providerConcurrency: z.number().int().min(1).max(16).default(2),
 });
 export const ExecutionQqLimitsSchema = z.strictObject({
   retryDelayMs: z.number().int().min(1_000).max(300_000).default(15_000),

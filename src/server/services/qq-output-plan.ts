@@ -44,13 +44,15 @@ const InputSchema = z.strictObject({
   minRepeatSeconds: z.number().int().nonnegative().nullable(),
   /** §9.3's soft rule: prefer stickers this conversation has not just seen. */
   avoidRecent: z.boolean(),
+  /** 结构化 @ 成员号（宿主已校验）；只挂在首条文本 part 上。 */
+  mentions: z.array(z.string().min(1)).optional(),
 });
 export type QqOutputPlanInput = Readonly<z.input<typeof InputSchema>>;
 
 export type QqOutputShape = "text_only" | "sticker_only" | "mixed";
 
 export type QqOutputPart =
-  | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "text"; readonly text: string; readonly mentions?: readonly string[] }
   | { readonly kind: "sticker"; readonly stickerId: string };
 
 /**
@@ -94,8 +96,10 @@ function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
   return result.data;
 }
 
-function textPart(text: string): QqOutputPart {
-  return Object.freeze({ kind: "text", text });
+function textPart(text: string, mentions: readonly string[] = []): QqOutputPart {
+  // 新协议下每个文本 part 都带 mentions 数组（无 @ 也是 []）：D2 按字段是否存在区分新旧，
+  // 缺字段会被当 legacy 把正文 CQ 变 @。首条带真实 ids，后续 part 传 []。
+  return Object.freeze({ kind: "text", text, mentions: Object.freeze([...mentions]) });
 }
 
 /** 一轮回复最多几条消息（一条主题一条消息）。可配置化记为后续项。 */
@@ -110,16 +114,19 @@ export const QQ_REPLY_MESSAGE_LIMIT = 3;
  * (longer is better than losing what somebody was told). A single line — the shape every earlier
  * version produced — passes through untouched.
  */
-function textParts(text: string): QqOutputPart[] {
+function textParts(text: string, mentions?: readonly string[]): QqOutputPart[] {
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line !== "");
-  if (lines.length <= 1) return [textPart(text)];
-  if (lines.length <= QQ_REPLY_MESSAGE_LIMIT) return lines.map((line) => textPart(line));
+  // 结构化 mention 只挂在**首条**文本 part 上（@ 出现在整条回复的开头），后续 part 不带，
+  // 避免同一条回复里重复 @。
+  if (lines.length <= 1) return [textPart(text, mentions)];
+  if (lines.length <= QQ_REPLY_MESSAGE_LIMIT)
+    return lines.map((line, index) => textPart(line, index === 0 ? mentions : []));
   const head = lines.slice(0, QQ_REPLY_MESSAGE_LIMIT - 1);
   const tail = lines.slice(QQ_REPLY_MESSAGE_LIMIT - 1).join(" ");
-  return [...head, tail].map((line) => textPart(line));
+  return [...head, tail].map((line, index) => textPart(line, index === 0 ? mentions : []));
 }
 
 function stickerPart(stickerId: string): QqOutputPart {
@@ -153,7 +160,7 @@ export function planQqOutput(input: unknown): QqOutputPlan {
       ? Object.freeze({
           kind: "planned",
           shape: "text_only",
-          parts: Object.freeze(textParts(text)),
+          parts: Object.freeze(textParts(text, value.mentions)),
           requestedStickers: value.requestedStickers,
           chosenStickerIds: Object.freeze([]),
           rejected: rejectedList([]),
@@ -192,7 +199,7 @@ export function planQqOutput(input: unknown): QqOutputPlan {
       ? Object.freeze({
           kind: "planned",
           shape: "text_only",
-          parts: Object.freeze(textParts(text)),
+          parts: Object.freeze(textParts(text, value.mentions)),
           requestedStickers: value.requestedStickers,
           chosenStickerIds: Object.freeze([]),
           rejected: rejectedList(rejected),
@@ -202,7 +209,9 @@ export function planQqOutput(input: unknown): QqOutputPlan {
   }
 
   const stickers = chosen.map((candidate) => stickerPart(candidate.id));
-  const parts: QqOutputPart[] = hasText ? [...textParts(text), ...stickers] : stickers;
+  const parts: QqOutputPart[] = hasText
+    ? [...textParts(text, value.mentions), ...stickers]
+    : stickers;
   return Object.freeze({
     kind: "planned",
     shape: hasText ? "mixed" : "sticker_only",

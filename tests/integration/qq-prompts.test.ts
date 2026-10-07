@@ -19,6 +19,7 @@ import {
 } from "../../src/server/db/schema-gate";
 import {
   buildQqPrompt,
+  parseQqBatchJudgement,
   parseQqSchemePrompts,
   QQ_PROMPT_DEFAULTS,
   QQ_PROMPT_SLOTS,
@@ -72,7 +73,7 @@ describe("editable QQ prompt storage and HTTP", () => {
           )
           .get(),
       ).toEqual({ revision: 7, judgement_output_reserved: 512, reply_output_reserved: 2048 });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 53 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
     } finally {
       db.close();
     }
@@ -120,7 +121,68 @@ describe("editable QQ prompt storage and HTTP", () => {
       expect(row.name).toBe("existing");
       for (const slot of QQ_PROMPT_SLOTS)
         expect(row[`prompt_${slot}`]).toBe(QQ_PROMPT_DEFAULTS[slot]);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 53 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
+    } finally {
+      db.close();
+    }
+  });
+  it("a fresh current database carries the 0054 rhythm defaults on a new scheme", () => {
+    const db = openBusinessDb();
+    try {
+      db.orm
+        .insert(businessTables.qqSchemes)
+        .values({
+          id: "00000000-0000-4000-8000-000000000054",
+          name: "默认节奏",
+          revision: 1,
+          createdAt: "2026-10-07T00:00:00.000Z",
+          updatedAt: "2026-10-07T00:00:00.000Z",
+        })
+        .run();
+      const row = db.orm.select().from(businessTables.qqSchemes).all().at(-1) as Record<
+        string,
+        unknown
+      >;
+      expect(row.initiativeBatchTargetCount).toBe(15);
+      expect(row.initiativeBatchJitterCount).toBe(5);
+      expect(row.initiativeQueueOnBusy).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a historical v53 database gains the three columns with defaults on upgrade, existing rows included", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const f of BUSINESS_MIGRATION_FILES.slice(0, 53))
+        db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
+      db.exec(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at) VALUES ('old','existing',7,'then','then'); PRAGMA user_version=53;",
+      );
+      ensureBusinessSchema(db);
+      const row = db
+        .query(
+          "SELECT initiative_batch_target_count, initiative_batch_jitter_count, initiative_queue_on_busy FROM qq_schemes WHERE id='old'",
+        )
+        .get() as Record<string, number>;
+      expect(row).toEqual({
+        initiative_batch_target_count: 15,
+        initiative_batch_jitter_count: 5,
+        initiative_queue_on_busy: 1,
+      });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("a future schema version is refused instead of silently downgraded", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const f of BUSINESS_MIGRATION_FILES)
+        db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
+      db.exec("PRAGMA user_version=55;");
+      expect(() => ensureBusinessSchema(db)).toThrow(/REJECT_UNKNOWN_VERSION/);
     } finally {
       db.close();
     }
@@ -538,6 +600,85 @@ describe("QQ judgement output fails closed", () => {
       expect(outcome).toEqual({ kind: "unreadable" });
       // An unreadable verdict never clears a threshold, however low that threshold is.
       expect(qqJudgeAllowsSpeech(outcome, 0)).toBe(false);
+    });
+  }
+});
+
+describe("the batch judgement contract (one call, one verdict per target)", () => {
+  const good = {
+    evaluations: [
+      { targetId: "20002", score: 7, intent: "接话", sourceSeqs: [12, 15] },
+      { targetId: "20003", score: 2, intent: "闲聊", sourceSeqs: [] },
+    ],
+  };
+
+  it("reads a well-formed batch verdict, keeping the frozen shape per target", () => {
+    const outcome = parseQqBatchJudgement(JSON.stringify(good));
+    expect(outcome).toEqual({
+      kind: "evaluations",
+      evaluations: [
+        { targetId: "20002", score: 7, intent: "接话", sourceSeqs: [12, 15] },
+        { targetId: "20003", score: 2, intent: "闲聊", sourceSeqs: [] },
+      ],
+    });
+    // The frozen arrays must not be mutable views the caller can rearrange.
+    if (outcome.kind === "evaluations") {
+      expect(Object.isFrozen(outcome.evaluations)).toBe(true);
+      expect(Object.isFrozen(outcome.evaluations[0])).toBe(true);
+      expect(Object.isFrozen(outcome.evaluations[0].sourceSeqs)).toBe(true);
+    }
+  });
+
+  it("accepts one fenced wrapper like the single verdict reader does", () => {
+    const outcome = parseQqBatchJudgement("```json\n" + JSON.stringify(good) + "\n```");
+    expect(outcome.kind).toBe("evaluations");
+  });
+
+  it("keeps 0 and 10 readable and a fractional or out-of-range score unreadable", () => {
+    expect(
+      parseQqBatchJudgement(
+        JSON.stringify({
+          evaluations: [{ targetId: "20002", score: 0, intent: "a", sourceSeqs: [] }],
+        }),
+      ).kind,
+    ).toBe("evaluations");
+    expect(
+      parseQqBatchJudgement(
+        JSON.stringify({
+          evaluations: [{ targetId: "20002", score: 10, intent: "a", sourceSeqs: [] }],
+        }),
+      ).kind,
+    ).toBe("evaluations");
+    for (const score of [7.5, 11, -1, "8"]) {
+      const outcome = parseQqBatchJudgement(
+        JSON.stringify({
+          evaluations: [{ targetId: "20002", score, intent: "a", sourceSeqs: [] }],
+        }),
+      );
+      expect(outcome).toEqual({ kind: "unreadable" });
+    }
+  });
+
+  for (const raw of [
+    "",
+    "null",
+    "[]",
+    "{}",
+    // An empty evaluations array is a shape the schema forbids: a batch that judged nobody is not
+    // representable (min 1) — the host decides no_output, the model cannot imply it.
+    '{"evaluations":[]}',
+    // Missing required keys, extra keys, and unknown shapes are unreadable, not partially readable.
+    '{"evaluations":[{"targetId":"20002","score":7}]}',
+    '{"evaluations":[{"targetId":"20002","score":7,"intent":"a","sourceSeqs":[1.5]}]}',
+    '{"evaluations":[{"targetId":"20002","score":7,"intent":"a","sourceSeqs":[-3]}]}',
+    '{"evaluations":[{"targetId":"20002","score":7,"intent":"a","sourceSeqs":["12"]}]}',
+    '{"evaluations":[{"targetId":"","score":7,"intent":"a","sourceSeqs":[]}]}',
+    '{"evaluations":[{"targetId":"20002","score":7,"intent":"a","sourceSeqs":[],"extra":1}]}',
+    "```json\n{}\n```",
+    "好的 " + JSON.stringify(good),
+  ]) {
+    it(`refuses malformed batch verdict ${raw.slice(0, 36)}`, () => {
+      expect(parseQqBatchJudgement(raw)).toEqual({ kind: "unreadable" });
     });
   }
 });

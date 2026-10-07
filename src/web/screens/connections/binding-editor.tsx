@@ -357,14 +357,29 @@ export function BindingEditor({
                         aria-label={t("connections.switchForValue", { "0": t(label) })}
                         disabled={saving}
                         value={value === null ? "inherit" : value ? "on" : "off"}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const val = e.target.value === "inherit" ? null : e.target.value === "on";
+                          let nextTriggers = {
+                            ...binding.triggers,
+                            [key]: val,
+                          };
+                          if (key === "follow_up" && val === true) {
+                            nextTriggers = { ...nextTriggers, follow_up: true, chiming_in: false };
+                          } else if (key === "chiming_in" && val === true) {
+                            nextTriggers = { ...nextTriggers, chiming_in: true, follow_up: false };
+                          } else if (
+                            (key === "follow_up" || key === "chiming_in") &&
+                            val === null
+                          ) {
+                            nextTriggers = { ...nextTriggers, follow_up: null, chiming_in: null };
+                          }
+                          if (nextTriggers.follow_up === true && nextTriggers.chiming_in === true) {
+                            nextTriggers = { ...nextTriggers, follow_up: false, chiming_in: true };
+                          }
                           void state.updateQqBindingRow(binding, {
-                            triggers: {
-                              ...binding.triggers,
-                              [key]: e.target.value === "inherit" ? null : e.target.value === "on",
-                            },
-                          })
-                        }
+                            triggers: nextTriggers,
+                          });
+                        }}
                       >
                         <option value="inherit">{t("connections.followTheScheme")}</option>
                         <option value="on">{t("connections.on")}</option>
@@ -373,6 +388,9 @@ export function BindingEditor({
                     </Field>
                   );
                 })}
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {t("connections.triggersMutualExclusionHint")}
+                </p>
               </SchemeFieldCard>
               <SchemeFieldCard
                 title={t("connections.importantPeople")}

@@ -62,6 +62,8 @@ export function checkQqTextPreflight(
       stickerId: z.string().min(1).nullable().optional(),
       // 0037: 这条消息回给谁（发送时 `@` 的号）。`null`＝没有对象，不加 `@`。
       targetSpeakerId: z.string().min(1).nullable().optional(),
+      // 结构化 @ 协议里合法的 mentionIds 数组也要能过这个形状；legacy 草稿仍可不带。
+      mentionIds: z.array(z.string()).optional(),
       memoryRead: z.strictObject({ keys: z.array(z.string()), fingerprint: z.string() }).optional(),
     })
     .safeParse(draft);
@@ -99,7 +101,7 @@ export function checkQqTextPreflight(
   // sticker that stopped being usable.
   if (draft.memoryRead && !qqMemoryReadIsCurrent(orm, binding.agentId, draft.memoryRead))
     return { kind: "blocked", reason: "memory_changed" };
-  const plan = planQqPreparedReply(orm, draft, stage);
+  const plan = planQqPreparedReply(orm, { ...draft, mentionIds: [] }, stage);
   if (plan.kind === "abandoned") return { kind: "blocked", reason: plan.reason };
   // 与生成阶段同一条规矩（2026-09-25）：只有"冲着她来的"或"她正在回的那个人"的新消息才要求复核，
   // 别人插一句无关的话不拦这一条。两处判据必须一致，否则预检会把生成阶段已经放行的草稿又拦下来。

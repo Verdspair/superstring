@@ -16,9 +16,23 @@ import { observationRelevant } from "./observation-relevance";
 /** Durable side effects. No model call can occur inside a transport transaction. */
 export class OutboundDelivery {
   private stopped = false;
+  /** 已占用的发送车道；名额与等待者由实例共享，多个 runOnce 不会各自超发。 */
+  private lanesInFlight = 0;
+  private readonly laneWaiters: Array<() => void> = [];
+  /** 本实例正在跑投递循环的会话：跨 runOnce 去重，同一会话不会占两个空车道。 */
+  private readonly activeConversations = new Set<string>();
   /** Finish an in-flight receipt, while leaving unstarted work durable for a new worker. */
   stop(): void {
     this.stopped = true;
+    // 等待名额的循环被唤醒后按 stopped 退出；已在飞的发送仍会收到回执并结算。
+    for (const wake of this.laneWaiters.splice(0)) wake();
+  }
+  /**
+   * 策略调高/撤销后由装配处调用（接既有配置更新通知，无定时器轮询）：唤醒等待者按**当前**
+   * 上限重新准入。不调用也不会卡死——每次释放都会再准入一次，只是调高后要等下一次释放。
+   */
+  notifyPolicyChange(): void {
+    for (const wake of this.laneWaiters.splice(0)) wake();
   }
   constructor(
     private readonly options: {
@@ -32,8 +46,33 @@ export class OutboundDelivery {
       authorize: (target: OutboundTarget, delivery: Delivery) => boolean;
       onStale?: (delivery: Delivery) => void;
       now?: () => string;
+      /**
+       * 本宿主同时允许几条真实发送（车道数）。它是**发送资源**，不是模型帽：默认不限，
+       * 生产由装配处按既有 QQ 并发资源注入（getter 形式，每次准入现读当前值）。同一个实例
+       * 共享这个名额，所以并发多次 runOnce 也不会突破它；下调后排队者不会再按旧值被放行。
+       */
+      deliveryConcurrency?: number | (() => number);
     },
   ) {}
+  /** 车道数每次准入现读：动态下调后，排队者不会再按旧值被放行。 */
+  private laneLimit(): number {
+    const configured = this.options.deliveryConcurrency;
+    const value = typeof configured === "function" ? configured() : configured;
+    return Math.max(1, value ?? Number.POSITIVE_INFINITY);
+  }
+  /** 取一条发送车道；停止时返回 false，调用方不发新请求，已在飞的照常结算。 */
+  private async acquireLane(): Promise<boolean> {
+    while (!this.stopped && this.lanesInFlight >= this.laneLimit())
+      await new Promise<void>((resolve) => this.laneWaiters.push(resolve));
+    if (this.stopped) return false;
+    this.lanesInFlight += 1;
+    return true;
+  }
+  /** 归还一条车道：只减一，再唤醒一个等待者按当前上限复核——不会向上限之外放行。 */
+  private releaseLane(): void {
+    this.lanesInFlight -= 1;
+    this.laneWaiters.shift()?.();
+  }
   private now() {
     return this.options.now?.() ?? new Date().toISOString();
   }
@@ -223,11 +262,13 @@ export class OutboundDelivery {
       let result: OneBotSendResult;
       try {
         if ("text" in claim.payload) {
+          // 线上段由部件 payload 决定：正文按字面文本，`@` 只来自 payload.mentions；
+          // 旧部件（无 mentions）才按当时的 wire 语义带程序收件人。
           result = await this.options.port.send({
             kind: target.conversationKind,
             peerId: target.peerId,
             message: qqTextSegments(
-              claim.payload.text,
+              claim.payload,
               claim.part.ordinal === 0 ? (target.participantId ?? null) : null,
             ),
           });
@@ -317,13 +358,48 @@ export class OutboundDelivery {
       return count;
     })();
   }
+  /**
+   * 投递所有待发意图。**按会话分车道**：慢群的真实 HTTP 只占它自己的车道，别的会话照常推进；
+   * 同一会话里的意图仍按原顺序串行投递——单意图的部件顺序与同人前后窗口的顺序由这段串行与
+   * 仓储里 claim 时的会话内因果检查共同保证，不引入第二条发送队列。
+   *
+   * 车道数＝发送资源上限（`deliveryConcurrency`，默认不限，每次准入现读）。它是发送上限而不是
+   * 模型帽，且由实例共享，所以并发多次 runOnce 也不会超发；同一会话已有循环在跑就不再起一条，
+   * 避免重复会话占空车道。停止后不再发新请求，等待者按 stopped 退出。
+   */
   async runOnce(): Promise<number> {
-    let count = 0;
-    for (const d of this.options.repository.pending()) {
-      if (this.stopped) break;
-      await this.deliver(d.id);
-      count++;
+    if (this.stopped) return 0;
+    const byConversation = new Map<string, string[]>();
+    for (const delivery of this.options.repository.pending()) {
+      const ids = byConversation.get(delivery.conversationId);
+      if (ids) ids.push(delivery.id);
+      else byConversation.set(delivery.conversationId, [delivery.id]);
     }
+    let count = 0;
+    const workers: Promise<void>[] = [];
+    for (const [conversationId, ids] of byConversation) {
+      if (this.activeConversations.has(conversationId)) continue;
+      this.activeConversations.add(conversationId);
+      workers.push(
+        (async () => {
+          try {
+            if (!(await this.acquireLane())) return;
+            try {
+              for (const id of ids) {
+                if (this.stopped) break;
+                await this.deliver(id);
+                count++;
+              }
+            } finally {
+              this.releaseLane();
+            }
+          } finally {
+            this.activeConversations.delete(conversationId);
+          }
+        })(),
+      );
+    }
+    await Promise.all(workers);
     this.housekeep();
     return count;
   }

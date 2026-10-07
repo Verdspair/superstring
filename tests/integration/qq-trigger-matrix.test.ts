@@ -39,15 +39,22 @@ const speaker = "20002";
 const now = 2_000_000_000;
 const stage: QqStickerStage = { counts: ["confirmed"], isAvailable: () => false };
 
-const ALL_ON: QqSpeechTriggers = Object.freeze({
+// 写入侧双真被拒后，矩阵按两个合法基态跑：连续交谈（follow 开）与自主接话（chiming 开）。
+const CONTINUOUS: QqSpeechTriggers = Object.freeze({
   direct_reply: true,
   follow_up: true,
+  chiming_in: false,
+  idle_topic: true,
+});
+const CHIMING: QqSpeechTriggers = Object.freeze({
+  direct_reply: true,
+  follow_up: false,
   chiming_in: true,
   idle_topic: true,
 });
 
 /** One account, one scheme whose four switches are given, one bound group. */
-function setup(triggers: QqSpeechTriggers = ALL_ON) {
+function setup(triggers: QqSpeechTriggers = CONTINUOUS) {
   const h = cloneBusinessDb();
   ensureDefaults(h.orm, "synthetic-model");
   updateQqSettings(h.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
@@ -210,7 +217,7 @@ describe("speech triggers: each switch stops exactly its own path", () => {
   });
 
   it("refuses the addressed message when 直接回应 is off, with no model call", async () => {
-    const { h } = setup({ ...ALL_ON, direct_reply: false });
+    const { h } = setup({ ...CONTINUOUS, direct_reply: false });
     try {
       message(h.orm, "direct-1", now - 10, true);
       const model = scripted([]);
@@ -239,7 +246,7 @@ describe("speech triggers: each switch stops exactly its own path", () => {
     } finally {
       on.h.close();
     }
-    const off = setup({ ...ALL_ON, follow_up: false });
+    const off = setup({ ...CONTINUOUS, follow_up: false });
     try {
       expect(followSignal(off.h)).toBeNull();
     } finally {
@@ -248,7 +255,7 @@ describe("speech triggers: each switch stops exactly its own path", () => {
   });
 
   it("schedules an initiative candidate, runs it with a judgement call, and stops when 自主接话 is off", async () => {
-    const on = setup();
+    const on = setup(CHIMING);
     try {
       expect(chimingSignal(on.h)).toBe("chiming_in");
       const model = scripted(['{"score":9}', "张三你好"]);
@@ -266,7 +273,7 @@ describe("speech triggers: each switch stops exactly its own path", () => {
     } finally {
       on.h.close();
     }
-    const off = setup({ ...ALL_ON, chiming_in: false });
+    const off = setup({ ...CHIMING, chiming_in: false });
     try {
       // 分类照写候选（那是"这条消息来过"的事实），开关管的是"说没说"。
       expect(chimingSignal(off.h)).toBe("chiming_in");
@@ -295,7 +302,7 @@ describe("speech triggers: each switch stops exactly its own path", () => {
     } finally {
       on.h.close();
     }
-    const off = setup({ ...ALL_ON, idle_topic: false });
+    const off = setup({ ...CONTINUOUS, idle_topic: false });
     try {
       expect(idleSignal(off.h)).toEqual({ scheduled: false, reason: "trigger_off" });
     } finally {
@@ -303,17 +310,31 @@ describe("speech triggers: each switch stops exactly its own path", () => {
     }
   });
 
-  it("turning one switch off leaves the other three paths unchanged", () => {
-    // 四个开关各关一次，把四条路的信号一起读出来。这里要区分两类信号：
-    //   * 「说没说」——立即路径给不给任务、冷场扫描排不排候选；
-    //   * 「记没记」——非 @ 群友消息在分类入口是否写下候选（自主接话的候选是**投递事实**，
-    //     开关管的是"说没说"，不是"记不记"；关掉它时候选照写，随后在预备阶段被判 trigger_off）。
+  it("turning one switch off leaves the other paths unchanged", () => {
+    // 两个合法基态各验一遍：连续交谈基态关 direct/follow/idle，自主接话基态关 direct/chiming/idle。
+    // 两类信号：立即路径给不给任务、冷场扫描排不排候选；分类入口照写候选（自主接话的候选是
+    // 投递事实，开关管"说没说"），所以 chiming 一列恒为 chiming_in。
     // 每条路各用一个自己的夹具：直接回应与连续交谈共用同一个"最新一条消息"的查找器，放在一个库里会互抢。
-    const cases: readonly [QqSpeechKind, readonly [string, string, string, string]][] = [
-      ["direct_reply", ["null", "follow_up", "chiming_in", "scheduled"]],
-      ["follow_up", ["direct_reply", "null", "chiming_in", "scheduled"]],
-      ["chiming_in", ["direct_reply", "follow_up", "chiming_in", "scheduled"]],
-      ["idle_topic", ["direct_reply", "follow_up", "chiming_in", "trigger_off"]],
+    const families: readonly [
+      QqSpeechTriggers,
+      readonly [QqSpeechKind, readonly [string, string, string, string]][],
+    ][] = [
+      [
+        CONTINUOUS,
+        [
+          ["direct_reply", ["null", "follow_up", "chiming_in", "scheduled"]],
+          ["follow_up", ["direct_reply", "null", "chiming_in", "scheduled"]],
+          ["idle_topic", ["direct_reply", "follow_up", "chiming_in", "trigger_off"]],
+        ],
+      ],
+      [
+        CHIMING,
+        [
+          ["direct_reply", ["null", "null", "chiming_in", "scheduled"]],
+          ["chiming_in", ["direct_reply", "null", "chiming_in", "scheduled"]],
+          ["idle_topic", ["direct_reply", "null", "chiming_in", "trigger_off"]],
+        ],
+      ],
     ];
     const signal = (switches: QqSpeechTriggers, read: (h: BusinessDbHandle) => string): string => {
       const h = setup(switches).h;
@@ -323,17 +344,19 @@ describe("speech triggers: each switch stops exactly its own path", () => {
         h.close();
       }
     };
-    for (const [off, expected] of cases) {
-      const switches = { ...ALL_ON, [off]: false };
-      expect([
-        signal(switches, (h) => directSignal(h) ?? "null"),
-        signal(switches, (h) => followSignal(h) ?? "null"),
-        signal(switches, (h) => chimingSignal(h) ?? "null"),
-        signal(switches, (h) => {
-          const idle = idleSignal(h);
-          return idle.scheduled ? "scheduled" : (idle.reason ?? "unknown");
-        }),
-      ]).toEqual([...expected]);
+    for (const [base, cases] of families) {
+      for (const [off, expected] of cases) {
+        const switches = { ...base, [off]: false };
+        expect([
+          signal(switches, (h) => directSignal(h) ?? "null"),
+          signal(switches, (h) => followSignal(h) ?? "null"),
+          signal(switches, (h) => chimingSignal(h) ?? "null"),
+          signal(switches, (h) => {
+            const idle = idleSignal(h);
+            return idle.scheduled ? "scheduled" : (idle.reason ?? "unknown");
+          }),
+        ]).toEqual([...expected]);
+      }
     }
   });
 
@@ -389,10 +412,10 @@ describe("speech triggers: each switch stops exactly its own path", () => {
   });
 
   it("does not reply twice when the immediate path already answered the same message", async () => {
-    const { h } = setup();
+    const { h } = setup(CHIMING);
     try {
       ownSpeech(h.orm, now - 120);
-      message(h.orm, "both-1", now - 60);
+      message(h.orm, "both-1", now - 60, true);
       // 事件路径先写下自主接话候选（非 @ 消息都会写一条）。
       expect(chimingSignal(h)).toBe("chiming_in");
       // 立即路径把这条消息当连续交谈回掉，并把确认送达写成她自己的发言。
@@ -405,8 +428,8 @@ describe("speech triggers: each switch stops exactly its own path", () => {
         stage,
         delivered.send,
       );
-      expect(immediate).toMatchObject({ kind: "authorized", path: "follow_up" });
-      ownSpeech(h.orm, now - 30, "follow_up");
+      expect(immediate).toMatchObject({ kind: "authorized", path: "direct_reply" });
+      ownSpeech(h.orm, now - 30, "direct_reply");
       // 队列里那条候选随后到期：它必须发现"没有人比她的发言更新"，于是不发也不调模型。
       const second = scripted([]);
       const result = await runQqDispatchCycle(

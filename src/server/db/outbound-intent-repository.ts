@@ -19,7 +19,22 @@ export type OutboundTarget = {
   agentConfigVersion?: number;
   sources?: SourceRef[];
 };
-export type OutboundPartPayload = { text: string } | { stickerId: string };
+export type OutboundPartPayload =
+  | { text: string; mentions?: readonly string[] }
+  | { stickerId: string };
+/**
+ * 落库形状。`mentions` 键只在调用方给了结构化协议时才写入：有键＝新协议（新提交恒带，可为
+ * 空数组），无键＝变更前计划的旧部件。发送与出站事实的读回都靠这个区别还原真实线上段，
+ * 不能用空数组冒充旧件，否则历史已送内容会被重新解释。
+ */
+function payloadJson(part: {
+  text: string;
+  mentions?: readonly string[];
+}): Record<string, unknown> {
+  return part.mentions === undefined
+    ? { text: part.text }
+    : { text: part.text, mentions: [...part.mentions] };
+}
 type IntentRow = {
   id: string;
   run_id: string;
@@ -144,7 +159,10 @@ export class OutboundIntentRepository {
     deliverBy: string;
     createdAt: string;
     expiresAt: string;
-    parts: ({ kind: "text"; text: string } | { kind: "sticker"; stickerId: string })[];
+    parts: (
+      | { kind: "text"; text: string; mentions?: readonly string[] }
+      | { kind: "sticker"; stickerId: string }
+    )[];
   }): Delivery {
     return this.db.transaction(() => {
       const existing = this.db
@@ -175,7 +193,7 @@ export class OutboundIntentRepository {
               ordinal,
               part.kind,
               JSON.stringify(
-                part.kind === "text" ? { text: part.text } : { stickerId: part.stickerId },
+                part.kind === "text" ? payloadJson(part) : { stickerId: part.stickerId },
               ),
             );
         return this.get(id)!;
@@ -207,7 +225,7 @@ export class OutboundIntentRepository {
             ordinal,
             part.kind,
             JSON.stringify(
-              part.kind === "text" ? { text: part.text } : { stickerId: part.stickerId },
+              part.kind === "text" ? payloadJson(part) : { stickerId: part.stickerId },
             ),
           );
       return this.get(id)!;
@@ -217,12 +235,21 @@ export class OutboundIntentRepository {
     return (
       this.db
         .query(
-          "SELECT id FROM outbound_intents WHERE status IN ('planned','delivering') ORDER BY created_at,output_ordinal",
+          "SELECT id FROM outbound_intents WHERE status IN ('planned','delivering') ORDER BY created_at,output_ordinal,id",
         )
         .all() as { id: string }[]
     ).map((r) => this.get(r.id)!);
   }
-  /** Persist sending before the first network byte. Another worker cannot claim the same part. */
+  /**
+   * Persist sending before the first network byte.
+   *
+   * Two different workers may deliver different conversations at the same time, so the claim is
+   * also where causal order inside one conversation is enforced: the intent that still owes an
+   * earlier reply must settle (or go final) before a later one starts. "Earlier" is the same
+   * order the delivery queue uses — created_at then output_ordinal — so a reply never overtakes
+   * the previous one for the same people. A stuck or already-tried earlier intent returns `null`
+   * here rather than letting the later one through; the caller leaves it planned and retries.
+   */
   claimPart(
     intentId: string,
     at: string,
@@ -231,6 +258,27 @@ export class OutboundIntentRepository {
       .transaction(() => {
         const intent = this.row(intentId);
         if (!intent || !["planned", "delivering"].includes(intent.status)) return null;
+        if (
+          this.db
+            .query(
+              `SELECT 1 FROM outbound_intents
+               WHERE conversation_id=? AND id<>? AND status IN ('planned','delivering')
+                 AND (created_at<? OR (created_at=? AND output_ordinal<?)
+                      OR (created_at=? AND output_ordinal=? AND id<?))
+               LIMIT 1`,
+            )
+            .get(
+              intent.conversation_id,
+              intentId,
+              intent.created_at,
+              intent.created_at,
+              intent.output_ordinal,
+              intent.created_at,
+              intent.output_ordinal,
+              intentId,
+            )
+        )
+          return null;
         const parts = this.parts(intentId);
         if (parts.some((p) => p.status !== "confirmed" && p.status !== "planned")) return null;
         const part = parts.find((p) => p.status === "planned");

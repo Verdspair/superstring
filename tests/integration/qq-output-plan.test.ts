@@ -264,7 +264,7 @@ describe("assembling §8.1's reply", () => {
     expect(plan).toEqual({
       kind: "planned",
       shape: "text_only",
-      parts: [{ kind: "text", text: "今天风挺大" }],
+      parts: [{ kind: "text", text: "今天风挺大", mentions: [] }],
       requestedStickers: 0,
       chosenStickerIds: [],
       rejected: [],
@@ -401,7 +401,7 @@ describe("assembling §8.1's reply", () => {
     expect(plan).toEqual({
       kind: "planned",
       shape: "text_only",
-      parts: [{ kind: "text", text: "算了，就这样吧" }],
+      parts: [{ kind: "text", text: "算了，就这样吧", mentions: [] }],
       requestedStickers: 1,
       chosenStickerIds: [],
       rejected: [{ stickerId: "a", reason: "file_unavailable" }],
@@ -559,5 +559,59 @@ describe("一条主题一条消息", () => {
 
   it("空行不产生空消息", () => {
     expect(plan("一\n\n二")).toEqual(["一", "二"]);
+  });
+});
+
+describe("structured mentions in planned parts", () => {
+  it("puts mentions on the first text part and [] on later parts of a multi-part reply", () => {
+    const plan = planQqOutput({
+      text: "line one\nline two",
+      requestedStickers: 0,
+      maxStickerCount: 1,
+      candidates: [],
+      minRepeatSeconds: null,
+      avoidRecent: false,
+      mentions: ["20002"],
+    });
+    expect(plan.kind).toBe("planned");
+    if (plan.kind !== "planned") return;
+    expect(plan.parts).toEqual([
+      { kind: "text", text: "line one", mentions: ["20002"] },
+      { kind: "text", text: "line two", mentions: [] },
+    ]);
+  });
+
+  it("keeps a text part's mentions an array ([]) when no @ was requested", () => {
+    const plan = planQqOutput({
+      text: "hello",
+      requestedStickers: 0,
+      maxStickerCount: 1,
+      candidates: [],
+      minRepeatSeconds: null,
+      avoidRecent: false,
+    });
+    expect(plan.kind).toBe("planned");
+    if (plan.kind !== "planned") return;
+    // 缺省 mentions 也写成 []：D2 按字段存在区分新旧，缺字段会被当 legacy。
+    expect(plan.parts).toEqual([{ kind: "text", text: "hello", mentions: [] }]);
+  });
+
+  it("carries mentions on the text part of a mixed (text + sticker) reply", () => {
+    const plan = planQqOutput({
+      text: "hi",
+      requestedStickers: 1,
+      maxStickerCount: 1,
+      candidates: [candidate("s1")],
+      minRepeatSeconds: null,
+      avoidRecent: false,
+      mentions: ["20002"],
+    });
+    expect(plan.kind).toBe("planned");
+    if (plan.kind !== "planned") return;
+    expect(plan.shape).toBe("mixed");
+    expect(plan.parts).toEqual([
+      { kind: "text", text: "hi", mentions: ["20002"] },
+      { kind: "sticker", stickerId: "s1" },
+    ]);
   });
 });

@@ -6,14 +6,13 @@
 
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 import {
+  batchScore,
   decideGenerate,
-  decideGenerateMany,
   decideInline,
   decideInvoke,
   decideNone,
   type ModelStep,
   say,
-  scoreOf,
 } from "./model";
 import { createOneBotHarness, type OneBotHarness } from "./onebot";
 
@@ -134,7 +133,8 @@ function snapshot(
 export async function privateDirectReply(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     kind: "private",
-    model: [decideGenerate("20002"), say("在的，怎么了")],
+    // 直接回应不做前置意图轮：首 call 直接给正文（规格 §2.4）。
+    model: [decideInline("20002", "在的，怎么了")],
   });
   harness.receive({ id: "1", text: "在吗" });
   const result = await harness.activate("direct_reply");
@@ -142,10 +142,10 @@ export async function privateDirectReply(): Promise<ScenarioRun> {
   return snapshot("私聊直接回应", harness, statusOf(result));
 }
 
-/** 群聊被 @：按发言人拆开、换行折叠、`@` 加在部件上。 */
+/** 群聊被 @：直接回应首 call 直接出正文；@ 由脚本显式 mentionIds 决定（无 auto-at）。 */
 export async function groupAddressed(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
-    model: [decideGenerate("20002"), say("收到\n马上看")],
+    model: [decideInline("20002", "收到\n马上看", [], undefined, ["20002"])],
   });
   harness.receive({ id: "1", speaker: "20002", addressed: true, text: "在吗" });
   const result = await harness.activate("direct_reply");
@@ -157,7 +157,8 @@ export async function groupAddressed(): Promise<ScenarioRun> {
 export async function groupUnsplitReply(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     splitBySpeaker: false,
-    model: [decideGenerate("30003"), say("第一句\n第二句")],
+    // 不给 mentionIds＝不 @（模型未要求 @ 时线上不应出现 at 段）。
+    model: [decideInline("30003", "第一句\n第二句")],
   });
   harness.receive({ id: "1", speaker: "20002", addressed: true, text: "在吗" });
   const result = await harness.activate("direct_reply");
@@ -166,24 +167,51 @@ export async function groupUnsplitReply(): Promise<ScenarioRun> {
 }
 
 /**
- * 自主接话达门槛：意图 → **程序触发**许可 → 写正文（0.4.0 P4 §4.1）。
- * 模型只产出意图（generate 的 instructions），评分由程序在写正文之前发出。
+ * 自主接话达门槛（规格 §2.2）：阶段一**一次**批量评分 → 达标目标进入回复子 run，
+ * 首 call 直接出正文（显式 @ 走 mentionIds，宿主编码 at 段）。
+ * 非计数门槛用例：显式 1/0 让单条未叫消息即成自主机会；计数门槛用例保留默认 15/5。
  */
 export async function chimingInAboveThreshold(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
-    model: [decideGenerate("20002"), scoreOf(9), say("这个我知道")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   harness.receive({ id: "1", speaker: "20002", text: "有人知道这个怎么弄吗" });
+  // 评分引用必须是本批冻结的真实成员事件 seq；回复首 call 的 @ 由脚本显式 mentionIds 决定。
+  harness.model?.push([
+    batchScore([
+      {
+        targetId: "20002",
+        score: 9,
+        intent: "想帮忙解答",
+        sourceSeqs: [harness.lastEventSeq],
+      },
+    ]),
+    decideInline("20002", "这个我知道", [], undefined, ["20002"]),
+  ]);
   harness.advance(3);
   const result = await harness.activate("chiming_in");
   await harness.deliver();
   return snapshot("自主接话达门槛", harness, statusOf(result));
 }
 
-/** 自主接话时模型自己判断没什么可说：直接 none（零评分调用），不留待发意图。 */
+/**
+ * 自主接话低分消费（规格 §2.2）：批评分给出低于门槛的分值＝正常 no_output，
+ * 消费本批观察边界，不留待发意图，也不算协议错误。
+ */
 export async function chimingInSilent(): Promise<ScenarioRun> {
-  const harness = createOneBotHarness({ model: [decideNone()] });
+  const harness = createOneBotHarness({
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
+  });
   harness.receive({ id: "1", speaker: "20002", text: "今天天气不错" });
+  harness.model?.push([
+    batchScore([
+      { targetId: "20002", score: 2, intent: "闲聊寒暄", sourceSeqs: [harness.lastEventSeq] },
+    ]),
+  ]);
   harness.advance(3);
   const result = await harness.activate("chiming_in");
   await harness.deliver();
@@ -204,12 +232,22 @@ export async function deliveryUnknown(): Promise<ScenarioRun> {
   return snapshot("投递结果未知", harness, statusOf(result));
 }
 
-/** 低于门槛仍要求 final：许可不通过＝**静默结束**（`no_output`），不是整轮失败（§4.1 已落）。 */
+/**
+ * 批评分低于门槛：**静默结束**（`no_output`），不是整轮失败（规格 §2.2：低分消费本批边界，
+ * 与协议错误分开）。
+ */
 export async function belowThresholdButFinal(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
-    model: [decideGenerate("20002"), scoreOf(1)],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   harness.receive({ id: "1", speaker: "20002", text: "无关的话" });
+  harness.model?.push([
+    batchScore([
+      { targetId: "20002", score: 1, intent: "无实质内容", sourceSeqs: [harness.lastEventSeq] },
+    ]),
+  ]);
   harness.advance(3);
   let status = "missing";
   let error: string | null = null;
@@ -223,10 +261,10 @@ export async function belowThresholdButFinal(): Promise<ScenarioRun> {
   return snapshot("低于门槛仍要求 final", harness, status, error);
 }
 
-/** 被 @ 之后他人插话：这一轮仍然回被叫到的人。 */
+/** 被 @ 之后他人插话：这一轮仍然回被叫到的人；@ 由显式 mentionIds 决定。 */
 export async function addressedThenInterrupted(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
-    model: [decideGenerate("20002"), say("好的")],
+    model: [decideInline("20002", "好的", [], undefined, ["20002"])],
   });
   harness.receive({ id: "1", speaker: "20002", addressed: true, text: "帮我看看" });
   harness.receive({ id: "2", speaker: "20003", text: "我先说个别的" });
@@ -235,22 +273,30 @@ export async function addressedThenInterrupted(): Promise<ScenarioRun> {
   return snapshot("被 @ 之后他人插话", harness, statusOf(result));
 }
 
-/** 多人同时说话：逐人评分、逐人回复。 */
+/**
+ * 多人同时说话（规格 §2.2）：**一次**批评分覆盖本批全部候选，达标者各自进回复子 run，
+ * 首 call 直接出正文、按目标显式 @。
+ */
 export async function multipleSpeakers(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     mergeWindowSeconds: 2,
-    // 程序按目标逐个走"许可 → 写正文"，所以脚本也按这个顺序交错。
-    model: [
-      decideGenerateMany(["20002", "20003"]),
-      scoreOf(9),
-      say("回甲"),
-      scoreOf(7),
-      say("回乙"),
-    ],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   harness.receive({ id: "1", speaker: "20002", text: "甲的问题" });
+  const seqA = harness.lastEventSeq;
   harness.advance(1);
   harness.receive({ id: "2", speaker: "20003", text: "乙的问题" });
+  const seqB = harness.lastEventSeq;
+  harness.model?.push([
+    batchScore([
+      { targetId: "20002", score: 9, intent: "甲在提问", sourceSeqs: [seqA] },
+      { targetId: "20003", score: 7, intent: "乙也在提问", sourceSeqs: [seqB] },
+    ]),
+    decideInline("20002", "回甲", [], undefined, ["20002"]),
+    decideInline("20003", "回乙", [], undefined, ["20003"]),
+  ]);
   harness.advance(3);
   const result = await harness.activate("chiming_in");
   await harness.deliver();
@@ -264,11 +310,21 @@ export async function multipleSpeakers(): Promise<ScenarioRun> {
 export async function multipleSilentBelowThreshold(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     mergeWindowSeconds: 2,
-    model: [decideGenerateMany(["20002", "20003"]), scoreOf(1), scoreOf(1)],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   harness.receive({ id: "1", speaker: "20002", text: "随意说说甲" });
+  const seqA = harness.lastEventSeq;
   harness.advance(1);
   harness.receive({ id: "2", speaker: "20003", text: "随意说说乙" });
+  const seqB = harness.lastEventSeq;
+  harness.model?.push([
+    batchScore([
+      { targetId: "20002", score: 1, intent: "闲聊", sourceSeqs: [seqA] },
+      { targetId: "20003", score: 1, intent: "闲聊", sourceSeqs: [seqB] },
+    ]),
+  ]);
   harness.advance(3);
   const result = await harness.activate("chiming_in");
   await harness.deliver();
@@ -282,11 +338,23 @@ export async function multipleSilentBelowThreshold(): Promise<ScenarioRun> {
 export async function mixedSilentAndSpeaking(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     mergeWindowSeconds: 2,
-    model: [decideGenerateMany(["20002", "20003"]), scoreOf(9), say("回甲"), scoreOf(1)],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   harness.receive({ id: "1", speaker: "20002", text: "甲的问题" });
+  const seqA = harness.lastEventSeq;
   harness.advance(1);
   harness.receive({ id: "2", speaker: "20003", text: "乙的问题" });
+  const seqB = harness.lastEventSeq;
+  harness.model?.push([
+    batchScore([
+      { targetId: "20002", score: 9, intent: "甲在提问", sourceSeqs: [seqA] },
+      { targetId: "20003", score: 1, intent: "闲聊", sourceSeqs: [seqB] },
+    ]),
+    // 只有达标目标进回复子 run；未达标者不派发、不计失败。
+    decideInline("20002", "回甲", [], undefined, ["20002"]),
+  ]);
   harness.advance(3);
   const result = await harness.activate("chiming_in");
   await harness.deliver();
@@ -302,14 +370,20 @@ export async function pausedConversation(): Promise<ScenarioRun> {
   return snapshot("会话暂停", harness, result === null ? "no_wake" : statusOf(result));
 }
 
-/** 冷场发起：安静满时长后扫描排程，面向整间会话、不加 @。 */
+/**
+ * 冷场发起（规格 §2.5）：安静满时长后扫描排程，一次判断（批评分形状）过门槛后
+ * 直接进回复任务出正文；面向整间会话，脚本不给 mentionIds＝不加 @。
+ */
 export async function idleTopic(): Promise<ScenarioRun> {
-  const harness = createOneBotHarness({
-    model: [decideNone(), decideGenerate("30003"), scoreOf(8), say("好久没人说话了")],
-  });
+  // 冷场不经自主计数门槛（节奏默认 15/5 下单条消息不成自主机会，正好保持会话安静）。
+  const harness = createOneBotHarness({ model: [] });
   harness.receive({ id: "1", speaker: "20002", text: "随便说说" });
+  const seq = harness.lastEventSeq;
+  harness.model?.push([
+    batchScore([{ targetId: "30003", score: 8, intent: "没人说话想开个话题", sourceSeqs: [seq] }]),
+    decideInline("30003", "好久没人说话了"),
+  ]);
   harness.advance(3);
-  await harness.activate("chiming_in");
   harness.advance(901);
   harness.sweep();
   const result = await harness.activate("idle_topic");
@@ -321,9 +395,9 @@ export async function idleTopic(): Promise<ScenarioRun> {
 export async function newMessageDuringGeneration(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
     model: [
-      decideGenerate("20002"),
+      decideGenerate("20002", "respond", undefined, undefined, ["20002"]),
       say("第一版", () => harness.receive({ id: "9", speaker: "20002", text: "对了，还有个事" })),
-      decideGenerate("20002"),
+      decideGenerate("20002", "respond", undefined, undefined, ["20002"]),
       say("第二版"),
     ],
   });
@@ -357,6 +431,8 @@ export async function pendingIntentSurvivesRestart(): Promise<ScenarioRun> {
  */
 export async function mediaReadFailureThenSupplement(): Promise<ScenarioRun> {
   const harness = createOneBotHarness({
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
     vision: ["fail", "图里是一只猫"],
     model: [],
     mediaInput: {
@@ -382,14 +458,19 @@ export async function mediaReadFailureThenSupplement(): Promise<ScenarioRun> {
       if (status === "failed") return [decideGenerate("20002")];
     }
     if (observation?.name === "media.note.read" && observation.value?.status === "ok")
-      return [decideInline("20002", "看到了，是只猫", [])];
+      return [decideInline("20002", "看到了，是只猫", [], undefined, ["20002"])];
     return null;
   });
 
-  // ① 群友只发了图、没叫她：自主接话（合并窗口 2 秒）里模型先读图，失败后发布被闸。
+  // ① 群友发了图和一句话、没叫她：批评分先行（规格 §2.2），回复任务里模型先读图，失败后发布被闸。
   harness.receive({ id: "1", speaker: "20002", text: "看这个", image: "upstream-1" });
   harness.advance(3);
-  harness.model?.push([decideInvoke("media.list", {})]);
+  harness.model?.push([
+    batchScore([
+      { targetId: "20002", score: 7, intent: "想看看这张图", sourceSeqs: [harness.lastEventSeq] },
+    ]),
+    decideInvoke("media.list", {}),
+  ]);
   let blockedNote: string;
   try {
     blockedNote = statusOf(await harness.activate("chiming_in"));
@@ -542,6 +623,76 @@ export async function knowledgeRevocation(): Promise<ScenarioRun> {
   const second = await harness.activate("direct_reply");
   await harness.deliver();
   return snapshot("资料撤权后不再进上下文", harness, `${statusOf(first)}/${statusOf(second)}`);
+}
+
+/**
+ * 真纯图负例（wire 无 text 段，receive text:null）：同秒同人两条纯图（不同 message id →
+ * 不同 eventKey/fileRef，身份稳定性由真实 source 裁定，夹具不猜时间），批评分后回复任务
+ * 逐张读图——一失败一成功，模型经 terminal speech.reply 尝试发布——失败图必须在提交处
+ * 挡下：整轮 MEDIA_READ_FAILED、零出站、零发送、恰两次视觉调用。
+ * 不入 ALL_SCENARIOS（基线记录器消费面不变），只由 owned 断言文件接线。
+ */
+export async function mediaReadFailureImageOnly(): Promise<ScenarioRun> {
+  const harness = createOneBotHarness({
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    vision: ["fail", "图里是一只猫"],
+    model: [],
+    mediaInput: {
+      mode: "native",
+      stages: { decision: false, evaluation: false, generation: false },
+    },
+  });
+  // 逐张描述已列出的图；全部描述完（一失败一成功）仍尝试经 terminal 发布。
+  const listed: string[] = [];
+  const described: string[] = [];
+  driveToolFirst(harness, (observation) => {
+    if (observation?.name === "media.list" && observation.value?.status === "ok") {
+      for (const item of observation.value.items ?? [])
+        if (item?.id !== undefined) listed.push(item.id);
+      const first = listed[0];
+      return first === undefined ? [decideNone()] : [decideInvoke("media.describe", { id: first })];
+    }
+    if (observation?.name === "media.describe") {
+      described.push(observation.value?.status ?? "unknown");
+      const next = listed[described.length];
+      if (next !== undefined) return [decideInvoke("media.describe", { id: next })];
+      return [
+        decideInvoke("speech.reply", {
+          outputs: [{ kind: "inline", targetId: "20002", text: "看到了图", stickerIds: [] }],
+        }),
+      ];
+    }
+    return null;
+  });
+  // 同秒同人两条真纯图：同一 clock tick 内连续落库，稳定身份只能来自真实 eventKey；
+  // 引用 seq 逐条捕获（两次入站之间夹着 wake 事件，不能按差值猜）。
+  harness.receive({ id: "1", speaker: "20002", image: "upstream-1", text: null });
+  const seqFirst = harness.lastEventSeq;
+  harness.receive({ id: "2", speaker: "20002", image: "upstream-2", text: null });
+  const seqSecond = harness.lastEventSeq;
+  harness.model?.push([
+    batchScore([
+      {
+        targetId: "20002",
+        score: 7,
+        intent: "想看看这两张图",
+        sourceSeqs: [seqFirst, seqSecond],
+      },
+    ]),
+    decideInvoke("media.list", {}),
+  ]);
+  harness.advance(3);
+  let status = "missing";
+  let error: string | null = null;
+  try {
+    status = statusOf(await harness.activate("chiming_in"));
+  } catch (caught) {
+    status = "failed";
+    error = (caught as { code?: string }).code ?? String(caught);
+  }
+  await harness.deliver();
+  return snapshot("真纯图读失败发布被闸", harness, status, error);
 }
 
 /** 全部 P0 场景，顺序固定（基线与测试都按这个顺序走）。 */

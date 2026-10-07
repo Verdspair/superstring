@@ -11,13 +11,16 @@ import {
   QQ_STICKER_DEDUP_DEFAULT,
   type QqSchemeResponse,
   QqSchemeResponseSchema,
+  QqSchemeRhythmSchema,
 } from "../../src/shared/contracts/qq";
 import {
+  isBothTrueInteractionPair,
   isEmptyQqGroupOverrides,
   mergeQqGroupScheme,
   normalizeQqGroupCapabilities,
   type QqGroupSchemeOverrides,
   QqGroupSchemeOverridesSchema,
+  resolveQqInteractionPair,
   UpdateQqGroupConfigRequestSchema,
 } from "../../src/shared/contracts/qq-group-config";
 import { QQ_MEDIA_INPUT_DEFAULT } from "../../src/shared/contracts/qq-media-input";
@@ -143,7 +146,10 @@ describe("本群方案差异的稀疏形状", () => {
       context: { judgement_token_budget: 1024 },
     });
     const effective = mergeQqGroupScheme(scheme, overrides);
-    expect(effective.triggers.follow_up).toBe(true);
+    // scheme 已开 chiming_in，本群又显式开 follow_up → 组合双 true（新写会被保存边界拒绝），
+    // 但 merge 本身是纯读归一：生效对按 chiming_in 优先，continuous 不生效。
+    expect(effective.triggers.follow_up).toBe(false);
+    expect(effective.triggers.chiming_in).toBe(true);
     expect(effective.triggers.direct_reply).toBe(true);
     expect(effective.rhythm.merge_window_seconds).toBe(5);
     expect(effective.rhythm.reply_cooldown_seconds).toBe(QQ_RHYTHM_DEFAULT.reply_cooldown_seconds);
@@ -291,5 +297,110 @@ describe("0052 消息设置与图片输入组的稀疏差异（T01 Step5）", ()
       media_input: { stages: {} },
     });
     expect(empty).toEqual({});
+  });
+});
+
+describe("0054 自主接话批量参数的稀疏覆盖与互斥解析", () => {
+  it("三个批量字段逐字段覆盖，缺席＝跟随基础方案；关系在合并后的完整节奏上校验", () => {
+    const base = baseScheme();
+    const overrides = QqGroupSchemeOverridesSchema.parse({
+      rhythm: { initiative_batch_target_count: 30, initiative_batch_jitter_count: 20 },
+    });
+    const merged = mergeQqGroupScheme(base, overrides);
+    expect(merged.rhythm.initiative_batch_target_count).toBe(30);
+    expect(merged.rhythm.initiative_batch_jitter_count).toBe(20);
+    expect(merged.rhythm.initiative_queue_on_busy).toBe(base.rhythm.initiative_queue_on_busy);
+
+    const singleY = QqGroupSchemeOverridesSchema.parse({
+      rhythm: { initiative_batch_jitter_count: 3 },
+    });
+    const mergedY = mergeQqGroupScheme(base, singleY);
+    expect(mergedY.rhythm.initiative_batch_target_count).toBe(
+      base.rhythm.initiative_batch_target_count,
+    );
+    expect(mergedY.rhythm.initiative_batch_jitter_count).toBe(3);
+  });
+
+  it("Y < X 在契约层拒绝：差异单值与基础方案组合后违约同样拒绝", () => {
+    const base = baseScheme();
+    // 基础 X=15；差异 Y=20 → 合并后违约。
+    const bad = { rhythm: { initiative_batch_jitter_count: 20 } };
+    const merged = mergeQqGroupScheme(base, QqGroupSchemeOverridesSchema.parse(bad));
+    expect(QqSchemeRhythmSchema.safeParse(merged.rhythm).success).toBe(false);
+    // 稀疏差异自身不携带完整关系（X/Y 可分别来自两层），(5,5) 在差异层可解析；
+    // 违约在合并后的完整节奏上必现，由保存边界（repo）据此拒绝。
+    const selfConflict = QqGroupSchemeOverridesSchema.parse({
+      rhythm: { initiative_batch_target_count: 5, initiative_batch_jitter_count: 5 },
+    });
+    const conflictMerged = mergeQqGroupScheme(base, selfConflict);
+    expect(QqSchemeRhythmSchema.safeParse(conflictMerged.rhythm).success).toBe(false);
+  });
+
+  it("queue_on_busy 剥默认后可选：显式 false 是真实覆盖，缺席是跟随", () => {
+    const base = baseScheme();
+    const off = mergeQqGroupScheme(
+      base,
+      QqGroupSchemeOverridesSchema.parse({ rhythm: { initiative_queue_on_busy: false } }),
+    );
+    expect(off.rhythm.initiative_queue_on_busy).toBe(false);
+    const follow = mergeQqGroupScheme(base, QqGroupSchemeOverridesSchema.parse({ rhythm: {} }));
+    expect(follow.rhythm.initiative_queue_on_busy).toBe(base.rhythm.initiative_queue_on_busy);
+  });
+
+  it("resolveQqInteractionPair：三层覆盖、旧双真读作只自主、两项全关合法", () => {
+    const scheme = { follow_up: false, chiming_in: true };
+    expect(
+      resolveQqInteractionPair({ scheme, binding: { follow_up: null, chiming_in: null } }),
+    ).toEqual({ continuous: false, chimingIn: true });
+    // 组合出的双 true 只可能是存量（新写已被保存边界拒绝），读取按 chiming_in 优先。
+    expect(
+      resolveQqInteractionPair({ scheme, binding: { follow_up: true, chiming_in: null } }),
+    ).toEqual({ continuous: false, chimingIn: true });
+    expect(
+      resolveQqInteractionPair({
+        scheme: { follow_up: false, chiming_in: false },
+        binding: { follow_up: true, chiming_in: null },
+        group: { follow_up: null, chiming_in: false },
+      }),
+    ).toEqual({ continuous: true, chimingIn: false });
+    // 存量双 true：读取按 chiming_in 优先，不报错。
+    expect(
+      resolveQqInteractionPair({ scheme, binding: { follow_up: true, chiming_in: true } }),
+    ).toEqual({ continuous: false, chimingIn: true });
+    // 两项全关也是合法状态。
+    expect(
+      resolveQqInteractionPair({ scheme, binding: { follow_up: false, chiming_in: false } }),
+    ).toEqual({ continuous: false, chimingIn: false });
+  });
+
+  it("isBothTrueInteractionPair 只对显式双 true 为真，null 不算", () => {
+    expect(isBothTrueInteractionPair({ follow_up: true, chiming_in: true })).toBe(true);
+    expect(isBothTrueInteractionPair({ follow_up: true, chiming_in: null })).toBe(false);
+    expect(isBothTrueInteractionPair({ follow_up: null, chiming_in: true })).toBe(false);
+  });
+});
+
+describe("生效对归一：mergeQqGroupScheme 与 raw 存量双 true", () => {
+  it("基础方案 raw 双 true 时 effective triggers 按 chiming_in 优先，raw base 不被改写", () => {
+    const base = baseScheme();
+    // 显式构造 raw 双 true 的存量方案形状。
+    const legacyBase = {
+      ...base,
+      triggers: { direct_reply: true, follow_up: true, chiming_in: true, idle_topic: false },
+    };
+    const merged = mergeQqGroupScheme(legacyBase, QqGroupSchemeOverridesSchema.parse({}));
+    // 生效对归一：自主优先，连续不生效。
+    expect(merged.triggers.follow_up).toBe(false);
+    expect(merged.triggers.chiming_in).toBe(true);
+    // 输入的 raw base 不被改写。
+    expect(legacyBase.triggers.follow_up).toBe(true);
+    expect(legacyBase.triggers.chiming_in).toBe(true);
+    // 本群差异单开 follow_up，chiming_in 跟随 legacy 双 true → 组合双 true → 仍归一为只自主。
+    const merged2 = mergeQqGroupScheme(
+      legacyBase,
+      QqGroupSchemeOverridesSchema.parse({ triggers: { follow_up: true, chiming_in: null } }),
+    );
+    expect(merged2.triggers.follow_up).toBe(false);
+    expect(merged2.triggers.chiming_in).toBe(true);
   });
 });

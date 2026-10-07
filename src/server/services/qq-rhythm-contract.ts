@@ -34,9 +34,14 @@ const MINUTES_PER_DAY = 24 * 60;
  * DDL defaults say, so an old scheme and a fresh one behave the same.
  */
 export const QQ_RHYTHM_DEFAULT: QqSchemeRhythm = Object.freeze({
+  /** 只用于连续交谈：每位发言人从自己的最后一条消息起算。 */
   merge_window_seconds: 30,
   reply_cooldown_seconds: 10,
   hourly_speech_limit: 200,
+  // 自主接话达到计数区间后等模型名额；超过上界时按繁忙设置保留或跳过机会。
+  initiative_batch_target_count: 15,
+  initiative_batch_jitter_count: 5,
+  initiative_queue_on_busy: true,
   /**
    * 0034 (user decision 2026-09-25): the interest score the judge has to reach for the assistant
    * to open her mouth unprompted. 6 keeps the behaviour the boolean verdict had — a message the

@@ -47,7 +47,7 @@ import {
   verifyQqFactInputs,
 } from "../../src/server/services/qq-memory-fact-input";
 import { projectQqTextRelations } from "../../src/server/services/qq-text-relations";
-import { decideGenerate, say, scoreOf } from "../harness/model";
+import { batchScore, decideGenerate, say } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 
 afterEach(() => {
@@ -588,35 +588,40 @@ describe("水位与判断档（id55 补块）", () => {
     const h = createOneBotHarness({
       accountId: "90001",
       member: "10001",
-      model: [decideGenerate("10001", "回答", []), say("合成回复正文")],
+      initiativeMinScore: 6,
+      // 阶段一批量评分的候选数收窄 X1/Y0：未点名的群消息走真实 chiming_in 唤醒。
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
+      model: [],
     });
     try {
       const marker = "水位包标记PACKAGETEXT55";
       seedSummary(h, marker);
-      h.receive({
-        id: "-7201",
-        speaker: "10001",
-        text: "普通聊天",
-        addressed: true,
-        groupCard: "阿林",
-      });
+      h.receive({ id: "-7201", speaker: "20002", text: "普通聊天", groupCard: "阿林" });
+      h.advance(31);
       const before = summaryRowJson(h);
       expect(before).not.toBeNull();
-      await h.activate("direct_reply");
+      // 新 chiming_in 形状：阶段一批量评分（judge）→ 回复决策 → 生成。
+      h.model?.push([
+        batchScore([
+          { targetId: "20002", score: 6, intent: "想接话", sourceSeqs: [h.lastEventSeq] },
+        ]),
+        decideGenerate("20002", "回答", [], undefined, ["20002"]),
+        say("合成回复正文"),
+      ]);
+      await h.activate("chiming_in");
       await h.deliver();
 
-      // 判断档＝决策相（call 0）：无包正文、无包信封（判断档完全不碰水位）。
-      expect(phases(h)).toEqual(["next", "generate"]);
-      const decisionText = callText(h, 0);
-      expect(decisionText).not.toContain(marker);
-      expect(decisionText).not.toContain("qq_context_packages");
-      // 生成相＝回复档：已存包按装配规则进入（旧规则装配的整链正测）。
-      expect(callText(h, 1)).toContain(marker);
+      // 判断档＝阶段一批量评分（call 0）：无包正文、无包信封（判断档完全不碰水位）。
+      expect(phases(h)).toEqual(["next", "next", "generate"]);
+      const judgeText = callText(h, 0);
+      expect(judgeText).not.toContain(marker);
+      expect(judgeText).not.toContain("qq_context_packages");
+      // 回复档（生成相）：已存包按装配规则进入（旧规则装配的整链正测）。
+      expect(callText(h, 2)).toContain(marker);
       // 行 hash 强负：before/after 逐字相等——判断档既不压缩也不推进水位
       // （qq_conversation_summaries 只有压缩任务会写）。
       expect(summaryRowJson(h)).toBe(before);
-      // 无辅助（压缩/整理）模型调用。
-      expect(phases(h)).toEqual(["next", "generate"]);
     } finally {
       h.close();
     }
@@ -851,11 +856,20 @@ describe("raw wire 保留（id58 补块）", () => {
       mergeWindowSeconds: 0,
       mediaInput: { mode: "native" },
       imageBytes: { [PATHY_REF]: bytes },
-      model: [decideGenerate("10001", "回答", []), scoreOf(6), say("合成回复正文")],
+      // 阶段一批量评分的候选数收窄 X1/Y0：让真实 chiming_in 唤醒在本夹具触发。
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
+      model: [],
     });
     try {
       h.receive({ id: "-7101", speaker: "10001", text: "看图回答", image: PATHY_REF });
       h.advance(31);
+      // 新 chiming_in 形状：阶段一批量评分（judge）→ 回复决策 → 生成。
+      h.model?.push([
+        batchScore([{ targetId: "10001", score: 6, intent: "看图", sourceSeqs: [h.lastEventSeq] }]),
+        decideGenerate("10001", "回答", []),
+        say("合成回复正文"),
+      ]);
       await h.activate("chiming_in");
       await h.deliver();
       expect(h.sent).toHaveLength(1);
@@ -864,25 +878,28 @@ describe("raw wire 保留（id58 补块）", () => {
       expect(received.length).toBeGreaterThan(0);
       // role 顺序逐字：整序列比对（system 在首、后续 user 材料次序与装配序一致）。
       expect(received.map((call) => call.messages.map((message) => message.role))).toEqual([
-        ["system", "user", "user", "user", "user"],
         ["system", "user", "user", "user", "user", "user"],
         ["system", "user", "user", "user", "user", "user"],
+        ["system", "user", "user", "user", "user", "user", "user"],
       ]);
-      // tools 逐字：决策调用带的工具名数组逐字锁定（动作目录形状）。
-      expect(h.model?.calls[0]?.tools ?? []).toEqual([
+      // tools 逐字：回复决策调用带的工具名数组逐字锁定（动作目录形状）；判断/生成不带 native tools。
+      expect(h.model?.calls[1]?.tools ?? []).toEqual([
         "memory.query",
         "memory.read",
         "knowledge.query",
         "knowledge.read",
         "history.query",
         "history.read",
+        "summary.query",
+        "summary.read",
         "media.list",
         "media.note.read",
         "media.describe",
         "media.read",
         "sticker.search",
+        "speech.reply",
       ]);
-      // schema 逐字：三次调用（决策/评分/生成）全带结构化响应 schema。
+      // schema 逐字：三次调用（判断/决策/生成）全带结构化响应 schema。
       expect((h.model?.calls ?? []).map((call) => call.schema)).toEqual([true, true, true]);
 
       // 有序片段：带图调用里 image 所在 user message 的 part 序列逐字（text 在前、image 在后）。
@@ -995,6 +1012,12 @@ function loopbackReply(body: {
   const schema = body.response_format?.json_schema?.schema;
   const properties = schema?.properties as Record<string, unknown> | undefined;
   const oneOf = schema?.oneOf as Record<string, unknown>[] | undefined;
+  if (properties?.evaluations !== undefined) {
+    // 阶段一批量评分：按真实候选逐人给分（本夹具只有一个成员事件，seq 为 1）。
+    return JSON.stringify({
+      evaluations: [{ targetId: "10001", score: 6, intent: "看图", sourceSeqs: [1] }],
+    });
+  }
   if (properties?.scoreResult !== undefined) {
     return JSON.stringify({ scoreResult: { score: 6 }, media: [] });
   }
@@ -1164,6 +1187,9 @@ describe("raw wire 真实 HTTP 捕获（id58 字节面）", () => {
         mergeWindowSeconds: 0,
         mediaInput: { mode: "native" },
         imageBytes: { "l58b-image": bytes },
+        // 阶段一批量评分的候选数收窄 X1/Y0：让真实 chiming_in 唤醒在本夹具触发。
+        initiativeBatchTargetCount: 1,
+        initiativeBatchJitterCount: 0,
         model: createModelPort({ gateway }),
       });
       try {
@@ -1172,7 +1198,7 @@ describe("raw wire 真实 HTTP 捕获（id58 字节面）", () => {
         await h.activate("chiming_in");
         await h.deliver();
         expect(h.sent).toHaveLength(1);
-        // 决策/评分/生成三相各一条真实 HTTP 调用。
+        // 判断/决策/生成三相各一条真实 HTTP 调用。
         expect(captures).toHaveLength(3);
         const bodies = captures.map(
           (raw) =>
@@ -1185,14 +1211,14 @@ describe("raw wire 真实 HTTP 捕获（id58 字节面）", () => {
         );
         const schemaOf = (body: (typeof bodies)[number]) =>
           body.response_format?.json_schema?.schema;
-        const phaseOf = (body: (typeof bodies)[number]): "decision" | "score" | "text" => {
+        const phaseOf = (body: (typeof bodies)[number]): "decision" | "batch" | "text" => {
           const schema = schemaOf(body);
-          if ((schema?.properties as Record<string, unknown> | undefined)?.scoreResult)
-            return "score";
+          if ((schema?.properties as Record<string, unknown> | undefined)?.evaluations)
+            return "batch";
           if ((schema?.properties as Record<string, unknown> | undefined)?.text) return "text";
           return "decision";
         };
-        expect(bodies.map(phaseOf)).toEqual(["decision", "score", "text"]);
+        expect(bodies.map(phaseOf)).toEqual(["batch", "decision", "text"]);
         let sawImage = false;
         for (const body of bodies) {
           // 每相 wire：system 打头；图片以 data URL 出现且与受控字节逐字相等。
@@ -1227,13 +1253,13 @@ describe("raw wire 真实 HTTP 捕获（id58 字节面）", () => {
           }
         }
         expect(sawImage).toBe(true);
-        // 声明 schema/tools（三相）：决策 oneOf+media envelope、评分 scoreResult、生成 text。
-        const decisionSchema = schemaOf(bodies[0] ?? {}) as { oneOf?: unknown } | undefined;
-        expect(Array.isArray(decisionSchema?.oneOf)).toBe(true);
+        // 声明 schema/tools（三相）：判断 evaluations、决策 oneOf+media envelope、生成 text。
         expect(
-          (schemaOf(bodies[1] ?? {})?.properties as Record<string, unknown> | undefined)
-            ?.scoreResult,
+          (schemaOf(bodies[0] ?? {})?.properties as Record<string, unknown> | undefined)
+            ?.evaluations,
         ).toBeDefined();
+        const decisionSchema = schemaOf(bodies[1] ?? {}) as { oneOf?: unknown } | undefined;
+        expect(Array.isArray(decisionSchema?.oneOf)).toBe(true);
         // 持久面强负：wire 上合法的 data URL/b64 绝不落任何持久面。
         const persisted = persistedSurfaces(h);
         expect(persisted).not.toContain("data:image");

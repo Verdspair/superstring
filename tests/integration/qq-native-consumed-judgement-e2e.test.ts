@@ -122,7 +122,7 @@ interface ObservedAction {
 interface WireRecord {
   readonly model: string;
   readonly stream: boolean;
-  readonly schemaKind: "decision" | "score" | "plain-score" | "text" | "vision";
+  readonly schemaKind: "decision" | "score" | "plain-score" | "batch" | "text" | "vision";
   readonly carriesImage: boolean;
   /** 本次请求体里实际出现的每个 image data URL 的 sha256（受控合成字节的 sha 常量见 IMAGE_SHA）。 */
   readonly imageShas: readonly string[];
@@ -253,6 +253,20 @@ async function startProvider(): Promise<{
           answer.status = 500;
           answer.text = "vision unavailable";
         }
+      } else if (properties?.evaluations !== undefined) {
+        schemaKind = "batch";
+        // provider 能力按真模型判：带图请求若本次脚本判定为不支持（返回 http 错误）则原样回错；
+        // 否则按批准协议回完整 evaluations（NP1 的脚本对带图返回 body，故仍回 evaluations）。
+        const imageVerdict = carriesImage ? decide({ carriesImage, envelope, observations }) : null;
+        if (imageVerdict !== null && "status" in imageVerdict) {
+          answer.status = imageVerdict.status;
+          decisionReply = `http ${imageVerdict.status}`;
+          answer.text = imageVerdict.message;
+        } else {
+          answer.text = JSON.stringify({
+            evaluations: [{ targetId: "20002", score: 6, intent: "看图说话", sourceSeqs: [] }],
+          });
+        }
       } else if (properties?.scoreResult !== undefined) {
         schemaKind = "score";
         answer.text = JSON.stringify({ scoreResult: { score: 6 }, media: [] });
@@ -364,6 +378,8 @@ function createNativeHarness(
     mergeWindowSeconds: 0,
     ...(triggers === undefined ? {} : { triggers }),
     mediaInput: { mode: "native" },
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
     imageBytes: imageBytes ?? { [IMAGE_REF]: IMAGE_BYTES },
     // 媒体工具接线（media.list/describe）+ 组织设置 vision-stub 登记：工具型描述读取走夹具合成
     // 适配器的受控答复游标（夹具只替换视觉模型本身）；native 投影/分类/降级/账本全部是宿主与
@@ -744,13 +760,24 @@ it("[NP2] a real provider image rejection falls back to a real description: the 
     const done = captureState(h, stub.wire, diagnostics);
     writeTrace("np2-final", () => done);
 
-    // 真实拒绝：对话相恰好一次带图 HTTP，被 provider 以能力句式拒绝（400；分类是产品做的）。
+    // 真实拒绝：native 每相各试一次——阶段一批量评分（evaluation）一次、回复决策（decision）一次，
+    // 两次都带受控图字节并被 provider 以能力句式拒绝（400；分类是产品做的）。
     const chatCalls = done.wire.filter((request) => request.schemaKind !== "vision");
     const imageCalls = chatCalls.filter((request) => request.carriesImage);
-    expect(imageCalls).toHaveLength(1);
-    expect(imageCalls[0]?.status).toBe(400);
-    expect(imageCalls[0]?.imageShas).toEqual([IMAGE_SHA]);
-    // 成功链全部无图：决策重试/评分/生成都是纯文字（降级重试排在带图那次之后）。
+    expect(imageCalls).toHaveLength(2);
+    // 按相分别恰一次（不靠总数）：batch＝阶段一评估相，decision＝回复决策相。
+    expect(imageCalls.filter((request) => request.schemaKind === "batch")).toHaveLength(1);
+    expect(imageCalls.filter((request) => request.schemaKind === "decision")).toHaveLength(1);
+    for (const request of imageCalls) {
+      expect(request.status).toBe(400);
+      expect(request.imageShas).toEqual([IMAGE_SHA]);
+    }
+    // 每相用自己的真模型：评估相＝judgement 档（judge-model），回复决策相＝reply-model。
+    expect(imageCalls.find((request) => request.schemaKind === "batch")?.model).toBe("judge-model");
+    expect(imageCalls.find((request) => request.schemaKind === "decision")?.model).toBe(
+      "reply-model",
+    );
+    // 成功链全部无图：评分重试/决策重试/生成都是纯文字（降级重试排在各自带图那次之后）。
     const successCalls = chatCalls.filter((request) => request.status === 200);
     expect(successCalls.length).toBeGreaterThan(0);
     for (const request of successCalls) expect(request.carriesImage).toBe(false);

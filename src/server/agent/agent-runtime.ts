@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   AGENT_DECISION_JSON_SCHEMA,
+  type AgentDecision,
   AgentDecisionSchema,
   type OutputDraft,
   parseAgentDecision,
@@ -35,7 +36,12 @@ import type {
 } from "../observability/runtime-telemetry";
 import { unicodeStrip } from "../services/text";
 import { ActionExecutor } from "./action-executor";
-import type { AgentGenerationConfig, AgentSpec, LeafAgentSpec } from "./agent-specs";
+import type {
+  ActionDescription,
+  AgentGenerationConfig,
+  AgentSpec,
+  LeafAgentSpec,
+} from "./agent-specs";
 import type { ActionContext, BuiltInAction } from "./built-in-actions";
 import { createCodeMode } from "./code-mode";
 import type { CodeRunner, CodeRunnerLimits } from "./code-runner";
@@ -95,6 +101,8 @@ export interface MessageLeafInput extends Omit<LeafInput, "messages"> {
 }
 export interface PreparedOutput extends OutputSummary {
   text?: string;
+  /** Explicit @ member IDs the host encodes; never CQ codes parsed out of the text. */
+  mentionIds?: readonly string[];
   /** undefined/null asks the channel to select; [] explicitly declines; IDs select attachments. */
   stickerIds?: readonly string[] | null;
   /** Channel-resolved attachment provenance, retained with a pending plan and delivery. */
@@ -115,6 +123,20 @@ export interface PreparedGeneration extends AgentGenerationConfig {
     /** meta.resolvedModel = onModelResolved→resolveStepModel 同真源的实际模型（可信消费用）。 */
     parse: (raw: string, meta?: { resolvedModel: string }) => { text: string };
   };
+  /**
+   * 本目标自己的发送边界闭包：并行生成时各目标不得共用输入级的 prepareWithResolved /
+   * onPhaseMediaUnsupported / onModelCallConsumed（它们会读写宿主的相投影与 fallback 状态）。
+   * 宿主在 prepareGeneration 里按目标冻结并返回；缺省＝沿输入级闭包（单目标旧行为）。
+   */
+  hooks?: TargetHooks;
+}
+/** 一次生成发送所需的宿主闭包（按目标冻结，未给字段沿输入级）。 */
+export interface TargetHooks {
+  prepareWithResolved?: ConversationInput["prepareWithResolved"];
+  onPhaseMediaUnsupported?: ConversationInput["onPhaseMediaUnsupported"];
+  onModelCallConsumed?: ConversationInput["onModelCallConsumed"];
+  assertPreparedCurrent?: ConversationInput["assertPreparedCurrent"];
+  imageResolver?: ConversationInput["imageResolver"];
 }
 export interface ConversationInput {
   owner: RunOwner;
@@ -151,6 +173,17 @@ export interface ConversationInput {
     draft: Extract<OutputDraft, { kind: "generate" }>,
     input: { context: RenderedContext; outputId: string; signal: AbortSignal },
   ) => Promise<PreparedGeneration | undefined>;
+  /**
+   * 规格 §4.1 早提交：每个目标生成完成即提交该目标（不等批次内其它目标或整批 settled）。
+   * 宿主在**原 host 事务**里写该目标的 outbox intent；runtime 不在此重复评分/重构上下文。
+   * `meta` 带该目标本轮 ordinal 与提交时刻；返回 false＝宿主拒绝（未提交），true/void＝已提交。
+   * 缺省＝无早提交，整批在 commitOutputs 一次结算。仅 prepared 输出会调用。
+   */
+  commitOutput?: (
+    output: PreparedOutput,
+    runId: string,
+    meta: { ordinal: number; at: string },
+  ) => Promise<boolean | void>;
   /**
    * T11 B：主 run 发送边界的图片解析器。可信宿主在本 run/owner 下登记已验证资产；
    * 生成步把它连同真实 runId/owner 传给端口（native 图 wire 只在发送边界解析字节）。
@@ -242,6 +275,18 @@ export interface ConversationInput {
       at: string;
     },
   ) => Promise<RunEvent | undefined>;
+  /**
+   * 终结回复动作（受信任宿主声明）：模型一次 invoke 该动作即**直接提交正文**，与 final 的
+   * inline 草稿同形状、走同一输出/提交路径——runtime 不执行工具、不返回模型确认、不追加第二次
+   * 调用。`parse` 由宿主提供（白名单/授权校验）；省略＝运行时无此终结路径（旧行为逐字不变）。
+   */
+  terminalAction?: {
+    name: string;
+    /** 参与同一次投递目录的终结能力描述（系统声明与原生 tools 都广告它）。 */
+    description: ActionDescription;
+    /** 把动作参数解析为 inline 草稿列表；非法即抛（该轮失败，不静默）。 */
+    parse: (arguments_: Record<string, unknown>) => readonly OutputDraft[];
+  };
 }
 export interface ConversationRunResult {
   runId: string;
@@ -261,6 +306,25 @@ export interface RunUsage {
 export interface RunBudget {
   maxCalls?: number;
   maxInputUnits?: number;
+}
+
+/**
+ * 并行生成段里一个已准备就绪的目标：准备（上下文/媒体/水位）已在串行段完成并冻结，这里只
+ * 携带该目标自己的请求材料，让模型网络段并行执行而不回读其它目标的共享投影。
+ */
+interface TargetPlan {
+  draft: Extract<OutputDraft, { kind: "generate" }>;
+  ordinal: number;
+  outputId: string;
+  generationContext: RenderedContext;
+  messages: ModelMessage[];
+  generationSpec: LeafAgentSpec;
+  structured?: PreparedGeneration["responseEnvelope"];
+  allowEmpty?: boolean;
+  /** 宿主按目标冻结的发送闭包；缺省字段沿输入级闭包。 */
+  hooks?: TargetHooks;
+  /** 本目标自己的 resolved 回写目标：并行时不得共用 active.resolvedModel。 */
+  resolvedSink: { resolvedModel?: string };
 }
 
 interface Running {
@@ -534,6 +598,48 @@ export class AgentRuntime {
     return this.withRun(active, () => this.runConversation(active, spec, input));
   }
 
+  /**
+   * 无模型步骤的父 run 入口（如主动批次的评分叶子＋各目标回复子任务）。start+withRun 提供真实
+   * agent_runs 行、agent.run span 与 taskTree{usage,budget,signal}；children 经 run/completeMessageLeaf
+   * 由 AsyncLocalStorage 继承同一 usage/budget、父 callerSignal 与父 trace。
+   * work 在父 run 内执行并覆盖评分叶子与全部目标子 run；work 正常返回但 abort 已生效时不写 completed。
+   * work 抛错→failed 后原样抛出；caller abort→cancelled；onRunId 与终态同在本 run 生命周期内释放。
+   * 宿主若用 allSettled，需自行把未达标/失败映射为抛错，否则父被标 completed。
+   */
+  async runTaskGroup<T>(
+    spec: { id: string; version?: string },
+    input: {
+      owner: RunOwner;
+      conversationId?: string;
+      signal?: AbortSignal;
+      sources?: readonly SourceRef[];
+      usage?: RunUsage;
+      budget?: RunBudget;
+      /** run 建立后立即回调（宿主据此 linkRun）；在本 run 生命周期内，抛错按运行失败结算。 */
+      onRunId?: (runId: string) => void;
+    },
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const active = this.start(spec, input);
+    return this.withRun(active, async () => {
+      try {
+        input.onRunId?.(active.runId);
+        await this.emit(active, { type: "started" });
+        this.repository.setStatus(active.runId, "generating", this.now());
+        const value = await work(active.signal);
+        // work 可能忽略 abort 仍正常返回：终态写前按本 run 边界复核，abort 生效即按 cancelled 结算。
+        active.signal.throwIfAborted();
+        await this.finish(active, "completed", { type: "completed", outputs: [] });
+        return value;
+      } catch (error) {
+        await this.fail(active, error);
+        throw error;
+      } finally {
+        active.dispose();
+      }
+    });
+  }
+
   private async runConversation(
     active: Running,
     spec: AgentSpec,
@@ -637,6 +743,8 @@ export class AgentRuntime {
       });
       /** 调用签名 → 已出现次数（无进展检测）：跨步累计，整轮有效。 */
       const callSignatures = new Map<string, number>();
+      /** 本 run 已早提交目标的原始输出（按 targetId）：跨轮不重生成、不再提交，终态结算仍带其事实。 */
+      const committedTargets = new Map<string, PreparedOutput>();
       const actionContext: ActionContext = {
         owner: input.owner,
         signal: active.signal,
@@ -660,7 +768,13 @@ export class AgentRuntime {
           const action = actions.resolve(descriptor.name);
           return action && this.executor.allowed(action, actionContext, mode);
         });
-        input.context.configureActions?.(availableActions);
+        // 终结回复能力与普通工具进入同一次投递目录：系统声明、原生 tools、configureActions
+        // 都看到它——模型只对**本轮已广告**的终结名调用才被接受（下方 terminalDecision 校验），
+        // 但它的执行不经 ActionExecutor（它没有可执行体）：转成 final 草稿走输出校验/提交边界。
+        const advertisedActions = input.terminalAction
+          ? [...availableActions, input.terminalAction.description]
+          : availableActions;
+        input.context.configureActions?.(advertisedActions);
         // 规格 §10：本步决策的实际响应 schema 选择——投影（read）完成后现取并冻结一次，
         // 系统声明（render）与实际请求（requestFor）、响应解析共用同一个选择。
         let decisionEnvelope: ReturnType<NonNullable<ConversationInput["decisionEnvelope"]>>;
@@ -676,7 +790,7 @@ export class AgentRuntime {
             active.signal.throwIfAborted();
             decisionEnvelope = input.decisionEnvelope?.();
             const rendered = this.contextEngine.render(
-              { ...spec, availableActions },
+              { ...spec, availableActions: advertisedActions },
               material,
               observations,
               input.authorizedTargets,
@@ -698,7 +812,7 @@ export class AgentRuntime {
             return rendered;
           },
         );
-        const decision = await this.step(
+        let decision = await this.step(
           active,
           "next",
           context.messages,
@@ -719,7 +833,7 @@ export class AgentRuntime {
               ...(input.imageResolver === undefined ? {} : { imageResolver: input.imageResolver }),
               // 已广告的动作同时以原生 tools 声明（issue #10）：模型用它表达 invoke，正文只剩
               // final/none。是否真的发送由网关决定——外部路由发，本地服务保持冻结的 JSON 决策。
-              tools: availableActions.map((action) => ({
+              tools: advertisedActions.map((action) => ({
                 name: action.name,
                 description: action.description,
                 parameters: action.parameters,
@@ -801,8 +915,34 @@ export class AgentRuntime {
           )
             continue;
           active.signal.throwIfAborted();
+          if (committedTargets.size > 0) {
+            // 若上一轮已有目标早提交，本轮 none 不改写既有结果：按完成结算已提交事实。
+            const settled = [...committedTargets.values()];
+            await this.commitAndFinish(active, input, settled, "completed", {
+              type: "completed",
+              outputs: settled.map(({ outputId, targetId, status, code }) => ({
+                outputId,
+                targetId,
+                status,
+                ...(code ? { code } : {}),
+              })),
+            });
+            return { runId: active.runId, status: "completed", outputs: settled };
+          }
           await this.commitAndFinish(active, input, [], "no_output", { type: "no_output" });
           return { runId: active.runId, status: "no_output", outputs: [] };
+        }
+        // 终结回复动作：模型一次 invoke speech.reply 直接给出正文——与 final 的 inline 草稿
+        // 同形状，走同一下面的输出/提交路径。不执行工具、不返回确认、不追加第二次调用。
+        // 只接受**本轮已广告**（availableActions 含其名）的终结名；未广告的调用不在这里被
+        // 截取，按普通 invoke 落到 ActionExecutor 的授权校验（未知动作即被拒）。
+        if (
+          decision.kind === "invoke" &&
+          input.terminalAction &&
+          advertisedActions.some((action) => action.name === input.terminalAction?.name)
+        ) {
+          const settledTerminal = this.terminalDecision(input.terminalAction, decision);
+          if (settledTerminal) decision = settledTerminal;
         }
         if (decision.kind === "invoke") {
           // 一批调用（0.4.0 P2）：先整体校验再执行——任何一条不可用就整批拒绝，
@@ -921,253 +1061,121 @@ export class AgentRuntime {
           continue;
         active.signal.throwIfAborted();
         this.repository.setStatus(active.runId, "generating", this.now());
-        const outputs: PreparedOutput[] = [];
+        // 上下文/媒体/水位是共享可变状态，准备逐目标串行；只有模型网络段并行。
+        // 每目标独立 catch：准备失败只作废该目标；结果按 ordinal 落位保持输出顺序。
+        const slots: Array<PreparedOutput | undefined> = decision.outputs.map(() => undefined);
+        const plans: TargetPlan[] = [];
         for (const [ordinal, draft] of decision.outputs.entries()) {
           active.signal.throwIfAborted();
+          // 已早提交目标跨轮保留：不重生成、不再提交（原输出与事实已在宿主早提交事务里）。
+          const alreadyCommitted = committedTargets.get(draft.targetId);
+          if (alreadyCommitted) {
+            slots[ordinal] = alreadyCommitted;
+            continue;
+          }
           if (!input.authorizedTargets.includes(draft.targetId)) {
-            outputs.push({
+            slots[ordinal] = {
               outputId: randomUUID(),
               targetId: draft.targetId,
               status: "blocked",
               code: "AGENT_TARGET_UNAUTHORIZED",
-            });
+            };
             continue;
           }
           let outputId: string = randomUUID();
           try {
             const reservation = await input.prepareOutput?.(draft, ordinal);
             if (reservation && "blocked" in reservation) {
-              outputs.push({
+              slots[ordinal] = {
                 outputId,
                 targetId: draft.targetId,
                 status: "blocked",
                 code: reservation.code,
-              });
+              };
               continue;
             }
             if (reservation) outputId = reservation.outputId;
             if (draft.kind === "inline") {
-              outputs.push({
+              const output: PreparedOutput = {
                 outputId,
                 targetId: draft.targetId,
                 status: "prepared",
                 text: draft.text,
+                ...(draft.mentionIds === undefined ? {} : { mentionIds: draft.mentionIds }),
                 stickerIds: draft.stickerIds,
-              });
+              };
+              slots[ordinal] = output;
+              // inline 草稿不走模型段，准备完成即与 generate 目标同一时机边界早提交。
+              await this.commitPrepared(active, input, output, ordinal, committedTargets);
               continue;
             }
             this.checkStepBudget(active, spec);
-            const { generation, generationContext, messages, generationSpec, structured } =
-              await this.trace(
-                active,
-                "agent.context",
-                {
-                  stage: "context",
-                  outputId,
-                  details: { phase: "generate" },
-                },
-                async (scope) => {
-                  const prepared = await input.prepareGeneration?.(draft, {
-                    context,
-                    outputId,
-                    signal: active.signal,
-                  });
-                  const generation = { ...spec.generation, ...prepared };
-                  // 规格 §10：是否走同次封装在系统声明渲染前冻结——renderOutput 的输出协议
-                  // 声明与 structured complete 的实际 responseSchema 用同一个选择。
-                  const structured =
-                    input.outputMode === "buffered" ? generation.responseEnvelope : undefined;
-                  const generationContext = prepared?.context ?? context;
-                  const messages = this.contextEngine.renderOutput(
-                    { ...spec, generation },
-                    generationContext,
-                    draft,
-                    structured?.responseSchema,
-                  );
-                  await input.onContext?.(
-                    { ...generationContext, messages, units: inputUnits(messages) },
-                    { runId: active.runId, phase: "generate" },
-                  );
-                  scope?.update({
-                    sources: generationContext.sources,
-                    details: {
-                      inputUnits: inputUnits(messages),
-                      messageCount: messages.length,
-                      sourceCount: generationContext.sources.length,
-                    },
-                  });
-                  const generationSpec: LeafAgentSpec = {
-                    ...spec,
-                    model: generation.model ?? spec.model,
-                    temperature: generation.temperature ?? spec.temperature,
-                    maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
-                    limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
-                  };
-                  return { generation, generationContext, messages, generationSpec, structured };
-                },
-              );
-            let text = "";
-            // 规格 §10：buffered 且宿主声明"本次生成需要同次机器可读封装"时，走一次结构化
-            // complete 取 envelope，剥离后正文照常提交——不新增第二次模型调用、不落 auxiliary
-            // 阶段；缺省（未声明）与 stream 模式逐字保持原 streamText 行为。
-            await this.step(
+            const prepared = await this.trace(
               active,
-              "generate",
-              messages,
-              generationContext.sources,
-              async (capture, onModelResolved) => {
-                if (structured) {
-                  // T10/§9 生成相发送（structured complete）：真实 HTTP 服务首拒
-                  // MODEL_IMAGE_UNSUPPORTED → 宿主标 fallback 重备后同相同 complete 重试
-                  // 恰一次；非 unsupported 原样抛。
-                  const requestFor = (phaseMessages: readonly ModelMessage[]): ModelRequest => ({
-                    messages: phaseMessages,
-                    model: generationSpec.model,
-                    temperature: generationSpec.temperature,
-                    maxTokens: generationSpec.maxTokens,
-                    responseSchema: structured.responseSchema,
-                    runId: active.runId,
-                    owner: input.owner,
-                    ...(input.imageResolver === undefined
-                      ? {}
-                      : { imageResolver: input.imageResolver }),
-                    ...(input.prepareWithResolved === undefined
-                      ? {}
-                      : {
-                          prepareWithResolved: async (hook: ModelResolvedPrepareInput) =>
-                            (await input.prepareWithResolved?.({
-                              ...hook,
-                              phase: "generate",
-                            })) ?? {},
-                        }),
-                    ...(input.assertPreparedCurrent === undefined
-                      ? {}
-                      : { assertPreparedCurrent: input.assertPreparedCurrent }),
-                    signal: active.signal,
-                    onModelResolved,
-                    onResponseText: capture,
-                  });
-                  let raw: string;
-                  try {
-                    raw = await this.options.model.complete(requestFor(messages));
-                  } catch (error) {
-                    if (
-                      !(
-                        error instanceof Error &&
-                        (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
-                      ) ||
-                      input.onPhaseMediaUnsupported === undefined
-                    )
-                      throw error;
-                    const retry = await input.onPhaseMediaUnsupported({
-                      phase: "generate",
-                      model: active.resolvedModel ?? generationSpec.model ?? "",
-                      messages,
-                      signal: active.signal,
-                    });
-                    if (retry === null) throw error;
-                    raw = await this.options.model.complete(requestFor(retry.messages));
-                  }
-                  capture(raw, true);
-                  text = structured.parse(raw, { resolvedModel: active.resolvedModel ?? "" }).text;
-                  if (!unicodeStrip(text) && !generation.allowEmpty)
-                    throw new AgentRuntimeError(
-                      "MODEL_EMPTY_RESPONSE",
-                      "Model returned an empty response",
-                    );
-                  active.signal.throwIfAborted();
-                  // §8.1：生成相调用成功返回 → 通知宿主记账（native proof）。
-                  input.onModelCallConsumed?.({ phase: "generate" });
-                  return text;
-                }
-                // T10/§9 生成相 stream：unsupported 首拒（零 delta）→ 宿主标 fallback 重备
-                // 后同相 stream 重试恰一次；已收到 delta 后的失败不重试。
-                let phaseMessages: readonly ModelMessage[] = messages;
-                const streamRequest = () => ({
-                  messages: phaseMessages,
-                  model: generationSpec.model,
-                  temperature: generationSpec.temperature,
-                  maxTokens: generationSpec.maxTokens,
-                  runId: active.runId,
-                  owner: input.owner,
-                  ...(input.imageResolver === undefined
-                    ? {}
-                    : { imageResolver: input.imageResolver }),
-                  ...(input.prepareWithResolved === undefined
-                    ? {}
-                    : {
-                        prepareWithResolved: async (hook: ModelResolvedPrepareInput) =>
-                          (await input.prepareWithResolved?.({
-                            ...hook,
-                            phase: "generate",
-                          })) ?? {},
-                      }),
-                  ...(input.assertPreparedCurrent === undefined
-                    ? {}
-                    : { assertPreparedCurrent: input.assertPreparedCurrent }),
+              "agent.context",
+              { stage: "context", outputId, details: { phase: "generate" } },
+              async (scope) => {
+                const preparedGeneration = await input.prepareGeneration?.(draft, {
+                  context,
+                  outputId,
                   signal: active.signal,
-                  onModelResolved,
                 });
-                let unsupportedRetry = input.onPhaseMediaUnsupported !== undefined;
-                try {
-                  for await (const delta of this.options.model.streamText(streamRequest())) {
-                    active.signal.throwIfAborted();
-                    if (!delta) continue;
-                    text += delta;
-                    capture(text);
-                    if (input.outputMode === "stream")
-                      await this.emit(active, { type: "output_delta", outputId, text: delta });
-                  }
-                } catch (error) {
-                  // §9：首拒（零 delta）且宿主接了重试边界 → 重备后同相 stream 重试恰一次。
-                  if (
-                    text !== "" ||
-                    !(
-                      error instanceof Error &&
-                      (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
-                    ) ||
-                    !unsupportedRetry
-                  )
-                    throw error;
-                  unsupportedRetry = false;
-                  const retry = await input.onPhaseMediaUnsupported?.({
-                    phase: "generate",
-                    model: active.resolvedModel ?? generationSpec.model ?? "",
-                    messages: phaseMessages,
-                    signal: active.signal,
-                  });
-                  if (retry === null || retry === undefined) throw error;
-                  phaseMessages = retry.messages;
-                  for await (const delta of this.options.model.streamText(streamRequest())) {
-                    active.signal.throwIfAborted();
-                    if (!delta) continue;
-                    text += delta;
-                    capture(text);
-                    if (input.outputMode === "stream")
-                      await this.emit(active, { type: "output_delta", outputId, text: delta });
-                  }
-                }
-                capture(text, true);
-                if (!unicodeStrip(text) && !generation.allowEmpty)
-                  throw new AgentRuntimeError(
-                    "MODEL_EMPTY_RESPONSE",
-                    "Model returned an empty response",
-                  );
-                active.signal.throwIfAborted();
-                // §8.1：stream 生成相在完整流结束、abort/empty 检查通过后记账恰一次；
-                // 流中异常、部分 delta 后失败/abort/empty 不允许时不通知。
-                input.onModelCallConsumed?.({ phase: "generate" });
-                return text;
+                const generation = { ...spec.generation, ...preparedGeneration };
+                // 规格 §10：是否走同次封装在系统声明渲染前冻结——renderOutput 的输出协议
+                // 声明与 structured complete 的实际 responseSchema 用同一个选择。
+                const structured =
+                  input.outputMode === "buffered" ? generation.responseEnvelope : undefined;
+                const generationContext = preparedGeneration?.context ?? context;
+                const messages = this.contextEngine.renderOutput(
+                  { ...spec, generation },
+                  generationContext,
+                  draft,
+                  structured?.responseSchema,
+                );
+                await input.onContext?.(
+                  { ...generationContext, messages, units: inputUnits(messages) },
+                  { runId: active.runId, phase: "generate" },
+                );
+                scope?.update({
+                  sources: generationContext.sources,
+                  details: {
+                    inputUnits: inputUnits(messages),
+                    messageCount: messages.length,
+                    sourceCount: generationContext.sources.length,
+                  },
+                });
+                const generationSpec: LeafAgentSpec = {
+                  ...spec,
+                  model: generation.model ?? spec.model,
+                  temperature: generation.temperature ?? spec.temperature,
+                  maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
+                  limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
+                };
+                return {
+                  generation,
+                  generationContext,
+                  messages,
+                  generationSpec,
+                  ...(structured === undefined ? {} : { structured }),
+                  ...(preparedGeneration?.hooks === undefined
+                    ? {}
+                    : { hooks: preparedGeneration.hooks }),
+                };
               },
-              generationSpec,
-              outputId,
             );
-            outputs.push({
+            plans.push({
+              draft,
+              ordinal,
               outputId,
-              targetId: draft.targetId,
-              status: "prepared",
-              text,
-              stickerIds: draft.stickerIds,
+              generationContext: prepared.generationContext,
+              messages: prepared.messages,
+              generationSpec: prepared.generationSpec,
+              ...(prepared.structured === undefined ? {} : { structured: prepared.structured }),
+              ...(prepared.generation.allowEmpty === undefined
+                ? {}
+                : { allowEmpty: prepared.generation.allowEmpty }),
+              ...(prepared.hooks === undefined ? {} : { hooks: prepared.hooks }),
+              resolvedSink: {},
             });
           } catch (error) {
             if (
@@ -1176,21 +1184,62 @@ export class AgentRuntime {
               (error instanceof AgentRuntimeError && error.code === "AGENT_STEP_LIMIT")
             )
               throw error;
-            outputs.push({
+            slots[ordinal] = {
               outputId,
               targetId: draft.targetId,
               status: "failed",
               code: errorCode(error),
-            });
+            };
           }
         }
+        // 每目标写自己的 resolved sink（不共用 active.resolvedModel）。一个目标 fatal 时
+        // 取消同批其余在飞请求并等它们 settle 再抛，避免资源已释放后兄弟仍访问。
+        const batchAbort = new AbortController();
+        const batchSignal = AbortSignal.any([active.signal, batchAbort.signal]);
+        let fatal: { error: unknown } | undefined;
+        await Promise.all(
+          plans.map(async (plan) => {
+            try {
+              const generated = await this.generateTarget(active, input, plan, batchSignal);
+              slots[plan.ordinal] = generated;
+              // 规格 §4.1 早提交：本目标生成完成即提交，不等兄弟；宿主按目标写自己的 outbox intent。
+              await this.commitPrepared(active, input, generated, plan.ordinal, committedTargets);
+            } catch (error) {
+              if (
+                active.signal.aborted ||
+                input.outputMode === "stream" ||
+                (error instanceof AgentRuntimeError && error.code === "AGENT_STEP_LIMIT")
+              ) {
+                fatal ??= { error };
+                batchAbort.abort(error);
+                return;
+              }
+              slots[plan.ordinal] = {
+                outputId: plan.outputId,
+                targetId: plan.draft.targetId,
+                status: "failed",
+                code: errorCode(error),
+              };
+            }
+          }),
+        );
+        if (fatal) throw fatal.error;
+        const outputs = this.mergeCommitted(
+          slots.filter((slot): slot is PreparedOutput => slot !== undefined),
+          committedTargets,
+        );
         active.signal.throwIfAborted();
+        // 已早提交目标不再复核/重开；reconsider 只观察未提交目标。
+        const pendingOutputs = outputs.filter((output) => !committedTargets.has(output.targetId));
         const reconsidered = await this.trace(
           active,
           "agent.checkpoint",
-          { stage: "context", details: { phase: "reconsider", outputCount: outputs.length } },
+          {
+            stage: "context",
+            details: { phase: "reconsider", outputCount: pendingOutputs.length },
+          },
           async (scope) => {
-            const result = await input.reconsider?.(outputs, active.signal);
+            const result = await input.reconsider?.(pendingOutputs, active.signal);
             scope?.update({ details: { reconsidered: result ?? false } });
             return result;
           },
@@ -1202,6 +1251,19 @@ export class AgentRuntime {
               "Already streamed output cannot be replaced",
             );
           if (reconsidered === "no_output") {
+            if (committedTargets.size > 0) {
+              // 已早提交目标不因“本轮无可提交输出”被抹除：带其事实按完成结算。
+              await this.commitAndFinish(active, input, outputs, "completed", {
+                type: "completed",
+                outputs: outputs.map(({ outputId, targetId, status, code }) => ({
+                  outputId,
+                  targetId,
+                  status,
+                  ...(code ? { code } : {}),
+                })),
+              });
+              return { runId: active.runId, status: "completed", outputs };
+            }
             await this.commitAndFinish(active, input, [], "no_output", { type: "no_output" });
             return { runId: active.runId, status: "no_output", outputs: [] };
           }
@@ -1247,6 +1309,206 @@ export class AgentRuntime {
         }
       }
     }
+  }
+
+  /**
+   * 终结回复动作 → final 决策：整批只有这一个调用且是声明的终结动作时，把参数解析为 inline
+   * 草稿，作为 `final` 走既有输出路径；否则返回 undefined（按普通 invoke 处理）。含其它调用
+   * 或解析失败＝非法，显式抛错（该轮失败，不静默把正文丢掉）。
+   */
+  private terminalDecision(
+    terminal: NonNullable<ConversationInput["terminalAction"]>,
+    decision: Extract<AgentDecision, { kind: "invoke" }>,
+  ): Extract<AgentDecision, { kind: "final" }> | undefined {
+    if (!decision.calls.some((call) => call.name === terminal.name)) return undefined;
+    if (decision.calls.length > 1)
+      throw new AgentRuntimeError(
+        "AGENT_OUTPUT_INVALID",
+        "A terminal reply action must be the only call in its step",
+      );
+    const drafts = terminal.parse(decision.calls[0].arguments);
+    if (drafts.length === 0)
+      throw new AgentRuntimeError(
+        "AGENT_OUTPUT_INVALID",
+        "A terminal reply action carried no output",
+      );
+    return { kind: "final", outputs: [...drafts] };
+  }
+
+  /** 并行生成段里单个目标的一次模型调用；resolved 回写本目标的 sink。 */
+  private async generateTarget(
+    active: Running,
+    input: ConversationInput,
+    plan: TargetPlan,
+    signalOverride: AbortSignal,
+  ): Promise<PreparedOutput> {
+    const { outputId, messages, generationContext, generationSpec, structured, allowEmpty } = plan;
+    // 宿主按目标冻结的闭包；未给的字段沿输入级（单目标行为）。并行多目标时宿主须给齐，
+    // 否则会回读共享的相投影/fallback 状态。
+    const hooks: TargetHooks = plan.hooks ?? {};
+    const prepareWithResolved = hooks.prepareWithResolved ?? input.prepareWithResolved;
+    const assertPreparedCurrent = hooks.assertPreparedCurrent ?? input.assertPreparedCurrent;
+    const onPhaseMediaUnsupported = hooks.onPhaseMediaUnsupported ?? input.onPhaseMediaUnsupported;
+    const onModelCallConsumed = hooks.onModelCallConsumed ?? input.onModelCallConsumed;
+    const imageResolver = hooks.imageResolver ?? input.imageResolver;
+    let text = "";
+    // 规格 §10：buffered 且宿主声明"本次生成需要同次机器可读封装"时，走一次结构化
+    // complete 取 envelope，剥离后正文照常提交——不新增第二次模型调用、不落 auxiliary
+    // 阶段；缺省（未声明）与 stream 模式逐字保持原 streamText 行为。
+    await this.step(
+      active,
+      "generate",
+      messages,
+      generationContext.sources,
+      async (capture, onModelResolved) => {
+        if (structured) {
+          // T10/§9 生成相发送（structured complete）：真实 HTTP 服务首拒
+          // MODEL_IMAGE_UNSUPPORTED → 宿主标 fallback 重备后同相同 complete 重试
+          // 恰一次；非 unsupported 原样抛。
+          const requestFor = (phaseMessages: readonly ModelMessage[]): ModelRequest => ({
+            messages: phaseMessages,
+            model: generationSpec.model,
+            temperature: generationSpec.temperature,
+            maxTokens: generationSpec.maxTokens,
+            responseSchema: structured.responseSchema,
+            runId: active.runId,
+            owner: input.owner,
+            ...(imageResolver === undefined ? {} : { imageResolver: imageResolver }),
+            ...(prepareWithResolved === undefined
+              ? {}
+              : {
+                  prepareWithResolved: async (hook: ModelResolvedPrepareInput) =>
+                    (await prepareWithResolved?.({
+                      ...hook,
+                      phase: "generate",
+                    })) ?? {},
+                }),
+            ...(assertPreparedCurrent === undefined
+              ? {}
+              : { assertPreparedCurrent: assertPreparedCurrent }),
+            signal: active.signal,
+            onModelResolved,
+            onResponseText: capture,
+          });
+          let raw: string;
+          try {
+            raw = await this.options.model.complete(requestFor(messages));
+          } catch (error) {
+            if (
+              !(
+                error instanceof Error &&
+                (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
+              ) ||
+              onPhaseMediaUnsupported === undefined
+            )
+              throw error;
+            const retry = await onPhaseMediaUnsupported({
+              phase: "generate",
+              model: plan.resolvedSink.resolvedModel ?? generationSpec.model ?? "",
+              messages,
+              signal: active.signal,
+            });
+            if (retry === null) throw error;
+            raw = await this.options.model.complete(requestFor(retry.messages));
+          }
+          capture(raw, true);
+          text = structured.parse(raw, {
+            resolvedModel: plan.resolvedSink.resolvedModel ?? "",
+          }).text;
+          if (!unicodeStrip(text) && !allowEmpty)
+            throw new AgentRuntimeError("MODEL_EMPTY_RESPONSE", "Model returned an empty response");
+          active.signal.throwIfAborted();
+          // §8.1：生成相调用成功返回 → 通知宿主记账（native proof）。
+          onModelCallConsumed?.({ phase: "generate" });
+          return text;
+        }
+        // T10/§9 生成相 stream：unsupported 首拒（零 delta）→ 宿主标 fallback 重备
+        // 后同相 stream 重试恰一次；已收到 delta 后的失败不重试。
+        let phaseMessages: readonly ModelMessage[] = messages;
+        const streamRequest = () => ({
+          messages: phaseMessages,
+          model: generationSpec.model,
+          temperature: generationSpec.temperature,
+          maxTokens: generationSpec.maxTokens,
+          runId: active.runId,
+          owner: input.owner,
+          ...(imageResolver === undefined ? {} : { imageResolver: imageResolver }),
+          ...(prepareWithResolved === undefined
+            ? {}
+            : {
+                prepareWithResolved: async (hook: ModelResolvedPrepareInput) =>
+                  (await prepareWithResolved?.({
+                    ...hook,
+                    phase: "generate",
+                  })) ?? {},
+              }),
+          ...(assertPreparedCurrent === undefined
+            ? {}
+            : { assertPreparedCurrent: assertPreparedCurrent }),
+          signal: active.signal,
+          onModelResolved,
+        });
+        let unsupportedRetry = onPhaseMediaUnsupported !== undefined;
+        try {
+          for await (const delta of this.options.model.streamText(streamRequest())) {
+            active.signal.throwIfAborted();
+            if (!delta) continue;
+            text += delta;
+            capture(text);
+            if (input.outputMode === "stream")
+              await this.emit(active, { type: "output_delta", outputId, text: delta });
+          }
+        } catch (error) {
+          // §9：首拒（零 delta）且宿主接了重试边界 → 重备后同相 stream 重试恰一次。
+          if (
+            text !== "" ||
+            !(
+              error instanceof Error &&
+              (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
+            ) ||
+            !unsupportedRetry
+          )
+            throw error;
+          unsupportedRetry = false;
+          const retry = await onPhaseMediaUnsupported?.({
+            phase: "generate",
+            model: plan.resolvedSink.resolvedModel ?? generationSpec.model ?? "",
+            messages: phaseMessages,
+            signal: active.signal,
+          });
+          if (retry === null || retry === undefined) throw error;
+          phaseMessages = retry.messages;
+          for await (const delta of this.options.model.streamText(streamRequest())) {
+            active.signal.throwIfAborted();
+            if (!delta) continue;
+            text += delta;
+            capture(text);
+            if (input.outputMode === "stream")
+              await this.emit(active, { type: "output_delta", outputId, text: delta });
+          }
+        }
+        capture(text, true);
+        if (!unicodeStrip(text) && !allowEmpty)
+          throw new AgentRuntimeError("MODEL_EMPTY_RESPONSE", "Model returned an empty response");
+        active.signal.throwIfAborted();
+        // §8.1：stream 生成相在完整流结束、abort/empty 检查通过后记账恰一次；
+        // 流中异常、部分 delta 后失败/abort/empty 不允许时不通知。
+        onModelCallConsumed?.({ phase: "generate" });
+        return text;
+      },
+      generationSpec,
+      outputId,
+      plan.resolvedSink,
+      signalOverride,
+    );
+    return {
+      outputId: plan.outputId,
+      targetId: plan.draft.targetId,
+      status: "prepared",
+      text,
+      ...(plan.draft.mentionIds === undefined ? {} : { mentionIds: plan.draft.mentionIds }),
+      stickerIds: plan.draft.stickerIds,
+    };
   }
 
   private start(
@@ -1330,8 +1592,16 @@ export class AgentRuntime {
     ) => Promise<T>,
     stepSpec: LeafAgentSpec = active.spec,
     outputId?: string,
+    /**
+     * 并行目标各自的 resolved 回写目标：并行时多个 step 同时在飞，不能都写共享的
+     * `active.resolvedModel`（会互相覆盖）；给定则写这里，未给保持原单目标行为。
+     */
+    resolvedSink?: { resolvedModel?: string },
+    /** 并行批次信号：兄弟 fatal 时取消同批在飞请求并先 settle；缺省＝只用 run 信号。 */
+    signalOverride?: AbortSignal,
   ): Promise<T> {
-    active.signal.throwIfAborted();
+    const stepSignal = signalOverride ?? active.signal;
+    stepSignal.throwIfAborted();
     active.assertActions?.();
     const units = inputUnits(messages);
     const limit = stepSpec.limits?.inputUnits;
@@ -1442,8 +1712,9 @@ export class AgentRuntime {
             context: { runId: active.runId, stepId },
           });
           const result = await execute(capture, (model) => {
-            // resolved 真源单点：先写 active（同闭包供步内可信消费读取），再落库。
-            active.resolvedModel = model;
+            // resolved 真源单点：先写本步的 resolved 目标（并行步写各自的 sink），再落库。
+            if (resolvedSink) resolvedSink.resolvedModel = model;
+            else active.resolvedModel = model;
             this.repository.resolveStepModel(stepId, model);
             scope?.update({ model, details: { modelResolved: true } });
           });
@@ -1573,13 +1844,66 @@ export class AgentRuntime {
     status: RunStatus,
     payload: RunEventPayload,
   ): Promise<void> {
+    // 宿主可能已在本 run 内用同一 repo 结算（如 group 零达标时 finishRun(no_output)）：
+    // repo.appendEvent 总会追加，故入口 early return，避免追加第二个终态事件。
+    if (this.repository.getRun(active.runId)?.endedAt) return;
     const event = this.repository.finishRun(active.runId, status, payload, this.now(), {
       conversationId: active.conversationId,
     });
     await active.onEvent?.(event);
   }
+  /**
+   * 该目标 prepared 后立即在宿主原事务里提交，不等兄弟或整批；缺省无 commitOutput＝不早提交。
+   * 与原 commitAndFinish 同一运行边界（assertActions）；权限/来源/租约等 guards 由宿主负责。
+   * 返回 false＝宿主拒绝（未提交，留给终态结算）；true/void＝已提交，记入 committedTargets。
+   */
+  private async commitPrepared(
+    active: Running,
+    input: ConversationInput,
+    output: PreparedOutput,
+    ordinal: number,
+    committedTargets: Map<string, PreparedOutput>,
+  ): Promise<void> {
+    if (input.commitOutput === undefined || output.status !== "prepared") return;
+    // 与原 commitAndFinish 同一提交边界：先复核本 run 已用动作仍可用，再做宿主事务。
+    active.assertActions?.();
+    const accepted = await this.trace(
+      active,
+      "agent.commit",
+      {
+        stage: "run",
+        details: { outputCount: 1, early: true, targetId: output.targetId, ordinal },
+      },
+      async () => input.commitOutput?.(output, active.runId, { ordinal, at: this.now() }),
+    );
+    if (accepted === false) {
+      // 宿主拒绝＝未提交：标 blocked，终态结算不再把它当 prepared 重新提交（不绕过拒绝）。
+      output.status = "blocked";
+      output.code ??= "AGENT_EARLY_COMMIT_REJECTED";
+      return;
+    }
+    committedTargets.set(output.targetId, output);
+  }
+
+  /**
+   * 终态结算输出始终包含已早提交目标的原输出，供 run 终态与 wake 结算；
+   * 宿主据自身已提交记录跳过重复 outbox。
+   */
+  private mergeCommitted(
+    outputs: readonly PreparedOutput[],
+    committedTargets: Map<string, PreparedOutput>,
+  ): PreparedOutput[] {
+    if (committedTargets.size === 0) return [...outputs];
+    const present = new Set(outputs.map((output) => output.targetId));
+    return [
+      ...outputs,
+      ...[...committedTargets.values()].filter((output) => !present.has(output.targetId)),
+    ];
+  }
+
   private async commitAndFinish(
     active: Running,
+
     input: ConversationInput,
     outputs: readonly PreparedOutput[],
     status: "completed" | "no_output",
@@ -1727,6 +2051,11 @@ export function createAgentRuntime(options: {
   providerConcurrency?: number | (() => number);
   /** 模型名 → 服务键；省略＝全部模型共用一个名额池。 */
   providerKey?: (model: string | undefined) => string;
+  /**
+   * 配置保存后的 drain 通知接线（宿主注入 `permissions.subscribe`）：保存成功即触发一次，
+   * 让准入重判等待队列；缺省＝无订阅（测试装配）。
+   */
+  onPolicyChange?: (listener: () => void) => () => void;
 }): AgentRuntime {
   return new AgentRuntime({ ...options, model: createModelPort(options) });
 }

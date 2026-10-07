@@ -15,7 +15,7 @@ import {
 import { inputUnits, textMessage } from "../../src/server/agent/context-engine";
 import { estimateMessages } from "../../src/server/agent/conversation-context";
 import {
-  createModelCallLimiter,
+  createModelAdmission,
   type ModelPort,
   type ModelRequest,
 } from "../../src/server/agent/model-port";
@@ -23,6 +23,8 @@ import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createLmStudioVisionClient } from "../../src/server/llm/vision-client";
+import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
+import { SpeechReplyArgumentsSchema } from "../../src/shared/contracts/agent-output";
 import {
   type RunEvent,
   RunEventSchema,
@@ -30,16 +32,16 @@ import {
 } from "../../src/shared/contracts/agent-run";
 
 it("cancels a queued model call without waiting for a busy model and keeps slot handoff atomic", async () => {
-  const limiter = createModelCallLimiter(1);
-  const release = await limiter.acquire();
+  const admission = createModelAdmission({ total: 1 });
+  const release = await admission.acquire(undefined);
   const controller = new AbortController();
-  const cancelled = limiter.acquire(controller.signal);
+  const cancelled = admission.acquire(undefined, controller.signal);
   controller.abort(new Error("cancel queued"));
   await expect(cancelled).rejects.toThrow("cancel queued");
-  const second = limiter.acquire();
+  const second = admission.acquire(undefined);
   release();
   let entered = false;
-  const third = limiter.acquire().then((done) => {
+  const third = admission.acquire(undefined).then((done) => {
     entered = true;
     return done;
   });
@@ -72,6 +74,15 @@ const direct = {
     async read() {
       return { pending: [textMessage("user", "hello")] };
     },
+  },
+};
+
+const terminalAction = {
+  name: "speech.reply",
+  description: SPEECH_REPLY_DESCRIPTION,
+  parse: (arguments_: Record<string, unknown>) => {
+    const parsed = SpeechReplyArgumentsSchema.parse(arguments_);
+    return parsed.outputs;
   },
 };
 function setup(
@@ -1682,5 +1693,99 @@ describe("AgentRuntime context source bindRun lifecycle", () => {
     expect(modelCalls).toBe(0);
     const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
     expect(["failed", "cancelled"]).toContain(run.status);
+  });
+});
+
+describe("terminal reply action", () => {
+  it("commits an inline body on the first call without an intent or generation step", async () => {
+    let calls = 0;
+    const { runtime, repository } = setup({
+      async complete() {
+        calls++;
+        return JSON.stringify({
+          kind: "invoke",
+          name: "speech.reply",
+          arguments: {
+            outputs: [{ kind: "inline", targetId: "web", text: "hi there" }],
+          },
+        });
+      },
+    });
+    const result = await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web"],
+      outputMode: "buffered",
+      terminalAction,
+    });
+    // 首 call 直接产出正文：没有前置 intent 决策、没有第二次生成。
+    expect(calls).toBe(1);
+    expect(result.status).toBe("completed");
+    expect(result.outputs).toMatchObject([
+      { targetId: "web", status: "prepared", text: "hi there" },
+    ]);
+    expect(repository.getRun(result.runId)?.steps.map((s) => s.phase)).toEqual(["next"]);
+  });
+
+  it("still reads a needed tool then submits the body on the next call", async () => {
+    let calls = 0;
+    const { runtime } = setup({
+      async complete() {
+        calls++;
+        if (calls === 1)
+          return JSON.stringify({
+            kind: "invoke",
+            name: "records.query",
+            arguments: { query: "x" },
+          });
+        return JSON.stringify({
+          kind: "invoke",
+          name: "speech.reply",
+          arguments: {
+            outputs: [{ kind: "inline", targetId: "web", text: "after tool" }],
+          },
+        });
+      },
+    });
+    const action = boundAction("records.query");
+    const result = await runtime.run(
+      { ...spec, availableActions: [action.description] },
+      {
+        ...direct,
+        actions: [action],
+        authorizedTargets: ["web"],
+        outputMode: "buffered",
+        terminalAction,
+      },
+    );
+    expect(calls).toBe(2);
+    expect(result.outputs).toMatchObject([{ targetId: "web", text: "after tool" }]);
+  });
+
+  it("rejects a terminal reply mixed with another call instead of silently dropping it", async () => {
+    const { runtime } = setup({
+      async complete() {
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "speech.reply",
+              arguments: { outputs: [{ kind: "inline", targetId: "web", text: "x" }] },
+            },
+            { name: "records.query", arguments: { query: "x" } },
+          ],
+        });
+      },
+    });
+    await expect(
+      runtime.run(
+        { ...spec, availableActions: [] },
+        {
+          ...direct,
+          authorizedTargets: ["web"],
+          outputMode: "buffered",
+          terminalAction,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
   });
 });

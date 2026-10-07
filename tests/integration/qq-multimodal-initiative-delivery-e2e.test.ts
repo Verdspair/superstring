@@ -24,7 +24,7 @@
 import { afterEach, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
-import { decideGenerate, decideNone, say, scoreOf } from "../harness/model";
+import { batchScore, decideGenerate, say } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 
 afterEach(() => {
@@ -111,27 +111,31 @@ it("[S48_1] initiative threshold comes from the scheme: 5 below it stays silent,
     accountId: "90001",
     member: "10001",
     initiativeMinScore: 6,
-    model: [decideGenerate("10001", "打算说点什么", []), scoreOf(5)],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   quiet.receive({ id: "-4801", speaker: "10001", text: "有人知道这个吗" });
+  quiet.model?.push([
+    batchScore([
+      { targetId: "10001", score: 5, intent: "有人提问想答", sourceSeqs: [quiet.lastEventSeq] },
+    ]),
+  ]);
   quiet.advance(31);
   const quietResult = await quiet.activate("chiming_in");
   await quiet.deliver();
-  // 恰好两次调用：决策相 + 评分相；许可被拒后不得再进生成相。
-  expect(phases(quiet)).toEqual(["next", "next"]);
+  // 恰好一次批评分调用；许可被拒后不得再进回复/生成相。
+  expect(phases(quiet)).toEqual(["next"]);
   expect(statusOf(quietResult)).toBe("no_output");
   expect(quiet.sent).toHaveLength(0);
   expect(quiet.outbox.list({ conversationId: quiet.conversationId })).toHaveLength(0);
   expect(countRows(quiet, "outbound_intents")).toBe(0);
-  // 两次 next 确实是**两种不同的相**（不是同一相跑了两遍）：决策相带工具目录，评分相不带
-  // （评分叶子只拿判断协议与结构化输出 schema）。两次调用的 head 首行也不同。
+  // 唯一一次调用是批评分叶子：结构化批协议（无工具目录），且真带本批冻结目标事实。
   const quietCalls = quiet.model?.calls ?? [];
-  expect(quietCalls).toHaveLength(2);
-  expect(quietCalls[0]?.tools.length).toBeGreaterThan(0);
-  expect(quietCalls[1]?.tools).toHaveLength(0);
+  expect(quietCalls).toHaveLength(1);
+  expect(quietCalls[0]?.tools).toHaveLength(0);
   expect(quietCalls[0]?.schema).toBe(true);
-  expect(quietCalls[1]?.schema).toBe(true);
-  expect(quietCalls[0]?.head).not.toBe(quietCalls[1]?.head);
+  expect(callText(quiet, 0)).toContain("qq_batch_targets");
   quiet.close();
 
   // --- 半边 B：默认门槛 6，score 6 → 生成 1 条 ---
@@ -139,18 +143,28 @@ it("[S48_1] initiative threshold comes from the scheme: 5 below it stays silent,
     accountId: "90001",
     member: "10001",
     initiativeMinScore: 6,
-    model: [decideGenerate("10001", "打算说点什么", []), scoreOf(6), say("主动回复正文")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   speak.receive({ id: "-4802", speaker: "10001", text: "有人知道这个吗" });
+  speak.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "有人提问想答", sourceSeqs: [speak.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "打算说点什么", []),
+    say("主动回复正文"),
+  ]);
   speak.advance(31);
   const speakResult = await speak.activate("chiming_in");
   await speak.deliver();
   expect(phases(speak)).toEqual(["next", "next", "generate"]);
-  // 与半边 A 同一判据：第 1 次 next 是决策相（带工具）、第 2 次 next 是评分相（不带工具）。
+  // 第 1 次 next 是批评分叶子（不带工具），第 2 次 next 是回复任务决策（工具可用）。
   const speakCalls = speak.model?.calls ?? [];
   expect(speakCalls).toHaveLength(3);
-  expect(speakCalls[0]?.tools.length).toBeGreaterThan(0);
-  expect(speakCalls[1]?.tools).toHaveLength(0);
+  expect(speakCalls[0]?.tools).toHaveLength(0);
+  expect(speakCalls[0]?.schema).toBe(true);
+  expect(speakCalls[1]?.tools.length).toBeGreaterThan(0);
   expect(statusOf(speakResult)).toBe("completed");
   expect(speak.sent).toHaveLength(1);
   expect(JSON.stringify(speak.sent[0]?.message)).toContain("主动回复正文");
@@ -167,16 +181,25 @@ it("[S48_1] initiative threshold comes from the scheme: 5 below it stays silent,
     accountId: "90001",
     member: "10001",
     initiativeMinScore: 4,
-    model: [decideGenerate("10001", "打算说点什么", []), scoreOf(5), say("门槛4下的主动回复")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   lowGate.receive({ id: "-4803", speaker: "10001", text: "门槛调低了" });
+  lowGate.model?.push([
+    batchScore([
+      { targetId: "10001", score: 5, intent: "有人提问想答", sourceSeqs: [lowGate.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "打算说点什么", []),
+    say("门槛4下的主动回复"),
+  ]);
   lowGate.advance(31);
   const lowGateResult = await lowGate.activate("chiming_in");
   await lowGate.deliver();
   expect(phases(lowGate)).toEqual(["next", "next", "generate"]);
   const lowGateCalls = lowGate.model?.calls ?? [];
-  expect(lowGateCalls[0]?.tools.length).toBeGreaterThan(0);
-  expect(lowGateCalls[1]?.tools).toHaveLength(0);
+  expect(lowGateCalls[0]?.tools).toHaveLength(0);
+  expect(lowGateCalls[1]?.tools.length).toBeGreaterThan(0);
   expect(statusOf(lowGateResult)).toBe("completed");
   expect(lowGate.sent).toHaveLength(1);
   expect(JSON.stringify(lowGate.sent[0]?.message)).toContain("门槛4下的主动回复");
@@ -261,9 +284,17 @@ it("[S50_1] a none decision with a real native image spends no extra call: one d
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "p6-50-image": bytes },
-    model: [decideNone()],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({ id: "-5001", speaker: "10001", text: "看看这张图", image: "p6-50-image" });
+  // 批判断言低于门槛＝新协议下唯一合法的"不开口"：不进回复/生成，零额外调用。
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 0, intent: "只是看图不说话", sourceSeqs: [h.lastEventSeq] },
+    ]),
+  ]);
   h.advance(31);
   const result = await h.activate("chiming_in");
   await h.deliver();
@@ -274,7 +305,7 @@ it("[S50_1] a none decision with a real native image spends no extra call: one d
     sha: string;
   };
   expect(asset.sha).toBe(sha(bytes));
-  // 强负面一：全轮恰好 1 次调用（决策相）。none 之后不得自动评分、不得自动生成。
+  // 强负面一：全轮恰好 1 次调用（批评分相）。低分之后不得自动回复、不得自动生成。
   expect(phases(h)).toEqual(["next"]);
   expect(h.model?.calls.length).toBe(1);
   // 强负面二：零视觉调用、零发送、零待发意图。
@@ -284,19 +315,19 @@ it("[S50_1] a none decision with a real native image spends no extra call: one d
   expect(countRows(h, "outbound_intents")).toBe(0);
   expect(statusOf(result)).toBe("no_output");
   // 那唯一一次调用的输入里**确实带着这张图**（否则"零额外调用"只是因为图没在链路上）：
-  // 决策相的自动图准备在决策调用之前完成，none 决策也得先看到画面才可能回 none。
+  // 批评分相的自动图准备在判断调用之前完成，低分判断也得先看到画面才可能不开口。
   // 这条是本用例与原 Base_8 的关键差别——原块没接 mediaInputService，图压根不在链路。
   expect(imageCountByCall(h)).toEqual([1]);
   expect(imageParts(h, 0)[0]?.sha256).toBe(sha(bytes));
   noBytesInWire(h);
-  // 强负面三：即使图被真的准备并随这一次决策发出，none 之后仍**没有**任何额外模型调用——
-  // 没有评分相、没有生成相、没有独立视觉调用、没有媒体工具调用。
-  // （native 路径把画面直接发给那一次决策调用；"没有为图花额外调用"正是本条要求。）
+  // 强负面三：即使图被真的准备并随这一次批评分发出，低分之后仍**没有**任何额外模型调用——
+  // 没有回复决策、没有生成相、没有独立视觉调用、没有媒体工具调用。
+  // （native 路径把画面直接发给那一次批评分调用；"没有为图花额外调用"正是本条要求。）
   expect(h.model?.calls.length).toBe(1);
   expect(phases(h).filter((phase) => phase === "vision")).toHaveLength(0);
   expect(phases(h).filter((phase) => phase === "auxiliary")).toHaveLength(0);
-  // 强负面四：媒体工具只是**声明**在目录里（有能力≠被调用）。none 这一轮没有任何工具
-  // 被调用——脚本只给了 decideNone 一步，若真调了 media.describe/describe 类工具，
+  // 强负面四：媒体工具只是**声明**在目录里（有能力≠被调用）。低分这一轮没有任何工具
+  // 被调用——脚本只给了 batchScore 一步，若真调了 media.describe 类工具，
   // 桩会因脚本耗尽或形状不符抛 HARNESS_* 码，整轮不会走到 no_output。
   // 读取任务表也没有为这次决策建行（native 不套描述尝试，规格 §14.1）。
   // 视觉调用 0（已断）＋读取任务表 0 行：native 路径不套描述尝试，
@@ -318,14 +349,23 @@ it("[S50_2] the same image in a speaking round yields a prepared variant yet sti
     mergeWindowSeconds: 0,
     mediaInput: { mode: "native" },
     imageBytes: { "p6-50b-image": bytes },
-    model: [decideGenerate("10001", "回答当前消息的图片问题", []), scoreOf(6), say("带图主动回复")],
+    initiativeBatchTargetCount: 1,
+    initiativeBatchJitterCount: 0,
+    model: [],
   });
   h.receive({ id: "-5002", speaker: "10001", text: "看看这张图", image: "p6-50b-image" });
+  h.model?.push([
+    batchScore([
+      { targetId: "10001", score: 6, intent: "想回答图片问题", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("10001", "回答当前消息的图片问题", []),
+    say("带图主动回复"),
+  ]);
   h.advance(31);
   const result = await h.activate("chiming_in");
   await h.deliver();
   // 对照成立：这次图被真的准备了（variant 行 > 0），但视觉调用计数仍为 0
-  // （native 路径把画面直接发给决策/评分/生成三次调用，不是另一次 classify/describe）。
+  // （native 路径把画面直接发给批评分/回复决策/生成三次调用，不是另一次 classify/describe）。
   expect(countRows(h, "qq_media_variants")).toBeGreaterThan(0);
   expect(h.visionCalls).toHaveLength(0);
   expect(phases(h)).toEqual(["next", "next", "generate"]);
