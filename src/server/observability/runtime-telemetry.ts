@@ -9,6 +9,7 @@ import {
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { TELEMETRY_RETENTION_DEFAULT_DAYS } from "../../shared/contracts/permissions";
 import type { RuntimeSpan } from "../../shared/contracts/runtime-observability";
+import { publishConversationChange } from "../conversation/conversation-changes";
 import { DEFAULT_USER_ID } from "../db/repositories";
 
 type Scalar = string | number | boolean | null;
@@ -75,9 +76,11 @@ export class RuntimeTelemetry {
         lifetime.spans++;
         this.activeTraces.set(traceId, lifetime);
         this.safe(() => this.persist(span as unknown as ReadableSpan, false));
+        this.notifyConversationChange(span as ReadableSpan);
       },
       onEnd: (span) => {
         this.safe(() => this.persist(span, true));
+        this.notifyConversationChange(span);
         // Cleanup must also run when the diagnostic database write fails.
         const { traceId, spanId } = span.spanContext();
         this.meta.delete(spanId);
@@ -96,6 +99,10 @@ export class RuntimeTelemetry {
     } catch {
       console.warn("runtime observability write failed");
     }
+  }
+  private notifyConversationChange(span: Pick<ReadableSpan, "spanContext">): void {
+    const conversationId = this.meta.get(span.spanContext().spanId)?.conversationId;
+    if (conversationId) this.safe(() => publishConversationChange(this.db, conversationId));
   }
   activeMetadata(): Readonly<TraceMetadata> | undefined {
     const parent = trace.getSpan(this.context.active());
@@ -121,6 +128,7 @@ export class RuntimeTelemetry {
     );
     const { traceId, spanId } = span.spanContext();
     this.meta.set(spanId, combined);
+    this.notifyConversationChange(span);
     let ended = false;
     const scope: TraceScope = {
       traceId,

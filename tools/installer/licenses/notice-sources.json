@@ -101,7 +101,7 @@
       "file": "superstring-MIT.txt",
       "source": "LICENSE",
       "component": "superstring",
-      "version": "0.4.0-alpha-1",
+      "version": "0.4.0-alpha-2",
       "license": "MIT",
       "sha256": "e4d6d80a4af894e56c61523138a2bbb631979dd2e93e82afe13e4d932b7071e9"
     },
@@ -133,9 +133,9 @@
       "file": "production-NOTICES.txt",
       "source": "Original license and NOTICE texts from the pinned production dependency closure",
       "component": "production-dependencies",
-      "version": "0.4.0-alpha-1",
+      "version": "0.4.0-alpha-2",
       "license": "Individual upstream terms reproduced verbatim",
-      "sha256": "d53b6fb8462de79fd49c3f729351a2fe192273b94dcd8aecb21aa4d0a1b0de65"
+      "sha256": "635adbf22476873065220f42ed4dcecbf7a8006aa8f6a35d39015b4d2bbf4e1b"
     }
   ]
 }

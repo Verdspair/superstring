@@ -9,7 +9,7 @@
 本地 Agent 工作区，主要用于日常陪伴与聊天，支持网页对话、QQ 群聊与私聊、记忆、知识库、MCP 工具扩展与技能管理。
 A local Agent workspace primarily for everyday companionship and chat, supporting web conversations, QQ groups and private chats, memory, knowledge, MCP tools, and skills.
 
-**版本 / Version:** `0.4.0-alpha-1`
+**版本：** `0.4.0-alpha-2` · **Version:** `0.4.0-alpha-2`
 
 [简体中文](#简体中文) · [English](#english)
 
@@ -17,7 +17,7 @@ A local Agent workspace primarily for everyday companionship and chat, supportin
 
 ### 有上下文的对话工作区
 
-在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。
+在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。界面支持 简体中文与 English 切换。
 
 Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号，也不提供 Superstring 云端数据同步服务；会话记录与密钥保存在本地，仅按已授予的权限将必要的上下文与参数发送给已配置的模型服务商或工具服务。
 
@@ -33,10 +33,10 @@ Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号�
 
 连接独立运行的 OneBot 11 WebSocket 服务（例如 NapCat），再将群或私聊绑定到 Agent 与聊天方案。
 
-新消息到达已绑定的会话时直接显示。工作区监听不含正文的消息通知，由程序自行更新会话列表与当前会话，无需手动刷新页面，已加载的内容与滚动位置保持不变。
+新消息到达已绑定的会话时直接显示。旧历史读取期间，新到达的消息无需等待更早历史加载完成即可即时显示，无需手动刷新页面，已加载的内容与滚动位置保持不变。群聊中的进行中模型父任务显示在消息记录上方并可点击查看；父级详情列出子任务，点击某个子任务查看该项详情，并在其结束时更新一次，不会预先拉取所有子任务正文。
 
-- 独立控制直接回应、连续交谈、自主接话和冷场发起四种模式。直接回应不要求兴趣评分，Agent 仍可选择沉默。
-- 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。收件人和提及由程序确定，模型不能自行指定任意目标。
+- 独立控制直接回应、连续交谈、自主接话和冷场发起四种模式。直接回应不要求兴趣评分，Agent 仍可选择沉默；自主接话支持设置分批消息目标步长（默认 15）与随机扰动量（默认 5），并支持忙时排队。
+- 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。收件人和提及由程序确定，模型不能自行指定任意目标；回复引用与用户提及原生转换为 OneBot 消息段投递，引用与提及彼此独立，元数据挂载于首个实际投递部件（支持纯表情或纯提及回复）。
 - 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用同一方案，不会因此共享会话历史。
 - 分别配置判断和回复窗口。超出回复窗口的消息进入水位缓冲，达到阈值后在后台任务队列压缩为上下文包；判断阶段不读取这些包。
 - QQ 群名称与用户自定义备注名解耦独立保存。设置自定义备注时优先显示备注，未设置时显示 QQ 原群名，均无则显示群号；支持群名预加载，更换绑定或助手不会丢失备注名。
@@ -87,15 +87,15 @@ QQ 接入前置步骤与运行要求：
 
 ### 运行要求与安装部署
 
-从 [v0.4.0-alpha-1 Release 页面](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1)下载各平台安装包与校验清单（`SHA256SUMS`）。升级前请先备份数据。
+从 [v0.4.0-alpha-2 Release 页面](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-2)下载各平台安装包与校验清单（`SHA256SUMS`）。升级前请先备份数据。
 
 | 平台 | 支持的分发形式 | 说明 |
 |---|---|---|
 | Windows x64 | 安装程序（`.exe`） | 可选安装目录，新版安装程序覆盖同一目录升级；数据保存在 `userdata` |
-| macOS 13+，Apple Silicon／Intel | 架构对应的 DMG、ZIP | 已随本次发布提供；macOS 为临时签名（ad-hoc signed，未公证），首次运行请右键「打开」；详情见[桌面发行说明](docs/reference/desktop.md) |
+| macOS 13+，Apple Silicon／Intel | 架构对应的 DMG、ZIP | 已随本次发布提供；macOS 为临时签名（ad-hoc signed，未公证），首次运行请右键「打开」；详情见[跨平台桌面打包](tools/desktop/build/cross-platform/README.md) |
 | Linux glibc，x64／arm64 | DEB、AppImage | 已随本次发布提供；Debian/Ubuntu 使用 DEB 包；AppImage 需要桌面沙箱与 FUSE 支持 |
 
-安装文件以对应 Release 页面实际附带的构件为准，请使用随发布的校验清单（`SHA256SUMS`）核对。macOS 签名状态与各平台安装细节见[桌面发行说明](docs/reference/desktop.md)。
+安装文件以对应 Release 页面实际附带的构件为准，请使用随发布的校验清单（`SHA256SUMS`）核对。macOS 签名状态与各平台安装细节见[跨平台桌面打包](tools/desktop/build/cross-platform/README.md)。
 
 应用安装包包含运行环境。模型推理需要 LM Studio 等本地服务或配置的外部 OpenAI 兼容服务。
 
@@ -110,9 +110,9 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 ### 数据与升级
 
-Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口会立即开始退出流程并停止 Superstring 管理的本地服务与正在运行的 Agent（无刻意等待宽限），再次双击启动器即可重新启动。
+Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口会直接结束程序自有进程树；常规服务停机仍先取消任务、处理在途写入并安全关闭数据库。再次双击启动器即可重新启动。
 
-升级前请完整退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完整退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。业务数据库结构版本为 54。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -130,8 +130,7 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建�
 
 - [版本说明](RELEASE_NOTES.md)
 - [升级指南](UPGRADING.md)
-- [桌面安装与恢复](docs/reference/desktop.md)
-- [运行观测](docs/reference/runtime-observability.md)
+- [跨平台桌面打包](tools/desktop/build/cross-platform/README.md)
 - [Agent 内核架构](docs/architecture/agent-runtime.md)与[前端工作区架构](docs/architecture/frontend-workspaces.md)
 - [MIT 许可证](LICENSE)；依赖项附带各自的许可证与 NOTICE 原文
 
@@ -141,7 +140,7 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建�
 
 ### Conversations, with context
 
-Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context.
+Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context. The interface supports English and Simplified Chinese.
 
 Superstring does not bundle model weights or a QQ client, does not require a cloud account, and does not provide a Superstring cloud sync service. Conversation records and credentials remain local, sending only authorized context and arguments to your configured model providers and tool services.
 
@@ -157,10 +156,10 @@ The current experience may not match mature commercial alternatives. Feedback is
 
 Connect a standalone OneBot 11 WebSocket service (such as NapCat), then bind a group or private chat to an Agent and a chat scheme.
 
-New messages in bound conversations appear automatically. The workspace listens for notifications containing only arrival metadata, updating conversation lists and open views without requiring manual page refreshes or shifting scroll positions.
+Incoming messages in bound conversations appear automatically. Freshly arrived messages appear immediately without waiting for older history pagination to complete, leaving loaded rows and scroll position undisturbed. In QQ group chats, an ongoing model parent task appears above the message history and can be opened to view its task chain; selecting a child task inspects its details and refreshes upon completion, without eagerly prefetching all child payloads.
 
-- Control direct responses, follow-up conversation, spontaneous participation, and idle-topic initiation independently. Direct responses bypass interest scoring, while the Agent may still choose silence.
-- Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. The application enforces recipients and mentions; models cannot invent destinations.
+- Control direct responses, follow-up conversation, spontaneous participation, and idle-topic initiation independently. Direct responses bypass interest scoring, while the Agent may still choose silence; spontaneous participation supports configurable batch message targets (default 15) with random jitter (default 5) and queue-on-busy controls.
+- Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. The application enforces recipients and mentions; models cannot invent destinations; reply quotes and user mentions map natively to OneBot message segments, operating independently with metadata attached to the first delivered carrier part (supporting sticker-only or mention-only replies).
 - Edit scheme prompts across scene, judgement, reply, review, sticker, media, and compression roles. Multiple bindings can share schemes without sharing conversation history.
 - Configure separate judgement and reply windows. Messages outside the reply window enter a watermark buffer and are compressed into context packages in a background task queue; judgement does not consume these packages.
 - Decouple original QQ group names from custom aliases. Custom aliases take precedence with fallback to group names; rebinding does not overwrite aliases, and group names support preloading.
@@ -211,15 +210,15 @@ Speech transcription, full-video understanding, image generation, and arbitrary 
 
 ### Requirements and installation
 
-Download distribution assets and the checksum list (`SHA256SUMS`) from [v0.4.0-alpha-1 Releases](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-1). Back up existing data before upgrading.
+Download distribution assets and the checksum list (`SHA256SUMS`) from [v0.4.0-alpha-2 Releases](https://github.com/Verdspair/superstring/releases/tag/v0.4.0-alpha-2). Back up existing data before upgrading.
 
 | Platform | Supported distribution formats | Notes |
 |---|---|---|
 | Windows x64 | Installer (`.exe`) | Choose an installation directory; future installers upgrade the same directory; data lives in `userdata` |
-| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Attached to this release; packages are ad-hoc signed, not notarized (right-click Open on first launch); see [Desktop distributions](docs/reference/desktop.md) for details |
+| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Attached to this release; packages are ad-hoc signed, not notarized (right-click Open on first launch); see [Desktop packaging](tools/desktop/build/cross-platform/README.md) for details |
 | Linux glibc, x64 or arm64 | DEB and AppImage | Attached to this release; DEB integrates with Debian/Ubuntu; AppImage requires desktop sandbox and FUSE support |
 
-Use files actually attached to the selected release and verify them against its checksum list (`SHA256SUMS`). macOS signing status and platform details are documented in [Desktop distributions](docs/reference/desktop.md).
+Use files actually attached to the selected release and verify them against its checksum list (`SHA256SUMS`). macOS signing status and platform details are documented in [Desktop packaging](tools/desktop/build/cross-platform/README.md).
 
 Application packages bundle their runtime. Inference requires a local server such as LM Studio or an external OpenAI-compatible provider.
 
@@ -234,9 +233,9 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 ### Data and upgrades
 
-On Windows, conversations and settings live under the installation's `userdata` directory. Native macOS/Linux packages use system application data profiles. Closing the desktop window immediately begins quitting Superstring and stops its managed local services and running Agents (no intentional grace period); double-click the launcher again to restart.
+On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window directly terminates the application-owned process tree; standard service stops continue to cancel active tasks, settle in-flight writes, and close the database safely. Double-click the launcher again to restart.
 
-Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The application database schema version is 54. See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
 ### Run from source
 
@@ -254,8 +253,7 @@ Services bind to `127.0.0.1:17861` by default, with automatic fallback to availa
 
 - [Release notes](RELEASE_NOTES.md)
 - [Upgrade guide](UPGRADING.md)
-- [Desktop installation and recovery](docs/reference/desktop.md)
-- [Runtime observability](docs/reference/runtime-observability.md)
+- [Desktop packaging](tools/desktop/build/cross-platform/README.md)
 - [Agent runtime architecture](docs/architecture/agent-runtime.md) and [Frontend workspace architecture](docs/architecture/frontend-workspaces.md)
 - [MIT license](LICENSE); third-party license and NOTICE texts accompany packaged dependencies
 

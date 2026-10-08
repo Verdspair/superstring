@@ -253,15 +253,32 @@ export class RuntimeSpanRepository {
     const countExpr = matched.filterWhere
       ? `SUM(CASE WHEN ${matched.filterWhere} THEN 1 ELSE 0 END)`
       : "COUNT(*)";
-    const cte = `WITH groups AS MATERIALIZED (SELECT * FROM (SELECT s.trace_id AS traceId,MIN(s.id) AS cursorId,
-        MAX(s.status='started') AS active,MAX(s.status='failed') AS failed,
-        MAX(COALESCE(s.finished_at,s.started_at)) AS lastActivityAt,
-        ${countExpr} AS matchedSpanCount
-        FROM runtime_spans s WHERE ${matched.visibilityWhere} GROUP BY s.trace_id)
-        WHERE matchedSpanCount>0)`;
-    // Text order inside the statement: the CASE's filter placeholders come before the scan's
-    // visibility placeholders, so the filter params bind first.
-    const params = [...matched.filterParams, ...matched.visibilityParams];
+    const activeConversation = filters.conversationId !== undefined && filters.status === "started";
+    const cte = activeConversation
+      ? `WITH candidates AS MATERIALIZED (SELECT DISTINCT s.trace_id FROM runtime_spans s
+          WHERE ${matched.visibilityWhere} AND ${matched.filterWhere}),
+        groups AS MATERIALIZED (SELECT * FROM (SELECT s.trace_id AS traceId,MIN(s.id) AS cursorId,
+          MAX(s.status='started') AS active,MAX(s.status='failed') AS failed,
+          MAX(COALESCE(s.finished_at,s.started_at)) AS lastActivityAt,
+          ${countExpr} AS matchedSpanCount
+          FROM candidates c CROSS JOIN runtime_spans s INDEXED BY idx_runtime_spans_trace
+          WHERE s.trace_id=c.trace_id AND ${matched.visibilityWhere}
+          GROUP BY s.trace_id) WHERE matchedSpanCount>0)`
+      : `WITH groups AS MATERIALIZED (SELECT * FROM (SELECT s.trace_id AS traceId,MIN(s.id) AS cursorId,
+          MAX(s.status='started') AS active,MAX(s.status='failed') AS failed,
+          MAX(COALESCE(s.finished_at,s.started_at)) AS lastActivityAt,
+          ${countExpr} AS matchedSpanCount
+          FROM runtime_spans s WHERE ${matched.visibilityWhere} GROUP BY s.trace_id)
+          WHERE matchedSpanCount>0)`;
+    // Candidate bindings precede the grouping SELECT; its CASE bindings precede WHERE bindings.
+    const params = activeConversation
+      ? [
+          ...matched.visibilityParams,
+          ...matched.filterParams,
+          ...matched.filterParams,
+          ...matched.visibilityParams,
+        ]
+      : [...matched.filterParams, ...matched.visibilityParams];
     const summary = this.db
       .query(`${cte} SELECT COUNT(*) AS totalTraces,
       COALESCE(SUM(active),0) AS activeTraces,COALESCE(SUM(failed),0) AS failedTraces,

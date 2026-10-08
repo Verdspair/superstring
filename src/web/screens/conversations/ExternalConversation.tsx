@@ -10,6 +10,7 @@ import { useConversationEvents } from "../../features/conversations/use-conversa
 import { timelineKey, useTimelineScroll } from "../../features/conversations/use-timeline-scroll";
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
+import { ConversationActiveTraces } from "./ConversationActiveTraces";
 import { ConversationIdentity } from "./ConversationIdentity";
 import { EventRecord } from "./EventRecord";
 import { QqGroupControls } from "./QqGroupControls";
@@ -78,6 +79,7 @@ export function ExternalConversation({
               />
             </div>
           )}
+          <ConversationActiveTraces conversationId={conversation.id} active={active} />
         </>
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">

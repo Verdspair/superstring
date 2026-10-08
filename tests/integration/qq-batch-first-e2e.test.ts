@@ -6,6 +6,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
+import { inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
@@ -13,13 +14,16 @@ import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
-import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { createQqScheme, schemeOutputReserve } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
+import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import { QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
+import { estimateTokens } from "../../src/server/services/token-estimate";
 import { cloneBusinessDb } from "../harness/business-db";
 
 const time = 2_000_000_000;
@@ -27,19 +31,34 @@ const bindingId = "22222222-2222-4222-8222-222222222222";
 
 type Call = { kind: "complete" | "stream"; request: ModelRequest };
 
-const batchTargetIds = (request: ModelRequest): string[] => {
+type BatchTargetsPayload = {
+  kind: string;
+  trust?: string;
+  sourceSeqs?: number[];
+  targets: {
+    targetId: string;
+    speakerId?: string;
+    sourceSeqs?: number[];
+  }[];
+};
+
+const batchTargetsPayload = (request: ModelRequest): BatchTargetsPayload | null => {
   for (const message of request.messages ?? []) {
     const parts = Array.isArray(message.content) ? message.content : [];
     for (const part of parts as { kind?: string; text?: string }[]) {
       if (part.kind !== "text" || typeof part.text !== "string") continue;
       try {
-        const data = JSON.parse(part.text) as { kind?: string; targets?: { targetId: string }[] };
-        if (data.kind === "qq_batch_targets" && data.targets)
-          return data.targets.map((entry) => entry.targetId);
+        const data = JSON.parse(part.text) as BatchTargetsPayload;
+        if (data.kind === "qq_batch_targets" && Array.isArray(data.targets)) return data;
       } catch {}
     }
   }
-  return [];
+  return null;
+};
+
+const batchTargetIds = (request: ModelRequest): string[] => {
+  const payload = batchTargetsPayload(request);
+  return payload ? payload.targets.map((entry) => entry.targetId) : [];
 };
 
 const isBatchScore = (request: ModelRequest) =>
@@ -78,6 +97,9 @@ function setup(
     /** 覆盖阶段一评分结论（缺省＝本批候选全部 9 分）。 */
     evaluations?: (targetIds: string[]) => unknown;
     intents?: string[];
+    capacity?: number;
+    judgementBudget?: number;
+    batchSize?: number;
   } = {},
 ) {
   const h = cloneBusinessDb();
@@ -91,11 +113,14 @@ function setup(
   });
   const scheme = createQqScheme(h.orm, {
     name: "batch-e2e",
+    ...(options.judgementBudget === undefined
+      ? {}
+      : { context: { ...QQ_CONTEXT_DEFAULT, judgement_token_budget: options.judgementBudget } }),
     reply: { split_by_speaker: true },
     triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: true },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
-      initiative_batch_target_count: 2,
+      initiative_batch_target_count: options.batchSize ?? 2,
       initiative_batch_jitter_count: 0,
       merge_window_seconds: 2,
       max_recompute_count: 1,
@@ -152,7 +177,7 @@ function setup(
     complete: async () => {
       throw new Error("UNIFIED_RUNTIME_REQUIRED");
     },
-    loadedContextCapacity: async () => 65536,
+    loadedContextCapacity: async () => options.capacity ?? 65536,
   };
   const adapter = new OneBot11Adapter({
     orm: h.orm,
@@ -171,7 +196,7 @@ function setup(
     policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600 }),
     now,
   });
-  const receive = (id: string, speaker: string) =>
+  const receive = (id: string, speaker: string, text = `hello from ${speaker}`) =>
     recordInbound(
       h.orm,
       normalizeOneBotMessage(
@@ -184,7 +209,7 @@ function setup(
           user_id: Number(speaker),
           group_id: 30003,
           message_id: id,
-          message: [{ type: "text", data: { text: `hello from ${speaker}` } }],
+          message: [{ type: "text", data: { text } }],
           sender: { nickname: speaker },
         },
         "10001",
@@ -205,6 +230,7 @@ function setup(
     calls,
     adapter,
     host,
+    scheme,
     clock,
     now,
     receive,
@@ -374,5 +400,133 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
         status: string;
       } | null,
     ).toEqual({ status: "failed" });
+  });
+
+  it("shares the complete frozen source allowlist once and uses the actual batch output protocol", async () => {
+    const f = setup();
+    f.receive("90101", "20002");
+    f.clock.seconds += 1;
+    f.receive("90102", "20003");
+    await f.activate();
+    const request = f.calls.find((call) => isBatchScore(call.request))?.request;
+    expect(request).toBeDefined();
+    const payloads =
+      request?.messages.flatMap((message) =>
+        message.content.flatMap((part) => {
+          if (part.kind !== "text") return [];
+          try {
+            const value = JSON.parse(part.text);
+            return value.kind === "qq_batch_targets" ? [value] : [];
+          } catch {
+            return [];
+          }
+        }),
+      ) ?? [];
+    expect(payloads).toHaveLength(1);
+    const payload = payloads[0];
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    const seqs = f.db
+      .query(
+        "SELECT seq FROM conversation_events WHERE conversation_id=? AND kind='inbound' ORDER BY seq",
+      )
+      .all(conversation.id) as { seq: number }[];
+    expect(payload.sourceSeqs).toEqual(seqs.map((row) => row.seq));
+    expect(payload.targets).toHaveLength(2);
+    expect(
+      payload.targets.every(
+        (target: Record<string, unknown>) => !Object.hasOwn(target, "sourceSeqs"),
+      ),
+    ).toBe(true);
+    const systems =
+      request?.messages
+        .filter((message) => message.role === "system")
+        .flatMap((message) =>
+          message.content.filter((part) => part.kind === "text").map((part) => part.text),
+        )
+        .join("\n") ?? "";
+    expect(systems).toContain("evaluations");
+    expect(systems).not.toContain("score 为必填");
+    const replies = f.calls.filter((call) => !isBatchScore(call.request));
+    expect(replies).toHaveLength(2);
+    expect(
+      replies.every((call) => !JSON.stringify(call.request.messages).includes("qq_batch_targets")),
+    ).toBe(true);
+  });
+
+  it("fits the actual batch before optional history and preserves true mandatory-capacity refusal", async () => {
+    const capacity = 16384;
+    const f = setup({
+      capacity,
+      judgementBudget: 16384,
+      evaluations: (ids) =>
+        ids.map((targetId) => ({ targetId, score: 0, intent: "", sourceSeqs: [] })),
+    });
+    f.receive("90201", "20002", `OPTIONAL_OLDER_BODY${"x".repeat(10000)}`);
+    f.clock.seconds += 1;
+    f.receive("90202", "20003", "LATEST_REQUIRED_BODY");
+    await f.activate();
+    const scored = f.calls.find((call) => isBatchScore(call.request))?.request;
+    expect(scored).toBeDefined();
+    if (!scored) throw new Error("No batch score request");
+    const serialized = JSON.stringify(scored.messages);
+    expect(serialized).toContain("LATEST_REQUIRED_BODY");
+    expect(serialized).not.toContain("OPTIONAL_OLDER_BODY");
+    const schemaCost = estimateTokens(JSON.stringify(QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA));
+    const ceiling = Math.floor(
+      (capacity - schemeOutputReserve(f.scheme).judgement_output_reserved) * 0.95,
+    );
+    expect(inputUnits(scored.messages) + schemaCost).toBeLessThanOrEqual(ceiling);
+    const batch = scored.messages.flatMap((message) =>
+      message.content.flatMap((part) => {
+        if (part.kind !== "text") return [];
+        try {
+          const value = JSON.parse(part.text);
+          return value.kind === "qq_batch_targets" ? [value] : [];
+        } catch {
+          return [];
+        }
+      }),
+    )[0];
+    expect(batch.sourceSeqs).toEqual([1, 2]);
+    expect(batch.targets).toHaveLength(2);
+    const small = setup({ capacity: 1024 });
+    small.receive("90301", "20002");
+    small.clock.seconds += 1;
+    small.receive("90302", "20003", "LATEST_REQUIRED_BODY");
+    await expect(small.activate()).rejects.toMatchObject({ code: "CONTEXT_BUDGET_EXCEEDED" });
+    expect(small.calls).toHaveLength(0);
+  });
+
+  it("keeps a large frozen batch source allowlist complete without multiplying it by candidate count", async () => {
+    const f = setup({
+      capacity: 16384,
+      judgementBudget: 16384,
+      batchSize: 200,
+      evaluations: (ids) =>
+        ids.map((targetId) => ({ targetId, score: 0, intent: "", sourceSeqs: [] })),
+    });
+    for (let i = 0; i < 200; i++) {
+      f.receive(String(91000 + i), String(21000 + (i % 20)), `batch message ${i}`);
+      f.clock.seconds += 1;
+    }
+    await f.activate();
+    const score = f.calls.find((call) => isBatchScore(call.request))?.request;
+    expect(score).toBeDefined();
+    if (!score) throw new Error("No batch score");
+    const payload = score.messages.flatMap((message) =>
+      message.content.flatMap((part) => {
+        if (part.kind !== "text") return [];
+        try {
+          const value = JSON.parse(part.text);
+          return value.kind === "qq_batch_targets" ? [value] : [];
+        } catch {
+          return [];
+        }
+      }),
+    )[0];
+    expect(payload.sourceSeqs).toHaveLength(200);
+    expect(payload.sourceSeqs).toEqual(Array.from({ length: 200 }, (_, i) => i + 1));
+    expect(payload.targets).toHaveLength(20);
+    expect(f.calls).toHaveLength(1);
   });
 });

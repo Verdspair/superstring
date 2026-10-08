@@ -306,7 +306,7 @@ it("navigates matching evidence and preserves selected identity without stealing
   const refresh = screen.getByRole("button", { name: "刷新当前链路" });
   refresh.focus();
   fireEvent.click(refresh);
-  await screen.findByRole("button", { name: "查看实际输入与输出" });
+  await screen.findByText("Exact protected input");
   expect(document.activeElement).toBe(refresh);
 });
 it("switches the model list and reader layout without duplicating protected requests", async () => {
@@ -315,7 +315,7 @@ it("switches the model list and reader layout without duplicating protected requ
   await screen.findByRole("button", { name: /下一个命中/ });
   await pointer(screen.getByRole("tab", { name: /模型调用/ }));
   await pointer(screen.getByRole("button", { name: "检查调用" }));
-  await pointer(screen.getByRole("button", { name: "查看实际输入与输出" }));
+  // Selecting this model call now expands its protected details in one action.
   await screen.findByText("Exact protected input");
   await pointer(screen.getByRole("button", { name: "展开阅读" }));
   expect(screen.getAllByRole("region", { name: "模型证据" })).toHaveLength(1);

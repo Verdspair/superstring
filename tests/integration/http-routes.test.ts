@@ -8,6 +8,7 @@
 // Nothing here touches the live model server — the gateway is a fake.
 
 import { describe, expect, it } from "bun:test";
+import { APP_VERSION } from "../../src/server/api/health";
 import { createApp } from "../../src/server/app";
 import { BUSINESS_SCHEMA_VERSION, openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
@@ -625,7 +626,7 @@ describe("health route", () => {
     expect(body.schema).toBe("ok");
     expect(body.model_service).toBe("ok");
     expect(body.model_loaded).toBe(true);
-    expect(body.version).toBe("0.4.0-alpha-1");
+    expect(body.version).toBe(APP_VERSION);
     expect(typeof body.instance_id).toBe("string");
   });
 

@@ -552,10 +552,11 @@ function loopbackReply(parsed: {
         if (!trimmed.startsWith("{") || !trimmed.includes('"qq_batch_targets"')) continue;
         try {
           const dump = JSON.parse(trimmed) as {
-            targets?: Array<{ targetId: string; sourceSeqs: number[] }>;
+            sourceSeqs: number[];
+            targets?: Array<{ targetId: string }>;
           };
           for (const target of dump.targets ?? [])
-            targets.push({ targetId: target.targetId, sourceSeqs: [...target.sourceSeqs] });
+            targets.push({ targetId: target.targetId, sourceSeqs: [...dump.sourceSeqs] });
         } catch {
           // 解不开的 dump 不伪造：targets 保持为空，宿主按目标缺失协议报错留现场。
         }

@@ -127,6 +127,11 @@ function contextScope(userId: string): { where: string; params: string[] } {
 export class AgentRunRepository {
   constructor(private readonly db: Database) {}
 
+  private notifyRunConversation(runId: string): void {
+    const conversationId = this.conversationOfRun(runId);
+    if (conversationId) publishConversationChange(this.db, conversationId);
+  }
+
   /** Owner -> conversation fact: same mapping as CONTEXT_ROW_SELECT; no synthetic ids. */
   private conversationOfRun(runId: string): string | null {
     const row = this.db
@@ -180,6 +185,7 @@ export class AgentRunRepository {
         input.owner.agentId ?? null,
         input.at,
       );
+    this.notifyRunConversation(input.runId);
   }
 
   setStatus(runId: string, status: RunStatus, at: string, errorCode: string | null = null): void {
@@ -188,10 +194,7 @@ export class AgentRunRepository {
       .query(`UPDATE agent_runs SET status=?, ended_at=?, error_code=?
       WHERE run_id=? AND ended_at IS NULL`)
       .run(status, terminal ? at : null, errorCode, runId).changes;
-    if (changed > 0) {
-      const conversationId = this.conversationOfRun(runId);
-      if (conversationId) publishConversationChange(this.db, conversationId);
-    }
+    if (changed > 0) this.notifyRunConversation(runId);
   }
 
   startStep(input: {
@@ -237,6 +240,7 @@ export class AgentRunRepository {
           expired ? "expired" : "exact",
         );
     })();
+    if (input.stepNo === 1) this.notifyRunConversation(input.runId);
   }
 
   finishStep(

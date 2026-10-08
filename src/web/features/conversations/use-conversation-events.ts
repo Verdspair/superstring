@@ -26,7 +26,7 @@ function redactEvent(item: ConversationEventView): ConversationEventView {
   };
 }
 
-/** Refresh every loaded source projection: expiry/revocation does not append a sequence. */
+/** New arrivals do not wait for older pages; loaded projections still revalidate expiry. */
 export function useConversationEvents(
   id: string,
   beforeChange?: BeforeHistoryChange,
@@ -45,53 +45,55 @@ export function useConversationEvents(
   const current = useRef(items);
   const notify = useRef(beforeChange);
   notify.current = beforeChange;
-  const pending = useRef<AbortController | null>(null);
+  const rangeRead = useRef<AbortController | null>(null);
+  const tailRead = useRef<AbortController | null>(null);
   const pendingRevalidate = useRef(false);
-  const pendingBackgroundUpdate = useRef(false);
+  const wantedSeq = useRef(0);
   const authoritativeSettled = useRef(false);
-
-  // Scope change cleanup: 严格按 summary (id, agentId, bindingEpoch) 及 api 判定范围跃迁
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const lastScope = useRef({ id, agentId, bindingEpoch, api });
-  useEffect(() => {
-    const prev = lastScope.current;
-    if (
-      prev.id !== id ||
-      prev.agentId !== agentId ||
-      prev.bindingEpoch !== bindingEpoch ||
-      prev.api !== api
-    ) {
-      lastScope.current = { id, agentId, bindingEpoch, api };
-      pending.current?.abort();
-      pending.current = null;
-      first.current = 0;
-      current.current = [];
-      authoritativeSettled.current = false;
-      pendingRevalidate.current = false;
-      pendingBackgroundUpdate.current = false;
-      setItems([]);
-      setHasMore(false);
-      setLoading(false);
-      setError("");
-      notify.current?.("clear", []);
-    }
-  }, [id, agentId, bindingEpoch, api]);
 
-  // F5 刷新缓存预显水合（缺 scope 不 hydrate；仅在网络落地前预显，绝不推进 first.current 保持 0）
+  const cancel = useCallback(() => {
+    rangeRead.current?.abort();
+    tailRead.current?.abort();
+    rangeRead.current = null;
+    tailRead.current = null;
+    pendingRevalidate.current = false;
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const previous = lastScope.current;
+    if (
+      previous.id === id &&
+      previous.agentId === agentId &&
+      previous.bindingEpoch === bindingEpoch &&
+      previous.api === api
+    )
+      return;
+    cancel();
+    lastScope.current = { id, agentId, bindingEpoch, api };
+    first.current = 0;
+    current.current = [];
+    wantedSeq.current = 0;
+    authoritativeSettled.current = false;
+    setItems([]);
+    setHasMore(false);
+    setError("");
+    notify.current?.("clear", []);
+  }, [id, agentId, bindingEpoch, api, cancel]);
+
   useEffect(() => {
     let active = true;
     if (!sessionStateStorage || !id || agentId === null || bindingEpoch === null) return;
+    const scope = lastScope.current;
     void loadQqEventsCache(sessionStateStorage, id, agentId, bindingEpoch).then((cached) => {
-      const scopeNow = lastScope.current;
-      const scopeMatches =
-        scopeNow.id === id &&
-        scopeNow.agentId === agentId &&
-        scopeNow.bindingEpoch === bindingEpoch;
       if (
         active &&
-        scopeMatches &&
-        cached &&
-        cached.length > 0 &&
-        current.current.length === 0 &&
+        lastScope.current === scope &&
+        cached?.length &&
+        !current.current.length &&
         !authoritativeSettled.current
       ) {
         current.current = cached;
@@ -104,36 +106,101 @@ export function useConversationEvents(
     };
   }, [id, agentId, bindingEpoch, sessionStateStorage]);
 
+  const publish = useCallback((kind: HistoryChange, records: ConversationEventView[]) => {
+    const previous = new Map(current.current.map((row) => [row.seq, row]));
+    const next = [...new Map(records.map((row) => [row.seq, row])).values()]
+      .sort((a, b) => a.seq - b.seq)
+      .map((row) => {
+        const old = previous.get(row.seq);
+        return old && JSON.stringify(old) === JSON.stringify(row) ? old : row;
+      });
+    first.current = next[0]?.seq ?? 0;
+    notify.current?.(kind, next);
+    current.current = next;
+    setItems(next);
+  }, []);
+
+  const save = useCallback(() => {
+    void saveQqEventsCache(sessionStateStorage, id, agentId, bindingEpoch, current.current);
+  }, [sessionStateStorage, id, agentId, bindingEpoch]);
+
+  const fail = useCallback(
+    (reason: unknown) => {
+      rangeRead.current?.abort();
+      rangeRead.current = null;
+      tailRead.current?.abort();
+      tailRead.current = null;
+      pendingRevalidate.current = false;
+      setLoading(false);
+      wantedSeq.current = 0;
+      setError(errorText(reason));
+      publish("refresh", current.current.map(redactEvent));
+      void removeQqEventsCache(sessionStateStorage, id);
+    },
+    [id, sessionStateStorage, publish],
+  );
+
+  const append = useCallback(async () => {
+    if (tailRead.current || !authoritativeSettled.current) return;
+    const controller = new AbortController();
+    const scope = lastScope.current;
+    tailRead.current = controller;
+    let cursor = current.current.at(-1)?.seq ?? 0;
+    try {
+      for (;;) {
+        const requestedSeq = wantedSeq.current;
+        const page = await api.getConversationEvents(
+          id,
+          { direction: "after", afterSeq: cursor, limit: 100 },
+          controller.signal,
+        );
+        if (controller.signal.aborted || lastScope.current !== scope) return;
+        publish("refresh", [...current.current, ...page.items]);
+        const progressed = page.nextSeq > cursor;
+        cursor = page.nextSeq;
+        if (!page.hasMore && wantedSeq.current <= requestedSeq) wantedSeq.current = 0;
+        if (!progressed || (!page.hasMore && wantedSeq.current === 0)) break;
+      }
+      if (!rangeRead.current) save();
+    } catch (reason) {
+      if (!controller.signal.aborted && lastScope.current === scope) fail(reason);
+    } finally {
+      if (tailRead.current === controller) tailRead.current = null;
+    }
+  }, [api, id, publish, save, fail]);
+
   const load = useCallback(
     async (older = false) => {
-      if (pending.current) return;
+      if (rangeRead.current) {
+        if (!older) pendingRevalidate.current = true;
+        return;
+      }
       const controller = new AbortController();
-      pending.current = controller;
+      const scope = lastScope.current;
+      rangeRead.current = controller;
       setLoading(true);
       setError("");
-      // R7: 初始网络读取以是否已有权威数据到达为准，首次必走 latest，不把预览缓存当作已加载范围
       const initial = !authoritativeSettled.current;
-      const loadedCount = current.current.length;
+      const lower = first.current;
+      const upper = current.current.at(-1)?.seq ?? 0;
+      wantedSeq.current = 0;
       try {
         const page = await api.getConversationEvents(
           id,
           initial
             ? { direction: "latest" }
             : older
-              ? { direction: "before", beforeSeq: first.current }
+              ? { direction: "before", beforeSeq: lower }
               : {
                   direction: "after",
-                  afterSeq: first.current - 1,
-                  limit: Math.max(100, loadedCount + 100),
+                  afterSeq: Math.max(0, lower - 1),
+                  limit: Math.max(100, current.current.length + 100),
                 },
           controller.signal,
         );
-        if (controller.signal.aborted || lastScope.current.id !== id) return;
-        let next = page.items;
-        if (initial || older) {
-          setHasMore(page.hasMore);
-        } else {
-          // If server has more beyond our expanded limit, page forward
+        if (controller.signal.aborted || lastScope.current !== scope) return;
+        let records = page.items;
+        if (!initial && !older) {
           let cursor = page.nextSeq;
           let more = page.hasMore;
           while (more) {
@@ -142,149 +209,95 @@ export function useConversationEvents(
               { direction: "after", afterSeq: cursor },
               controller.signal,
             );
-            if (controller.signal.aborted || lastScope.current.id !== id) return;
-            next = [...next, ...following.items];
+            if (controller.signal.aborted || lastScope.current !== scope) return;
+            records = [...records, ...following.items];
             more = following.hasMore && following.nextSeq > cursor;
             cursor = following.nextSeq;
           }
         }
-
-        let merged: ConversationEventView[];
-        if (older) {
-          merged = [
-            ...new Map([...next, ...current.current].map((item) => [item.seq, item])).values(),
-          ].sort((a, b) => a.seq - b.seq);
-        } else {
-          // Fresh authoritative projections from server replace loaded range
-          merged = [...next].sort((a, b) => a.seq - b.seq);
-        }
-
-        // Fresh JSON objects represent authoritative projections, not necessarily changed rows.
-        const previousRows = new Map(current.current.map((row) => [row.seq, row]));
-        merged = merged.map((row) => {
-          const previous = previousRows.get(row.seq);
-          return previous && JSON.stringify(previous) === JSON.stringify(row) ? previous : row;
-        });
-        first.current = merged[0]?.seq ?? 0;
+        if (initial || older) setHasMore(page.hasMore);
+        // A range response owns only the range it began with, not concurrent tail arrivals.
+        const next = initial
+          ? records
+          : older
+            ? [...records, ...current.current]
+            : [...records, ...current.current.filter((row) => row.seq < lower || row.seq > upper)];
         authoritativeSettled.current = true;
-        notify.current?.(initial ? "initial" : older ? "older" : "refresh", merged);
-        current.current = merged;
-        setItems(merged);
-        void saveQqEventsCache(sessionStateStorage, id, agentId, bindingEpoch, merged);
+        publish(initial ? "initial" : older ? "older" : "refresh", next);
+        save();
       } catch (reason) {
-        if (!controller.signal.aborted && lastScope.current.id === id) {
+        if (!controller.signal.aborted && lastScope.current === scope) {
           authoritativeSettled.current = true;
-          setError(errorText(reason));
-          const redacted: ConversationEventView[] = current.current.map(redactEvent);
-          notify.current?.("refresh", redacted);
-          current.current = redacted;
-          setItems(redacted);
-          void removeQqEventsCache(sessionStateStorage, id);
+          fail(reason);
         }
       } finally {
-        if (pending.current === controller) {
-          pending.current = null;
+        if (rangeRead.current === controller) {
+          rangeRead.current = null;
           setLoading(false);
-          if (pendingRevalidate.current) {
-            pendingRevalidate.current = false;
-            if (document.visibilityState !== "hidden") {
+          if (enabledRef.current && document.visibilityState !== "hidden") {
+            if (pendingRevalidate.current) {
+              pendingRevalidate.current = false;
               void load();
-            } else {
-              pendingBackgroundUpdate.current = true;
+            } else if (wantedSeq.current > (current.current.at(-1)?.seq ?? 0)) {
+              void append();
             }
           }
         }
       }
     },
-    [api, id, agentId, bindingEpoch, sessionStateStorage],
+    [api, id, append, fail, publish, save],
   );
 
   useEffect(() => {
     const pause = () => {
-      pendingRevalidate.current = false;
-      // 暂停：只取消在途请求，不清空已加载内容。
-      // 通知"refresh"而不是"clear"：后者会让滚动层把整份记录当已清空而渲染为空。
-      if (pending.current) {
-        pending.current.abort();
-        pending.current = null;
-      }
+      cancel();
       notify.current?.("refresh", current.current);
-      setLoading(false);
     };
-
     if (!enabled) {
-      // 当页签隐藏或会话失活时暂停在途请求，保留已加载正文与占位
       pause();
       return;
     }
-
     const refresh = () => {
       if (document.visibilityState !== "hidden") void load();
     };
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        pendingBackgroundUpdate.current = true;
-        pause();
-      } else if (pendingBackgroundUpdate.current) {
-        pendingBackgroundUpdate.current = false;
-        if (pending.current) {
-          pendingRevalidate.current = true;
-        } else {
-          void load();
-        }
-      }
+    let hidden = document.visibilityState === "hidden";
+    const visibility = () => {
+      const nextHidden = document.visibilityState === "hidden";
+      if (nextHidden === hidden) return;
+      hidden = nextHidden;
+      if (hidden) pause();
+      else refresh();
     };
-
-    if (document.visibilityState === "hidden") {
-      pendingBackgroundUpdate.current = true;
-    } else {
-      pendingBackgroundUpdate.current = false;
-      void load();
-    }
-
+    refresh();
     const timer = setInterval(refresh, refreshMs);
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    document.addEventListener("visibilitychange", visibility);
     return () => {
       clearInterval(timer);
-      if (pending.current) {
-        pending.current.abort();
-        pending.current = null;
-      }
-      setLoading(false);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      cancel();
+      document.removeEventListener("visibilitychange", visibility);
     };
-  }, [enabled, load, refreshMs]);
+  }, [enabled, load, refreshMs, cancel]);
 
-  useEffect(() => {
-    const unsubscribe = addConversationChangeListener((event) => {
-      const isTarget =
-        event.event === "ready" ||
-        (event.event === "conversation_changed" && event.conversationId === id);
-
-      if (!isTarget) return;
-
-      const isForeground = enabled && document.visibilityState !== "hidden";
-      if (isForeground) {
-        if (pending.current) {
-          pendingRevalidate.current = true;
+  useEffect(
+    () =>
+      addConversationChangeListener((event) => {
+        if (event.event !== "ready" && event.conversationId !== id) return;
+        if (event.event === "conversation_changed")
+          wantedSeq.current = Math.max(wantedSeq.current, event.seq);
+        if (!enabled || document.visibilityState === "hidden") return;
+        if (event.event === "ready" && rangeRead.current && !authoritativeSettled.current) return;
+        if (
+          event.event === "conversation_changed" &&
+          authoritativeSettled.current &&
+          event.seq > (current.current.at(-1)?.seq ?? 0)
+        ) {
+          void append();
         } else {
           void load();
         }
-      } else {
-        pendingBackgroundUpdate.current = true;
-      }
-    });
+      }),
+    [id, enabled, append, load],
+  );
 
-    return unsubscribe;
-  }, [id, enabled, load]);
-
-  return {
-    items,
-    hasMore,
-    loading,
-    error,
-    refresh: () => load(),
-    loadMore: () => load(true),
-  };
+  return { items, hasMore, loading, error, refresh: () => load(), loadMore: () => load(true) };
 }

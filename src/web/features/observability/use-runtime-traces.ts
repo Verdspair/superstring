@@ -213,13 +213,19 @@ export function useRuntimeWaterfall(traceId: string, filters: RuntimeSpanFilters
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const pending = useRef<ReadTask | null>(null);
+  const pendingRevalidate = useRef(false);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   const key = filterKey(filters);
   const appliedFilters = useMemo(() => JSON.parse(key) as RuntimeSpanFilters, [key]);
 
+  const scopeRef = useRef({ api, traceId, appliedFilters });
+
   const cancel = useCallback(() => {
     pending.current?.cancel();
     pending.current = null;
+    pendingRevalidate.current = false;
     setLoading(false);
   }, []);
 
@@ -229,26 +235,70 @@ export function useRuntimeWaterfall(traceId: string, filters: RuntimeSpanFilters
     setError("");
   }, [cancel]);
 
+  useEffect(() => {
+    if (
+      scopeRef.current.api !== api ||
+      scopeRef.current.traceId !== traceId ||
+      scopeRef.current.appliedFilters !== appliedFilters
+    ) {
+      scopeRef.current = { api, traceId, appliedFilters };
+      clear();
+      setError("");
+    }
+  }, [api, traceId, appliedFilters, clear]);
+
   const load = useCallback(() => {
-    if (pending.current) return;
+    if (!traceId) return;
+    if (pending.current) {
+      pendingRevalidate.current = true;
+      return;
+    }
     setLoading(true);
     setError("");
     pending.current = startRead(
       (signal) => api.getRuntimeWaterfall(traceId, appliedFilters, signal),
       {
-        success: setData,
+        success: (nextData) => {
+          if (
+            scopeRef.current.api === api &&
+            scopeRef.current.traceId === traceId &&
+            scopeRef.current.appliedFilters === appliedFilters
+          ) {
+            setData(nextData);
+          }
+        },
         failure: (reason) => {
-          setData(null);
-          setError(errorText(reason));
+          if (
+            scopeRef.current.api === api &&
+            scopeRef.current.traceId === traceId &&
+            scopeRef.current.appliedFilters === appliedFilters
+          ) {
+            setData(null);
+            setError(errorText(reason));
+          }
         },
         settled: () => {
           pending.current = null;
           setLoading(false);
+          if (pendingRevalidate.current) {
+            pendingRevalidate.current = false;
+            if (document.visibilityState !== "hidden" && !pausedRef.current) {
+              load();
+            }
+          }
         },
       },
     );
   }, [api, appliedFilters, traceId]);
 
   useForegroundRead(load, clear, { paused, onSuspend: cancel });
+  const conversationId =
+    appliedFilters.conversationId ?? data?.trace.root.conversationId ?? undefined;
+  useConversationChangeSubscription(load, {
+    conversationId,
+    enabled: Boolean(traceId),
+    paused,
+  });
+
   return { data, loading, error, refresh: load };
 }

@@ -108,10 +108,12 @@ import {
 } from "../../services/qq-message-renderer";
 import {
   buildQqPrompt,
+  QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
   QQ_JUDGEMENT_RESPONSE_SCHEMA,
   type QqPromptInput,
   type QqPromptMaterial,
   qqPromptMessages,
+  qqReplaceOutputRule,
   qqSpeakerLabel,
   TIER_OUTPUT_RULES,
 } from "../../services/qq-prompt-contract";
@@ -883,7 +885,9 @@ export class BotContextSource {
       ...(input.mediaInput === undefined ? {} : { mediaInput: input.mediaInput }),
       ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     });
-    for (const [tier, view] of this.views)
+    // Reply children select their own judgement view if they later request a score.
+    for (const [tier, view] of this.views) {
+      if (tier !== "reply") continue;
       child.views.set(tier, {
         ...view,
         disclosedMessages: view.disclosedMessages.map((entry) => ({
@@ -891,6 +895,7 @@ export class BotContextSource {
           facts: [...entry.facts],
         })),
       });
+    }
     child.sequence = this.sequence;
     // Render bindings are immutable view material; history observations remain child-local.
     // 数组按值复制：子 run 追加失败项不写回父（retrievalFailures 是可变 run 级状态）。
@@ -1095,7 +1100,20 @@ export class BotContextSource {
       )
         fail("CONTEXT_SOURCE_INVALID", "评分目标不再受权");
     }
-    const view = await this.view("judgement", input.signal);
+    const memberSourceSeqs = this.frozenMemberSourceSeqs(input.throughSeq);
+    const batchTargets = textMessage(
+      "user",
+      contextDumps({
+        kind: "qq_batch_targets",
+        trust: "data_only",
+        sourceSeqs: [...memberSourceSeqs.keys()],
+        targets: input.targets.map((target) => ({
+          targetId: target.id,
+          speakerId: target.speakerId,
+        })),
+      }),
+    );
+    const view = await this.view("judgement", input.signal, batchTargets);
     const evaluationMedia = await this.preparePhaseMedia("evaluation", input.signal);
     const evaluationMaterial = evaluationMedia
       ? {
@@ -1110,30 +1128,14 @@ export class BotContextSource {
       this.observations,
       this.targetIds(),
     );
-    const messages = this.evaluationMessages(
+    const messages = this.batchEvaluationMessages(
       evaluationMaterial,
       this.observations,
-      undefined,
       view.selection.messages,
-      undefined,
+      batchTargets,
     );
-    // 本批候选目标（data_only，非指令）：模型按这些 id 逐人给分；缺一即协议错误。
-    const memberSourceSeqs = this.frozenMemberSourceSeqs(input.throughSeq);
-    messages.push(
-      textMessage(
-        "user",
-        contextDumps({
-          kind: "qq_batch_targets",
-          trust: "data_only",
-          targets: input.targets.map((target) => ({
-            targetId: target.id,
-            speakerId: target.speakerId,
-            sourceSeqs: [...memberSourceSeqs.keys()],
-          })),
-        }),
-      ),
-    );
-    const units = inputUnits(messages) + scoreProtocolUnits(this.options);
+    const units =
+      inputUnits(messages) + estimateTokens(contextDumps(QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA));
     if (units > view.limit) {
       const model = this.options.spec.model ?? this.options.runtime.model_name;
       this.options.onDiagnostic?.({
@@ -1294,6 +1296,22 @@ export class BotContextSource {
       inputUnits: view.limit,
       stateDigest,
     };
+  }
+  private batchEvaluationMessages(
+    material: ContextMaterial,
+    observations: readonly ActionObservation[],
+    timeline: readonly QqContextMessage[],
+    batchTargets: ModelMessage,
+  ): ModelMessage[] {
+    return [
+      ...qqReplaceOutputRule(
+        this.evaluationMessages(material, observations, undefined, timeline),
+        "judgement",
+        "只返回 JSON 对象 evaluations：对本批每个 targetId 返回一项，包含 0–10 整数 score、意图 intent 和来源引用 sourceSeqs。" +
+          "qq_batch_targets.sourceSeqs 是所有候选共享的完整可引用序号列表；每项只引用该列表中的真实来源，也可以返回空 sourceSeqs。不得遗漏、重复或增加候选目标。",
+      ),
+      batchTargets,
+    ];
   }
   private evaluationMessages(
     material: ContextMaterial,
@@ -1723,6 +1741,7 @@ ${intent.trim()}`,
     material: ContextMaterial,
     observations = this.observations,
     timeline = this.views.get(tier)?.selection.messages ?? [],
+    batchTargets?: ModelMessage,
   ): number {
     const o = this.options;
     const rendered = this.engine.render(
@@ -1733,6 +1752,12 @@ ${intent.trim()}`,
     );
     const targets = o.targets();
     if (tier === "judgement") {
+      if (batchTargets) {
+        return (
+          inputUnits(this.batchEvaluationMessages(material, observations, timeline, batchTargets)) +
+          estimateTokens(contextDumps(QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA))
+        );
+      }
       // 与 cost() 同一处估算（评分相实际 schema + 实际规则替换的净增量），不各估一遍。
       const schemaUnits = scoreProtocolUnits(o);
       const evaluations = [undefined, ...targets].map(
@@ -1799,9 +1824,20 @@ ${intent.trim()}`,
     const used = this.cost(tier, material, this.observations);
     return used + this.envelopeFloor(material) + ACTION_ENVELOPE_ALLOWANCE <= limit;
   }
-  private async view(tier: QqContextTier, signal: AbortSignal): Promise<View> {
+  private async view(
+    tier: QqContextTier,
+    signal: AbortSignal,
+    batchTargets?: ModelMessage,
+  ): Promise<View> {
     const saved = this.views.get(tier);
-    if (saved) {
+    if (
+      saved &&
+      (!batchTargets ||
+        this.cost(tier, saved.material, this.observations, saved.selection.messages, batchTargets) +
+          this.envelopeFloor(saved.material) +
+          ACTION_ENVELOPE_ALLOWANCE <=
+          saved.limit)
+    ) {
       this.assertCurrent();
       return saved;
     }
@@ -1866,7 +1902,7 @@ ${intent.trim()}`,
     let selection = qqSelectContext({ timeline, limits: price, nowSeconds });
     let disclosedMessages: { message: ModelMessage; facts: readonly QqMessageFact[] }[] = [];
     const cost = (material: ContextMaterial) =>
-      this.cost(tier, material, this.observations, selection.messages);
+      this.cost(tier, material, this.observations, selection.messages, batchTargets);
     // 正文去重：预计算哪些 selected 消息有 facts 投影（eventKey 匹配）。
     // 有 facts 的消息正文由 qq_message_facts 资料段承载（唯一来源），
     // timeline 对这些消息不再重复正文文本。

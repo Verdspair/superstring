@@ -1,90 +1,80 @@
-# 0.4.0-alpha-1
+# v0.4.0-alpha-2
 
 [简体中文](#简体中文) · [English](#english)
 
 ## 简体中文
 
-本版本引入 MCP 外部服务接入、标准技能目录、QQ 消息原生图片输入与结构化回复引用、本群独立配置覆盖，以及持久化任务状态机与本地审批机制。以下变更直接对比已发布的 **v0.3.0-beta**。
+本次预发布版本引入 QQ 自主接话分批评估与预算开销修正、会话新消息即时呈现、群聊模型任务可视化观测、QQ 原生提及与引用段投递、方案与群配置界面整合，以及桌面端退出生命周期明确。以下变更直接对比已发布的 **v0.4.0-alpha-1**。
 
-### 外部扩展、技能与程序化工具调用
+### QQ 自主接话分批与预算估算修正
 
-- 支持连接外部 Model Context Protocol（MCP）服务，覆盖 stdio、HTTP 与 SSE 三种传输协议；登记的服务默认未启用，支持配置调用超时与返回结果长度限制，环境变量凭据仅保存变量名。
-- 引入标准技能目录，随包提供证据读取、媒体读取、任务执行与网络研究 4 个系统技能。
-- 新增网络搜索与网页抓取工具，支持接入 SearXNG 端点与必应搜索通道，网页抓取内置私网地址拦截护栏；该模块默认保持关闭。
-- 引入基于 QuickJS WASM 沙箱的程序化工具调用（PTC）模式，支持在本地沙箱中编排与聚合只读工具调用；新增受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）。两项功能默认关闭，代码沙箱需模型服务明确声明具备代码执行能力。
+- 新增自主接话分批计数控制（目标步长默认为 15，随机扰动量默认为 5，约束扰动量小于目标数）及忙时排队开关（默认开启），避免群聊高频触发无效评估。
+- 修正批量判断估算上下文窗口时的预算过估与重复开销：由统一的批量消息构造器统一计算窗口拟合与实际发送请求，完整冻结来源列表全批共享一次，避免重复复制。
+- 评分专属信息与回复运行解耦，回复子运行仅继承 reply 视图，避免批量评估裁剪影响回复工具预算；保留容量限制与原有裁剪顺序，超限时在模型调用前明确拒绝，不增加总容量配额，不引入自动重试或额外压缩。
 
-### QQ 消息多模态与回复引用
+### 会话新消息实时到达与任务可视化观测
 
-- 新增原生图片输入（`native`）与文本描述（`description`）双模式，支持将图片传入支持图片的模型；支持在决策、评估与生成三阶段独立控制图片输入；图片资产按范围缓存，支持多分辨率副本与动图抽帧。
-- 记录多部件消息事实与回复引用链（`reply_to_message_id`），支持多层按需引用。
-- 细化成员身份记录，区分当前群名片与个人昵称，标注来源属于平台原始上报还是本地目录记录。
-- 入站媒体转为按需提取，减少无效资源消耗。
+- 旧历史读取期间，新到达的消息无需等待更早历史加载完成即可即时显示，无需手动刷新页面，已加载的内容与用户当前滚动位置保持不变。
+- 群聊消息记录上方直观展示正在进行中的模型父任务状态（任一子任务处于运行状态即保持活跃指示）；点击父任务可打开详情，点击某个子任务查看该项详情，并在其结束时更新一次，不会预先拉取所有子任务正文。
 
-### QQ 本群配置与群名管理
+### QQ 原生提及与引用段投递
 
-- 新增单账号 × 群 × Agent 本群配置页，支持针对特定群覆盖基础方案中的触发、节奏、上下文与提示词等字段。
-- 支持针对单个群停用 12 项系统能力，停用即时生效，切换时旧证据永久失效。
-- 独立保存 QQ 群原始名称与用户自定义备注名，显示时备注名优先，留空自动回退为群本名；更换绑定或助手不覆盖备注名，支持群名预加载。
+- 用户提及与回复引用原生转换为 OneBot 协议的 `at` 与 `reply` 消息段投递。
+- 提及与引用相互独立，支持仅提及回复；元数据挂载于首个实际投递部件（支持纯表情或纯提及回复），媒体段需经授权方案允许。
+- 随包提供内置的 `speech.reply` 技能规范，明确回复中引用、提及与表情字段的交互约定（声明不越权授予外部工具）。
+- 优化并发投递时的事务提交与状态恢复逻辑。
 
-### 任务持久化与本地执行审批
+### 桌面端退出生命周期与运行查询优化
 
-- 新增持久化任务状态机，维护排队、运行、等待工具、等待审批、完成、失败与取消等状态，支持任务排队与结果分页。
-- 持久化任务中需审批的调用生成审批票据，必须在本地界面手动确认，禁止静默执行。
-- 对话工作区整合消息、运行观测与任务三页签，支持在当前会话与全局范围之间切换。
+- 关闭桌面窗口直接结束程序自有进程树；常规服务停机仍先取消任务、处理在途写入并安全关闭数据库。
+- 优化消息历史、任务与追踪读取，减少重复查询，加载更及时；优化早期工作区加载可用性。
 
-### 运行治理、输出预留与数据保留
+### 方案与群配置界面整合
 
-- 方案判断与回复两档的输出预留上限由 16384 放宽至 32768，适应长输出调用；默认值仍为 512 与 2048。
-- 新增 QQ 数据保留期限设置（1–3650 天，默认仍为 14 天），覆盖消息正文、媒体阅读记录、助手发言、发送台账与昵称；到期数据不可读，物理清理需用户在存储面板手动预览确认。运行追踪的保留天数在「系统能力 → 执行限制」中单独配置。
-- QQ 消息水位压缩移入后台任务队列异步执行，主流程无需同步等待压缩完成。
-- 引入加密会话快照缓存、空闲分块预加载与 SSE 会话变更流，减少界面重复查询。
+- 将本群专属覆盖设置融入方案工作流中，统一群绑定与方案管理入口，直观查看群专属覆盖项与继承状态。
+- 改善方案与群配置保存时的状态与草稿处理，发生冲突时不会意外覆盖。
 
 ### 升级说明
 
-升级前请完整退出程序并备份整个数据目录。已知 v0.3.0-beta 数据库从结构版本 **47 升级至 53**。迁移 0052 会将现有方案的图片模式统一初始化为 `native` 并写入默认消息设置；升级后请检查模型实际图片支持与视觉能力声明，并按需调整方案模式。回退需要旧版程序与**同一套匹配的升级前完整数据备份**。详见 [UPGRADING.md](UPGRADING.md)。
+升级前请完整退出程序并备份整个数据目录。业务数据库从结构版本 **53 升级至 54**（新增迁移 `0054_qq_initiative_batches.sql`）。回退需要旧版程序与**同一套匹配的升级前结构版本 53 数据与密钥备份**。详见 [UPGRADING.md](UPGRADING.md)。
 
 ---
 
 ## English
 
-This release introduces external Model Context Protocol (MCP) integrations, standard skills, native image input and structured reply quoting for QQ messages, per-group configuration overrides, and a durable task state machine with local approval controls. Changes below compare directly with published **v0.3.0-beta**.
+This release introduces batched QQ spontaneous participation with corrected budget estimation, immediate live message presentation, group chat model task observability, native QQ mention and reply quote delivery, integrated scheme and group directory configuration, and clear desktop lifecycle boundaries. Changes below compare directly with published **v0.4.0-alpha-1**.
 
-### External Extensions, Skills, and Programmatic Tool Calling
+### QQ Spontaneous Participation Batching and Corrected Budget Estimation
 
-- Connect to external Model Context Protocol (MCP) services across stdio, HTTP, and SSE transports. Registered servers are disabled by default, with configurable timeouts and result size caps; environment variable credentials store variable names rather than secret values.
-- Introduce a standard skills catalog with four bundled system skills: evidence reading, media reading, task execution, and web research.
-- Add web search and page fetch tools supporting SearXNG endpoints with fallback to Bing; page fetching enforces private network address guards. Disabled by default.
-- Introduce Programmatic Tool Calling (PTC) via a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; add a read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask). Both default to off; code mode requires models with explicit code execution declarations.
+- Add configurable batch count controls (target count defaults to 15, jitter count defaults to 5 with jitter constrained below target) and a queue-on-busy switch (enabled by default), avoiding redundant evaluations in active group chats.
+- Correct budget overestimation and repeated source overhead during batch judgement: unified batch constructor calculates both window fitting and actual requests, sharing the frozen context source list once across all targets instead of duplicating it.
+- Decouple evaluation-specific context from reply runs so child reply runs inherit only the reply view, protecting reply tool budgets. Preserves capacity limits and original trimming order, explicitly rejecting requests before model calls when exceeding limits, without inflating total capacity, adding automatic retries, or extra compression.
 
-### QQ Multimodal Messaging and Reply Quotes
+### Real-time Live Messages and Conversation Task Observability
 
-- Add dual-mode image input supporting native multimodal delivery (`native`) and text description extraction (`description`); independent toggles control image input across decision, evaluation, and generation stages; image assets are scoped and cached with multi-resolution variants and animated GIF frames.
-- Preserve multi-part segments and structured reply quote chains (`reply_to_message_id`), supporting multi-level quoting.
-- Distinguish group cards from personal nicknames in member records, tracking whether names originate from platform wire events or local directory records.
-- Inbound media processing shifts from automatic arrival reads to on-demand reading.
+- Freshly arrived messages appear immediately without waiting for older history pagination to complete, leaving loaded rows and scroll position undisturbed.
+- Surface active model parent tasks directly above message history in group chats whenever any child task is running; selecting the parent task opens the task chain, while selecting a child task inspects its detail and refreshes upon completion, without eagerly prefetching all child payloads.
 
-### QQ Per-Group Configuration and Group Names
+### Native QQ Mention and Reply Quote Delivery
 
-- Add dedicated per-group configuration pages (QQ account × group × Agent) to override triggers, rhythm, context, and prompt fields from base schemes.
-- Support disabling 12 individual system capabilities per group with immediate fail-closed enforcement and permanent invalidation of earlier evidence.
-- Decouple original QQ group names from custom aliases. Custom aliases take precedence with fallback to group names; aliases survive rebinding, and group names support preloading.
+- Map user mentions and reply quotes natively to OneBot `at` and `reply` message segments.
+- Keep mentions and quotes mutually independent (supporting mention-only replies); metadata attaches strictly to the first delivered carrier part (supporting sticker-only or mention-only replies), and media segments require authorization from the chat scheme.
+- Bundle the built-in `speech.reply` skill specification, defining clear contracts for quotes, mentions, and stickers without escalating tool permissions.
+- Refine transactional commit and state recovery during concurrent delivery.
 
-### Durable Tasks and Local Execution Approvals
+### Desktop Lifecycle and Runtime Query Optimization
 
-- Introduce a durable task state machine tracking queued, running, waiting-for-tool, waiting-for-approval, completed, failed, and cancelled states, with lease handling and result paging.
-- Task calls requiring approval generate pending tickets that require explicit local confirmation rather than silent execution.
-- Consolidate conversation workspaces into three tabs: Messages, Runs, and Tasks, with toggles between conversation and global scopes.
+- Closing the desktop window directly terminates the application-owned process tree; standard service stops continue to cancel active tasks, settle in-flight writes, and close the database safely.
+- Optimize message history, task, and trace reads, reducing redundant queries and improving load responsiveness; improve early workspace responsiveness.
 
-### Runtime Governance, Output Reserves, and Retention
+### Integrated Schemes and Group Directory UI
 
-- Expand judgement and reply output reserve limits from 16384 to 32768 to accommodate long model calls; default values remain 512 and 2048.
-- Add a QQ data retention setting (1–3650 days, default remains 14 days) covering message text, media reading notes, assistant speech, send ledgers, and nicknames; expired content becomes unreadable, and physical deletion requires manual user preview and confirmation in the storage panel. Telemetry trace retention is configured independently under System capabilities → Execution limits.
-- Move QQ watermark compression into a background task queue so the main conversation flow does not wait for compression to settle.
-- Introduce encrypted session snapshot caching, idle chunk preloading, and SSE conversation change streams to reduce redundant queries.
+- Incorporate per-group overrides into the scheme workflow, consolidating group binding management and clarifying override inheritance.
+- Improve state and draft handling during scheme and group editing, preventing accidental overwrites when editing across tabs.
 
 ### Upgrading
 
-Fully exit the application and back up your complete data directory before upgrading. Known v0.3.0-beta databases migrate from schema **47 to 53**. Migration 0052 initializes existing schemes to `native` image mode and applies default message settings; review actual model image support and vision declarations after updating. Rolling back requires the older application and a **matching pre-upgrade data backup from the same snapshot**. See [UPGRADING.md](UPGRADING.md).
+Fully exit the application and back up your complete data directory before upgrading. Known databases migrate from schema **53 to 54** (via migration `0054_qq_initiative_batches.sql`). Rolling back requires the older application and a **matching pre-upgrade schema 53 data and key backup**. See [UPGRADING.md](UPGRADING.md).
 
 ---
 

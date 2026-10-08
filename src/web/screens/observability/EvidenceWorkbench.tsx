@@ -12,7 +12,13 @@ import { RunWorkspace } from "../runs/RunEntry";
 import { detailLabels, operationLabels, reasonLabels } from "./labels";
 import { ModelEvidence } from "./ModelEvidence";
 import { phaseLabels, StatusMark } from "./presentation";
-export function EvidenceWorkbench({ item }: { item: RuntimeSpan }) {
+export function EvidenceWorkbench({
+  item,
+  autoInspect = false,
+}: {
+  item: RuntimeSpan;
+  autoInspect?: boolean;
+}) {
   const reducedMotion = useReducedMotion();
   const { t, i18n } = useTranslation(),
     [run, setRun] = useState(false);
@@ -168,6 +174,8 @@ export function EvidenceWorkbench({ item }: { item: RuntimeSpan }) {
         {item.runId && stepId && (
           <TabsContent value="model" className="min-w-0 pt-3">
             <ModelEvidence
+              autoInspect={autoInspect}
+              inspectionRevision={item.status === "started" ? "running" : "settled"}
               handle={{
                 runId: item.runId,
                 stepId,

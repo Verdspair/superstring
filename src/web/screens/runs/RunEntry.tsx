@@ -178,7 +178,8 @@ export function RunWorkspace({
     [api, runId, receive],
   );
   const { data, loading, error, refresh } = useLiveResource(read);
-  const currentData = data && data.api === api ? data.snapshot : null;
+  const currentData =
+    data && data.api === api && data.snapshot.runId === runId ? data.snapshot : null;
   const validInitial = initialSnapshot?.runId === runId ? initialSnapshot : null;
   const currentOwner = currentData?.owner ?? validInitial?.owner;
   const conversationScope =
@@ -270,7 +271,14 @@ export function RunWorkspace({
           {!run.steps.length && (
             <p className="text-muted-foreground">{t("observability.noModelStepHasStartedYet")}</p>
           )}
-          {step && <ModelEvidence key={step.stepId} handle={step.context} />}
+          {step && (
+            <ModelEvidence
+              key={step.stepId}
+              handle={step.context}
+              autoInspect={Boolean(selected && selected === step.stepId)}
+              inspectionRevision={step.status === "running" ? "running" : "settled"}
+            />
+          )}
           {!!run.outputs.length && (
             <section className="space-y-3 border-t pt-4">
               <h3 className="text-sm font-semibold">{t("observability.outputsAndDelivery")}</h3>

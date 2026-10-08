@@ -274,7 +274,7 @@ export function InvestigationCanvas({
                   <ScrollArea className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:block!">
                     <div className="min-w-0 p-4 md:p-6">
                       {selected ? (
-                        <EvidenceWorkbench key={selected.spanId} item={selected} />
+                        <EvidenceWorkbench key={selected.spanId} item={selected} autoInspect />
                       ) : (
                         <div className="grid min-h-40 place-content-center gap-2 text-center">
                           <p className="font-medium">

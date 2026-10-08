@@ -164,9 +164,9 @@ describe("conversation arrival instant update", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
 
-    // Immediately read before 5s!
+    // Append the new message immediately without dropping the already loaded message.
     expect(getEvents).toHaveBeenCalledTimes(2);
-    expect(result.current.items.length).toBe(1);
+    expect(result.current.items.map((item) => item.seq)).toEqual([1, 2]);
 
     // Advance the remaining time to 5000ms to verify fallback poll still functions
     await act(async () => {

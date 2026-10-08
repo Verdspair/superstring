@@ -117,12 +117,8 @@ describe("dev API proxy coverage (#101)", () => {
 
 describe("build version consistency (#101)", () => {
   it("package.json names the same release /health reports", () => {
-    // One spelling everywhere: legal SemVer "0.4.0-alpha-1", matching package.json,
-    // the release tag and the installer file name. Compared verbatim so the two can
-    // never drift into different releases.
     const pkg = JSON.parse(read("package.json")) as { version: string };
-    expect(pkg.version).toBe(APP_VERSION);
-    expect(APP_VERSION).toBe("0.4.0-alpha-1");
+    expect(APP_VERSION).toBe(pkg.version);
     const lock = JSON.parse(read("package-lock.json"));
     expect(lock.version).toBe(pkg.version);
     expect(lock.packages[""].version).toBe(pkg.version);

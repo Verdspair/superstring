@@ -18,22 +18,76 @@ import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
 import { ContentReader } from "./ContentReader";
 import { ReadError } from "./presentation";
-export function ModelEvidence({ handle }: { handle: ContextHandle }) {
+export function ModelEvidence({
+  handle,
+  autoInspect = false,
+  inspectionRevision = "",
+}: {
+  handle: ContextHandle;
+  autoInspect?: boolean;
+  inspectionRevision?: string;
+}) {
   const { t } = useTranslation(),
     api = useSuperstringStore((s) => s.apiClient);
   const [value, setValue] = useState<InspectedContext | null>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState("");
   const pending = useRef<ReadTask | null>(null);
+  const activeReadRef = useRef<{ api: typeof api; runId: string; stepId: string } | null>(null);
+  const autoInspectedRef = useRef<{
+    api: typeof api;
+    runId: string;
+    stepId: string;
+    revision: string;
+  } | null>(null);
+  const userClearedRef = useRef(false);
+
+  const runId = handle.runId;
+  const stepId = handle.stepId;
+
   const clear = useCallback(() => {
     pending.current?.cancel();
     pending.current = null;
+    activeReadRef.current = null;
     setValue(null);
     setLoading(false);
     setError("");
   }, []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Both IDs own the lifetime of protected content.
+
+  const inspect = useCallback(() => {
+    clear();
+    setLoading(true);
+    const targetScope = { api, runId, stepId };
+    activeReadRef.current = targetScope;
+    pending.current = startRead((signal) => api.inspectRunContext({ runId, stepId }, signal), {
+      success: (context) => {
+        if (
+          activeReadRef.current?.api === api &&
+          activeReadRef.current?.runId === runId &&
+          activeReadRef.current?.stepId === stepId
+        ) {
+          setValue(context);
+        }
+      },
+      failure: (cause) => {
+        if (
+          activeReadRef.current?.api === api &&
+          activeReadRef.current?.runId === runId &&
+          activeReadRef.current?.stepId === stepId
+        ) {
+          setError(errorText(cause));
+        }
+      },
+      settled: () => {
+        pending.current = null;
+        setLoading(false);
+      },
+    });
+  }, [api, clear, runId, stepId]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runId, stepId, and api own the scope of protected content.
   useEffect(() => {
+    userClearedRef.current = false;
     clear();
     const hidden = () => {
       if (document.visibilityState === "hidden") clear();
@@ -43,19 +97,36 @@ export function ModelEvidence({ handle }: { handle: ContextHandle }) {
       pending.current?.cancel();
       document.removeEventListener("visibilitychange", hidden);
     };
-  }, [clear, handle.runId, handle.stepId]);
-  const inspect = () => {
-    clear();
-    setLoading(true);
-    pending.current = startRead((signal) => api.inspectRunContext(handle, signal), {
-      success: setValue,
-      failure: (cause) => setError(errorText(cause)),
-      settled: () => {
-        pending.current = null;
-        setLoading(false);
-      },
-    });
+  }, [clear, api, runId, stepId]);
+
+  useEffect(() => {
+    if (!autoInspect) return;
+    if (document.visibilityState === "hidden") return;
+    if (userClearedRef.current) return;
+    const current = autoInspectedRef.current;
+    if (
+      current &&
+      current.api === api &&
+      current.runId === runId &&
+      current.stepId === stepId &&
+      current.revision === inspectionRevision
+    ) {
+      return;
+    }
+    autoInspectedRef.current = { api, runId, stepId, revision: inspectionRevision };
+    inspect();
+  }, [autoInspect, api, runId, stepId, inspectionRevision, inspect]);
+
+  const onUserInspect = () => {
+    userClearedRef.current = false;
+    inspect();
   };
+
+  const onUserClear = () => {
+    userClearedRef.current = true;
+    clear();
+  };
+
   return (
     <section aria-label={t("observability.modelEvidence")} className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed p-3">
@@ -63,7 +134,7 @@ export function ModelEvidence({ handle }: { handle: ContextHandle }) {
           {t("observability.inputsAndOutputsAreLoadedOnlyWhenYouInspectThem")}
         </p>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={inspect} disabled={loading}>
+          <Button size="sm" onClick={onUserInspect} disabled={loading}>
             <Eye />
             {t(
               value
@@ -72,7 +143,7 @@ export function ModelEvidence({ handle }: { handle: ContextHandle }) {
             )}
           </Button>
           {(value || loading) && (
-            <Button variant="ghost" size="sm" onClick={clear}>
+            <Button variant="ghost" size="sm" onClick={onUserClear}>
               <EyeOff />
               {t("observability.hideActualInputAndOutput")}
             </Button>
