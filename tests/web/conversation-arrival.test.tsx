@@ -654,8 +654,21 @@ describe("conversation arrival instant update", () => {
     unmount();
   });
 
-  it("respects paused state and does not trigger trace reloads when paused", async () => {
-    const listTracesSpy = vi.fn().mockResolvedValue({
+  it("does not load while paused and loads once resumed without a duplicate event read", async () => {
+    let resolveRead!: (value: {
+      items: never[];
+      summary: {
+        total: number;
+        active: number;
+        failed: number;
+        unknown: number;
+        lastActivityAt: null;
+        now: string;
+      };
+      hasMore: false;
+      nextBeforeId: number;
+    }) => void;
+    const page = {
       items: [],
       summary: {
         total: 0,
@@ -667,12 +680,18 @@ describe("conversation arrival instant update", () => {
       },
       hasMore: false,
       nextBeforeId: 0,
-    });
+    } as const;
+    const listTracesSpy = vi
+      .fn()
+      .mockImplementation(() => new Promise((resolve) => (resolveRead = resolve)));
     setupApi({ listRuntimeTraces: listTracesSpy });
 
-    const { unmount } = renderHook(() => useRuntimeTraces({ conversationId: "conv-paused" }, true));
-    // Initial mount reads once to populate initial view
-    expect(listTracesSpy).toHaveBeenCalledTimes(1);
+    const { rerender, unmount } = renderHook(
+      ({ paused }: { paused: boolean }) =>
+        useRuntimeTraces({ conversationId: "conv-paused" }, paused),
+      { initialProps: { paused: true } },
+    );
+    expect(listTracesSpy).not.toHaveBeenCalled();
 
     await act(async () => {
       notifyConversationChange({
@@ -682,8 +701,23 @@ describe("conversation arrival instant update", () => {
         bindingEpoch: 1,
       });
     });
-    // Paused state prevents event-driven reloads
+    expect(listTracesSpy).not.toHaveBeenCalled();
+
+    rerender({ paused: false });
     expect(listTracesSpy).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-paused",
+        seq: 2,
+        bindingEpoch: 1,
+      });
+      expect(listTracesSpy).toHaveBeenCalledTimes(1);
+      resolveRead({ ...page, items: [...page.items] });
+      await Promise.resolve();
+    });
+    // The event during the read is coalesced into one trailing authoritative read.
+    expect(listTracesSpy).toHaveBeenCalledTimes(2);
 
     unmount();
   });

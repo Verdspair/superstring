@@ -62,7 +62,7 @@ function eventView(overrides: Partial<ConversationEventView> = {}): Conversation
 
 function renderRecord(event: ConversationEventView, language: "zh-CN" | "en") {
   void i18n.changeLanguage(language);
-  return render(<EventRecord event={event} rows={[event]} conversation={conversation} />);
+  return render(<EventRecord event={event} conversation={conversation} />);
 }
 
 function openSourceRecord(container: HTMLElement) {

@@ -257,7 +257,7 @@ export function ExecutionWorkspace({
             </div>
           </div>
           <ReadError error={error} />
-          {loading && (
+          {loading && !summary && (
             <p role="status" className="text-xs text-muted-foreground">
               {t("observability.loadingRuns")}
             </p>
@@ -270,7 +270,7 @@ export function ExecutionWorkspace({
               onInvestigate={open}
             />
           )}
-          {!loading && !error && !items.length && (
+          {(!loading || summary !== null) && !error && !items.length && (
             <div className="rounded-xl border border-dashed px-6 py-16 text-center">
               <p className="font-medium">{t("observability.noMatchingExecutions")}</p>
               <p className="mt-2 text-sm text-muted-foreground">

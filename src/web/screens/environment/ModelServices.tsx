@@ -1,6 +1,7 @@
 import { Cpu, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import {
   MODEL_PROVIDER_MODEL_LIMIT,
   type ModelProviderResponse,
@@ -38,10 +39,19 @@ import { type ReadTask, startRead } from "../../services/read-task";
 import { useSuperstringStore } from "../../store";
 import { ModelDefaults } from "./model-defaults";
 
-export function ModelServices() {
+export function ModelServices({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const { apiClient, refreshModels, modelStatus, loadedModelNames, modelProviders, settingsRoute } =
-    useSuperstringStore();
+    useSuperstringStore(
+      useShallow((state) => ({
+        apiClient: state.apiClient,
+        refreshModels: state.refreshModels,
+        modelStatus: state.modelStatus,
+        loadedModelNames: state.loadedModelNames,
+        modelProviders: state.modelProviders,
+        settingsRoute: state.settingsRoute,
+      })),
+    );
   // Bootstrap already fetched the registered providers: first paint reuses that snapshot,
   // then the authoritative read below corrects it (no second cache, no sync machinery).
   const [providers, setProviders] = useState<ModelProviderResponse[]>(modelProviders);
@@ -57,15 +67,24 @@ export function ModelServices() {
   const [testing, setTesting] = useState(false);
   const [revision, setRevision] = useState(0);
   const [tab, setTab] = useState(settingsRoute === "external-api" ? "providers" : "defaults");
+  const [visited, setVisited] = useState([
+    settingsRoute === "external-api" ? "providers" : "defaults",
+  ]);
   const [pending, setPending] = useState<"close" | "delete" | null>(null);
   // The route owns the visible tab: the external API entry opens providers, quick model management
   // opens defaults. This only retargets the tab — the provider editor lives in its own Sheet outside
   // the tab panels, so a route-driven tab change never closes it or discards an unsaved draft.
   useEffect(() => {
-    setTab(settingsRoute === "external-api" ? "providers" : "defaults");
+    const next = settingsRoute === "external-api" ? "providers" : "defaults";
+    setTab(next);
+    setVisited((previous) => (previous.includes(next) ? previous : [...previous, next]));
   }, [settingsRoute]);
+  useEffect(() => {
+    setVisited((previous) => (previous.includes(tab) ? previous : [...previous, tab]));
+  }, [tab]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit refresh generation
   useEffect(() => {
+    if (!active || tab !== "providers") return;
     setLoading(true);
     const task = startRead((signal) => apiClient.listModelProviders(signal), {
       success: (rows) => {
@@ -77,11 +96,11 @@ export function ModelServices() {
     });
     void refreshModels();
     return () => task.cancel();
-  }, [apiClient, refreshModels, revision]);
+  }, [active, apiClient, refreshModels, revision, tab]);
   // Provider editing must remain available even while a remote health check is slow.
   // Probing waits for the authoritative read: never probe the stale bootstrap snapshot twice.
   useEffect(() => {
-    if (loading) return;
+    if (!active || tab !== "providers" || loading) return;
     setHealth({});
     setTesting(false);
     const tasks = providers.map((provider) =>
@@ -107,11 +126,14 @@ export function ModelServices() {
       recheck.current?.cancel();
       recheck.current = null;
     };
-  }, [apiClient, providers, loading]);
-  const parsed = editor ? providerPayload(editor) : null;
-  const dirty =
-    editor !== null &&
-    JSON.stringify(editor) !== JSON.stringify(createProviderEditor(editor.source));
+  }, [active, apiClient, providers, loading, tab]);
+  const parsed = useMemo(() => (editor ? providerPayload(editor) : null), [editor]);
+  const dirty = useMemo(
+    () =>
+      editor !== null &&
+      JSON.stringify(editor) !== JSON.stringify(createProviderEditor(editor.source)),
+    [editor],
+  );
   useEffect(() => {
     if (!dirty && !saving) return;
     const warn = (event: BeforeUnloadEvent) => {
@@ -180,89 +202,101 @@ export function ModelServices() {
             <TabsTrigger value="defaults">{t("models.defaults")}</TabsTrigger>
           </TabsList>
         </div>
-        <TabsContent value="providers" className="m-0 overflow-y-auto px-6 py-6 lg:px-8">
-          <div className="mb-6 flex items-start justify-between gap-4">
-            <div>
-              <h2 className="font-semibold">{t("models.external")}</h2>
-              <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                {t("models.externalHint")}
-              </p>
+        {visited.includes("providers") && (
+          <TabsContent
+            value="providers"
+            forceMount
+            className="m-0 overflow-y-auto px-6 py-6 lg:px-8 data-[state=inactive]:hidden"
+          >
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="font-semibold">{t("models.external")}</h2>
+                <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                  {t("models.externalHint")}
+                </p>
+              </div>
+              <Button onClick={() => setEditor(createProviderEditor(null))}>
+                <Plus />
+                {t("models.addProvider")}
+              </Button>
             </div>
-            <Button onClick={() => setEditor(createProviderEditor(null))}>
-              <Plus />
-              {t("models.addProvider")}
-            </Button>
-          </div>
-          <div className="rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  {["name", "endpoint", "declared", "health", "actions"].map((key) => (
-                    <TableHead key={key}>{t(`models.columns.${key}`)}</TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {providers.map((provider) => (
-                  <TableRow key={provider.id}>
-                    <TableCell className="font-medium">{provider.name}</TableCell>
-                    <TableCell className="max-w-80 truncate font-mono text-xs">
-                      {provider.base_url}
-                    </TableCell>
-                    <TableCell>{provider.models.length}</TableCell>
-                    <TableCell>
-                      <Badge variant={health[provider.id]?.ok ? "secondary" : "outline"}>
-                        {t(
-                          health[provider.id]?.ok
-                            ? "models.reachable"
-                            : health[provider.id]
-                              ? "models.unreachable"
-                              : "models.checking",
-                        )}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setEditor(createProviderEditor(provider))}
-                      >
-                        {t("models.configure")}
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {!providers.length && (
+            <div className="rounded-lg border">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell colSpan={5} className="h-36 text-center text-muted-foreground">
-                      {t(loading ? "models.loading" : "models.noProviders")}
-                    </TableCell>
+                    {["name", "endpoint", "declared", "health", "actions"].map((key) => (
+                      <TableHead key={key}>{t(`models.columns.${key}`)}</TableHead>
+                    ))}
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-          <section className="mt-8 border-t pt-6">
-            <div className="flex items-center gap-2">
-              <h2 className="font-semibold">{t("models.localProvider")}</h2>
-              <Badge variant="outline">{t("models.local")}</Badge>
+                </TableHeader>
+                <TableBody>
+                  {providers.map((provider) => (
+                    <TableRow key={provider.id}>
+                      <TableCell className="font-medium">{provider.name}</TableCell>
+                      <TableCell className="max-w-80 truncate font-mono text-xs">
+                        {provider.base_url}
+                      </TableCell>
+                      <TableCell>{provider.models.length}</TableCell>
+                      <TableCell>
+                        <Badge variant={health[provider.id]?.ok ? "secondary" : "outline"}>
+                          {t(
+                            health[provider.id]?.ok
+                              ? "models.reachable"
+                              : health[provider.id]
+                                ? "models.unreachable"
+                                : "models.checking",
+                          )}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditor(createProviderEditor(provider))}
+                        >
+                          {t("models.configure")}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!providers.length && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="h-36 text-center text-muted-foreground">
+                        {t(loading ? "models.loading" : "models.noProviders")}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
             </div>
-            <p className="mt-2 text-sm text-muted-foreground">{translateNotice(modelStatus)}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {loadedModelNames.map((name) => (
-                <Badge key={name} variant="secondary" className="font-mono">
-                  {name}
-                </Badge>
-              ))}
-            </div>
-          </section>
-        </TabsContent>
-        <TabsContent value="defaults" className="m-0 overflow-y-auto">
-          <ModelDefaults />
-        </TabsContent>
+            <section className="mt-8 border-t pt-6">
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold">{t("models.localProvider")}</h2>
+                <Badge variant="outline">{t("models.local")}</Badge>
+              </div>
+              <p className="mt-2 text-sm text-muted-foreground">{translateNotice(modelStatus)}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {loadedModelNames.map((name) => (
+                  <Badge key={name} variant="secondary" className="font-mono">
+                    {name}
+                  </Badge>
+                ))}
+              </div>
+            </section>
+          </TabsContent>
+        )}
+        {visited.includes("defaults") && (
+          <TabsContent
+            value="defaults"
+            forceMount
+            className="m-0 overflow-y-auto data-[state=inactive]:hidden"
+          >
+            <ModelDefaults active={active && tab === "defaults"} />
+          </TabsContent>
+        )}
       </Tabs>
       <Sheet
-        open={editor !== null}
+        open={editor !== null && active}
         onOpenChange={(open) => {
           if (open || saving) return;
           if (dirty) setPending("close");
@@ -585,7 +619,7 @@ export function ModelServices() {
           )}
         </SheetContent>
       </Sheet>
-      {pending && (
+      {active && pending && (
         <ConfirmDialog
           busy={saving}
           message={t(pending === "delete" ? "models.deleteConfirm" : "models.discardConfirm")}

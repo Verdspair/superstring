@@ -76,6 +76,7 @@ export function childEnvironment(
   return Object.assign(env, {
     SUPERSTRING_APP_MODE: "desktop",
     SUPERSTRING_DESKTOP_MANAGED: "1",
+    SUPERSTRING_DESKTOP_WINDOW_OWNED: "1",
     SUPERSTRING_APP_ROOT: profileRoot,
     SUPERSTRING_RESOURCE_ROOT: resourceRoot,
     SUPERSTRING_DESKTOP_TOKEN: token,

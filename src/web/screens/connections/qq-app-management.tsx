@@ -13,10 +13,12 @@ export type QqAppView = "schemes" | "groups" | "connection" | "data";
 
 export function QqAppManagement({
   view,
+  active = true,
   schemesView,
   groupsView,
 }: {
   view: QqAppView;
+  active?: boolean;
   schemesView?: ReactNode;
   groupsView?: ReactNode;
 }) {
@@ -34,6 +36,12 @@ export function QqAppManagement({
             ? "qq-storage"
             : "qq-app-schemes",
     );
+  const [visitedViews, setVisitedViews] = useState<QqAppView[]>([view]);
+  useEffect(() => {
+    setVisitedViews((visited) => (visited.includes(view) ? visited : [...visited, view]));
+  }, [view]);
+  const renderedViews = new Set(visitedViews).add(view);
+
   return (
     <section
       className="flex h-full min-h-0 flex-col"
@@ -86,12 +94,38 @@ export function QqAppManagement({
           )}
         </div>
       )}
-      {view === "schemes" && <div className="flex min-h-0 flex-1 flex-col">{schemesView}</div>}
-      {view === "groups" && <div className="flex min-h-0 flex-1 flex-col">{groupsView}</div>}
-      {view === "connection" && <QqConnectionTab />}
-      {view === "data" && (
-        <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
-          <StorageInventory />
+      {renderedViews.has("schemes") && (
+        <div
+          hidden={view !== "schemes"}
+          className="min-h-0 flex-1 flex-col [&[hidden]]:hidden"
+          data-qq-retained-scroll="schemes"
+        >
+          {schemesView}
+        </div>
+      )}
+      {renderedViews.has("groups") && (
+        <div
+          hidden={view !== "groups"}
+          className="min-h-0 flex-1 flex-col [&[hidden]]:hidden"
+          data-qq-retained-scroll="groups"
+        >
+          {groupsView}
+        </div>
+      )}
+      {renderedViews.has("connection") && (
+        <div hidden={view !== "connection"} className="min-h-0 flex-1 flex-col [&[hidden]]:hidden">
+          <QqConnectionTab active={active && view === "connection"} />
+        </div>
+      )}
+      {renderedViews.has("data") && (
+        <div
+          hidden={view !== "data"}
+          className="min-h-0 flex-1 flex-col [&[hidden]]:hidden"
+          data-qq-retained-scroll="data"
+        >
+          <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
+            <StorageInventory active={active && view === "data"} />
+          </div>
         </div>
       )}
     </section>
@@ -107,7 +141,7 @@ const connectionPhaseLabels: Record<string, string> = {
   closed: "connections.connectionClosed",
 };
 
-function QqConnectionTab() {
+function QqConnectionTab({ active }: { active: boolean }) {
   const { t } = useTranslation();
   const s = useSuperstringStore();
   const { loadQqAccess } = s;
@@ -122,9 +156,10 @@ function QqConnectionTab() {
     }
   };
   useEffect(() => {
+    if (!active) return;
     // 整页读取是进入连接页的起载：只读设置与状态，绝不自动推进连接草稿的保存基线。
     void loadQqAccess();
-  }, [loadQqAccess]);
+  }, [active, loadQqAccess]);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
       {s.qqSettings ? (

@@ -72,9 +72,10 @@ export function SchemeDirectory({
   const dirtyDraft = qqSchemeDirty(s.qqSchemeEditor) || invalidDraft;
 
   useEffect(() => {
+    if (!active) return;
     void loadQqSchemes();
     void loadQqBindings();
-  }, [loadQqSchemes, loadQqBindings]);
+  }, [active, loadQqSchemes, loadQqBindings]);
 
   useEffect(() => {
     if (!active) return;
@@ -222,7 +223,11 @@ export function SchemeDirectory({
           </Button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-6"
+        data-workspace-scroll
+        data-qq-retained-scroll="schemes"
+      >
         {apps.map((app) => {
           const allRows = schemeRowsOf(s, app);
           const visibleRows = visibleOf(app);
@@ -414,7 +419,7 @@ export function SchemeDirectory({
   );
 }
 
-function SchemeDetail({ app }: { app: SchemeAppEntry }) {
+function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean }) {
   const { t } = useTranslation();
   const s = useSuperstringStore();
   const busy = s.qqSchemeSaving || s.qqAccessSaving || s.qqSchemesLoading;
@@ -521,7 +526,7 @@ function SchemeDetail({ app }: { app: SchemeAppEntry }) {
         hidden={view !== "settings" && !!schemeId}
         className="min-h-0 flex-1 overflow-hidden [&[hidden]]:hidden"
       >
-        <SchemeStudio />
+        <SchemeStudio active={active && view === "settings"} />
       </div>
       {view === "bindings" && schemeId && (
         <div
@@ -529,7 +534,7 @@ function SchemeDetail({ app }: { app: SchemeAppEntry }) {
           data-workspace-scroll
           data-scheme-view="bindings"
         >
-          <SchemeBindingsView schemeId={schemeId} />
+          <SchemeBindingsView schemeId={schemeId} active={active} />
         </div>
       )}
     </section>
@@ -547,24 +552,23 @@ function qqAppView(route: string, settingsView: string): QqAppView | null {
 export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute);
   const settingsView = useSuperstringStore((s) => s.settingsView);
-  if (route === "scheme-bindings") return <SchemeBindingsPage />;
+  if (route === "scheme-bindings") return <SchemeBindingsPage active={active} />;
   const appView = qqAppView(route, settingsView);
   if (appView)
     return (
       <QqAppManagement
         view={appView}
-        schemesView={appView === "schemes" ? <SchemeDirectory appId="qq" /> : null}
+        active={active}
+        schemesView={<SchemeDirectory appId="qq" active={active && appView === "schemes"} />}
         groupsView={
-          appView === "groups" ? (
-            route === "qq-group-config" ? (
-              <QqGroupConfigPage active={active} />
-            ) : (
-              <QqGroupDirectory />
-            )
-          ) : null
+          route === "qq-group-config" ? (
+            <QqGroupConfigPage active={active && appView === "groups"} />
+          ) : (
+            <QqGroupDirectory active={active && appView === "groups"} />
+          )
         }
       />
     );
   const app = route === "scheme-library" ? null : schemeAppByRoute(route);
-  return app ? <SchemeDetail app={app} /> : <SchemeDirectory active={active} />;
+  return app ? <SchemeDetail app={app} active={active} /> : <SchemeDirectory active={active} />;
 }

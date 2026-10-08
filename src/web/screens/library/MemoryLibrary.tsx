@@ -30,6 +30,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { agentPageDirty, policyDirty } from "@/features/agents/page-drafts";
 import { translateNotice } from "@/i18n";
+import { formatDate } from "@/i18n/runtime";
 import { useLiveResource } from "@/services/use-live-resource";
 import { errorText } from "@/state/helpers";
 import { useSuperstringStore } from "@/store";
@@ -101,25 +102,44 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     [retryError, setRetryError] = useState("");
   const agentId = s.editorAgentId,
     agent = s.agents.find((a) => a.id === agentId),
-    ready = !!agent && !s.editorLoading;
+    ready = !!agent && s.pageEditor?.agent.id === agentId && !s.editorLoading;
+  const automaticAgent = useRef<{ api: typeof s.apiClient; id: string } | null>(null);
   useEffect(() => {
-    if (!s.pageEditor && !s.editorLoading && s.agents[0]) s.requestAgentNavigation(s.agents[0].id);
-  }, [s.pageEditor, s.editorLoading, s.agents, s.requestAgentNavigation]);
+    const target = s.agents[0]?.id;
+    if (!active || s.pageEditor || s.editorLoading || !target) return;
+    if (automaticAgent.current?.api === s.apiClient && automaticAgent.current.id === target) return;
+    automaticAgent.current = { api: s.apiClient, id: target };
+    s.requestAgentNavigation(target);
+  }, [active, s.apiClient, s.pageEditor, s.editorLoading, s.agents, s.requestAgentNavigation]);
   useEffect(() => () => s.resetMemoryManagement(), [s.resetMemoryManagement]);
-  const read = useCallback(async () => {
-    const [scopes, connections] = await Promise.all([
-      s.apiClient.listMemoryScopes(agentId),
-      Promise.allSettled([s.apiClient.listQqBindings(), s.apiClient.getQqOwner()]),
+  const read = useCallback(
+    async () => ({
+      api: s.apiClient,
+      agentId,
+      scopes: await s.apiClient.listMemoryScopes(agentId),
+    }),
+    [s.apiClient, agentId],
+  );
+  const readConnections = useCallback(async () => {
+    const connections = await Promise.allSettled([
+      s.apiClient.listQqBindings(),
+      s.apiClient.getQqOwner(),
     ]);
     const [bindings, owner] = connections;
     return {
-      scopes,
+      api: s.apiClient,
       bindings: bindings.status === "fulfilled" ? bindings.value : [],
       owner: owner.status === "fulfilled" ? owner.value : null,
       connectionError: connections.some((result) => result.status === "rejected"),
     };
-  }, [s.apiClient, agentId]);
+  }, [s.apiClient]);
   const resource = useLiveResource(read, { enabled: ready, paused: !active });
+  const connections = useLiveResource(readConnections, { enabled: ready, paused: !active });
+  const scopes =
+    resource.data?.api === s.apiClient && resource.data.agentId === agentId
+      ? resource.data.scopes
+      : [];
+  const connectionData = connections.data?.api === s.apiClient ? connections.data : null;
   useEffect(() => {
     if (!agentId) return;
     setScope("");
@@ -145,16 +165,16 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     };
   }, [agentId, s.settingsRoute]);
   useEffect(() => {
-    if (ready && agentId)
+    if (active && ready && agentId)
       void s.loadMemoryPage(page, {
         ...(scope ? { scope_key: scope } : {}),
         ...(query ? { search: query } : {}),
         ...(status !== "all" ? { status } : {}),
       });
-  }, [ready, agentId, page, scope, query, status, s.loadMemoryPage]);
-  const selectedScope = resource.data?.scopes.find((item) => item.scope_key === scope);
-  const binding = resource.data?.bindings.find((item) => item.id === selectedScope?.binding?.id);
-  const owner = resource.data?.owner;
+  }, [active, ready, agentId, page, scope, query, status, s.loadMemoryPage]);
+  const selectedScope = scopes.find((item) => item.scope_key === scope);
+  const binding = connectionData?.bindings.find((item) => item.id === selectedScope?.binding?.id);
+  const owner = connectionData?.owner;
   const shareEligible =
     binding?.kind === "private" &&
     owner?.configured &&
@@ -184,8 +204,8 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   const maintenanceDirty =
     !!editor && (policyDirty(editor) || agentPageDirty(editor, "long-memory"));
   useEffect(() => {
-    if (ready && !editor?.policy) void s.loadMemoryPolicy();
-  }, [ready, editor?.policy, s.loadMemoryPolicy]);
+    if (active && ready && !editor?.policy) void s.loadMemoryPolicy();
+  }, [active, ready, editor?.policy, s.loadMemoryPolicy]);
   const discardMaintenance = () => {
     if (!editor) return;
     if (editor.policy)
@@ -205,6 +225,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   };
   const refresh = async () => {
     resource.refresh();
+    connections.refresh();
     await s.reloadMemory();
     await s.loadMemoryPage(page, {
       ...(scope ? { scope_key: scope } : {}),
@@ -298,7 +319,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           {t("capabilities.resources.openMemoryTools")}
         </Button>
       </div>
-      {resource.data?.connectionError && (
+      {connectionData?.connectionError && (
         <p role="status" className="text-sm text-muted-foreground">
           {t("library.connection.metadata.unavailable")}
         </p>
@@ -329,11 +350,9 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                   }}
                 >
                   {t("library.all.partitions")}
-                  <Badge variant="outline">
-                    {resource.data?.scopes.reduce((sum, row) => sum + row.count, 0) ?? 0}
-                  </Badge>
+                  <Badge variant="outline">{scopes.reduce((sum, row) => sum + row.count, 0)}</Badge>
                 </Button>
-                {resource.data?.scopes.map((item) => (
+                {scopes.map((item) => (
                   <Button
                     key={item.scope_key}
                     variant={scope === item.scope_key ? "secondary" : "ghost"}
@@ -555,7 +574,14 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                       </div>
                       <p className="mt-2 text-xs text-muted-foreground">
                         {memoryScopeLabel(entry.scope_key, agentId, t)} ·{" "}
-                        {new Date(entry.created_at).toLocaleString(i18n.resolvedLanguage)}
+                        {formatDate(entry.created_at, i18n.resolvedLanguage ?? i18n.language, {
+                          year: "numeric",
+                          month: "numeric",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "numeric",
+                          second: "numeric",
+                        })}
                       </p>
                     </div>
                   </div>
@@ -718,7 +744,14 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                     <Badge variant="outline">{job.kind}</Badge>
                     <span>{t(`library.status.${job.status}`)}</span>
                     <span className="text-xs text-muted-foreground">
-                      {new Date(job.created_at).toLocaleString(i18n.resolvedLanguage)}
+                      {formatDate(job.created_at, i18n.resolvedLanguage ?? i18n.language, {
+                        year: "numeric",
+                        month: "numeric",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "numeric",
+                        second: "numeric",
+                      })}
                     </span>
                     {job.error_code && <span className="text-destructive">{job.error_code}</span>}
                     <div className="ml-auto flex items-center gap-2">
@@ -745,9 +778,9 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           </Card>
         </>
       )}
-      <MemoryDetail />
-      {manual && <ManualMemory onClose={() => setManual(false)} />}
-      {purge && (
+      <MemoryDetail active={active} />
+      {manual && <ManualMemory active={active} onClose={() => setManual(false)} />}
+      {active && purge && (
         <ConfirmDialog
           message={t("library.permanently.delete.value.memories.this.cannot.be.undone", {
             "0": selected.length,
@@ -764,7 +797,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           }}
         />
       )}
-      {retryJob && (
+      {active && retryJob && (
         <ConfirmDialog
           message={
             retryError
@@ -784,7 +817,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   );
 }
 
-export function MemoryDetail() {
+export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(),
     t = useTranslation().t,
     entry = s.memoryEntryDetail,
@@ -799,8 +832,8 @@ export function MemoryDetail() {
       setTagText(useSuperstringStore.getState().memoryCorrectionDraft?.tags.join(", ") ?? "");
   }, [correctionRevision]);
   useEffect(() => {
-    if (entryId) void s.loadMemoryContent();
-  }, [entryId, s.loadMemoryContent]);
+    if (active && entryId) void s.loadMemoryContent();
+  }, [active, entryId, s.loadMemoryContent]);
   const close = () => {
     if (s.memoryCorrectionDirty) setDiscard(true);
     else s.clearMemoryDetail();
@@ -808,7 +841,7 @@ export function MemoryDetail() {
   return (
     <>
       <Sheet
-        open={!!entry}
+        open={active && !!entry}
         onOpenChange={(open) => {
           if (!open) close();
         }}
@@ -959,7 +992,7 @@ export function MemoryDetail() {
           </SheetFooter>
         </SheetContent>
       </Sheet>
-      {discard && (
+      {active && discard && (
         <ConfirmDialog
           message={t("library.discard.the.unsaved.memory.correction")}
           onCancel={() => setDiscard(false)}
@@ -974,7 +1007,7 @@ export function MemoryDetail() {
   );
 }
 
-function ManualMemory({ onClose }: { onClose: () => void }) {
+function ManualMemory({ onClose, active }: { onClose: () => void; active: boolean }) {
   const s = useSuperstringStore(),
     t = useTranslation().t;
   const [session, setSession] = useState(s.memorySessions[0]?.id ?? ""),
@@ -986,7 +1019,7 @@ function ManualMemory({ onClose }: { onClose: () => void }) {
   }, [s.clearMemoryTurns]);
   return (
     <Sheet
-      open
+      open={active}
       onOpenChange={(open) => {
         if (!open) onClose();
       }}

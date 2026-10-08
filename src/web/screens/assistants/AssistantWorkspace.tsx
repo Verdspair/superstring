@@ -16,7 +16,7 @@ import { useSuperstringStore } from "@/store";
 import { CapabilityEditor, IdentityEditor } from "./StudioEditors";
 
 /** The directory chooses an object; the studio always edits an explicit assistant. */
-export function AssistantWorkspace() {
+export function AssistantWorkspace({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       agents: state.agents,
@@ -45,14 +45,32 @@ export function AssistantWorkspace() {
   const [search, setSearch] = useState("");
   const [studio, setStudio] = useState(s.settingsView === "workspace" && !!s.pageEditor);
   const [selection, setSelection] = useState<string[]>([]);
+  const selectedSet = useMemo(() => new Set(selection), [selection]);
   const [deleteIds, setDeleteIds] = useState<string[] | null>(null);
-  // Bootstrap already resolved the model names; only a failed/empty bootstrap triggers one refresh.
+  const initialTab =
+    s.settingsRoute === "models" || s.settingsRoute === "context" ? "capabilities" : "identity";
+  const [tab, setTab] = useState(initialTab);
+  const [visitedTabs, setVisitedTabs] = useState([initialTab]);
+  useEffect(() => {
+    if (s.settingsRoute === "models" || s.settingsRoute === "context") {
+      setTab("capabilities");
+      setStudio(true);
+    } else if (["basic", "identity", "expression"].includes(s.settingsRoute)) {
+      setTab("identity");
+    }
+  }, [s.settingsRoute]);
+  useEffect(() => {
+    setVisitedTabs((previous) => (previous.includes(tab) ? previous : [...previous, tab]));
+  }, [tab]);
+  // Bootstrap already resolved the model names; a hidden workspace must not fire requests, and a
+  // failed/empty bootstrap still triggers one refresh when this workspace becomes visible.
   const modelsRefreshed = useRef(false);
   useEffect(() => {
+    if (!active) return;
     if (s.modelNames.length > 0 || modelsRefreshed.current) return;
     modelsRefreshed.current = true;
     void s.refreshModels();
-  }, [s.refreshModels, s.modelNames]);
+  }, [active, s.refreshModels, s.modelNames]);
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return s.agents;
@@ -161,7 +179,7 @@ export function AssistantWorkspace() {
                     <Checkbox
                       aria-label={t("library.select.value", { "0": agent.name })}
                       disabled={s.editorLoading || s.settingsSaving}
-                      checked={selection.includes(agent.id)}
+                      checked={selectedSet.has(agent.id)}
                       onCheckedChange={(v) =>
                         setSelection((ids) =>
                           v === true ? [...ids, agent.id] : ids.filter((id) => id !== agent.id),
@@ -297,29 +315,33 @@ export function AssistantWorkspace() {
             </div>
           </div>
           <Tabs
-            defaultValue={
-              s.settingsRoute === "models" || s.settingsRoute === "context"
-                ? "capabilities"
-                : "identity"
-            }
+            value={tab}
+            onValueChange={(next) => {
+              setTab(next);
+              s.openSettingsRoute(next === "capabilities" ? "context" : "identity");
+            }}
             className="gap-6"
           >
             <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
               <TabsTrigger value="identity">{t("library.identity.expression")}</TabsTrigger>
               <TabsTrigger value="capabilities">{t("library.models.context")}</TabsTrigger>
             </TabsList>
-            <TabsContent value="identity">
-              <IdentityEditor />
-            </TabsContent>
-            <TabsContent value="capabilities">
-              <CapabilityEditor />
-            </TabsContent>
+            {(tab === "identity" || visitedTabs.includes("identity")) && (
+              <TabsContent value="identity" forceMount className="data-[state=inactive]:hidden">
+                <IdentityEditor />
+              </TabsContent>
+            )}
+            {(tab === "capabilities" || visitedTabs.includes("capabilities")) && (
+              <TabsContent value="capabilities" forceMount className="data-[state=inactive]:hidden">
+                <CapabilityEditor active={active && tab === "capabilities"} />
+              </TabsContent>
+            )}
           </Tabs>
         </>
       ) : (
         <p>{t("library.select.an.agent.to.start.editing")}</p>
       )}
-      {deleteIds && (
+      {active && deleteIds && (
         <ConfirmDialog
           message={t("library.agents.delete.named", {
             "0": deleteIds

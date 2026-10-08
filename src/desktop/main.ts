@@ -53,6 +53,7 @@ let stopped = false;
 let showingFailure = false;
 let disposePreferences: (() => void) | null = null;
 let configured = false;
+let smokeReady = false;
 const t = (key: string) => i18next.t(key);
 const brand = path.join(process.resourcesPath, "service", "brand");
 const openLogs = () => {
@@ -81,6 +82,29 @@ async function quit(): Promise<void> {
       }, 15_000);
   try {
     await backend?.stop();
+    if (smokeReport && smokeReady) {
+      if (backend?.exitCode !== 0) throw new Error("DESKTOP_SMOKE_SHUTDOWN_FAILED");
+      writeFileSync(
+        smokeReport,
+        JSON.stringify(
+          {
+            ok: true,
+            platform: process.platform,
+            arch: process.arch,
+            version: app.getVersion(),
+            checks: {
+              backend: true,
+              renderer: true,
+              authentication: true,
+              closeStopsBackend: true,
+              gracefulStop: true,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+    }
     disposePreferences?.();
     tray?.destroy();
     stopped = true;
@@ -183,16 +207,7 @@ function openWindow(): BrowserWindow {
     event.preventDefault();
     if (closing) return;
     closing = true;
-    void backend
-      ?.status()
-      .then((status) => {
-        if (status.close_action === "exit") void quit();
-        else created.destroy();
-      })
-      .catch(() => {
-        closing = false;
-        windowFailure("DESKTOP_CLOSE_STATUS_FAILED");
-      });
+    void quit();
   });
   created.on("closed", () => {
     if (window === created) window = null;
@@ -331,52 +346,8 @@ async function smoke(created: BrowserWindow): Promise<void> {
     rejected.status !== 403
   )
     throw new Error("DESKTOP_SMOKE_FAILED");
-  const backgroundSaved = await created.webContents.executeJavaScript(`(async () => {
-    const saved = await fetch('/desktop/settings').then(r => r.json());
-    return fetch('/desktop/settings', {
-      method: 'PUT', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({close_action:'background', expected_revision: saved.revision})
-    }).then(r => r.ok);
-  })()`);
-  if (!backgroundSaved) throw new Error("DESKTOP_SMOKE_BACKGROUND_SETTING_FAILED");
-  await new Promise<void>((resolve) => {
-    created.once("closed", resolve);
-    created.close();
-  });
-  if ((await backend.status()).close_action !== "background")
-    throw new Error("DESKTOP_SMOKE_BACKGROUND_FAILED");
-  const reopened = openWindow();
-  await new Promise<void>((resolve) =>
-    reopened.webContents.once("did-finish-load", () => resolve()),
-  );
-  if (!(await reopened.webContents.executeJavaScript("fetch('/agents').then(r => r.ok)")))
-    throw new Error("DESKTOP_SMOKE_REOPEN_FAILED");
-  quitting = true;
-  reopened.destroy();
-  await backend.stop();
-  if (backend.exitCode !== 0) throw new Error("DESKTOP_SMOKE_SHUTDOWN_FAILED");
-  writeFileSync(
-    smokeReport,
-    JSON.stringify(
-      {
-        ok: true,
-        platform: process.platform,
-        arch: process.arch,
-        version: app.getVersion(),
-        checks: {
-          backend: true,
-          renderer: true,
-          authentication: true,
-          backgroundReopen: true,
-          gracefulStop: true,
-        },
-      },
-      null,
-      2,
-    ),
-  );
-  stopped = true;
-  app.quit();
+  smokeReady = true;
+  created.close();
 }
 
 function launch(): Promise<void> {
@@ -424,7 +395,7 @@ if (!app.requestSingleInstanceLock()) {
     if (backend?.origin && !quitting) openWindow();
   });
   app.on("window-all-closed", () => {
-    /* The saved background/exit setting owns this transition. */
+    void quit();
   });
   app.on("before-quit", (event) => {
     if (!stopped) {

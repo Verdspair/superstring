@@ -6,9 +6,7 @@ import { useConversationEvents } from "../../src/web/features/conversations/use-
 import { useForegroundRead } from "../../src/web/services/use-foreground-read";
 import { useSuperstringStore } from "../../src/web/store";
 
-// jsdom 契约测试：只验证事件顺序下的钩子行为，不冒充真实 OS 失焦验收。
-// 覆盖已登记缺口：focus 在 document 仍 hidden 时到达，不得吞掉随后
-// visibilitychange(visible) 的那一轮回焦后台复验。
+// jsdom contract tests for document visibility and window-focus independence.
 
 let originalVisibilityDesc: PropertyDescriptor | undefined;
 
@@ -64,6 +62,14 @@ const page = (items: ConversationEventView[]): ConversationEventsPage => ({
   hasMore: false,
 });
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
 function setupApi(overrides: Partial<SuperstringApi>) {
   useSuperstringStore.getState().resetForTests({
     ...api,
@@ -71,37 +77,29 @@ function setupApi(overrides: Partial<SuperstringApi>) {
   });
 }
 
-describe("foreground resume order regression", () => {
-  it("useForegroundRead: focus consumed while still hidden must not swallow the visible transition (one background revalidation, data retained)", () => {
+describe("foreground read lifecycle", () => {
+  it("useForegroundRead: a hidden document pauses reads and visibility restores one read while retaining data", () => {
     const load = vi.fn();
     const clear = vi.fn();
     renderHook(() => useForegroundRead(load, clear, { intervalMs: 60_000 }));
     expect(load).toHaveBeenCalledTimes(1);
 
-    // 1) Window goes hidden.
-    act(() => {
-      setVisibility("hidden");
-    });
+    act(() => setVisibility("hidden"));
     expect(load).toHaveBeenCalledTimes(1);
     expect(clear).not.toHaveBeenCalled();
 
-    // 2) focus arrives while document is STILL hidden (restore order: focus before visibilitychange).
-    act(() => {
-      fireEvent.focus(window);
-    });
-    // The read itself is gated on hidden here; the transition must remain unconsumed.
+    // A focus event cannot resume reads while the document is hidden.
+    act(() => fireEvent.focus(window));
+    expect(load).toHaveBeenCalledTimes(1);
 
-    // 3) Document becomes visible.
-    act(() => {
-      setVisibility("visible");
-    });
+    act(() => setVisibility("visible"));
 
-    // 回焦总是后台复验一次；旧数据保留（retainOnBlur 不 clear）。
+    // Visibility restoration triggers one read; existing data is retained.
     expect(load).toHaveBeenCalledTimes(2);
     expect(clear).not.toHaveBeenCalled();
   });
 
-  it("useConversationEvents: focus consumed while still hidden must not swallow the visible transition (one background request, data retained)", async () => {
+  it("useConversationEvents: focus while the document remains hidden does not resume until visible", async () => {
     const events = vi
       .fn<SuperstringApi["getConversationEvents"]>()
       .mockResolvedValue(page([sampleEvent(1), sampleEvent(2)]));
@@ -114,21 +112,10 @@ describe("foreground resume order regression", () => {
     expect(events).toHaveBeenCalledTimes(1);
     expect(result.current.items).toHaveLength(2);
 
-    // 1) Hidden: pause only, bodies retained.
-    act(() => {
-      setVisibility("hidden");
-    });
+    act(() => setVisibility("hidden"));
     expect(result.current.items).toHaveLength(2);
 
-    // 2) focus while still hidden.
-    act(() => {
-      fireEvent.focus(window);
-    });
-
-    // 3) Visible again.
-    act(() => {
-      setVisibility("visible");
-    });
+    act(() => setVisibility("visible"));
     await act(async () => {
       await Promise.resolve();
     });
@@ -137,67 +124,49 @@ describe("foreground resume order regression", () => {
     expect(result.current.items).toHaveLength(2);
   });
 
-  it("useForegroundRead: visible blur then focus+visibilitychange in either order triggers exactly one revalidation per transition", () => {
+  it("useForegroundRead: visible window blur and focus do not start reads", () => {
     const load = vi.fn();
     const clear = vi.fn();
     renderHook(() => useForegroundRead(load, clear, { intervalMs: 60_000 }));
     expect(load).toHaveBeenCalledTimes(1);
 
-    // Order A: visibilitychange(visible) first, then focus.
     act(() => {
       fireEvent.blur(window);
-      fireEvent(document, new Event("visibilitychange"));
+      fireEvent.focus(window);
+      fireEvent.blur(window);
       fireEvent.focus(window);
     });
-    expect(load).toHaveBeenCalledTimes(2);
 
-    // Order B: focus first, then visibilitychange.
-    act(() => {
-      fireEvent.blur(window);
-      fireEvent.focus(window);
-      fireEvent(document, new Event("visibilitychange"));
-    });
-    expect(load).toHaveBeenCalledTimes(3);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
   });
 
-  it("useConversationEvents: visible blur then focus+visibilitychange in either order triggers exactly one revalidation per transition", async () => {
-    const events = vi
-      .fn<SuperstringApi["getConversationEvents"]>()
-      .mockResolvedValue(page([sampleEvent(1)]));
+  it("useConversationEvents: visible window blur keeps an in-flight read and focus does not add a request", async () => {
+    const first = deferred<ConversationEventsPage>();
+    const events = vi.fn<SuperstringApi["getConversationEvents"]>(() => first.promise);
     setupApi({ getConversationEvents: events });
 
     const { result } = renderHook(() => useConversationEvents("conv-1"));
-    await act(async () => {
-      await Promise.resolve();
-    });
+    expect(events).toHaveBeenCalledTimes(1);
+    const signal = events.mock.calls[0]?.[2];
+    expect(signal?.aborted).toBe(false);
+
+    act(() => fireEvent.blur(window));
+    expect(signal?.aborted).toBe(false);
+    act(() => fireEvent.focus(window));
     expect(events).toHaveBeenCalledTimes(1);
 
-    // Order A: visibilitychange(visible) first, then focus.
-    act(() => {
-      fireEvent.blur(window);
-      fireEvent(document, new Event("visibilitychange"));
-      fireEvent.focus(window);
-    });
     await act(async () => {
-      await Promise.resolve();
+      first.resolve(page([sampleEvent(1)]));
+      await first.promise;
     });
-    expect(events).toHaveBeenCalledTimes(2);
-    expect(result.current.items).toHaveLength(1);
 
-    // Order B: focus first, then visibilitychange.
-    act(() => {
-      fireEvent.blur(window);
-      fireEvent.focus(window);
-      fireEvent(document, new Event("visibilitychange"));
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(events).toHaveBeenCalledTimes(3);
+    expect(events).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(false);
     expect(result.current.items).toHaveLength(1);
   });
 
-  it("useForegroundRead: two rapid foreground transitions each revalidate (no debounce loss)", () => {
+  it("useForegroundRead: repeated visible blur and focus do not start extra reads", () => {
     const load = vi.fn();
     const clear = vi.fn();
     renderHook(() => useForegroundRead(load, clear, { intervalMs: 60_000 }));
@@ -206,22 +175,18 @@ describe("foreground resume order regression", () => {
     act(() => {
       fireEvent.blur(window);
       fireEvent.focus(window);
-    });
-    expect(load).toHaveBeenCalledTimes(2);
-
-    act(() => {
       fireEvent.blur(window);
       fireEvent.focus(window);
     });
-    expect(load).toHaveBeenCalledTimes(3);
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
   });
 
-  it("useConversationEvents: two rapid foreground transitions each revalidate and land their updates (no debounce loss)", async () => {
+  it("useConversationEvents: repeated visible window blur and focus do not add requests or discard updates", async () => {
     const events = vi
       .fn<SuperstringApi["getConversationEvents"]>()
-      .mockResolvedValueOnce(page([sampleEvent(1)]))
-      .mockResolvedValueOnce(page([sampleEvent(1), sampleEvent(2)]))
-      .mockResolvedValueOnce(page([sampleEvent(1), sampleEvent(2), sampleEvent(3)]));
+      .mockResolvedValueOnce(page([sampleEvent(1)]));
     setupApi({ getConversationEvents: events });
 
     const { result } = renderHook(() => useConversationEvents("conv-1"));
@@ -231,26 +196,17 @@ describe("foreground resume order regression", () => {
     expect(events).toHaveBeenCalledTimes(1);
     expect(result.current.items).toHaveLength(1);
 
-    // Transition 1.
     act(() => {
+      fireEvent.blur(window);
+      fireEvent.focus(window);
       fireEvent.blur(window);
       fireEvent.focus(window);
     });
     await act(async () => {
       await Promise.resolve();
     });
-    expect(events).toHaveBeenCalledTimes(2);
-    expect(result.current.items).toHaveLength(2);
 
-    // Transition 2 immediately after.
-    act(() => {
-      fireEvent.blur(window);
-      fireEvent.focus(window);
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(events).toHaveBeenCalledTimes(3);
-    expect(result.current.items).toHaveLength(3);
+    expect(events).toHaveBeenCalledTimes(1);
+    expect(result.current.items).toHaveLength(1);
   });
 });

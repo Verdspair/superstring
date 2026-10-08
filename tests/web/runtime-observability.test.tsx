@@ -106,13 +106,27 @@ const setup = (client: Partial<SuperstringApi>) =>
         };
       }),
   });
+let originalVisibilityDesc: PropertyDescriptor | undefined;
+
+const setVisibility = (value: "visible" | "hidden") => {
+  Object.defineProperty(document, "visibilityState", { configurable: true, value });
+  fireEvent(document, new Event("visibilitychange"));
+};
+
 beforeEach(() => {
+  originalVisibilityDesc =
+    Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState") ??
+    Object.getOwnPropertyDescriptor(document, "visibilityState");
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   window.history.replaceState(null, "", "/");
   void i18n.changeLanguage("zh-CN");
 });
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  if (originalVisibilityDesc) {
+    Object.defineProperty(document, "visibilityState", originalVisibilityDesc);
+  }
 });
 const pointer = async (target: HTMLElement) =>
   userEvent.setup().pointer({ target, keys: "[MouseLeft]", coords: { x: 100, y: 100 } });
@@ -264,13 +278,22 @@ it("stops polling under a controlled hub pause and reports its real loading stat
     const list = vi.fn<SuperstringApi["listRuntimeSpans"]>(async () => page());
     const states: boolean[] = [];
     setup({ listRuntimeSpans: list });
-    render(<ExecutionWorkspace paused onState={(state) => states.push(state.loading)} />);
+    const onState = (state: { loading: boolean }) => states.push(state.loading);
+    const view = render(<ExecutionWorkspace paused onState={onState} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+    expect(list).not.toHaveBeenCalled();
+    expect(states).not.toContain(true);
+    expect(states.at(-1)).toBe(false);
+    view.rerender(<ExecutionWorkspace paused={false} onState={onState} />);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(list).toHaveBeenCalledOnce();
     expect(states).toContain(true);
     expect(states.at(-1)).toBe(false);
+    view.rerender(<ExecutionWorkspace paused onState={onState} />);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(15000);
     });
@@ -325,19 +348,24 @@ it("compares two trace identities with independent complete metadata reads", asy
   expect(await screen.findByRole("region", { name: first.traceId })).toBeTruthy();
   expect(screen.getByRole("region", { name: second.traceId })).toBeTruthy();
 });
-it("retains investigation identity across foreground clearing without preserving stale details", async () => {
+it("retains investigation identity across window blur and revalidates after document visibility resumes", async () => {
   const detail = vi.fn().mockResolvedValue(page());
   setup({ listRuntimeSpans: async () => page(), getRuntimeTrace: detail });
   render(<ExecutionWorkspace />);
   await pointer(await screen.findByRole("button", { name: /Model generation/ }));
   await screen.findByRole("button", { name: /下一个命中/ });
+  expect(detail).toHaveBeenCalledTimes(1);
+
   fireEvent.blur(window);
-  // 失焦保留已打开的调查视图，不再强制收起。
   expect(screen.getByRole("button", { name: /下一个命中/ })).toBeTruthy();
   expect(screen.getByRole("region", { name: "追踪链路" })).toBeTruthy();
-  fireEvent.focus(window);
-  await screen.findByRole("button", { name: /下一个命中/ });
-  expect(detail).toHaveBeenCalledTimes(2);
+  expect(detail).toHaveBeenCalledTimes(1);
+
+  act(() => setVisibility("hidden"));
+  expect(detail).toHaveBeenCalledTimes(1);
+  act(() => setVisibility("visible"));
+  await waitFor(() => expect(detail).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole("region", { name: "追踪链路" })).toBeTruthy();
 });
 it("shows confirmed and unknown parts independently and aborts delivery inspection on close", async () => {
   const delivery = {

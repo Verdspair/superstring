@@ -1,5 +1,5 @@
 import { Copy, Crosshair, FileDiff, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -601,7 +601,7 @@ function PromptEditor({
   );
 }
 
-export function SchemeStudio() {
+export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const state = useSuperstringStore(
     useShallow((s) => ({
@@ -633,6 +633,22 @@ export function SchemeStudio() {
   );
   const { loadQqSchemes, loadQqStickers, qqSchemeEditor: editor, qqSchemeSaving: saving } = state;
   const [task, setTask] = useState<SchemeTask>("participation");
+  const [visitedTasks, setVisitedTasks] = useState<SchemeTask[]>(["participation"]);
+  const taskScrollRoot = useRef<HTMLDivElement>(null);
+  const taskScrollPositions = useRef(new Map<SchemeTask, number>());
+  const previousTask = useRef(task);
+  useLayoutEffect(() => {
+    const viewport = taskScrollRoot.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (!viewport || previousTask.current === task) return;
+    taskScrollPositions.current.set(previousTask.current, viewport.scrollTop);
+    viewport.scrollTop = taskScrollPositions.current.get(task) ?? 0;
+    previousTask.current = task;
+  }, [task]);
+  useEffect(() => {
+    setVisitedTasks((previous) => (previous.includes(task) ? previous : [...previous, task]));
+  }, [task]);
   const [naming, setNaming] = useState<{ kind: "new" | "copy"; step: "name" | "draft" } | null>(
     null,
   );
@@ -643,9 +659,10 @@ export function SchemeStudio() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [focusField, setFocusField] = useState<string | null>(null);
   useEffect(() => {
+    if (!active) return;
     void loadQqSchemes();
     void loadQqStickers();
-  }, [loadQqSchemes, loadQqStickers]);
+  }, [active, loadQqSchemes, loadQqStickers]);
   // 定位到出错字段：先切页签；Radix 面板内容下一帧才挂载，所以等一帧并做有限重试。
   useEffect(() => {
     if (!focusField) return;
@@ -839,462 +856,503 @@ export function SchemeStudio() {
               ))}
             </TabsList>
           </div>
-          <ScrollArea className="min-h-0 flex-1">
+          <ScrollArea ref={taskScrollRoot} className="min-h-0 flex-1">
             <div className="min-w-0 space-y-6 px-4 py-6">
-              <TabsContent value="participation" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("connections.speechTriggers")}
-                  description="schemes.studio.triggersHint"
+              {(effectiveTab === "participation" || visitedTasks.includes("participation")) && (
+                <TabsContent
+                  value="participation"
+                  forceMount
+                  className="m-0 space-y-6 data-[state=inactive]:hidden"
                 >
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {Object.entries(TRIGGER_LABELS).map(([key, label]) => (
-                      <Label key={key} className="flex items-start gap-3 rounded-lg border p-4">
-                        <Checkbox
-                          disabled={saving}
-                          checked={editor.triggers[key as keyof typeof TRIGGER_LABELS]}
-                          onCheckedChange={(value) => {
-                            if (key === "follow_up" && value === true) {
-                              state.patchQqSchemeGroup("triggers", {
-                                follow_up: true,
-                                chiming_in: false,
-                              });
-                            } else if (key === "chiming_in" && value === true) {
-                              state.patchQqSchemeGroup("triggers", {
-                                chiming_in: true,
-                                follow_up: false,
-                              });
-                            } else {
-                              state.patchQqSchemeGroup("triggers", { [key]: value === true });
-                            }
-                          }}
-                        />
-                        <span className="space-y-1">
-                          <span className="block">{t(label)}</span>
-                          <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                            {t(
-                              key === "direct_reply" || key === "follow_up"
-                                ? "connections.directRepliesAndOngoingConversationsAreNotSubjectTo"
-                                : "connections.subjectToScoreCooldownHourlyLimitsAndActiveHours",
-                            )}
-                          </span>
-                        </span>
-                      </Label>
-                    ))}
-                  </div>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    {t("connections.triggersMutualExclusionHint")}
-                  </p>
-                  {editor.triggers.follow_up && editor.triggers.chiming_in && (
-                    <div className="mt-3 rounded-md bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
-                      {t("connections.legacyChimingInPrecedenceNotice")}
-                    </div>
-                  )}
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("schemes.studio.rhythmTitle")}
-                  description="schemes.studio.rhythmHint"
-                >
-                  <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                    {participationFields.map(([name, label, info]) => (
-                      <SchemeNumber
-                        key={name}
-                        group="rhythm"
-                        name={name}
-                        label={label}
-                        info={info}
-                      />
-                    ))}
-                    <Label className="flex items-start gap-3 rounded-lg border p-4 sm:col-span-2">
-                      <Checkbox
-                        disabled={saving}
-                        checked={editor.rhythm.initiative_queue_on_busy}
-                        onCheckedChange={(checked) =>
-                          state.patchQqSchemeGroup("rhythm", {
-                            initiative_queue_on_busy: checked === true,
-                          })
-                        }
-                      />
-                      <span className="space-y-1">
-                        <span className="block">{t("connections.initiativeQueueOnBusy")}</span>
-                        <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                          {t("connections.initiativeQueueOnBusyHint")}
-                        </span>
-                      </span>
-                    </Label>
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.allowedHours")}
-                  description="connections.useLocalTimeEqualStartAndEndMeansAll"
-                >
-                  <Label>
-                    <Checkbox
-                      disabled={saving}
-                      checked={editor.rhythm.active_hours_enabled}
-                      onCheckedChange={(checked) =>
-                        state.patchQqSchemeGroup("rhythm", {
-                          active_hours_enabled: checked === true,
-                        })
-                      }
-                    />
-                    {t("connections.allowedHours")}
-                  </Label>
-                  {/* 窄屏单列：两个 time 输入并排会被压到内容裁切，sm 起恢复两列。 */}
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {(["start", "end"] as const).map((side) => {
-                      const key = `active_hours_${side}_minutes` as const;
-                      return (
-                        <Field
-                          key={key}
-                          label={
-                            side === "start"
-                              ? "connections.allowedHoursStart"
-                              : "connections.allowedHoursEnd"
-                          }
-                        >
-                          <Input
-                            type="time"
-                            value={localClock(editor.rhythm[key])}
-                            disabled={saving || !editor.rhythm.active_hours_enabled}
-                            onChange={(e) => {
-                              const minutes = utcMinutes(e.target.value);
-                              if (minutes !== null)
-                                state.patchQqSchemeGroup("rhythm", { [key]: minutes });
+                  <SchemeFieldCard
+                    title={t("connections.speechTriggers")}
+                    description="schemes.studio.triggersHint"
+                  >
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {Object.entries(TRIGGER_LABELS).map(([key, label]) => (
+                        <Label key={key} className="flex items-start gap-3 rounded-lg border p-4">
+                          <Checkbox
+                            disabled={saving}
+                            checked={editor.triggers[key as keyof typeof TRIGGER_LABELS]}
+                            onCheckedChange={(value) => {
+                              if (key === "follow_up" && value === true) {
+                                state.patchQqSchemeGroup("triggers", {
+                                  follow_up: true,
+                                  chiming_in: false,
+                                });
+                              } else if (key === "chiming_in" && value === true) {
+                                state.patchQqSchemeGroup("triggers", {
+                                  chiming_in: true,
+                                  follow_up: false,
+                                });
+                              } else {
+                                state.patchQqSchemeGroup("triggers", { [key]: value === true });
+                              }
                             }}
                           />
-                        </Field>
-                      );
-                    })}
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("schemes.studio.activeHoursHint")}
-                  </p>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("schemes.studio.judgePrompt")}
-                  description="connections.decideWhetherToSpeak"
-                >
-                  <PromptEditor slot="judge" titleKey="connections.judgementTask" />
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="response" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("schemes.studio.replyStructure")}
-                  description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
-                >
-                  <Label>
-                    <Checkbox
-                      checked={editor.reply.split_by_speaker}
-                      disabled={saving}
-                      onCheckedChange={(value) =>
-                        state.patchQqSchemeGroup("reply", { split_by_speaker: value === true })
-                      }
-                    />
-                    {t("connections.answerEachSpeakerSeparately")}
-                  </Label>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("schemes.studio.replyTasks")}
-                  description="schemes.studio.replyTasksHint"
-                >
-                  <PromptEditor
-                    slot="scene"
-                    titleKey="connections.sceneAndBehaviour"
-                    hint="schemes.studio.sceneGlobalNote"
-                  />
-                  {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
-                      一改就写进方案的 prompt_reply，服务端取的是同一个函数的结果。 */}
-                  <Field
-                    label="connections.effectiveReplyTask"
-                    info="connections.editTheReplyTaskItWinsOverTheSwitch"
-                  >
-                    <div className="mb-1.5 flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        {editor.prompts.reply === QQ_REPLY_DEFAULT_PROMPT
-                          ? t("schemes.studio.replyPromptDerived")
-                          : t("schemes.studio.replyPromptCustom")}
-                      </span>
+                          <span className="space-y-1">
+                            <span className="block">{t(label)}</span>
+                            <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                              {t(
+                                key === "direct_reply" || key === "follow_up"
+                                  ? "connections.directRepliesAndOngoingConversationsAreNotSubjectTo"
+                                  : "connections.subjectToScoreCooldownHourlyLimitsAndActiveHours",
+                              )}
+                            </span>
+                          </span>
+                        </Label>
+                      ))}
                     </div>
-                    <Textarea
-                      className="min-h-36 font-mono text-xs leading-6"
-                      disabled={saving}
-                      value={qqEffectiveReplyPrompt(
-                        editor.prompts.reply,
-                        editor.reply.split_by_speaker,
-                      )}
-                      onChange={(e) =>
-                        state.patchQqSchemeGroup("prompts", { reply: e.target.value })
-                      }
-                    />
-                  </Field>
-                  <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                    {responseFields.map(([name, label, info]) => (
-                      <SchemeNumber
-                        key={name}
-                        group="rhythm"
-                        name={name}
-                        label={label}
-                        info={info}
-                      />
-                    ))}
-                  </div>
-                  <PromptEditor slot="review" titleKey="connections.reviewTask" />
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="context_reading" className="m-0 space-y-6">
-                {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
-                    不参与运行（禁用但配置保留），切回按层数即恢复。 */}
-                <SchemeFieldCard
-                  title={t("schemes.studio.messageRelations")}
-                  description="schemes.studio.messageRelationsHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <SchemeEnum
-                      group="messageSettings"
-                      name="reply_mode"
-                      label="connections.quoteReplyMode"
-                    />
-                    <SchemeNumber
-                      group="messageSettings"
-                      name="reply_depth"
-                      label="connections.quoteDepth"
-                      info="connections.quoteDepthHint"
-                      // one_then_on_demand 下层数不参与运行：禁用但配置保留，切回按层数即恢复。
-                      disabled={editor.messageSettings.reply_mode === "one_then_on_demand"}
-                    />
-                    <SchemeEnum
-                      group="messageSettings"
-                      name="time_display"
-                      label="connections.timeDisplayMode"
-                    />
-                    <SchemeTimezone label="connections.timezone" />
-                  </div>
-                  <QqMessagePreview
-                    settings={
-                      invalidSchemeTimezone(useSuperstringStore.getState()) === null
-                        ? editor.messageSettings
-                        : null
-                    }
-                  />
-                </SchemeFieldCard>
-                {(["judgement", "reply"] as const).map((part) => (
-                  <SchemeFieldCard
-                    key={part}
-                    title={
-                      part === "judgement"
-                        ? t("connections.judgementContext")
-                        : t("connections.replyContext")
-                    }
-                    description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
-                  >
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      {/* 回复档的条数跟随绑定助手的「保留最近轮数」，所以它是只读的。 */}
-                      {part === "reply" ? (
-                        <BoundRecentTurns />
-                      ) : (
-                        <SchemeNumber
-                          group="context"
-                          name={`${part}_message_limit`}
-                          label="connections.judgementRecentMessages"
-                        />
-                      )}
-                      <SchemeNumber
-                        group="context"
-                        name={`${part}_window_minutes`}
-                        label={
-                          part === "judgement"
-                            ? "connections.judgementTimeWindowMinutes"
-                            : "connections.replyTimeWindowMinutes"
-                        }
-                      />
-                      <SchemeNumber
-                        group="context"
-                        name={`${part}_token_budget`}
-                        label={
-                          part === "judgement"
-                            ? "connections.judgementBudgetEstimatedBytes"
-                            : "connections.replyBudgetEstimatedBytes"
-                        }
-                      />
-                      <SchemeNumber
-                        group="outputReserve"
-                        name={`${part}_output_reserved`}
-                        label={
-                          part === "judgement"
-                            ? "connections.judgementOutputReserveEstimatedBytes"
-                            : "connections.replyOutputReserveEstimatedBytes"
-                        }
-                      />
-                    </div>
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {t("connections.triggersMutualExclusionHint")}
+                    </p>
+                    {editor.triggers.follow_up && editor.triggers.chiming_in && (
+                      <div className="mt-3 rounded-md bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
+                        {t("connections.legacyChimingInPrecedenceNotice")}
+                      </div>
+                    )}
                   </SchemeFieldCard>
-                ))}
-                <div className="rounded-lg bg-muted p-5 text-sm leading-6">
-                  <h3 className="font-medium">
-                    {t("connections.bindingsDetermineTheMaterialScope")}
-                  </h3>
-                  <p className="mt-2 text-muted-foreground">
-                    {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
-                  </p>
-                  <Button
-                    className="mt-3"
-                    variant="outline"
-                    onClick={() => state.openSettingsRoute("knowledge-config")}
+                  <SchemeFieldCard
+                    title={t("schemes.studio.rhythmTitle")}
+                    description="schemes.studio.rhythmHint"
                   >
-                    {t("connections.manageKnowledge")}
-                  </Button>
-                </div>
-              </TabsContent>
-              <TabsContent value="history_compression" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("connections.compressionAndAssembly")}
-                  description="schemes.studio.compressionHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <SchemeNumber
-                      group="compression"
-                      name="watermark_trigger"
-                      label="connections.watermarkTriggerMessages"
-                      info="connections.oldMessagesOutsideTheReplyWindowAccumulateUntilThisMany"
-                    />
-                    <SchemeNumber
-                      group="compression"
-                      name="package_limit"
-                      label="connections.watermarkPackageLimit"
-                      info="connections.packagesBeyondThisManyAreDroppedOldestFirst"
-                    />
-                    <SchemePercent
-                      name="headroom_ratio"
-                      label="connections.assemblyHeadroomPercent"
-                      info="connections.reserveThisShareOfTheCapacityBeforeAssembling"
-                    />
-                  </div>
-                  <PromptEditor
-                    slot="compress"
-                    titleKey="connections.watermarkCompressionTask"
-                    hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
-                  />
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="image_understanding" className="m-0 space-y-6">
-                {/* 0052 图片输入：模式/阶段/图数/规格；普通动图沿用下方既有 rhythm 真源不重复存储。 */}
-                <SchemeFieldCard
-                  title={t("schemes.studio.imageInput")}
-                  description="schemes.studio.imageInputHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <SchemeEnum
-                      group="mediaInput"
-                      name="mode"
-                      label="connections.imageInputMode"
-                      info={
-                        editor.mediaInput.mode === "description"
-                          ? "connections.imageMode.descriptionHint"
-                          : "connections.imageMode.nativeHint"
-                      }
-                    />
-                    <SchemeNumber
-                      group="mediaInput"
-                      name="max_images"
-                      label="connections.maxAutoImages"
-                    />
-                    <SchemeNumber
-                      group="mediaInput"
-                      name="expression_max_dimension"
-                      label="connections.expressionStillMaxDimension"
-                    />
-                    <OrdinaryStillSpec />
-                    <SchemeNumber
-                      group="mediaInput"
-                      name="expression_frame_count"
-                      label="connections.expressionFrameCount"
-                    />
-                    <SchemeNumber
-                      group="mediaInput"
-                      name="expression_frame_max_dimension"
-                      label="connections.expressionFrameMaxDimension"
-                    />
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <StageSwitch phase="decision" />
-                    <StageSwitch phase="evaluation" />
-                    <StageSwitch phase="generation" />
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("schemes.studio.imageParams")}
-                  description="schemes.studio.imageParamsHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {imageFields.map(([group, name, label]) => (
-                      <SchemeNumber key={name} group={group} name={name} label={label} />
-                    ))}
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.mediaNoteTask")}
-                  description="connections.describeWhatThePictureOrVoiceActuallyContains"
-                >
-                  <PromptEditor
-                    slot="media"
-                    titleKey="connections.mediaNoteTask"
-                    hint="connections.describeWhatThePictureOrVoiceActuallyContains"
-                  />
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="sticker_sending" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("schemes.studio.stickerParams")}
-                  description="schemes.studio.stickerParamsHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {stickerFields.map(([group, name, label]) => (
-                      <SchemeNumber key={name} group={group} name={name} label={label} />
-                    ))}
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.authorizedCollections")}
-                  description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
-                >
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {state.qqStickerCollections.map((collection) => (
-                      <Label key={collection.id} className="rounded-lg border p-3">
+                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                      {participationFields.map(([name, label, info]) => (
+                        <SchemeNumber
+                          key={name}
+                          group="rhythm"
+                          name={name}
+                          label={label}
+                          info={info}
+                        />
+                      ))}
+                      <Label className="flex items-start gap-3 rounded-lg border p-4 sm:col-span-2">
                         <Checkbox
-                          checked={editor.stickerCollectionIds.includes(collection.id)}
                           disabled={saving}
-                          onCheckedChange={(value) =>
-                            state.patchQqScheme({
-                              stickerCollectionIds:
-                                value === true
-                                  ? [...editor.stickerCollectionIds, collection.id]
-                                  : editor.stickerCollectionIds.filter(
-                                      (id) => id !== collection.id,
-                                    ),
+                          checked={editor.rhythm.initiative_queue_on_busy}
+                          onCheckedChange={(checked) =>
+                            state.patchQqSchemeGroup("rhythm", {
+                              initiative_queue_on_busy: checked === true,
                             })
                           }
                         />
-                        {collection.name}
-                        <span className="ml-auto text-xs text-muted-foreground">
-                          {collection.asset_count}
+                        <span className="space-y-1">
+                          <span className="block">{t("connections.initiativeQueueOnBusy")}</span>
+                          <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                            {t("connections.initiativeQueueOnBusyHint")}
+                          </span>
                         </span>
                       </Label>
-                    ))}
-                  </div>
-                  <Button variant="outline" onClick={() => state.openSettingsRoute("qq-stickers")}>
-                    {t("connections.manageStickers")}
-                  </Button>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.stickerTask")}
-                  description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
+                    </div>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("connections.allowedHours")}
+                    description="connections.useLocalTimeEqualStartAndEndMeansAll"
+                  >
+                    <Label>
+                      <Checkbox
+                        disabled={saving}
+                        checked={editor.rhythm.active_hours_enabled}
+                        onCheckedChange={(checked) =>
+                          state.patchQqSchemeGroup("rhythm", {
+                            active_hours_enabled: checked === true,
+                          })
+                        }
+                      />
+                      {t("connections.allowedHours")}
+                    </Label>
+                    {/* 窄屏单列：两个 time 输入并排会被压到内容裁切，sm 起恢复两列。 */}
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      {(["start", "end"] as const).map((side) => {
+                        const key = `active_hours_${side}_minutes` as const;
+                        return (
+                          <Field
+                            key={key}
+                            label={
+                              side === "start"
+                                ? "connections.allowedHoursStart"
+                                : "connections.allowedHoursEnd"
+                            }
+                          >
+                            <Input
+                              type="time"
+                              value={localClock(editor.rhythm[key])}
+                              disabled={saving || !editor.rhythm.active_hours_enabled}
+                              onChange={(e) => {
+                                const minutes = utcMinutes(e.target.value);
+                                if (minutes !== null)
+                                  state.patchQqSchemeGroup("rhythm", { [key]: minutes });
+                              }}
+                            />
+                          </Field>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t("schemes.studio.activeHoursHint")}
+                    </p>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("schemes.studio.judgePrompt")}
+                    description="connections.decideWhetherToSpeak"
+                  >
+                    <PromptEditor slot="judge" titleKey="connections.judgementTask" />
+                  </SchemeFieldCard>
+                </TabsContent>
+              )}
+              {(effectiveTab === "response" || visitedTasks.includes("response")) && (
+                <TabsContent
+                  value="response"
+                  forceMount
+                  className="m-0 space-y-6 data-[state=inactive]:hidden"
                 >
-                  <PromptEditor
-                    slot="sticker"
-                    titleKey="connections.stickerTask"
-                    hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                  />
-                </SchemeFieldCard>
-              </TabsContent>
+                  <SchemeFieldCard
+                    title={t("schemes.studio.replyStructure")}
+                    description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
+                  >
+                    <Label>
+                      <Checkbox
+                        checked={editor.reply.split_by_speaker}
+                        disabled={saving}
+                        onCheckedChange={(value) =>
+                          state.patchQqSchemeGroup("reply", { split_by_speaker: value === true })
+                        }
+                      />
+                      {t("connections.answerEachSpeakerSeparately")}
+                    </Label>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("schemes.studio.replyTasks")}
+                    description="schemes.studio.replyTasksHint"
+                  >
+                    <PromptEditor
+                      slot="scene"
+                      titleKey="connections.sceneAndBehaviour"
+                      hint="schemes.studio.sceneGlobalNote"
+                    />
+                    {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
+                      一改就写进方案的 prompt_reply，服务端取的是同一个函数的结果。 */}
+                    <Field
+                      label="connections.effectiveReplyTask"
+                      info="connections.editTheReplyTaskItWinsOverTheSwitch"
+                    >
+                      <div className="mb-1.5 flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          {editor.prompts.reply === QQ_REPLY_DEFAULT_PROMPT
+                            ? t("schemes.studio.replyPromptDerived")
+                            : t("schemes.studio.replyPromptCustom")}
+                        </span>
+                      </div>
+                      <Textarea
+                        className="min-h-36 font-mono text-xs leading-6"
+                        disabled={saving}
+                        value={qqEffectiveReplyPrompt(
+                          editor.prompts.reply,
+                          editor.reply.split_by_speaker,
+                        )}
+                        onChange={(e) =>
+                          state.patchQqSchemeGroup("prompts", { reply: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                      {responseFields.map(([name, label, info]) => (
+                        <SchemeNumber
+                          key={name}
+                          group="rhythm"
+                          name={name}
+                          label={label}
+                          info={info}
+                        />
+                      ))}
+                    </div>
+                    <PromptEditor slot="review" titleKey="connections.reviewTask" />
+                  </SchemeFieldCard>
+                </TabsContent>
+              )}
+              {(effectiveTab === "context_reading" || visitedTasks.includes("context_reading")) && (
+                <TabsContent
+                  value="context_reading"
+                  forceMount
+                  className="m-0 space-y-6 data-[state=inactive]:hidden"
+                >
+                  {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
+                    不参与运行（禁用但配置保留），切回按层数即恢复。 */}
+                  <SchemeFieldCard
+                    title={t("schemes.studio.messageRelations")}
+                    description="schemes.studio.messageRelationsHint"
+                  >
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <SchemeEnum
+                        group="messageSettings"
+                        name="reply_mode"
+                        label="connections.quoteReplyMode"
+                      />
+                      <SchemeNumber
+                        group="messageSettings"
+                        name="reply_depth"
+                        label="connections.quoteDepth"
+                        info="connections.quoteDepthHint"
+                        // one_then_on_demand 下层数不参与运行：禁用但配置保留，切回按层数即恢复。
+                        disabled={editor.messageSettings.reply_mode === "one_then_on_demand"}
+                      />
+                      <SchemeEnum
+                        group="messageSettings"
+                        name="time_display"
+                        label="connections.timeDisplayMode"
+                      />
+                      <SchemeTimezone label="connections.timezone" />
+                    </div>
+                    <QqMessagePreview
+                      settings={
+                        invalidSchemeTimezone(useSuperstringStore.getState()) === null
+                          ? editor.messageSettings
+                          : null
+                      }
+                    />
+                  </SchemeFieldCard>
+                  {(["judgement", "reply"] as const).map((part) => (
+                    <SchemeFieldCard
+                      key={part}
+                      title={
+                        part === "judgement"
+                          ? t("connections.judgementContext")
+                          : t("connections.replyContext")
+                      }
+                      description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {/* 回复档的条数跟随绑定助手的「保留最近轮数」，所以它是只读的。 */}
+                        {part === "reply" ? (
+                          <BoundRecentTurns />
+                        ) : (
+                          <SchemeNumber
+                            group="context"
+                            name={`${part}_message_limit`}
+                            label="connections.judgementRecentMessages"
+                          />
+                        )}
+                        <SchemeNumber
+                          group="context"
+                          name={`${part}_window_minutes`}
+                          label={
+                            part === "judgement"
+                              ? "connections.judgementTimeWindowMinutes"
+                              : "connections.replyTimeWindowMinutes"
+                          }
+                        />
+                        <SchemeNumber
+                          group="context"
+                          name={`${part}_token_budget`}
+                          label={
+                            part === "judgement"
+                              ? "connections.judgementBudgetEstimatedBytes"
+                              : "connections.replyBudgetEstimatedBytes"
+                          }
+                        />
+                        <SchemeNumber
+                          group="outputReserve"
+                          name={`${part}_output_reserved`}
+                          label={
+                            part === "judgement"
+                              ? "connections.judgementOutputReserveEstimatedBytes"
+                              : "connections.replyOutputReserveEstimatedBytes"
+                          }
+                        />
+                      </div>
+                    </SchemeFieldCard>
+                  ))}
+                  <div className="rounded-lg bg-muted p-5 text-sm leading-6">
+                    <h3 className="font-medium">
+                      {t("connections.bindingsDetermineTheMaterialScope")}
+                    </h3>
+                    <p className="mt-2 text-muted-foreground">
+                      {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
+                    </p>
+                    <Button
+                      className="mt-3"
+                      variant="outline"
+                      onClick={() => state.openSettingsRoute("knowledge-config")}
+                    >
+                      {t("connections.manageKnowledge")}
+                    </Button>
+                  </div>
+                </TabsContent>
+              )}
+              {(effectiveTab === "history_compression" ||
+                visitedTasks.includes("history_compression")) && (
+                <TabsContent
+                  value="history_compression"
+                  forceMount
+                  className="m-0 space-y-6 data-[state=inactive]:hidden"
+                >
+                  <SchemeFieldCard
+                    title={t("connections.compressionAndAssembly")}
+                    description="schemes.studio.compressionHint"
+                  >
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <SchemeNumber
+                        group="compression"
+                        name="watermark_trigger"
+                        label="connections.watermarkTriggerMessages"
+                        info="connections.oldMessagesOutsideTheReplyWindowAccumulateUntilThisMany"
+                      />
+                      <SchemeNumber
+                        group="compression"
+                        name="package_limit"
+                        label="connections.watermarkPackageLimit"
+                        info="connections.packagesBeyondThisManyAreDroppedOldestFirst"
+                      />
+                      <SchemePercent
+                        name="headroom_ratio"
+                        label="connections.assemblyHeadroomPercent"
+                        info="connections.reserveThisShareOfTheCapacityBeforeAssembling"
+                      />
+                    </div>
+                    <PromptEditor
+                      slot="compress"
+                      titleKey="connections.watermarkCompressionTask"
+                      hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
+                    />
+                  </SchemeFieldCard>
+                </TabsContent>
+              )}
+              {(effectiveTab === "image_understanding" ||
+                visitedTasks.includes("image_understanding")) && (
+                <TabsContent
+                  value="image_understanding"
+                  forceMount
+                  className="m-0 space-y-6 data-[state=inactive]:hidden"
+                >
+                  {/* 0052 图片输入：模式/阶段/图数/规格；普通动图沿用下方既有 rhythm 真源不重复存储。 */}
+                  <SchemeFieldCard
+                    title={t("schemes.studio.imageInput")}
+                    description="schemes.studio.imageInputHint"
+                  >
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      <SchemeEnum
+                        group="mediaInput"
+                        name="mode"
+                        label="connections.imageInputMode"
+                        info={
+                          editor.mediaInput.mode === "description"
+                            ? "connections.imageMode.descriptionHint"
+                            : "connections.imageMode.nativeHint"
+                        }
+                      />
+                      <SchemeNumber
+                        group="mediaInput"
+                        name="max_images"
+                        label="connections.maxAutoImages"
+                      />
+                      <SchemeNumber
+                        group="mediaInput"
+                        name="expression_max_dimension"
+                        label="connections.expressionStillMaxDimension"
+                      />
+                      <OrdinaryStillSpec />
+                      <SchemeNumber
+                        group="mediaInput"
+                        name="expression_frame_count"
+                        label="connections.expressionFrameCount"
+                      />
+                      <SchemeNumber
+                        group="mediaInput"
+                        name="expression_frame_max_dimension"
+                        label="connections.expressionFrameMaxDimension"
+                      />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <StageSwitch phase="decision" />
+                      <StageSwitch phase="evaluation" />
+                      <StageSwitch phase="generation" />
+                    </div>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("schemes.studio.imageParams")}
+                    description="schemes.studio.imageParamsHint"
+                  >
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      {imageFields.map(([group, name, label]) => (
+                        <SchemeNumber key={name} group={group} name={name} label={label} />
+                      ))}
+                    </div>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("connections.mediaNoteTask")}
+                    description="connections.describeWhatThePictureOrVoiceActuallyContains"
+                  >
+                    <PromptEditor
+                      slot="media"
+                      titleKey="connections.mediaNoteTask"
+                      hint="connections.describeWhatThePictureOrVoiceActuallyContains"
+                    />
+                  </SchemeFieldCard>
+                </TabsContent>
+              )}
+              {(effectiveTab === "sticker_sending" || visitedTasks.includes("sticker_sending")) && (
+                <TabsContent
+                  value="sticker_sending"
+                  forceMount
+                  className="m-0 space-y-6 data-[state=inactive]:hidden"
+                >
+                  <SchemeFieldCard
+                    title={t("schemes.studio.stickerParams")}
+                    description="schemes.studio.stickerParamsHint"
+                  >
+                    <div className="grid gap-5 sm:grid-cols-2">
+                      {stickerFields.map(([group, name, label]) => (
+                        <SchemeNumber key={name} group={group} name={name} label={label} />
+                      ))}
+                    </div>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("connections.authorizedCollections")}
+                    description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
+                  >
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {state.qqStickerCollections.map((collection) => (
+                        <Label key={collection.id} className="rounded-lg border p-3">
+                          <Checkbox
+                            checked={editor.stickerCollectionIds.includes(collection.id)}
+                            disabled={saving}
+                            onCheckedChange={(value) =>
+                              state.patchQqScheme({
+                                stickerCollectionIds:
+                                  value === true
+                                    ? [...editor.stickerCollectionIds, collection.id]
+                                    : editor.stickerCollectionIds.filter(
+                                        (id) => id !== collection.id,
+                                      ),
+                              })
+                            }
+                          />
+                          {collection.name}
+                          <span className="ml-auto text-xs text-muted-foreground">
+                            {collection.asset_count}
+                          </span>
+                        </Label>
+                      ))}
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() => state.openSettingsRoute("qq-stickers")}
+                    >
+                      {t("connections.manageStickers")}
+                    </Button>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("connections.stickerTask")}
+                    description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
+                  >
+                    <PromptEditor
+                      slot="sticker"
+                      titleKey="connections.stickerTask"
+                      hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
+                    />
+                  </SchemeFieldCard>
+                </TabsContent>
+              )}
             </div>
           </ScrollArea>
         </Tabs>

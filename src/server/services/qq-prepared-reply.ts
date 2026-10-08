@@ -5,6 +5,8 @@ import type { QqSpeechKind } from "./qq-speaking-contract";
 /** Draft material for deterministic output/sticker assembly, independent of any model pipeline. */
 export interface QqPreparedReply {
   readonly text: string | null;
+  /** 同会话已观察且在提交边界复验通过的引用消息 ID。 */
+  readonly replyToMessageId?: string;
   readonly snapshot: QqTaskSnapshot;
   readonly schemeRevision: number;
   readonly agentConfigVersion: number;

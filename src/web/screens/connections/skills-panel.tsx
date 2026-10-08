@@ -24,15 +24,27 @@ import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
 
-export function SkillsPanel() {
+export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const target = useSuperstringStore((s) => s.componentTarget);
-  const { data: catalog, loading, error: readError, refresh } = useSkillsResource(apiClient);
+  const {
+    data: catalog,
+    loading,
+    error: readError,
+    refresh,
+  } = useSkillsResource(apiClient, active);
   const [detail, setDetail] = useState<SkillDetailResponse | null>(null);
   const [error, setError] = useState("");
   const pendingDetail = useRef<ReadTask | null>(null);
-  useEffect(() => () => pendingDetail.current?.cancel(), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Replacing the API cancels detail reads from the previous client.
+  useEffect(() => {
+    if (!active) {
+      pendingDetail.current?.cancel();
+      pendingDetail.current = null;
+    }
+    return () => pendingDetail.current?.cancel();
+  }, [active, apiClient]);
   const open = useCallback(
     (name: string) => {
       pendingDetail.current?.cancel();
@@ -45,8 +57,8 @@ export function SkillsPanel() {
     [apiClient],
   );
   useEffect(() => {
-    if (target?.kind === "skill") open(target.id);
-  }, [target, open]);
+    if (active && target?.kind === "skill") open(target.id);
+  }, [active, target, open]);
   const metadata = Object.entries(detail?.metadata ?? {});
   return (
     <div className="w-full space-y-6 px-4 py-6">
@@ -147,7 +159,7 @@ export function SkillsPanel() {
       )}
 
       <Sheet
-        open={detail !== null}
+        open={active && detail !== null}
         onOpenChange={(open) => {
           if (!open) {
             pendingDetail.current?.cancel();

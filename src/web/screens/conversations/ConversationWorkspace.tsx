@@ -55,6 +55,18 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
     }
   }, [isActivity, activityScopeKey]);
 
+  const isTasks = view === "tasks";
+  const tasksScopeKey = global ? "global" : (conversation?.id ?? "none");
+  const [visitedTasksScopes, setVisitedTasksScopes] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (isTasks) {
+      setVisitedTasksScopes((prev) =>
+        prev[tasksScopeKey] ? prev : { ...prev, [tasksScopeKey]: true },
+      );
+    }
+  }, [isTasks, tasksScopeKey]);
+
   useEffect(() => {
     if (!global) setCollapsed(false);
   }, [global]);
@@ -174,13 +186,23 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
             )}
           </div>
         )}
-        {view === "tasks" && (
-          <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
-            {conversation && !global ? (
-              <TaskLedger key={conversation.id} conversationId={conversation.id} />
-            ) : (
-              <TaskLedger key="global" />
-            )}
+        {(isTasks || visitedTasksScopes[tasksScopeKey]) && (
+          <div
+            key={`tasks-${tasksScopeKey}`}
+            hidden={!isTasks}
+            className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden"
+          >
+            <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
+              {conversation && !global ? (
+                <TaskLedger
+                  key={conversation.id}
+                  conversationId={conversation.id}
+                  active={active && isTasks}
+                />
+              ) : (
+                <TaskLedger key="global" active={active && isTasks} />
+              )}
+            </div>
           </div>
         )}
       </div>

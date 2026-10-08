@@ -251,6 +251,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 
 describe("runtime storage panel", () => {
@@ -512,7 +513,7 @@ describe("runtime storage panel", () => {
     expect(screen.getByText(contextEligible.stepId)).toBeTruthy();
   });
 
-  it("preserves loaded page data when window blurs and cancels in-flight query", async () => {
+  it("preserves loaded page data across window blur and cancels an in-flight query only when hidden", async () => {
     const pendingQuery = Promise.withResolvers<RuntimeStorageItemsPage>();
     const signals: AbortSignal[] = [];
     const list = vi
@@ -525,14 +526,14 @@ describe("runtime storage panel", () => {
     await renderPanel({ list });
     expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
 
-    // Trigger second query that stays pending
     fireEvent.click(screen.getByRole("button", { name: T("observability.applyFilters") }));
     expect(list).toHaveBeenCalledTimes(2);
-
-    // Window blurs
     fireEvent.blur(window);
+    expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
+    expect(signals[0]?.aborted).toBe(false);
 
-    // Page data must still be preserved
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    fireEvent(document, new Event("visibilitychange"));
     expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
     expect(signals[0]?.aborted).toBe(true);
   });

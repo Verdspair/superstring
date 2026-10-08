@@ -201,7 +201,7 @@ export const SPEECH_REPLY_DESCRIPTION: SharedActionDescription = {
   effect: "write",
   parameters: z.toJSONSchema(SpeechReplyArgumentsSchema),
   description:
-    "Finish this turn by submitting the reply text for one or more authorized targets. Pass outputs: one inline draft per logical target — each with targetId, text, and optional mentionIds (explicit @ member IDs the host encodes as QQ at segments) and stickerIds. Use only target IDs that were authorized for this turn and member IDs that were already observed in the conversation; an unknown target or member ID is an error, never silently dropped. Do not write CQ at codes in text. Execution writes through the host's normal output path; there is no separate confirmation, network call or follow-up step.",
+    "Submit text and optional replyToMessageId, mentionIds, and stickerIds for each authorized target; choose text, quote, @mention, and sticker independently. Quote only disclosed messages in this conversation and mention only observed member IDs; invalid references or unavailable members are rejected. The host emits native OneBot reply/at segments; CQ codes in text are literal. This terminal action uses the existing host output path without separate confirmation.",
 };
 
 // ---------------------------------------------------------------------------

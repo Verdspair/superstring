@@ -6,11 +6,19 @@ import { z } from "zod";
 
 const outputBase = {
   targetId: z.string().min(1),
+  /** 本轮上下文已披露、由宿主在当前会话校验的 QQ 消息 ID；与 @ 成员独立。 */
+  replyToMessageId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Disclosed QQ platform message ID to quote; independent of mentions. Host checks scope and availability.",
+    ),
   /** 要显式 @ 的成员 ID；正文里的 CQ 码不参与编码，只作文字展示。 */
   mentionIds: z
     .array(z.string().min(1))
     .optional()
-    .describe("@ member IDs; the host encodes them as `at` segments."),
+    .describe("Optional observed QQ member IDs to mention."),
   stickerIds: z
     .array(z.string().min(1))
     .nullable()

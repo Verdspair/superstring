@@ -46,7 +46,7 @@ import { JobRunLink } from "../runs/RunEntry";
 /** 搜索输入防抖常量（250ms），避免高频击键请求风暴与网络竞态 */
 const KNOWLEDGE_SEARCH_DEBOUNCE_MS = 250;
 
-export function KnowledgeLibrary() {
+export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       agents: state.agents,
@@ -84,8 +84,8 @@ export function KnowledgeLibrary() {
     [moveTo, setMoveTo] = useState("default");
   useEffect(() => {
     // 挂载只发一次稳定读取：预热在途则接管那一次读取，预热已就绪则静默做一次权威刷新。
-    void s.loadKnowledge(undefined, { quiet: true });
-  }, [s.loadKnowledge]);
+    if (active) void s.loadKnowledge(undefined, { quiet: true });
+  }, [active, s.loadKnowledge]);
   // 列表由服务端分页过滤；docs 就是当前页，不在客户端二次筛选。
   const docs = s.knowledgeDocuments,
     filters = s.knowledgeFilters,

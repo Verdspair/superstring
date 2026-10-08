@@ -6,7 +6,7 @@ import { DesignSystemProvider } from "./design-system/Providers";
 import { useLocale } from "./i18n";
 import { startConversationChanges } from "./services/conversation-changes";
 import { startChunkPreload } from "./state/preload-orchestrator";
-import { WORKSPACE_LOADERS } from "./state/preload-registry";
+import { PRELOAD_REGISTRY, WORKSPACE_LOADERS } from "./state/preload-registry";
 import { hasUnsavedDrafts } from "./state/unsaved-changes";
 import { useSuperstringStore } from "./store";
 import { activeSpace, type SpaceId } from "./workspace/navigation";
@@ -42,6 +42,8 @@ function Application() {
   const status = useSuperstringStore((s) => s.status);
   const directoryIds = useSuperstringStore((s) => s.directoryIds);
   const currentConversationId = useSuperstringStore((s) => s.currentConversationId);
+  const sessionStateStorage = useSuperstringStore((s) => s.sessionStateStorage);
+  const apiClient = useSuperstringStore((s) => s.apiClient);
   const bootstrap = useSuperstringStore((s) => s.bootstrap);
   const unsaved = useSuperstringStore(hasUnsavedDrafts);
   const space = useSuperstringStore(activeSpace);
@@ -59,14 +61,28 @@ function Application() {
     void bootstrap();
   }, [bootstrap]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Replacing the API disposes prewarm work owned by the previous client.
   useEffect(() => {
     if (status !== "ready") return;
     const current = activeSpace(useSuperstringStore.getState());
-    const handle = startChunkPreload({ currentSpace: current });
-    return () => {
-      handle.cancel();
-    };
-  }, [status]);
+    const handle = startChunkPreload({
+      currentSpace: current,
+      items: PRELOAD_REGISTRY.map((entry) =>
+        entry.space === "conversations" ? { ...entry, loadData: undefined } : entry,
+      ),
+    });
+    return () => handle.cancel();
+  }, [status, apiClient]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new API client must start its own bounded trace prewarm.
+  useEffect(() => {
+    if (status !== "ready" || !sessionStateStorage) return;
+    const handle = startChunkPreload({
+      currentSpace: "conversations",
+      items: PRELOAD_REGISTRY.filter((entry) => entry.space === "conversations"),
+    });
+    return () => handle.cancel();
+  }, [status, apiClient, sessionStateStorage]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -115,7 +131,7 @@ function Application() {
       {(visitedSpaces.has("assistants") || isAssistants) && (
         <div hidden={!isAssistants} className={isAssistants ? "h-full" : "hidden"}>
           <Suspense fallback={<Waiting />}>
-            <AssistantWorkspace />
+            <AssistantWorkspace active={isAssistants} />
           </Suspense>
         </div>
       )}
@@ -143,21 +159,21 @@ function Application() {
       {(visitedSpaces.has("connections") || isConnections) && (
         <div hidden={!isConnections} className={isConnections ? "h-full" : "hidden"}>
           <Suspense fallback={<Waiting />}>
-            <ConnectionWorkspace />
+            <ConnectionWorkspace active={isConnections} />
           </Suspense>
         </div>
       )}
       {(visitedSpaces.has("models") || isModels) && (
         <div hidden={!isModels} className={isModels ? "h-full" : "hidden"}>
           <Suspense fallback={<Waiting />}>
-            <ModelServices />
+            <ModelServices active={isModels} />
           </Suspense>
         </div>
       )}
       {(visitedSpaces.has("preferences") || isPreferences) && (
         <div hidden={!isPreferences} className={isPreferences ? "h-full" : "hidden"}>
           <Suspense fallback={<Waiting />}>
-            <Preferences />
+            <Preferences active={isPreferences} />
           </Suspense>
         </div>
       )}

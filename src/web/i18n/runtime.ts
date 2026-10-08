@@ -24,13 +24,29 @@ void i18n.use(initReactI18next).init({
   interpolation: { escapeValue: false, prefix: "{", suffix: "}" },
 });
 
+const DATE_FORMATTER_LIMIT = 16;
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+
 export function formatDate(
   value: Date | number | string,
   locale: string,
   options?: Intl.DateTimeFormatOptions,
 ) {
-  return new Intl.DateTimeFormat(
+  const resolvedOptions = options ?? { dateStyle: "medium", timeStyle: "short" };
+  const key = JSON.stringify([
     locale,
-    options ?? { dateStyle: "medium", timeStyle: "short" },
-  ).format(new Date(value));
+    Object.entries(resolvedOptions)
+      .filter(([, value]) => value !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  ]);
+  let formatter = dateFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, resolvedOptions);
+    if (dateFormatters.size === DATE_FORMATTER_LIMIT) {
+      const oldest = dateFormatters.keys().next().value;
+      if (oldest !== undefined) dateFormatters.delete(oldest);
+    }
+    dateFormatters.set(key, formatter);
+  }
+  return formatter.format(new Date(value));
 }

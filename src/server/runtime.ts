@@ -1,6 +1,7 @@
 // Own the business database, model gateway and memory-worker lifetime.
 // Kept separate from socket binding so tests can exercise startup and shutdown.
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import type { Hono } from "hono";
 import { executionPolicy } from "../shared/contracts/permissions";
 import { ActionExecutor } from "./agent/action-executor";
@@ -126,7 +127,7 @@ export interface SuperstringRuntime {
   botWorker: BotWorker;
   qqIntake: QqIntakeRuntime;
   start(): void;
-  stop(): Promise<void>;
+  stop(requestDrain?: Promise<unknown>): Promise<void>;
 }
 
 /** Transport budgets. Generous, because a stalled socket is worse than a slow answer. */
@@ -431,7 +432,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
                 qqIntake.state.phase === "ready" &&
                 (await bot.scheduler.runOnce())
               ) {
-                // The scheduler supplies priority, coalescing and durable leases for all topologies.
+                // Immediately settled wakes must still let socket and cancellation callbacks run.
+                await setImmediate();
               }
             }),
           );
@@ -488,6 +490,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let contextSweep: ReturnType<typeof setInterval> | null = null;
   let started = false;
   let stopped = false;
+  let stopPromise: Promise<void> | null = null;
   return {
     app,
     business,
@@ -513,26 +516,37 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       if (mcpHost)
         void mcpHost
           .start()
-          .then(() => tasks.start())
+          .then(() => {
+            if (!stopping) tasks.start();
+          })
           .catch(() => {});
       else tasks.start();
       // Refuses on its own while the third-party switch is off or the saved configuration is
       // incomplete, so an unconfigured installation produces no traffic and no login.
       void qqIntake.start().catch(() => {});
     },
-    async stop(): Promise<void> {
-      if (stopped) return;
+    stop(requestDrain: Promise<unknown> = Promise.resolve()): Promise<void> {
+      if (stopPromise) return stopPromise;
       stopped = true;
       stopping = true;
       if (contextSweep !== null) clearInterval(contextSweep);
       bot.delivery.stop();
       qqIntake.stop();
       bot.scheduler.stop();
-      await Promise.all([botWorker.stop(), bot.compression.stop(), tasks.stop()]);
-      await mcpHost?.stop();
-      if (started) await modules.stop();
-      await telemetry.close();
-      business.close();
+      const settling = [
+        botWorker.stop(),
+        bot.compression.stop(),
+        tasks.stop(),
+        mcpHost?.stop() ?? Promise.resolve(),
+        ...(started ? [modules.stop()] : []),
+        requestDrain,
+      ];
+      stopPromise = (async () => {
+        await Promise.allSettled(settling);
+        await telemetry.close();
+        business.close();
+      })();
+      return stopPromise;
     },
   };
 }

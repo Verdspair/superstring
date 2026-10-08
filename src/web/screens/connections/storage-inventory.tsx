@@ -113,7 +113,7 @@ function StorageRetentionCard() {
   );
 }
 
-export function StorageInventory() {
+export function StorageInventory({ active = true }: { active?: boolean } = {}) {
   const { t, i18n } = useTranslation();
   const {
     qqStorageUsage: data,
@@ -148,18 +148,20 @@ export function StorageInventory() {
   const [reloadTick, setReloadTick] = useState(0);
   useEffect(() => {
     // 隐式读取只填摘要与设置，不推进保留草稿基线。
+    if (!active) return;
     void load();
-  }, [load]);
+  }, [active, load]);
   const cursor = trail[position] ?? null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick 只作关闭结果对话框后的强制重读触发条件，effect 体无需读取。
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     void loadItems(
       { category, status, kind: kind === "" ? null : kind, peerId: peer, cursor },
       { signal: controller.signal },
     );
     return () => controller.abort();
-  }, [category, status, kind, peer, cursor, reloadTick, loadItems]);
+  }, [active, category, status, kind, peer, cursor, reloadTick, loadItems]);
   // 卸载：作废在途清理操作并让 busy 归零，迟到响应不得再落地。
   useEffect(() => () => clearCleanup(), [clearCleanup]);
   const formatter = new Intl.DateTimeFormat(i18n.language, {

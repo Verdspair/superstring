@@ -244,27 +244,33 @@ export class ConversationEventRepository {
     firstSeq: number;
     hasMore: boolean;
   } {
-    const rows = this.db
-      .query(`WITH epochs AS (
-        SELECT c.id, COALESCE(SUM(c.next_seq-1) OVER (
-          ORDER BY c.binding_epoch ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-        ),0) AS offset FROM conversations c JOIN conversations anchor ON anchor.id=?
-        WHERE c.channel=anchor.channel AND c.source_id=anchor.source_id
-          AND c.agent_id=anchor.agent_id AND c.user_id=anchor.user_id
-      ) SELECT e.*,e.seq+epochs.offset AS history_seq FROM epochs
-        JOIN conversation_events e ON e.conversation_id=epochs.id
-        WHERE e.seq+epochs.offset${direction === "after" ? ">" : "<"}? ORDER BY history_seq ${direction === "after" ? "ASC" : "DESC"} LIMIT ?`)
-      .all(id, cursor, limit + 1) as (EventRow & { history_seq: number })[];
-    const items = rows.slice(0, limit).map((row) => ({
-      event: eventFromRow(row),
-      seq: row.history_seq,
-    }));
-    if (direction === "before") items.reverse();
+    // Translate the global history cursor into per-epoch local seq bounds so each
+    // epoch page is an indexed (conversation_id, seq) range read.
+    const before = direction === "before";
+    let offset = 0;
+    const epochs = this.historyRows(id).map((row) => {
+      const epoch = { ...row, offset };
+      offset += row.next_seq - 1;
+      return epoch;
+    });
+    const found: { event: ConversationEvent; seq: number }[] = [];
+    for (const epoch of before ? [...epochs].reverse() : epochs) {
+      const remaining = limit + 1 - found.length;
+      if (remaining <= 0) break;
+      const local = cursor - epoch.offset;
+      const query = before
+        ? "SELECT e.* FROM conversation_events e WHERE e.conversation_id=? AND e.seq<? ORDER BY e.seq DESC LIMIT ?"
+        : "SELECT e.* FROM conversation_events e WHERE e.conversation_id=? AND e.seq>? ORDER BY e.seq ASC LIMIT ?";
+      const rows = this.db.query(query).all(epoch.id, local, remaining) as EventRow[];
+      found.push(...rows.map((row) => ({ event: eventFromRow(row), seq: row.seq + epoch.offset })));
+    }
+    const hasMore = found.length > limit;
+    const items = before ? found.slice(0, limit).reverse() : found.slice(0, limit);
     return {
       items,
       firstSeq: items[0]?.seq ?? 0,
       nextSeq: items.at(-1)?.seq ?? 0,
-      hasMore: rows.length > limit,
+      hasMore,
     };
   }
 
@@ -692,10 +698,28 @@ export class ConversationEventRepository {
         id: string;
       }[])
         this.ensureWeb(s.id);
+      const recorded = new Set(
+        (
+          this.db
+            .query(`SELECT e.conversation_id,e.source_id,e.source_revision
+            FROM conversation_events e JOIN conversations c ON c.id=e.conversation_id
+            WHERE c.channel='web' AND c.closed_at IS NULL AND e.source_kind='web_message'`)
+            .all() as { conversation_id: string; source_id: string; source_revision: string }[]
+        ).map((e) => `${e.conversation_id}\0${e.source_id}\0${e.source_revision}`),
+      );
       for (const m of this.db
-        .query("SELECT id FROM messages WHERE status!='pending' ORDER BY created_at,sequence_no,id")
-        .all() as { id: string }[])
-        this.ingestWebMessage(m.id);
+        .query(`SELECT m.id,m.status,m.content,c.id AS conversation_id
+          FROM messages m
+          LEFT JOIN conversations c ON c.channel='web' AND c.source_id=m.session_id AND c.closed_at IS NULL
+          WHERE m.status!='pending' AND m.role!='system'
+          ORDER BY m.created_at,m.sequence_no,m.id`)
+        .all() as { id: string; status: string; content: string; conversation_id: string | null }[])
+        if (
+          !recorded.has(
+            `${m.conversation_id}\0${m.id}\0${bodyRevision(`${m.status}\0${m.content}`)}`,
+          )
+        )
+          this.ingestWebMessage(m.id);
       for (const b of this.db
         .query(
           "SELECT id,account_id,conversation_kind,peer_id,agent_id FROM qq_bindings ORDER BY created_at,id",
@@ -753,11 +777,17 @@ export class ConversationEventRepository {
     // timestamp and speech kind in original recording order; preserve unmatched speech.
     const matched = new Set<string>();
     const sendSpeech = new Map<string, (typeof speeches)[number]>();
+    const speechQueues = new Map<string, { items: typeof speeches; next: number }>();
+    for (const speech of speeches) {
+      const key = `${speech.time}\0${speech.kind}`;
+      const queue = speechQueues.get(key);
+      if (queue) queue.items.push(speech);
+      else speechQueues.set(key, { items: [speech], next: 0 });
+    }
     for (const send of sends) {
       if (!send.confirmed) continue;
-      const speech = speeches.find(
-        (s) => !matched.has(s.id) && s.time === send.sent_at_seconds && s.kind === send.kind,
-      );
+      const queue = speechQueues.get(`${send.sent_at_seconds}\0${send.kind}`);
+      const speech = queue?.items[queue.next++];
       if (speech) {
         matched.add(speech.id);
         sendSpeech.set(send.id, speech);
@@ -765,12 +795,34 @@ export class ConversationEventRepository {
     }
     const media = this.db
       .query(
-        "SELECT n.id,n.updated_at AS recorded_at FROM qq_media_notes n JOIN qq_events e ON e.event_key=n.event_key WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?",
+        "SELECT n.id,n.event_key,n.attempts,n.updated_at AS recorded_at FROM qq_media_notes n JOIN qq_events e ON e.event_key=n.event_key WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?",
       )
       .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id) as {
       id: string;
+      event_key: string;
+      attempts: number;
       recorded_at: string;
     }[];
+    const recorded = new Set(
+      (
+        this.db
+          .query("SELECT event_key FROM conversation_events WHERE conversation_id=?")
+          .all(c.id) as { event_key: string }[]
+      ).map((e) => e.event_key),
+    );
+    const missingMediaParents = new Set(
+      (
+        this.db
+          .query(`SELECT n.event_key FROM qq_media_notes n JOIN qq_events e ON e.event_key=n.event_key
+        WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?
+        AND NOT EXISTS(SELECT 1 FROM conversation_events ce,json_each(ce.sources) s
+          WHERE ce.conversation_id=? AND ce.event_key='onebot:'||n.event_key
+          AND json_extract(s.value,'$.kind')='qq_media' AND json_extract(s.value,'$.id')=n.id)`)
+          .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id, c.id) as {
+          event_key: string;
+        }[]
+      ).map((n) => n.event_key),
+    );
     const ordered = [
       ...events.map((e) => ({ ...e, priority: 0, type: "event" })),
       ...sends.map((e) => ({ ...e, time: e.sent_at_seconds, priority: 1, type: "send" })),
@@ -784,17 +836,28 @@ export class ConversationEventRepository {
         type: "media",
       })),
     ].sort((a, b) => a.time - b.time || a.priority - b.priority || a.id.localeCompare(b.id));
+    const mediaById = new Map(media.map((n) => [n.id, n]));
+    const sendsById = new Map(sends.map((s) => [s.id, s]));
+    const speechesById = new Map(speeches.map((s) => [s.id, s]));
     for (const r of ordered) {
       if (r.type === "event") {
+        if (recorded.has(`onebot:${r.id}`) && !missingMediaParents.has(r.id)) continue;
         this.ingestOneBotReference(r.id, b.id, c, undefined, historical);
         continue;
       }
       if (r.type === "media") {
+        const note = mediaById.get(r.id)!;
+        if (
+          recorded.has(`media:${note.id}:${note.attempts}`) &&
+          !missingMediaParents.has(note.event_key)
+        )
+          continue;
         this.ingestMediaReference(r.id, b.id, c, historical);
         continue;
       }
       if (r.type === "send") {
-        const send = sends.find((s) => s.id === r.id)!;
+        if (recorded.has(`send:${r.id}`)) continue;
+        const send = sendsById.get(r.id)!;
         const speech = sendSpeech.get(r.id);
         const source: SourceRef = {
           kind: "qq_send",
@@ -829,7 +892,8 @@ export class ConversationEventRepository {
         });
         continue;
       }
-      const speech = speeches.find((s) => s.id === r.id)!;
+      if (recorded.has(`speech:${r.id}`)) continue;
+      const speech = speechesById.get(r.id)!;
       this.append({
         conversationId: c.id,
         eventKey: `speech:${r.id}`,

@@ -148,28 +148,17 @@ import { memo } from "react";
 
 function EventRecordComponent({
   event,
-  rows,
-  bySourceMap,
+  quoted,
   conversation,
 }: {
   event: ConversationEventView;
-  rows?: ConversationEventView[];
-  bySourceMap?: Map<string, ConversationEventView>;
+  quoted?: ConversationEventView;
   conversation: ConversationSummary;
 }) {
   const { t, i18n } = useTranslation();
   const message =
     event.kind === "inbound" || (event.kind === "outbound" && event.deliveryStatus === "confirmed");
   const source = event.addressing.replyTo;
-  const quoted =
-    source &&
-    (bySourceMap
-      ? bySourceMap.get(source.sourceId)
-      : rows?.find(
-          (row) =>
-            row.source.id === source.sourceId ||
-            row.sources.some((ref) => ref.id === source.sourceId),
-        ));
   return (
     <li
       data-timeline-key={timelineKey(event)}

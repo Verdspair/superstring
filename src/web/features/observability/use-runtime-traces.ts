@@ -79,8 +79,9 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
     void loadTracesCache(sessionStateStorage, key).then((cached) => {
       if (
         !unmounted &&
+        scopeRef.current.api === api &&
         cached &&
-        cached.items.length > 0 &&
+        cached.summary !== null &&
         items.length === 0 &&
         oldest.current === 0 &&
         !authoritativeSettled.current
@@ -93,7 +94,7 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
     return () => {
       unmounted = true;
     };
-  }, [sessionStateStorage, key, active, items.length]);
+  }, [api, sessionStateStorage, key, active, items.length]);
 
   const load = useCallback(
     (kind: "background" | "refresh" | "older" = "background") => {
@@ -104,15 +105,21 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
       }
       const boundary = oldest.current;
       const initial = boundary === 0;
+      const previousItems = current.current;
+      const project = (records: RuntimeTrace[]) =>
+        [...new Map(records.map((item) => [item.traceId, item])).values()].sort(
+          (a, b) => b.cursorId - a.cursorId,
+        );
       setLoading(true);
       setError("");
       pending.current = startRead(
-        async (signal) => {
+        async (signal, publish) => {
           const read = (beforeId?: number) =>
             api.listRuntimeTraces({ ...appliedFilters, beforeId, limit: 100 }, signal);
           let page = await read(kind === "older" ? boundary : undefined);
           const nextSummary = page.summary;
           const next = [...page.items];
+          if (kind === "refresh") publish({ page, next: [...next], nextSummary });
           while (
             !signal.aborted &&
             kind === "refresh" &&
@@ -123,11 +130,20 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
             const cursor = page.nextBeforeId;
             page = await read(cursor);
             next.push(...page.items);
+            publish({ page, next: [...next], nextSummary });
             if (page.nextBeforeId >= cursor) break;
           }
           return { page, next, nextSummary };
         },
         {
+          progress: ({ page, next, nextSummary }) => {
+            setSummary(nextSummary);
+            const tail = page.hasMore
+              ? previousItems.filter((item) => item.cursorId <= page.nextBeforeId)
+              : [];
+            current.current = project([...tail, ...next]);
+            setItems(current.current);
+          },
           success: ({ page, next, nextSummary }) => {
             authoritativeSettled.current = true;
             if (initial || kind !== "background") {
@@ -139,9 +155,7 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
             // 仅首次 initial 或显式 refresh 进行权威全量替换（淘汰已删 trace）；
             // older 分页与非 initial 的后台轮询保留既有 merge 范围
             const records = initial || kind === "refresh" ? next : [...current.current, ...next];
-            const deduplicated = [
-              ...new Map(records.map((item) => [item.traceId, item])).values(),
-            ].sort((a, b) => b.cursorId - a.cursorId);
+            const deduplicated = project(records);
 
             current.current = deduplicated;
             setItems(deduplicated);
@@ -173,7 +187,7 @@ export function useRuntimeTraces(filters: RuntimeSpanFilters, paused = false, ac
   useForegroundRead(background, clear, {
     paused,
     enabled: active,
-    retainOnBlur: true,
+    retainOnHide: true,
     onSuspend: cancel,
   });
   useConversationChangeSubscription(background, {

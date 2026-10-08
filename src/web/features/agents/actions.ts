@@ -29,6 +29,13 @@ export function createAgentActions(
     editAgent: async (id) => {
       if (get().settingsSaving) return false;
       const request = ++editorRequest;
+      const { apiClient: api, page, settingsView, settingsRoute } = get();
+      const isCurrent = () => request === editorRequest && get().apiClient === api;
+      const ownsPage = () =>
+        isCurrent() &&
+        get().page === page &&
+        get().settingsView === settingsView &&
+        get().settingsRoute === settingsRoute;
       set({ editorLoading: true });
       get().discardMemoryCorrection();
       get().resetMemoryManagement();
@@ -86,13 +93,11 @@ export function createAgentActions(
       }
       try {
         const [agent, persona] = await Promise.all([
-          get().apiClient.getAgent(id),
+          api.getAgent(id),
           // 首屏预热人设直接消费（在途则共享同一请求）；未命中或预热失败才走前台读取。
-          resolvePreloadedPersona(get().apiClient, id).then(
-            (preloaded) => preloaded ?? get().apiClient.getPersona(id),
-          ),
+          resolvePreloadedPersona(api, id).then((preloaded) => preloaded ?? api.getPersona(id)),
         ]);
-        if (request !== editorRequest) return false;
+        if (!ownsPage()) return false;
         get().discardKnowledgeRead();
         set({
           editorAgentId: id,
@@ -104,14 +109,15 @@ export function createAgentActions(
           feedback: "",
           dirty: false,
           activeSection: "A",
+          editorLoading: false,
         });
         await get().reloadMemory();
         return true;
       } catch (error) {
-        if (request === editorRequest) set({ error: errorText(error) });
+        if (ownsPage()) set({ error: errorText(error) });
         return false;
       } finally {
-        if (request === editorRequest) set({ editorLoading: false });
+        if (isCurrent()) set({ editorLoading: false });
       }
     },
     patchDraft: (patch) =>

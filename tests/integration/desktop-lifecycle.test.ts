@@ -96,7 +96,7 @@ function makeFakeWs(autoPong = true): FakeWs {
   return ws;
 }
 
-function buildLifecycle(overrides: Record<string, number> = {}): void {
+function buildLifecycle(overrides: Record<string, number> = {}, windowOwned = false): void {
   timers = new FakeTimers();
   stopped = 0;
   closePreference = "exit";
@@ -108,6 +108,7 @@ function buildLifecycle(overrides: Record<string, number> = {}): void {
       stopped++;
     },
     closeAction: () => closePreference,
+    windowOwned,
     graceMs: overrides.graceMs ?? 40,
     startupWindowMs: overrides.startupWindowMs ?? 120,
     pingIntervalMs: overrides.pingIntervalMs ?? 10,
@@ -284,6 +285,28 @@ describe("desktop control surface (unit, deterministic clock)", () => {
     expect(
       (upgrader as unknown as { upgrade: ReturnType<typeof vi.fn> }).upgrade,
     ).toHaveBeenCalled();
+  });
+
+  it("leaves page reconnects to an owned native window instead of scheduling page-close exit", async () => {
+    buildLifecycle({}, true);
+    closePreference = "background";
+    const ws = makeFakeWs();
+    wsApi().open(ws);
+    lifecycle.start();
+    wsApi().close(ws);
+    timers.advance(200);
+    await flush();
+    expect(stopped).toBe(0);
+    expect(lifecycle.backgroundOnline()).toBe(false);
+    expect(await status(TOKEN).json()).toMatchObject({ close_action: "exit" });
+    const restored = makeFakeWs();
+    wsApi().open(restored);
+    timers.advance(200);
+    await flush();
+    expect(stopped).toBe(0);
+    wsApi().message(restored, '{"exit":true}');
+    await flush();
+    expect(stopped).toBe(1);
   });
 
   it("last connection close starts the grace, then stops", async () => {

@@ -245,6 +245,12 @@ export function inTimeline(
   kind: string,
   id: string,
 ): boolean {
+  const direct = db.query(`SELECT 1 FROM conversation_events e
+    WHERE e.conversation_id=? AND e.source_kind=? AND e.source_id=?
+      AND e.kind IN ('inbound','outbound') AND (e.source_kind<>'qq_send' OR EXISTS(
+        SELECT 1 FROM qq_send_log l WHERE l.id=e.source_id AND l.outcome='sent')) LIMIT 1`);
+  if (direct.get(scope.conversationId, kind, id)) return true;
+  if (kind === "qq_observation" && direct.get(scope.conversationId, "qq_event", id)) return true;
   return !!db
     .query(`SELECT 1 FROM conversation_events e WHERE e.conversation_id=? AND
     e.kind IN ('inbound','outbound') AND (e.source_kind<>'qq_send' OR EXISTS(

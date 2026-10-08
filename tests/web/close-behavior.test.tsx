@@ -24,25 +24,25 @@ describe("desktop preference contract", () => {
   it("does not offer host-only controls in an ordinary browser", () => {
     render(<Preferences />);
     expect(screen.queryByLabelText("关闭窗口时")).toBeNull();
+    expect(screen.queryByText("立即退出应用")).toBeNull();
+    expect(screen.queryByText("桌面行为")).toBeNull();
   });
-  it("shows the actual stored choice and no unsupported ask-every-time action", async () => {
-    desktop();
-    await act(async () => render(<Preferences />));
-    expect((screen.getByLabelText("关闭窗口时") as HTMLSelectElement).value).toBe("background");
-    expect(screen.queryByRole("option", { name: "每次询问" })).toBeNull();
-  });
-  it("updates with the current revision and never claims a failed write succeeded", async () => {
+  it("offers no close-action choice and keeps the manual quit available", async () => {
     const client = setupLibrary();
     desktop();
     await act(async () => render(<Preferences />));
-    await act(async () =>
-      fireEvent.change(screen.getByLabelText("关闭窗口时"), { target: { value: "exit" } }),
-    );
-    expect(client.updateDesktopSettings).toHaveBeenCalledWith({
-      close_action: "exit",
-      expected_revision: 1,
-    });
-    expect(store.getState().desktopCloseAction).toBe("exit");
+    // The remembered background/exit choice is gone: closing the window always quits now.
+    expect(screen.queryByLabelText("关闭窗口时")).toBeNull();
+    expect(screen.queryByRole("option", { name: "保持后台在线" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "完全退出" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "每次询问" })).toBeNull();
+    expect(
+      screen.getByText("关闭窗口将退出 Superstring，并停止本地服务与 Agent 运行。"),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "立即退出应用" })).toBeTruthy();
+    // No UI path writes the close preference anymore; the stored value stays whatever it was.
+    expect(store.getState().desktopCloseAction).toBe("background");
+    expect(client.updateDesktopSettings).not.toHaveBeenCalled();
   });
   it("requires confirmation and reports an unavailable exit transport honestly", async () => {
     desktop();

@@ -76,6 +76,8 @@ export interface DesktopLifecycleConfig {
    * unkillable process.
    */
   closeAction?: () => DesktopCloseAction;
+  /** An owned native window, rather than page sockets, decides when the application exits. */
+  windowOwned?: boolean;
   graceMs?: number;
   startupWindowMs?: number;
   pingIntervalMs?: number;
@@ -202,7 +204,7 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
   /** The stored preference, with a throwing getter treated as "exit" (see the config docs). */
   function closeAction(): DesktopCloseAction {
     try {
-      return config.closeAction?.() ?? "exit";
+      return config.windowOwned ? "exit" : (config.closeAction?.() ?? "exit");
     } catch {
       return "exit";
     }
@@ -260,7 +262,7 @@ export function createDesktopLifecycle(config: DesktopLifecycleConfig): DesktopL
    * "完全退出" frame, the host's tray, or `/__desktop/stop`).
    */
   function handleLastPageClosed(): void {
-    if (stopping) return;
+    if (stopping || config.windowOwned) return;
     if (closeAction() === "background") {
       background = true;
       return;

@@ -27,6 +27,7 @@ import {
   RESEARCH_ACTION_DESCRIPTION,
   ReadTaskSchema,
   ResearchSchema,
+  SPEECH_REPLY_DESCRIPTION,
   STICKER_SEARCH_DESCRIPTION,
   StickerSearchSchema,
   TASK_READ_DESCRIPTION,
@@ -266,6 +267,28 @@ describe("qq media tool descriptions", () => {
       };
       expect(json.properties.questionMessageId?.description).toBe(pointer);
     }
+  });
+});
+
+describe("speech.reply terminal action", () => {
+  test("describes native quote and mentions as independent output choices", () => {
+    expect(SPEECH_REPLY_DESCRIPTION.name).toBe("speech.reply");
+    expect(SPEECH_REPLY_DESCRIPTION.effect).toBe("write");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("replyToMessageId");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("mentionIds");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("stickerIds");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("independently");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("authorized target");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain(
+      "disclosed messages in this conversation",
+    );
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("observed member IDs");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain(
+      "invalid references or unavailable members are rejected",
+    );
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("native OneBot reply/at segments");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("CQ codes in text are literal");
+    expect(SPEECH_REPLY_DESCRIPTION.description).toContain("existing host output path");
   });
 });
 

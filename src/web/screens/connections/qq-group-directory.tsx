@@ -13,7 +13,7 @@ import { useSuperstringStore } from "../../store";
  * QQ 应用级本群配置目录：展示所有已绑定的 QQ 群，跨方案列出。
  * 支持搜索群显示名、群号、账号、方案名、Agent 名；点击进入对应群的本群配置。
  */
-export function QqGroupDirectory() {
+export function QqGroupDirectory({ active = true }: { active?: boolean } = {}) {
   const { t, i18n } = useTranslation();
   const [query, setQuery] = useState("");
 
@@ -63,9 +63,10 @@ export function QqGroupDirectory() {
     qqSchemesLoading;
 
   useEffect(() => {
+    if (!active) return;
     void loadQqBindings();
     void loadQqSchemes({ background: true, editor: false });
-  }, [loadQqBindings, loadQqSchemes]);
+  }, [active, loadQqBindings, loadQqSchemes]);
 
   const allRows = useMemo(
     () => projectQqGroupRows({ qqBindings, qqSchemes, agents, summaryById }),

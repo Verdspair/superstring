@@ -404,10 +404,10 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
     expect(summary).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledTimes(1);
 
-    // Return to space: active becomes true
+    // Return to space revalidates once without waiting for the next polling interval.
     rerender(<CapabilitiesWorkspace active={true} />);
     await act(async () => {});
-    expect(summary).toHaveBeenCalledTimes(1);
-    expect(list).toHaveBeenCalledTimes(1);
+    expect(summary).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledTimes(2);
   });
 });

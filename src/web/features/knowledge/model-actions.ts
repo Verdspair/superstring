@@ -27,10 +27,12 @@ export function createKnowledgeModelActions(
         return;
       const previous = get().knowledgeModelEditor;
       const request = ++read;
+      const api = get().apiClient;
+      const matches = () => read === request && get().apiClient === api;
       set({ knowledgeModelLoading: true });
       try {
-        const source = await get().apiClient.getKnowledgeSettings();
-        if (read !== request) return;
+        const source = await api.getKnowledgeSettings();
+        if (!matches()) return;
         set({
           knowledgeModelEditor: {
             token: previous?.token ?? {},
@@ -56,9 +58,9 @@ export function createKnowledgeModelActions(
           error: null,
         });
       } catch (error) {
-        if (read === request) set({ error: errorText(error) });
+        if (matches()) set({ error: errorText(error) });
       } finally {
-        if (read === request) set({ knowledgeModelLoading: false });
+        if (matches()) set({ knowledgeModelLoading: false });
       }
     },
     patchKnowledgeModel: (modelName) => {

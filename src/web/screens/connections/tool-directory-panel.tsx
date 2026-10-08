@@ -27,7 +27,7 @@ import { useSuperstringStore } from "../../store";
 import { CAPABILITY_CATALOG } from "../../workspace/capability-catalog";
 import { ToolGrantsPanel } from "./tool-grants-panel";
 
-export function ToolDirectoryPanel() {
+export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const api = useSuperstringStore((s) => s.apiClient);
   const editor = useSuperstringStore((s) => s.permissionEditor);
@@ -35,7 +35,7 @@ export function ToolDirectoryPanel() {
   const loadPermissions = useSuperstringStore((s) => s.loadPermissionSettings);
   const target = useSuperstringStore((s) => s.componentTarget);
   const openRoute = useSuperstringStore((s) => s.openSettingsRoute);
-  const { data, loading, error: readError, refresh } = useToolDirectoryResource(api);
+  const { data, loading, error: readError, refresh } = useToolDirectoryResource(api, active);
   const tools = data?.tools ?? [];
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -43,8 +43,8 @@ export function ToolDirectoryPanel() {
   const [detail, setDetail] = useState<ToolDirectoryEntry | null>(null);
   const [grantResource, setGrantResource] = useState<string | null>(null);
   useEffect(() => {
-    void loadPermissions();
-  }, [loadPermissions]);
+    if (active) void loadPermissions();
+  }, [active, loadPermissions]);
   useEffect(() => {
     if (target?.kind !== "tool" || loading) return;
     const entry = tools.find((tool) => tool.name === target.id);
@@ -216,11 +216,11 @@ export function ToolDirectoryPanel() {
               {t("connections.grants.collapse")}
             </Button>
           </div>
-          <ToolGrantsPanel embedded scope={[grantResource]} />
+          <ToolGrantsPanel embedded scope={[grantResource]} active={active} />
         </section>
       )}
       <Sheet
-        open={detail !== null}
+        open={active && detail !== null}
         onOpenChange={(open) => {
           if (!open) closeDetail();
         }}

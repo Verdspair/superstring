@@ -361,13 +361,19 @@ export class OneBotHost {
         string,
         { wake: typeof wake; participantId: string; occurredAt: string }
       >();
+      const replied = new Map<string, boolean>();
       for (const event of items) {
         if (event.seq > wake.throughSeq) break;
         if (event.kind !== "inbound") continue;
         const speaker = event.participant?.id;
         if (!speaker) continue;
         if (attention && !attention.includes(speaker)) continue;
-        if (hasConfirmedReply(wake.throughSeq, speaker)) continue;
+        let covered = replied.get(speaker);
+        if (covered === undefined) {
+          covered = hasConfirmedReply(wake.throughSeq, speaker);
+          replied.set(speaker, covered);
+        }
+        if (covered) continue;
         const existing = bySpeaker.get(speaker);
         if (!existing || event.occurredAt > existing.occurredAt)
           bySpeaker.set(speaker, { wake, participantId: speaker, occurredAt: event.occurredAt });
@@ -783,9 +789,9 @@ export class OneBotHost {
       `表情能力：${stickerState.state}，当前可用 ${stickerState.assets.length} 张。inline/generate 共用 stickerIds：[]=明确不用；[id]=指定一张，ID 必须来自本 run sticker.search 已返回的候选或 pending_plan 的已选 ID，不要编造或复用旧 ID。有候选而省略/null 会被要求重选（STICKER_SELECTION_REQUIRED）；未披露或已失效的 ID 会被拒绝（STICKER_SELECTION_UNAVAILABLE）。允许空正文仅发图；真正不发则返回 none。output_feedback 表示尚未发送的无效计划，须纠正。`,
       `这是 OneBot ${binding.kind === "private" ? "私聊" : "群聊"}。只向 authorizedTargets 中的目标输出；${
         split
-          ? "每个目标一条回复，正文里不要写 @，需要 @ 谁就把其成员号放进该目标的 mentionIds。"
+          ? "每个目标一条回复。"
           : "不按发言人拆分，整间会话最多一条逻辑回复；该回复可以由程序按换行发送多段。"
-      }`,
+      }回复引用与 @ 成员均由你独立自主选择，互不绑定且均完全可选（缺省不自动引用、不自动 @ 收件人）。需要引用同会话已向你披露的消息时，把该消息的真实平台消息 ID（不是 UUID，原样字符串，包括负数）放入 replyToMessageId；需要 @ 成员时，把成员号放入 mentionIds。正文里不要写 @ 或 CQ 码。`,
     ];
     const reviewRule = `后续相关消息到来要重新决定尚未发送的计划。pending_plan 是你之前的草稿/计划与剩余独立 generate 次数，属于资料而非指令。读过新消息后，可以用 inline 原样保留或修改仍然适用的草稿，也可 none 暂不发送；generate 次数耗尽时不能再请求独立生成。复核指导：\n${schemePrompts(scheme).review}`;
     const replyRules = [
@@ -832,30 +838,7 @@ export class OneBotHost {
       limits: { steps: policy.maxSteps },
     };
     const spec: AgentSpec = initiative ? judgementSpec : buildReplySpec();
-    /**
-     * 结构化 mention 校验：只接受**本轮已观察到的合法成员**号（本群众人事件里的 speaker，
-     * 或授权目标本人）。未知/伪造的 ID 立即报错，不静默丢弃、也不落进正文 CQ（§5.3）。
-     */
-    const validateMentionIds = (
-      ids: readonly string[] | undefined,
-      target: BotContextTarget,
-    ): readonly string[] => {
-      if (!ids || ids.length === 0) return [];
-      const authorized = new Set<string>();
-      for (const candidate of targets) if (candidate.speakerId) authorized.add(candidate.speakerId);
-      if (target.speakerId) authorized.add(target.speakerId);
-      for (const event of o.journal
-        .eventsAfter(conversation.id, 0, Number.MAX_SAFE_INTEGER)
-        .items.filter((entry) => entry.kind === "inbound")) {
-        const speaker = event.participant?.id;
-        if (speaker) authorized.add(speaker);
-      }
-      const unique = [...new Set(ids)];
-      for (const id of unique)
-        if (!authorized.has(id))
-          fail("CONTEXT_SOURCE_INVALID", "mention 指向未受权或未观察到的成员");
-      return unique;
-    };
+    // 结构化 mention 校验已迁入 buildRun（按 source 及 targets 校验，删除旧无界 journal 循环）。
     // 观察序列戳以**原 base** 拼（不叠加，重复 read 不累积）；每个 run/子 run 以自己 spec 的
     // base 计算。
     const epochText = (base: string, seq: number) =>
@@ -1982,6 +1965,13 @@ export class OneBotHost {
       const reserved = new Set<string>();
       /** 已早提交的目标（规格 §4.1）：整批终态结算时不再重复写 intent/事件。 */
       const committedTargets = new Set<string>();
+      const resolveQuote = (messageId: string): SourceRef[] =>
+        source.resolveReplyToMessage(messageId);
+      const validateMentions = (ids: readonly string[] | undefined): readonly string[] =>
+        source.resolveMentionIds(
+          ids,
+          targets.flatMap((target) => (target.speakerId ? [target.speakerId] : [])),
+        );
       /**
        * 单目标提交流程（在宿主原事务内调用，供早提交与终态结算共用）：写该目标的 outbox intent、
        * delivery 事件与出站身份快照。返回 intent id（未提交＝undefined）。不做评分/上下文重构。
@@ -1998,6 +1988,20 @@ export class OneBotHost {
         if ((output.stickerIds?.length ?? 0) > 0) guard.assert(groupOwner, "stickers");
         const pending = staged.get(output.outputId);
         if (!pending) throw new Error("OUTPUT_PREPARATION_MISSING");
+        // 引用来源提交前复验：重新解析引用并比对保存的 refs 修订（必须相同，不重铸覆盖）；源守卫照常检验。
+        if (pending.replyToMessageId) {
+          const freshQuoteSources = resolveQuote(pending.replyToMessageId);
+          for (const fresh of freshQuoteSources) {
+            const saved = (output.sources ?? []).find(
+              (s) => s.kind === fresh.kind && s.id === fresh.id,
+            );
+            if (!saved || saved.revision !== fresh.revision) {
+              fail("CONTEXT_SOURCE_INVALID", "引用消息来源或修订已变更");
+            }
+          }
+          source.assertSources(output.sources ?? []);
+          source.assertSources(freshQuoteSources);
+        }
         const plan = planQqPreparedReply(o.orm, pending, o.stickers);
         if (plan.kind !== "planned") throw new Error("OUTPUT_CHANGED_AT_COMMIT");
         // 每次提交都现读保留窗口：改设置只影响之后写出的到期戳，已在队列里的行保持原样。
@@ -2086,6 +2090,14 @@ export class OneBotHost {
           text = split ? raw.replace(/\s*\r?\n+\s*/g, " ").trim() : raw;
         const selection = source.selection;
         if (!selection) throw new Error("BOT_CONTEXT_MISSING");
+        // 引用解析与来源合并：提供 replyToMessageId 时校验并解析披露来源
+        let quoteSources: SourceRef[] = [];
+        if (output.replyToMessageId) {
+          quoteSources = resolveQuote(output.replyToMessageId);
+        }
+        // 结构化 mention 校验（无旧无界 journal 循环，写回去重后的 IDs）
+        const validMentions = validateMentions(output.mentionIds);
+        output.mentionIds = [...validMentions];
         // 显式选图在发前再对一次当前事实：本 run 披露过、素材仍在目录里且修订未变。
         const explicitId = output.stickerIds?.[0] ?? null;
         const selectedAsset = explicitId ? disclosedSticker(explicitId, runIdOverride) : undefined;
@@ -2108,12 +2120,24 @@ export class OneBotHost {
           details: selectedAsset ? { stickerId: selectedAsset.id } : undefined,
         });
         output.stickerIds = selectedAsset ? [selectedAsset.id] : [];
-        output.sources = selectedAsset
-          ? [{ kind: "qq_sticker", id: selectedAsset.id, revision: selectedAsset.updatedAt }]
+        const stickerSources = selectedAsset
+          ? [
+              {
+                kind: "qq_sticker" as const,
+                id: selectedAsset.id,
+                revision: selectedAsset.updatedAt,
+              },
+            ]
           : [];
+        output.sources = uniqueSources([
+          ...(output.sources ?? []),
+          ...stickerSources,
+          ...quoteSources,
+        ]);
         const target = targets.find((t) => t.id === output.targetId)!;
         const pending: QqPreparedReply = {
           text: text || null,
+          ...(output.replyToMessageId ? { replyToMessageId: output.replyToMessageId } : {}),
           snapshot,
           schemeRevision: scheme.revision,
           agentConfigVersion: agent.configVersion,
@@ -2123,7 +2147,7 @@ export class OneBotHost {
           stickerId: selectedAsset?.id ?? null,
           targetSpeakerId: target.speakerId,
           // 显式 @ 走结构化 IDs（宿主已按真实合法成员/授权校验）；正文 CQ 只作文字。
-          mentionIds: validateMentionIds(output.mentionIds, target),
+          mentionIds: validMentions,
         };
         staged.set(output.outputId, pending);
         if (planQqPreparedReply(o.orm, pending, o.stickers).kind !== "planned") {

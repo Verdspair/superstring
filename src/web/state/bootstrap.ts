@@ -6,21 +6,26 @@ import {
   removeDirectoryCache,
   saveDirectoryCache,
 } from "../services/page-snapshot-cache";
-import { beginProcessing, endProcessing, errorText } from "./helpers";
+import { errorText } from "./helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "./types";
 
 export function createBootstrapActions(
   set: StoreSet,
   get: StoreGet,
 ): Pick<SuperstringState, "bootstrap"> {
+  let revision = 0;
   return {
     bootstrap: async () => {
+      const currentRevision = ++revision;
+      const api = get().apiClient;
+      const isCurrent = () => revision === currentRevision && get().apiClient === api;
+      const initialSelectionRevision = get().selectionRevision;
+      const initialDirectoryRevision = get().directoryRevision;
+      const ownsSelection = () =>
+        isCurrent() && get().selectionRevision === initialSelectionRevision;
       set({ status: "loading", error: null });
-      beginProcessing(get, set);
       try {
-        const storageConfigPromise = get()
-          .apiClient.getBrowserStateConfig()
-          .catch(() => null);
+        const storageConfigPromise = api.getBrowserStateConfig().catch(() => null);
         const sessionStateStoragePromise = storageConfigPromise.then((cfg) => {
           try {
             return cfg && typeof sessionStorage !== "undefined"
@@ -41,8 +46,36 @@ export function createBootstrapActions(
         // 权威目录独立结算守卫：一旦会话目录响应落地（不论空目录、全量还是失败），
         // 立即标记 directorySettled，杜绝慢速 modelProviders 期间迟到解密复活已删目录
         let directorySettled = false;
-        const conversationsPromise = get()
-          .apiClient.listConversations()
+        const conversationsPromise = api
+          .listConversations()
+          .then(
+            (page) => {
+              if (isCurrent() && get().directoryRevision === initialDirectoryRevision) {
+                set((state) => ({
+                  status: "ready",
+                  summaryById: {
+                    ...state.summaryById,
+                    ...Object.fromEntries(page.items.map((item) => [item.id, item])),
+                  },
+                  directoryIds: page.items.map((item) => item.id),
+                  directoryCursor: page.nextCursor,
+                  sessionConversationIds: {
+                    ...state.sessionConversationIds,
+                    ...Object.fromEntries(
+                      page.items
+                        .filter((item) => item.channel === "web")
+                        .map((item) => [item.sourceId, item.id]),
+                    ),
+                  },
+                }));
+              }
+              return page;
+            },
+            (reason) => {
+              if (isCurrent()) set({ status: "ready", directoryError: errorText(reason) });
+              throw reason;
+            },
+          )
           .finally(() => {
             directorySettled = true;
           });
@@ -51,7 +84,7 @@ export function createBootstrapActions(
         // 挂载消息/事件视图并显示缓存正文（非草稿/在途动作），不等所有 modelproviders 慢 PromiseAll
         void Promise.all([sessionStateStoragePromise, browserStateStoragePromise]).then(
           async ([sessionStorageInstance, browserStorageInstance]) => {
-            if (!sessionStorageInstance || directorySettled) return;
+            if (!isCurrent() || !sessionStorageInstance || directorySettled) return;
             const cachedDir = await loadDirectoryCache(sessionStorageInstance);
             if (
               !directorySettled &&
@@ -65,7 +98,7 @@ export function createBootstrapActions(
               const savedSession = await browserStorageInstance
                 ?.read("superstring-session")
                 .catch(() => null);
-              if (directorySettled) return;
+              if (!isCurrent() || directorySettled) return;
               const previewItem =
                 (savedConversation
                   ? cachedDir.items.find((i) => i.id === savedConversation)
@@ -103,7 +136,12 @@ export function createBootstrapActions(
                   previewItem.sourceId,
                   previewItem.agentId,
                 );
-                if (cachedChat && cachedChat.messages.length > 0 && !directorySettled) {
+                if (
+                  isCurrent() &&
+                  cachedChat &&
+                  cachedChat.messages.length > 0 &&
+                  !directorySettled
+                ) {
                   set((state) => {
                     const currentView = state.conversationById[previewItem.id];
                     if (currentView && currentView.messages.length > 0) return {};
@@ -136,38 +174,74 @@ export function createBootstrapActions(
           },
         );
 
-        const [
-          agentsResult,
-          sessionsResult,
-          catalogResult,
-          providersResult,
-          storageResult,
-          sessionStorageResult,
-        ] = await Promise.allSettled([
-          get().apiClient.listAgents(),
+        // Model discovery is optional: a slow service must not block the directory or startup prewarm.
+        const modelResults = Promise.allSettled([api.listModels(), api.listModelProviders()]);
+        void modelResults.then(([catalogResult, providersResult]) => {
+          if (!isCurrent()) return;
+          const catalog = catalogResult.status === "fulfilled" ? catalogResult.value : null;
+          const providers = providersResult.status === "fulfilled" ? providersResult.value : [];
+          const local = [...new Set(catalog?.models ?? [])];
+          const external = [
+            ...new Set(providers.flatMap((provider) => provider.models.map((model) => model.name))),
+          ];
+          const reported = [...new Set([...local, ...external])];
+          const catalogFailure =
+            catalogResult.status === "rejected" ? errorText(catalogResult.reason) : null;
+          const modelFailures =
+            providersResult.status === "rejected" ? [errorText(providersResult.reason)] : [];
+          if (catalogFailure !== null && external.length === 0) modelFailures.push(catalogFailure);
+          set((state) => ({
+            error: modelFailures.length
+              ? [state.error, ...modelFailures].filter(Boolean).join("；")
+              : state.error,
+            modelNames: reported,
+            modelProviders: providers,
+            loadedModelNames: local,
+            externalModelNames: external,
+            modelStatus:
+              catalogFailure !== null
+                ? external.length
+                  ? translate("本地模型服务连不上：{0}；已登记的外部模型仍可选择。", catalogFailure)
+                  : translate("模型列表加载失败：{0}；仍可保留或手动输入模型 ID。", catalogFailure)
+                : reported.length
+                  ? translate("LM Studio 当前报告 {0} 个已加载模型。", reported.length)
+                  : translate("LM Studio 当前没有报告已加载模型；仍可保留或手动输入模型 ID。"),
+          }));
+        });
+        void api
+          .listAgents()
+          .then(async (agents) => {
+            if (!isCurrent()) return;
+            set({ agents });
+            const storage = await browserStateStoragePromise;
+            const savedAgent = await storage?.read("superstring-agent").catch(() => null);
+            if (!isCurrent() || get().selectedNewSessionAgentId !== null) return;
+            const selectedAgent =
+              agents.find((agent) => agent.is_active && agent.id === savedAgent) ??
+              agents.find((agent) => agent.is_active);
+            set({ selectedNewSessionAgentId: selectedAgent?.id ?? null });
+          })
+          .catch((reason) => {
+            if (isCurrent())
+              set((state) => ({
+                error: [state.error, errorText(reason)].filter(Boolean).join("；"),
+              }));
+          });
+        const [sessionsResult, storageResult, sessionStorageResult] = await Promise.allSettled([
           conversationsPromise,
-          get().apiClient.listModels(),
-          // 外部模型 API（0032）：登记过的外部模型名与本地模型并列进入选择器。取不到就当没有。
-          get().apiClient.listModelProviders(),
           browserStateStoragePromise,
           sessionStateStoragePromise,
         ]);
-        const agents = agentsResult.status === "fulfilled" ? agentsResult.value : [];
+        if (!isCurrent()) return;
         let conversations = sessionsResult.status === "fulfilled" ? sessionsResult.value.items : [];
         let directoryCursor =
           sessionsResult.status === "fulfilled" ? sessionsResult.value.nextCursor : null;
-        const catalog = catalogResult.status === "fulfilled" ? catalogResult.value : null;
         const browserStateStorage =
           storageResult.status === "fulfilled" ? storageResult.value : null;
-        const savedAgent = await browserStateStorage?.read("superstring-agent").catch(() => null);
-        const availableAgent = agents.find((item) => item.is_active && item.id === savedAgent);
-        const selectedAgent = availableAgent ?? agents.find((item) => item.is_active) ?? null;
-        const savedSession = await browserStateStorage
-          ?.read("superstring-session")
-          .catch(() => null);
-        const savedConversation = await browserStateStorage
-          ?.read("superstring-conversation")
-          .catch(() => null);
+        const [savedSession, savedConversation] = await Promise.all([
+          browserStateStorage?.read("superstring-session").catch(() => null),
+          browserStateStorage?.read("superstring-conversation").catch(() => null),
+        ]);
         let restorationError: string | null = null;
         // The former session list was unpaged. Preserve the saved choice even when it is on a
         // later canonical page; only fetch onward while a persisted selection is still missing.
@@ -177,9 +251,15 @@ export function createBootstrapActions(
             : conversations.some(
                 (item) => item.channel === "web" && item.sourceId === savedSession,
               );
-        while ((savedConversation || savedSession) && !hasSavedSelection() && directoryCursor) {
+        while (
+          ownsSelection() &&
+          (savedConversation || savedSession) &&
+          !hasSavedSelection() &&
+          directoryCursor
+        ) {
           try {
-            const page = await get().apiClient.listConversations({ cursor: directoryCursor });
+            const page = await api.listConversations({ cursor: directoryCursor });
+            if (!isCurrent()) return;
             conversations = [
               ...new Map([...conversations, ...page.items].map((item) => [item.id, item])).values(),
             ];
@@ -189,6 +269,7 @@ export function createBootstrapActions(
             break;
           }
         }
+        if (!isCurrent()) return;
         const selected = restorationError
           ? null
           : (conversations.find((item) => item.id === savedConversation) ??
@@ -197,20 +278,9 @@ export function createBootstrapActions(
             ) ??
             conversations[0] ??
             null);
-        const providers = providersResult.status === "fulfilled" ? providersResult.value : [];
-        const local = [...new Set(catalog?.models ?? [])];
-        const external = [
-          ...new Set(providers.flatMap((provider) => provider.models.map((model) => model.name))),
-        ];
-        const reported = [...new Set([...local, ...external])];
-        // 本地模型目录连不上不等于"没有模型可用"：只要还登记着外部模型，它就是
-        // 一条提示（`modelStatus`），不是错误。一个模型来源都拿不到时才按错误报出来。
-        const catalogFailure =
-          catalogResult.status === "rejected" ? errorText(catalogResult.reason) : null;
-        const failures = [agentsResult, sessionsResult, providersResult, storageResult]
+        const failures = [sessionsResult, storageResult]
           .filter((result): result is PromiseRejectedResult => result.status === "rejected")
           .map((result) => errorText(result.reason));
-        if (catalogFailure !== null && external.length === 0) failures.push(catalogFailure);
         if (restorationError) failures.push(restorationError);
         const sessionStateStorage =
           sessionStorageResult.status === "fulfilled" ? sessionStorageResult.value : null;
@@ -232,37 +302,29 @@ export function createBootstrapActions(
 
         set({
           status: "ready",
-          currentConversationId: selected?.id ?? null,
-          agents,
-          summaryById: Object.fromEntries(conversations.map((item) => [item.id, item])),
-          directoryIds: conversations.map((item) => item.id),
-          directoryCursor,
-          directoryError: restorationError,
-          sessionConversationIds: Object.fromEntries(
-            conversations
-              .filter((item) => item.channel === "web")
-              .map((item) => [item.sourceId, item.id]),
-          ),
-          modelNames: reported,
-          modelProviders: providers,
-          loadedModelNames: local,
-          externalModelNames: external,
-          modelStatus:
-            catalogFailure !== null
-              ? external.length
-                ? translate("本地模型服务连不上：{0}；已登记的外部模型仍可选择。", catalogFailure)
-                : translate("模型列表加载失败：{0}；仍可保留或手动输入模型 ID。", catalogFailure)
-              : reported.length
-                ? translate("LM Studio 当前报告 {0} 个已加载模型。", reported.length)
-                : translate("LM Studio 当前没有报告已加载模型；仍可保留或手动输入模型 ID。"),
-          selectedNewSessionAgentId: selectedAgent?.id ?? null,
+          currentConversationId: ownsSelection()
+            ? (selected?.id ?? null)
+            : get().currentConversationId,
+          ...(get().directoryRevision === initialDirectoryRevision
+            ? {
+                summaryById: Object.fromEntries(conversations.map((item) => [item.id, item])),
+                directoryIds: conversations.map((item) => item.id),
+                directoryCursor,
+                directoryError: restorationError,
+                sessionConversationIds: Object.fromEntries(
+                  conversations
+                    .filter((item) => item.channel === "web")
+                    .map((item) => [item.sourceId, item.id]),
+                ),
+              }
+            : {}),
           browserStateStorage,
           sessionStateStorage,
-          error: failures.length ? failures.join("；") : null,
+          error: [get().error, ...failures].filter(Boolean).join("；") || null,
         });
-        if (selected) await get().selectConversation(selected.id);
-      } finally {
-        endProcessing(get, set);
+        if (selected && ownsSelection()) await get().selectConversation(selected.id);
+      } catch (reason) {
+        if (isCurrent()) set({ status: "ready", error: errorText(reason) });
       }
     },
   };

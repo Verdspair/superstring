@@ -13,8 +13,13 @@ import {
 } from "@/components/ui/dialog";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { AgentStepSnapshot, RunStatus } from "../../../shared/contracts/agent-run";
+import type {
+  AgentStepSnapshot,
+  RunSnapshot,
+  RunStatus,
+} from "../../../shared/contracts/agent-run";
 import { formatDate } from "../../i18n/runtime";
+import { useConversationChangeSubscription } from "../../services/conversation-changes";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
 import { ModelEvidence } from "../observability/ModelEvidence";
@@ -103,15 +108,23 @@ export function RunAttempts({ ownerKind, ownerId }: { ownerKind: string; ownerId
     api = useSuperstringStore((s) => s.apiClient),
     [selected, setSelected] = useState("");
   const read = useCallback(
-    (signal: AbortSignal) => api.listRuns(ownerKind, ownerId, signal),
+    async (signal: AbortSignal) => {
+      const result = await api.listRuns(ownerKind, ownerId, signal);
+      return { api, ownerKind, ownerId, runs: result.runs };
+    },
     [api, ownerKind, ownerId],
   );
   const conversationScope = ownerKind === "conversation" ? { conversationId: ownerId } : undefined;
   const { data, error, loading, refresh } = useLiveResource(read, { conversationScope });
-  const runs = [...(data?.runs ?? [])].sort(
-      (a, b) => b.startedAt.localeCompare(a.startedAt) || a.runId.localeCompare(b.runId),
-    ),
+  const isDataCurrent =
+    data && data.api === api && data.ownerKind === ownerKind && data.ownerId === ownerId;
+  const runs = isDataCurrent
+      ? [...data.runs].sort(
+          (a, b) => b.startedAt.localeCompare(a.startedAt) || a.runId.localeCompare(b.runId),
+        )
+      : [],
     runId = runs.some((run) => run.runId === selected) ? selected : runs[0]?.runId;
+  const selectedRun = runs.find((run) => run.runId === runId);
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
@@ -140,11 +153,17 @@ export function RunAttempts({ ownerKind, ownerId }: { ownerKind: string; ownerId
       {!loading && !error && !runs.length && (
         <p>{t("observability.noRecordedRunsYetQueuedTasksAndTasksBeforeMigration")}</p>
       )}
-      {runId && <RunWorkspace key={runId} runId={runId} />}
+      {runId && <RunWorkspace key={runId} runId={runId} initialSnapshot={selectedRun} />}
     </div>
   );
 }
-export function RunWorkspace({ runId }: { runId: string }) {
+export function RunWorkspace({
+  runId,
+  initialSnapshot,
+}: {
+  runId: string;
+  initialSnapshot?: RunSnapshot;
+}) {
   const { t, i18n } = useTranslation(),
     api = useSuperstringStore((s) => s.apiClient),
     receive = useSuperstringStore((s) => s.receiveRunSnapshot),
@@ -154,20 +173,28 @@ export function RunWorkspace({ runId }: { runId: string }) {
     async (signal: AbortSignal) => {
       const snapshot = await api.getRun(runId, signal);
       if (!signal.aborted) receive(snapshot);
-      return snapshot;
+      return { api, snapshot };
     },
     [api, runId, receive],
   );
-  const owner = live?.snapshot?.owner;
+  const { data, loading, error, refresh } = useLiveResource(read);
+  const currentData = data && data.api === api ? data.snapshot : null;
+  const validInitial = initialSnapshot?.runId === runId ? initialSnapshot : null;
+  const currentOwner = currentData?.owner ?? validInitial?.owner;
   const conversationScope =
-    owner?.kind === "conversation" ? { conversationId: owner.id } : undefined;
-  const { data, loading, error, refresh } = useLiveResource(read, { conversationScope });
-  const run = data
+    currentOwner?.kind === "conversation" ? { conversationId: currentOwner.id } : undefined;
+  useConversationChangeSubscription(refresh, {
+    conversationId: conversationScope?.conversationId,
+    enabled: conversationScope !== undefined,
+  });
+  const base = error ? null : (currentData ?? validInitial);
+  const isLiveCurrent = Boolean(currentData && live?.snapshot === currentData);
+  const run = base
     ? {
-        ...data,
-        status: live?.status ?? data.status,
-        errorCode: live?.errorCode ?? data.errorCode,
-        outputs: live?.outputs ?? data.outputs,
+        ...base,
+        status: isLiveCurrent ? (live?.status ?? base.status) : base.status,
+        errorCode: isLiveCurrent ? (live?.errorCode ?? base.errorCode) : base.errorCode,
+        outputs: isLiveCurrent ? (live?.outputs ?? base.outputs) : base.outputs,
       }
     : null;
   const step = run?.steps.find((item) => item.stepId === selected) ?? run?.steps[0];

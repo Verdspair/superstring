@@ -38,11 +38,9 @@ export function ModelEvidence({ handle }: { handle: ContextHandle }) {
     const hidden = () => {
       if (document.visibilityState === "hidden") clear();
     };
-    window.addEventListener("blur", clear);
     document.addEventListener("visibilitychange", hidden);
     return () => {
       pending.current?.cancel();
-      window.removeEventListener("blur", clear);
       document.removeEventListener("visibilitychange", hidden);
     };
   }, [clear, handle.runId, handle.stepId]);

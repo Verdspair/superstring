@@ -137,8 +137,11 @@ export function ExternalConversation({
                 <EventRecord
                   key={timelineKey(event)}
                   event={event}
-                  rows={rows}
-                  bySourceMap={bySourceMap}
+                  quoted={
+                    event.addressing.replyTo
+                      ? bySourceMap.get(event.addressing.replyTo.sourceId)
+                      : undefined
+                  }
                   conversation={conversation}
                 />
               ))}

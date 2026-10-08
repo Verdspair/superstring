@@ -38,6 +38,14 @@ If the upgrade first indexed another assistant, later switching to an assistant 
 
 Retention and authorization remain source-authoritative. Restoring history does not restore deleted or expired text. Historical inspection is a read permission, never authority to resume an old task or send an old draft.
 
+### Indexed history pagination
+
+History pages translate the global history cursor into per-epoch local `seq` bounds. Each epoch's offset is the sum of prior epochs' `next_seq - 1` (not the stored event count), so gaps keep existing cursors compatible. A page is assembled from as many per-epoch indexed `(conversation_id, seq)` range reads as needed — it may span several epoch ranges — and stops once `limit + 1` rows have been read; before-direction pages are reversed at the end. Cursors remain read-only projections: they never acknowledge a wake, advance a watermark or touch execution sequences, and the public items/firstSeq/nextSeq/hasMore contract is unchanged. No extra table, index, cache or migration is introduced.
+
+### 索引化历史分页
+
+历史分页把全局历史游标换算为各 epoch 的本地 `seq` 边界：每段 epoch 的偏移取其前各 epoch `next_seq - 1` 之和（不是实际事件数，含空洞时游标仍兼容）。一页按需跨多个 epoch 区间分段做索引化 `(conversation_id, seq)` 范围读，读满 `limit + 1` 行即停，before 方向最后反转。游标始终是只读投影：不确认 wake、不推进水位、不触碰执行序列，公开的 items/firstSeq/nextSeq/hasMore 合同逐位不变；不新增表、索引、缓存或迁移。
+
 ## Configuration and context
 
 The host freezes assistant and knowledge read configuration when a run starts. Enablement, selected document scope and cumulative context budget apply to the evidence supported by that stage and later query actions, within current document grants.

@@ -159,6 +159,12 @@ export function useConversationEvents(
           merged = [...next].sort((a, b) => a.seq - b.seq);
         }
 
+        // Fresh JSON objects represent authoritative projections, not necessarily changed rows.
+        const previousRows = new Map(current.current.map((row) => [row.seq, row]));
+        merged = merged.map((row) => {
+          const previous = previousRows.get(row.seq);
+          return previous && JSON.stringify(previous) === JSON.stringify(row) ? previous : row;
+        });
         first.current = merged[0]?.seq ?? 0;
         authoritativeSettled.current = true;
         notify.current?.(initial ? "initial" : older ? "older" : "refresh", merged);
@@ -194,12 +200,10 @@ export function useConversationEvents(
   );
 
   useEffect(() => {
-    let foreground = document.visibilityState !== "hidden";
-
     const pause = () => {
+      pendingRevalidate.current = false;
       // 暂停：只取消在途请求，不清空已加载内容。
       // 通知"refresh"而不是"clear"：后者会让滚动层把整份记录当已清空而渲染为空。
-      foreground = false;
       if (pending.current) {
         pending.current.abort();
         pending.current = null;
@@ -214,53 +218,32 @@ export function useConversationEvents(
       return;
     }
 
-    const onBlur = () => {
-      if (document.visibilityState !== "hidden") {
-        // visible blur: cancel in-flight and pause polling, do NOT clear body
-        if (pending.current) {
-          pending.current.abort();
-          pending.current = null;
-        }
-        setLoading(false);
-        foreground = false;
-        return;
-      }
-      pause();
-    };
-
     const refresh = () => {
-      if (foreground && document.visibilityState !== "hidden") void load();
-    };
-
-    const onFocus = () => {
-      if (document.visibilityState === "hidden") return;
-      const wasForeground = foreground;
-      foreground = true;
-      // 回到前台状态跃迁（false -> true）或后台有待更新通知时，一律后台权威复验一次
-      if (!wasForeground || pendingBackgroundUpdate.current) {
-        pendingBackgroundUpdate.current = false;
-        void load();
-      }
+      if (document.visibilityState !== "hidden") void load();
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
+        pendingBackgroundUpdate.current = true;
         pause();
-      } else {
-        onFocus();
+      } else if (pendingBackgroundUpdate.current) {
+        pendingBackgroundUpdate.current = false;
+        if (pending.current) {
+          pendingRevalidate.current = true;
+        } else {
+          void load();
+        }
       }
     };
 
-    // Initial load or background pending update catch-up when enabled
-    if (pendingBackgroundUpdate.current) {
+    if (document.visibilityState === "hidden") {
+      pendingBackgroundUpdate.current = true;
+    } else {
       pendingBackgroundUpdate.current = false;
       void load();
-    } else {
-      void load();
     }
+
     const timer = setInterval(refresh, refreshMs);
-    window.addEventListener("blur", onBlur);
-    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       clearInterval(timer);
@@ -269,8 +252,6 @@ export function useConversationEvents(
         pending.current = null;
       }
       setLoading(false);
-      window.removeEventListener("blur", onBlur);
-      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, load, refreshMs]);

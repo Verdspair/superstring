@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse, PersonaResponse } from "../../src/shared/contracts";
-import type { SuperstringApi } from "../../src/web/api";
+import { api, type SuperstringApi } from "../../src/web/api";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
@@ -245,15 +245,49 @@ describe("task-based workspace navigation", () => {
       pendingNavigation: { kind: "page", page: "chat" },
     });
   });
-  it("助手读取中禁止页面或助手切换", () => {
-    store.setState({ editorLoading: true });
+  it("助手读取中允许页面切换，迟到读取不接管新页面", async () => {
+    let resolveAgent!: (value: AgentResponse) => void;
+    store.setState({
+      apiClient: {
+        ...api,
+        getAgent: () => new Promise<AgentResponse>((resolve) => (resolveAgent = resolve)),
+        getPersona: async () => persona("A"),
+      } as SuperstringApi,
+      reloadMemory: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const loading = store.getState().editAgent("A");
+    expect(store.getState().editorLoading).toBe(true);
     store.getState().openSettingsRoute("context");
-    store.getState().openChat();
-    store.getState().requestAgentNavigation("B");
     expect(store.getState()).toMatchObject({
-      settingsRoute: "basic",
+      settingsRoute: "context",
       page: "settings",
       editorAgentId: "A",
+      editorLoading: true,
+    });
+
+    store.getState().openChat();
+    expect(store.getState()).toMatchObject({ page: "chat", conversationView: "messages" });
+
+    resolveAgent(agent("A"));
+    await loading;
+    expect(store.getState()).toMatchObject({
+      page: "chat",
+      editorAgentId: "A",
+      editorLoading: false,
+      pendingNavigation: null,
+    });
+
+    store.setState({ dirty: true, settingsSaving: true });
+    store.getState().openSettingsRoute("scheme-library");
+    store.getState().requestAgentNavigation("B");
+    expect(store.getState()).toMatchObject({
+      page: "chat",
+      settingsRoute: "context",
+      editorAgentId: "A",
+      dirty: true,
+      settingsSaving: true,
+      pendingNavigation: null,
     });
   });
   it("迟到的助手加载不能覆盖最新选择", async () => {

@@ -38,7 +38,18 @@ export function prepareCaseSlot(outDir, finalBase) {
       ) {
         throw new Error(`Build output missing or empty; recovery retained: ${backup ?? "none"}`);
       }
-      if (backup) fs.unlinkSync(backup);
+      if (backup) {
+        try {
+          fs.unlinkSync(backup);
+        } catch (error) {
+          if (error?.code !== "EPERM" && error?.code !== "EBUSY") throw error;
+          // A live process still holds the prior executable image; keep the
+          // uniquely named backup instead of discarding a valid new build.
+          console.warn(
+            `Could not remove build backup; retaining ${backup}: ${error.code ?? error}`,
+          );
+        }
+      }
       finished = true;
     },
   };

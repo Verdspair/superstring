@@ -23,6 +23,7 @@ import {
   DEV_HOST,
   resolveDevPort,
 } from "./dev-config";
+import { HttpResponseDrain } from "./http-response-drain";
 import { createRuntime, resolveBusinessDbPath } from "./runtime";
 import { acquireServiceLease } from "./service-lease";
 import { loadStartupLayout } from "./startup-layout";
@@ -105,6 +106,7 @@ const desktop = isDesktopToken(process.env.SUPERSTRING_DESKTOP_TOKEN)
       port: PORT,
       actualPort: () => actualPort,
       onStop: () => void shutdown(),
+      windowOwned: process.env.SUPERSTRING_DESKTOP_WINDOW_OWNED === "1",
       onAppearance: appearanceRepo ? (snapshot) => void appearanceRepo.save(snapshot) : undefined,
       // §12: "stay online in the background" has to mean the server does not stop when the last
       // page closes. Read per close (not once at boot) so a change in settings applies at once.
@@ -117,13 +119,10 @@ if (SERVE_WEB && existsSync(WEB_ROOT)) {
   appStaticFallback(runtime.app, WEB_ROOT);
 }
 
-// In-flight request tracking
-// On shutdown we wait (bounded) for active requests to finish before closing
-// the socket and the databases, so a request mid-write is not truncated purely
-// because the port closed. This protects both SIGINT and desktop-triggered stop.
+// In-flight request ownership keeps SQLite open until response cancellation and
+// request handlers have settled.
 let inFlight = 0;
-const drainTimeoutMs = 5_000;
-const activeReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
+const responseDrain = new HttpResponseDrain(releaseInFlight);
 const idleWaiters: Array<() => void> = [];
 const shutdownAbort = new AbortController();
 
@@ -136,48 +135,6 @@ function releaseInFlight(): void {
   }
 }
 
-function wrapForDrain(res: Response): Response {
-  if (!res.body) {
-    releaseInFlight();
-    return res;
-  }
-  const reader = res.body.getReader();
-  activeReaders.add(reader);
-  let released = false;
-  const release = (): void => {
-    if (released) return;
-    released = true;
-    activeReaders.delete(reader);
-    releaseInFlight();
-  };
-  const stream = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      return reader.read().then(
-        ({ done, value }) => {
-          if (done) {
-            controller.close();
-            release();
-          } else {
-            controller.enqueue(value);
-          }
-        },
-        (error) => {
-          controller.error(error);
-          release();
-        },
-      );
-    },
-    cancel() {
-      return reader.cancel().then(release, release);
-    },
-  });
-  return new Response(stream, {
-    status: res.status,
-    statusText: res.statusText,
-    headers: res.headers,
-  });
-}
-
 async function dispatch(req: Request): Promise<Response> {
   inFlight++;
   try {
@@ -186,51 +143,39 @@ async function dispatch(req: Request): Promise<Response> {
         signal: AbortSignal.any([req.signal, shutdownAbort.signal]),
       }),
     );
-    return wrapForDrain(res);
+    return responseDrain.wrap(res);
   } catch (error) {
     releaseInFlight();
     throw error;
   }
 }
 
-function waitForIdle(timeoutMs: number): Promise<void> {
+function waitForIdle(): Promise<void> {
   if (inFlight <= 0) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, timeoutMs);
-    idleWaiters.push(() => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
+  return new Promise<void>((resolve) => idleWaiters.push(resolve));
 }
 
+let shutdownPromise: Promise<void> | null = null;
 let shuttingDown = false;
 let disposeParent: (() => void) | null = null;
-async function shutdown(): Promise<void> {
-  if (shuttingDown) return;
+function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
   shuttingDown = true;
   disposeParent?.();
-  // Give in-flight requests up to drainTimeoutMs to finish/persist, then close.
-  await waitForIdle(drainTimeoutMs);
   shutdownAbort.abort(new Error("SERVER_SHUTTING_DOWN"));
-  // Explicitly await stream cancellation/persistence before closing SQLite.
-  // Refuse new requests below; pending pre-response requests must also settle.
-  await Promise.allSettled([...activeReaders].map((reader) => reader.cancel()));
-  await waitForIdle(drainTimeoutMs);
-  if (inFlight > 0) {
-    console.error("[superstring] shutdown is waiting for active requests to settle");
-    while (inFlight > 0) await waitForIdle(drainTimeoutMs);
-  }
-  // Flush the desktop appearance queue (rejects new writes, awaits the in-flight
-  // save) before we stop listening. A appearance write failure is already
-  // swallowed by the repository, so this never rejects shutdown.
-  if (appearanceRepo) await appearanceRepo.close();
-  server.stop(true);
-  await runtime.stop();
-  // Release only after the runtime (and the SQLite handle) is fully closed, so
-  // "installation is unlocked" always implies "no database writer remains".
-  serviceLease?.release();
-  process.exit(0);
+  const requestDrain = Promise.all([
+    responseDrain.cancelActive(),
+    waitForIdle(),
+    appearanceRepo?.close() ?? Promise.resolve(),
+  ]);
+  shutdownPromise = (async () => {
+    await runtime.stop(requestDrain);
+    server.stop(true);
+    // Release only after the runtime (and SQLite handle) is fully closed.
+    serviceLease?.release();
+    process.exit(0);
+  })();
+  return shutdownPromise;
 }
 
 const noopWebsocket: WebSocketHandler<{ alive: boolean }> = {

@@ -110,7 +110,7 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 ### 数据与升级
 
-Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。桌面窗口关闭遵循**后台运行／退出**偏好，明确退出会停止其管理的本地服务。
+Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口会立即开始退出流程并停止 Superstring 管理的本地服务与正在运行的 Agent（无刻意等待宽限），再次双击启动器即可重新启动。
 
 升级前请完整退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
@@ -234,7 +234,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 ### Data and upgrades
 
-On Windows, conversations and settings live under the installation's `userdata` directory. Native macOS/Linux packages use system application data profiles. Closing desktop windows follows the **background / exit** preference, and an explicit Quit stops managed local services.
+On Windows, conversations and settings live under the installation's `userdata` directory. Native macOS/Linux packages use system application data profiles. Closing the desktop window immediately begins quitting Superstring and stops its managed local services and running Agents (no intentional grace period); double-click the launcher again to restart.
 
 Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 

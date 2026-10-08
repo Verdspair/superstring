@@ -40,10 +40,12 @@ export interface QqOutboundFactPartState {
   payload: string;
   payloadText: string | null;
   /**
-   * 文本部件 payload 的结构化 mention（新协议）；`null` 表示旧部件，线上段按正文 CQ 与
-   * 程序收件人还原。它进 revision：被改动即视为来源漂移，读取与复验一起拒绝。
+   * 结构化 mention（新协议）；`null` 表示旧部件。原始 payload 已在 revision 中，省略时
+   * 不新增独立 revision 字段，保持历史来源指纹不变。
    */
   payloadMentions: readonly string[] | null;
+  /** 缺省表示历史部件未带 quote 元数据；原始 payload 已冻结于 revision。 */
+  replyToMessageId?: string;
   finishedAt: string;
   /** 程序生成的收件人（target.participantId）——只有旧部件才作为线上 `@` 使用，与发送同判。 */
   targetParticipantId: string | null;
@@ -199,13 +201,13 @@ export function visibleQqOutboundFactPartState(
   if (!payload) return null;
   let payloadText: string | null = null;
   let payloadMentions: readonly string[] | null = null;
+  let replyToMessageId: string | undefined;
   if (row.partKind === "text") {
     const text = payload.text;
     if (typeof text !== "string") return null;
     if (entry.text !== text) return null;
     payloadText = text;
-    // 形状即协议：缺失＝旧部件按正文 CQ 还原；存在时必须是合法成员号的数组（空数组合法，
-    // 表示新提交的"不 @ 任何人"）。任何别的形状一律拒绝，不给伪造的线上段留余地。
+    // 形状即协议：缺失＝旧部件；有键时必须是纯数字成员号数组，空数组代表不 @。
     const mentions = payload.mentions;
     if (mentions !== undefined) {
       if (!Array.isArray(mentions)) return null;
@@ -216,6 +218,17 @@ export function visibleQqOutboundFactPartState(
     // A sticker proves existence only; the image content is never interpreted here.
     if (typeof payload.stickerId !== "string" || payload.stickerId === "") return null;
     if (entry.text !== null) return null;
+    const mentions = payload.mentions;
+    if (mentions !== undefined) {
+      if (!Array.isArray(mentions)) return null;
+      if (mentions.some((id) => typeof id !== "string" || !/^\d+$/.test(id))) return null;
+      payloadMentions = mentions as readonly string[];
+    }
+  }
+  const reply = payload.replyToMessageId;
+  if (reply !== undefined) {
+    if (typeof reply !== "string" || reply.length === 0) return null;
+    replyToMessageId = reply;
   }
   // Real delivery journal attribution: the intent's own delivery event in this
   // conversation. The generic timeline face (inbound/outbound) is not widened for this.
@@ -248,6 +261,7 @@ export function visibleQqOutboundFactPartState(
     payload: row.payload,
     payloadText,
     payloadMentions,
+    ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
     finishedAt: row.finishedAt,
     // 与发送通路同一口径：ordinal 0 才带程序收件人，且只认合法纯数字
     // （qqTextSegments 的 mention 形状检查）；sticker 部件按实际线上无 at。

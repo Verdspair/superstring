@@ -44,16 +44,28 @@ const InputSchema = z.strictObject({
   minRepeatSeconds: z.number().int().nonnegative().nullable(),
   /** §9.3's soft rule: prefer stickers this conversation has not just seen. */
   avoidRecent: z.boolean(),
-  /** 结构化 @ 成员号（宿主已校验）；只挂在首条文本 part 上。 */
+  /** 结构化 @ 成员号（宿主已校验）；只挂在首个真实消息 part 上。 */
   mentions: z.array(z.string().min(1)).optional(),
+  /** 同会话中观察到且已由宿主复验的引用消息 ID。 */
+  replyToMessageId: z.string().min(1).optional(),
 });
 export type QqOutputPlanInput = Readonly<z.input<typeof InputSchema>>;
 
 export type QqOutputShape = "text_only" | "sticker_only" | "mixed";
 
 export type QqOutputPart =
-  | { readonly kind: "text"; readonly text: string; readonly mentions?: readonly string[] }
-  | { readonly kind: "sticker"; readonly stickerId: string };
+  | {
+      readonly kind: "text";
+      readonly text: string;
+      readonly mentions?: readonly string[];
+      readonly replyToMessageId?: string;
+    }
+  | {
+      readonly kind: "sticker";
+      readonly stickerId: string;
+      readonly mentions?: readonly string[];
+      readonly replyToMessageId?: string;
+    };
 
 /**
  * Why a candidate did not make it into the reply. `over_ceiling` belongs to the reply rather
@@ -96,10 +108,19 @@ function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
   return result.data;
 }
 
-function textPart(text: string, mentions: readonly string[] = []): QqOutputPart {
+function textPart(
+  text: string,
+  mentions: readonly string[] = [],
+  replyToMessageId?: string,
+): QqOutputPart {
   // 新协议下每个文本 part 都带 mentions 数组（无 @ 也是 []）：D2 按字段是否存在区分新旧，
-  // 缺字段会被当 legacy 把正文 CQ 变 @。首条带真实 ids，后续 part 传 []。
-  return Object.freeze({ kind: "text", text, mentions: Object.freeze([...mentions]) });
+  // 缺字段会被当 legacy 把正文 CQ 变 @。引用与 @ 只在首个真实平台 part 上携带。
+  return Object.freeze({
+    kind: "text",
+    text,
+    mentions: Object.freeze([...mentions]),
+    ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
+  });
 }
 
 /** 一轮回复最多几条消息（一条主题一条消息）。可配置化记为后续项。 */
@@ -114,23 +135,39 @@ export const QQ_REPLY_MESSAGE_LIMIT = 3;
  * (longer is better than losing what somebody was told). A single line — the shape every earlier
  * version produced — passes through untouched.
  */
-function textParts(text: string, mentions?: readonly string[]): QqOutputPart[] {
+function textParts(
+  text: string,
+  mentions?: readonly string[],
+  replyToMessageId?: string,
+): QqOutputPart[] {
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line !== "");
-  // 结构化 mention 只挂在**首条**文本 part 上（@ 出现在整条回复的开头），后续 part 不带，
-  // 避免同一条回复里重复 @。
-  if (lines.length <= 1) return [textPart(text, mentions)];
+  // 引用与结构化 mention 只挂在**首条**文本 part 上，后续文本消息不重复带元数据。
+  if (lines.length <= 1) return [textPart(text, mentions, replyToMessageId)];
   if (lines.length <= QQ_REPLY_MESSAGE_LIMIT)
-    return lines.map((line, index) => textPart(line, index === 0 ? mentions : []));
+    return lines.map((line, index) =>
+      textPart(line, index === 0 ? mentions : [], index === 0 ? replyToMessageId : undefined),
+    );
   const head = lines.slice(0, QQ_REPLY_MESSAGE_LIMIT - 1);
   const tail = lines.slice(QQ_REPLY_MESSAGE_LIMIT - 1).join(" ");
-  return [...head, tail].map((line, index) => textPart(line, index === 0 ? mentions : []));
+  return [...head, tail].map((line, index) =>
+    textPart(line, index === 0 ? mentions : [], index === 0 ? replyToMessageId : undefined),
+  );
 }
 
-function stickerPart(stickerId: string): QqOutputPart {
-  return Object.freeze({ kind: "sticker", stickerId });
+function stickerPart(
+  stickerId: string,
+  mentions?: readonly string[],
+  replyToMessageId?: string,
+): QqOutputPart {
+  return Object.freeze({
+    kind: "sticker",
+    stickerId,
+    ...(mentions === undefined ? {} : { mentions: Object.freeze([...mentions]) }),
+    ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
+  });
 }
 
 function rejectedList(
@@ -150,17 +187,19 @@ export function planQqOutput(input: unknown): QqOutputPlan {
   const value = parse(InputSchema, input);
   const text = value.text === null ? "" : value.text.trim();
   const hasText = text.length > 0;
+  const hasMentions = (value.mentions?.length ?? 0) > 0;
+  const hasSubstantiveBody = hasText || hasMentions;
   // §8.1-4: a ceiling, not a target. Asking for more than the scheme allows trims.
   const wanted = Math.min(value.requestedStickers, value.maxStickerCount);
 
   if (wanted === 0) {
     // Nothing was asked for, so candidates are not examined: the model chose text alone
     // (§8.1-1), and reporting every candidate as "rejected" would misdescribe that.
-    return hasText
+    return hasSubstantiveBody
       ? Object.freeze({
           kind: "planned",
           shape: "text_only",
-          parts: Object.freeze(textParts(text, value.mentions)),
+          parts: Object.freeze(textParts(text, value.mentions, value.replyToMessageId)),
           requestedStickers: value.requestedStickers,
           chosenStickerIds: Object.freeze([]),
           rejected: rejectedList([]),
@@ -195,11 +234,11 @@ export function planQqOutput(input: unknown): QqOutputPlan {
   }
 
   if (chosen.length === 0) {
-    return hasText
+    return hasSubstantiveBody
       ? Object.freeze({
           kind: "planned",
           shape: "text_only",
-          parts: Object.freeze(textParts(text, value.mentions)),
+          parts: Object.freeze(textParts(text, value.mentions, value.replyToMessageId)),
           requestedStickers: value.requestedStickers,
           chosenStickerIds: Object.freeze([]),
           rejected: rejectedList(rejected),
@@ -208,9 +247,15 @@ export function planQqOutput(input: unknown): QqOutputPlan {
       : Object.freeze({ kind: "abandoned", reason: "sticker_unavailable_and_no_text" });
   }
 
-  const stickers = chosen.map((candidate) => stickerPart(candidate.id));
+  const stickers = chosen.map((candidate, index) =>
+    stickerPart(
+      candidate.id,
+      !hasText && index === 0 && hasMentions ? value.mentions : undefined,
+      !hasText && index === 0 ? value.replyToMessageId : undefined,
+    ),
+  );
   const parts: QqOutputPart[] = hasText
-    ? [...textParts(text, value.mentions), ...stickers]
+    ? [...textParts(text, value.mentions, value.replyToMessageId), ...stickers]
     : stickers;
   return Object.freeze({
     kind: "planned",

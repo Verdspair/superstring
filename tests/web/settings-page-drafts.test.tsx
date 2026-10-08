@@ -29,7 +29,7 @@ function agent(id = "A") {
     updated_at: "2026-09-19T00:00:00.000Z",
   });
 }
-it("旧目录与检索字段只取已存基线，工具额度与上下文白名单互不夹带", () => {
+it("模型页可提交检索模型草稿；工具额度与上下文白名单互不夹带", () => {
   const editor = newPageEditor(agent(), persona());
   editor.draft.p5_config = structuredClone(editor.draft.p5_config);
   editor.draft.p5_config.max_catalog_batches = 7;
@@ -47,7 +47,9 @@ it("旧目录与检索字段只取已存基线，工具额度与上下文白名�
   // 维护页不再承载读取字段：不再发送 p5_config。
   expect(maintenance).not.toHaveProperty("p5_config");
   expect(maintenance).not.toHaveProperty("memory_retrieval_prompt");
-  expect(pageAgentPayload(editor, "models")).not.toHaveProperty("memory_retrieval_model_name");
+  expect(pageAgentPayload(editor, "models")).toEqual(
+    expect.objectContaining({ memory_retrieval_model_name: "ignored model" }),
+  );
   // 目录批次两项已并入 memory-tools 白名单：草稿改动随本页保存。
   expect(memory.max_catalog_batches).toBe(7);
   expect(memory.catalog_batch_size).toBe(9);
@@ -273,7 +275,7 @@ describe("页面草稿与白名单保存", () => {
       };
       await store.getState().editAgent("A");
       const original = structuredClone(persisted);
-      store.getState().patchPageAgent("models", { memory_retrieval_model_name: "ignored" });
+      store.getState().patchPageAgent("models", { memory_retrieval_model_name: "legacy-model" });
       store.getState().patchPageAgent("long-memory", {
         memory_retrieval_prompt: "ignored",
         p5_config: {

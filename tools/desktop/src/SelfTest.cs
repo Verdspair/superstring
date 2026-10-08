@@ -93,6 +93,7 @@ namespace Superstring.Desktop
             Check("root hash is normalisation-stable", h1 == h2);
             Check("root hash differs for different roots", h1 != h3);
             Check("root hash is 16 hex", h1.Length == 16 && Util.IsHex(h1));
+            RunSingleInstanceCheck();
 
             // 7. logger redaction
             string tmp = Path.Combine(_outputDirectory, "logger-fixture");
@@ -190,6 +191,26 @@ namespace Superstring.Desktop
 
             Console.WriteLine(_failed == 0 ? "=== SELF-TEST PASSED ===" : "=== SELF-TEST FAILED (" + _failed + ") ===");
             return _failed == 0 ? 0 : 1;
+        }
+
+        private static void RunSingleInstanceCheck()
+        {
+            CheckPipeResult("selftest-" + Guid.NewGuid().ToString("N"), ExistingInstanceResult.Shown);
+            CheckPipeResult("selftest-" + Guid.NewGuid().ToString("N"), ExistingInstanceResult.Unavailable);
+        }
+
+        private static void CheckPipeResult(string root, ExistingInstanceResult expected)
+        {
+            var server = new SingleInstance();
+            Check("pipe fixture owns identity mutex " + expected, server.TryAcquire(root));
+            server.StartPipeServer(() => expected);
+            var client = new SingleInstance();
+            var initialize = new Thread(() => client.TryAcquire(root));
+            initialize.Start();
+            initialize.Join();
+            Check("pipe returns explicit " + expected, client.NotifyExisting() == expected);
+            client.Release();
+            server.Release();
         }
 
         private static void RunProjectLocatorCheck(string projectRoot)

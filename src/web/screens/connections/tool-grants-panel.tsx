@@ -36,11 +36,13 @@ const moduleOf = (resource: string): ExecutionModuleKey | undefined => {
 export function ToolGrantsPanel({
   scope,
   embedded = false,
+  active = true,
 }: {
   /** 资源过滤：external＝MCP/技能，builtin＝内置动作，字符串数组按资源名前缀；缺省＝全部。 */
   scope?: "external" | "builtin" | string[];
   /** 嵌入其他页面时去掉自带页容器，仅保留节内间距。 */
   embedded?: boolean;
+  active?: boolean;
 }) {
   const { t } = useTranslation();
   const agents = useSuperstringStore((s) => s.agents);
@@ -58,8 +60,8 @@ export function ToolGrantsPanel({
   const edit = useSuperstringStore((s) => s.patchToolGrant);
   const [expanded, setExpanded] = useState<string | null>(null);
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (active) void load();
+  }, [active, load]);
   const snapshot = editor?.snapshot;
   const drafts = editor?.grants ?? {};
   const resources = snapshot ? permissionResources(snapshot) : [];

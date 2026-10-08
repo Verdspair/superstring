@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { Field } from "../../components/form-field";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -8,9 +9,32 @@ import { knowledgeModelDirty, organizationDirty } from "../../features/knowledge
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 
-export function ModelDefaults() {
+export function ModelDefaults({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const state = useSuperstringStore(
+    useShallow((state) => ({
+      discardOrganization: state.discardOrganization,
+      error: state.error,
+      knowledgeModelEditor: state.knowledgeModelEditor,
+      knowledgeModelLoading: state.knowledgeModelLoading,
+      loadKnowledgeModel: state.loadKnowledgeModel,
+      loadOrganization: state.loadOrganization,
+      loadQqSettings: state.loadQqSettings,
+      modelNames: state.modelNames,
+      openAgentSettings: state.openAgentSettings,
+      organizationEditor: state.organizationEditor,
+      organizationError: state.organizationError,
+      organizationLoading: state.organizationLoading,
+      patchKnowledgeModel: state.patchKnowledgeModel,
+      patchOrganizationPurposes: state.patchOrganizationPurposes,
+      qqAccessSaving: state.qqAccessSaving,
+      qqSettings: state.qqSettings,
+      saveKnowledgeModel: state.saveKnowledgeModel,
+      saveOrganization: state.saveOrganization,
+      saveQqJudgementModel: state.saveQqJudgementModel,
+      settingsSaving: state.settingsSaving,
+    })),
+  );
   const {
     loadOrganization,
     loadQqSettings,
@@ -18,10 +42,11 @@ export function ModelDefaults() {
     organizationEditor: editor,
   } = state;
   useEffect(() => {
+    if (!active) return;
     void loadOrganization();
     void loadQqSettings();
     void loadKnowledgeModel();
-  }, [loadOrganization, loadQqSettings, loadKnowledgeModel]);
+  }, [active, loadOrganization, loadQqSettings, loadKnowledgeModel]);
   return (
     <div className="mx-auto max-w-4xl space-y-8 px-6 py-7">
       <section className="space-y-6">

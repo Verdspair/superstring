@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import type { RuntimeConfig } from "../../../shared/contracts";
 import type { OutputDraft } from "../../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
@@ -66,6 +67,7 @@ import {
   readQqConversationSummary,
 } from "../../db/qq-summary-repository";
 import { DEFAULT_USER_ID, type Orm } from "../../db/repositories";
+import * as schema from "../../db/schema";
 import { AppError, fail } from "../../errors";
 import type { ModelGateway } from "../../llm/model-gateway";
 import {
@@ -153,6 +155,84 @@ const ACTION_ENVELOPE_ALLOWANCE = 512;
 interface ConfirmedOutboundPartCandidate {
   readonly intentId: string;
   readonly platformMessageId: string;
+}
+
+function historyReadDisclosureRefs(
+  db: Database,
+  observations: readonly ActionObservation[],
+  scope: QqConversationScope,
+  conversationId: string,
+): Map<string, SourceRef[]> {
+  const disclosed = new Map<string, SourceRef[]>();
+  for (const observation of observations) {
+    if (
+      observation.name !== "history.read" ||
+      typeof observation.value !== "object" ||
+      observation.value === null
+    )
+      continue;
+    const value = observation.value as { status?: unknown; items?: unknown };
+    if (value.status !== "ok" || !Array.isArray(value.items)) continue;
+    const sources = uniqueSources(observation.sources);
+    if (sources.length === 0) continue;
+    let tuple: unknown;
+    let tupleId: string | undefined;
+    let bodyText = false;
+    for (const item of value.items) {
+      if (typeof item !== "object" || item === null) continue;
+      const body = item as { id?: unknown; text?: unknown };
+      if (typeof body.id !== "string" || typeof body.text !== "string" || body.text.length === 0)
+        continue;
+      try {
+        const candidate = JSON.parse(body.id);
+        if (Array.isArray(candidate) && candidate.length === 3) {
+          tuple = candidate;
+          tupleId = body.id;
+          bodyText = true;
+          break;
+        }
+      } catch {}
+    }
+    if (!bodyText || !tupleId || !Array.isArray(tuple)) continue;
+    const [tupleScope, domain, key] = tuple;
+    const expectedScope = {
+      channel: "onebot11",
+      agentId: scope.agentId,
+      conversationId,
+      bindingId: scope.bindingId,
+      bindingEpoch: scope.bindingEpoch,
+      authorityRevision: scope.authorityRevision,
+      accountId: scope.accountId,
+      conversationKind: scope.conversationKind,
+      peerId: scope.peerId,
+    };
+    const currentScope = tupleScope as Record<string, unknown> | null;
+    if (
+      !currentScope ||
+      Object.entries(expectedScope).some(([name, expected]) => currentScope[name] !== expected) ||
+      Object.keys(currentScope).some((name) => !(name in expectedScope)) ||
+      domain !== "history" ||
+      !Number.isSafeInteger(key) ||
+      (key as number) < 1
+    )
+      continue;
+    const originalEvidence = sources.find(
+      (source) => source.kind === "conversation_evidence" && source.id === tupleId,
+    );
+    if (!originalEvidence) continue;
+    const event = db
+      .query(
+        "SELECT kind,source_kind AS sourceKind,source_id AS sourceId FROM conversation_events WHERE conversation_id=? AND seq=?",
+      )
+      .get(conversationId, key) as { kind: string; sourceKind: string; sourceId: string } | null;
+    if (event?.kind !== "inbound" || !["qq_event", "qq_observation"].includes(event.sourceKind))
+      continue;
+    disclosed.set(
+      event.sourceId,
+      uniqueSources([...(disclosed.get(event.sourceId) ?? []), ...sources]),
+    );
+  }
+  return disclosed;
 }
 
 function confirmedOutboundPartCandidates(
@@ -370,6 +450,8 @@ interface View {
   /** D2 S4b：本档窗口事实投影与回复展开（一次构建、各相复用，登记只发生一次）。 */
   replyFacts: readonly QqMessageFact[];
   replyExpansion: QqFullReplyProjection;
+  /** Rendered model-message identity gates disclosure; trimmed/removed messages lose it immediately. */
+  disclosedMessages: readonly { message: ModelMessage; facts: readonly QqMessageFact[] }[];
   /** 本档实际选中消息的载体键（按发言人分组，run 私有簿记；纯图行无正文 ref 也在此）。 */
   selectedEventKeysBySpeaker: ReadonlyMap<string | null, readonly string[]>;
 }
@@ -388,6 +470,8 @@ export class BotContextSource {
   private readonly knowledge: KnowledgeModule;
   private compressionJob?: BotCompressionJob;
   private observations: readonly ActionObservation[] = [];
+  /** Successful body pages disclosed by this run; child sessions intentionally start with their own history observations. */
+  private historyDisclosureRefs = new Map<string, SourceRef[]>();
   /** 同批在飞动作各自的投影增量（token→相对基线 cost(observations) 的 units；按档取最大值）。 */
   private readonly reservations = new ReservationLedger();
   private sequence = 0;
@@ -555,6 +639,116 @@ export class BotContextSource {
   get observedSeq(): number {
     return this.sequence;
   }
+  /** Resolve only platform messages whose exact rendered context object is still present. */
+  resolveReplyToMessage(messageId: string): SourceRef[] {
+    this.assertCurrent();
+    if (typeof messageId !== "string" || messageId.length === 0) return this.invalidReplySource();
+    const disclosed = [...this.views.values()].flatMap((view) =>
+      (view.material.pending ?? []).flatMap((message) =>
+        view.disclosedMessages
+          .filter((entry) => entry.message === message)
+          .flatMap((entry) => entry.facts),
+      ),
+    );
+    const candidates = new Map(
+      disclosed
+        .filter((fact) => fact.platformMessageId === messageId)
+        .map((fact) => [fact.id, fact]),
+    );
+    if (candidates.size === 0 && this.historyDisclosureRefs.size > 0) {
+      const conversation = this.options.journal.get(this.options.conversationId);
+      if (!conversation) return this.invalidReplySource();
+      const scope = qqConversationScopeOfBinding({
+        conversationId: this.options.conversationId,
+        binding: this.options.binding,
+        bindingEpoch: conversation.bindingEpoch,
+      });
+      const stored = this.options.orm
+        .select({ event: schema.qqEvents })
+        .from(schema.qqEvents)
+        .innerJoin(
+          schema.qqMessageFacts,
+          eq(schema.qqMessageFacts.eventKey, schema.qqEvents.eventKey),
+        )
+        .where(
+          and(
+            eq(schema.qqEvents.accountId, scope.accountId),
+            eq(schema.qqEvents.conversationKind, scope.conversationKind),
+            eq(schema.qqEvents.peerId, scope.peerId),
+            eq(schema.qqEvents.agentId, scope.agentId),
+            eq(schema.qqEvents.messageId, messageId),
+          ),
+        )
+        .all();
+      for (const { event } of stored) {
+        if (!this.historyDisclosureRefs.has(event.eventKey)) continue;
+        const fact = loadQqMessageFact(
+          { db: this.options.db, orm: this.options.orm },
+          scope,
+          messageId,
+          this.now(),
+        );
+        if (fact?.id === event.eventKey) candidates.set(fact.id, fact);
+      }
+    }
+    if (candidates.size !== 1) return this.invalidReplySource();
+    const [factId, fact] = [...candidates.entries()][0] ?? [];
+    if (fact?.completeness !== "full" || fact.platformMessageId !== messageId)
+      return this.invalidReplySource();
+    const historical = this.historyDisclosureRefs.get(factId);
+    if (historical) {
+      this.assertSources(historical);
+      return historical;
+    }
+    const sources = uniqueSources(fact.sources);
+    if (sources.length === 0) return this.invalidReplySource();
+    this.assertSources(sources);
+    return sources;
+  }
+  /** Validate explicit mentions against this view's disclosed people and authorized targets. */
+  resolveMentionIds(
+    ids: readonly string[] | undefined,
+    authorizedMemberIds: readonly string[],
+  ): readonly string[] {
+    this.assertCurrent();
+    if (ids === undefined) return [];
+    if (!Array.isArray(ids)) return this.invalidMention();
+    const disclosedFacts = [...this.views.values()].flatMap((view) =>
+      (view.material.pending ?? []).flatMap((message) =>
+        view.disclosedMessages
+          .filter((entry) => entry.message === message)
+          .flatMap((entry) => entry.facts),
+      ),
+    );
+    const refs = uniqueSources(disclosedFacts.flatMap((fact) => fact.sources));
+    this.assertSources(refs);
+    const disclosedIds = new Set(
+      disclosedFacts.flatMap((fact) => [
+        ...(fact.speaker.role === "member" && fact.speaker.qq ? [fact.speaker.qq] : []),
+        ...fact.mentions.flatMap((mention) =>
+          mention.qq !== "all" && mention.identity !== null ? [mention.qq] : [],
+        ),
+      ]),
+    );
+    const authorized = new Set(authorizedMemberIds);
+    const resolved: string[] = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (typeof id !== "string" || !/^\d+$/.test(id) || id === "all") return this.invalidMention();
+      if (!disclosedIds.has(id) && !authorized.has(id)) return this.invalidMention();
+      if (!seen.has(id)) {
+        seen.add(id);
+        resolved.push(id);
+      }
+    }
+    return resolved;
+  }
+  private invalidReplySource(): never {
+    return fail("CONTEXT_SOURCE_INVALID", "引用消息未在当前回复上下文披露或已失效");
+  }
+  private invalidMention(): never {
+    return fail("CONTEXT_SOURCE_INVALID", "艾特成员未在当前回复上下文披露或不属于授权目标");
+  }
   get selection(): QqContextSelection | undefined {
     return (
       this.views.get("reply")?.selection ?? this.views.get(this.options.decisionTier)?.selection
@@ -689,8 +883,16 @@ export class BotContextSource {
       ...(input.mediaInput === undefined ? {} : { mediaInput: input.mediaInput }),
       ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     });
-    for (const [tier, view] of this.views) child.views.set(tier, { ...view });
+    for (const [tier, view] of this.views)
+      child.views.set(tier, {
+        ...view,
+        disclosedMessages: view.disclosedMessages.map((entry) => ({
+          ...entry,
+          facts: [...entry.facts],
+        })),
+      });
     child.sequence = this.sequence;
+    // Render bindings are immutable view material; history observations remain child-local.
     // 数组按值复制：子 run 追加失败项不写回父（retrievalFailures 是可变 run 级状态）。
     child.retrievalFailures = [...this.retrievalFailures];
     for (const [key, value] of this.capacities) child.capacities.set(key, value);
@@ -709,6 +911,19 @@ export class BotContextSource {
     signal: AbortSignal;
     observations: readonly ActionObservation[];
   }): Promise<ContextMaterial> {
+    const conversation = this.options.journal.get(this.options.conversationId);
+    this.historyDisclosureRefs = conversation
+      ? historyReadDisclosureRefs(
+          this.options.db,
+          input.observations,
+          qqConversationScopeOfBinding({
+            conversationId: this.options.conversationId,
+            binding: this.options.binding,
+            bindingEpoch: conversation.bindingEpoch,
+          }),
+          this.options.conversationId,
+        )
+      : new Map();
     this.observations = input.observations;
     // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
     this.reservations.clear();
@@ -1649,6 +1864,7 @@ ${intent.trim()}`,
       ],
     });
     let selection = qqSelectContext({ timeline, limits: price, nowSeconds });
+    let disclosedMessages: { message: ModelMessage; facts: readonly QqMessageFact[] }[] = [];
     const cost = (material: ContextMaterial) =>
       this.cost(tier, material, this.observations, selection.messages);
     // 正文去重：预计算哪些 selected 消息有 facts 投影（eventKey 匹配）。
@@ -1923,12 +2139,12 @@ ${intent.trim()}`,
         nowSeconds: nowSeconds,
       });
       if (rendered.trim() === "") return [];
-      return [
-        textMessage(
-          "user",
-          contextDumps({ kind: "qq_message_facts", trust: "data_only", facts: rendered }),
-        ),
-      ];
+      const message = textMessage(
+        "user",
+        contextDumps({ kind: "qq_message_facts", trust: "data_only", facts: rendered }),
+      );
+      disclosedMessages.push({ message, facts });
+      return [message];
     };
     // 已存水位包独立于近期窗口；长期资料仅经工具观察进入上下文。
     const pending = (items: readonly QqSummaryPackage[]) => {
@@ -1978,6 +2194,7 @@ ${intent.trim()}`,
       // 窗口收窄＝selection 换代：projection bundle 必须同代重建，被裁消息的事实/出站
       // 投影/承载判定不再留在资料段，成本才能真正随窗口下降（见 projectionFor 说明）。
       projection = projectionFor(selection);
+      disclosedMessages = [];
       material = {
         pending: pending([]),
         sources: selection.messages.flatMap((message) => message.sources ?? []),
@@ -2370,15 +2587,22 @@ ${intent.trim()}`,
             : line,
         );
       if (quoteLines.length > 0 && quoteDumpBytes(quoteRoots) <= quoteRoom) {
+        const message = textMessage(
+          "user",
+          contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots: quoteLines }),
+        );
+        const includedTargets = new Set(quoteLines.map((line) => line.target));
+        disclosedMessages.push({
+          message,
+          facts: quoteRoots.flatMap((root) =>
+            includedTargets.has(root.targetMessageId) && root.message?.platformMessageId
+              ? [root.message]
+              : [],
+          ),
+        });
         material = {
           ...material,
-          pending: [
-            ...(material.pending ?? []),
-            textMessage(
-              "user",
-              contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots: quoteLines }),
-            ),
-          ],
+          pending: [...(material.pending ?? []), message],
           sources: uniqueSources([...(material.sources ?? []), ...replyExpansion.sources]),
         };
       }
@@ -2417,6 +2641,7 @@ ${intent.trim()}`,
       limit: ceiling,
       replyFacts,
       replyExpansion,
+      disclosedMessages,
       selectedEventKeysBySpeaker,
     };
     this.views.set(tier, view);

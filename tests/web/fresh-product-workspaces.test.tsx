@@ -245,7 +245,10 @@ describe("fresh assistant studio", () => {
       });
       selectLocale(locale);
       await act(async () => render(<CapabilityEditor />));
-      expect(screen.queryByLabelText(/记忆读取模型|Memory reading model/)).toBeNull();
+      expect(screen.getByLabelText(/记忆读取模型|Memory reading model/)).toHaveProperty(
+        "value",
+        "legacy-retrieval",
+      );
       expect(store.getState().refreshCapacityPreview).toHaveBeenCalledWith([
         "model-a",
         "model-a",

@@ -67,6 +67,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 
 describe("run reducer", () => {
@@ -175,7 +176,7 @@ describe("run inspector", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
-  it("replaces inspected text after revocation and clears it when the window blurs", async () => {
+  it("retains inspected text across window blur and clears it only when the document is hidden", async () => {
     const inspect = vi
       .fn()
       .mockResolvedValueOnce(exact)
@@ -184,10 +185,16 @@ describe("run inspector", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行详情" }));
     fireEvent.click(await screen.findByRole("button", { name: "查看实际输入与输出" }));
     await screen.findByText("private source text");
+    act(() => window.dispatchEvent(new Event("blur")));
+    expect(screen.getByText("private source text")).toBeTruthy();
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(screen.getByText("private source text")).toBeTruthy();
+    expect(inspect).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "重新核对实际输入与输出" }));
     await screen.findByText("来源已撤权或删除，实际输入不可查看；仅保留允许的元数据。");
     expect(screen.queryByText("private source text")).toBeNull();
-    act(() => window.dispatchEvent(new Event("blur")));
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
     expect(
       screen.queryByText("来源已撤权或删除，实际输入不可查看；仅保留允许的元数据。"),
     ).toBeNull();

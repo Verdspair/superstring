@@ -60,7 +60,7 @@ const problemKeys: Record<McpDraftProblem, string> = {
   numbers: "connections.mcp.problem.numbers",
 };
 
-export function McpPanel() {
+export function McpPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const target = useSuperstringStore((s) => s.componentTarget);
@@ -76,7 +76,7 @@ export function McpPanel() {
     error: readError,
     refresh,
     mutate,
-  } = useMcpServersResource(apiClient);
+  } = useMcpServersResource(apiClient, active);
   const [busy, setBusy] = useState<"" | "save" | "reload">("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -101,12 +101,12 @@ export function McpPanel() {
   }, [dirty, busy]);
   const reloadTask = useRef<ReadTask | null>(null);
   useEffect(() => {
-    void loadPermissions();
+    if (active) void loadPermissions();
     return () => {
       reloadTask.current?.cancel();
       toolRead.current?.cancel();
     };
-  }, [loadPermissions]);
+  }, [active, loadPermissions]);
   useEffect(() => {
     if (target?.kind === "mcp" && status) {
       const server = status.servers.find((row) => row.config.id === target.id);
@@ -116,7 +116,7 @@ export function McpPanel() {
   useEffect(() => {
     toolRead.current?.cancel();
     setDetailTools([]);
-    if (!detail) return;
+    if (!active || !detail) return;
     toolRead.current = startRead((signal) => apiClient.getToolDirectory(signal), {
       success: (response) =>
         setDetailTools(
@@ -125,7 +125,7 @@ export function McpPanel() {
       failure: (caught) => setError(errorText(caught)),
     });
     return () => toolRead.current?.cancel();
-  }, [detail, apiClient]);
+  }, [active, detail, apiClient]);
 
   const servers = (status?.servers ?? []).map((row) => row.config);
   const save = async (next: McpServerConfig[]) => {
@@ -299,7 +299,7 @@ export function McpPanel() {
       </div>
 
       <Sheet
-        open={detail !== null}
+        open={active && detail !== null}
         onOpenChange={(open) => {
           if (!open) {
             setDetail(null);
@@ -335,7 +335,7 @@ export function McpPanel() {
         </SheetContent>
       </Sheet>
       <Sheet
-        open={editor !== null}
+        open={active && editor !== null}
         onOpenChange={(open) => {
           if (!open && busy === "") {
             if (dirty) setDiscarding(true);
@@ -549,7 +549,7 @@ export function McpPanel() {
           )}
         </SheetContent>
       </Sheet>
-      {discarding && (
+      {active && discarding && (
         <ConfirmDialog
           message={t("models.discardConfirm")}
           onCancel={() => setDiscarding(false)}
@@ -559,7 +559,7 @@ export function McpPanel() {
           }}
         />
       )}
-      {removing && (
+      {active && removing && (
         <ConfirmDialog
           busy={busy === "save"}
           message={t("connections.mcp.deleteConfirm", { "0": removing })}

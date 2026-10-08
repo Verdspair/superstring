@@ -7,7 +7,7 @@ import { useForegroundRead } from "./use-foreground-read";
 export interface LiveResourceOptions {
   enabled?: boolean;
   paused?: boolean;
-  retainOnBlur?: boolean;
+  retainOnHide?: boolean;
   /** When supplied, invalidates on matching SSE conversation events */
   conversationScope?: { conversationId?: string };
 }
@@ -18,7 +18,7 @@ export function useLiveResource<A>(
   {
     enabled = true,
     paused = false,
-    retainOnBlur = true,
+    retainOnHide = true,
     conversationScope,
   }: LiveResourceOptions = {},
 ) {
@@ -72,7 +72,7 @@ export function useLiveResource<A>(
     });
   }, [enabled, read]);
 
-  useForegroundRead(refresh, clear, { enabled, paused, retainOnBlur, onSuspend: cancel });
+  useForegroundRead(refresh, clear, { enabled, paused, retainOnHide, onSuspend: cancel });
   useConversationChangeSubscription(refresh, {
     conversationId: conversationScope?.conversationId,
     enabled: enabled && conversationScope !== undefined,

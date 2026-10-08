@@ -151,6 +151,42 @@ MCP 工具），逐行标注来源、读写、全局状态与授权摘要；共�
 宽度不变；复用面板、刷新机制与运行追踪视图，各视图保留自己的真实刷新。
 入口迁移不改变后端契约、默认值、权限或业务。
 
+## 读取、导航与显示优先
+
+所有工作区与子面板通过活动状态控制自动前台读取。隐藏或暂停不发起新读取，
+保留同一归属已加载的内容；恢复时通过原读取生命周期复验一次。旧 API、页面或
+Agent 的迟到结果不安装到新归属。自动预热与前台读取复用原所有者，不另建缓存。
+
+普通只读加载不占全局导航锁。实际写入、测试操作和未保存草稿仍使用原导航守卫；
+确认保存时必须等待对应编辑基线就绪。Agent 基础信息与人设、记忆分区与正文优先
+显示，可选记忆预热或 QQ 身份元数据各自结算；本人身份未就绪不允许共享记忆。
+
+刷新预显复用同一加密 sessionStorage 缓存，总预算为 4 MiB（键与密文的实际
+UTF-16 占用）。目录、最近网页消息和 QQ 事件分别最多 200 条，运行追踪最多 100 条。
+按 Agent、会话、纪元与有效期校验；过期或撤权结果不因迟到写入复活。浏览器存储
+限额由浏览器决定，这个预算不是全量历史镜像或可保证写入成功的配额。
+
+## Reads, navigation and display priority
+
+Workspace and panel activity controls automatic foreground reads. Hidden or paused
+views start no new read and keep already loaded content for the same owner. The
+existing read lifecycle revalidates once on return. Late results from an old API,
+page or Agent cannot install into the new owner. Preloading and foreground reads
+share their existing owner rather than creating another cache.
+
+Read-only loading does not lock global navigation. Real writes, test operations and
+unsaved drafts keep the existing navigation guard. Saving requires a settled editor
+baseline. Basic Agent data and persona, memory partitions and entries display first;
+optional memory preloading or QQ identity metadata settle independently. Unknown QQ
+owner identity never grants memory sharing.
+
+Refresh previews use the existing encrypted sessionStorage cache, with a 4 MiB total
+budget measured as the UTF-16 size of keys and ciphertext. Directory entries, recent
+Web messages and QQ events each retain at most 200 items; traces retain at most 100.
+Agent, conversation, epoch and expiry checks remain in force. Late writes cannot
+revive expired or revoked data. Browser storage limits still apply; this is not a
+full history mirror or a guaranteed storage quota.
+
 ## Dependency boundaries
 
 ```mermaid
@@ -180,8 +216,8 @@ flowchart TD
   domain requests without an AbortSignal parameter still isolate stale results;
   this does not claim transport cancellation for every legacy API method.
 - **Motion:** Motion owns entrance/layout transitions and follows reduced-motion
-  preferences. Protected bodies are cleared immediately on scope/visibility loss;
-  exit animations never retain sensitive evidence.
+  preferences. Hidden views retain already loaded content for the same owner;
+  scope changes and authoritative expiry or revocation still remove invalid evidence.
 - **Brand:** one SVG master in `src/shared/brand` retains the original quotation
   marks, conversation bubble, string and two nodes in the project's 24-unit
   composition.
@@ -195,8 +231,10 @@ flowchart TD
 - Conversation source order, cursor paging, per-conversation drafts, retries using
   the original turn identity, quote/source links and uncertain sends are preserved.
 - Agent page drafts and persona compilation still use domain actions. Manual model
-  IDs remain possible when discovery is unavailable. Four-purpose default-model
-  replacement requires an explicit confirmation for the selected Agent.
+  IDs remain possible when discovery is unavailable. Applying the default model
+  requires confirmation and changes the selected Agent's chat, memory organization
+  and context compression purposes. Its independent memory-reading model remains
+  unchanged and can be edited separately on the model page.
 - Knowledge authorization, selected versus all modes, original versus generated
   drafts, versions and independent model/rule saves remain separate. Server-side
   search stays paginated and keeps its case-insensitive substring matching.

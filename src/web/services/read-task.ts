@@ -6,9 +6,10 @@ export interface ReadTask {
 
 /** Owns one read, including adapters that resolve after abort. Never caches the result. */
 export function startRead<A>(
-  request: (signal: AbortSignal) => Promise<A>,
+  request: (signal: AbortSignal, publish: (value: A) => void) => Promise<A>,
   callbacks: {
     success(value: A): void;
+    progress?(value: A): void;
     failure(cause: unknown): void;
     settled?(): void;
   },
@@ -18,7 +19,9 @@ export function startRead<A>(
     try: (signal) => {
       const abort = () => controller.abort();
       signal.addEventListener("abort", abort, { once: true });
-      return request(controller.signal).finally(() => signal.removeEventListener("abort", abort));
+      return request(controller.signal, (value) => {
+        if (!controller.signal.aborted) callbacks.progress?.(value);
+      }).finally(() => signal.removeEventListener("abort", abort));
     },
     catch: (cause) => cause,
   });

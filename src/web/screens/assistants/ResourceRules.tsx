@@ -293,17 +293,17 @@ export function MemoryToolSettings() {
 
 /** 知识工具设置：只读写 knowledgeReadEditor 草稿；资料正文仍归资料库文档分区。
  *  全局默认预算独立成组，与默认模型页共用 knowledgeModelEditor（预算只有一个真源）。 */
-export function KnowledgeToolSettings() {
+export function KnowledgeToolSettings({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore();
   const t = useTranslation().t;
   useEffect(() => {
-    if (s.editorAgentId !== "__new__") {
+    if (active && s.editorAgentId !== "__new__") {
       // 知识读取配置独立于助手页面草稿加载与保存；资料正文仍在资料库的文档分区管理。
       void s.loadKnowledgeRead();
       // 全局默认预算与知识整理模型共用同一编辑器；此处只编辑预算字段。
       void s.loadKnowledgeModel();
     }
-  }, [s.editorAgentId, s.loadKnowledgeRead, s.loadKnowledgeModel]);
+  }, [active, s.editorAgentId, s.loadKnowledgeRead, s.loadKnowledgeModel]);
   const editor = s.pageEditor;
   if (!editor) return <p role="status">{t("library.loading")}</p>;
   const read = s.knowledgeReadEditor?.agentId === editor.agent.id ? s.knowledgeReadEditor : null;

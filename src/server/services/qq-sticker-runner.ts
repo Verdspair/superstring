@@ -320,6 +320,7 @@ export function planQqPreparedReply(
       minRepeatSeconds: null,
       avoidRecent: false,
       mentions: prepared.mentionIds,
+      replyToMessageId: prepared.replyToMessageId,
     });
   }
   const selection = qqStickerSelectionForScheme(orm, {
@@ -347,5 +348,6 @@ export function planQqPreparedReply(
     minRepeatSeconds: selection.minRepeatSeconds,
     avoidRecent: selection.avoidRecent,
     mentions: prepared.mentionIds,
+    replyToMessageId: prepared.replyToMessageId,
   });
 }

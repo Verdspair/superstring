@@ -121,10 +121,12 @@ function useSharedResource<A>(
   api: SuperstringApi,
   entry: ResourceEntry<A>,
   read: (api: SuperstringApi, signal: AbortSignal) => Promise<A>,
+  active = true,
 ) {
   const [, render] = useState(0);
   const revalidated = useRef(false);
   useEffect(() => {
+    if (!active) return;
     const listener = () => render((n) => n + 1);
     entry.listeners.add(listener);
     entry.owners += 1;
@@ -142,7 +144,7 @@ function useSharedResource<A>(
       // 最后一个面板消费者退场：warm 持有的读取允许完成，面板独占前台读取按原语义取消。
       if (entry.owners === 0 && entry.task && !entry.warmOwned) cancelEntry(entry);
     };
-  }, [api, entry, read]);
+  }, [active, api, entry, read]);
   const refresh = useCallback(() => {
     if (entry.task) {
       // 在途读取归 warm 或仍有其他消费者时共享复用；面板独占前台刷新沿用原 cancel 语义。
@@ -194,9 +196,9 @@ export function warmConnectionResources(api: SuperstringApi, options?: Connectio
   ]).then(([mcp, skills, tools]) => ({ mcp, skills, tools }));
 }
 
-export function useMcpServersResource(api: SuperstringApi) {
+export function useMcpServersResource(api: SuperstringApi, active = true) {
   const entry = entryFor(mcpEntries, api);
-  const resource = useSharedResource(api, entry, readMcpServers);
+  const resource = useSharedResource(api, entry, readMcpServers, active);
   const mutate = useCallback(
     (updater: (prev: McpStatusResponse | null) => McpStatusResponse | null) => {
       entry.data = updater(entry.data);
@@ -208,10 +210,10 @@ export function useMcpServersResource(api: SuperstringApi) {
   return { ...resource, mutate };
 }
 
-export function useSkillsResource(api: SuperstringApi) {
-  return useSharedResource(api, entryFor(skillsEntries, api), readSkills);
+export function useSkillsResource(api: SuperstringApi, active = true) {
+  return useSharedResource(api, entryFor(skillsEntries, api), readSkills, active);
 }
 
-export function useToolDirectoryResource(api: SuperstringApi) {
-  return useSharedResource(api, entryFor(toolEntries, api), readTools);
+export function useToolDirectoryResource(api: SuperstringApi, active = true) {
+  return useSharedResource(api, entryFor(toolEntries, api), readTools, active);
 }

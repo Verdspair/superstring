@@ -32,7 +32,7 @@ export function hasUnsavedDrafts(state: SuperstringState): boolean {
   );
 }
 
-/** 有任一保存/读取在途：导航必须被拦住，防止带着半份答案或半次读取切走。 */
+/** 写入与测试操作在途时保护导航；只读请求按所属页面接纳结果，不锁住全局。 */
 export function navigationBusy(state: SuperstringState): boolean {
   return (
     state.qqAccessSaving ||
@@ -46,10 +46,6 @@ export function navigationBusy(state: SuperstringState): boolean {
     state.permissionSaving ||
     state.webAccessSaving ||
     state.webAccessTesting ||
-    state.editorLoading ||
-    state.knowledgeReadLoading ||
-    state.organizationLoading ||
-    state.knowledgeModelLoading ||
     state.memoryCorrectionSaving ||
     state.qqMemoryBatchSaving ||
     state.knowledgeBusy

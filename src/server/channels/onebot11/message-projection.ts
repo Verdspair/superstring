@@ -25,7 +25,7 @@ import {
   visibleQqOutboundFactPartState,
 } from "../../services/qq-outbound-fact-sources";
 import { isObservationExpired } from "../../services/qq-retention";
-import { qqTextSegments } from "../../services/qq-send-transport";
+import { qqReplySegments } from "../../services/qq-send-transport";
 import type { QqReplyTargetState } from "./reply-context";
 
 export {
@@ -45,25 +45,36 @@ function outboundWireParts(state: {
   partKind: string;
   payloadText: string | null;
   payloadMentions: readonly string[] | null;
+  replyToMessageId?: string;
   partOrdinal: number;
   targetParticipantId: string | null;
-}): QqMessagePart[] {
-  if (state.partKind !== "text" || state.payloadText === null) {
-    return [{ kind: "unavailable", type: "sticker" }];
-  }
-  const legacyRecipient = state.partOrdinal === 0 ? (state.targetParticipantId ?? null) : null;
+}): { parts: QqMessagePart[]; replyTo: { platformMessageId: string } | null } {
+  const firstPart = state.partOrdinal === 0;
+  const legacyRecipient = firstPart ? (state.targetParticipantId ?? null) : null;
+  const metadata = {
+    ...(state.payloadMentions === null ? {} : { mentions: firstPart ? state.payloadMentions : [] }),
+    ...(firstPart && state.replyToMessageId !== undefined
+      ? { replyToMessageId: state.replyToMessageId }
+      : {}),
+  };
   const payload =
-    state.payloadMentions === null
-      ? { text: state.payloadText }
-      : { text: state.payloadText, mentions: state.payloadMentions };
+    state.partKind === "text" && state.payloadText !== null
+      ? { text: state.payloadText, ...metadata }
+      : { stickerFile: "unavailable://sticker-content", ...metadata };
   const parts: QqMessagePart[] = [];
-  for (const segment of qqTextSegments(payload, legacyRecipient)) {
+  let replyTo: { platformMessageId: string } | null = null;
+  for (const segment of qqReplySegments(
+    payload,
+    state.payloadMentions === null ? legacyRecipient : null,
+  )) {
     if (segment.type === "text") parts.push({ kind: "text", text: segment.data.text });
     else if (segment.type === "at") parts.push({ kind: "mention", qq: segment.data.qq });
+    else if (segment.type === "reply") replyTo = { platformMessageId: segment.data.id };
   }
-  return parts;
+  if (state.partKind !== "text" || state.payloadText === null)
+    parts.push({ kind: "unavailable", type: "sticker" });
+  return { parts, replyTo };
 }
-
 /**
  * The projection body shared by the fact read and the state read: the located part becomes
  * exactly one `QqMessageFact` with its real identity snapshot, delivery journal seq and the
@@ -77,7 +88,7 @@ function outboundFactOf(scope: QqConversationScope, state: QqOutboundFactPartSta
     revision: qqOutboundFactSourceRevision(scope, state),
     expiresAt: qqOutboundFactConsumableCap(state),
   };
-  const parts = outboundWireParts(state);
+  const { parts, replyTo } = outboundWireParts(state);
   return {
     // 稳定内部身份 = 精确 outbound_parts.id（§2.3：QqMessageFact.id 是已确认发送部件 ID）。
     id: state.partId,
@@ -93,13 +104,10 @@ function outboundFactOf(scope: QqConversationScope, state: QqOutboundFactPartSta
       legacyDisplayName: state.legacyDisplayName,
       nameState: qqOutboundFactNameState(state),
     },
-    // 文本部件按真实发送线上片段重放（同 qqTextSegments 编码，at→mention）；sticker
-    // 平台部件只标存在，不编图片/文本内容。
+    // 文本部件按真实发送线上片段重放；贴纸只表示存在，不编图片内容。
     parts,
-    // 点名 = 线上真实 at 段（程序收件人 + 原文 CQ at），按实际顺序与重复收集。
     mentions: collectMentions(parts),
-    // 出站部件没有引用关系；未知就是 null，不猜。
-    replyTo: null,
+    replyTo,
     sources: [ref],
     completeness: state.partKind === "text" ? "full" : "unavailable",
   };

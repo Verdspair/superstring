@@ -51,7 +51,7 @@ export function modelRoutes(
     const model = parsed.data.model;
 
     try {
-      const capacity = await gateway.loadedContextCapacity(model);
+      const capacity = await gateway.loadedContextCapacity(model, { signal: c.req.raw.signal });
       return c.json({
         model,
         status: capacity !== null ? "loaded" : "unknown",
@@ -71,7 +71,7 @@ export function modelRoutes(
   });
 
   router.get("/local", async (c) => {
-    const models = [...new Set(await gateway.listModels())];
+    const models = [...new Set(await gateway.listModels({ signal: c.req.raw.signal }))];
     return c.json({
       provider: "lm_studio",
       status: models.length > 0 ? "available" : "empty",
@@ -138,7 +138,7 @@ export function modelRoutes(
     }
     const apiKey = readModelProviderKey(orm, providerId, keyPath);
     const url = `${provider.base_url.replace(/\/+$/, "")}/models`;
-    const lifetime = AbortSignal.timeout(10_000);
+    const lifetime = AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(10_000)]);
     try {
       const response = await fetch(url, {
         method: "GET",

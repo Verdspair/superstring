@@ -28,6 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
+import { formatDate } from "../../i18n/runtime";
 import { addConversationChangeListener } from "../../services/conversation-changes";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
@@ -65,7 +66,13 @@ const sameFilters = (left: FilterDraft, right: FilterDraft) =>
   left.conversationId === right.conversationId &&
   left.originRunId === right.originRunId;
 
-export function TaskLedger({ conversationId }: { conversationId?: string } = {}) {
+export function TaskLedger({
+  conversationId,
+  active = true,
+}: {
+  conversationId?: string;
+  active?: boolean;
+} = {}) {
   const { t, i18n } = useTranslation();
   const filterId = useId();
   const apiClient = useSuperstringStore((s) => s.apiClient);
@@ -91,6 +98,11 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
   const mutation = useRef(false);
   const previousLocked = useRef(conversationId);
   const [saving, setSaving] = useState(false);
+  const isInitialRead = useRef(true);
+  const effectiveFilters = useMemo<FilterDraft>(
+    () => (conversationId ? { ...filters, conversationId } : filters),
+    [conversationId, filters],
+  );
   useEffect(() => {
     if (previousLocked.current === conversationId) return;
     previousLocked.current = conversationId;
@@ -114,7 +126,7 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
 
   const refreshDetail = useCallback(() => {
     const currentDetail = detailRef.current;
-    if (!currentDetail) return;
+    if (!active || !currentDetail) return;
     pendingDetail.current?.cancel();
     pendingDetail.current = null;
     pendingDetail.current = startRead((signal) => apiClient.getTask(currentDetail.id, signal), {
@@ -134,11 +146,12 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
         pendingDetail.current = null;
       },
     });
-  }, [apiClient]);
+  }, [apiClient, active]);
 
   const load = useCallback(
     (cursor?: string, clear = false) => {
-      const scopedConversationId = conversationId ?? filters.conversationId;
+      if (!active) return;
+      const scopedConversationId = conversationId ?? effectiveFilters.conversationId;
       if (pending.current) {
         if (!clear && !cursor) {
           pendingRevalidate.current = true;
@@ -155,40 +168,71 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
       // or a load-more click reads exactly one 50-row page.
       const loadedCount = listRef.current?.items.length ?? 0;
       const target = clear || cursor ? 0 : Math.max(0, loadedCount - 50);
-      pending.current = startRead(
-        async (signal) => {
+      const isRefresh = !cursor && !clear;
+      const existingItems = isRefresh ? (listRef.current?.items ?? []) : [];
+      pending.current = startRead<TaskList>(
+        async (signal, publish) => {
           let page = await apiClient.listTasks(
             {
-              ...(filters.status ? { status: filters.status } : {}),
-              ...(filters.agentId ? { agentId: filters.agentId } : {}),
+              ...(effectiveFilters.status ? { status: effectiveFilters.status } : {}),
+              ...(effectiveFilters.agentId ? { agentId: effectiveFilters.agentId } : {}),
               ...(scopedConversationId ? { conversationId: scopedConversationId } : {}),
-              ...(filters.originRunId ? { originRunId: filters.originRunId } : {}),
+              ...(effectiveFilters.originRunId
+                ? { originRunId: effectiveFilters.originRunId }
+                : {}),
               cursor,
               limit: 50,
             },
             signal,
           );
           if (cursor || clear) return page;
+
+          // Background refresh of loaded range: publish the fresh first page immediately
+          // with deduped tail so visible items are updated without waiting for later pages.
           let items = [...page.items];
+          const newIds = new Set(page.items.map((i) => i.id));
+          const dedupedTail = existingItems
+            .slice(page.items.length)
+            .filter((i) => !newIds.has(i.id));
+          publish({
+            items: page.hasMore ? [...page.items, ...dedupedTail] : page.items,
+            nextCursor: page.nextCursor,
+            hasMore: page.hasMore,
+          });
+
           while (!signal.aborted && page.hasMore && page.nextCursor && items.length < target + 50) {
             page = await apiClient.listTasks(
               {
-                ...(filters.status ? { status: filters.status } : {}),
-                ...(filters.agentId ? { agentId: filters.agentId } : {}),
+                ...(effectiveFilters.status ? { status: effectiveFilters.status } : {}),
+                ...(effectiveFilters.agentId ? { agentId: effectiveFilters.agentId } : {}),
                 ...(scopedConversationId ? { conversationId: scopedConversationId } : {}),
-                ...(filters.originRunId ? { originRunId: filters.originRunId } : {}),
+                ...(effectiveFilters.originRunId
+                  ? { originRunId: effectiveFilters.originRunId }
+                  : {}),
                 cursor: page.nextCursor,
                 limit: 50,
               },
               signal,
             );
             items = [...items, ...page.items];
+            const allNewIds = new Set(items.map((i) => i.id));
+            const remainingTail = existingItems
+              .slice(items.length)
+              .filter((i) => !allNewIds.has(i.id));
+            publish({
+              items: page.hasMore ? [...items, ...remainingTail] : items,
+              nextCursor: page.nextCursor,
+              hasMore: page.hasMore,
+            });
           }
           return { ...page, items };
         },
         {
+          progress: (intermediate) => {
+            setList(intermediate);
+            if (errorSource.current !== "detail") setError("");
+          },
           success: (page) => {
-            // The last page's nextCursor/hasMore are authoritative for everything read.
             setList(
               cursor && listRef.current
                 ? { ...page, items: [...listRef.current.items, ...page.items] }
@@ -201,33 +245,48 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
             setError(errorText(caught));
           },
           settled: () => {
+            isInitialRead.current = false;
             setLoading(false);
             pending.current = null;
             if (pendingRevalidate.current) {
               pendingRevalidate.current = false;
-              if (document.visibilityState !== "hidden") {
-                load(undefined, false);
-              }
+              if (active && document.visibilityState !== "hidden") load(undefined, false);
             }
           },
         },
       );
     },
-    [apiClient, filters, conversationId, cancelPending],
+    [apiClient, effectiveFilters, conversationId, cancelPending, active],
   );
 
+  const readScope = useRef<{
+    apiClient: typeof apiClient;
+    filters: FilterDraft;
+    conversationId: string | undefined;
+  } | null>(null);
   useEffect(() => {
-    load(undefined, true);
+    if (active) {
+      const previous = readScope.current;
+      const changed =
+        !previous ||
+        previous.apiClient !== apiClient ||
+        previous.filters !== effectiveFilters ||
+        previous.conversationId !== conversationId;
+      readScope.current = { apiClient, filters: effectiveFilters, conversationId };
+      load(undefined, changed);
+      if (detailRef.current) refreshDetail();
+    }
     return () => {
       cancelPending();
       pendingDetail.current?.cancel();
       pendingDetail.current = null;
     };
-  }, [load, cancelPending]);
+  }, [load, cancelPending, active, apiClient, effectiveFilters, conversationId, refreshDetail]);
 
   useEffect(() => {
+    if (!active) return;
     let pendingHidden = false;
-    const targetConversationId = conversationId ?? filters.conversationId;
+    const targetConversationId = conversationId ?? effectiveFilters.conversationId;
     const unsubscribe = addConversationChangeListener((event) => {
       const matches =
         event.event === "ready" ||
@@ -238,7 +297,17 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
         pendingHidden = true;
         return;
       }
-      load(undefined, false);
+      if (event.event === "ready") {
+        // SSE ready handshake indicates connection readiness; if an initial read is in flight
+        // without an existing authoritative list (listRef.current === null), coalesce without trailing GET.
+        if (isInitialRead.current && pending.current && listRef.current === null) {
+          return;
+        }
+        load(undefined, false);
+      } else {
+        // Real conversation changes require authoritative re-read (or trailing revalidation if pending).
+        load(undefined, false);
+      }
       if (
         detailRef.current &&
         (!event.conversationId || detailRef.current.conversationId === event.conversationId)
@@ -260,8 +329,7 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
       unsubscribe();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [conversationId, filters.conversationId, load, refreshDetail]);
-
+  }, [conversationId, effectiveFilters.conversationId, load, refreshDetail, active]);
   const updateDraft = <K extends keyof FilterDraft>(key: K, value: FilterDraft[K]) =>
     setDraft((previous) => ({ ...previous, [key]: value }));
   const applyFilters = () =>
@@ -505,7 +573,7 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
       )}
 
       <Sheet
-        open={detail !== null}
+        open={active && detail !== null}
         onOpenChange={(open) => {
           if (!open && !saving) {
             pendingDetail.current?.cancel();
@@ -573,7 +641,7 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
           )}
         </SheetContent>
       </Sheet>
-      {approving && detail && waiting?.approvalRevision && (
+      {active && approving && detail && waiting?.approvalRevision && (
         <AlertDialog
           title={t("connections.tasks.approvalTitle")}
           onCancel={() => setApproving(false)}
@@ -615,7 +683,7 @@ export function TaskLedger({ conversationId }: { conversationId?: string } = {})
           </div>
         </AlertDialog>
       )}
-      {cancelling && (
+      {active && cancelling && (
         <ConfirmDialog
           message={t("connections.tasks.cancelConfirm")}
           busy={saving}
@@ -640,9 +708,7 @@ function TaskRow({
 }) {
   const { t } = useTranslation();
   const date = (value: string) =>
-    new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "short" }).format(
-      new Date(value),
-    );
+    formatDate(value, locale, { dateStyle: "short", timeStyle: "short" });
   return (
     <TableRow>
       <TableCell>

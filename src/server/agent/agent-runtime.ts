@@ -101,6 +101,8 @@ export interface MessageLeafInput extends Omit<LeafInput, "messages"> {
 }
 export interface PreparedOutput extends OutputSummary {
   text?: string;
+  /** Explicit QQ reply reference from this draft; the host validates scope/current availability. */
+  replyToMessageId?: string;
   /** Explicit @ member IDs the host encodes; never CQ codes parsed out of the text. */
   mentionIds?: readonly string[];
   /** undefined/null asks the channel to select; [] explicitly declines; IDs select attachments. */
@@ -1101,6 +1103,9 @@ export class AgentRuntime {
                 targetId: draft.targetId,
                 status: "prepared",
                 text: draft.text,
+                ...(draft.replyToMessageId === undefined
+                  ? {}
+                  : { replyToMessageId: draft.replyToMessageId }),
                 ...(draft.mentionIds === undefined ? {} : { mentionIds: draft.mentionIds }),
                 stickerIds: draft.stickerIds,
               };
@@ -1506,6 +1511,9 @@ export class AgentRuntime {
       targetId: plan.draft.targetId,
       status: "prepared",
       text,
+      ...(plan.draft.replyToMessageId === undefined
+        ? {}
+        : { replyToMessageId: plan.draft.replyToMessageId }),
       ...(plan.draft.mentionIds === undefined ? {} : { mentionIds: plan.draft.mentionIds }),
       stickerIds: plan.draft.stickerIds,
     };

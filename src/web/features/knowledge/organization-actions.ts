@@ -25,11 +25,12 @@ export function createOrganizationActions(
       )
         return;
       const request = ++read;
+      const api = get().apiClient;
       const previous = get().organizationEditor;
       set({ organizationLoading: true, organizationError: null });
       try {
-        const source = await get().apiClient.getOrganizationSettings();
-        if (request !== read) return;
+        const source = await api.getOrganizationSettings();
+        if (request !== read || get().apiClient !== api) return;
         set({
           organizationEditor: {
             token: previous?.token ?? {},
@@ -48,9 +49,10 @@ export function createOrganizationActions(
           error: null,
         });
       } catch (error) {
-        if (request === read) set({ organizationError: errorText(error) });
+        if (request === read && get().apiClient === api)
+          set({ organizationError: errorText(error) });
       } finally {
-        if (request === read) set({ organizationLoading: false });
+        if (request === read && get().apiClient === api) set({ organizationLoading: false });
       }
     },
     patchOrganization: (modelName) => {

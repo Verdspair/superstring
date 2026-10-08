@@ -29,7 +29,7 @@ import { useQqInput } from "@/features/qq/use-qq-input";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 
-export function StickerLibrary() {
+export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       annotateQqSticker: state.annotateQqSticker,
@@ -77,8 +77,8 @@ export function StickerLibrary() {
     [batchCollection, setBatchCollection] = useQqInput("stickerBatchCollection"),
     [batchTag, setBatchTag] = useQqInput("stickerBatchTag");
   useEffect(() => {
-    void s.loadQqStickers();
-  }, [s.loadQqStickers]);
+    if (active) void s.loadQqStickers();
+  }, [active, s.loadQqStickers]);
   const editor = s.qqStickerEditor,
     dirty = qqStickerEditorDirty(editor);
 

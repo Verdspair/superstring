@@ -9,7 +9,7 @@ import type { OneBotSendResult } from "../services/onebot-connection";
 import {
   type QqSendPort,
   type QqStickerFileReference,
-  qqTextSegments,
+  qqReplySegments,
 } from "../services/qq-send-transport";
 import { observationRelevant } from "./observation-relevance";
 
@@ -262,14 +262,26 @@ export class OutboundDelivery {
       let result: OneBotSendResult;
       try {
         if ("text" in claim.payload) {
-          // 线上段由部件 payload 决定：正文按字面文本，`@` 只来自 payload.mentions；
-          // 旧部件（无 mentions）才按当时的 wire 语义带程序收件人。
+          const payload = claim.payload;
+          const firstPart = claim.part.ordinal === 0;
+          // New structured parts carry mentions explicitly (including an empty list), so the
+          // shared encoder never invents a recipient. Legacy parts keep their historical CQ and
+          // first-part recipient behavior; quote metadata is independent of that branch.
+          const sendPayload = {
+            text: payload.text,
+            ...(payload.mentions === undefined
+              ? {}
+              : { mentions: firstPart ? payload.mentions : [] }),
+            ...(firstPart && payload.replyToMessageId !== undefined
+              ? { replyToMessageId: payload.replyToMessageId }
+              : {}),
+          };
           result = await this.options.port.send({
             kind: target.conversationKind,
             peerId: target.peerId,
-            message: qqTextSegments(
-              claim.payload,
-              claim.part.ordinal === 0 ? (target.participantId ?? null) : null,
+            message: qqReplySegments(
+              sendPayload,
+              firstPart && payload.mentions === undefined ? (target.participantId ?? null) : null,
             ),
           });
         } else {
@@ -277,13 +289,25 @@ export class OutboundDelivery {
             this.options.stickerAvailable?.(claim.payload.stickerId, target, this.now()) === false
               ? null
               : this.options.stickerFile(claim.payload.stickerId);
-          result = file
-            ? await this.options.port.send({
-                kind: target.conversationKind,
-                peerId: target.peerId,
-                message: [{ type: "image", data: { file } }],
-              })
-            : { kind: "not_sent", reason: "invalid_request" };
+          if (!file) {
+            result = { kind: "not_sent", reason: "invalid_request" };
+          } else {
+            const payload = claim.payload;
+            const firstPart = claim.part.ordinal === 0;
+            result = await this.options.port.send({
+              kind: target.conversationKind,
+              peerId: target.peerId,
+              message: qqReplySegments({
+                stickerFile: file,
+                ...(payload.mentions === undefined
+                  ? {}
+                  : { mentions: firstPart ? payload.mentions : [] }),
+                ...(firstPart && payload.replyToMessageId !== undefined
+                  ? { replyToMessageId: payload.replyToMessageId }
+                  : {}),
+              }),
+            });
+          }
         }
       } catch {
         result = { kind: "unknown", reason: "transport_error" };

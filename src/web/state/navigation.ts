@@ -602,7 +602,16 @@ export function createNavigationActions(
     },
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;
-      if (!pending || navigationBusy(get())) return;
+      const state = get();
+      // Saving needs settled editor baselines; ordinary read-only navigation does not.
+      if (
+        !pending ||
+        navigationBusy(state) ||
+        state.editorLoading ||
+        state.knowledgeReadLoading ||
+        state.knowledgeModelLoading
+      )
+        return;
       if (pending.kind === "scheme") {
         if (!(await get().saveQqDrafts())) {
           set({

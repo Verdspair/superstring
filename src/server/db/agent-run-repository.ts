@@ -40,6 +40,8 @@ type StepRow = {
   ended_at: string | null;
   error_code: string | null;
 };
+type EventSequenceRow = { run_id: string; last_seq: number };
+type CompletedOutputRow = { run_id: string; payload: string };
 type ContextRow = {
   run_id: string;
   step_id: string;
@@ -319,30 +321,86 @@ export class AgentRunRepository {
   }
 
   getRun(runId: string): RunSnapshot | null {
-    const row = this.db
-      .query("SELECT * FROM agent_runs WHERE run_id=?")
-      .get(runId) as RunRow | null;
-    if (!row) return null;
-    const steps = (
-      this.db
-        .query("SELECT * FROM agent_steps WHERE run_id=? ORDER BY step_no")
-        .all(runId) as StepRow[]
-    ).map(
-      (step): AgentStepSnapshot => ({
+    return this.readRunSnapshots("r.run_id=?", [runId], 1)[0] ?? null;
+  }
+
+  listRuns(input: {
+    ownerKind: string;
+    ownerId: string;
+    userId?: string;
+    agentId?: string;
+    limit?: number;
+  }): RunSnapshot[] {
+    const conditions = ["r.owner_kind=?", "r.owner_id=?"];
+    const args: (string | number)[] = [input.ownerKind, input.ownerId];
+    if (input.userId !== undefined) {
+      conditions.push("r.user_id=?");
+      args.push(input.userId);
+    }
+    if (input.agentId !== undefined) {
+      conditions.push("r.agent_id=?");
+      args.push(input.agentId);
+    }
+    return this.readRunSnapshots(conditions.join(" AND "), args, input.limit ?? 100);
+  }
+
+  private readRunSnapshots(where: string, args: (string | number)[], limit: number): RunSnapshot[] {
+    const rows = this.db
+      .query(
+        `SELECT r.* FROM agent_runs r WHERE ${where}
+        ORDER BY r.started_at DESC,r.rowid DESC LIMIT ?`,
+      )
+      .all(...args, limit) as RunRow[];
+    if (rows.length === 0) return [];
+
+    const runIds = rows.map((row) => row.run_id);
+    const placeholders = runIds.map(() => "?").join(",");
+    const steps = this.db
+      .query(
+        `SELECT step_id,run_id,step_no,model,phase,status,started_at,ended_at,error_code
+        FROM agent_steps WHERE run_id IN (${placeholders}) ORDER BY run_id,step_no`,
+      )
+      .all(...runIds) as StepRow[];
+    const sequences = this.db
+      .query(
+        `SELECT run_id,MAX(seq) AS last_seq FROM run_events
+        WHERE run_id IN (${placeholders}) GROUP BY run_id`,
+      )
+      .all(...runIds) as EventSequenceRow[];
+    const outputs = this.db
+      .query(
+        `SELECT run_id,payload FROM run_events
+        WHERE type='completed' AND run_id IN (${placeholders}) ORDER BY run_id,seq`,
+      )
+      .all(...runIds) as CompletedOutputRow[];
+    const stepsByRun = new Map<string, AgentStepSnapshot[]>();
+    for (const step of steps) {
+      const snapshots = stepsByRun.get(step.run_id) ?? [];
+      snapshots.push({
         stepId: step.step_id,
-        runId,
+        runId: step.run_id,
         stepNo: step.step_no,
         model: step.model,
         phase: step.phase,
         status: step.status,
-        context: { runId, stepId: step.step_id },
+        context: { runId: step.run_id, stepId: step.step_id },
         startedAt: step.started_at,
         endedAt: step.ended_at,
         errorCode: step.error_code,
-      }),
-    );
-    return {
-      runId,
+      });
+      stepsByRun.set(step.run_id, snapshots);
+    }
+    const lastSeqByRun = new Map(sequences.map((sequence) => [sequence.run_id, sequence.last_seq]));
+    const outputsByRun = new Map<string, RunSnapshot["outputs"]>();
+    for (const event of outputs) {
+      const completed = JSON.parse(event.payload) as Extract<RunEvent, { type: "completed" }>;
+      const runOutputs = outputsByRun.get(event.run_id) ?? [];
+      runOutputs.push(...completed.outputs);
+      outputsByRun.set(event.run_id, runOutputs);
+    }
+
+    return rows.map((row) => ({
+      runId: row.run_id,
       specId: row.spec_id,
       specVersion: row.spec_version,
       owner: {
@@ -355,43 +413,10 @@ export class AgentRunRepository {
       startedAt: row.started_at,
       endedAt: row.ended_at,
       errorCode: row.error_code,
-      steps,
-      lastSeq: (
-        this.db
-          .query("SELECT COALESCE(MAX(seq),0) AS seq FROM run_events WHERE run_id=?")
-          .get(runId) as { seq: number }
-      ).seq,
-      outputs: this.listEvents(runId).flatMap((event) =>
-        event.type === "completed" ? event.outputs : [],
-      ),
-    };
-  }
-
-  listRuns(input: {
-    ownerKind: string;
-    ownerId: string;
-    userId?: string;
-    agentId?: string;
-    limit?: number;
-  }): RunSnapshot[] {
-    const conditions = ["owner_kind=?", "owner_id=?"];
-    const args: (string | number)[] = [input.ownerKind, input.ownerId];
-    if (input.userId !== undefined) {
-      conditions.push("user_id=?");
-      args.push(input.userId);
-    }
-    if (input.agentId !== undefined) {
-      conditions.push("agent_id=?");
-      args.push(input.agentId);
-    }
-    args.push(input.limit ?? 100);
-    return (
-      this.db
-        .query(
-          `SELECT run_id FROM agent_runs WHERE ${conditions.join(" AND ")} ORDER BY started_at DESC, rowid DESC LIMIT ?`,
-        )
-        .all(...args) as { run_id: string }[]
-    ).map((row) => this.getRun(row.run_id) as RunSnapshot);
+      steps: stepsByRun.get(row.run_id) ?? [],
+      lastSeq: lastSeqByRun.get(row.run_id) ?? 0,
+      outputs: outputsByRun.get(row.run_id) ?? [],
+    }));
   }
 
   listEvents(runId: string, afterSeq = 0): RunEvent[] {

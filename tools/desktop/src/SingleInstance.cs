@@ -16,9 +16,14 @@ namespace Superstring.Desktop
     /// instead of starting a competing service (which would wrongly assume a
     /// stranger on the port belongs to us).
     /// </summary>
+    internal enum ExistingInstanceResult { Shown, Unavailable }
+
     internal sealed class SingleInstance
     {
         private Mutex _mutex;
+        private volatile bool _released;
+        private readonly object _pipeLock = new object();
+        private NamedPipeServerStream _activePipe;
         public bool IsFirst { get; private set; }
         public string MutexName { get; private set; }
         public string PipeName { get; private set; }
@@ -28,66 +33,103 @@ namespace Superstring.Desktop
             string hash = RootHash(projectRoot);
             MutexName = "Local\\superstring-desktop-" + hash;
             PipeName = "superstring-desktop-pipe-" + hash;
-
-            bool created;
-            _mutex = new Mutex(true, MutexName, out created);
-            IsFirst = created;
-            // If not created, another instance already owns the kernel object.
-            if (!created)
+            if (_mutex == null)
             {
-                try { _mutex.Close(); } catch { }
-                _mutex = null;
+                bool created;
+                _mutex = new Mutex(true, MutexName, out created);
+                if (created) { IsFirst = true; return true; }
             }
+            return AcquireCurrentThread();
+        }
+
+        private bool AcquireCurrentThread()
+        {
+            try { IsFirst = _mutex.WaitOne(0); }
+            catch (AbandonedMutexException) { IsFirst = true; }
             return IsFirst;
         }
 
         public void Release()
         {
-            try { if (_mutex != null) { _mutex.ReleaseMutex(); _mutex.Close(); } } catch { }
+            _released = true;
+            lock (_pipeLock)
+            {
+                if (_activePipe != null) { try { _activePipe.Dispose(); } catch { } _activePipe = null; }
+            }
+            try { if (IsFirst && _mutex != null) _mutex.ReleaseMutex(); } catch { }
+            IsFirst = false;
+            try { if (_mutex != null) _mutex.Close(); } catch { }
+            _mutex = null;
         }
 
-        public void NotifyExisting()
+        public ExistingInstanceResult NotifyExisting()
         {
             try
             {
-                using (var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out))
+                using (var client = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut))
                 {
                     client.Connect(2000);
-                    byte[] msg = Encoding.UTF8.GetBytes("show");
-                    client.Write(msg, 0, msg.Length);
+                    client.WriteByte(1);
                     client.Flush();
+                    byte[] response = new byte[1];
+                    var read = client.BeginRead(response, 0, 1, null, null);
+                    using (WaitHandle completion = read.AsyncWaitHandle)
+                    {
+                        if (!completion.WaitOne(6000)) return ExistingInstanceResult.Unavailable;
+                    }
+                    int count = client.EndRead(read);
+                    int responseByte = count == 1 ? response[0] : -1;
+                    if (responseByte == 1) return ExistingInstanceResult.Shown;
                 }
             }
-            catch
-            {
-                // If the pipe isn't reachable we simply don't surface a second window.
-            }
+            catch { }
+            return ExistingInstanceResult.Unavailable;
         }
 
-        public void StartPipeServer(Action onShow)
+        public void StartPipeServer(Func<ExistingInstanceResult> onShow)
         {
+            _released = false;
             Thread t = new Thread(() => PipeLoop(onShow));
             t.IsBackground = true;
             t.Start();
         }
 
-        private void PipeLoop(Action onShow)
+        private void PipeLoop(Func<ExistingInstanceResult> onShow)
         {
-            while (true)
+            while (!_released)
             {
+                NamedPipeServerStream server = null;
                 try
                 {
-                    using (var server = new NamedPipeServerStream(PipeName, PipeDirection.In))
+                    server = new NamedPipeServerStream(PipeName, PipeDirection.InOut);
+                    lock (_pipeLock)
                     {
-                        server.WaitForConnection();
-                        var buf = new byte[64];
-                        while (server.Read(buf, 0, buf.Length) > 0) { }
-                        if (onShow != null) onShow();
+                        if (_released) { server.Dispose(); return; }
+                        _activePipe = server;
                     }
+                    server.WaitForConnection();
+                    if (server.ReadByte() != 1) continue;
+                    ExistingInstanceResult result = onShow == null ? ExistingInstanceResult.Unavailable : onShow();
+                    server.WriteByte(result == ExistingInstanceResult.Shown ? (byte)1 : (byte)0);
+                    server.Flush();
+                }
+                catch (IOException)
+                {
+                    if (_released) return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    if (_released) return;
+                    break;
                 }
                 catch
                 {
-                    Thread.Sleep(500);
+                    break;
+                }
+                finally
+                {
+                    lock (_pipeLock) { if (object.ReferenceEquals(_activePipe, server)) _activePipe = null; }
+                    if (server != null) server.Dispose();
                 }
             }
         }

@@ -56,7 +56,13 @@ function capabilityFact(entry: CapabilityEntry, editor: PermissionEditor | null)
   return on === 0 ? { kind: "off" } : { kind: "partial" };
 }
 
-function CapabilityDirectory() {
+function CapabilityDirectory({
+  active = true,
+  hidden = false,
+}: {
+  active?: boolean;
+  hidden?: boolean;
+} = {}) {
   const { t, i18n } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -68,8 +74,9 @@ function CapabilityDirectory() {
   );
   const [query, setQuery] = useState("");
   useEffect(() => {
+    if (!active) return;
     void s.loadPermissionSettings();
-  }, [s.loadPermissionSettings]);
+  }, [active, s.loadPermissionSettings]);
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase(i18n.language);
     if (!needle) return CAPABILITY_CATALOG;
@@ -81,7 +88,12 @@ function CapabilityDirectory() {
     );
   }, [query, t, i18n.language]);
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label={t("workspace.capabilities")}>
+    <section
+      hidden={hidden}
+      className={hidden ? "hidden" : "flex h-full min-h-0 flex-col"}
+      style={hidden ? { display: "none" } : undefined}
+      aria-label={t("workspace.capabilities")}
+    >
       <header className="space-y-1 border-b px-4 py-5">
         <div className="flex items-center gap-2">
           <Wrench className="size-4 text-muted-foreground" />
@@ -245,16 +257,17 @@ function autoLoadTarget(state: {
 }
 
 // 自动读取失败后只接受显式重试，避免形成请求循环。
-function useAgentAutoLoad() {
+function useAgentAutoLoad(active = true) {
   const targetId = useSuperstringStore((s) => autoLoadTarget(s));
   const pageEditor = useSuperstringStore((s) => s.pageEditor);
   const editorLoading = useSuperstringStore((s) => s.editorLoading);
   const attempted = useRef<string | null>(null);
   useEffect(() => {
-    if (!targetId || attempted.current === targetId || pageEditor || editorLoading) return;
+    if (!active || !targetId || attempted.current === targetId || pageEditor || editorLoading)
+      return;
     attempted.current = targetId;
     void useSuperstringStore.getState().requestAgentNavigation(targetId);
-  }, [targetId, pageEditor, editorLoading]);
+  }, [active, targetId, pageEditor, editorLoading]);
   return useCallback((id?: string) => {
     const state = useSuperstringStore.getState();
     const next = id ?? autoLoadTarget(state);
@@ -262,7 +275,7 @@ function useAgentAutoLoad() {
   }, []);
 }
 
-function AgentScopedDetail({ entry }: { entry: CapabilityEntry }) {
+function AgentScopedDetail({ entry, active = true }: { entry: CapabilityEntry; active?: boolean }) {
   const { t } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -291,7 +304,7 @@ function AgentScopedDetail({ entry }: { entry: CapabilityEntry }) {
       webAccessSaving: state.webAccessSaving,
     })),
   );
-  const attempt = useAgentAutoLoad();
+  const attempt = useAgentAutoLoad(active);
   const busy = capabilityGuards(s);
   const pendingDraft =
     s.dirty ||
@@ -340,7 +353,7 @@ function AgentScopedDetail({ entry }: { entry: CapabilityEntry }) {
         entry.detail === "memory" ? (
           <MemoryToolSettings />
         ) : (
-          <KnowledgeToolSettings />
+          <KnowledgeToolSettings active={active} />
         )
       ) : (
         <div className="space-y-3">
@@ -379,7 +392,7 @@ function AgentScopedDetail({ entry }: { entry: CapabilityEntry }) {
   );
 }
 
-function SessionLinkDetail({ entry }: { entry: CapabilityEntry }) {
+function SessionLinkDetail({ entry, active = true }: { entry: CapabilityEntry; active?: boolean }) {
   const { t } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -413,10 +426,11 @@ function SessionLinkDetail({ entry }: { entry: CapabilityEntry }) {
     selectedId !== "" && s.editorAgentId === selectedId && !!s.pageEditor && !s.editorLoading;
   const attempted = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedId || attempted.current === selectedId || ready || s.editorLoading) return;
+    if (!active || !selectedId || attempted.current === selectedId || ready || s.editorLoading)
+      return;
     attempted.current = selectedId;
     void s.requestAgentNavigation(selectedId);
-  }, [selectedId, ready, s.editorLoading, s.requestAgentNavigation]);
+  }, [active, selectedId, ready, s.editorLoading, s.requestAgentNavigation]);
   return (
     <div className="w-full space-y-6 px-4 py-6">
       <div className="min-w-0">
@@ -498,7 +512,7 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
   if (entry.detail === "memory" || entry.detail === "knowledge")
     return (
       <CapabilityDetailShell entry={entry}>
-        <AgentScopedDetail entry={entry} />
+        <AgentScopedDetail entry={entry} active={active} />
       </CapabilityDetailShell>
     );
   // 面板自带标题与内边距（联网/执行）：壳层只补“允许尝试≠完整可用”的事实行。
@@ -508,7 +522,7 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
         <p className="border-b px-4 py-3 text-sm text-muted-foreground">
           {t("capabilities.web.scopeNote")}
         </p>
-        <WebAccessPanel />
+        <WebAccessPanel active={active} />
       </CapabilityDetailShell>
     );
   if (entry.detail === "media")
@@ -522,7 +536,7 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
             </p>
           </div>
           <p className="text-sm text-muted-foreground">{t("capabilities.media.scopeNote")}</p>
-          <CapabilityPolicyPanel modules={["qqMedia", "qqStickers"]} />
+          <CapabilityPolicyPanel modules={["qqMedia", "qqStickers"]} active={active} />
           <div className="flex flex-wrap gap-2 border-t pt-4">
             <Button variant="outline" size="sm" onClick={() => openSettingsRoute("qq-stickers")}>
               {t("workspace.sticker_library")}
@@ -555,7 +569,7 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
     );
   return (
     <CapabilityDetailShell entry={entry}>
-      <SessionLinkDetail entry={entry} />
+      <SessionLinkDetail entry={entry} active={active} />
     </CapabilityDetailShell>
   );
 }
@@ -563,5 +577,21 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
 export function CapabilitiesWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute);
   const entry = route === "system-capabilities" ? null : capabilityByRoute(route);
-  return entry ? <CapabilityDetail entry={entry} active={active} /> : <CapabilityDirectory />;
+  const isDirectory = !entry;
+  const [visitedDirectory, setVisitedDirectory] = useState(isDirectory);
+
+  useEffect(() => {
+    if (isDirectory) {
+      setVisitedDirectory(true);
+    }
+  }, [isDirectory]);
+
+  return (
+    <>
+      {visitedDirectory && (
+        <CapabilityDirectory active={active && isDirectory} hidden={!isDirectory} />
+      )}
+      {entry && <CapabilityDetail entry={entry} active={active} />}
+    </>
+  );
 }

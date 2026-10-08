@@ -9,7 +9,7 @@ export interface ChunkPreloadItem {
 }
 
 export interface ChunkPreloadOptions {
-  /** 待预载的项列表。缺省时使用 PRELOAD_REGISTRY 中排除 currentSpace 后的所有项 */
+  /** 待预载的项列表；当前工作区只跳过代码预载，保留登记的数据预热。 */
   items?: readonly ChunkPreloadItem[];
   /** 最大并发加载数，缺省为 2 */
   concurrency?: number;
@@ -21,7 +21,7 @@ export interface ChunkPreloadOptions {
   isDocumentVisible?: () => boolean;
   /** 可注入的可见性事件监听目标，缺省为 typeof document !== "undefined" ? document : null */
   visibilityTarget?: EventTarget | null;
-  /** 是否在 Chunk 预载后执行注册的数据预热，缺省为 true */
+  /** 是否执行注册的数据预热，缺省为 true */
   preloadData?: boolean;
 }
 
@@ -64,51 +64,66 @@ export function startChunkPreload(options: ChunkPreloadOptions = {}): ChunkPrelo
 
   const items: ChunkPreloadItem[] = options.items
     ? [...options.items]
-    : PRELOAD_REGISTRY.filter((entry) =>
-        options.currentSpace ? entry.space !== options.currentSpace : true,
-      ).map((entry) => ({
+    : PRELOAD_REGISTRY.map((entry) => ({
         id: entry.id,
         loadChunk: entry.loadChunk,
         loadData: entry.loadData,
         space: entry.space,
       }));
 
-  const queue = [...items];
-  let inFlightCount = 0;
+  const chunkQueue = items.filter(
+    (item) => !options.currentSpace || item.space !== options.currentSpace,
+  );
+  const dataQueue =
+    options.preloadData === false
+      ? []
+      : items.filter(
+          (item) => options.currentSpace && item.space === options.currentSpace && item.loadData,
+        );
+  let inFlightChunks = 0;
+  let inFlightData = 0;
   let canceled = false;
   let cancelIdle: (() => void) | null = null;
 
   const drain = () => {
-    if (canceled) return;
-    if (!isDocumentVisible()) return;
-
-    while (inFlightCount < concurrency && queue.length > 0) {
-      const item = queue.shift();
+    if (canceled || !isDocumentVisible()) return;
+    while (inFlightData < concurrency && dataQueue.length > 0) {
+      const item = dataQueue.shift();
+      if (!item?.loadData) continue;
+      inFlightData++;
+      void item
+        .loadData()
+        .catch(() => {})
+        .finally(() => {
+          inFlightData--;
+          scheduleDrain();
+        });
+    }
+    while (inFlightChunks < concurrency && chunkQueue.length > 0) {
+      const item = chunkQueue.shift();
       if (!item) break;
-
-      inFlightCount++;
-      const executeItem = async () => {
-        try {
-          await item.loadChunk();
-          if (!canceled && options.preloadData !== false && item.loadData) {
-            await item.loadData();
-          }
-        } catch {
-          // 静默处理后台预加载失败，防止成为 unhandled rejection；
-          // 真实用户导航按需加载仍由 React.lazy 与 createCachedLoader 重试。
-        } finally {
-          inFlightCount--;
-          if (!canceled && queue.length > 0 && isDocumentVisible()) {
-            scheduleDrain();
-          }
-        }
-      };
-      void executeItem();
+      inFlightChunks++;
+      void item
+        .loadChunk()
+        .then(() => {
+          if (!canceled && options.preloadData !== false && item.loadData) dataQueue.push(item);
+        })
+        .catch(() => {})
+        .finally(() => {
+          inFlightChunks--;
+          scheduleDrain();
+        });
     }
   };
 
   const scheduleDrain = () => {
-    if (canceled || queue.length === 0 || cancelIdle !== null) return;
+    if (
+      canceled ||
+      !isDocumentVisible() ||
+      (chunkQueue.length === 0 && dataQueue.length === 0) ||
+      cancelIdle !== null
+    )
+      return;
     cancelIdle = scheduleIdle(() => {
       cancelIdle = null;
       drain();
@@ -134,7 +149,8 @@ export function startChunkPreload(options: ChunkPreloadOptions = {}): ChunkPrelo
   const cancel = () => {
     if (canceled) return;
     canceled = true;
-    queue.length = 0;
+    chunkQueue.length = 0;
+    dataQueue.length = 0;
     if (cancelIdle) {
       cancelIdle();
       cancelIdle = null;

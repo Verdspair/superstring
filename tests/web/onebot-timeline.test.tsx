@@ -128,6 +128,7 @@ it("OneBot timeline revalidates expired bodies and redacts projections only when
   expect(events.mock.calls[1][1]).toEqual({ direction: "after", afterSeq: 0, limit: 101 });
   fireEvent.blur(window);
   expect(screen.getByText("原文已过保留期")).toBeTruthy();
+  expect(events).toHaveBeenCalledTimes(2);
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   fireEvent(document, new Event("visibilitychange"));
   expect(screen.getByText("原文已过保留期")).toBeTruthy();

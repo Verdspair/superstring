@@ -89,7 +89,7 @@ export interface ModelTool {
 }
 
 export interface ModelGateway {
-  listModels(): Promise<string[]>;
+  listModels(options?: { signal?: AbortSignal }): Promise<string[]>;
   /** `signal` aborts the capacity probe when the caller is cancelled. */
   loadedContextCapacity(model: string, options?: { signal?: AbortSignal }): Promise<number | null>;
   probeModelLoaded(): Promise<boolean>;
@@ -771,17 +771,19 @@ export function createLmStudioClient(
   // do not each ask the local service again; short enough that loading a model in LM Studio shows up
   // on the next turn rather than after a restart.
   let loadedCache: { at: number; models: readonly string[] } | null = null;
-  const loadedLocalModels = async (): Promise<readonly string[]> => {
+  const loadedLocalModels = async (signal?: AbortSignal): Promise<readonly string[]> => {
+    signal?.throwIfAborted();
     const now = Date.now();
     if (loadedCache !== null && now - loadedCache.at < 5_000) return loadedCache.models;
     try {
-      const body = (await requestJson(config, "/models", { method: "GET" }, timeoutMs)) as {
+      const body = (await requestJson(config, "/models", { method: "GET" }, timeoutMs, signal)) as {
         data?: Array<{ id?: string }>;
       };
       const models = (body.data ?? []).map((m) => String(m.id ?? "")).filter((id) => id !== "");
       loadedCache = { at: now, models };
       return models;
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error;
       // A catalogue we cannot read is not a licence to invent a substitute; the configured name
       // travels and the call's own error explains what happened.
       return [];
@@ -793,10 +795,10 @@ export function createLmStudioClient(
    * line in the server console, because a silent swap would make "it answered differently today"
    * impossible to explain.
    */
-  const effectiveModel = async (model: string): Promise<string> => {
+  const effectiveModel = async (model: string, signal?: AbortSignal): Promise<string> => {
     const chosen = pickUsableModel({
       configured: model,
-      availableLocal: await loadedLocalModels(),
+      availableLocal: await loadedLocalModels(signal),
       isExternal: routeOfExternal(model) !== null,
     });
     if (chosen !== model) console.warn(`[model-fallback] ${model} 不可用，本次改用 ${chosen}`);
@@ -806,8 +808,14 @@ export function createLmStudioClient(
   return {
     config,
 
-    async listModels(): Promise<string[]> {
-      const body = (await requestJson(config, "/models", { method: "GET" }, timeoutMs)) as {
+    async listModels(options?: { signal?: AbortSignal }): Promise<string[]> {
+      const body = (await requestJson(
+        config,
+        "/models",
+        { method: "GET" },
+        timeoutMs,
+        options?.signal,
+      )) as {
         data?: Array<{ id?: string }>;
       };
       return (body.data ?? []).map((m) => String(m.id ?? "")).filter((id) => id !== "");
@@ -825,7 +833,7 @@ export function createLmStudioClient(
       if (external !== null) return external.contextWindow;
       // A configured local model that is not loaded is judged by its substitute's capacity, because
       // that substitute is the model the call will actually reach (see `effectiveModel`).
-      const used = await effectiveModel(model);
+      const used = await effectiveModel(model, options?.signal);
       if (used !== model) {
         const substitute = routeOfExternal(used);
         if (substitute !== null) return substitute.contextWindow;
@@ -885,7 +893,7 @@ export function createLmStudioClient(
 
     async complete(options): Promise<string> {
       const requested = options.model || config.model;
-      const used = await effectiveModel(requested);
+      const used = await effectiveModel(requested, options.signal);
       reportResolvedModel(options.onModelResolved, used);
       const externalRoute = routeOfExternal(used);
       const isExternal = externalRoute !== null;
@@ -1104,7 +1112,7 @@ export function createLmStudioClient(
     },
 
     async *streamChat(options): AsyncGenerator<string, void, unknown> {
-      const used = await effectiveModel(options.model || config.model);
+      const used = await effectiveModel(options.model || config.model, options.signal);
       reportResolvedModel(options.onModelResolved, used);
       // 流式同钩子（T10 基础）：actualModel 冻结后、组 body 前一次受信准备；抛错=流不启动。
       // wire 转换用最终 messages/resolver 在这里完成（同 complete）。

@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
 import {
@@ -23,9 +24,25 @@ import { executionPolicy, toolExecutionEnabled } from "../../../shared/contracts
 import { compilePersona } from "../../../shared/contracts/persona-compile";
 
 export function IdentityEditor() {
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      pageEditor: state.pageEditor,
+      settingsSaving: state.settingsSaving,
+      patchPageAgent: state.patchPageAgent,
+      patchPagePersona: state.patchPagePersona,
+    })),
+  );
   const t = useTranslation().t;
   const editor = s.pageEditor;
+  const previewPersona = editor?.personaDraft;
+  const previewIntensity = editor?.draft.persona_intensity;
+  const compiledPersona = useMemo(
+    () =>
+      previewPersona && previewIntensity !== undefined
+        ? compilePersona(previewPersona, previewIntensity)
+        : "",
+    [previewPersona, previewIntensity],
+  );
   if (!editor) return null;
   const { draft, personaDraft: persona } = editor;
   return (
@@ -123,8 +140,7 @@ export function IdentityEditor() {
         </CardHeader>
         <CardContent>
           <pre className="max-h-[65dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 font-mono text-xs leading-relaxed">
-            {compilePersona(persona, draft.persona_intensity) ||
-              t("library.no.personality.defined")}
+            {compiledPersona || t("library.no.personality.defined")}
           </pre>
         </CardContent>
       </Card>
@@ -133,13 +149,20 @@ export function IdentityEditor() {
 }
 
 // 此处只投影工具范围，编辑仍归系统能力与扩展授权。
-function AgentToolScope({ agentId }: { agentId: string }) {
+function AgentToolScope({ agentId, active }: { agentId: string; active: boolean }) {
   const t = useTranslation().t;
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      openSettingsRoute: state.openSettingsRoute,
+      editorAgentId: state.editorAgentId,
+      apiClient: state.apiClient,
+    })),
+  );
   const open = s.openSettingsRoute;
   const [scope, setScope] = useState<{ approved: string[]; pending: number } | null>(null);
   const [scopeError, setScopeError] = useState("");
   useEffect(() => {
+    if (!active) return;
     setScope(null);
     setScopeError("");
     if (s.editorAgentId === "__new__") {
@@ -149,8 +172,11 @@ function AgentToolScope({ agentId }: { agentId: string }) {
     const task = startRead((signal) => s.apiClient.getPermissions(signal), {
       success: (value) => {
         const execution = executionPolicy(value.policy);
+        const grants = new Map<string, (typeof value.policy.grants)[number]>();
+        for (const grant of value.policy.grants)
+          if (!grants.has(grant.resource)) grants.set(grant.resource, grant);
         const mine = value.resources.flatMap((resource) => {
-          const grant = value.policy.grants.find((entry) => entry.resource === resource.resource);
+          const grant = grants.get(resource.resource);
           if (
             !grant ||
             (grant.agentIds && !grant.agentIds.includes(agentId)) ||
@@ -171,7 +197,7 @@ function AgentToolScope({ agentId }: { agentId: string }) {
       failure: (error) => setScopeError(error instanceof Error ? error.message : String(error)),
     });
     return () => task.cancel();
-  }, [agentId, s.apiClient, s.editorAgentId]);
+  }, [active, agentId, s.apiClient, s.editorAgentId]);
   return (
     <Card>
       <CardHeader>
@@ -216,20 +242,37 @@ function AgentToolScope({ agentId }: { agentId: string }) {
   );
 }
 
-export function CapabilityEditor() {
-  const s = useSuperstringStore();
+export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      pageEditor: state.pageEditor,
+      editorAgentId: state.editorAgentId,
+      loadOrganization: state.loadOrganization,
+      refreshCapacityPreview: state.refreshCapacityPreview,
+      organizationEditor: state.organizationEditor,
+      modelNames: state.modelNames,
+      loadedModelNames: state.loadedModelNames,
+      externalModelNames: state.externalModelNames,
+      modelStatus: state.modelStatus,
+      capacityPreview: state.capacityPreview,
+      settingsSaving: state.settingsSaving,
+      patchPageAgent: state.patchPageAgent,
+      refreshModels: state.refreshModels,
+      applyDefaultModelToAgent: state.applyDefaultModelToAgent,
+    })),
+  );
   const t = useTranslation().t;
   const editor = s.pageEditor;
   const [confirmDefault, setConfirmDefault] = useState(false);
   useEffect(() => {
-    void s.loadOrganization();
-  }, [s.loadOrganization]);
+    if (active) void s.loadOrganization();
+  }, [active, s.loadOrganization]);
   const modelName = editor?.draft.model_name;
   const compressionModel = editor?.draft.context_compression_model_name;
   useEffect(() => {
-    if (s.editorAgentId !== "__new__" && modelName)
+    if (active && s.editorAgentId !== "__new__" && modelName)
       void s.refreshCapacityPreview([modelName, modelName, compressionModel ?? null]);
-  }, [s.editorAgentId, modelName, compressionModel, s.refreshCapacityPreview]);
+  }, [active, s.editorAgentId, modelName, compressionModel, s.refreshCapacityPreview]);
   if (!editor) return null;
   const defaultModel = s.organizationEditor?.modelName;
   const alreadyDefault =
@@ -246,6 +289,7 @@ export function CapabilityEditor() {
   const modelFields = [
     ["model_name", "library.chat.model"],
     ["memory_consolidation_model_name", "library.memory.organization.model"],
+    ["memory_retrieval_model_name", "library.memory.reading.model"],
     ["context_compression_model_name", "library.context.compression.model"],
   ] as const;
   const numberField = (key: keyof typeof p5, label: string, min: number, max: number, step = 1) => (
@@ -393,7 +437,7 @@ export function CapabilityEditor() {
             </Accordion>
           </CardContent>
         </Card>
-        <AgentToolScope agentId={editor.agent.id} />
+        <AgentToolScope agentId={editor.agent.id} active={active} />
       </div>
       {confirmDefault && defaultModel && (
         <ConfirmDialog

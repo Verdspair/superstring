@@ -2052,91 +2052,210 @@ describe("sticker search context and permissions", () => {
     const firstSmall = "11111111-1111-4111-8111-111111111111";
     const secondSmall = "33333333-3333-4333-8333-333333333333";
     const descriptions = "详".repeat(2000);
-    const pages: ReturnType<typeof stickerObservation>[] = [];
-    let calls = 0;
-    const h = setup(
-      {
-        complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(22528 - 2048);
-          calls++;
-          if (calls > 1) {
-            const page = stickerObservation(request);
-            pages.push(page);
-            expect(page.status).toBe("available");
-            expect(page.items).toHaveLength(1);
-            expect(JSON.stringify(request.messages)).not.toContain(descriptions);
-            if (page.nextCursor === null) return '{"kind":"none"}';
-            return JSON.stringify({
-              kind: "invoke",
-              name: "sticker.search",
-              arguments: { query: "", limit: 1, cursor: page.nextCursor },
-            });
-          }
-          return JSON.stringify({
-            kind: "invoke",
-            name: "sticker.search",
-            arguments: { query: "", limit: 1 },
-          });
-        },
-      },
-      { stickersAvailable: true },
-    );
-    // 本用例验证分页：容量需容纳当前完整协议，同时仍使大描述超预算、小候选可读。
-    // 22528 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
-    h.gateway.loadedContextCapacity = async () => 22528;
-    const anchor = addSticker(h);
-    const collections = [collection(h, anchor)];
-    setQqStickerEnabled(h.orm, anchor, false);
     const largeIds = [
       "00000000-0000-4000-8000-000000000000",
       "22222222-2222-4222-8222-222222222222",
     ];
-    for (const id of largeIds) {
-      extra(h, "large", collections, id);
-      editQqSticker(h.orm, id, { description: descriptions });
+    const runAtCapacity = async (capacity: number) => {
+      const pages: ReturnType<typeof stickerObservation>[] = [];
+      const requestUnits: number[] = [];
+      let calls = 0;
+      const h = setup(
+        {
+          complete: async (request) => {
+            requestUnits.push(inputUnits(request.messages));
+            calls++;
+            if (calls > 1) {
+              const page = stickerObservation(request);
+              pages.push(page);
+              if (page.status !== "available" || page.nextCursor === null) return '{"kind":"none"}';
+              return JSON.stringify({
+                kind: "invoke",
+                name: "sticker.search",
+                arguments: { query: "", limit: 1, cursor: page.nextCursor },
+              });
+            }
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "", limit: 1 },
+            });
+          },
+        },
+        { stickersAvailable: true },
+      );
+      h.gateway.loadedContextCapacity = async () => capacity;
+      const anchor = addSticker(h);
+      const collections = [collection(h, anchor)];
+      setQqStickerEnabled(h.orm, anchor, false);
+      for (const id of largeIds) {
+        extra(h, "large", collections, id);
+        editQqSticker(h.orm, id, { description: descriptions });
+      }
+      extra(h, "first compact", collections, firstSmall);
+      extra(h, "second compact", collections, secondSmall);
+      h.receive("1");
+      try {
+        const result = await activate(h);
+        return { fits: true as const, h, result, pages, requestUnits, calls };
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "CONTEXT_BUDGET_EXCEEDED")
+          return { fits: false as const };
+        throw error;
+      }
+    };
+    const capacityProbe = setup();
+    const upper = await capacityProbe.gateway.loadedContextCapacity("chat-model", {
+      signal: new AbortController().signal,
+    });
+    if (upper === null) throw new Error("synthetic model capacity unavailable");
+    let low = 1,
+      high = upper;
+    while (low < high) {
+      const capacity = Math.floor((low + high) / 2);
+      const probe = await runAtCapacity(capacity);
+      if (probe.fits && probe.calls >= 3) high = capacity;
+      else low = capacity + 1;
     }
-    extra(h, "first compact", collections, firstSmall);
-    extra(h, "second compact", collections, secondSmall);
-    h.receive("1");
-    expect((await activate(h)).status).toBe("no_output");
+    const calibrated = await runAtCapacity(low);
+    if (!calibrated.fits) throw new Error("current protocol cannot reach both sticker pages");
+    const { h, result, calls, pages, requestUnits } = calibrated;
+    const ceiling = Math.floor((low - h.scheme.replyOutputReserved) * (1 - h.scheme.headroomRatio));
+    expect(result.status).toBe("no_output");
     expect(calls).toBe(3);
+    expect(requestUnits).toHaveLength(3);
+    expect(requestUnits.every((units) => units <= ceiling)).toBe(true);
+    expect(pages.every((page) => page.status === "available" && page.items.length === 1)).toBe(
+      true,
+    );
     expect(pages.map((page) => page.items[0].id)).toEqual([firstSmall, secondSmall]);
     expect(pages.map((page) => page.nextCursor)).toEqual([firstSmall, null]);
+    expect(JSON.stringify(pages)).not.toContain(descriptions);
     for (const id of largeIds)
       expect(h.db.query("SELECT description FROM qq_sticker_assets WHERE id=?").get(id)).toEqual({
         description: descriptions,
       });
+    console.log("sticker-pagination-calibration", { capacity: low, ceiling, requestUnits });
   });
+
   it("reports a terminal budget-exhausted page only after no authorized whole item fits", async () => {
-    let calls = 0;
-    const h = setup(
-      {
-        complete: async (request) => {
-          expect(inputUnits(request.messages)).toBeLessThanOrEqual(21500 - 2048);
-          if (++calls === 1)
-            return JSON.stringify({
-              kind: "invoke",
-              name: "sticker.search",
-              arguments: { query: "" },
+    const description = "详".repeat(2000);
+    const runAtCapacity = async (capacity: number) => {
+      let calls = 0;
+      const requestUnits: number[] = [];
+      const candidateMeasures: number[] = [];
+      let observedPage: ReturnType<typeof stickerObservation> | undefined;
+      const h = setup(
+        {
+          complete: async (request) => {
+            requestUnits.push(inputUnits(request.messages));
+            if (++calls === 1)
+              return JSON.stringify({
+                kind: "invoke",
+                name: "sticker.search",
+                arguments: { query: "" },
+              });
+            observedPage = stickerObservation(request);
+            const observation = (value: unknown, sources: unknown[] = []) => ({
+              kind: "action_observation",
+              trust: "data_only",
+              value: {
+                id: "terminal-budget-fixture",
+                name: "sticker.search",
+                arguments: { query: "" },
+                value,
+                sources,
+              },
             });
-          expect(stickerObservation(request)).toEqual({
-            status: "budget_exhausted",
-            items: [],
-            nextCursor: null,
-          });
-          return '{"kind":"none"}';
+            const item = {
+              id: "terminal-budget-candidate",
+              name: "wave",
+              description,
+              tags: [],
+              recentlyUsed: false,
+            };
+            const baseUnits = inputUnits(request.messages);
+            const addedUnits = (value: unknown, sources: unknown[] = []) =>
+              inputUnits([
+                ...request.messages,
+                {
+                  role: "user",
+                  content: [{ kind: "text", text: JSON.stringify(observation(value, sources)) }],
+                },
+              ]) - baseUnits;
+            candidateMeasures.push(
+              addedUnits(observedPage),
+              addedUnits({ status: "available", items: [item], nextCursor: null }, [
+                { kind: "qq_sticker", id: item.id, revision: "fixture" },
+              ]),
+            );
+            return '{"kind":"none"}';
+          },
         },
-      },
-      { stickersAvailable: true },
-    );
-    // 本用例验证分页：容量需容纳当前完整协议，同时仍使大描述超预算、小候选可读。
-    // 21500 仅是此合成夹具容量，不改变产品默认；下面的跳过与耗尽断言验证预算仍受限。
-    h.gateway.loadedContextCapacity = async () => 21500;
-    const large = addSticker(h);
-    editQqSticker(h.orm, large, { description: "详".repeat(2000) });
-    h.receive("1");
-    expect((await activate(h)).status).toBe("no_output");
+        { stickersAvailable: true },
+      );
+      h.gateway.loadedContextCapacity = async () => capacity;
+      const large = addSticker(h);
+      editQqSticker(h.orm, large, { description });
+      h.receive("1");
+      try {
+        const result = await activate(h);
+        return {
+          ok: true as const,
+          h,
+          result,
+          calls,
+          requestUnits,
+          candidateMeasures,
+          observedPage,
+        };
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "CONTEXT_BUDGET_EXCEEDED")
+          return { ok: false as const, h, calls, requestUnits, candidateMeasures };
+        throw error;
+      }
+    };
+
+    const capacityProbe = setup();
+    const maximum = await capacityProbe.gateway.loadedContextCapacity("chat-model", {
+      signal: new AbortController().signal,
+    });
+    expect(maximum).not.toBeNull();
+    if (maximum === null) throw new Error("synthetic model capacity unavailable");
+    let low = 1;
+    let high = maximum;
+    // Calibrate the first capacity where this active protocol reaches a complete observation turn.
+    while (low < high) {
+      const capacity = Math.floor((low + high) / 2);
+      const probe = await runAtCapacity(capacity);
+      if (probe.calls >= 2) high = capacity;
+      else low = capacity + 1;
+    }
+    const calibrated = await runAtCapacity(low);
+    expect(calibrated.ok).toBe(true);
+    if (!calibrated.ok) throw new Error("calibrated protocol did not reach observation");
+    const { h, result, calls, requestUnits, candidateMeasures, observedPage } = calibrated;
+    const ceiling = Math.floor((low - h.scheme.replyOutputReserved) * (1 - h.scheme.headroomRatio));
+    expect(result.status).toBe("no_output");
     expect(calls).toBe(2);
+    expect(observedPage).toEqual({
+      status: "budget_exhausted",
+      items: [],
+      nextCursor: null,
+    });
+    expect(requestUnits).toHaveLength(2);
+    expect(requestUnits.every((units) => units <= ceiling)).toBe(true);
+    expect(candidateMeasures).toHaveLength(2);
+    expect(candidateMeasures[0]).toBeLessThan(candidateMeasures[1]);
+    expect(candidateMeasures[1]).toBeGreaterThan(ceiling - requestUnits[1]!);
+    console.info("terminal-budget-calibration", {
+      capacity: low,
+      ceiling,
+      decisionRequestUnits: requestUnits[0],
+      observationRequestUnits: requestUnits[1],
+      emptyObservationIncrement: candidateMeasures[0],
+      wholeCandidateIncrement: candidateMeasures[1],
+    });
     expect(h.outbox.list({})).toEqual([]);
   });
   it("does not use a disclosed candidate after its asset is disabled", async () => {

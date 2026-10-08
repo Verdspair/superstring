@@ -99,6 +99,21 @@ function candidateEventKeys(db: Database, scope: QqConversationScope, qq: string
 
 /** The QQ really appeared in this conversation's journal timeline (sender or recorded mention). */
 function memberEstablished(db: Database, scope: QqConversationScope, qq: string): boolean {
+  const sender = db
+    .query(`SELECT 1 FROM conversation_events c JOIN qq_events e ON e.event_key=c.source_id
+      JOIN qq_message_facts f ON f.event_key=e.event_key
+      WHERE c.conversation_id=? AND c.source_kind='qq_event' AND c.kind IN('inbound','outbound')
+        AND e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?
+        AND e.speaker_id=? LIMIT 1`)
+    .get(
+      scope.conversationId,
+      scope.accountId,
+      scope.conversationKind,
+      scope.peerId,
+      scope.agentId,
+      qq,
+    );
+  if (sender) return true;
   return candidateEventKeys(db, scope, qq).length > 0;
 }
 

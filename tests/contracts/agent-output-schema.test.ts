@@ -94,6 +94,25 @@ it("skips a leading echo envelope to reach the decision, without loosening the t
   expect(() => parseAgentDecision('{"kind":"none"} {"kind":"action_observation"}')).toThrow();
 });
 
+it("accepts an independent non-UUID reply reference on both inline and generated drafts", () => {
+  const reference = "-1001234567890";
+  for (const draft of [
+    { kind: "inline", targetId: "t", text: "quote", replyToMessageId: reference },
+    { kind: "generate", targetId: "t", instructions: "answer it", replyToMessageId: reference },
+  ]) {
+    const decision = parseAgentDecision(JSON.stringify({ kind: "final", outputs: [draft] }));
+    expect(decision).toMatchObject({ kind: "final", outputs: [{ replyToMessageId: reference }] });
+  }
+  expect(() =>
+    parseAgentDecision(
+      JSON.stringify({
+        kind: "final",
+        outputs: [{ kind: "inline", targetId: "t", text: "x", replyToMessageId: "" }],
+      }),
+    ),
+  ).toThrow();
+});
+
 it("requests an explicit sticker decision from structured providers while accepting legacy omission", () => {
   const schema = AGENT_DECISION_JSON_SCHEMA as JsonSchema;
   const final = schema.oneOf?.find((variant) => variant.properties?.kind?.const === "final");
@@ -137,11 +156,27 @@ it("shares one inline draft shape between final outputs and the speech.reply ter
     kind: "inline",
     targetId: "allowed",
     text: "back",
+    replyToMessageId: "-10001",
     mentionIds: ["10001"],
     stickerIds: [],
   };
   expect(InlineOutputDraftSchema.parse(draft)).toEqual(draft);
-  // mentionIds 可选；给了就是非空字符串数组。
+  // 引用、艾特、贴图彼此独立；消息 ID 是 platform ID，不要求 UUID，可为负数。
+  const quoted = {
+    kind: "inline" as const,
+    targetId: "t",
+    text: "quoted",
+    replyToMessageId: "-1001234567890",
+  };
+  expect(InlineOutputDraftSchema.parse(quoted)).toEqual(quoted);
+  const outputVariants = (AGENT_DECISION_JSON_SCHEMA as JsonSchema).oneOf?.find(
+    (variant) => variant.properties?.kind?.const === "final",
+  )?.properties?.outputs?.items?.oneOf;
+  const replyDescription = outputVariants?.find((variant) => variant.properties?.replyToMessageId)
+    ?.properties?.replyToMessageId?.description;
+  expect(replyDescription).toBe(
+    "Disclosed QQ platform message ID to quote; independent of mentions. Host checks scope and availability.",
+  );
   expect(InlineOutputDraftSchema.parse({ kind: "inline", targetId: "t", text: "x" })).toEqual({
     kind: "inline",
     targetId: "t",
@@ -149,6 +184,17 @@ it("shares one inline draft shape between final outputs and the speech.reply ter
   });
   expect(() =>
     InlineOutputDraftSchema.parse({ kind: "inline", targetId: "t", text: "x", mentionIds: [""] }),
+  ).toThrow();
+  expect(() =>
+    InlineOutputDraftSchema.parse({
+      kind: "inline",
+      targetId: "t",
+      text: "x",
+      replyToMessageId: "",
+    }),
+  ).toThrow();
+  expect(() =>
+    InlineOutputDraftSchema.parse({ kind: "inline", targetId: "t", text: "x", unknown: true }),
   ).toThrow();
   const decision = parseAgentDecision(JSON.stringify({ kind: "final", outputs: [draft] }));
   expect(decision).toEqual({ kind: "final", outputs: [draft] });

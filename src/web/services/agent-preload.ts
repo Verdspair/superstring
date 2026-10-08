@@ -46,7 +46,11 @@ let slot:
       memoryEntries: EntriesList | null;
     })
   | null = null;
-let inFlight: { owner: AgentPreloadOwner; promise: Promise<WarmAgentResult> } | null = null;
+let inFlight: {
+  owner: AgentPreloadOwner;
+  promise: Promise<WarmAgentResult>;
+  persona: Promise<PersonaResponse | null>;
+} | null = null;
 
 /**
  * 统一执行助手人设与选中记忆首屏预读（仅 GET，不写任何状态）。
@@ -54,30 +58,38 @@ let inFlight: { owner: AgentPreloadOwner; promise: Promise<WarmAgentResult> } | 
  * - 同 {api, agentId} 重复调用直接命中已有结果，不重复发包。
  */
 export function warmAgentResources(api: SuperstringApi, agentId: string): Promise<WarmAgentResult> {
+  if (inFlight && sameOwner(inFlight.owner, api, agentId)) return inFlight.promise;
   if (slot && sameOwner(slot, api, agentId) && (slot.persona || slot.memoryEntries)) {
     return Promise.resolve({ persona: slot.persona, memoryEntries: slot.memoryEntries });
   }
-  if (inFlight && sameOwner(inFlight.owner, api, agentId)) return inFlight.promise;
   const owner: AgentPreloadOwner = { api, agentId };
+  const personaRead = api.getPersona(agentId).then((persona) => {
+    if (inFlight?.owner === owner) {
+      const previous = slot && sameOwner(slot, api, agentId) ? slot : null;
+      slot = { api, agentId, persona, memoryEntries: previous?.memoryEntries ?? null };
+    }
+    return persona;
+  });
+  const memoryRead = api.listMemoryEntries(agentId, 0, 100).then((memoryEntries) => {
+    if (inFlight?.owner === owner) {
+      const previous = slot && sameOwner(slot, api, agentId) ? slot : null;
+      slot = { api, agentId, persona: previous?.persona ?? null, memoryEntries };
+    }
+    return memoryEntries;
+  });
   const run = async (): Promise<WarmAgentResult> => {
-    const [persona, memoryEntries] = await Promise.allSettled([
-      api.getPersona(agentId),
-      api.listMemoryEntries(agentId, 0, 100),
-    ]);
+    const [persona, memoryEntries] = await Promise.allSettled([personaRead, memoryRead]);
     if (persona.status === "rejected" && memoryEntries.status === "rejected") throw persona.reason;
     const result: WarmAgentResult = {
       persona: persona.status === "fulfilled" ? persona.value : null,
       memoryEntries: memoryEntries.status === "fulfilled" ? memoryEntries.value : null,
     };
-    // 只有仍是当前 owner 的任务落值：迟到旧请求不覆盖新槽位。
-    if (inFlight?.owner === owner)
-      slot = { api, agentId, persona: result.persona, memoryEntries: result.memoryEntries };
     return result;
   };
   const promise = run().finally(() => {
     if (inFlight?.owner === owner) inFlight = null;
   });
-  inFlight = { owner, promise };
+  inFlight = { owner, promise, persona: personaRead.catch(() => null) };
   return promise;
 }
 
@@ -91,10 +103,10 @@ export async function resolvePreloadedPersona(
 ): Promise<PersonaResponse | null> {
   if (inFlight && sameOwner(inFlight.owner, api, agentId)) {
     try {
-      const result = await inFlight.promise;
-      if (!result.persona) return null;
+      const persona = await inFlight.persona;
+      if (!persona) return null;
       consumePreloadedPersona(api, agentId);
-      return result.persona;
+      return persona;
     } catch {
       return null;
     }

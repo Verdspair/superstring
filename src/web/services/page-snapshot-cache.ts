@@ -7,11 +7,11 @@ import type { BrowserStateStorage } from "../browser-state";
 import type { ChatItem } from "../state/types";
 
 export const CACHE_LIMITS = {
-  MAX_DIRECTORY_ITEMS: 50,
-  MAX_CHAT_MESSAGES: 50,
-  MAX_QQ_EVENTS: 50,
-  MAX_TRACE_ITEMS: 30,
-  MAX_TOTAL_BYTES: 512 * 1024,
+  MAX_DIRECTORY_ITEMS: 200,
+  MAX_CHAT_MESSAGES: 200,
+  MAX_QQ_EVENTS: 200,
+  MAX_TRACE_ITEMS: 100,
+  MAX_TOTAL_BYTES: 4 * 1024 * 1024,
 } as const;
 
 export const CACHE_KEYS = {
@@ -50,7 +50,7 @@ function enforceTotalCacheBudget(): void {
         entries.push({ key: k, length: len });
       }
     }
-    // 当总存储字节超限时，循环淘汰直到总存储 <= 512 KiB（全 cache key 均可淘汰含 QQ/目录/自身）
+    // 超出总存储预算时依次淘汰缓存项，计入密文和键实际占用。
     while (totalBytes > CACHE_LIMITS.MAX_TOTAL_BYTES && entries.length > 0) {
       const victim = entries.shift();
       if (!victim) break;
@@ -68,15 +68,16 @@ async function commitCacheEntry(
   storage: BrowserStateStorage | null,
   key: string,
   payload: unknown,
+  isStale: () => boolean = () => false,
 ): Promise<void> {
-  if (!storage) return;
+  if (!storage || isStale()) return;
   const gen = nextGeneration(key);
   try {
     const serialized = JSON.stringify(payload);
     await storage.write(
       key,
       serialized,
-      () => writeGenerations.get(key) !== gen, // encrypt 完成后、setItem 之前的原子失效拦截
+      () => writeGenerations.get(key) !== gen || isStale(), // encrypt 完成后、setItem 之前的原子失效拦截
     );
     enforceTotalCacheBudget();
   } catch {
@@ -311,6 +312,33 @@ export async function saveTracesCache(
     cachedAt: Date.now(),
   };
   await commitCacheEntry(storage, `${CACHE_KEYS.TRACES_PREFIX}${scopeKey}`, payload);
+}
+
+/** Prewarm only an absent preview; any later authoritative write or purge wins. */
+export async function warmTracesCache(
+  storage: BrowserStateStorage,
+  scopeKey: string,
+  read: () => Promise<RuntimeTracesPage>,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const key = `${CACHE_KEYS.TRACES_PREFIX}${scopeKey}`;
+  const generation = writeGenerations.get(key);
+  if (await loadTracesCache(storage, scopeKey)) return;
+  const staleBeforeCommit = () => !isCurrent() || writeGenerations.get(key) !== generation;
+  if (staleBeforeCommit()) return;
+  const page = await read();
+  if (staleBeforeCommit()) return;
+  await commitCacheEntry(
+    storage,
+    key,
+    {
+      scopeKey,
+      summary: page.summary,
+      items: page.items.slice(0, CACHE_LIMITS.MAX_TRACE_ITEMS),
+      cachedAt: Date.now(),
+    },
+    () => !isCurrent(),
+  );
 }
 
 export async function loadTracesCache(

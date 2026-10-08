@@ -1,4 +1,5 @@
 import { BookOpen, Brain, Smile } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSuperstringStore } from "@/store";
@@ -15,8 +16,35 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
       : route === "long-memory" || route === "profile"
         ? "memory"
         : "knowledge";
+  const [visited, setVisited] = useState([tab]);
+  const workspaceScroll = useRef<HTMLDivElement>(null);
+  const scrollPositions = useRef(new Map<string, number>());
+  const previousTab = useRef(tab);
+  useEffect(() => {
+    setVisited((previous) => (previous.includes(tab) ? previous : [...previous, tab]));
+  }, [tab]);
+  useLayoutEffect(() => {
+    const element = workspaceScroll.current;
+    if (!element) return;
+    if (previousTab.current !== tab) {
+      scrollPositions.current.set(previousTab.current, element.scrollTop);
+      element.scrollTop = scrollPositions.current.get(tab) ?? 0;
+      previousTab.current = tab;
+    }
+  }, [tab]);
+  const panel = (name: "knowledge" | "memory" | "stickers", child: React.ReactNode) =>
+    visited.includes(name) || tab === name ? (
+      <div hidden={tab !== name} data-workspace-scroll={name}>
+        {child}
+      </div>
+    ) : null;
   return (
-    <div className="h-full min-h-0 w-full space-y-6 overflow-y-auto px-4 py-6">
+    <div
+      ref={workspaceScroll}
+      data-testid="library-workspace-scroll"
+      onScroll={(event) => scrollPositions.current.set(tab, event.currentTarget.scrollTop)}
+      className="h-full min-h-0 w-full space-y-6 overflow-y-auto px-4 py-6"
+    >
       <header className="space-y-1">
         <p className="text-xs font-medium tracking-widest text-muted-foreground">
           {t("brand.workspace", { "0": t("library.materials") })}
@@ -53,13 +81,9 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
           </TabsTrigger>
         </TabsList>
       </Tabs>
-      {tab === "knowledge" ? (
-        <KnowledgeLibrary />
-      ) : tab === "memory" ? (
-        <MemoryLibrary active={active} />
-      ) : (
-        <StickerLibrary />
-      )}
+      {panel("knowledge", <KnowledgeLibrary active={active && tab === "knowledge"} />)}
+      {panel("memory", <MemoryLibrary active={active && tab === "memory"} />)}
+      {panel("stickers", <StickerLibrary active={active && tab === "stickers"} />)}
     </div>
   );
 }

@@ -216,7 +216,7 @@ describe("page-snapshot-cache unit tests", () => {
     expect(loaded?.messages[0]?.content).toBe("Write-B (fresh)");
   });
 
-  it("3. total budget: strictly enforces 512 KiB total cap across all cache keys including QQ events", async () => {
+  it("3. total budget: strictly enforces the configured encrypted total cap across all cache keys including QQ events", async () => {
     const storage = createBrowserStateStorage(mockConfig, sessionStorage);
 
     const largeEvents = Array.from({ length: 50 }, (_, i) =>
@@ -236,6 +236,20 @@ describe("page-snapshot-cache unit tests", () => {
     }
 
     expect(totalStoredBytes).toBeLessThanOrEqual(CACHE_LIMITS.MAX_TOTAL_BYTES);
+  });
+
+  it("retains a scoped recent preview larger than the former 2 MiB budget", async () => {
+    const storage = createBrowserStateStorage(mockConfig, sessionStorage);
+    const items = Array.from({ length: 200 }, (_, index) =>
+      sampleEvent(index + 1, { text: "A".repeat(5000) }),
+    );
+    await saveQqEventsCache(storage, "conv-1", "agent-1", 1, items);
+    const key = `${CACHE_KEYS.QQ_EVENTS_PREFIX}conv-1`;
+    const storedBytes = (key.length + (sessionStorage.getItem(key)?.length ?? 0)) * 2;
+    expect(storedBytes).toBeGreaterThan(2 * 1024 * 1024);
+    expect(storedBytes).toBeLessThanOrEqual(CACHE_LIMITS.MAX_TOTAL_BYTES);
+    expect(await loadQqEventsCache(storage, "conv-1", "agent-1", 1)).toHaveLength(200);
+    expect(await loadQqEventsCache(storage, "conv-1", "other-agent", 1)).toBeNull();
   });
 
   it("4. scope check: currentAgentId known rejects cache with null or different agentId", async () => {

@@ -11,7 +11,7 @@ import { CapabilityPolicyPanel } from "./capability-policy-panel";
 import { ToolGrantsPanel } from "./tool-grants-panel";
 
 // 端点草稿持久在 store：跨路由保留，离开设置页时参与保存/放弃守卫。
-export function WebAccessPanel() {
+export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const snapshot = useSuperstringStore((s) => s.webAccessSnapshot);
   const loading = useSuperstringStore((s) => s.webAccessLoading);
@@ -35,8 +35,8 @@ export function WebAccessPanel() {
     };
   }, []);
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (active) void load();
+  }, [active, load]);
   const revision = snapshot?.revision ?? "";
   // 自检结论只对发起时的已保存配置有效：配置换代后不呈现旧成功。
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision 只作触发条件，effect 体无需读取它。
@@ -99,8 +99,8 @@ export function WebAccessPanel() {
           {t(notice)}
         </p>
       )}
-      <CapabilityPolicyPanel modules={["web"]} />
-      <ToolGrantsPanel scope={["web"]} embedded />
+      <CapabilityPolicyPanel modules={["web"]} active={active} />
+      <ToolGrantsPanel scope={["web"]} embedded active={active} />
       <section className="space-y-4">
         <h3 className="font-semibold">{t("connections.web.channels")}</h3>
         <p className="text-xs text-muted-foreground">{t("connections.web.scopeHint")}</p>

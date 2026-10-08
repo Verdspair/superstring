@@ -496,10 +496,15 @@ it("pauses and resumes the runtime summary and trace list from one view-level co
     expect(status).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: key("observability.resumeAutoRefresh") }));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(list).toHaveBeenCalledTimes(2);
     expect(status).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(status).toHaveBeenCalledTimes(3);
   } finally {
     vi.useRealTimers();
   }

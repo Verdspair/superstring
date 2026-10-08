@@ -30,9 +30,10 @@ export function createKnowledgeReadActions(
     const previous = get().knowledgeReadEditor;
     const editor = previous?.agentId === agentId ? previous : null;
     set({ knowledgeReadLoading: true });
-    const matches = () => request === read && get().editorAgentId === agentId;
+    const api = get().apiClient;
+    const matches = () =>
+      request === read && get().editorAgentId === agentId && get().apiClient === api;
     try {
-      const api = get().apiClient;
       const [source, documents, global] = await Promise.all([
         editor && knowledgeReadDirty(editor) && !refresh
           ? Promise.resolve(editor.source)

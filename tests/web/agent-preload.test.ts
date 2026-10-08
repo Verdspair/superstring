@@ -12,6 +12,7 @@ import {
   isAgentPreloadEligible,
   peekPreloadedMemory,
   peekPreloadedPersona,
+  resolvePreloadedPersona,
   warmAgentResources,
 } from "../../src/web/services/agent-preload";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -122,6 +123,24 @@ describe("agent preload target & eligibility", () => {
 });
 
 describe("warmAgentResources", () => {
+  it("makes a ready persona available without waiting for optional memory preload", async () => {
+    const memory = Promise.withResolvers<EntriesList>();
+    const client = agentClient({ listMemoryEntries: vi.fn(() => memory.promise) });
+    const warming = warmAgentResources(client, AGENT);
+    let ready = false;
+    const reading = resolvePreloadedPersona(client, AGENT).then((value) => {
+      ready = true;
+      return value;
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const readyBeforeMemory = ready;
+    memory.resolve(entriesFixture);
+    await warming;
+    expect(await reading).toEqual(personaFixture);
+    expect(readyBeforeMemory).toBe(true);
+    expect(client.getPersona).toHaveBeenCalledTimes(1);
+  });
+
   it("一次预热发出纯读两请求：persona + 前 100 条记忆摘要（offset 0）", async () => {
     const fake = agentClient();
     const result = await warmAgentResources(fake, AGENT);

@@ -20,20 +20,20 @@ export type OutboundTarget = {
   sources?: SourceRef[];
 };
 export type OutboundPartPayload =
-  | { text: string; mentions?: readonly string[] }
-  | { stickerId: string };
+  | { text: string; mentions?: readonly string[]; replyToMessageId?: string }
+  | { stickerId: string; mentions?: readonly string[]; replyToMessageId?: string };
 /**
  * 落库形状。`mentions` 键只在调用方给了结构化协议时才写入：有键＝新协议（新提交恒带，可为
  * 空数组），无键＝变更前计划的旧部件。发送与出站事实的读回都靠这个区别还原真实线上段，
  * 不能用空数组冒充旧件，否则历史已送内容会被重新解释。
  */
-function payloadJson(part: {
-  text: string;
-  mentions?: readonly string[];
-}): Record<string, unknown> {
-  return part.mentions === undefined
-    ? { text: part.text }
-    : { text: part.text, mentions: [...part.mentions] };
+function payloadJson(part: OutboundPartPayload): Record<string, unknown> {
+  const payload = "text" in part ? { text: part.text } : { stickerId: part.stickerId };
+  return {
+    ...payload,
+    ...(part.mentions === undefined ? {} : { mentions: [...part.mentions] }),
+    ...(part.replyToMessageId === undefined ? {} : { replyToMessageId: part.replyToMessageId }),
+  };
 }
 type IntentRow = {
   id: string;
@@ -160,8 +160,18 @@ export class OutboundIntentRepository {
     createdAt: string;
     expiresAt: string;
     parts: (
-      | { kind: "text"; text: string; mentions?: readonly string[] }
-      | { kind: "sticker"; stickerId: string }
+      | {
+          kind: "text";
+          text: string;
+          mentions?: readonly string[];
+          replyToMessageId?: string;
+        }
+      | {
+          kind: "sticker";
+          stickerId: string;
+          mentions?: readonly string[];
+          replyToMessageId?: string;
+        }
     )[];
   }): Delivery {
     return this.db.transaction(() => {
@@ -187,15 +197,7 @@ export class OutboundIntentRepository {
             .query(
               "INSERT INTO outbound_parts(id,intent_id,ordinal,kind,payload,status) VALUES(?,?,?,?,?,'planned')",
             )
-            .run(
-              crypto.randomUUID(),
-              id,
-              ordinal,
-              part.kind,
-              JSON.stringify(
-                part.kind === "text" ? payloadJson(part) : { stickerId: part.stickerId },
-              ),
-            );
+            .run(crypto.randomUUID(), id, ordinal, part.kind, JSON.stringify(payloadJson(part)));
         return this.get(id)!;
       }
       this.db
@@ -219,15 +221,7 @@ export class OutboundIntentRepository {
           .query(
             "INSERT INTO outbound_parts(id,intent_id,ordinal,kind,payload,status) VALUES(?,?,?,?,?,'planned')",
           )
-          .run(
-            crypto.randomUUID(),
-            id,
-            ordinal,
-            part.kind,
-            JSON.stringify(
-              part.kind === "text" ? payloadJson(part) : { stickerId: part.stickerId },
-            ),
-          );
+          .run(crypto.randomUUID(), id, ordinal, part.kind, JSON.stringify(payloadJson(part)));
       return this.get(id)!;
     })();
   }

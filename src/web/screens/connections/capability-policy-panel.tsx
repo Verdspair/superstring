@@ -15,8 +15,10 @@ import { useSuperstringStore } from "../../store";
 
 export function CapabilityPolicyPanel({
   modules,
+  active = true,
 }: {
   modules: (keyof ExecutionDraft["modules"])[];
+  active?: boolean;
 }) {
   const { t } = useTranslation();
   const editor = useSuperstringStore((s) => s.permissionEditor);
@@ -32,8 +34,8 @@ export function CapabilityPolicyPanel({
   const discard = useSuperstringStore((s) => s.discardPermissionSettings);
   const update = useSuperstringStore((s) => s.patchExecutionSettings);
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (active) void load();
+  }, [active, load]);
   const scope: PermissionScope = { modules };
   const draft = editor?.execution;
   const dirty = permissionSettingsDirty(editor, scope);

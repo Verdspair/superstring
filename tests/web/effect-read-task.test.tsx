@@ -59,13 +59,18 @@ it("disposes its Effect polling fiber instead of leaving a view timer alive", as
   expect(tick).toHaveBeenCalledOnce();
 });
 
-it("pauses foreground polling, clears on blur, cancels pending reads, and reloads on focus", async () => {
+it("keeps visible reads active across blur, while explicit pause still suspends and clears", async () => {
   vi.useFakeTimers();
   const signals: AbortSignal[] = [];
   let unresolved = false;
+  let finishPending!: (value: string) => void;
   const request = vi.fn((signal: AbortSignal) => {
     signals.push(signal);
-    return unresolved ? new Promise<string>(() => {}) : Promise.resolve("visible metadata");
+    return unresolved
+      ? new Promise<string>((resolve) => {
+          finishPending = resolve;
+        })
+      : Promise.resolve("visible metadata");
   });
   function Probe() {
     const [data, setData] = useState("");
@@ -112,28 +117,59 @@ it("pauses foreground polling, clears on blur, cancels pending reads, and reload
     await vi.advanceTimersByTimeAsync(5000);
   });
   expect(request).toHaveBeenCalledOnce();
-  fireEvent.click(screen.getByRole("button", { name: "Pause" }));
   unresolved = true;
+  fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(request).toHaveBeenCalledTimes(2);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(5000);
   });
   expect(request).toHaveBeenCalledTimes(2);
   fireEvent.blur(window);
-  // 失焦保留已加载数据；在途读取经 onSuspend 取消，延迟返回不得覆盖新状态。
-  expect(signals[1]?.aborted).toBe(true);
+  expect(signals[1]?.aborted).toBe(false);
   expect(screen.getByText("visible metadata")).toBeTruthy();
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(15000);
+    finishPending("accepted while blurred");
+    await Promise.resolve();
   });
-  expect(request).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("accepted while blurred")).toBeTruthy();
   unresolved = false;
   fireEvent.focus(window);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(request).toHaveBeenCalledTimes(3);
-  expect(screen.getByText("visible metadata")).toBeTruthy();
+  expect(request).toHaveBeenCalledTimes(2);
   view.unmount();
   await vi.advanceTimersByTimeAsync(15000);
-  expect(request).toHaveBeenCalledTimes(3);
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+it("publishes intermediate pages through the same owner and rejects late progress after cancel", async () => {
+  let publish!: (value: string) => void;
+  let finish!: (value: string) => void;
+  const progress = vi.fn();
+  const success = vi.fn();
+  const failure = vi.fn();
+  const task = startRead<string>(
+    (_signal, emit) => {
+      publish = emit;
+      return new Promise<string>((resolve) => {
+        finish = resolve;
+      });
+    },
+    { progress, success, failure },
+  );
+  await vi.waitFor(() => expect(publish).toBeDefined());
+  publish("first page");
+  expect(progress).toHaveBeenCalledExactlyOnceWith("first page");
+  expect(success).not.toHaveBeenCalled();
+  task.cancel();
+  publish("late next page");
+  finish("late complete range");
+  await Promise.resolve();
+  expect(progress).toHaveBeenCalledOnce();
+  expect(success).not.toHaveBeenCalled();
+  expect(failure).not.toHaveBeenCalled();
 });

@@ -74,7 +74,7 @@ function setupApi(overrides: Partial<SuperstringApi>) {
 }
 
 describe("focus and blur regression tests", () => {
-  it("useConversationEvents: refocus triggers exactly one background request even if both visibilitychange and focus fire", async () => {
+  it("useConversationEvents: visible blur and refocus do not trigger a background request", async () => {
     const events = vi.fn<SuperstringApi["getConversationEvents"]>().mockResolvedValue({
       items: [sampleEvent(1), sampleEvent(2)],
       nextSeq: 2,
@@ -91,18 +91,10 @@ describe("focus and blur regression tests", () => {
     expect(result.current.items).toHaveLength(2);
     expect(events).toHaveBeenCalledTimes(1);
 
-    // Window blurs (still visible)
     act(() => {
       fireEvent.blur(window);
-    });
-
-    // Old data is preserved during blur
-    expect(result.current.items).toHaveLength(2);
-    expect(result.current.loading).toBe(false);
-
-    // Refocus: both visibilitychange (to visible) and focus fire in real browsers
-    act(() => {
-      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      expect(result.current.items).toHaveLength(2);
+      expect(result.current.loading).toBe(false);
       fireEvent(document, new Event("visibilitychange"));
       fireEvent.focus(window);
     });
@@ -111,12 +103,11 @@ describe("focus and blur regression tests", () => {
       await Promise.resolve();
     });
 
-    // Should only have revalidated once, NOT twice!
-    expect(events).toHaveBeenCalledTimes(2);
+    expect(events).toHaveBeenCalledTimes(1);
     expect(result.current.items).toHaveLength(2);
   });
 
-  it("useConversationEvents: refocus always revalidates in background even if blur was brief (< refreshMs)", async () => {
+  it("useConversationEvents: brief visible blur does not depend on refocus to finish loading", async () => {
     const events = vi.fn<SuperstringApi["getConversationEvents"]>().mockResolvedValue({
       items: [sampleEvent(1), sampleEvent(2)],
       nextSeq: 2,
@@ -124,21 +115,19 @@ describe("focus and blur regression tests", () => {
     });
     setupApi({ getConversationEvents: events });
 
-    renderHook(() => useConversationEvents("conv-1", undefined, { refreshMs: 10000 }));
+    const { result } = renderHook(() =>
+      useConversationEvents("conv-1", undefined, { refreshMs: 10000 }),
+    );
 
     await act(async () => {
       await Promise.resolve();
     });
 
+    expect(result.current.items).toHaveLength(2);
     expect(events).toHaveBeenCalledTimes(1);
 
-    // Brief blur (much less than 10000ms refreshMs)
     act(() => {
       fireEvent.blur(window);
-    });
-
-    // Refocus
-    act(() => {
       fireEvent.focus(window);
     });
 
@@ -146,11 +135,11 @@ describe("focus and blur regression tests", () => {
       await Promise.resolve();
     });
 
-    // Requirement: "回焦总是重新拉取（用户选 2）"
-    expect(events).toHaveBeenCalledTimes(2);
+    expect(events).toHaveBeenCalledTimes(1);
+    expect(result.current.items).toHaveLength(2);
   });
 
-  it("useConversationEvents: rapid two distinct blur-focus cycles without dropping either update (no debounce loss)", async () => {
+  it("useConversationEvents: rapid visible blur-focus cycles add no reads; explicit refreshes still apply each update", async () => {
     const events = vi
       .fn<SuperstringApi["getConversationEvents"]>()
       .mockResolvedValueOnce({
@@ -178,28 +167,24 @@ describe("focus and blur regression tests", () => {
     expect(events).toHaveBeenCalledTimes(1);
     expect(result.current.items).toHaveLength(1);
 
-    // Cycle 1: blur then focus
     act(() => {
       fireEvent.blur(window);
-    });
-    act(() => {
       fireEvent.focus(window);
     });
+    expect(events).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await Promise.resolve();
+      await result.current.refresh();
     });
     expect(events).toHaveBeenCalledTimes(2);
     expect(result.current.items).toHaveLength(2);
 
-    // Cycle 2: immediately blur and focus again (rapid separate user window alt-tabs)
     act(() => {
       fireEvent.blur(window);
-    });
-    act(() => {
       fireEvent.focus(window);
     });
+    expect(events).toHaveBeenCalledTimes(2);
     await act(async () => {
-      await Promise.resolve();
+      await result.current.refresh();
     });
     expect(events).toHaveBeenCalledTimes(3);
     expect(result.current.items).toHaveLength(3);
@@ -251,7 +236,7 @@ describe("focus and blur regression tests", () => {
     expect(result.current.items.some((item) => item.text === "new-data")).toBe(true);
   });
 
-  it("useForegroundRead: focus and visibilitychange in quick succession trigger at most one read", async () => {
+  it("useForegroundRead: visible blur and focus do not trigger an extra read", async () => {
     const load = vi.fn();
     const clear = vi.fn();
 
@@ -259,20 +244,13 @@ describe("focus and blur regression tests", () => {
 
     expect(load).toHaveBeenCalledTimes(1);
 
-    // Blur window
     act(() => {
       fireEvent.blur(window);
-    });
-
-    // Both visibilitychange and focus fire on restore
-    act(() => {
-      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
       fireEvent(document, new Event("visibilitychange"));
       fireEvent.focus(window);
     });
 
-    // Should only have been called once on return (total 2 including initial)
-    expect(load).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it("useLiveResource: inline callback with component state updates settles properly without churn", async () => {
@@ -295,7 +273,7 @@ describe("focus and blur regression tests", () => {
     expect(result.current.loading).toBe(false);
   });
 
-  it("ConversationWorkspace with QQ conversation: initial load being interrupted by blur does not freeze on '正在读取会话'", async () => {
+  it("ConversationWorkspace with QQ conversation: initial load completes after visible blur without refocus", async () => {
     let settle!: (val: ConversationEventsPage) => void;
     const events = vi.fn<SuperstringApi["getConversationEvents"]>().mockImplementation(
       () =>
@@ -345,35 +323,17 @@ describe("focus and blur regression tests", () => {
     // While initial load is in flight: "正在读取会话…" is shown
     expect(screen.getByText("正在读取会话…")).toBeTruthy();
 
-    // User blurs window while initial request is in-flight
+    // A visible window blur must not cancel or delay acceptance of the initial request.
     act(() => {
       fireEvent.blur(window);
     });
 
-    // Old in-flight promise resolves late
     await act(async () => {
       settle({ items: [sampleEvent(1, "first-message")], nextSeq: 1, hasMore: false });
       await Promise.resolve();
     });
 
-    // Refocus window
-    let settle2!: (val: ConversationEventsPage) => void;
-    events.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          settle2 = resolve;
-        }),
-    );
-
-    act(() => {
-      fireEvent.focus(window);
-    });
-
-    // Settle the recovery load
-    await act(async () => {
-      settle2({ items: [sampleEvent(1, "first-message")], nextSeq: 1, hasMore: false });
-      await Promise.resolve();
-    });
+    expect(events).toHaveBeenCalledTimes(1);
 
     // Message must be rendered! It must NOT be stuck on '正在读取会话…'
     expect(await screen.findByText("first-message")).toBeTruthy();
@@ -426,7 +386,7 @@ describe("focus and blur regression tests", () => {
     expect(result.current.loading).toBe(false);
   });
 
-  it("same scope blur-aborted request A finally arriving late does not clear loading when refocus B is pending", async () => {
+  it("same scope hidden-page request A arriving late does not clear loading when resumed request B is pending", async () => {
     let settleA!: (val: ConversationEventsPage) => void;
     let settleB!: (val: ConversationEventsPage) => void;
 
@@ -449,14 +409,16 @@ describe("focus and blur regression tests", () => {
     // Request A in-flight
     expect(result.current.loading).toBe(true);
 
-    // Window blurs: A is aborted
+    // A genuinely hidden document pauses and aborts the request.
     act(() => {
-      fireEvent.blur(window);
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      fireEvent(document, new Event("visibilitychange"));
     });
 
-    // Window refocuses: Request B starts (initial load recovery since first.current is 0)
+    // Resuming the document starts request B; this is not a window-focus transition.
     act(() => {
-      fireEvent.focus(window);
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      fireEvent(document, new Event("visibilitychange"));
     });
 
     // Request B should be pending and loading

@@ -52,6 +52,7 @@ export const PAGE_AGENT_FIELDS = {
     "model_name",
     "temperature",
     "memory_consolidation_model_name",
+    "memory_retrieval_model_name",
     "context_compression_model_name",
   ],
   identity: ["additional_instructions"],

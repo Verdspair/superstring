@@ -269,17 +269,24 @@ export class RuntimeSpanRepository {
       .get(...params) as Omit<RuntimeTracesPage["summary"], "now">;
     const limit = filters.limit ?? 50;
     const groups = this.db
-      .query(`${cte} SELECT traceId,matchedSpanCount FROM groups
+      .query(`${cte} SELECT traceId,cursorId,matchedSpanCount FROM groups
       ${filters.beforeId ? "WHERE cursorId<?" : ""} ORDER BY cursorId DESC LIMIT ?`)
       .all(...params, ...(filters.beforeId ? [filters.beforeId] : []), limit + 1) as {
       traceId: string;
+      cursorId: number;
       matchedSpanCount: number;
     }[];
-    const items = groups
-      .slice(0, limit)
-      .map((group) =>
-        summarizeTrace(this.traceSpans(group.traceId, userId, now), group.matchedSpanCount, now),
-      );
+    const pageGroups = groups.slice(0, limit);
+    const spansByTrace = pageGroups.length
+      ? this.traceSpansForPage(
+          pageGroups.map((group) => group.traceId),
+          userId,
+          now,
+        )
+      : new Map<string, RuntimeSpan[]>();
+    const items = pageGroups.map((group) =>
+      summarizeTrace(spansByTrace.get(group.traceId) ?? [], group.matchedSpanCount, now),
+    );
     return {
       items,
       nextBeforeId: items.at(-1)?.cursorId ?? 0,
@@ -305,17 +312,41 @@ export class RuntimeSpanRepository {
     return { now, items, matchedSpanIds, trace: summarizeTrace(items, matchedSpanIds.length, now) };
   }
 
+  private traceSpansForPage(
+    traceIds: string[],
+    userId: string,
+    now: string,
+  ): Map<string, RuntimeSpan[]> {
+    const placeholders = traceIds.map(() => "?").join(",");
+    const visibility = spanQuery({}, userId, now);
+    const rows = this.db
+      .query(`SELECT ${SPAN_PROJECTION} FROM runtime_spans s INDEXED BY idx_runtime_spans_trace
+      WHERE ${visibility.visibilityWhere} AND s.trace_id IN (${placeholders}) ORDER BY s.trace_id,s.id ASC`)
+      .all(...visibility.visibilityParams, ...traceIds) as SpanRow[];
+    const grouped = new Map<string, RuntimeSpan[]>();
+    for (const row of rows) {
+      const spans = grouped.get(row.traceId) ?? [];
+      spans.push(spanFromRow(row));
+      grouped.set(row.traceId, spans);
+    }
+    return grouped;
+  }
+
   private traceSpans(traceId: string, userId: string, now: string): RuntimeSpan[] {
     const { where, params } = spanQuery({ traceId }, userId, now);
     const rows = this.db
-      .query(`SELECT id,trace_id AS traceId,span_id AS spanId,parent_span_id AS parentSpanId,
-      name,started_at AS at,finished_at AS finishedAt,duration_ms AS durationMs,channel,stage,status,code,model,
-      conversation_id AS conversationId,agent_id AS agentId,run_id AS runId,wake_id AS wakeId,output_id AS outputId,
-      source_seq AS sourceSeq,details FROM runtime_spans s WHERE ${where} ORDER BY id ASC`)
-      .all(...params) as (Omit<RuntimeSpan, "details"> & { details: string })[];
-    return rows.map((row) => ({ ...row, details: JSON.parse(row.details) }));
+      .query(`SELECT ${SPAN_PROJECTION} FROM runtime_spans s WHERE ${where} ORDER BY s.id ASC`)
+      .all(...params) as SpanRow[];
+    return rows.map(spanFromRow);
   }
 }
+
+const SPAN_PROJECTION = `id,trace_id AS traceId,span_id AS spanId,parent_span_id AS parentSpanId,
+  name,started_at AS at,finished_at AS finishedAt,duration_ms AS durationMs,channel,stage,status,code,model,
+  conversation_id AS conversationId,agent_id AS agentId,run_id AS runId,wake_id AS wakeId,output_id AS outputId,
+  source_seq AS sourceSeq,details`;
+type SpanRow = Omit<RuntimeSpan, "details"> & { details: string };
+const spanFromRow = (row: SpanRow): RuntimeSpan => ({ ...row, details: JSON.parse(row.details) });
 
 const CONVERSATION_VISIBILITY = `(s.conversation_id IS NULL OR EXISTS (
       SELECT 1 FROM conversations c WHERE c.id=s.conversation_id AND c.user_id=s.user_id AND

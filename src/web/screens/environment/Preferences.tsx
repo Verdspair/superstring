@@ -1,6 +1,7 @@
 import { Check, Laptop, Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import {
   type AppearanceMode,
   MODE_STORAGE_KEY,
@@ -22,18 +23,20 @@ import { broadcastAppearance, isDesktopMode, requestDesktopExit } from "@/deskto
 import { selectLocale, useLocale } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 
-export function Preferences() {
+export function Preferences({ active = true }: { active?: boolean } = {}) {
   const t = useTranslation().t,
     locale = useLocale(),
-    s = useSuperstringStore();
+    s = useSuperstringStore(
+      useShallow((state) => ({ loadDesktopSettings: state.loadDesktopSettings })),
+    );
   const [theme, setTheme] = useState(readTheme),
     [mode, setMode] = useState(readMode),
     [notice, setNotice] = useState(""),
     [exit, setExit] = useState(false);
   const desktop = isDesktopMode();
   useEffect(() => {
-    if (desktop) void s.loadDesktopSettings();
-  }, [desktop, s.loadDesktopSettings]);
+    if (active && desktop) void s.loadDesktopSettings();
+  }, [active, desktop, s.loadDesktopSettings]);
   useEffect(() => {
     const sync = (event: StorageEvent) => {
       if (event.key === THEME_STORAGE_KEY || event.key === MODE_STORAGE_KEY || event.key === null) {
@@ -148,28 +151,12 @@ export function Preferences() {
         <Card>
           <CardHeader>
             <CardTitle>{t("library.desktop.behavior")}</CardTitle>
-            <CardDescription>
-              {t("library.choose.whether.agents.stay.online.after.you.close.the")}
-            </CardDescription>
+            <CardDescription>{t("library.desktop.behavior.description")}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            <Field label="library.when.the.window.closes">
-              <NativeSelect
-                value={s.desktopCloseAction ?? ""}
-                disabled={s.desktopSettingsLoading || s.desktopSettingsSaving}
-                onChange={(e) => {
-                  if (e.target.value)
-                    void s.updateDesktopCloseAction(e.target.value as "background" | "exit");
-                }}
-              >
-                {s.desktopCloseAction === null && <option value="">{t("library.not.set")}</option>}
-                <option value="background">{t("library.stay.online.in.the.background")}</option>
-                <option value="exit">{t("library.quit.completely")}</option>
-              </NativeSelect>
-            </Field>
             <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
               <p className="text-sm text-muted-foreground">
-                {t("library.quitting.stops.the.local.service.and.running.agents")}
+                {t("library.window.close.exits.superstring")}
               </p>
               <Button variant="outline" onClick={() => setExit(true)}>
                 {t("library.quit.application.now")}

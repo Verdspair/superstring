@@ -110,6 +110,7 @@ describe("Model purpose boundaries", () => {
         model_name: "default-model",
         temperature: 0.7,
         memory_consolidation_model_name: "default-model",
+        memory_retrieval_model_name: retrieval,
         context_compression_model_name: "default-model",
       });
       expect(store.getState().pageEditor?.draft.memory_retrieval_model_name).toBe(retrieval);

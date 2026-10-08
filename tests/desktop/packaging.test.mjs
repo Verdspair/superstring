@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { renderBrandAssets } from "../../tools/desktop/build/brand-assets.mjs";
+import { prepareCaseSlot } from "../../tools/desktop/build/case-rename.mjs";
 import { buildBrand } from "../../tools/desktop/build/cross-platform/brand.mjs";
 import { writeChecksums } from "../../tools/desktop/build/cross-platform/checksums.mjs";
 import {
@@ -171,7 +172,13 @@ test("smoke requires every real readiness check and the exact target identity", 
   const report = {
     ...identity,
     ok: true,
-    checks: { backend: true, renderer: true, authentication: true, gracefulStop: true },
+    checks: {
+      backend: true,
+      renderer: true,
+      authentication: true,
+      closeStopsBackend: true,
+      gracefulStop: true,
+    },
   };
   validateSmokeReport(report, identity);
   assert.throws(() => validateSmokeReport({ ...report, arch: "x64" }, identity), /IDENTITY/);
@@ -182,6 +189,14 @@ test("smoke requires every real readiness check and the exact target identity", 
         identity,
       ),
     /gracefulStop/,
+  );
+  assert.throws(
+    () =>
+      validateSmokeReport(
+        { ...report, checks: { ...report.checks, closeStopsBackend: false } },
+        identity,
+      ),
+    /closeStopsBackend/,
   );
   assert.throws(() => validateSmokeReport({ ...report, ok: false }, identity), /FAILED/);
 });
@@ -247,5 +262,43 @@ test("smoke diagnostics survive profile cleanup without copying profile data", (
     assert.deepEqual(fs.readdirSync(destination).sort(), ["smoke-logs", "smoke-report.json"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a retained backup on locked unlink keeps the new executable and never restores it", () => {
+  const realUnlinkSync = fs.unlinkSync;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-backup-lock-"));
+  try {
+    fs.writeFileSync(path.join(directory, "Superstring.exe"), "OLD");
+    const slot = prepareCaseSlot(directory, "superstring.exe");
+    fs.writeFileSync(path.join(directory, "superstring.exe"), "NEW");
+    fs.unlinkSync = (target) => {
+      if (target === slot.backup) {
+        const error = new Error(`EPERM: operation not permitted, unlink '${target}'`);
+        error.code = "EPERM";
+        error.syscall = "unlink";
+        error.path = target;
+        throw error;
+      }
+      realUnlinkSync(target);
+    };
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (message) => warnings.push(String(message));
+    try {
+      slot.commit();
+    } finally {
+      console.warn = originalWarn;
+      fs.unlinkSync = realUnlinkSync;
+    }
+    assert.equal(fs.readFileSync(path.join(directory, "superstring.exe"), "utf8"), "NEW");
+    assert.equal(fs.readFileSync(slot.backup, "utf8"), "OLD");
+    assert.match(warnings.join("\n"), /retaining/);
+    assert.match(warnings.join("\n"), /EPERM/);
+    assert.throws(() => slot.commit(), /already finished/);
+    assert.equal(fs.readFileSync(path.join(directory, "superstring.exe"), "utf8"), "NEW");
+  } finally {
+    fs.unlinkSync = realUnlinkSync;
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });

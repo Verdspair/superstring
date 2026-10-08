@@ -129,6 +129,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 const pointer = async (target: HTMLElement) =>
   userEvent.setup().pointer({ target, keys: "[MouseLeft]", coords: { x: 100, y: 100 } });
@@ -196,7 +197,7 @@ it("uses real keyboard branch controls and reveals the selected evidence ancestr
   expect(screen.getByRole("button", { name: "查看输入、输出与详情" })).toBeTruthy();
   expect(screen.getByRole("region", { name: "父子时序图" }).tabIndex).toBe(0);
 });
-it("inspects exact input and output only on request, then clears both on blur", async () => {
+it("inspects exact input and output only on request, retains them across blur, and clears when hidden", async () => {
   const { inspect } = install();
   render(<ModelEvidence handle={{ runId: "run-child", stepId: "step-child" }} />);
   expect(inspect).not.toHaveBeenCalled();
@@ -205,10 +206,18 @@ it("inspects exact input and output only on request, then clears both on blur", 
   await pointer(screen.getByRole("tab", { name: "模型输出" }));
   expect(screen.getByText('{"selected":["one"]}')).toBeTruthy();
   expect(inspect.mock.calls[0][0]).toEqual({ runId: "run-child", stepId: "step-child" });
+  await pointer(screen.getByRole("tab", { name: "模型输入" }));
+  expect(screen.getByText("Exact protected input")).toBeTruthy();
   fireEvent.blur(window);
-  expect(screen.queryByText('{"selected":["one"]}')).toBeNull();
+  expect(screen.getByText("Exact protected input")).toBeTruthy();
+  await pointer(screen.getByRole("tab", { name: "模型输出" }));
+  expect(screen.getByText('{"selected":["one"]}')).toBeTruthy();
   fireEvent.focus(window);
   expect(inspect).toHaveBeenCalledOnce();
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  fireEvent(document, new Event("visibilitychange"));
+  expect(screen.queryByText("Exact protected input")).toBeNull();
+  expect(screen.queryByText('{"selected":["one"]}')).toBeNull();
 });
 it("distinguishes partial output, historical absence, revocation and expiry", async () => {
   const view = render(

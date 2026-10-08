@@ -162,9 +162,9 @@ export class OneBot11Adapter implements ConversationIngress {
         -- direct 开启时被指名事件由直接回应独占；关闭时它们仍可进入剩余模式计数，
         -- 除非该 source 已经被一次 direct 机会真正处理过。
         AND (?=0 OR json_array_length(ce.addressing,'$.reasons')=0)
-        AND NOT EXISTS(
-          SELECT 1 FROM wake_signals w
-          WHERE w.conversation_id=ce.conversation_id AND w.cause='direct_reply' AND w.through_seq=ce.seq
+        AND ce.seq NOT IN (
+          SELECT w.through_seq FROM wake_signals w
+          WHERE w.conversation_id=? AND w.cause='direct_reply'
         )
         AND (
           EXISTS(SELECT 1 FROM qq_observation_text t WHERE t.event_key=substr(ce.event_key,8) AND t.expires_at>?)
@@ -176,6 +176,7 @@ export class OneBot11Adapter implements ConversationIngress {
           boundary,
           ...(attention ?? []),
           directEnabled ? 1 : 0,
+          conversationId,
           new Date(this.now() * 1000).toISOString(),
           new Date(this.now() * 1000).toISOString(),
         ) as { n: number }
@@ -432,7 +433,8 @@ export class OneBot11Adapter implements ConversationIngress {
       // Permanent event identities alone are not readable conversation content after TTL.
       const candidates = journal.db
         .query(`WITH ranked AS (
-        SELECT e.*,ROW_NUMBER() OVER(PARTITION BY speaker_id ORDER BY occurred_at_seconds DESC,rowid DESC) AS latest,
+        SELECT event_key,occurred_at_seconds,speaker_id,speaker_kind,addressed,
+          ROW_NUMBER() OVER(PARTITION BY speaker_id ORDER BY occurred_at_seconds DESC,rowid DESC) AS latest,
           ROW_NUMBER() OVER(PARTITION BY speaker_id,addressed ORDER BY occurred_at_seconds DESC,rowid DESC) AS latest_addressed
         FROM qq_events e WHERE account_id=? AND conversation_kind=? AND peer_id=? AND agent_id=?
           AND speaker_kind IN('member','anonymous')

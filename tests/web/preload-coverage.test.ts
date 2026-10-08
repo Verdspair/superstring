@@ -85,6 +85,8 @@ describe("orchestrator data phase", () => {
     await flush();
     pump.fire(pump.pumps.length - 1);
     await flush();
+    pump.fire(pump.pumps.length - 1);
+    await flush();
     expect(order).toEqual(["chunk:a", "data:a", "chunk:b", "data:b"]);
 
     const chunkOnly: string[] = [];
@@ -130,7 +132,7 @@ describe("orchestrator data phase", () => {
     handle.cancel();
     pump.fire(pump.pumps.length - 1);
     await flush();
-    expect(order).toEqual(["chunk:a", "data:a"]);
+    expect(order).toEqual(["chunk:a"]);
   });
 });
 
@@ -204,7 +206,7 @@ describe("store outlets via registry loadData", () => {
 
     // 无界/已由 bootstrap 覆盖的资源维持 excluded：登记表只承认精准理由，不给 loadData。
     for (const entry of PRELOAD_REGISTRY) {
-      if (entry.space === "conversations" || entry.space === "models") {
+      if (entry.space === "models") {
         expect(entry.dataStatus).toBe("excluded");
         expect(entry.loadData).toBeUndefined();
       }

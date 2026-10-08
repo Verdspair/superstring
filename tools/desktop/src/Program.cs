@@ -115,12 +115,25 @@ namespace Superstring.Desktop
             }
             try
             {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
             // single instance (normalised root hash)
             var single = new SingleInstance();
             if (!single.TryAcquire(root))
             {
-                single.NotifyExisting();
-                return 0; // another instance owns the session; just reveal it
+                bool shown = single.NotifyExisting() == ExistingInstanceResult.Shown;
+                single.Release();
+                if (!shown) MessageBox.Show("已有 Superstring 实例未响应，请关闭当前实例后重新启动。", "superstring", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return shown ? 0 : 1;
+            }
+            DesktopProcesses processes;
+            try { processes = new DesktopProcesses(); }
+            catch (Exception ex)
+            {
+                single.Release();
+                MessageBox.Show("无法建立桌面进程生命周期: " + ex.Message, "superstring", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
             }
 
             // No database/log is opened before the installed storage preflight.
@@ -152,10 +165,8 @@ namespace Superstring.Desktop
                 log.Error("Bun 解析失败: " + bunError);
             }
 
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
             var form = new MainForm();
-            var launcher = new Launcher(root, log, bunExe, token, DefaultPort, form, single, layout);
+            var launcher = new Launcher(root, log, bunExe, token, DefaultPort, form, layout, processes);
             launcher.Attach();
 
             // appearance: restore the persisted snapshot, then keep it in sync
@@ -218,11 +229,12 @@ namespace Superstring.Desktop
             {
                 SystemEvents.UserPreferenceChanged -= sysHandler;
                 if (watcher != null) { try { watcher.Dispose(); } catch { } }
-                single.Release();
+                processes.Terminate(0);
             }
             return 0;
             }
             finally { if (runtimeLease != null) runtimeLease.Dispose(); }
         }
+
     }
 }

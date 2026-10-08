@@ -180,7 +180,7 @@ it("prepending earlier pages preserves the first visible source offset", async (
   await screen.findByText("message-100");
   expect(viewport.scrollTop).toBe(500);
 });
-it("preserves a visible blurred timeline and revalidates its source anchor after hiding", async () => {
+it("continues pagination while blurred, pauses only when hidden, and revalidates once on resume", async () => {
   const events = vi
     .fn()
     .mockResolvedValue({ items: [row(201), row(202)], nextSeq: 202, hasMore: false });
@@ -197,16 +197,25 @@ it("preserves a visible blurred timeline and revalidates its source anchor after
   fireEvent.blur(window);
   expect(screen.getByText("message-201")).toBeTruthy();
   expect(events).toHaveBeenCalledOnce();
+  expect(events.mock.calls[0][1]).toEqual({ direction: "latest" });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(5000);
+  });
+  expect(events).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("message-201")).toBeTruthy();
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
   fireEvent(document, new Event("visibilitychange"));
   expect(screen.getByText("message-201")).toBeTruthy();
+  expect(events).toHaveBeenCalledTimes(2);
   viewport.scrollTop = 0;
   fireEvent.scroll(viewport);
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   fireEvent(document, new Event("visibilitychange"));
   await screen.findByText("message-201");
   expect(viewport.scrollTop).toBe(200);
+  expect(events).toHaveBeenCalledTimes(3);
   expect(events.mock.calls[1][1]).toEqual({ direction: "after", afterSeq: 200, limit: 102 });
+  expect(events.mock.calls[2][1]).toEqual({ direction: "after", afterSeq: 200, limit: 102 });
 });
 
 it("Home and End scroll the reading region without intercepting nested controls", async () => {

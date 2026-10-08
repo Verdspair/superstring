@@ -1,10 +1,14 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../../src/server/app";
+import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { createModelProvider } from "../../src/server/db/model-provider-repository";
+import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import {
   readQqSettings,
   updateQqSettings,
@@ -82,6 +86,213 @@ describe("application runtime lifecycle", () => {
       await runtime.stop();
     }
   });
+  it("shares one stop completion, cancels owners before drain, and closes SQLite after persistence", async () => {
+    const log: string[] = [];
+    const actualBusiness = openBusinessDb();
+    const runtime = createRuntime({
+      business: {
+        ...actualBusiness,
+        close() {
+          log.push("business-close");
+          actualBusiness.close();
+        },
+      },
+      gateway,
+      memoryService: fakeWorker(log),
+      browserStateSecret: testBrowserStateSecret,
+    });
+    let settleDrain!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      settleDrain = resolve;
+    });
+    runtime.start();
+    const first = runtime.stop(drain);
+    const second = runtime.stop();
+    expect(second).toBe(first);
+    expect(log).toEqual(["worker-start", "worker-stop"]);
+    expect(() => actualBusiness.db.query("SELECT 1").get()).not.toThrow();
+    settleDrain();
+    await first;
+    expect(log).toEqual(["worker-start", "worker-stop", "business-close"]);
+    expect(runtime.stop()).toBe(first);
+  });
+
+  it("cancels background owners synchronously before awaiting either worker drain", async () => {
+    const log: string[] = [];
+    const underlying = openBusinessDb();
+    const business = {
+      ...underlying,
+      close() {
+        log.push("business-close");
+        underlying.close();
+      },
+    };
+    const runtime = createRuntime({
+      business,
+      gateway,
+      browserStateSecret: testBrowserStateSecret,
+    });
+    let releaseBot!: () => void;
+    let releaseModules!: () => void;
+    const botDrain = new Promise<void>((resolve) => {
+      releaseBot = resolve;
+    });
+    const moduleDrain = new Promise<void>((resolve) => {
+      releaseModules = resolve;
+    });
+    const stopBot = runtime.botWorker.stop.bind(runtime.botWorker);
+    const stopModules = runtime.modules.stop.bind(runtime.modules);
+    runtime.botWorker.stop = () => {
+      log.push("bot-stop-start");
+      const settled = stopBot();
+      return Promise.all([settled, botDrain]).then(() => {
+        log.push("bot-stop-finished");
+      });
+    };
+    runtime.modules.stop = () => {
+      log.push("modules-stop-start");
+      const settled = stopModules();
+      return Promise.all([settled, moduleDrain]).then(() => {
+        log.push("modules-stop-finished");
+      });
+    };
+    runtime.start();
+    const stopping = runtime.stop();
+    expect(log).toEqual(["bot-stop-start", "modules-stop-start"]);
+    expect(() => business.db.query("SELECT 1").get()).not.toThrow();
+    releaseBot();
+    releaseModules();
+    await stopping;
+    expect(log).toContain("bot-stop-finished");
+    expect(log).toContain("modules-stop-finished");
+    expect(log.slice(-1)).toEqual(["business-close"]);
+    expect(() => business.db.query("SELECT 1").get()).toThrow();
+  });
+
+  it("hard-exits an owned synthetic child, then recovers committed history and unknown delivery", async () => {
+    const dbPath = path.join(tmpdir(), `superstring-shutdown-reopen-${crypto.randomUUID()}.sqlite`);
+    const setup = openBusinessDb({ path: dbPath });
+    ensureDefaults(setup.orm, "synthetic-model");
+    const session = createSession(setup.orm, "committed synthetic history", {
+      clientRequestId: `reopen-${crypto.randomUUID()}`,
+    });
+    const journal = new ConversationEventRepository(setup.db);
+    const conversationId = journal.ensureWeb(session.id)?.id;
+    if (!conversationId) throw new Error("synthetic session conversation missing");
+    journal.append({
+      conversationId,
+      eventKey: "committed-before-hard-exit",
+      kind: "inbound",
+      source: { kind: "synthetic", id: "history", revision: "1" },
+      occurredAt: "2026-10-08T00:00:00.000Z",
+    });
+    const outbox = new OutboundIntentRepository(setup.db);
+    const intentId = crypto.randomUUID();
+    const runId = `run-${intentId}`;
+    new AgentRunRepository(setup.db).createRun({
+      runId,
+      specId: "test",
+      specVersion: "1",
+      owner: { kind: "conversation", id: conversationId },
+      at: "2026-10-08T00:00:00.000Z",
+    });
+    outbox.commit({
+      id: intentId,
+      runId,
+      conversationId,
+      ordinal: 0,
+      target: {
+        accountId: "synthetic-account",
+        conversationKind: "group",
+        peerId: "synthetic-peer",
+        agentId: session.agentId,
+        bindingId: "synthetic-binding",
+        bindingEpoch: 1,
+      },
+      speechKind: "direct_reply",
+      sourceThroughSeq: 1,
+      deliverBy: "2026-10-09T00:00:00.000Z",
+      createdAt: "2026-10-08T00:00:00.000Z",
+      expiresAt: "2026-10-09T00:00:00.000Z",
+      parts: [{ kind: "text", text: "synthetic" }],
+    });
+    expect(outbox.claimPart(intentId, "2026-10-08T00:00:01.000Z")?.part.status).toBe("sending");
+    setup.close();
+
+    const childProgram = `
+      import { openBusinessDb } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/server/db/schema-gate.ts"))};
+      import { ConversationEventRepository } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/server/db/conversation-event-repository"))};
+      import { OutboundIntentRepository } from ${JSON.stringify(path.resolve(import.meta.dir, "../../src/server/db/outbound-intent-repository"))};
+      const handle = openBusinessDb({path:${JSON.stringify(dbPath)}});
+      const events = new ConversationEventRepository(handle.db).historyRows(${JSON.stringify(conversationId)});
+      const delivery = new OutboundIntentRepository(handle.db).get(${JSON.stringify(intentId)});
+      if(events.length !== 1 || delivery?.status !== "delivering") process.exit(3);
+      console.log("OWNED_SYNTHETIC_DB_OPEN");
+      await new Promise(() => {});
+    `;
+    const child = spawn(process.execPath, ["--eval", childProgram], {
+      cwd: path.dirname(dbPath),
+      env: {
+        ...process.env,
+        SUPERSTRING_APP_MODE: undefined,
+        SUPERSTRING_DB_PATH: undefined,
+        SUPERSTRING_APP_ROOT: undefined,
+        SUPERSTRING_RESOURCE_ROOT: undefined,
+        SUPERSTRING_DESKTOP_TOKEN: undefined,
+        SUPERSTRING_LM_STUDIO_API_KEY: undefined,
+        LM_STUDIO_API_KEY: undefined,
+        LM_STUDIO_BASE_URL: undefined,
+        LM_STUDIO_MODEL: undefined,
+        LM_STUDIO_TIMEOUT: undefined,
+        SUPERSTRING_QQ_TRANSPORT_KEY_PATH: undefined,
+        SUPERSTRING_MODEL_PROVIDER_KEY_PATH: undefined,
+        SUPERSTRING_BROWSER_STATE_SECRET: undefined,
+        SUPERSTRING_BROWSER_STATE_SECRET_PATH: undefined,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+    const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+      child.once("close", (code, signal) => resolve({ code, signal })),
+    );
+    const readiness = await Promise.race([
+      new Promise<boolean>((resolve) => {
+        const inspect = () => {
+          if (stdout.includes("OWNED_SYNTHETIC_DB_OPEN")) return resolve(true);
+          if (stderr || child.exitCode !== null) return resolve(false);
+          setTimeout(inspect, 5);
+        };
+        inspect();
+      }),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000)),
+    ]);
+    if (!readiness) {
+      child.kill();
+      await exit;
+      throw new Error(`synthetic owned child did not open fixture DB: ${stderr}`);
+    }
+    child.kill("SIGKILL");
+    expect(await exit).toMatchObject({ signal: "SIGKILL" });
+
+    const reopened = openBusinessDb({ path: dbPath });
+    try {
+      const recoveredOutbox = new OutboundIntentRepository(reopened.db);
+      expect(new ConversationEventRepository(reopened.db).historyRows(conversationId).length).toBe(
+        1,
+      );
+      expect(recoveredOutbox.recover("2026-10-08T00:00:02.000Z")).toBe(1);
+      expect(recoveredOutbox.get(intentId)?.status).toBe("unknown");
+      expect(recoveredOutbox.pending()).toEqual([]);
+    } finally {
+      reopened.close();
+      Bun.gc(true);
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(`${dbPath}${suffix}`, { force: true });
+    }
+  });
+
   it("starts the worker once and stops it before closing the business database", async () => {
     const log: string[] = [];
     const actualBusiness = openBusinessDb();

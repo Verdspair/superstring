@@ -1490,11 +1490,6 @@ describe("shared Bot context source", () => {
    * 00:12–00:24 那几条 `AGENT_CONTEXT_LIMIT` 就是模型连着调 speech.evaluate 把观测堆穿了。
    */
   it("re-assembles the window when accumulated observations crowd the ceiling", async () => {
-    const h = setup({ tokenBudget: 16384 });
-    h.gateway.loadedContextCapacity = async () => 16384;
-    for (let index = 0; index < 20; index += 1) h.seed(`old ${"x".repeat(480)}`, 1);
-    h.seed("newest question", 0);
-    const first = await h.source.read(readInput());
     const observations = [0, 1].map((index) => ({
       id: crypto.randomUUID(),
       name: "speech.evaluate",
@@ -1503,18 +1498,81 @@ describe("shared Bot context source", () => {
       value: { verdict: `v${index}`, note: "y".repeat(2200) },
       sources: [],
     }));
-    const material = await h.source.read({ signal: new AbortController().signal, observations });
-    // 重装后窗口收窄（材料比没有观测时小），最新一条还在，且仍放得下"这批观测 + 下一条动作结果"。
-    expect(JSON.stringify(material.pending).length).toBeLessThan(
-      JSON.stringify(first.pending).length,
-    );
-    expect(JSON.stringify(material.pending)).toContain("newest question");
-    const fits = await h.source.actionResultFitter(
-      "sticker.search",
-      { query: "趴" },
-      new AbortController().signal,
-    );
-    expect(fits({ status: "available", items: [], nextCursor: null }, [])).toBe(true);
+    const inspect = async (capacity: number) => {
+      const h = setup({ tokenBudget: 16384 });
+      h.gateway.loadedContextCapacity = async () => capacity;
+      for (let index = 0; index < 20; index += 1) h.seed(`old ${"x".repeat(480)}`, 1);
+      h.seed("newest question", 0);
+      try {
+        const first = await h.source.read(readInput());
+        const material = await h.source.read({
+          signal: new AbortController().signal,
+          observations,
+        });
+        const fits = await h.source.actionResultFitter(
+          "sticker.search",
+          { query: "趴" },
+          new AbortController().signal,
+        );
+        const countOld = (value: unknown) =>
+          ((JSON.stringify(value) ?? "").match(/old x/g) ?? []).length;
+        const engine = new ContextEngine();
+        const ceiling = h.spec.limits.inputUnits;
+        if (ceiling === undefined) throw new Error("context source did not set its input ceiling");
+        return {
+          fits: true as const,
+          capacity,
+          ceiling,
+          first,
+          material,
+          beforeOld: countOld(first.pending),
+          afterOld: countOld(material.pending),
+          beforeUnits: engine.render(h.spec, first, [], ["alice", "bob"]).units,
+          afterUnits: engine.render(h.spec, material, observations, ["alice", "bob"]).units,
+          nextFits: fits({ status: "available", items: [], nextCursor: null }, []),
+        };
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          (error.code === "CONTEXT_BUDGET_EXCEEDED" || error.code === "AGENT_CONTEXT_LIMIT")
+        )
+          return { fits: false as const, capacity, code: error.code };
+        throw error;
+      }
+    };
+    const upperProbe = setup();
+    const upper = await upperProbe.gateway.loadedContextCapacity("reply-model", {
+      signal: new AbortController().signal,
+    });
+    if (upper === null) throw new Error("synthetic model capacity unavailable");
+    let low = 1,
+      high = upper;
+    // Find the actual loaded-capacity point where this protocol can keep multiple old messages,
+    // then fit both existing observations plus the next action envelope. No guessed capacity.
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const probe = await inspect(mid);
+      if (probe.fits && probe.beforeOld >= 2 && probe.nextFits) high = mid;
+      else low = mid + 1;
+    }
+    const calibrated = await inspect(low);
+    expect(upper).not.toBeNull();
+    expect(calibrated.fits).toBe(true);
+    if (!calibrated.fits) throw new Error("calibrated source did not fit");
+    expect(calibrated.beforeOld).toBeGreaterThanOrEqual(2);
+    expect(calibrated.afterOld).toBeLessThan(calibrated.beforeOld);
+    expect(JSON.stringify(calibrated.material.pending)).toContain("newest question");
+    expect(calibrated.nextFits).toBe(true);
+    expect(calibrated.afterUnits).toBeLessThanOrEqual(calibrated.ceiling);
+    console.info("budget-window-calibration", {
+      capacity: calibrated.capacity,
+      ceiling: calibrated.ceiling,
+      beforeUnits: calibrated.beforeUnits,
+      afterUnits: calibrated.afterUnits,
+      beforeOld: calibrated.beforeOld,
+      afterOld: calibrated.afterOld,
+    });
   });
 
   it("keeps a sibling target's frozen media state when another target falls back", async () => {

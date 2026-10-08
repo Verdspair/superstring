@@ -147,12 +147,19 @@ export function createQqStickerActions(
         const final = options?.enableAfterSave
           ? await api.setQqStickerEnabled(editor.source.id, true)
           : collected;
-        replaceAsset(final);
-        set({
-          qqStickerEditor: { ...qqStickerEditorFrom(final) },
-          feedback: options?.enableAfterSave ? "已保存并启用" : "已保存素材整理",
+        set((state) => {
+          const isCurrent = state.qqStickerEditor === editor;
+          return {
+            qqStickerAssets: state.qqStickerAssets.map((row) =>
+              row.id === final.id ? final : row,
+            ),
+            qqStickerEditor: isCurrent ? { ...qqStickerEditorFrom(final) } : state.qqStickerEditor,
+            ...(isCurrent
+              ? { feedback: options?.enableAfterSave ? "已保存并启用" : "已保存素材整理" }
+              : {}),
+          };
         });
-        await loadImpact(final.id);
+        void loadImpact(final.id);
         return true;
       } catch (error) {
         report(error);

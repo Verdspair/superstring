@@ -143,3 +143,32 @@ bun run build
 ~~~
 
 Deterministic tests use synthetic models and transports. Live model quality/latency, actual OneBot delivery and native installation remain separate environment checks. Local screenshots, run logs and temporary browser fixtures are not source deliverables.
+
+## Model discovery, cancellation and shutdown
+
+Optional model catalog discovery does not block readiness: application shell and directory readiness settle independently, and a late catalog result is adopted only while it still matches its API and startup owner. Model metadata requests (`/models/local`, `/models/capacity`) follow their caller's cancellation. Ordinary service shutdown cancels owned work before settling active requests and necessary persistence, then closes SQLite.
+
+Windows desktop direct exit is a separate process-lifetime path. The launcher owns an anonymous Windows Job Object containing itself and its spawned service, isolated Edge window and descendants. Destroying the owned application window ends that job immediately; it does not wait for the browser process, model completion or the HTTP stop endpoint. Page refresh does not destroy the application window. There is no automatic handoff or queued restart. Uncommitted work may be interrupted; SQLite recovers committed transactions, and interrupted sends retain unknown-delivery recovery rather than blind replay. External model services, bot transports and personal browser processes are not part of the job. The legacy background preference remains parseable but is ignored on the window-owned path; non-owned browser integrations retain their own page lifecycle.
+
+## 模型目录、取消与关闭
+
+可选模型目录发现不阻塞就绪：应用壳与目录就绪独立结算，迟到结果只在仍匹配当前 API 与启动所有者时接入。模型元数据请求（`/models/local`、`/models/capacity`）跟随调用方取消。普通服务停止先取消自有工作，再结算在途请求和必要持久化，最后关闭 SQLite。
+
+Windows 桌面直接退出采用独立的进程生命周期路径。启动器通过匿名 Windows Job Object 拥有自身、自行启动的服务、独立 Edge 应用窗口及其后代。自有应用窗口销毁即结束该作业，不等待浏览器进程、模型完成或 HTTP stop。页面刷新不销毁应用窗口；没有自动交接或排队重启。未提交的工作可以中断；SQLite 恢复已提交事务，发送中断保留未知送达恢复而不盲目重放。外部模型服务、机器人传输服务和个人浏览器进程不属于该作业。旧 background 偏好仍可解析但在 windowOwned 路径被忽略；非自有浏览器集成保留自己的页面生命周期。
+
+## Background loop yield fairness
+
+The background Bot worker loop shares the process event loop with the server. After each wake cycle completes, the loop yields once with `await setImmediate` so that pending socket and timer callbacks (including wake cancellations) can run between cycles. The loop never busy-spins past settled work, and no timer-based forced unlock or forced kill is introduced. A dedicated test pins this contract with the production runtime closure and a spy boundary: while the production runtime drains immediately settled wakes, a zero-delay timer callback must run before the finite test backlog has been fully drained. This asserts callback progress, not a wall-clock latency bound or a socket-response measurement.
+
+## 后台循环让出公平性
+
+后台 Bot worker 循环与服务端共享同一事件循环。每完成一次唤醒循环后，循环以 `await setImmediate` 让出一次，使挂起的 socket 与定时器回调（含唤醒取消）有机会在循环之间执行。循环不会在已结算工作之外空转，不引入基于计时器的强制解锁或强制杀进程。专项测试以生产 runtime 闭包与 spy 边界钉住该合同：生产 runtime 排空立即结算的唤醒时，零延迟定时器回调必须在有限测试积压全部排空前得到执行。这验证回调进展，不是墙钟时延上限，也不是 socket 响应实测。
+
+
+## Editor readiness and optional metadata
+
+Assistant and persona reads own editor readiness. Memory maintenance initialization continues under its existing owner, but it does not extend the navigation lock after the basic editor is ready. Optional shared model metadata reads do not block navigation; settings writes, unsaved drafts and compare-and-swap checks remain protected. Retained hidden workspaces receive an activity flag so their automatic foreground reads pause without clearing loaded content. Components subscribe to the state they render rather than every background update.
+
+## 编辑器就绪与可选元数据
+
+助手与人设读取负责编辑器就绪。记忆维护初始化仍由原入口执行，但基本编辑器就绪后不再延长导航锁。可选共享模型元数据读取不阻止导航，设置写入、未保存草稿和比较交换检查仍受保护。保留挂载的隐藏工作区通过活动状态暂停自动前台读取，不清空已加载内容；组件只订阅其展示的状态，不跟随所有后台更新重渲染。

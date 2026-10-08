@@ -293,9 +293,11 @@ function AddConversationDialog({
 export function SchemeBindingsView({
   schemeId = null,
   picker = false,
+  active = true,
 }: {
   schemeId?: string | null;
   picker?: boolean;
+  active?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const state = useSuperstringStore(
@@ -322,8 +324,9 @@ export function SchemeBindingsView({
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<"all" | "group" | "private">("all");
   useEffect(() => {
+    if (!active) return;
     void loadQqBindingDirectory();
-  }, [loadQqBindingDirectory]);
+  }, [active, loadQqBindingDirectory]);
   const schemes = state.qqSchemes;
   // 显式给的方案不在目录里：停在明确提示上——不退回第一个方案，也不允许把别的绑定挂上来。
   const schemeMissing = !!schemeId && !schemes.some((scheme) => scheme.id === schemeId);
@@ -552,7 +555,7 @@ export function SchemeBindingsView({
 }
 
 /** 全局「会话绑定」页：从方案目录进入的次级入口，先选方案，再落到同一绑定视图。 */
-export function SchemeBindingsPage() {
+export function SchemeBindingsPage({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const openSettingsRoute = useSuperstringStore((s) => s.openSettingsRoute);
   return (
@@ -570,7 +573,7 @@ export function SchemeBindingsPage() {
         <p className="min-w-0 text-xs text-muted-foreground">{t("schemes.bindings.note")}</p>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
-        <SchemeBindingsView picker />
+        <SchemeBindingsView picker active={active} />
       </div>
     </section>
   );

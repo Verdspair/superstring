@@ -9,8 +9,12 @@ export interface QqSendPort {
 }
 export type QqStickerFileReference = (stickerId: string) => string | null;
 
-/** 一条文本部件落库后的内容；`mentions` 见 qqTextSegments 的两套线上语义。 */
-export type QqTextPart = { text: string; mentions?: readonly string[] };
+/** 一条文本部件落库后的内容；缺少 `mentions` 才按历史 CQ/程序收件人规则重放。 */
+export type QqTextPart = {
+  text: string;
+  mentions?: readonly string[];
+  replyToMessageId?: string;
+};
 
 /**
  * 把一条文本部件变成平台段。
@@ -23,22 +27,37 @@ export type QqTextPart = { text: string; mentions?: readonly string[] };
  * - `mentions` 缺失＝变更前计划的旧部件，线上事实是：正文里的 CQ 码拆成 `at` 段，ordinal 0
  *   前置程序收件人（`legacyRecipient`）。按当时的编解码还原，不把历史的 `@` 重新解释掉。
  */
-export function qqTextSegments(
-  payload: QqTextPart,
-  legacyRecipient: string | null = null,
+export type QqReplyTextPayload = {
+  text: string;
+  mentions?: readonly string[];
+  replyToMessageId?: string;
+};
+export type QqReplyStickerPayload = {
+  stickerFile: string;
+  mentions?: readonly string[];
+  replyToMessageId?: string;
+};
+export type QqReplyPayload = QqReplyTextPayload | QqReplyStickerPayload;
+
+function replySegment(messageId: string): OneBotSendRequest["message"][number] {
+  if (messageId.length === 0) throw new TypeError("Invalid reply message id");
+  return { type: "reply", data: { id: messageId } };
+}
+
+function mentionSegments(ids: readonly string[] | undefined): OneBotSendRequest["message"] {
+  if (ids === undefined) return [];
+  return ids.map((id) => {
+    // 非纯数字的项是协议错误：宁可显式失败，也不猜一个目标或悄悄少 @ 一个人。
+    if (!/^\d+$/.test(id)) throw new TypeError("Invalid mention id in reply payload");
+    return { type: "at", data: { qq: id } };
+  });
+}
+
+function legacyTextSegments(
+  text: string,
+  legacyRecipient: string | null,
 ): OneBotSendRequest["message"] {
   const segments: OneBotSendRequest["message"] = [];
-  if (payload.mentions !== undefined) {
-    if (payload.text.length > 0) segments.push({ type: "text", data: { text: payload.text } });
-    for (const id of payload.mentions) {
-      // 非纯数字的项是协议错误：宁可显式失败，也不猜一个目标或悄悄少 @ 一个人。
-      if (!/^\d+$/.test(id)) throw new TypeError("Invalid mention id in reply payload");
-      segments.push({ type: "at", data: { qq: id } });
-    }
-    // An `at` on its own is a mention the platform accepts; a text part must never come back empty.
-    if (segments.length > 0) return segments;
-    return [{ type: "text", data: { text: payload.text } }];
-  }
   const pattern = /\[CQ:at,qq=(\d+)\]/g;
   // `@` 和后面那句话之间留一个空格，看起来自然些；后面本来就以空白开头就不重复加。
   // 只加在 `at` 与紧随其后的文字之间——单独一个 `at`（后面没有话）不补空格。
@@ -57,16 +76,52 @@ export function qqTextSegments(
     afterMention = true;
   }
   let cursor = 0;
-  for (const match of payload.text.matchAll(pattern)) {
+  for (const match of text.matchAll(pattern)) {
     const start = match.index ?? 0;
-    pushText(payload.text.slice(cursor, start), afterMention);
+    pushText(text.slice(cursor, start), afterMention);
     segments.push({ type: "at", data: { qq: match[1] ?? "" } });
     afterMention = true;
     cursor = start + match[0].length;
   }
-  pushText(payload.text.slice(cursor), afterMention);
+  pushText(text.slice(cursor), afterMention);
   if (segments.length > 0) return segments;
-  return [{ type: "text", data: { text: payload.text } }];
+  return [{ type: "text", data: { text } }];
+}
+
+/** Encode a single persisted reply part into its native OneBot segments. */
+export function qqReplySegments(
+  payload: QqReplyPayload,
+  legacyRecipient: string | null = null,
+): OneBotSendRequest["message"] {
+  const segments: OneBotSendRequest["message"] = [];
+  if (payload.replyToMessageId !== undefined) segments.push(replySegment(payload.replyToMessageId));
+  if ("stickerFile" in payload) {
+    segments.push(...mentionSegments(payload.mentions));
+    if (payload.stickerFile.length === 0) throw new TypeError("Invalid sticker file reference");
+    segments.push({ type: "image", data: { file: payload.stickerFile } });
+    return segments;
+  }
+  if (payload.mentions !== undefined) {
+    if (payload.text.length === 0 && payload.mentions.length === 0)
+      throw new TypeError("Reply text part has no text or mention");
+    if (payload.text.length > 0) segments.push({ type: "text", data: { text: payload.text } });
+    segments.push(...mentionSegments(payload.mentions));
+    return segments;
+  }
+  if (payload.replyToMessageId !== undefined) {
+    if (payload.text.length === 0) throw new TypeError("Reply text part has no text or mention");
+    segments.push({ type: "text", data: { text: payload.text } });
+    return segments;
+  }
+  return legacyTextSegments(payload.text, legacyRecipient);
+}
+
+/** Text-only public entry retained for existing callers and historical projection. */
+export function qqTextSegments(
+  payload: QqTextPart,
+  legacyRecipient: string | null = null,
+): OneBotSendRequest["message"] {
+  return qqReplySegments(payload, legacyRecipient);
 }
 
 export function qqStickerFileReference(orm: Orm, store: QqStickerStore): QqStickerFileReference {

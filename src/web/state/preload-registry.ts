@@ -5,6 +5,7 @@ import {
   warmAgentResources,
 } from "../services/agent-preload";
 import { warmConnectionResources } from "../services/connection-resources";
+import { warmTracesCache } from "../services/page-snapshot-cache";
 import { useSuperstringStore } from "../store";
 import type { SpaceId } from "../workspace/navigation";
 
@@ -93,15 +94,38 @@ const warmAssistantPersona = () => {
   return warmAgentResources(state.apiClient, agentId);
 };
 
+const warmConversationTraces = async () => {
+  const { apiClient, sessionStateStorage, currentConversationId } = useSuperstringStore.getState();
+  if (!sessionStateStorage) return;
+  const scopes = currentConversationId ? [{}, { conversationId: currentConversationId }] : [{}];
+  await Promise.all(
+    scopes.map((filters) =>
+      warmTracesCache(
+        sessionStateStorage,
+        JSON.stringify(filters),
+        () => apiClient.listRuntimeTraces({ ...filters, limit: 100 }),
+        () => {
+          const current = useSuperstringStore.getState();
+          return (
+            current.apiClient === apiClient &&
+            current.sessionStateStorage === sessionStateStorage &&
+            (!("conversationId" in filters) ||
+              current.currentConversationId === currentConversationId)
+          );
+        },
+      ),
+    ),
+  );
+};
+
 /** 8 大工作区统一登记表 (覆盖 navigation.ts 中的 SPACES 与 ENVIRONMENT) */
 export const PRELOAD_REGISTRY: readonly PreloadRegistryItem[] = [
   {
     id: "workspace:conversations",
     space: "conversations",
     loadChunk: WORKSPACE_LOADERS.conversations,
-    dataStatus: "excluded",
-    excludedReason:
-      "Bootstrap already fetches directory & active conversation; excluded to protect the 512 KiB session cache from churn",
+    dataStatus: "eligible",
+    loadData: warmConversationTraces,
   },
   {
     id: "workspace:assistants",
