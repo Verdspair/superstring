@@ -12,6 +12,7 @@ import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port"
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
 import { createOneBotConversationRuntime } from "../../src/server/channels/onebot11/create-runtime";
+import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
@@ -645,4 +646,88 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
     expect(payload.targets).toHaveLength(20);
     expect(f.calls).toHaveLength(1);
   });
+});
+
+it("an own chiming intent confirmed during the crash still resumes the frozen batch with the reused judgement", async () => {
+  // 规格 §8.2 恢复一致性：同 frozen wake 的 own stable key 在 confirmed 状态下同样排除出
+  // 覆盖判定——崩溃恢复后复用持久判断（0 次新评分）、已确认目标不重生成不重发、目标集完整。
+  let releaseSlow: () => void = () => {};
+  let rejectCrash: (error: unknown) => void = () => {};
+  const slowGate = new Promise<void>((resolve) => {
+    releaseSlow = resolve;
+    pendingGates.push(releaseSlow);
+  });
+  const crashed = new Promise<never>((_, reject) => {
+    rejectCrash = reject;
+  });
+  const sends: string[] = [];
+  const f = setup({
+    replyComplete: async (req) => {
+      if (authorizedTargetOf(req) === "20003") await Promise.race([slowGate, crashed]);
+      return inlineFinal(authorizedTargetOf(req), "reply body");
+    },
+  });
+  f.receive("1", "20002");
+  f.clock.seconds += 1;
+  f.receive("2", "20003");
+  const wake = f.wakes.claim({ at: f.now(), leaseMs: 120000, cause: "chiming_in" })!;
+  const crash = new AbortController();
+  const crashing = f.host.activate(wake, crash.signal);
+  try {
+    await waitFor(() => f.outbox.list({}).length === 1);
+    // 真实投递把快目标的 part 送到 confirmed——wake 仍未终态（慢目标挂起）。
+    const delivery = new OutboundDelivery({
+      orm: f.orm,
+      repository: f.outbox,
+      journal: f.journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      port: {
+        async send() {
+          sends.push("20002");
+          return { kind: "confirmed", messageId: "synthetic-a" };
+        },
+      },
+    });
+    await delivery.runOnce();
+    expect(f.outbox.list({}).find((d) => d.target?.participantId === "20002")?.status).toBe(
+      "confirmed",
+    );
+    const crashError = new Error("CRASH");
+    crash.abort(crashError);
+    rejectCrash(crashError);
+    await expect(crashing).rejects.toBeTruthy();
+  } finally {
+    releaseSlow();
+  }
+  // 发送之后的新成员输入解除 no-reply 等待（既批准规则：只有晚于我们发言的成员消息
+  // 放行下一次主动）；租约到期后同 wake 恢复。
+  f.clock.seconds += 60;
+  f.receive("3", "20004");
+  f.clock.seconds += 61;
+  expect(f.wakes.recover({ at: f.now(), maxAttempts: 5, retryDelayMs: 1000 })).toBe(1);
+  f.clock.seconds += 2;
+  const resumedWake = f.wakes.claim({
+    at: f.now(),
+    leaseMs: 120000,
+    cause: "chiming_in",
+    wakeId: wake.id,
+  })!;
+  expect(resumedWake.id).toBe(wake.id);
+  const resumed = await f.host.activate(resumedWake, new AbortController().signal);
+  expect(resumed.status).toBe("completed");
+  const scoreCalls = f.calls.filter(
+    (call) => call.kind === "complete" && isBatchScore(call.request),
+  ).length;
+  expect(scoreCalls).toBe(1);
+  expect(
+    f.outbox
+      .list({})
+      .map((d) => d.target?.participantId)
+      .sort(),
+  ).toEqual(["20002", "20003"]);
+  expect(f.outbox.list({}).find((d) => d.target?.participantId === "20002")?.status).toBe(
+    "confirmed",
+  );
+  expect(sends).toEqual(["20002"]);
 });

@@ -7,6 +7,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
+import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import type { ActionContext, BuiltInAction } from "../../src/server/agent/built-in-actions";
@@ -25,6 +26,7 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_USER_ID, ensureDefaults, nowIso } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { fail } from "../../src/server/errors";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
 import type { QqBinding } from "../../src/server/services/qq-binding-contract";
 import {
@@ -245,6 +247,7 @@ function open() {
       modelConfig?: QqMediaToolsOptions["modelConfig"];
       conversationId?: string;
       binding?: QqBinding;
+      resolveQuestion?: QqMediaToolsOptions["resolveQuestion"];
     } = {},
   ) {
     const stats = { calls: 0, described: [] as string[] };
@@ -275,6 +278,7 @@ function open() {
       assertCurrent: () => {},
       fit: input.fit ?? (async () => () => true),
       evidence: { db: h.db, orm: h.orm },
+      ...(input.resolveQuestion === undefined ? {} : { resolveQuestion: input.resolveQuestion }),
       onDescribed: (eventKey) => {
         stats.described.push(eventKey);
       },
@@ -687,7 +691,7 @@ describe("run-scoped QQ media tools", () => {
     }
   });
 
-  it("refuses ids this run never disclosed and never accepts model-supplied authorisation", async () => {
+  it("feeds back ids this run never disclosed and never accepts model-supplied authorisation", async () => {
     const f = open();
     try {
       const visible = f.image("img-1");
@@ -695,11 +699,15 @@ describe("run-scoped QQ media tools", () => {
       const tool = f.mount();
       const { ctx } = f.context();
       await tool.execute("media.list", {}, ctx);
-      await expect(tool.execute("media.describe", { id: hidden.id }, ctx)).rejects.toMatchObject({
-        code: "CONTEXT_INVALID_SELECTION",
+      const hiddenDescribe = await tool.execute("media.describe", { id: hidden.id }, ctx);
+      expect(hiddenDescribe).toMatchObject({
+        value: { status: "unavailable", code: "CONTEXT_INVALID_SELECTION", recoverable: true },
+        sources: [],
       });
-      await expect(tool.execute("media.note.read", { id: hidden.id }, ctx)).rejects.toMatchObject({
-        code: "CONTEXT_INVALID_SELECTION",
+      const hiddenNote = await tool.execute("media.note.read", { id: hidden.id }, ctx);
+      expect(hiddenNote).toMatchObject({
+        value: { status: "unavailable", code: "CONTEXT_INVALID_SELECTION", recoverable: true },
+        sources: [],
       });
       // 模型的授权布尔不能进参数：schema 是 strict 的。
       await expect(
@@ -713,7 +721,7 @@ describe("run-scoped QQ media tools", () => {
     }
   });
 
-  it("refuses an id disclosed in another conversation even in the same run context", async () => {
+  it("feeds back an id disclosed in another conversation without accessing it", async () => {
     const f = open();
     try {
       const img = f.image("img-1");
@@ -730,9 +738,11 @@ describe("run-scoped QQ media tools", () => {
         id: elsewhere.conversationId,
       });
       await other.execute("media.list", {}, elsewhereCtx.ctx);
-      await expect(
-        other.execute("media.describe", { id: img.id }, elsewhereCtx.ctx),
-      ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+      const foreign = await other.execute("media.describe", { id: img.id }, elsewhereCtx.ctx);
+      expect(foreign).toMatchObject({
+        value: { status: "unavailable", code: "CONTEXT_INVALID_SELECTION", recoverable: true },
+        sources: [],
+      });
       expect(other.stats.calls).toBe(0);
       expect(mediaNoteRow(f.h.orm, "img-1", 0)?.attempts).toBe(0);
     } finally {
@@ -986,6 +996,123 @@ describe("run-scoped QQ media tools", () => {
     }
   });
 
+  it("feeds a wrong question-message field back in a direct batch and keeps the same run usable", async () => {
+    const f = open();
+    try {
+      const image = f.image("img-question");
+      const anchor = {
+        questionKey: "猫在做什么",
+        eventKey: "img-question",
+        bodyRevision: "revision-1",
+        source: { kind: "qq_message_fact" as const, id: "img-question", revision: "revision-1" },
+        assertQuestionCurrent: () => {},
+      };
+      let sourceExpired = false;
+      const tool = f.mount({
+        resolveQuestion: ({ questionMessageId }) => {
+          if (sourceExpired) fail("CONTEXT_SOURCE_INVALID", "问题来源已过期");
+          return questionMessageId === "message-img-question" ? anchor : null;
+        },
+      });
+      const { ctx } = f.context("same-selection-run");
+      const executor = new ActionExecutor();
+      const list = tool.named("media.list");
+      const describe = tool.named("media.describe");
+      await executor.executeBatch([{ action: list, arguments: {} }], ctx);
+
+      const wrong = await executor.executeBatch(
+        [{ action: describe, arguments: { id: image.id, questionMessageId: "img-question" } }],
+        ctx,
+      );
+      expect(wrong[0]?.value).toEqual({
+        status: "unavailable",
+        code: "CONTEXT_INVALID_SELECTION",
+        recoverable: true,
+      });
+      expect(wrong[0]?.sources).toEqual([]);
+      expect(tool.stats.calls).toBe(0);
+      expect(f.h.db.query("SELECT id FROM qq_media_read_tasks").all()).toHaveLength(0);
+
+      const corrected = await executor.executeBatch(
+        [
+          {
+            action: describe,
+            arguments: { id: image.id, questionMessageId: "message-img-question" },
+          },
+        ],
+        ctx,
+      );
+      expect(corrected[0]?.value).toMatchObject({
+        status: "described",
+        described: true,
+        attempt: 1,
+        id: image.id,
+      });
+      expect(corrected[0]?.sources.length).toBeGreaterThan(0);
+      expect(tool.stats.calls).toBe(1);
+      expect(f.h.db.query("SELECT attempts,purpose FROM qq_media_read_tasks").all()).toEqual([
+        { attempts: 1, purpose: "detail" },
+      ]);
+
+      sourceExpired = true;
+      await expect(
+        executor.executeBatch(
+          [
+            {
+              action: describe,
+              arguments: { id: image.id, questionMessageId: "message-img-question" },
+            },
+          ],
+          ctx,
+        ),
+      ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+      expect(tool.stats.calls).toBe(1);
+      expect(f.h.db.query("SELECT attempts FROM qq_media_read_tasks").all()).toEqual([
+        { attempts: 1 },
+      ]);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("returns correctable feedback for an out-of-range note page without losing run state", async () => {
+    const f = open();
+    try {
+      const img = f.image("img-page");
+      const tool = f.mount({ read: async () => "甲乙" });
+      const { ctx } = f.context("page-selection-run");
+      const executor = new ActionExecutor();
+      await executor.executeBatch([{ action: tool.named("media.list"), arguments: {} }], ctx);
+      await executor.executeBatch(
+        [{ action: tool.named("media.describe"), arguments: { id: img.id } }],
+        ctx,
+      );
+      const bad = await executor.executeBatch(
+        [{ action: tool.named("media.note.read"), arguments: { id: img.id, offset: 99 } }],
+        ctx,
+      );
+      expect(bad[0]?.value).toEqual({
+        status: "unavailable",
+        code: "CONTEXT_INVALID_SELECTION",
+        recoverable: true,
+      });
+      expect(bad[0]?.sources).toEqual([]);
+      expect(tool.stats.calls).toBe(1);
+      expect(
+        f.h.db.query("SELECT attempts FROM qq_media_read_tasks WHERE media_note_id=?").all(img.id),
+      ).toEqual([{ attempts: 1 }]);
+      const corrected = await executor.executeBatch(
+        [{ action: tool.named("media.note.read"), arguments: { id: img.id, offset: 0 } }],
+        ctx,
+      );
+      expect(corrected[0]?.value).toMatchObject({ status: "ok", text: "甲乙", offset: 0 });
+      expect(corrected[0]?.sources).toHaveLength(1);
+      expect(tool.stats.calls).toBe(1);
+    } finally {
+      f.h.close();
+    }
+  });
+
   it("releases run state idempotently and keeps describe out of sandbox callables", async () => {
     const f = open();
     try {
@@ -1060,7 +1187,7 @@ describe("run-scoped QQ media tools", () => {
     }
   });
 
-  it("keeps cursors opaque and per-run: forged, cross-run and released tokens are refused", async () => {
+  it("feeds back invalid cursors inside a run and keeps run boundaries fatal", async () => {
     const f = open();
     try {
       const first = f.image("img-a", { at: f.baseSeconds });
@@ -1073,12 +1200,20 @@ describe("run-scoped QQ media tools", () => {
       if (cursor === null) throw new Error("missing cursor");
 
       const tampered = cursor.slice(0, -1) + (cursor.endsWith("0") ? "1" : "0");
-      await expect(
-        tool.execute("media.list", { limit: 1, cursor: tampered }, ctx),
-      ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
-      await expect(
-        tool.execute("media.list", { limit: 1, cursor: "forged-token" }, ctx),
-      ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+      const tamperedResult = await tool.execute("media.list", { limit: 1, cursor: tampered }, ctx);
+      expect(tamperedResult).toMatchObject({
+        value: { status: "unavailable", code: "CONTEXT_INVALID_SELECTION", recoverable: true },
+        sources: [],
+      });
+      const forgedResult = await tool.execute(
+        "media.list",
+        { limit: 1, cursor: "forged-token" },
+        ctx,
+      );
+      expect(forgedResult).toMatchObject({
+        value: { status: "unavailable", code: "CONTEXT_INVALID_SELECTION", recoverable: true },
+        sources: [],
+      });
 
       // 别的 run 里没有这张表：续页不自动建表，跨 run 的游标不成立。
       const other = f.context("run-other");
@@ -1195,9 +1330,12 @@ describe("run-scoped QQ media tools", () => {
       const refused = await swept.execute("media.list", {}, runB.ctx);
       expect(refused.value).toEqual({ status: "unavailable", code: "segment_missing" });
       expect(refused.sources).toEqual([]);
-      await expect(
-        swept.execute("media.describe", { id: third.id }, runB.ctx),
-      ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+      const undisclosed = await swept.execute("media.describe", { id: third.id }, runB.ctx);
+      expect(undisclosed).toMatchObject({
+        value: { status: "unavailable", code: "CONTEXT_INVALID_SELECTION", recoverable: true },
+        sources: [],
+      });
+      expect(swept.stats.calls).toBe(0);
 
       // (c) 等待 fit 期间绑定被暂停（撤权）：同样拒绝，绝不交出正文或引用。
       const second = f.image("img-2");

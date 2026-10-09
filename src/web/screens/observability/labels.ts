@@ -108,3 +108,6 @@ export const reasonLabels: Record<string, string> = {
   PROCESS_INTERRUPTED: "observability.processInterruptedOutcomeNeedsConfirmation",
   OPERATION_FAILED: "observability.operationDidNotCompleteInspectRelatedSteps",
 };
+export const neutralWakeReasonLabels: Record<string, string> = {
+  BATCH_WAITING_FOR_COUNT: "workspace.wake_batch_waiting_for_count",
+};

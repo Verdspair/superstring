@@ -252,7 +252,8 @@ describe("qq media tool descriptions", () => {
   test("questionMessageId pointer wording stays verbatim on all three tools", () => {
     const pointer =
       "Only when this image needs a NEW detail that the current question asks for: the " +
-      "id of the real already-seen user message that asks it, exactly as printed in the " +
+      "platformMessageId field (NOT the id/eventKey field) of the real already-seen user " +
+      "message that asks it, exactly as printed in that message's msg= JSON in the " +
       "qq_message_facts block. It must be this turn's question message (the message this " +
       "turn answers, or a message it directly quotes), and this image must be in that " +
       "message's own image range. The pointer only selects the higher-detail spec for " +

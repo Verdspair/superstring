@@ -723,12 +723,18 @@ describe("typed QQ media tools (t08 finish2)", () => {
       const tool = f.mount({ read: async () => "细节正文", resolveQuestion: resolveReal });
       const { ctx } = f.context();
       await tool.execute("media.list", {}, ctx);
-      // 伪造指针：宿主解析不出锚 ⇒ 按原 reason 穿透拒绝，零任务消耗。
-      expect(
-        await rejection(
-          tool.execute("media.note.read", { id: img.id, questionMessageId: "message-forged" }, ctx),
-        ),
-      ).toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+      // 伪造指针：本轮有效披露下回传选择错误，无正文、来源或任务消耗。
+      const invalid = await tool.execute(
+        "media.note.read",
+        { id: img.id, questionMessageId: "message-forged" },
+        ctx,
+      );
+      expect(invalid.value).toEqual({
+        status: "unavailable",
+        code: "CONTEXT_INVALID_SELECTION",
+        recoverable: true,
+      });
+      expect(invalid.sources).toEqual([]);
       expect(tool.stats.calls).toBe(0);
       expect(f.h.db.query("SELECT COUNT(*) AS n FROM qq_media_read_tasks").get()).toMatchObject({
         n: 0,

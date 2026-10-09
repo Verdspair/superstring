@@ -29,6 +29,7 @@ import { readOrganizationSettings } from "../../db/organization-repository";
 import {
   idempotentIntentId,
   type OutboundIntentRepository,
+  type OutboundTarget,
 } from "../../db/outbound-intent-repository";
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { recordQqIdleJudgement } from "../../db/qq-dispatch-repository";
@@ -112,13 +113,18 @@ import {
   type BotContextTarget,
   type MediaPhaseState as QqMediaPhaseState,
 } from "./context-source";
+import { qqDeliveryAuthorize } from "./delivery-authority";
 import type {
   QqMediaInputService,
   QqMediaProjection,
   QqPreparedMediaImage,
 } from "./media-input-service";
 import { consumeModelMediaData, isModelImageUnsupportedError } from "./media-input-service";
-import { loadQqMessageFact, projectQqMessageFacts } from "./message-projection";
+import {
+  loadQqMessageFact,
+  loadQqMessageFactState,
+  projectQqMessageFacts,
+} from "./message-projection";
 export interface OneBotPolicy {
   maxSteps: number;
   deliveryTtlSeconds: number;
@@ -219,9 +225,18 @@ const qqPhaseOf = (phase: "next" | "generate" | "leaf"): "decision" | "generatio
 export class OneBotHost {
   private readonly host: ConversationHost;
   private readonly guard: QqGroupCapabilityGuard;
+  private readonly deliveryAuthorize: ReturnType<typeof qqDeliveryAuthorize>;
   constructor(private readonly options: OneBotHostOptions) {
     this.host = options.host ?? new ConversationHost({ runtime: options.agentRuntime });
     this.guard = options.guard ?? new QqGroupCapabilityGuard(options.orm);
+    this.deliveryAuthorize = qqDeliveryAuthorize({
+      orm: options.orm,
+      db: (options.orm as Orm & { $client: Database }).$client,
+      journal: options.journal,
+      outbox: options.outbox,
+      guard: this.guard,
+      resolveSource: options.resolveSource,
+    });
   }
   /**
    * 主动批次（chiming_in/idle_topic）的 parent 编排入口。`reply` 非空＝本调用是一个达标目标的
@@ -315,24 +330,104 @@ export class OneBotHost {
       settleOpportunity();
       return { status: "expired" as const };
     }
-    const hasConfirmedReply = (sourceSeq: number, participantId: string | null): boolean =>
-      !!db
-        .query(`SELECT 1 FROM outbound_intents i
+    // 出站覆盖归属：origin 取 intent 所属 run 关联的原始 wake（LEFT JOIN，缺失＝非 own），
+    // 且原始 wake 必须属于当前会话。own 排除按调用目的分两档：chiming 恢复复用冻结候选集时
+    // 排除同原始 wake 的已确认回复；immediate 重跑只豁免同原始机会 planned 且部件未尝试的
+    // 计划替换。sending/attempted 同源仍 coverage，unknown 不重发等守卫原样。
+    const coverageOwnOriginal = (
+      originThrough: number | null,
+      originCause: string | null,
+      purpose: "recover-frozen" | "planned-replace",
+      status: string,
+      replaceable: number,
+    ): boolean =>
+      originThrough === wake.throughSeq &&
+      originCause === wake.cause &&
+      (purpose === "recover-frozen" || (status === "planned" && replaceable === 1));
+    const confirmedReplyCoverage = (
+      sourceSeq: number,
+      participantId: string | null,
+      excludeOwnConfirmed: boolean,
+    ): boolean => {
+      const rows = db
+        .query(`SELECT w.through_seq AS origin_through, w.cause AS origin_cause
+          FROM outbound_intents i
+          LEFT JOIN agent_runs ar ON ar.run_id=i.run_id
+          LEFT JOIN wake_signals w ON w.id=ar.wake_id AND w.conversation_id=?
           WHERE i.conversation_id=? AND i.source_through_seq>=? AND i.status='confirmed'
             AND (json_extract(i.target,'$.participantId') IS NULL OR json_extract(i.target,'$.participantId')=?)
             AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
-              AND p.attempted_at IS NOT NULL AND p.status='confirmed') LIMIT 1`)
-        .get(conversation.id, sourceSeq, participantId);
+              AND p.attempted_at IS NOT NULL AND p.status='confirmed')`)
+        .all(conversation.id, conversation.id, sourceSeq, participantId) as {
+        origin_through: number | null;
+        origin_cause: string | null;
+      }[];
+      return rows.some(({ origin_through, origin_cause }) => {
+        if (
+          excludeOwnConfirmed &&
+          coverageOwnOriginal(origin_through, origin_cause, "recover-frozen", "confirmed", 0)
+        )
+          return false;
+        return true;
+      });
+    };
     // A newer addressed reply can cover an older ordinary opportunity for the same
     // recipient. Idle openers are not responses to a particular source.
     if (
       path !== "idle_topic" &&
       focusKey &&
       focus &&
-      hasConfirmedReply(focus.seq, focus.participant?.id ?? null)
+      confirmedReplyCoverage(focus.seq, focus.participant?.id ?? null, path === "chiming_in")
     ) {
       settleOpportunity();
       return { status: "no_output" as const, reason: "already_replied" };
+    }
+    // 在飞覆盖：同一受众仍有待发部件、且 deliver_by/expires 与来源授权仍有效的 durable 意图
+    // 即拥有该输入，确认前启动的第二个 immediate wake 不再生成；判据与投递领取段同源，此处只读。
+    const inFlightCoverage = (sourceSeq: number, participantId: string | null): boolean => {
+      const rows = db
+        .query(
+          `SELECT i.id, i.status, w.through_seq AS origin_through, w.cause AS origin_cause,
+            NOT EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
+              AND (p.attempted_at IS NOT NULL OR p.status<>'planned')) AS replaceable
+          FROM outbound_intents i
+          LEFT JOIN agent_runs ar ON ar.run_id=i.run_id
+          LEFT JOIN wake_signals w ON w.id=ar.wake_id AND w.conversation_id=?
+          WHERE i.conversation_id=? AND i.source_through_seq>=? AND i.status IN('planned','delivering')
+            AND i.deliver_by>? AND i.expires_at>?
+            AND (json_extract(i.target,'$.participantId') IS NULL OR json_extract(i.target,'$.participantId')=?)
+            AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
+              AND p.status IN('planned','sending'))`,
+        )
+        .all(conversation.id, conversation.id, sourceSeq, now(), now(), participantId) as {
+        id: string;
+        status: string;
+        origin_through: number | null;
+        origin_cause: string | null;
+        replaceable: number;
+      }[];
+      return rows.some(({ id, status, origin_through, origin_cause, replaceable }) => {
+        if (
+          coverageOwnOriginal(origin_through, origin_cause, "planned-replace", status, replaceable)
+        )
+          return false;
+        const delivery = o.outbox.get(id),
+          row = o.outbox.row(id);
+        return (
+          delivery !== null &&
+          row !== null &&
+          this.deliveryAuthorize(JSON.parse(row.target) as OutboundTarget, delivery)
+        );
+      });
+    };
+    if (
+      !initiative &&
+      focusKey &&
+      focus &&
+      inFlightCoverage(focus.seq, focus.participant?.id ?? null)
+    ) {
+      settleOpportunity();
+      return { status: "no_output" as const, reason: "already_replying" };
     }
     // Different immediate causes can describe the same person's already attempted input.
     // Coverage belongs to the actual output audience and observed source sequence, not the
@@ -368,26 +463,35 @@ export class OneBotHost {
       const boundary = o.wakes.getSourceFromSeq(wake.id) ?? 0;
       const attention = attentionTriggerFilter(binding);
       const items = o.journal.eventsAfter(conversation.id, boundary, Number.MAX_SAFE_INTEGER).items;
-      const bySpeaker = new Map<
-        string,
-        { wake: typeof wake; participantId: string; occurredAt: string }
-      >();
-      const replied = new Map<string, boolean>();
+      // 1. 先按成员收集窗口内最新合格入站事件（纯收集，无覆盖查询）。
+      const latestBySpeaker = new Map<string, { seq: number; occurredAt: string }>();
       for (const event of items) {
         if (event.seq > wake.throughSeq) break;
         if (event.kind !== "inbound") continue;
         const speaker = event.participant?.id;
         if (!speaker) continue;
         if (attention && !attention.includes(speaker)) continue;
-        let covered = replied.get(speaker);
-        if (covered === undefined) {
-          covered = hasConfirmedReply(wake.throughSeq, speaker);
-          replied.set(speaker, covered);
-        }
-        if (covered) continue;
-        const existing = bySpeaker.get(speaker);
-        if (!existing || event.occurredAt > existing.occurredAt)
-          bySpeaker.set(speaker, { wake, participantId: speaker, occurredAt: event.occurredAt });
+        // 候选锚＝occurredAt 最大的那条事件（与原实现同口径）：seq 顺序只是遍历序，
+        // 后到旧时戳的事件不改变候选时间锚。
+        const existing = latestBySpeaker.get(speaker);
+        if (
+          !existing ||
+          event.occurredAt > existing.occurredAt ||
+          (event.occurredAt === existing.occurredAt && event.seq > existing.seq)
+        )
+          latestBySpeaker.set(speaker, { seq: event.seq, occurredAt: event.occurredAt });
+      }
+      // 2. 每成员恰两次覆盖判定：confirmed 保持原批上界口径（原 newtopic 批语义，E<=S<T
+      //    不剔除候选）；pending 按最新合格事件判（已 covered input 不复活候选）。本机会
+      //    stable key（同 frozen wake 恢复复用判断，规格 §8.2）在两种状态下都排除。
+      const bySpeaker = new Map<
+        string,
+        { wake: typeof wake; participantId: string; occurredAt: string }
+      >();
+      for (const [speaker, latest] of latestBySpeaker) {
+        if (confirmedReplyCoverage(wake.throughSeq, speaker, true)) continue;
+        if (inFlightCoverage(latest.seq, speaker)) continue;
+        bySpeaker.set(speaker, { wake, participantId: speaker, occurredAt: latest.occurredAt });
       }
       return [...bySpeaker.values()];
     };
@@ -1381,7 +1485,9 @@ export class OneBotHost {
         // 不用 initial 时的冻结时间（跨到期时能按当前期限拒）。
         const buildAndValidate = () => {
           const at = now();
-          // 1. focus fact：eventKey 域加载（focusKey 是内部 eventKey）
+          // 1. focus fact：eventKey 域加载（focusKey 是内部 eventKey）。focus 是锚的授权
+          //    基座：不可读＝源失效 fatal，不是可恢复的选错（选错只发生在指针不在授权
+          //    集合内）。
           const focusFacts = projectQqMessageFacts(
             { db, orm: o.orm },
             readScope,
@@ -1389,36 +1495,40 @@ export class OneBotHost {
             at,
           );
           const focusFact = focusFacts[0] ?? null;
-          if (!focusFact) return null;
+          if (!focusFact) fail("CONTEXT_SOURCE_INVALID", "focus 消息事实不可读");
 
-          // 2. question fact：平台消息 ID 域加载
-          const questionFact = loadQqMessageFact(
-            { db, orm: o.orm },
-            readScope,
-            input.questionMessageId,
-            at,
+          // 2. 授权平台 ID 集合先于任何模型指针读取：指针不在集合内＝选错 → null
+          //    （工具层 selection 反馈），集合外指针零加载。
+          const allowedPlatformIds = new Set(
+            focusFact.replyTo
+              ? [focusFact.platformMessageId, focusFact.replyTo.platformMessageId]
+              : [focusFact.platformMessageId],
           );
+          if (!allowedPlatformIds.has(input.questionMessageId)) return null;
+
+          // 3. 直接引用目标是授权关联源：state-aware 读取（同 loader/期限）。它只在被锚
+          //    实际依赖时必须存活——问题指针指向它，或被认领的图落在它的事件上（见下方
+          //    mediaNote 匹配处）；未被依赖的失效引用不拖垮合法锚，也不泛吞源失效。
+          const pointerOnTarget =
+            focusFact.replyTo !== null &&
+            input.questionMessageId === focusFact.replyTo.platformMessageId;
+          const directTargetState = focusFact.replyTo
+            ? loadQqMessageFactState(
+                { db, orm: o.orm },
+                readScope,
+                focusFact.replyTo.platformMessageId,
+                at,
+              )
+            : null;
+          const directTargetFact =
+            directTargetState?.state === "available" ? directTargetState.fact : null;
+          if (pointerOnTarget && directTargetFact === null)
+            fail("CONTEXT_SOURCE_INVALID", "focus 直接引用目标不可读");
+          const questionFact =
+            input.questionMessageId === focusFact.platformMessageId ? focusFact : directTargetFact;
           if (!questionFact) return null;
 
-          // 3. focus∪depth1 判定：question 是 focus 本身，或 focus 的直接引用目标
-          const focusPlatformId = focusFact.platformMessageId;
-          const isFocusMessage =
-            focusPlatformId !== null && questionFact.platformMessageId === focusPlatformId;
-          const isDirectTarget =
-            focusFact.replyTo !== null &&
-            questionFact.platformMessageId === focusFact.replyTo.platformMessageId;
-          if (!isFocusMessage && !isDirectTarget) return null;
-
           // 4. 构建授权 fact 集合：question fact + focus fact + direct target fact
-          const directTargetFact =
-            focusFact.replyTo !== null
-              ? loadQqMessageFact(
-                  { db, orm: o.orm },
-                  readScope,
-                  focusFact.replyTo.platformMessageId,
-                  at,
-                )
-              : null;
           const authorizedFacts = [questionFact, focusFact, directTargetFact].filter(
             (f): f is NonNullable<typeof f> => f !== null,
           );
@@ -1441,7 +1551,26 @@ export class OneBotHost {
           // 在授权 facts 中找到与 mediaNote.event_key 匹配的 fact，然后验证其 parts
           // 包含该 mediaId 的 image part
           const matchingFact = authorizedFacts.find((fact) => fact.id === mediaNote.event_key);
-          if (!matchingFact) return null;
+          if (!matchingFact) {
+            // 认领的图落在已失效的直接引用目标事件上＝被依赖的授权源失效，fatal；
+            // 其余集合外引用都是选错，null 反馈。
+            if (directTargetFact === null && focusFact.replyTo !== null) {
+              const targetEvent = db
+                .query(
+                  "SELECT event_key FROM qq_events WHERE message_id=? AND account_id=? AND conversation_kind=? AND peer_id=? AND agent_id=?",
+                )
+                .get(
+                  focusFact.replyTo.platformMessageId,
+                  binding.accountId,
+                  binding.kind,
+                  binding.peerId,
+                  binding.agentId,
+                ) as { event_key: string } | null;
+              if (targetEvent?.event_key === mediaNote.event_key)
+                fail("CONTEXT_SOURCE_INVALID", "引用目标图的来源不可读");
+            }
+            return null;
+          }
           const imagePart = matchingFact.parts.find(
             (part) => part.kind === "image" && part.mediaId === input.mediaNoteId,
           );
@@ -1458,9 +1587,9 @@ export class OneBotHost {
         const body = validated.questionFact.parts
           .flatMap((part) => (part.kind === "text" ? [part.text] : []))
           .join("");
-        if (body.trim() === "") return null;
+        if (body.trim() === "") fail("CONTEXT_SOURCE_INVALID", "问题正文为空");
         const questionSource = validated.questionFact.sources[0];
-        if (!questionSource) return null;
+        if (!questionSource) fail("CONTEXT_SOURCE_INVALID", "问题来源缺失");
         const revision = bodyRevision(body);
         return {
           questionKey: normalizeQuestionKey(body),

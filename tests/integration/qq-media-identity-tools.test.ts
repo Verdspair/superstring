@@ -478,17 +478,23 @@ describe("T08 media tools: identity reuse and the detail question pointer", () =
     expect(tool.stats.calls).toBe(1);
   });
 
-  it("refuses a question the host cannot freeze: no task, no attempt, no baseline fallback", async () => {
+  it("returns correctable feedback for an invalid question selection without spending an attempt", async () => {
     const f = open();
     const img = f.image("img-a");
     const tool = f.mount({ resolveQuestion: () => null });
     const { ctx } = f.context();
     await tool.execute("media.list", {}, ctx);
-    expect(
-      await f.rejection(
-        tool.execute("media.describe", { id: img, questionMessageId: "message-forged" }, ctx),
-      ),
-    ).toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+    const observation = await tool.execute(
+      "media.describe",
+      { id: img, questionMessageId: "message-forged" },
+      ctx,
+    );
+    expect(observation.value).toEqual({
+      status: "unavailable",
+      code: "CONTEXT_INVALID_SELECTION",
+      recoverable: true,
+    });
+    expect(observation.sources).toEqual([]);
     expect(tool.stats.calls).toBe(0);
     expect(f.taskRows()).toHaveLength(0);
   });

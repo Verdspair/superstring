@@ -839,14 +839,13 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
   }
 
   /**
-   * 冻结本轮问题锚：模型只给指针，宿主复验后才成为问题身份。解析失败、不是本轮问题
-   * 消息、正文不可读、图不在该问题的图范围内——一律零任务消耗地拒绝，绝不用模型措辞
-   * 造键，也绝不退化成 baseline（那会把新问题当首次读取）。
+   * 冻结本轮问题锚：模型只给指针，宿主复验后才成为问题身份。无效选择返回 null 供模型修正；
+   * 授权来源失效由宿主抛 CONTEXT_SOURCE_INVALID，保持致命。绝不用模型措辞造键，也不退回 baseline。
    */
   function resolveQuestionAnchor(input: {
     readonly row: QqMediaNoteRow;
     readonly questionMessageId: string;
-  }): QqMediaQuestionAnchor {
+  }): QqMediaQuestionAnchor | null {
     const resolve = options.resolveQuestion;
     if (resolve === undefined) fail("CONTEXT_INVALID_SELECTION", "当前轮次不支持按问题细读这张图");
     const anchor = resolve({
@@ -856,8 +855,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       segmentIndex: input.row.segmentIndex,
       now: now(),
     });
-    if (anchor === null)
-      fail("CONTEXT_INVALID_SELECTION", "问题消息不是本轮这条问题，或这张图不在它的图范围内");
+    if (anchor === null) return null;
     if (anchor.questionKey.trim().length === 0)
       fail("CONTEXT_SOURCE_INVALID", "问题消息没有可用的真实原文");
     return anchor;
@@ -1013,6 +1011,20 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     return observation;
   }
 
+  async function invalidSelection(
+    state: MediaRunState,
+    context: ActionContext,
+    fits: FitCapture,
+  ): Promise<Omit<ActionObservation, "id" | "name">> {
+    const value = { status: "unavailable", code: "CONTEXT_INVALID_SELECTION", recoverable: true };
+    boundary(state, context);
+    const observation = (await fits())(value, [])
+      ? { value, sources: [] }
+      : { value: unavailableValue(), sources: [] };
+    boundary(state, context);
+    return observation;
+  }
+
   const list: BuiltInAction = {
     description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.list"],
     release: releaseRun,
@@ -1027,7 +1039,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       let cursor: ListCursor | null = null;
       if (input.cursor !== undefined) {
         const found = state.cursors.get(input.cursor);
-        if (!found) fail("CONTEXT_INVALID_SELECTION", "媒体列表游标无效");
+        if (!found) return invalidSelection(state, context, fits);
         cursor = found;
       }
       // 范围/绑定复验：绑定改到别处或会话关闭后，列表不再披露任何行。
@@ -1243,9 +1255,23 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     wrap: (page: Extract<NoteReadValue, { status: "ok" }>) => unknown;
   }): Promise<Omit<ActionObservation, "id" | "name">> {
     const points = [...input.served.note];
-    if (input.offset > points.length) fail("CONTEXT_INVALID_SELECTION", "正文分页位置超出范围");
     const snapshotAtRead = snapshot(input.row);
     const anchorStillCurrent = () => input.question?.assertQuestionCurrent(options.orm);
+    if (input.offset > points.length) {
+      boundary(input.state, input.context);
+      const current = revalidated(snapshotAtRead);
+      if (!current.ok) return refuse(input.state, input.context, input.fits, current.code);
+      anchorStillCurrent();
+      const fresh = input.resolveFresh();
+      if (
+        fresh === null ||
+        fresh.taskId !== input.served.taskId ||
+        fresh.note !== input.served.note ||
+        fresh.modelName !== input.served.modelName
+      )
+        return refuse(input.state, input.context, input.fits, "segment_changed");
+      return invalidSelection(input.state, input.context, input.fits);
+    }
     const remaining = points.length - input.offset;
     for (
       let length = Math.max(1, Math.min(input.limit, remaining));
@@ -1373,26 +1399,18 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       const state = runState(context, false);
       const fits = captureFit(context, "media.note.read", arguments_);
       boundary(state, context);
-      if (!state.disclosed.has(input.id))
-        fail("CONTEXT_INVALID_SELECTION", "媒体引用不属于本轮已披露的列表");
+      if (!state.disclosed.has(input.id)) return invalidSelection(state, context, fits);
       const row = mediaRowById(input.id);
       if (!row) return refuse(state, context, fits, "segment_missing");
       const event = eventRow(row.eventKey);
       if (!event) return refuse(state, context, fits, "segment_missing");
       const scope = scopeFor(row, event);
       if (!scope.ok) return refuse(state, context, fits, scope.code);
-      const select:
-        | { readonly purpose: "baseline" }
-        | { readonly purpose: "detail"; readonly question: QqMediaQuestionAnchor } =
+      const question =
         input.questionMessageId === undefined
-          ? { purpose: "baseline" }
-          : {
-              purpose: "detail",
-              question: resolveQuestionAnchor({
-                row,
-                questionMessageId: input.questionMessageId,
-              }),
-            };
+          ? undefined
+          : resolveQuestionAnchor({ row, questionMessageId: input.questionMessageId });
+      if (question === null) return invalidSelection(state, context, fits);
       return readDescriptionPage({
         state,
         context,
@@ -1400,8 +1418,8 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         id: input.id,
         row,
         event,
-        purpose: select.purpose,
-        question: select.purpose === "detail" ? select.question : null,
+        purpose: question === undefined ? "baseline" : "detail",
+        question: question ?? null,
         offset: input.offset ?? 0,
         limit: input.limit ?? DEFAULT_READ_LIMIT,
         wrap: (page) => page,
@@ -1421,8 +1439,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       const state = runState(context, false);
       const fits = captureFit(context, "media.describe", arguments_);
       boundary(state, context);
-      if (!state.disclosed.has(input.id))
-        fail("CONTEXT_INVALID_SELECTION", "媒体引用不属于本轮已披露的列表");
+      if (!state.disclosed.has(input.id)) return invalidSelection(state, context, fits);
       const row = mediaRowById(input.id);
       if (!row) return refuse(state, context, fits, "segment_missing");
       const event = eventRow(row.eventKey);
@@ -1586,6 +1603,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
        */
       if (input.questionMessageId !== undefined) {
         const question = resolveQuestionAnchor({ row, questionMessageId: input.questionMessageId });
+        if (question === null) return invalidSelection(state, context, fits);
         const existing = findMediaReadTask(options.orm, {
           mediaNoteId: row.id,
           purpose: "detail",
@@ -1866,8 +1884,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
           const state = runState(context, false);
           const fits = captureFit(context, "media.read", arguments_);
           boundary(state, context);
-          if (!state.disclosed.has(input.id))
-            fail("CONTEXT_INVALID_SELECTION", "媒体引用不属于本轮已披露的列表");
+          if (!state.disclosed.has(input.id)) return invalidSelection(state, context, fits);
           const row = mediaRowById(input.id);
           if (!row) return refuse(state, context, fits, "segment_missing");
           const event = eventRow(row.eventKey);
@@ -1881,6 +1898,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
             input.questionMessageId === undefined
               ? undefined
               : resolveQuestionAnchor({ row, questionMessageId: input.questionMessageId });
+          if (question === null) return invalidSelection(state, context, fits);
           let prepared: Awaited<ReturnType<QqMediaReadImageService>>;
           try {
             prepared = await readImage({

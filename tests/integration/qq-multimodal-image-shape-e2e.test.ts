@@ -68,7 +68,7 @@ import type {
   QqMessagePart,
 } from "../../src/shared/contracts/qq-message";
 import { createEphemeralAgentRuntime } from "../harness/ephemeral-runtime";
-import { batchScore, decideGenerate, decideInline, decideInvoke, say } from "../harness/model";
+import { batchScore, decideGenerate, decideInvoke, decideNone, say } from "../harness/model";
 import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 import { driveToolFirst } from "../harness/scenarios";
 
@@ -1782,9 +1782,9 @@ it("[S28_2] a real host media.read with questionMessageId prepares the native de
 });
 
 it("[S28_3] a questionMessageId outside the focus scope is refused by the host anchor", async () => {
-  // 拒绝对照：questionMessageId 指向一条真实存在但不在 focus∪depth1 范围的消息（更早的、
-  // 与本轮无关的消息）。宿主 resolveQuestion 按规格拒绝（不扩大到任意被渲染旧消息），
-  // media.read 抛真实 CONTEXT_INVALID_SELECTION；本轮零 detail 副本、零额外取字节。
+  // 选择拒绝对照：questionMessageId 指向一条真实存在但不在 focus∪depth1 范围的旧消息。
+  // 宿主不扩展授权，media.read 返回可修正的 CONTEXT_INVALID_SELECTION 观察供模型决定收口；
+  // 本轮零 detail 副本、零额外取字节。
   const bytes = pngOf(120, 1024, 512);
   const fetches = fetchCounter();
   const h = createOneBotHarness({
@@ -1806,11 +1806,8 @@ it("[S28_3] a questionMessageId outside the focus scope is refused by the host a
       // "-1300" 是这条更早消息的平台 ID——真实存在但不是 focus 也不是 focus 的直接引用目标。
       return [decideInvoke("media.read", { id: target.id, questionMessageId: "-1300" })];
     }
-    // 只有真看到了 media.read 的观察（refuse 信封）才收尾；首调（无观察）必须返回 null，
-    // 不然 inline 步骤会被提前消费（探针 probe-s28-refusal6 实证的次序错误）。
-    if (observation?.name === "media.read") {
-      return [decideInline("20002", "收尾", [])];
-    }
+    // 只有真看到了 media.read 的观察才收尾；对选择反馈，模型在当前 run 内可安全收口。
+    if (observation?.name === "media.read") return [decideNone()];
     return null;
   });
   // 先收一条更早的无关消息（有正文、可被按平台 ID 查到），再收本轮 focus 图片消息。
@@ -1829,17 +1826,36 @@ it("[S28_3] a questionMessageId outside the focus scope is refused by the host a
     imageHint: { ...MARKET_FACE },
     addressed: true,
   });
-  let refusal: { code?: unknown; message?: unknown } | null = null;
-  try {
-    await h.activate("direct_reply");
-    await h.deliver();
-  } catch (error) {
-    refusal = error as { code?: unknown; message?: unknown };
-  }
-  // 真实拒绝：宿主锚解析返回 null → CONTEXT_INVALID_SELECTION（不是自造 code）。
-  expect(refusal).not.toBeNull();
-  expect(refusal?.code).toBe("CONTEXT_INVALID_SELECTION");
+  await h.activate("direct_reply");
+  await h.deliver();
+  const observations = actionObservationsOf(h, "media.read");
+  expect(observations).toHaveLength(1);
+  expect(observations[0]?.value.value).toEqual({
+    status: "unavailable",
+    code: "CONTEXT_INVALID_SELECTION",
+    recoverable: true,
+  });
+  expect(observations[0]?.value.sources).toEqual([
+    {
+      kind: "qq_group_capability",
+      id: JSON.stringify([
+        "11111111-1111-4111-8111-111111111111",
+        "00000000-0000-0000-0000-000000000001",
+        "media",
+      ]),
+      revision: "0",
+    },
+  ]);
+  expect(
+    observations[0]?.value.sources.some((source) =>
+      ["qq_message_fact", "qq_media_source", "qq_media_note", "qq_media_read_task"].includes(
+        String((source as { kind?: unknown }).kind),
+      ),
+    ),
+  ).toBe(false);
   expect(h.sent).toHaveLength(0);
+  expect(assetRows(h)).toHaveLength(1);
+  expect(rowsOf(h, "SELECT id FROM qq_media_read_tasks")).toHaveLength(0);
   // 零 detail 副本：只有决策相自动准备的 expression 512x256（ordinary 1024x512 不得出现）。
   const variants = h.db.query("SELECT width, height FROM qq_media_variants").all() as {
     width: number;
@@ -2105,8 +2121,8 @@ it("[S28_4] a legal focus question reads the directly-referenced original image 
 
 it("[S28_5] a legal focus question cannot read an out-of-scope image from the same scope's list", async () => {
   // 强负：问题本身合法（focus 消息、有正文、有自己的图），但 media.read 的目标图是
-  // **同 scope 其他 list 图**——它不属于该问题的 focus/direct 图范围。宿主必须拒：锚解析不因
-  // "问题合法"而放行跨范围图；零 detail 副本、零额外 fetch、零发送。
+  // **同 scope 其他 list 图**——它不属于该问题的 focus/direct 图范围。宿主不给该图授权，
+  // 返回选择反馈而不是继续读；零 detail 副本、零额外 fetch、零发送。
   const scopeImage = pngOf(200); // 同 scope 旧图（不在本轮 focus/direct 范围）
   const focusImage = pngOf(120, 1024, 512); // focus 消息自己的表情图
   const fetches = fetchCounter();
@@ -2131,10 +2147,8 @@ it("[S28_5] a legal focus question cannot read an out-of-scope image from the sa
       if (older?.id === undefined) throw new Error("out-of-scope media not disclosed");
       return [decideInvoke("media.read", { id: older.id, questionMessageId: "-1601" })];
     }
-    // 只有真看到 media.read 的观察（refuse 信封）才收尾；首调返回 null。
-    if (observation?.name === "media.read") {
-      return [decideInline("20002", "收尾", [])];
-    }
+    // 选择反馈到模型后，使用 none 收口，不进行额外图片或消息操作。
+    if (observation?.name === "media.read") return [decideNone()];
     return null;
   });
   // 旧图消息（范围外）；随后 focus 问题消息带自己的图（合法问题）。
@@ -2154,16 +2168,35 @@ it("[S28_5] a legal focus question cannot read an out-of-scope image from the sa
     imageHint: { ...MARKET_FACE },
     addressed: true,
   });
-  let refusal: { code?: unknown } | null = null;
-  try {
-    await h.activate("direct_reply");
-    await h.deliver();
-  } catch (error) {
-    refusal = error as { code?: unknown };
-  }
-  expect(refusal).not.toBeNull();
-  expect(refusal?.code).toBe("CONTEXT_INVALID_SELECTION");
+  await h.activate("direct_reply");
+  await h.deliver();
+  const observations = actionObservationsOf(h, "media.read");
+  expect(observations).toHaveLength(1);
+  expect(observations[0]?.value.value).toEqual({
+    status: "unavailable",
+    code: "CONTEXT_INVALID_SELECTION",
+    recoverable: true,
+  });
+  expect(observations[0]?.value.sources).toEqual([
+    {
+      kind: "qq_group_capability",
+      id: JSON.stringify([
+        "11111111-1111-4111-8111-111111111111",
+        "00000000-0000-0000-0000-000000000001",
+        "media",
+      ]),
+      revision: "0",
+    },
+  ]);
+  expect(
+    observations[0]?.value.sources.some((source) =>
+      ["qq_message_fact", "qq_media_source", "qq_media_note", "qq_media_read_task"].includes(
+        String((source as { kind?: unknown }).kind),
+      ),
+    ),
+  ).toBe(false);
   expect(h.sent).toHaveLength(0);
+  expect(rowsOf(h, "SELECT id FROM qq_media_read_tasks")).toHaveLength(0);
 
   // 零 detail 副本：没有 ordinary 1024x512（focus 图的 detail），也没有范围外旧图的任何准备副本。
   const variants = h.db.query("SELECT width, height FROM qq_media_variants").all() as {

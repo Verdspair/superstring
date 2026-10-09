@@ -8,6 +8,7 @@ import type { QqIdentity } from "../../../shared/contracts/qq-message";
 import { Badge } from "../../components/ui/badge";
 import { timelineKey } from "../../features/conversations/use-timeline-scroll";
 import { cn } from "../../lib/utils";
+import { neutralWakeReasonLabels } from "../observability/labels";
 import { DeliveryDetails, staleReasonLabelKey } from "../runs/DeliveryEvidence";
 import { RunLink } from "../runs/RunEntry";
 
@@ -246,7 +247,14 @@ function EventRecordComponent({
                 </time>
               </p>
             )}
-            {event.wake.errorCode && <p className="text-destructive">{event.wake.errorCode}</p>}
+            {event.wake.errorCode &&
+              (neutralWakeReasonLabels[event.wake.errorCode] ? (
+                <p className="text-muted-foreground">
+                  {t(neutralWakeReasonLabels[event.wake.errorCode])}
+                </p>
+              ) : (
+                <p className="text-destructive">{event.wake.errorCode}</p>
+              ))}
           </div>
         )}
         {event.kind !== "wake" &&

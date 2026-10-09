@@ -15,7 +15,14 @@ import { useSuperstringStore } from "../../store";
 import { DeliveryDetails } from "../runs/DeliveryEvidence";
 import { EvidenceWorkbench } from "./EvidenceWorkbench";
 import { ModelCallsTable } from "./ModelCallsTable";
-import { milliseconds, ReadError, StatusMark, traceCause, traceTask } from "./presentation";
+import {
+  latestWakeOutcome,
+  milliseconds,
+  ReadError,
+  StatusMark,
+  traceCause,
+  traceTask,
+} from "./presentation";
 import { TraceTimeline } from "./TraceTimeline";
 export function InvestigationCanvas({
   traceId,
@@ -104,6 +111,7 @@ export function InvestigationCanvas({
           {data && (
             <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
               <StatusMark status={data.trace.status} />
+              {latestWakeOutcome(data.items, t) && <span>{latestWakeOutcome(data.items, t)}</span>}
               <span>{traceCause(data.trace, t) || t("observability.triggerNotRecorded")}</span>
               <time dateTime={data.trace.at}>
                 {formatDate(data.trace.at, i18n.language, {

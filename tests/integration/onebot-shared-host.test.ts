@@ -1298,6 +1298,393 @@ describe("immediate opportunity coverage", () => {
     expect((await h.activate("follow_up")).status).toBe("completed");
     expect(h.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20003", "20002"]);
   });
+  it("does not regenerate an answer already durably owned by a planned in-flight reply", async () => {
+    const h = setup({ complete: async () => generate(["20002"]) });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    h.clock.seconds++;
+    // 追问并入同一 pending 窗口：第一轮 direct run 的观察窗吞掉它，已提交 intent 的
+    // sourceThroughSeq 因此覆盖追问 seq（与本轮覆盖形态一致）。
+    h.receive("2", "20002", true);
+    const first = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!;
+    expect(await h.host.activate(first, new AbortController().signal)).toMatchObject({
+      status: "completed",
+    });
+    const [intent] = h.outbox.list({});
+    // 第二个 direct wake 的上界＝被在途回复覆盖的追问：与既有 wake 生成时机一致。
+    const conversation = h.journal.ensureOneBot(bindingId)!;
+    const second = h.wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "direct_reply",
+      throughSeq: intent.sourceThroughSeq,
+      dedupeKey: "repeat-second-direct",
+      readyAt: h.now(),
+      at: h.now(),
+      priority: 100,
+    });
+    // 部件经真实 claimPart 已在发（sending）、未确认。
+    expect(h.outbox.claimPart(intent.id, h.now())).not.toBeNull();
+    const modelCalls = h.requests.length;
+    const leased = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!;
+    expect(leased.id).toBe(second.id);
+    expect(await h.host.activate(leased, new AbortController().signal)).toMatchObject({
+      status: "no_output",
+      reason: "already_replying",
+    });
+    expect(h.requests.length).toBe(modelCalls);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id='onebot.main'").get(),
+    ).toEqual({ n: 1 });
+    expect(h.outbox.list({})).toHaveLength(1);
+  });
+  it("in-flight coverage stays per speaker: another participant's wake still generates", async () => {
+    let calls = 0;
+    const h = setup({ complete: async () => generate([++calls === 1 ? "20002" : "20003"]) });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    h.clock.seconds++;
+    h.receive("2", "20003", true);
+    const oldestPending = () =>
+      h.db
+        .query(
+          "SELECT id FROM wake_signals WHERE status='pending' ORDER BY created_at,through_seq LIMIT 1",
+        )
+        .get() as { id: string };
+    const first = h.wakes.claim({
+      at: h.now(),
+      leaseMs: 120000,
+      cause: "direct_reply",
+      wakeId: oldestPending().id,
+    })!;
+    expect(await h.host.activate(first, new AbortController().signal)).toMatchObject({
+      status: "completed",
+    });
+    const [intent] = h.outbox.list({});
+    expect(intent.target?.participantId).toBe("20002");
+    expect(h.outbox.claimPart(intent.id, h.now())).not.toBeNull();
+    expect(
+      await h.host.activate(
+        h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!,
+        new AbortController().signal,
+      ),
+    ).toMatchObject({
+      status: "completed",
+    });
+    expect(h.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20002", "20003"]);
+    expect(h.requests.length).toBe(2);
+  });
+  it("an expired planned intent is not active coverage", async () => {
+    const h = setup({ complete: async () => generate(["20002"]) });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    await h.activate("direct_reply");
+    // 来源过期的行由既有 expiry keeper（purgeExpired）判 stale；keeper 运行前的窗口里，
+    // 门禁同样不得把它当在飞覆盖吞掉新一轮回答。
+    const [intent] = h.outbox.list({});
+    h.db
+      .query("UPDATE outbound_intents SET expires_at=? WHERE id=?")
+      .run(new Date((time - 60) * 1000).toISOString(), intent.id);
+    h.clock.seconds += 5;
+    h.receive("2", "20002", true, "a genuinely new input");
+    h.clock.seconds += 5;
+    expect(await h.activate("direct_reply")).toMatchObject({ status: "completed" });
+    expect(h.outbox.list({})).toHaveLength(2);
+    expect(h.requests.length).toBe(2);
+  });
+  it("does not treat a delivery-TTL-expired planned intent as coverage", async () => {
+    const h = setup({ complete: async () => generate(["20002"]) });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    h.clock.seconds++;
+    h.receive("2", "20002", true);
+    await h.activate("direct_reply");
+    const [intent] = h.outbox.list({});
+    h.db
+      .query("UPDATE outbound_intents SET deliver_by=? WHERE id=?")
+      .run(new Date((time - 60) * 1000).toISOString(), intent.id);
+    const conversation = h.journal.ensureOneBot(bindingId)!;
+    h.wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "direct_reply",
+      throughSeq: intent.sourceThroughSeq,
+      dedupeKey: "ttl-second-direct",
+      readyAt: h.now(),
+      at: h.now(),
+      priority: 100,
+    });
+    const modelCalls = h.requests.length;
+    const leased = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!;
+    expect(await h.host.activate(leased, new AbortController().signal)).toMatchObject({
+      status: "completed",
+    });
+    expect(h.requests.length).toBe(modelCalls + 1);
+    expect(
+      h.db.query("SELECT COUNT(*) AS n FROM agent_runs WHERE spec_id='onebot.main'").get(),
+    ).toEqual({ n: 2 });
+  });
+  it("does not treat an intent whose authority changed as coverage", async () => {
+    const h = setup({ complete: async () => generate(["20002"]) });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    h.clock.seconds++;
+    h.receive("2", "20002", true);
+    await h.activate("direct_reply");
+    const [intent] = h.outbox.list({});
+    h.db
+      .query(
+        "UPDATE qq_bindings SET revision=revision+1, authority_revision=authority_revision+1 WHERE id=?",
+      )
+      .run(bindingId);
+    const conversation = h.journal.ensureOneBot(bindingId)!;
+    h.wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "direct_reply",
+      throughSeq: intent.sourceThroughSeq,
+      dedupeKey: "authority-second-direct",
+      readyAt: h.now(),
+      at: h.now(),
+      priority: 100,
+    });
+    const modelCalls = h.requests.length;
+    const leased = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!;
+    expect(await h.host.activate(leased, new AbortController().signal)).toMatchObject({
+      status: "completed",
+    });
+    expect(h.requests.length).toBe(modelCalls + 1);
+  });
+  it("[v3] confirmed coverage keeps the batch upper bound: a member covered below the new batch stays a candidate", async () => {
+    // 覆盖矩阵 E<=S<T：direct confirmed S 覆盖成员旧输入但低于本批上界 T——confirmed 保持
+    // 原批口径（原整批共享话题批准语义），成员仍是本批评分候选；pending 才按最新合格事件判。
+    // 确认发送之后的新成员输入解除 no-reply 等待并抬高批上界（既批准规则）。
+    const scored: string[][] = [];
+    const h = setup({
+      complete: async (req) => {
+        if (isBatchScore(req)) {
+          scored.push(batchTargetIds(req));
+          return batchScores(batchTargetIds(req));
+        }
+        return generate(["20002", "20004"]);
+      },
+      async *streamText() {
+        yield "reply\nfor target";
+      },
+    });
+    previousSpeech(h);
+    h.receive("1", "20002", false);
+    h.receive("2", "20002", true);
+    await h.activate("direct_reply");
+    await transport(h, "confirmed").runOnce();
+    expect(h.outbox.list({}).find((d) => d.target?.participantId === "20002")?.status).toBe(
+      "confirmed",
+    );
+    h.clock.seconds += 1;
+    h.receive("4", "20004", false, "newer member input releases the batch");
+    h.clock.seconds += 11;
+    const chiming = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "chiming_in" })!;
+    await h.host.activate(chiming, new AbortController().signal);
+    expect(scored.at(-1)).toEqual(["20002", "20004"]);
+  });
+
+  it("[v3] a member's newer input after a confirmed reply stays a candidate under both checks", async () => {
+    // S<E<=T：confirmed（T 口径）与 pending（最新事件口径）都保留成员——新输入永不被旧回复吞。
+    const scored: string[][] = [];
+    const h = setup({
+      complete: async (req) => {
+        if (isBatchScore(req)) {
+          scored.push(batchTargetIds(req));
+          return batchScores(batchTargetIds(req));
+        }
+        return generate(["20002"]);
+      },
+      async *streamText() {
+        yield "reply\nfor target";
+      },
+    });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    await h.activate("direct_reply");
+    const directIntent = h.outbox.list({}).find((d) => d.target?.participantId === "20002")!;
+    expect(h.outbox.claimPart(directIntent.id, h.now())).not.toBeNull();
+    await transport(h, "confirmed").runOnce();
+    h.receive("2", "20002", false);
+    h.receive("3", "20003", false);
+    h.clock.seconds += 5;
+    const chiming = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "chiming_in" })!;
+    await h.host.activate(chiming, new AbortController().signal);
+    expect(scored.at(-1)).toEqual(["20002", "20003"]);
+  });
+  it("[v3] a member whose latest eligible input is covered by a current valid pending reply is omitted", async () => {
+    // 最新合格事件被当前有效 pending 覆盖 → 成员整员省略（不是靠更旧未覆盖事件复活候选）；
+    // 无覆盖成员照常进批。
+    const scored: string[][] = [];
+    const h = setup({
+      complete: async (req) => {
+        if (isBatchScore(req)) {
+          scored.push(batchTargetIds(req));
+          return batchScores(batchTargetIds(req));
+        }
+        return generate(["20002", "20003"]);
+      },
+      async *streamText() {
+        yield "reply\nfor target";
+      },
+    });
+    previousSpeech(h);
+    h.receive("1", "20002", false);
+    h.receive("2", "20002", true);
+    await h.activate("direct_reply");
+    const directIntent = h.outbox.list({}).find((d) => d.target?.participantId === "20002")!;
+    expect(h.outbox.claimPart(directIntent.id, h.now())).not.toBeNull();
+    h.receive("3", "20003", false);
+    h.clock.seconds += 5;
+    const chiming = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "chiming_in" })!;
+    await h.host.activate(chiming, new AbortController().signal);
+    expect(scored.at(-1)).toEqual(["20003"]);
+  });
+
+  it("chiming keeps a member covered by a valid pending reply out of the batch but keeps new members", async () => {
+    const scored: string[][] = [];
+    const h = setup({
+      complete: async (req) => {
+        if (isBatchScore(req)) {
+          scored.push(batchTargetIds(req));
+          return batchScores(batchTargetIds(req));
+        }
+        return generate(["20002", "20003"]);
+      },
+      async *streamText() {
+        yield "reply\nfor target";
+      },
+    });
+    previousSpeech(h);
+    h.receive("1", "20002");
+    h.receive("2", "20003");
+    h.receive("3", "20002", true);
+    await h.activate("direct_reply");
+    const directIntent = h.outbox.list({}).find((d) => d.target?.participantId === "20002")!;
+    expect(h.outbox.claimPart(directIntent.id, h.now())).not.toBeNull();
+    h.clock.seconds += 5;
+    const leased = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "chiming_in" })!;
+    await h.host.activate(leased, new AbortController().signal);
+    expect(scored.at(-1)).toEqual(["20003"]);
+    expect(h.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20002", "20003"]);
+  });
+
+  it("[SO-A] a same-original planned reply is replaced on the opportunity rerun", async () => {
+    // 同原始机会（重跑 wake throughSeq=原 wake throughSeq，origin run/wake 归属一致）上的
+    // planned 且全部部件未尝试：合法计划替换——重跑重新生成并按幂等替换部件，仍只投递一条。
+    let round = 0;
+    const bodies = ["第一版正文", "第二版正文"];
+    const h = setup({
+      complete: async () => generate(["20002"]),
+      async *streamText() {
+        yield bodies[Math.min(round++, bodies.length - 1)];
+      },
+    });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    await h.activate("direct_reply");
+    const conversation = h.journal.ensureOneBot(bindingId)!;
+    const firstIntent = h.outbox.list({}).find((d) => d.target?.participantId === "20002")!;
+    expect(firstIntent.status).toBe("planned");
+    h.wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "direct_reply",
+      throughSeq: firstIntent.sourceThroughSeq,
+      dedupeKey: "so-same-origin-rerun",
+      readyAt: h.now(),
+      at: h.now(),
+      priority: 100,
+    });
+    const rerun = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!;
+    expect(await h.host.activate(rerun, new AbortController().signal)).toMatchObject({
+      status: "completed",
+    });
+    expect(h.outbox.list({})).toHaveLength(1);
+    const replaced = h.outbox.parts(firstIntent.id)[0];
+    expect(JSON.parse(replaced.payload as string).text).toBe("第二版正文");
+  });
+  it("[SO-B] a second wake at an absorbed newer seq stays covered after a real mid-run refresh", async () => {
+    // 事故形态真链：第一轮 decision 挂起期间同参与者追问到达（second wake pending），放行后
+    // reconsider refresh 重观察并把 commit 抬到追问 seq（origin wake=第一 wake）；第二 wake
+    // 在该 seq 上仍被覆盖——不因 origin 不同而重生成，零额外模型调用与出站增长。
+    let decisionCalls = 0;
+    let releaseDecision: () => void = () => {};
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    const h = setup({
+      complete: async () => {
+        decisionCalls += 1;
+        if (decisionCalls === 1) await decisionGate;
+        return generate(["20002"]);
+      },
+      async *streamText() {
+        yield "回复正文";
+      },
+    });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    const running = h.activate("direct_reply");
+    await waitFor(() => decisionCalls === 1);
+    h.receive("2", "20002", true);
+    releaseDecision();
+    await running;
+    expect(h.outbox.list({}).map((d) => d.sourceThroughSeq)).toEqual([3]);
+    h.clock.seconds += 5;
+    expect(await h.activate("direct_reply")).toMatchObject({ status: "no_output" });
+    expect(h.outbox.list({})).toHaveLength(1);
+    expect(decisionCalls).toBe(2);
+  });
+  it("[SO-C] a same-original intent already sending is not replaced on the opportunity rerun", async () => {
+    // 同原始机会但部件真实在发：不替换不重放（coverage 生效），目标实际发送计数保持一次，
+    // 放行后原部件照常收口。
+    let releaseSend: () => void = () => {};
+    const sendGate = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const sends: string[] = [];
+    const h = setup({ complete: async () => generate(["20002"]) });
+    previousSpeech(h);
+    h.receive("1", "20002", true);
+    await h.activate("direct_reply");
+    const intent = h.outbox.list({}).find((d) => d.target?.participantId === "20002")!;
+    const delivery = new OutboundDelivery({
+      orm: h.orm,
+      repository: h.outbox,
+      journal: h.journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      port: {
+        async send() {
+          sends.push("20002");
+          await sendGate;
+          return { kind: "confirmed", messageId: "receipt" };
+        },
+      },
+    });
+    const pumping = delivery.runOnce();
+    await waitFor(() => h.outbox.parts(intent.id)[0]?.status === "sending");
+    const conversation = h.journal.ensureOneBot(bindingId)!;
+    h.wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "direct_reply",
+      throughSeq: intent.sourceThroughSeq,
+      dedupeKey: "so-sending-rerun",
+      readyAt: h.now(),
+      at: h.now(),
+      priority: 100,
+    });
+    const rerun = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!;
+    expect(await h.host.activate(rerun, new AbortController().signal)).toMatchObject({
+      status: "no_output",
+    });
+    expect(h.outbox.list({})).toHaveLength(1);
+    expect(sends).toEqual(["20002"]);
+    releaseSend();
+    await pumping;
+    expect(h.outbox.list({})[0]?.status).toBe("confirmed");
+  });
 });
 
 function pendingPlan(

@@ -981,3 +981,413 @@ it("[DU_6] generation stage off sends no raw image after a successful detail dec
   expect(pendingSteps()).toBe(0);
   writeDuTrace("DU_6", { captures, sent: h.sent });
 });
+
+// ---- [DU_7..DU_9] question 锚宿主契约：选错可恢复 vs 授权源失效 fatal -----------------------
+// 宿主契约（QUESTION-ANCHOR-HOST-GO）：锚接口保持 anchor|null；模型指针不在 focus∪直接
+// 引用目标平台 ID 集合内＝选错 → resolver null（工具层给 selection 反馈，同 run 可纠正）；
+// 已授权的 focus/question/直接目标源失效（快照到期/撤权/缺失/正文空）＝源失效 → 宿主
+// CONTEXT_SOURCE_INVALID fatal（vision 0），绝不吞成可恢复反馈。
+
+it("[DU_7] a wrong question pointer gets selection-null and a corrected platform id succeeds in the same run", async () => {
+  // 同一 run 内：先误把 media.list 披露的内部 id 当平台消息 ID 传（选错→selection null 反馈，
+  // 不读任何未授权指针），再用正确平台 ID 纠正成功；命令域纠正是可恢复反馈而非整轮失败。
+  const exprBytes = pngOf(120, 1024, 512);
+  const { port, captures, pendingSteps } = createCapturePort([
+    { kind: "decision", build: () => ({ kind: "invoke", name: "media.list", arguments: {} }) },
+    {
+      kind: "decision",
+      build: (seen) => ({
+        kind: "invoke",
+        name: "media.read",
+        arguments: {
+          id: disclosedIdFor(seen, "-3002"),
+          questionMessageId: disclosedIdFor(seen, "-3002"),
+        },
+      }),
+    },
+    {
+      kind: "decision",
+      build: (seen) => ({
+        kind: "invoke",
+        name: "media.read",
+        arguments: { id: disclosedIdFor(seen, "-3002"), questionMessageId: "-3002" },
+      }),
+    },
+    {
+      kind: "decision",
+      build: () => ({
+        kind: "final",
+        outputs: [{ kind: "generate", targetId: "10001", instructions: "回答", stickerIds: [] }],
+      }),
+    },
+    { kind: "text", text: "合成回复正文" },
+  ]);
+  const h = createOneBotHarness({
+    accountId: "90001",
+    member: "10001",
+    mediaEnabled: true,
+    mergeWindowSeconds: 0,
+    mediaInput: { mode: "native" },
+    imageBytes: { "du7-face": exprBytes },
+    model: port,
+  });
+  h.receive({
+    id: "-3002",
+    speaker: "10001",
+    text: "这个表情包上画的是什么 DU7",
+    groupCard: "阿林",
+    image: "du7-face",
+    imageHint: { ...MARKET_FACE },
+    addressed: true,
+  });
+  await h.activate("direct_reply");
+  await h.deliver();
+  expect(h.sent).toHaveLength(1);
+  expect(pendingSteps()).toBe(0);
+  const reads: ObservationEnvelope[] = [];
+  const seenReadIds = new Set<string>();
+  for (const call of captures)
+    for (const observation of observationsOf(call, "media.read")) {
+      if (seenReadIds.has(observation.value.id)) continue;
+      seenReadIds.add(observation.value.id);
+      reads.push(observation);
+    }
+  expect(reads).toHaveLength(2);
+  const firstValue = reads[0]?.value.value as { status?: string } | undefined;
+  const secondValue = reads[1]?.value.value as { status?: string } | undefined;
+  expect(firstValue?.status).not.toBe("ok");
+  expect(secondValue?.status).toBe("ok");
+  noBytesOnWire(captures);
+  writeDuTrace("DU_7", { captures, sent: h.sent });
+});
+
+it("[DU_8] an authorized question source that expires mid-run fails the run with CONTEXT_SOURCE_INVALID and zero vision", async () => {
+  // 已授权问题源在 run 中途真实到期（qq_message_facts.expires_at 原行 UPDATE，DU_5 同款真实
+  // 状态变更；正文真实非空，不复用 0 正文 run）：源失效 fatal，绝不吞成可恢复 selection
+  // 反馈；vision 0＝无任何发送、后续脚本步不再消费。
+  const exprBytes = pngOf(120, 1024, 512);
+  const { port, captures, pendingSteps } = createCapturePort([
+    { kind: "decision", build: () => ({ kind: "invoke", name: "media.list", arguments: {} }) },
+    {
+      kind: "decision",
+      build: (seen) => ({
+        kind: "invoke",
+        name: "media.read",
+        arguments: { id: disclosedIdFor(seen, "-3102"), questionMessageId: "-3102" },
+      }),
+      beforeRespond: () => {
+        const mediaId = disclosedIdFor(captures, "-3102");
+        const row = h.db.query("SELECT event_key FROM qq_media_notes WHERE id=?").get(mediaId) as {
+          event_key: string;
+        } | null;
+        if (!row) throw new Error("question media missing");
+        const changed = h.db
+          .query("UPDATE qq_message_facts SET expires_at=? WHERE event_key=?")
+          .run(new Date((2_000_000_000 - 60) * 1000).toISOString(), row.event_key);
+        expect(changed.changes).toBe(1);
+      },
+    },
+    {
+      kind: "decision",
+      build: () => ({
+        kind: "final",
+        outputs: [{ kind: "generate", targetId: "10001", instructions: "回答", stickerIds: [] }],
+      }),
+    },
+    { kind: "text", text: "不应发出的正文" },
+  ]);
+  const h = createOneBotHarness({
+    accountId: "90001",
+    member: "10001",
+    mediaEnabled: true,
+    mergeWindowSeconds: 0,
+    mediaInput: { mode: "native" },
+    imageBytes: { "du8-face": exprBytes },
+    model: port,
+  });
+  h.receive({
+    id: "-3102",
+    speaker: "10001",
+    text: "请看清这张表情的细节 DU8",
+    groupCard: "阿林",
+    image: "du8-face",
+    imageHint: { ...MARKET_FACE },
+    addressed: true,
+  });
+  const refused = await runErrorOf(async () => {
+    await h.activate("direct_reply");
+    await h.deliver();
+  });
+  expect(refused).not.toBeNull();
+  expect((refused as { code?: string } | null)?.code).toBe("CONTEXT_SOURCE_INVALID");
+  expect(h.sent).toHaveLength(0);
+  expect(pendingSteps()).toBeGreaterThan(0);
+  writeDuTrace("DU_8", { captures, sent: h.sent, refusal: String(refused) });
+});
+
+it("[DU_9] a direct reply target image stays answerable as the question anchor at the original depth", async () => {
+  // 正例（原批准 depth1 不回退）：问题是 focus 消息本身，读取的直接引用目标图（-3101 的
+  // 普通图）作为问题锚成功——focus∪direct target 授权集合与同 run 纠正后路径共用同一门。
+  const exprBytes = pngOf(120, 1024, 512);
+  const plainBytes = pngOf(80, 800, 400);
+  const { port, captures, pendingSteps } = createCapturePort([
+    { kind: "decision", build: () => ({ kind: "invoke", name: "media.list", arguments: {} }) },
+    {
+      kind: "decision",
+      build: (seen) => ({
+        kind: "invoke",
+        name: "media.read",
+        arguments: { id: disclosedIdFor(seen, "-3101"), questionMessageId: "-3101" },
+      }),
+    },
+    {
+      kind: "decision",
+      build: () => ({
+        kind: "final",
+        outputs: [{ kind: "generate", targetId: "10001", instructions: "回答", stickerIds: [] }],
+      }),
+    },
+    { kind: "text", text: "合成回复正文" },
+  ]);
+  const h = createOneBotHarness({
+    accountId: "90001",
+    member: "10001",
+    mediaEnabled: true,
+    mergeWindowSeconds: 0,
+    mediaInput: { mode: "native" },
+    imageBytes: { "du9-face": exprBytes, "du9-plain": plainBytes },
+    model: port,
+  });
+  h.receive({
+    id: "-3101",
+    speaker: "20002",
+    text: "看这张原图 DU9",
+    groupCard: "小周",
+    image: "du9-plain",
+  });
+  h.receive({
+    id: "-3102",
+    speaker: "10001",
+    text: "这张图里有什么 DU9",
+    groupCard: "阿林",
+    image: "du9-face",
+    imageHint: { ...MARKET_FACE },
+    addressed: true,
+    replyTo: "-3101",
+  });
+  await h.activate("direct_reply");
+  await h.deliver();
+  expect(h.sent).toHaveLength(1);
+  expect(pendingSteps()).toBe(0);
+  const reads: ObservationEnvelope[] = [];
+  const seenTargetReadIds = new Set<string>();
+  for (const call of captures)
+    for (const observation of observationsOf(call, "media.read")) {
+      if (seenTargetReadIds.has(observation.value.id)) continue;
+      seenTargetReadIds.add(observation.value.id);
+      reads.push(observation);
+    }
+  expect(reads).toHaveLength(1);
+  const value = reads[0]?.value.value as { status?: string } | undefined;
+  expect(value?.status).toBe("ok");
+  noBytesOnWire(captures);
+  writeDuTrace("DU_9", { captures, sent: h.sent });
+});
+
+// ---- [DU_10/DU_11] 直接引用目标是「被依赖才必须存活」的授权源 --------------------------------
+// 宿主契约修正：过期/撤权只对锚实际依赖的源 fatal——问题指针指向它，或被认领的图落在
+// 它的事件上；focus 自身图有效而未依赖的 replyTo 引用失效，不拖垮合法锚（不泛吞源失效）。
+
+it("[DU_10] an unreadable unused direct target does not break a legal focus question anchor", async () => {
+  // focus 自身带有效图且问题指针指向 focus；replyTo 指向的旧消息事实真实到期——
+  // 该引用未被依赖，锚仍合法（v1 回归面：曾把未依赖目标失效误判为 fatal）。
+  const exprBytes = pngOf(120, 1024, 512);
+  const { port, captures, pendingSteps } = createCapturePort([
+    { kind: "decision", build: () => ({ kind: "invoke", name: "media.list", arguments: {} }) },
+    {
+      kind: "decision",
+      build: (seen) => ({
+        kind: "invoke",
+        name: "media.read",
+        arguments: { id: disclosedIdFor(seen, "-3202"), questionMessageId: "-3202" },
+      }),
+    },
+    {
+      kind: "decision",
+      build: () => ({
+        kind: "final",
+        outputs: [{ kind: "generate", targetId: "10001", instructions: "回答", stickerIds: [] }],
+      }),
+    },
+    { kind: "text", text: "合成回复正文" },
+  ]);
+  const h = createOneBotHarness({
+    accountId: "90001",
+    member: "10001",
+    mediaEnabled: true,
+    mergeWindowSeconds: 0,
+    mediaInput: { mode: "native" },
+    imageBytes: { "du10-face": exprBytes },
+    model: port,
+  });
+  h.receive({
+    id: "-3201",
+    speaker: "20002",
+    text: "这条旧消息稍后会过期 DU10",
+    groupCard: "小周",
+  });
+  h.receive({
+    id: "-3202",
+    speaker: "10001",
+    text: "这个表情包上画的是什么 DU10",
+    groupCard: "阿林",
+    image: "du10-face",
+    imageHint: { ...MARKET_FACE },
+    addressed: true,
+    replyTo: "-3201",
+  });
+  // 真实置过期：replyTo 旧消息（未被锚依赖）的事实快照整行到期。
+  const staleKey = h.db
+    .query("SELECT event_key FROM qq_events WHERE message_id=? AND peer_id='30003'")
+    .get("-3201") as { event_key: string } | null;
+  expect(staleKey).not.toBeNull();
+  if (!staleKey) throw new Error("target event missing");
+  h.db
+    .query("UPDATE qq_message_facts SET expires_at=? WHERE event_key=?")
+    .run(new Date((2_000_000_000 - 60) * 1000).toISOString(), staleKey.event_key);
+  await h.activate("direct_reply");
+  await h.deliver();
+  expect(h.sent).toHaveLength(1);
+  expect(pendingSteps()).toBe(0);
+  const reads: ObservationEnvelope[] = [];
+  const seenIds = new Set<string>();
+  for (const call of captures)
+    for (const observation of observationsOf(call, "media.read")) {
+      if (seenIds.has(observation.value.id)) continue;
+      seenIds.add(observation.value.id);
+      reads.push(observation);
+    }
+  expect(reads).toHaveLength(1);
+  const value = reads[0]?.value.value as { status?: string } | undefined;
+  expect(value?.status).toBe("ok");
+  noBytesOnWire(captures);
+  writeDuTrace("DU_10", { captures, sent: h.sent });
+});
+
+it("[DU_11] an expired direct target is fatal when the question or the claimed image depends on it", async () => {
+  // 依赖失效＝fatal：问题指针指向的直接引用目标事实到期（第一段同 run 无法借 selection
+  // 反馈恢复），认领图落在该目标事件上同样 fatal——不降级成 selection 反馈。
+  const exprBytes = pngOf(120, 1024, 512);
+  const { port, captures, pendingSteps } = createCapturePort([
+    { kind: "decision", build: () => ({ kind: "invoke", name: "media.list", arguments: {} }) },
+    {
+      kind: "decision",
+      build: (seen) => ({
+        kind: "invoke",
+        name: "media.read",
+        arguments: { id: disclosedIdFor(seen, "-3301"), questionMessageId: "-3301" },
+      }),
+    },
+    { kind: "text", text: "不应发出的正文" },
+  ]);
+  const h = createOneBotHarness({
+    accountId: "90001",
+    member: "10001",
+    mediaEnabled: true,
+    mergeWindowSeconds: 0,
+    mediaInput: { mode: "native" },
+    imageBytes: { "du11-face": exprBytes },
+    model: port,
+  });
+  h.receive({
+    id: "-3301",
+    speaker: "20002",
+    text: "看这张原图 DU11",
+    groupCard: "小周",
+    image: "du11-face",
+  });
+  h.receive({
+    id: "-3302",
+    speaker: "10001",
+    text: "这张图里有什么 DU11",
+    groupCard: "阿林",
+    addressed: true,
+    replyTo: "-3301",
+  });
+  const targetKey = h.db
+    .query("SELECT event_key FROM qq_events WHERE message_id=? AND peer_id='30003'")
+    .get("-3301") as { event_key: string } | null;
+  expect(targetKey).not.toBeNull();
+  if (!targetKey) throw new Error("target event missing");
+  h.db
+    .query("UPDATE qq_message_facts SET expires_at=? WHERE event_key=?")
+    .run(new Date((2_000_000_000 - 60) * 1000).toISOString(), targetKey.event_key);
+  const refused = await runErrorOf(async () => {
+    await h.activate("direct_reply");
+    await h.deliver();
+  });
+  expect(refused).not.toBeNull();
+  expect((refused as { code?: string } | null)?.code).toBe("CONTEXT_SOURCE_INVALID");
+  expect(h.sent).toHaveLength(0);
+  expect(pendingSteps()).toBeGreaterThan(0);
+  writeDuTrace("DU_11", { captures, sent: h.sent, refusal: String(refused) });
+});
+
+it("[DU_12] an image claimed on an expired direct target is a source failure, not a selection miss", async () => {
+  // 问题指针指向 focus（合法选择），但认领的图落在已到期的直接引用目标事件上：
+  // 该目标被本次锚依赖（图在其事件上）→ 源失效 fatal，不得降级成 selection 反馈。
+  const exprBytes = pngOf(120, 1024, 512);
+  const { port, captures, pendingSteps } = createCapturePort([
+    { kind: "decision", build: () => ({ kind: "invoke", name: "media.list", arguments: {} }) },
+    {
+      kind: "decision",
+      build: (seen) => ({
+        kind: "invoke",
+        name: "media.read",
+        arguments: { id: disclosedIdFor(seen, "-3401"), questionMessageId: "-3402" },
+      }),
+    },
+    { kind: "text", text: "不应发出的正文" },
+  ]);
+  const h = createOneBotHarness({
+    accountId: "90001",
+    member: "10001",
+    mediaEnabled: true,
+    mergeWindowSeconds: 0,
+    mediaInput: { mode: "native" },
+    imageBytes: { "du12-face": exprBytes },
+    model: port,
+  });
+  h.receive({
+    id: "-3401",
+    speaker: "20002",
+    text: "看这张原图 DU12",
+    groupCard: "小周",
+    image: "du12-face",
+  });
+  h.receive({
+    id: "-3402",
+    speaker: "10001",
+    text: "这张图里有什么 DU12",
+    groupCard: "阿林",
+    addressed: true,
+    replyTo: "-3401",
+  });
+  const targetKey = h.db
+    .query("SELECT event_key FROM qq_events WHERE message_id=? AND peer_id='30003'")
+    .get("-3401") as { event_key: string } | null;
+  expect(targetKey).not.toBeNull();
+  if (!targetKey) throw new Error("target event missing");
+  h.db
+    .query("UPDATE qq_message_facts SET expires_at=? WHERE event_key=?")
+    .run(new Date((2_000_000_000 - 60) * 1000).toISOString(), targetKey.event_key);
+  const refused = await runErrorOf(async () => {
+    await h.activate("direct_reply");
+    await h.deliver();
+  });
+  expect(refused).not.toBeNull();
+  expect((refused as { code?: string } | null)?.code).toBe("CONTEXT_SOURCE_INVALID");
+  expect(h.sent).toHaveLength(0);
+  expect(pendingSteps()).toBeGreaterThan(0);
+  writeDuTrace("DU_12", { captures, sent: h.sent, refusal: String(refused) });
+});
