@@ -230,7 +230,7 @@
   "connections.execution.modules.webHint": "Lets the Agent search the web and read pages (http/https only; private, loopback and reserved addresses are refused). Off by default; the per-assistant scope from Tool authorisation still applies. Turning it off stops offering the tools and keeps the endpoint configuration and grants.",
   "connections.execution.qq": "QQ delivery",
   "connections.execution.qqDeliveryTtlSeconds": "Delivery intent TTL (seconds)",
-  "connections.execution.qqDeliveryTtlSecondsHint": "10–3600, default 120",
+  "connections.execution.qqDeliveryTtlSecondsHint": "10–3600, default 600",
   "connections.execution.qqMaxAttempts": "Maximum attempts",
   "connections.execution.qqMaxAttemptsHint": "1–10, default 3; a higher count never resends an unknown outcome",
   "connections.execution.qqRetryDelayMs": "Retry delay (ms)",
@@ -2064,5 +2064,11 @@
   "capabilities.labels.qqMembersQuery": "Query member roster",
   "capabilities.labels.qqMembersRead": "Read member details",
   "capabilities.labels.skillQqMembers": "Group member guidelines",
-  "capabilities.qqReply.runtimeAction": "Runtime action"
+  "capabilities.qqReply.runtimeAction": "Runtime action",
+  "connections.initiativeTimeWindowEnabled": "Enable time window",
+  "connections.initiativeTimeWindowEnabledHint": "Trigger initiative evaluation by dual count and elapsed time windows; either window maturity readies the opportunity",
+  "connections.initiativeTimeTargetSeconds": "Target time (seconds)",
+  "connections.initiativeTimeTargetSecondsHint": "Triggers when elapsed time after initial unjudged message reaches [target - variation, target + variation]",
+  "connections.initiativeTimeJitterSeconds": "Variation time (seconds)",
+  "connections.initiativeTimeJitterSecondsHint": "Must be less than target time (0–1799 seconds, and variation less than target)"
 }

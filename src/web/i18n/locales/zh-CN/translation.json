@@ -230,7 +230,7 @@
   "connections.execution.modules.webHint": "允许助手联网搜索与读取网页（仅 http/https，私网与环回地址会被拒绝）。默认关闭；可用范围还按「工具授权」中的助手范围，关闭后不提供联网工具，端点配置与授权保留。",
   "connections.execution.qq": "QQ 投递",
   "connections.execution.qqDeliveryTtlSeconds": "投递意图有效期（秒）",
-  "connections.execution.qqDeliveryTtlSecondsHint": "10–3600，默认 120",
+  "connections.execution.qqDeliveryTtlSecondsHint": "10–3600，默认 600",
   "connections.execution.qqMaxAttempts": "最多尝试次数",
   "connections.execution.qqMaxAttemptsHint": "1–10，默认 3；未知结果不因次数增加而重发",
   "connections.execution.qqRetryDelayMs": "失败重试间隔（毫秒）",
@@ -2064,5 +2064,11 @@
   "capabilities.labels.qqMembersQuery": "查询成员名单",
   "capabilities.labels.qqMembersRead": "读取成员详情",
   "capabilities.labels.skillQqMembers": "群成员感知指引",
-  "capabilities.qqReply.runtimeAction": "运行时动作"
+  "capabilities.qqReply.runtimeAction": "运行时动作",
+  "connections.initiativeTimeWindowEnabled": "启用时间窗口",
+  "connections.initiativeTimeWindowEnabledHint": "开启后按经过时间与消息条数双窗口择机判定接话；两者任一成熟即触发",
+  "connections.initiativeTimeTargetSeconds": "目标时间（秒）",
+  "connections.initiativeTimeTargetSecondsHint": "首条未判消息后等待进入 [目标 - 浮动, 目标 + 浮动] 范围时择机派发",
+  "connections.initiativeTimeJitterSeconds": "浮动时间（秒）",
+  "connections.initiativeTimeJitterSecondsHint": "必须小于目标时间（0–1799 秒，且浮动小于目标）"
 }

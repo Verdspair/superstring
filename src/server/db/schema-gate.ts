@@ -18,7 +18,7 @@ import path from "node:path";
 import { type BusinessDbHandle, openConnection, toOrmHandle } from "./connection";
 
 /** Ordered resources are also supplied explicitly by installed entrypoints. */
-export const BUSINESS_SCHEMA_VERSION = 54 as const;
+export const BUSINESS_SCHEMA_VERSION = 55 as const;
 export const BUSINESS_MIGRATION_FILES = [
   "0001_initial.sql",
   "0002_knowledge.sql",
@@ -74,8 +74,10 @@ export const BUSINESS_MIGRATION_FILES = [
   "0052_qq_message_multimodal.sql",
   "0053_qq_group_names.sql",
   "0054_qq_initiative_batches.sql",
+  "0055_qq_initiative_time_window.sql",
 ] as const;
 export type BusinessMigrationSql = readonly [
+  string,
   string,
   string,
   string,
@@ -268,6 +270,7 @@ function loadMigrationSql(): BusinessMigrationSql {
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[51]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[52]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[53]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[54]), "utf8"),
   ];
 }
 

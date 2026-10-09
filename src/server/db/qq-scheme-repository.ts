@@ -260,6 +260,9 @@ export function schemeRhythm(row: QqSchemeRow): QqSchemeRhythm {
     initiative_batch_target_count: row.initiativeBatchTargetCount,
     initiative_batch_jitter_count: row.initiativeBatchJitterCount,
     initiative_queue_on_busy: row.initiativeQueueOnBusy === 1,
+    initiative_time_window_enabled: row.initiativeTimeWindowEnabled === 1,
+    initiative_time_target_seconds: row.initiativeTimeTargetSeconds,
+    initiative_time_jitter_seconds: row.initiativeTimeJitterSeconds,
   });
 }
 
@@ -282,6 +285,9 @@ function rhythmColumns(rhythm: QqSchemeRhythm) {
     initiativeBatchTargetCount: rhythm.initiative_batch_target_count,
     initiativeBatchJitterCount: rhythm.initiative_batch_jitter_count,
     initiativeQueueOnBusy: rhythm.initiative_queue_on_busy ? 1 : 0,
+    initiativeTimeWindowEnabled: rhythm.initiative_time_window_enabled ? 1 : 0,
+    initiativeTimeTargetSeconds: rhythm.initiative_time_target_seconds,
+    initiativeTimeJitterSeconds: rhythm.initiative_time_jitter_seconds,
   };
 }
 
@@ -307,7 +313,10 @@ function sameRhythm(left: QqSchemeRhythm, right: QqSchemeRhythm): boolean {
     left.media_max_dimension === right.media_max_dimension &&
     left.initiative_batch_target_count === right.initiative_batch_target_count &&
     left.initiative_batch_jitter_count === right.initiative_batch_jitter_count &&
-    left.initiative_queue_on_busy === right.initiative_queue_on_busy
+    left.initiative_queue_on_busy === right.initiative_queue_on_busy &&
+    left.initiative_time_window_enabled === right.initiative_time_window_enabled &&
+    left.initiative_time_target_seconds === right.initiative_time_target_seconds &&
+    left.initiative_time_jitter_seconds === right.initiative_time_jitter_seconds
   );
 }
 

@@ -61,8 +61,8 @@ export const ExecutionLoopLimitsSchema = z.strictObject({
 export const ExecutionQqLimitsSchema = z.strictObject({
   retryDelayMs: z.number().int().min(1_000).max(300_000).default(15_000),
   maxAttempts: z.number().int().min(1).max(10).default(3),
-  /** 出站意图有效期：超时未提交按未送达处理，不盲目重发。 */
-  deliveryTtlSeconds: z.number().int().min(10).max(3_600).default(120),
+  /** 未发送意图从提交起有效的秒数；超时未发送按未送达处理。显式保存的值保留。 */
+  deliveryTtlSeconds: z.number().int().min(10).max(3_600).default(600),
 });
 export const ExecutionModulesSchema = z.strictObject({
   mcp: z.boolean().default(true),

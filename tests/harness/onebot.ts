@@ -134,6 +134,14 @@ export interface OneBotHarnessOptions {
   readonly initiativeBatchJitterCount?: number;
   readonly initiativeQueueOnBusy?: boolean;
   /**
+   * 自主接话时间窗口三参数（与计数窗口同一纯测试入口）：缺省沿用方案默认（60±20、新方案开）。
+   * 旧存量方案行由 0055 的 DDL 缺省置 0（关闭）——夹具新建方案走上面的默认 true，
+   * 期望旧行为关闭的用例自己构造存量行，不在这里特判。
+   */
+  readonly initiativeTimeWindowEnabled?: boolean;
+  readonly initiativeTimeTargetSeconds?: number;
+  readonly initiativeTimeJitterSeconds?: number;
+  /**
    * P7/S55：接线生产 BotCompressionQueue（与 create-runtime 同一构造，无第二链）。true 时
    * 宿主 enqueue 的压缩任务进入真实队列，测试用 `h.compressionRunOnce()` 手动消费（不自动
    * 后台运行）。缺省 false＝既有行为（job 丢弃）。
@@ -341,6 +349,12 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
         options.initiativeBatchJitterCount ?? QQ_RHYTHM_DEFAULT.initiative_batch_jitter_count,
       initiative_queue_on_busy:
         options.initiativeQueueOnBusy ?? QQ_RHYTHM_DEFAULT.initiative_queue_on_busy,
+      initiative_time_window_enabled:
+        options.initiativeTimeWindowEnabled ?? QQ_RHYTHM_DEFAULT.initiative_time_window_enabled,
+      initiative_time_target_seconds:
+        options.initiativeTimeTargetSeconds ?? QQ_RHYTHM_DEFAULT.initiative_time_target_seconds,
+      initiative_time_jitter_seconds:
+        options.initiativeTimeJitterSeconds ?? QQ_RHYTHM_DEFAULT.initiative_time_jitter_seconds,
     },
   });
   const bindingId = "11111111-1111-4111-8111-111111111111";

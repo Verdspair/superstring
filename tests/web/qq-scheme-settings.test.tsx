@@ -48,6 +48,9 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     initiative_batch_target_count: 15,
     initiative_batch_jitter_count: 5,
     initiative_queue_on_busy: true,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
   },
   context: {
     judgement_message_limit: 20,
@@ -581,6 +584,35 @@ describe("Shared scheme studio", () => {
 
     // 修正为 jitter < target (5 < 10) 后允许保存
     fireEvent.change(jitterInput, { target: { value: "5" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalled();
+  });
+
+  it("edits autonomous time window controls and validates jitter seconds < target seconds", async () => {
+    const { fake } = await renderPage();
+    await task("发言时机");
+
+    const timeSwitch = screen.getByRole("checkbox", { name: /启用时间窗口/ });
+    const targetSeconds = screen.getByLabelText("目标时间（秒）") as HTMLInputElement;
+    const jitterSeconds = screen.getByLabelText("浮动时间（秒）") as HTMLInputElement;
+
+    expect(timeSwitch.getAttribute("aria-checked")).toBe("true");
+    expect(targetSeconds.value).toBe("60");
+    expect(jitterSeconds.value).toBe("20");
+
+    // 切换开关
+    await userEvent.click(timeSwitch);
+    expect(timeSwitch.getAttribute("aria-checked")).toBe("false");
+    expect(store.getState().qqSchemeEditor?.rhythm.initiative_time_window_enabled).toBe(false);
+
+    // 设置 jitter >= target (60 >= 60) 阻止保存
+    fireEvent.change(jitterSeconds, { target: { value: "60" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
+    expect(await store.getState().saveQqDrafts()).toBe(false);
+
+    // 修正为 15 < 60 允许保存
+    fireEvent.change(jitterSeconds, { target: { value: "15" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
     expect(fake.updateQqScheme).toHaveBeenCalled();
   });

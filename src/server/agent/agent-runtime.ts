@@ -418,6 +418,13 @@ export class AgentRuntime {
   get telemetry(): RuntimeTelemetry | undefined {
     return this.options.telemetry;
   }
+  /**
+   * 名额观察面（只读）：调度侧据此判断"现在有没有空位"并在名额释放时复查，
+   * 真正占名额仍然只有 ModelPort 内部的 acquire，名额状态没有第二份。
+   */
+  get admission(): ModelPort["admission"] {
+    return this.options.model.admission;
+  }
   private now(): string {
     return this.options.now?.() ?? new Date().toISOString();
   }

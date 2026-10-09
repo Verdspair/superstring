@@ -53,6 +53,9 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     initiative_batch_target_count: 15,
     initiative_batch_jitter_count: 5,
     initiative_queue_on_busy: true,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
   },
   context: {
     judgement_message_limit: 20,
@@ -303,6 +306,8 @@ describe("Scheme studio layout and grouping", () => {
         "scheme-field-rhythm.initiative_batch_jitter_count",
         "scheme-field-rhythm.initiative_batch_target_count",
         "scheme-field-rhythm.initiative_min_score",
+        "scheme-field-rhythm.initiative_time_jitter_seconds",
+        "scheme-field-rhythm.initiative_time_target_seconds",
         "scheme-field-rhythm.max_recompute_count",
         "scheme-field-rhythm.max_sticker_count",
         "scheme-field-rhythm.media_frame_count",

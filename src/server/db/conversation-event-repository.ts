@@ -388,9 +388,29 @@ export class ConversationEventRepository {
     return row?.seq ?? 0;
   }
 
+  chimingInJudgedAt(conversationId: string): string | null {
+    const row = this.db
+      .query("SELECT chiming_in_judged_at AS at FROM conversations WHERE id=?")
+      .get(conversationId) as { at: string | null } | undefined;
+    return row?.at ?? null;
+  }
+
+  /** Record a complete, valid autonomous judgement with its source boundary. */
+  markChimingInJudged(conversationId: string, throughSeq: number, at: string): void {
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) {
+      throw new Error("CONVERSATION_SEQUENCE_INVALID");
+    }
+    if (!Number.isFinite(Date.parse(at))) throw new Error("CONVERSATION_TIMESTAMP_INVALID");
+    this.db
+      .query(
+        "UPDATE conversations SET chiming_in_observed_seq=MAX(chiming_in_observed_seq,?),chiming_in_judged_at=CASE WHEN ? > chiming_in_observed_seq THEN ? ELSE chiming_in_judged_at END WHERE id=?",
+      )
+      .run(throughSeq, throughSeq, at, conversationId);
+  }
+
   /**
-   * 推进自主观察边界。不开启自身事务：调用方（机会结算）把它写进同一个 IMMEDIATE
-   * 事务，边界与该次结算的其余事实同生同灭。
+   * Advance the source boundary when an opportunity is intentionally skipped without judgement.
+   * The caller keeps this in the same IMMEDIATE transaction as wake settlement.
    */
   advanceChimingInObservedSeq(conversationId: string, throughSeq: number): void {
     if (!Number.isSafeInteger(throughSeq) || throughSeq < 0) {

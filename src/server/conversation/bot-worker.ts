@@ -6,6 +6,8 @@ export interface BotWorkerOptions {
   nextReadyAt?: () => string | null;
   clockSeconds?: () => number;
   onError?: (error: unknown) => void;
+  /** 停机排水（如 scheduler.waitForIdle）：stop() 与计时循环一起等它结束；中止在飞由 stop 的调用方负责。 */
+  drain?: () => Promise<void>;
 }
 
 /** Timer and lifecycle only. Wakes, leases and Agent activation belong to WakeScheduler. */
@@ -30,7 +32,7 @@ export class BotWorker {
     this.stopped = true;
     this.sleepResolve?.();
     // A caller still receives a manual cycle failure; shutdown must finish draining it.
-    await Promise.allSettled([this.cyclePromise, this.loopPromise]);
+    await Promise.allSettled([this.cyclePromise, this.loopPromise, this.options.drain?.()]);
   }
   runCycle(
     nowSeconds = this.options.clockSeconds?.() ?? Math.floor(Date.now() / 1000),

@@ -40,6 +40,7 @@ import { createSession, ensureDefaults, nowIso, type Orm } from "../../src/serve
 import * as schema from "../../src/server/db/schema";
 import {
   BUSINESS_MIGRATION_FILES,
+  BUSINESS_SCHEMA_VERSION,
   ensureBusinessSchema,
   openBusinessDb,
 } from "../../src/server/db/schema-gate";
@@ -105,7 +106,9 @@ describe("context limit caps (0047)", () => {
         "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,judgement_message_limit,reply_message_limit) VALUES ('old','旧方案',3,'then','then',137,321)",
       );
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
       expect(
         db
           .query(
@@ -192,6 +195,10 @@ describe("scheme identity", () => {
         "initiative_batch_target_count",
         "initiative_batch_jitter_count",
         "initiative_queue_on_busy",
+        // 0055 的时间窗口三列排在表尾（SQLite 只能追加列）。
+        "initiative_time_window_enabled",
+        "initiative_time_target_seconds",
+        "initiative_time_jitter_seconds",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -200,6 +207,80 @@ describe("scheme identity", () => {
       expect(columns).not.toContain("agent_id");
       expect(readQqScheme(h.orm, created.id)?.name).toBe("默认方案");
       expect(readQqSchemes(h.orm)).toHaveLength(1);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("upgrading an existing scheme leaves the time window off, new schemes get it on", () => {
+    // 用户定的是「新开旧关」。旧行因此必须仍按 0054 的纯计数行为运行，一次升级不能暗改
+    // 既有方案的参与时机；回填值 0/60/20 因此与新方案的 true/60/20 不同，这是决定本身。
+    const db = new Database(":memory:");
+    try {
+      for (const file of BUSINESS_MIGRATION_FILES.slice(0, -1))
+        db.exec(
+          readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
+        );
+      db.exec("PRAGMA user_version = 54");
+      db.exec(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at) VALUES ('old','旧方案',1,'then','then')",
+      );
+      ensureBusinessSchema(db);
+      const row = db
+        .query(
+          "SELECT initiative_time_window_enabled AS e, initiative_time_target_seconds AS a, initiative_time_jitter_seconds AS b, initiative_batch_target_count AS x, initiative_batch_jitter_count AS y FROM qq_schemes WHERE id='old'",
+        )
+        .get() as Record<string, number>;
+      expect(row).toEqual({ e: 0, a: 60, b: 20, x: 15, y: 5 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("round-trips the time window through a save and keeps a no-op save off the clock", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      const tuned = updateQqScheme(h.orm, created.id, {
+        name: created.name,
+        expectedRevision: created.revision,
+        rhythm: {
+          ...schemeRhythm(created),
+          initiative_time_window_enabled: false,
+          initiative_time_target_seconds: 180,
+          initiative_time_jitter_seconds: 45,
+        },
+      });
+      expect(schemeRhythm(tuned)).toMatchObject({
+        initiative_time_window_enabled: false,
+        initiative_time_target_seconds: 180,
+        initiative_time_jitter_seconds: 45,
+      });
+      expect(tuned.revision).toBe(created.revision + 1);
+      // 只改时间窗不动计数窗：两维互相独立，改一维不能顺带写坏另一维。
+      expect(schemeRhythm(tuned)).toMatchObject({
+        initiative_batch_target_count: 15,
+        initiative_batch_jitter_count: 5,
+        initiative_queue_on_busy: true,
+      });
+      // 再交一次同样的节奏＝没有变化，不许涨修订（少一个 CAS 字段就会在这里露馅）。
+      const again = updateQqScheme(h.orm, created.id, {
+        name: created.name,
+        expectedRevision: tuned.revision,
+        rhythm: schemeRhythm(tuned),
+      });
+      expect(again.revision).toBe(tuned.revision);
+      // B<A 在保存边界就被拒，不落一行违约数据。
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: created.name,
+          expectedRevision: tuned.revision,
+          rhythm: { ...schemeRhythm(tuned), initiative_time_jitter_seconds: 180 },
+        }),
+      ).toThrow(TypeError);
     } finally {
       h.business.close();
     }
@@ -231,6 +312,10 @@ describe("scheme identity", () => {
         initiative_batch_target_count: 15,
         initiative_batch_jitter_count: 5,
         initiative_queue_on_busy: true,
+        // 0055：新方案默认开时间窗，旧方案由 0055 的 DDL 默认关（见「升级」用例）。
+        initiative_time_window_enabled: true,
+        initiative_time_target_seconds: 60,
+        initiative_time_jitter_seconds: 20,
       });
       // The context tiers are the third decided group (P3b-2), on the same terms.
       expect(schemeContext(created)).toEqual(QQ_CONTEXT_DEFAULT);

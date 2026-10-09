@@ -43,6 +43,17 @@ export const QQ_RHYTHM_DEFAULT: QqSchemeRhythm = Object.freeze({
   initiative_batch_jitter_count: 5,
   initiative_queue_on_busy: true,
   /**
+   * 自主接话的双窗口第二维：与 X±Y 同形，合格成员消息在 [A−B, A+B] 秒内同样进入
+   * 同一批判定，任一成熟即可就绪，两者同时成熟也只判一次。B 是半径，B===A 会把下界
+   * 压到 0，所以要求 B<A。
+   *
+   * 这里的 1 是**新建方案**的缺省（写入侧落值）；0055 的 DDL 缺省是 0，所以升级既有方案
+   * 仍按 0054 的纯计数模式运行——回填只改已有行、不改它们读到的行为。
+   */
+  initiative_time_window_enabled: true,
+  initiative_time_target_seconds: 60,
+  initiative_time_jitter_seconds: 20,
+  /**
    * 0034 (user decision 2026-09-25): the interest score the judge has to reach for the assistant
    * to open her mouth unprompted. 6 keeps the behaviour the boolean verdict had — a message the
    * old verdict called worth answering still clears it — while leaving room to go quieter by

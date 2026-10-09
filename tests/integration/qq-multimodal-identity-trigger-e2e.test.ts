@@ -651,10 +651,15 @@ it("[S11_1] @self 真触发，且关闭直接回应后该条零模型调用（@�
   direct.close();
 
   // 强负：关闭直接回应后同一条 @self 零模型调用、零发送、零待发意图。
+  // 自主维度在这里只取**纯计数**（时间窗关闭）：本块要证明的是「关掉 direct 触发后这条
+  // @self 不立刻开口」，所以单条消息低于条数下界、不排任何自主机会，零唤醒是字面事实。
+  // 时间维开启时同一条消息会排出一条未来的自主批（见下面的 time ON 用例），那是另一件事，
+  // 不在本块断言范围内。
   const off = createOneBotHarness({
     accountId: "90001",
     member: "10001",
     triggers: { direct_reply: false },
+    initiativeTimeWindowEnabled: false,
     model: [decideGenerate("20002", "回答", []), scoreOf(6), say("不该被调用")],
   });
   off.receive({ id: "-772", speaker: "20002", text: "在吗", addressed: true });
@@ -672,6 +677,43 @@ it("[S11_1] @self 真触发，且关闭直接回应后该条零模型调用（@�
   expect(statusOf(await off.activate("chiming_in"))).toBe("missing");
   expect(phases(off)).toEqual([]);
   expect(off.sent).toHaveLength(0);
+});
+
+it("[S11_2] 时间窗开启：关掉直接回应的 @self 排进未来自主批，成熟前零模型调用，成熟后判一次", async () => {
+  // 上一块的对照面：direct 触发关着、时间维开着，同一条 @self 仍被识别，但它成的是一条
+  // **未来**的自主批（ready_at = 首条合格消息 + A−B = 40s），不是立即回话。
+  const h = createOneBotHarness({
+    accountId: "90001",
+    member: "10001",
+    triggers: { direct_reply: false },
+    initiativeTimeWindowEnabled: true,
+    initiativeTimeTargetSeconds: 60,
+    initiativeTimeJitterSeconds: 20,
+    model: [],
+  });
+  h.receive({ id: "-773", speaker: "20002", text: "在吗", addressed: true });
+  // @识别本身与 direct 开关无关，仍照实记录。
+  expect(addressingOf(h, "-773")?.reasons).toEqual(["mention"]);
+  expect(wakeCauses(h)).toEqual(["chiming_in"]);
+  // 到点之前不判：不领、不调模型、不发送、不留待发意图。
+  h.advance(39);
+  expect(statusOf(await h.activate("chiming_in"))).toBe("missing");
+  expect(phases(h)).toEqual([]);
+  expect(h.sent).toHaveLength(0);
+  expect(h.outbox.list({ conversationId: h.conversationId })).toHaveLength(0);
+  // 到下界：这一批成熟，批改分用本批冻结的真实成员事件 seq，达标才进回复。
+  h.advance(1);
+  h.model?.push([
+    batchScore([
+      { targetId: "20002", score: 6, intent: "被点名后想接话", sourceSeqs: [h.lastEventSeq] },
+    ]),
+    decideGenerate("20002", "打算接话"),
+    say("合成回复正文"),
+  ]);
+  expect(statusOf(await h.activate("chiming_in"))).toBe("completed");
+  expect(phases(h)).toEqual(["next", "next", "generate"]);
+  await h.deliver();
+  expect(h.sent).toHaveLength(1);
 });
 
 it("[S12_1] 回复他人：真实 addressing 不含 reply_to_agent，原文经引用展开带原作者与时间", async () => {

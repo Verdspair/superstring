@@ -45,7 +45,9 @@ export interface BotConversationPolicy {
 
 export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
   maxSteps: 16,
-  deliveryTtlSeconds: 120,
+  // 出站等待发送的默认上限。600 秒让一次慢回复不再半路作废；已显式存过别的值的
+  // 方案不受缺省变化影响，范围 10..3600 由既有契约与 DDL 约束。
+  deliveryTtlSeconds: 600,
   retryDelayMs: 15_000,
   maxAttempts: 3,
   // 0.4.0 起默认允许跨会话并发：一条慢请求不再堵住别的群；模型调用仍由
@@ -133,6 +135,11 @@ export function createOneBotConversationRuntime(options: {
   mediaInputService?: (scheme: QqSchemeRow) => QqMediaInputService;
   /** 执行/权限配置保存成功（CAS 通过）后的通知：投递车道据此按新上限重新准入；缺省＝不订阅。 */
   onPolicyChange?: (listener: () => void) => () => void;
+  /**
+   * 一条唤醒结算（成功/失败/放弃）后的通知：宿主计时循环据此在**不阻塞本轮**的前提下
+   * 复查别的会话 deadline。缺省＝不通知；它不是第二准入，不代替 `BotWorker.wake()`。
+   */
+  onWakeSettled?: () => void;
 }) {
   const { orm, db, journal } = options;
   const policy = (): BotConversationPolicy => ({
@@ -147,6 +154,9 @@ export function createOneBotConversationRuntime(options: {
     wakes,
     wake: options.wake,
     telemetry: options.telemetry,
+    // 名额提示读同一个模型准入观察面：只回答"现在有没有空位"，不预留、不代替 acquire，
+    // 名额状态仍只有 ModelPort 内部那一份。
+    admission: options.agentRuntime.admission,
   });
   const compression = new BotCompressionQueue();
   // 本群能力停用集中由 guard 判定；投递与出站授权都按它复核，而不是各自读一遍配置。
@@ -362,13 +372,37 @@ export function createOneBotConversationRuntime(options: {
         globalConcurrency: policy().globalConcurrency,
       };
     },
+    onSettled: options.onWakeSettled,
+    // 自主接话要真模型名额才能判：闸在领取前拦下它，被闸的机会保持 pending、不烧 attempts，
+    // 名额释放时的通知让 worker 立刻复查，而不是等下一轮轮询。
+    resourceGate: (wake) => {
+      if (wake.cause !== "chiming_in") return true;
+      // 判断模型与自主接话判定用的是同一个真源：设置里指定的判断模型，未指定则跟随该会话
+      // 绑定助手的对话模型——与 adapter 判断「有没有名额」时取的是同一个值。
+      const agentId = journal.get(wake.conversationId)?.agentId;
+      const judgement =
+        readQqSettings(orm).judgementModelName ??
+        (agentId ? getAgentRow(orm, agentId)?.modelName : undefined);
+      return options.agentRuntime.admission?.available(judgement ?? undefined) ?? true;
+    },
     async activate(wake, signal) {
       const result = await host.activate(wake, signal);
       await delivery.runOnce();
       return result;
     },
   });
+  // 名额变化（有人占用或释放、上限被改写）时复查一次队列：自主接话被闸住的机会因此
+  // 在空位出现的那一刻就能被领走，而不是等下一轮轮询。退订随本运行时一起交出，停机时释放。
+  const releaseAdmission = options.agentRuntime.admission?.subscribe(() => options.wake?.());
   delivery.recover();
   delivery.housekeep();
-  return { adapter, scheduler, delivery, outbox, compression };
+  return {
+    adapter,
+    scheduler,
+    delivery,
+    outbox,
+    compression,
+    /** 停机收尾：退掉本运行时对模型名额的订阅，避免它活过 runtime 本身。 */
+    release: () => releaseAdmission?.(),
+  };
 }

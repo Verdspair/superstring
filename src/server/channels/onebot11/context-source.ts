@@ -335,6 +335,8 @@ export interface BotContextSourceOptions {
   path: QqSpeechKind;
   /** Original ingress that scheduled this activation; re-observation does not relabel it as latest. */
   trigger?: { sourceId: string; seq: number; participantId: string | null };
+  /** Chiming batch lower boundary frozen at its first claim. */
+  sourceFromSeq?: number;
   /** Private direct uses reply; shared judgement keeps its separately configured window. */
   decisionTier: QqContextTier;
   targets: () => readonly BotContextTarget[];
@@ -1042,7 +1044,9 @@ export class BotContextSource {
    * 也不是"最新 source"——只有这一冻结范围里的 seq 可被模型引用。
    */
   private frozenMemberSourceSeqs(throughSeq: number): Map<number, SourceRef> {
-    const boundary = this.options.journal.chimingInObservedSeq(this.options.conversationId);
+    if (this.options.path === "chiming_in" && this.options.sourceFromSeq === undefined)
+      throw new Error("CHIMING_SOURCE_BOUNDARY_REQUIRED");
+    const boundary = this.options.sourceFromSeq ?? 0;
     const rows = this.options.db
       .query(
         `SELECT seq,event_key FROM conversation_events

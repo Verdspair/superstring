@@ -69,6 +69,7 @@ const schemeBooleanFields: ReadonlySet<string> = new Set([
   ...Object.keys(TRIGGER_LABELS).map((key) => `triggers.${key}`),
   "rhythm.active_hours_enabled",
   "rhythm.initiative_queue_on_busy",
+  "rhythm.initiative_time_window_enabled",
   "reply.split_by_speaker",
   // 0052 的 stages 布尔同样按开/关渲染（人话，不出现 true/false）。
   "media_input.stages.decision",
@@ -917,6 +918,25 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                     description="schemes.studio.rhythmHint"
                   >
                     <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                      <Label className="flex items-start gap-3 rounded-lg border p-4 sm:col-span-2">
+                        <Checkbox
+                          disabled={saving}
+                          checked={editor.rhythm.initiative_time_window_enabled}
+                          onCheckedChange={(checked) =>
+                            state.patchQqSchemeGroup("rhythm", {
+                              initiative_time_window_enabled: checked === true,
+                            })
+                          }
+                        />
+                        <span className="space-y-1">
+                          <span className="block">
+                            {t("connections.initiativeTimeWindowEnabled")}
+                          </span>
+                          <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                            {t("connections.initiativeTimeWindowEnabledHint")}
+                          </span>
+                        </span>
+                      </Label>
                       {participationFields.map(([name, label, info]) => (
                         <SchemeNumber
                           key={name}

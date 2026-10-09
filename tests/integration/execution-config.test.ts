@@ -66,7 +66,8 @@ describe("execution configuration", () => {
         modelConcurrency: 4,
         providerConcurrency: 2,
       },
-      qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
+      // 出站期限缺省 600 秒（2026-10-09 放宽）；10..3600 的范围没动，已存显式值按存储值生效。
+      qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 600 },
     });
     for (const invalid of [
       { loop: { readBatch: 4 } },
@@ -79,8 +80,16 @@ describe("execution configuration", () => {
       { codeLimits: { concurrency: 9 } },
       { codeLimits: { concurrency: 1.5 } },
       { qq: { maxAttempts: 0 } },
+      { qq: { deliveryTtlSeconds: 9 } },
+      { qq: { deliveryTtlSeconds: 3601 } },
     ])
       expect(ExecutionPolicySchema.safeParse(invalid).success).toBe(false);
+    // 放宽缺省不等于放开上限，也不等于改写已存的显式值：两个边界仍可存，旧的 120 仍照用。
+    for (const seconds of [10, 120, 600, 3600]) {
+      expect(ExecutionPolicySchema.parse({ qq: { deliveryTtlSeconds: seconds } }).qq).toMatchObject(
+        { deliveryTtlSeconds: seconds },
+      );
+    }
     for (const concurrency of [1, 8])
       expect(
         ExecutionPolicySchema.parse({ codeLimits: { concurrency } }).codeLimits.concurrency,

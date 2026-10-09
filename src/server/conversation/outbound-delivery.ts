@@ -217,6 +217,9 @@ export class OutboundDelivery {
     while (!this.stopped && ["planned", "delivering"].includes(row.status)) {
       const delivery = repository.get(id)!;
       const target = JSON.parse(row.target) as OutboundTarget;
+      // 同一入口、同一份判据：宿主按 source.sources 传，这里按 target.sources 传。
+      // 群内自主接话后到的新消息进下一批，不作废本批；已用来源的修订仍作废。
+      const speechKind = row.speech_kind;
       const changed = journal
         .eventsAfter(row.conversation_id, row.source_through_seq, Number.MAX_SAFE_INTEGER)
         .items.some((event) =>
@@ -224,6 +227,8 @@ export class OutboundDelivery {
             topology: target.conversationKind === "private" ? "direct" : "shared",
             participantIds: [target.participantId ?? null],
             attentionMembers: target.attentionMembers,
+            purpose: speechKind,
+            usedSources: target.sources,
           }),
         );
       const staleCode =

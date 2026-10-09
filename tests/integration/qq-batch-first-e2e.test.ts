@@ -122,6 +122,7 @@ function setup(
       ...QQ_RHYTHM_DEFAULT,
       initiative_batch_target_count: options.batchSize ?? 2,
       initiative_batch_jitter_count: 0,
+      initiative_time_window_enabled: false,
       merge_window_seconds: 2,
       max_recompute_count: 1,
       judgement_interval_turns: 1,
@@ -336,6 +337,9 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
         status: string;
       } | null,
     ).toEqual({ status: "leased" });
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    expect(f.journal.chimingInObservedSeq(conversation.id)).toBeGreaterThan(0);
+    expect(f.journal.chimingInJudgedAt(conversation.id)).toBe(f.now());
 
     releaseSlow();
     const result = await pending;
@@ -381,6 +385,23 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
     expect(f.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20003"]);
     // 完整有效判断消费本批已观察边界：chiming_in_observed_seq 推进到冻结的 wake.throughSeq。
     expect(f.journal.chimingInObservedSeq(conversation.id)).toBeGreaterThan(0);
+    expect(f.journal.chimingInJudgedAt(conversation.id)).toBe(f.now());
+  });
+
+  it("an invalid batch protocol does not advance the judgement time", async () => {
+    const f = setup({
+      evaluations: (ids) =>
+        ids
+          .filter((targetId) => targetId !== "20003")
+          .map((targetId) => ({ targetId, score: 9, intent: "x", sourceSeqs: [] })),
+    });
+    f.receive("1", "20002");
+    f.clock.seconds += 1;
+    f.receive("2", "20003");
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    await expect(f.activate()).rejects.toMatchObject({ code: "JUDGEMENT_TARGET_MISSING" });
+    expect(f.journal.chimingInObservedSeq(conversation.id)).toBe(0);
+    expect(f.journal.chimingInJudgedAt(conversation.id)).toBeNull();
   });
 
   it("a batch evaluation missing a frozen candidate is a protocol failure, not a low score", async () => {
@@ -487,7 +508,13 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
         }
       }),
     )[0];
-    expect(batch.sourceSeqs).toEqual([1, 2]);
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    const inboundSeqs = f.db
+      .query(
+        "SELECT seq FROM conversation_events WHERE conversation_id=? AND kind='inbound' AND source_kind='qq_event' ORDER BY seq",
+      )
+      .all(conversation.id) as { seq: number }[];
+    expect(batch.sourceSeqs).toEqual(inboundSeqs.map((row) => row.seq));
     expect(batch.targets).toHaveLength(2);
     const small = setup({ capacity: 1024 });
     small.receive("90301", "20002");
@@ -524,8 +551,14 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
         }
       }),
     )[0];
-    expect(payload.sourceSeqs).toHaveLength(200);
-    expect(payload.sourceSeqs).toEqual(Array.from({ length: 200 }, (_, i) => i + 1));
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    const inboundSeqs = f.db
+      .query(
+        "SELECT seq FROM conversation_events WHERE conversation_id=? AND kind='inbound' AND source_kind='qq_event' ORDER BY seq",
+      )
+      .all(conversation.id) as { seq: number }[];
+    expect(payload.sourceSeqs).toHaveLength(inboundSeqs.length);
+    expect(payload.sourceSeqs).toEqual(inboundSeqs.map((row) => row.seq));
     expect(payload.targets).toHaveLength(20);
     expect(f.calls).toHaveLength(1);
   });

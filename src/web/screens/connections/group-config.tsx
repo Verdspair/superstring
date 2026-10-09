@@ -1761,6 +1761,18 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   description="schemes.studio.rhythmHint"
                 >
                   <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                    {visible("rhythm", "initiative_time_window_enabled") && (
+                      <div className="sm:col-span-2">
+                        <ThreeStateField
+                          editor={visibleEditor}
+                          base={baseBag("rhythm")}
+                          group="rhythm"
+                          name="initiative_time_window_enabled"
+                          labelKey="connections.initiativeTimeWindowEnabled"
+                          infoKey="connections.initiativeTimeWindowEnabledHint"
+                        />
+                      </div>
+                    )}
                     {participationFields
                       .filter(([name]) => visible("rhythm", name))
                       .map(([name, label, info]) => (

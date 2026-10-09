@@ -37,6 +37,9 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     initiative_batch_target_count: 15,
     initiative_batch_jitter_count: 5,
     initiative_queue_on_busy: true,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
   },
   context: {
     judgement_message_limit: 20,
@@ -661,5 +664,52 @@ describe("0052 两组的真实保存链路（T13）", () => {
     expect(await store.getState().saveQqDrafts()).toBe(false);
     expect(fake.updateQqScheme).not.toHaveBeenCalled();
     expect(fake.createQqScheme).not.toHaveBeenCalled();
+  });
+
+  it("autonomous time window: rhythm fields support editing, diffing, and cross-field jitter < target validation", async () => {
+    const fake = resetForScheme();
+    const editor = editorOf();
+
+    // 1. 正常修改 time window 开关与目标/浮动时间并产生 diff
+    store.setState({
+      qqSchemeEditor: {
+        ...editor,
+        rhythm: {
+          ...editor.rhythm,
+          initiative_time_window_enabled: false,
+          initiative_time_target_seconds: 120,
+          initiative_time_jitter_seconds: 30,
+        },
+      },
+      qqInputs: { ...store.getState().qqInputs, schemeTexts: {} },
+    });
+    expect(qqSchemeDirty(store.getState().qqSchemeEditor)).toBe(true);
+    const changes = qqSchemeChanges(store.getState().qqSchemeEditor);
+    expect(changes).toEqual(
+      expect.arrayContaining([
+        { field: "rhythm.initiative_time_window_enabled", before: "true", after: "false" },
+        { field: "rhythm.initiative_time_target_seconds", before: "60", after: "120" },
+        { field: "rhythm.initiative_time_jitter_seconds", before: "20", after: "30" },
+      ]),
+    );
+
+    // 2. 越界验证：jitter >= target 时 invalidSchemeInputs 拦截
+    store.setState({
+      qqSchemeEditor: {
+        ...editor,
+        rhythm: {
+          ...editor.rhythm,
+          initiative_time_target_seconds: 60,
+          initiative_time_jitter_seconds: 60,
+        },
+      },
+      qqInputs: { ...store.getState().qqInputs, schemeTexts: {} },
+    });
+    const invalids = invalidSchemeInputs(store.getState());
+    expect(invalids).toEqual(
+      expect.arrayContaining([["rhythm.initiative_time_jitter_seconds", "60"]]),
+    );
+    expect(await store.getState().saveQqScheme()).toBe(false);
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
   });
 });

@@ -68,6 +68,7 @@ function setup(
       // 让 1 条合格成员事件即可进入既有 host 行为。真实批次门槛（X15/Y5）由 D1 专测。
       initiative_batch_target_count: 1,
       initiative_batch_jitter_count: 0,
+      initiative_time_window_enabled: false,
       merge_window_seconds: options.mergeSeconds ?? 2,
       max_recompute_count: options.recomputes ?? 1,
       judgement_interval_turns: 1,
@@ -872,11 +873,28 @@ describe("shared configuration and races", () => {
     h.receive("2", "20003");
     h.clock.seconds += 2;
     const wake = h.wakes.claim({ at: h.now(), leaseMs: 120000 })!;
+    const frozenLower = h.wakes.getSourceFromSeq(wake.id);
+    const frozenThrough = wake.throughSeq;
+    expect(frozenLower).toBe(h.journal.chimingInObservedSeq(h.journal.ensureOneBot(bindingId)!.id));
     const crash = new AbortController();
     const crashing = h.host.activate(wake, crash.signal);
     // 快目标早提交后中断（模拟崩溃）：20002 已 committed，20003 未完成。
     try {
       await waitFor(() => h.outbox.list({}).some((d) => d.target?.participantId === "20002"));
+      const conversationId = h.journal.ensureOneBot(bindingId)!.id;
+      expect(h.journal.chimingInObservedSeq(conversationId)).toBe(frozenThrough);
+      const judgedAt = h.journal.chimingInJudgedAt(conversationId);
+      expect(judgedAt).toBe(h.now());
+      h.receive("3", "20004", false, "next batch input");
+      const nextPending = h.db
+        .query(
+          "SELECT id,through_seq FROM wake_signals WHERE conversation_id=? AND cause='chiming_in' AND status='pending'",
+        )
+        .all(conversationId) as { id: string; through_seq: number }[];
+      expect(nextPending).toHaveLength(1);
+      expect(nextPending[0]!.id).not.toBe(wake.id);
+      expect(nextPending[0]!.through_seq).toBeGreaterThan(frozenThrough);
+      expect(h.wakes.get(wake.id)?.throughSeq).toBe(frozenThrough);
       crash.abort(new Error("CRASH"));
       await expect(crashing).rejects.toBeTruthy();
     } finally {
@@ -891,6 +909,8 @@ describe("shared configuration and races", () => {
     h.clock.seconds += 2;
     const resumedWake = h.wakes.claim({ at: h.now(), leaseMs: 120000, wakeId: wake.id })!;
     expect(resumedWake.id).toBe(wake.id);
+    expect(resumedWake.throughSeq).toBe(frozenThrough);
+    expect(h.wakes.getSourceFromSeq(resumedWake.id)).toBe(frozenLower);
     const resumed = await h.host.activate(resumedWake, new AbortController().signal);
     expect(resumed.status).toBe("completed");
     expect(judgeCalls).toBe(1); // 复用持久判断：0 次新判断调用
@@ -1562,6 +1582,9 @@ describe("durable participant windows across actual Host and delivery", () => {
     h.receive("2", "20003");
     h.clock.seconds += 2;
     expect((await h.activate("chiming_in")).status).toBe("no_output");
+    const conversation = h.journal.ensureOneBot(bindingId)!;
+    expect(h.journal.chimingInJudgedAt(conversation.id)).toBe(h.now());
+    expect(h.journal.chimingInObservedSeq(conversation.id)).toBeGreaterThan(0);
     expect(seen).toHaveLength(1); // 只一次批量评分
     expect(h.outbox.list({})).toHaveLength(0);
     expect(

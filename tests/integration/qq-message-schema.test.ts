@@ -10,7 +10,7 @@
 //  - the 51→52 upgrade preserves legacy evidence: old scheme switches untouched,
 //    old member nickname stays a `legacy` fact, old media notes import as legacy
 //    read tasks with model/expiry/attempts intact (failures are not zeroed)
-//  - an unknown future version (55) is still rejected
+//  - an unknown future version (56) is still rejected
 
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
@@ -71,13 +71,17 @@ describe("0052 message facts and media persistence", () => {
         "name_state",
       ]);
       // Appended scheme groups sit at the end, after 0049's reserve columns;
-      // 0054 appends the three initiative-batch rhythm columns after them.
-      expect(columns("qq_schemes").slice(-5)).toEqual([
+      // 0054 appends the three initiative-batch rhythm columns and 0055 the three
+      // time-window columns after them.
+      expect(columns("qq_schemes").slice(-8)).toEqual([
         "message_settings",
         "media_input",
         "initiative_batch_target_count",
         "initiative_batch_jitter_count",
         "initiative_queue_on_busy",
+        "initiative_time_window_enabled",
+        "initiative_time_target_seconds",
+        "initiative_time_jitter_seconds",
       ]);
       expect(columns("qq_message_facts")).toEqual([
         "event_key",
@@ -431,7 +435,7 @@ describe("0052 message facts and media persistence", () => {
 
       ensureBusinessSchema(db);
 
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
       // Old switches and old custom values survive byte for byte.
       const after = db.prepare("SELECT * FROM qq_schemes").all() as Record<string, unknown>[];
       for (const key of Object.keys(before[0])) {
@@ -508,7 +512,7 @@ describe("0052 message facts and media persistence", () => {
   it("still rejects an unknown future version", () => {
     const h = cloneBusinessDb();
     try {
-      h.db.exec("PRAGMA user_version = 55");
+      h.db.exec("PRAGMA user_version = 56");
       expect(() => ensureBusinessSchema(h.db)).toThrow("REJECT_UNKNOWN_VERSION");
     } finally {
       h.close();

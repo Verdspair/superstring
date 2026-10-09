@@ -347,6 +347,61 @@ describe("0054 自主接话批量参数的稀疏覆盖与互斥解析", () => {
     expect(follow.rhythm.initiative_queue_on_busy).toBe(base.rhythm.initiative_queue_on_busy);
   });
 
+  it("时间窗口三字段同样逐字段覆盖，缺席＝跟随基础方案", () => {
+    const base = baseScheme();
+    const overrides = QqGroupSchemeOverridesSchema.parse({
+      rhythm: {
+        initiative_time_window_enabled: false,
+        initiative_time_target_seconds: 200,
+        initiative_time_jitter_seconds: 30,
+      },
+    });
+    const merged = mergeQqGroupScheme(base, overrides);
+    expect(merged.rhythm.initiative_time_window_enabled).toBe(false);
+    expect(merged.rhythm.initiative_time_target_seconds).toBe(200);
+    expect(merged.rhythm.initiative_time_jitter_seconds).toBe(30);
+    // 只覆盖 A 时 B 跟随基础方案，不是缺省 20——这一群的时间窗因此不会因半次编辑变形。
+    const onlyTarget = mergeQqGroupScheme(
+      base,
+      QqGroupSchemeOverridesSchema.parse({ rhythm: { initiative_time_target_seconds: 200 } }),
+    );
+    expect(onlyTarget.rhythm.initiative_time_target_seconds).toBe(200);
+    expect(onlyTarget.rhythm.initiative_time_jitter_seconds).toBe(
+      base.rhythm.initiative_time_jitter_seconds,
+    );
+    expect(onlyTarget.rhythm.initiative_time_window_enabled).toBe(
+      base.rhythm.initiative_time_window_enabled,
+    );
+  });
+
+  it("时间窗口的 B<A 在合并后的完整节奏上校验：单值覆盖违约必现", () => {
+    const base = baseScheme();
+    // 基础 A=60；本群只把 B 改成 70 → 合并后 B>A。
+    const bad = QqGroupSchemeOverridesSchema.parse({
+      rhythm: { initiative_time_jitter_seconds: 70 },
+    });
+    const merged = mergeQqGroupScheme(base, bad);
+    expect(QqSchemeRhythmSchema.safeParse(merged.rhythm).success).toBe(false);
+    // 差异自身不携带完整关系（(10,10) 在稀疏层可解析），违约只可能在合并后判定，
+    // 由保存边界（qq-group-config-repository）据此拒绝。
+    const selfConflict = QqGroupSchemeOverridesSchema.parse({
+      rhythm: { initiative_time_target_seconds: 10, initiative_time_jitter_seconds: 10 },
+    });
+    expect(
+      QqSchemeRhythmSchema.safeParse(mergeQqGroupScheme(base, selfConflict).rhythm).success,
+    ).toBe(false);
+    // 越界在稀疏层就被拒，不必等合并；B<A 属于合并后的关系，稀疏层不判（与计数窗口同理）。
+    expect(
+      QqGroupSchemeOverridesSchema.safeParse({
+        rhythm: { initiative_time_target_seconds: 1801 },
+      }).success,
+    ).toBe(false);
+    expect(
+      QqGroupSchemeOverridesSchema.safeParse({ rhythm: { initiative_time_jitter_seconds: 1800 } })
+        .success,
+    ).toBe(false);
+  });
+
   it("resolveQqInteractionPair：三层覆盖、旧双真读作只自主、两项全关合法", () => {
     const scheme = { follow_up: false, chiming_in: true };
     expect(

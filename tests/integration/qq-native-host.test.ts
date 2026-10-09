@@ -902,6 +902,10 @@ describe("T11 final exit coverage", () => {
       // 主动机会走真实 idle_topic 扫描（15 分钟静默门槛，advance 16 分钟后 sweep 排程）。
       // 不把私聊三相强塞 direct。
       triggers: { direct_reply: false },
+      // 本用例只考**冷场扫描 + 评分叶子**：自主维度取纯计数（时间窗关闭），单条消息低于
+      // 条数下界因此不成自主机会，扫尾时才不会被成熟的自主批挡成 candidate_pending。
+      // 时间维自身的行为由 onebot-opportunity 的时间窗用例负责。
+      initiativeTimeWindowEnabled: false,
       model: [],
     });
     h.receive({

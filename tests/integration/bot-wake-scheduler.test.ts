@@ -322,3 +322,165 @@ describe("跨会话并发与车道（0.4.0 P1）", () => {
     expect([...aborted].sort()).toEqual([h.ids[0]!, h.ids[1]!].sort());
   });
 });
+
+describe("后台短车道（dispatchOnce）与停机排水", () => {
+  it("领到即返回、模型在后台跑；waitForIdle 排水后状态与名额一致", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "bg");
+    let release!: () => void;
+    const model = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const notified: number[] = [];
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: async (w) => {
+        await model;
+        h.a.complete(w.id, w.leaseToken!, "no_output", w.throughSeq, at);
+      },
+      onSettled: () => {
+        notified.push(1);
+      },
+    });
+    expect(await scheduler.dispatchOnce()).toBe(true);
+    expect(scheduler.activeCount).toBe(1);
+    expect(h.a.get(wake.id)?.status).toBe("leased");
+    let drained = false;
+    const idle = scheduler.waitForIdle().then(() => {
+      drained = true;
+    });
+    await Bun.sleep(1);
+    expect(drained).toBe(false);
+    release();
+    await idle;
+    expect(drained).toBe(true);
+    expect(scheduler.activeCount).toBe(0);
+    expect(h.a.get(wake.id)?.status).toBe("no_output");
+    expect(notified).toEqual([1]);
+    scheduler.stop();
+  });
+
+  it("名额与 runOnce 同源：满员即 false 且不通知；结算释放后可再领", async () => {
+    const h = fixture();
+    offer(h, 0, "a");
+    offer(h, 1, "b");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let notified = 0;
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: async (w) => {
+        await gate;
+        h.a.complete(w.id, w.leaseToken!, "no_output", w.throughSeq, at);
+      },
+      onSettled: () => {
+        notified += 1;
+      },
+    });
+    expect(await scheduler.dispatchOnce()).toBe(true);
+    expect(await scheduler.dispatchOnce()).toBe(false);
+    expect(scheduler.activeCount).toBe(1);
+    expect(notified).toBe(0);
+    release();
+    await scheduler.waitForIdle();
+    expect(notified).toBe(1);
+    expect(await scheduler.dispatchOnce()).toBe(true);
+    await scheduler.waitForIdle();
+    expect([scheduler.activeCount, notified]).toEqual([0, 2]);
+    scheduler.stop();
+  });
+
+  it("空资源闸不烧 attempts，机会保持 pending", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "gated");
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      resourceGate: () => false,
+      activate: async () => {
+        throw new Error("gated wake must not run");
+      },
+    });
+    expect(await scheduler.dispatchOnce()).toBe(false);
+    expect(scheduler.activeCount).toBe(0);
+    expect(h.a.get(wake.id)).toMatchObject({ status: "pending", attempts: 0 });
+    scheduler.stop();
+  });
+
+  it("stop() 中止后台在飞唤醒，waitForIdle 仍排水结束", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "abort");
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: (_wake, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    });
+    expect(await scheduler.dispatchOnce()).toBe(true);
+    scheduler.stop();
+    await scheduler.waitForIdle();
+    expect(scheduler.activeCount).toBe(0);
+    // 中止按失败结算：预算内回 pending 等下次重试，冻结的来源边界不变。
+    expect(h.a.get(wake.id)).toMatchObject({ status: "pending", errorCode: "BOT_STOPPED" });
+  });
+
+  it("onError 观察者自身抛错不阻断名额回收与排水", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "observer-throw");
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: async () => {
+        throw Object.assign(new Error("private model response"), {
+          code: "CONTEXT_MEMORY_BUDGET",
+        });
+      },
+      onError: () => {
+        throw new Error("fixture observer failure");
+      },
+    });
+    expect(await scheduler.dispatchOnce()).toBe(true);
+    await scheduler.waitForIdle();
+    expect(scheduler.activeCount).toBe(0);
+    expect(h.a.get(wake.id)).toMatchObject({
+      status: "pending",
+      errorCode: "CONTEXT_MEMORY_BUDGET",
+    });
+    scheduler.stop();
+  });
+
+  it("结算通知抛错不改写已完成唤醒的结算", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "notify-throw");
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: async (w) => {
+        h.a.complete(w.id, w.leaseToken!, "no_output", w.throughSeq, at);
+      },
+      onSettled: () => {
+        throw new Error("fixture notification failure");
+      },
+    });
+    expect(await scheduler.dispatchOnce()).toBe(true);
+    await scheduler.waitForIdle();
+    expect(h.a.get(wake.id)).toMatchObject({ status: "no_output", errorCode: null });
+    scheduler.stop();
+  });
+});

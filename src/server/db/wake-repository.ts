@@ -28,6 +28,7 @@ type Row = {
   lease_token: string | null;
   lease_expires_at: string | null;
   error_code: string | null;
+  source_from_seq: number | null;
 };
 const map = (r: Row): WakeSignal => ({
   id: r.id,
@@ -68,6 +69,12 @@ export class WakeRepository {
     const r = this.db.query("SELECT * FROM wake_signals WHERE id=?").get(id) as Row | null;
     return r ? map(r) : null;
   }
+  getSourceFromSeq(wakeId: string): number | null {
+    const row = this.db
+      .query("SELECT source_from_seq FROM wake_signals WHERE id=?")
+      .get(wakeId) as { source_from_seq: number | null } | null;
+    return row?.source_from_seq ?? null;
+  }
   enqueue(input: WakeEnqueueInput): WakeSignal {
     return this.enqueueChanged(input).wake;
   }
@@ -81,6 +88,7 @@ export class WakeRepository {
         if (
           existing &&
           (existing.status !== "pending" ||
+            (existing.cause === "chiming_in" && existing.source_from_seq !== null) ||
             (input.onlyNewerSource && input.throughSeq <= existing.through_seq))
         )
           return { wake: map(existing), changed: false };
@@ -292,7 +300,11 @@ export class WakeRepository {
         const token = crypto.randomUUID();
         this.db
           .query(
-            "UPDATE wake_signals SET status='leased',lease_token=?,lease_expires_at=?,attempts=attempts+1 WHERE id=? AND status='pending'",
+            `UPDATE wake_signals SET status='leased',lease_token=?,lease_expires_at=?,attempts=attempts+1,
+               source_from_seq=CASE WHEN cause='chiming_in'
+                 THEN COALESCE(source_from_seq,(SELECT chiming_in_observed_seq FROM conversations WHERE id=conversation_id))
+                 ELSE source_from_seq END
+             WHERE id=? AND status='pending'`,
           )
           .run(token, new Date(Date.parse(input.at) + input.leaseMs).toISOString(), r.id);
         publishConversationChange(this.db, r.conversation_id);

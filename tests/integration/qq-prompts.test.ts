@@ -73,7 +73,7 @@ describe("editable QQ prompt storage and HTTP", () => {
           )
           .get(),
       ).toEqual({ revision: 7, judgement_output_reserved: 512, reply_output_reserved: 2048 });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
     } finally {
       db.close();
     }
@@ -121,12 +121,12 @@ describe("editable QQ prompt storage and HTTP", () => {
       expect(row.name).toBe("existing");
       for (const slot of QQ_PROMPT_SLOTS)
         expect(row[`prompt_${slot}`]).toBe(QQ_PROMPT_DEFAULTS[slot]);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
     } finally {
       db.close();
     }
   });
-  it("a fresh current database carries the 0054 rhythm defaults on a new scheme", () => {
+  it("a fresh current database carries the 0054/0055 rhythm DDL defaults on a bare scheme row", () => {
     const db = openBusinessDb();
     try {
       db.orm
@@ -146,12 +146,17 @@ describe("editable QQ prompt storage and HTTP", () => {
       expect(row.initiativeBatchTargetCount).toBe(15);
       expect(row.initiativeBatchJitterCount).toBe(5);
       expect(row.initiativeQueueOnBusy).toBe(1);
+      // The switch's DDL default stays 0: a bare row is the existing-row shape (pure count
+      // window); the write path is what puts true/60/20 on a genuinely new scheme.
+      expect(row.initiativeTimeWindowEnabled).toBe(0);
+      expect(row.initiativeTimeTargetSeconds).toBe(60);
+      expect(row.initiativeTimeJitterSeconds).toBe(20);
     } finally {
       db.close();
     }
   });
 
-  it("a historical v53 database gains the three columns with defaults on upgrade, existing rows included", () => {
+  it("a historical v53 database gains the 0054 and 0055 rhythm columns with defaults on upgrade, existing rows included", () => {
     const db = new Database(":memory:");
     try {
       for (const f of BUSINESS_MIGRATION_FILES.slice(0, 53))
@@ -162,15 +167,20 @@ describe("editable QQ prompt storage and HTTP", () => {
       ensureBusinessSchema(db);
       const row = db
         .query(
-          "SELECT initiative_batch_target_count, initiative_batch_jitter_count, initiative_queue_on_busy FROM qq_schemes WHERE id='old'",
+          "SELECT initiative_batch_target_count, initiative_batch_jitter_count, initiative_queue_on_busy, initiative_time_window_enabled, initiative_time_target_seconds, initiative_time_jitter_seconds FROM qq_schemes WHERE id='old'",
         )
         .get() as Record<string, number>;
       expect(row).toEqual({
         initiative_batch_target_count: 15,
         initiative_batch_jitter_count: 5,
         initiative_queue_on_busy: 1,
+        // 0055 keeps an existing scheme on the pure count window (DDL default 0); the
+        // window centre/radius still land at the approved 60/20.
+        initiative_time_window_enabled: 0,
+        initiative_time_target_seconds: 60,
+        initiative_time_jitter_seconds: 20,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
     } finally {
       db.close();
     }
@@ -181,7 +191,7 @@ describe("editable QQ prompt storage and HTTP", () => {
     try {
       for (const f of BUSINESS_MIGRATION_FILES)
         db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
-      db.exec("PRAGMA user_version=55;");
+      db.exec("PRAGMA user_version=56;");
       expect(() => ensureBusinessSchema(db)).toThrow(/REJECT_UNKNOWN_VERSION/);
     } finally {
       db.close();

@@ -375,8 +375,10 @@ export async function pausedConversation(): Promise<ScenarioRun> {
  * 直接进回复任务出正文；面向整间会话，脚本不给 mentionIds＝不加 @。
  */
 export async function idleTopic(): Promise<ScenarioRun> {
-  // 冷场不经自主计数门槛（节奏默认 15/5 下单条消息不成自主机会，正好保持会话安静）。
-  const harness = createOneBotHarness({ model: [] });
+  // 冷场不经自主计数门槛：本场景只走**纯计数**的自主维度（时间窗关闭），单条消息（低于
+  // 条数下界 10）因此不成自主机会，会话保持安静，冷场门槛才是唯一的判据。时间维的
+  // 「一条消息也能排进未来自主批」由 onebot-opportunity 的时间窗用例覆盖，不在这里混。
+  const harness = createOneBotHarness({ model: [], initiativeTimeWindowEnabled: false });
   harness.receive({ id: "1", speaker: "20002", text: "随便说说" });
   const seq = harness.lastEventSeq;
   harness.model?.push([

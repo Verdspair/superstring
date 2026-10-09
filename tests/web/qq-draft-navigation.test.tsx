@@ -35,6 +35,9 @@ const qqSchemeFixture = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeRes
     initiative_batch_target_count: 15,
     initiative_batch_jitter_count: 5,
     initiative_queue_on_busy: true,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
   },
   context: {
     judgement_message_limit: 20,

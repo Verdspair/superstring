@@ -256,10 +256,24 @@ export function invalidSchemeInputs(state: SuperstringState) {
   ];
   if (editor) {
     if (!QqSchemeRhythmSchema.safeParse(editor.rhythm).success) {
-      if (!seen.has("rhythm.initiative_batch_jitter_count")) {
+      if (
+        editor.rhythm.initiative_batch_jitter_count >=
+          editor.rhythm.initiative_batch_target_count &&
+        !seen.has("rhythm.initiative_batch_jitter_count")
+      ) {
         finalRows.push([
           "rhythm.initiative_batch_jitter_count",
           String(editor.rhythm.initiative_batch_jitter_count),
+        ]);
+      }
+      if (
+        editor.rhythm.initiative_time_jitter_seconds >=
+          editor.rhythm.initiative_time_target_seconds &&
+        !seen.has("rhythm.initiative_time_jitter_seconds")
+      ) {
+        finalRows.push([
+          "rhythm.initiative_time_jitter_seconds",
+          String(editor.rhythm.initiative_time_jitter_seconds),
         ]);
       }
     }

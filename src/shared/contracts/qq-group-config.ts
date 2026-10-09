@@ -96,6 +96,16 @@ const OverridesShapeBase = z.strictObject({
         Scheme.rhythm.initiative_batch_jitter_count,
       ).optional(),
       initiative_queue_on_busy: stripDefault(Scheme.rhythm.initiative_queue_on_busy).optional(),
+      // 0055 的时间窗口三字段同样逐字段覆盖；enabled 带默认值，剥掉后缺席＝跟随基础方案。
+      initiative_time_window_enabled: stripDefault(
+        Scheme.rhythm.initiative_time_window_enabled,
+      ).optional(),
+      initiative_time_target_seconds: stripDefault(
+        Scheme.rhythm.initiative_time_target_seconds,
+      ).optional(),
+      initiative_time_jitter_seconds: stripDefault(
+        Scheme.rhythm.initiative_time_jitter_seconds,
+      ).optional(),
     })
     .optional(),
   context: z

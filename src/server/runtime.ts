@@ -369,6 +369,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       store: stickerStore,
       port,
       wake: () => botWorker.wake(),
+      // 短领取后模型仍在跑：结算到达时叫醒计时循环复查别的会话 deadline，
+      // 不阻塞本轮 advance，也不构成第二准入。
+      onWakeSettled: () => botWorker.wake(),
       telemetry,
       policy: botLimits,
       modules: modules.bind,
@@ -443,24 +446,25 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         async advance() {
           if (stopping) return;
           await bot.delivery.runOnce();
-          // 车道数 = 跨会话并发上限。每条车道各自"领一条跑一条"：能不能领由数据库决定
-          // （同一会话已有租约时不发第二条），车道只是把本进程的并发度用满。
+          // 短调度 tick：本轮只把最多「车道数」条唤醒启动起来，每次启动后立刻让出 I/O，
+          // 于是计时器与 socket 回调不会被后台车道堵住。它不把刚启动的唤醒跑完，也不为了
+          // 填满车道而连续补派——能不能领由数据库与准入决定（同一会话已有租约时不发第二条，
+          // 自主接话还要看模型名额），没抢到就 break，下一轮由 onSettled／到达的通知再来。
+          // 后台结算照旧走 scheduler 的租约与 onSettled，所以启动与收尾不改变并发与租约语义。
           const lanes = Math.max(1, bot.scheduler.concurrencyLimit);
-          await Promise.all(
-            Array.from({ length: lanes }, async () => {
-              while (
-                !stopping &&
-                qqIntake.state.phase === "ready" &&
-                (await bot.scheduler.runOnce())
-              ) {
-                // Immediately settled wakes must still let socket and cancellation callbacks run.
-                await setImmediate();
-              }
-            }),
-          );
-          await bot.delivery.runOnce();
+          let dispatched = 0;
+          for (let lane = 0; lane < lanes; lane += 1) {
+            if (stopping || qqIntake.state.phase !== "ready") break;
+            if (!(await bot.scheduler.dispatchOnce())) break;
+            dispatched += 1;
+            // 刚启动的唤醒在后台跑；此处让出一次 I/O，计时器与取消回调才能及时推进。
+            await setImmediate();
+          }
+          if (dispatched) await bot.delivery.runOnce();
           void bot.compression.runOnce();
         },
+        // 停机时先由 scheduler 同步中止在飞，再由这里等真正结算完（见 stop()）。
+        drain: () => bot.scheduler.waitForIdle(),
         onError: () => console.warn("bot worker cycle failed; retrying next check"),
       });
     qqIntake =
@@ -560,7 +564,11 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       if (contextSweep !== null) clearInterval(contextSweep);
       bot.delivery.stop();
       qqIntake.stop();
+      // scheduler.stop() 是同步 abort（取消在飞）；worker 的 stop() 同时停掉计时循环并等
+      // scheduler.waitForIdle()（BotWorker.drain），所以在飞唤醒真正结算完才算停机。
       bot.scheduler.stop();
+      // 退订模型名额通知：停机后不再有复查通知，也不留活过 runtime 的订阅。
+      bot.release();
       const settling = [
         botWorker.stop(),
         bot.compression.stop(),

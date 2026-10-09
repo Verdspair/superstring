@@ -89,6 +89,10 @@ describe("the decided defaults", () => {
       initiative_batch_target_count: 15,
       initiative_batch_jitter_count: 5,
       initiative_queue_on_busy: true,
+      // 0055 (user decision 2026-10-09): the second window, same [A-B, A+B] shape.
+      initiative_time_window_enabled: true,
+      initiative_time_target_seconds: 60,
+      initiative_time_jitter_seconds: 20,
       // 0034 (user decision 2026-09-25): the interest score the judge must reach.
       initiative_min_score: 6,
       // 0036: 每 X 条群友消息才真跑一次判断（间隔内复用上次读数）。
@@ -127,6 +131,39 @@ describe("the decided defaults", () => {
         initiative_batch_jitter_count: 5,
       }),
     ).toThrow(TypeError);
+  });
+
+  it("bounds the time window exactly as the 0055 CHECK does", () => {
+    // Both ends are the deciding detail: a window wider than 30 minutes stops being a
+    // nudge inside a conversation, and B===A would put the lower edge at zero, which is
+    // "no wait at all" rather than a half-width.
+    for (const accepted of [
+      { initiative_time_target_seconds: 10, initiative_time_jitter_seconds: 0 },
+      { initiative_time_target_seconds: 1800, initiative_time_jitter_seconds: 1799 },
+    ]) {
+      expect(parseQqSchemeRhythm({ ...QQ_RHYTHM_DEFAULT, ...accepted })).toMatchObject(accepted);
+    }
+    for (const rejected of [
+      { initiative_time_target_seconds: 9, initiative_time_jitter_seconds: 0 },
+      { initiative_time_target_seconds: 1801, initiative_time_jitter_seconds: 20 },
+      { initiative_time_target_seconds: 60, initiative_time_jitter_seconds: 60 },
+      { initiative_time_target_seconds: 60, initiative_time_jitter_seconds: 1800 },
+      { initiative_time_target_seconds: 60, initiative_time_jitter_seconds: -1 },
+    ]) {
+      expect(() => parseQqSchemeRhythm({ ...QQ_RHYTHM_DEFAULT, ...rejected })).toThrow(TypeError);
+    }
+  });
+
+  it("turns the time window off without disturbing the count window", () => {
+    // "Off" has to mean exactly the 0054 behaviour, so the count numbers stay readable and
+    // independent: a scheme that turns the time window off keeps X=15/Y=5.
+    const off = parseQqSchemeRhythm({
+      ...QQ_RHYTHM_DEFAULT,
+      initiative_time_window_enabled: false,
+    });
+    expect(off.initiative_time_window_enabled).toBe(false);
+    expect(off.initiative_batch_target_count).toBe(15);
+    expect(off.initiative_batch_jitter_count).toBe(5);
   });
 
   it("names the paths the time gates apply to", () => {

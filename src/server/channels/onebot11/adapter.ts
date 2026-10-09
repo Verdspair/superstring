@@ -10,6 +10,7 @@ import { getAgentRow, type Orm } from "../../db/repositories";
 import type { WakeRepository } from "../../db/wake-repository";
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import type { QqObservation } from "../../services/onebot-protocol";
+import { qqChimingBatchWindow } from "../../services/qq-chiming-time-window";
 import {
   attentionTriggerFilter,
   QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS,
@@ -150,12 +151,11 @@ export class OneBot11Adapter implements ConversationIngress {
     boundary: number,
     attention: readonly string[] | null,
     directEnabled: boolean,
-  ): number {
+  ): { count: number; firstEligibleSeconds: number | null } {
     const placeholders = (attention ?? []).map(() => "?").join(",");
-    return (
-      this.options.journal.db
-        .query(
-          `SELECT COUNT(*) AS n FROM conversation_events ce
+    const row = this.options.journal.db
+      .query(
+        `SELECT COUNT(*) AS n,MIN(CAST(strftime('%s',ce.occurred_at) AS INTEGER)) AS first_at FROM conversation_events ce
       WHERE ce.conversation_id=? AND ce.seq>? AND ce.kind='inbound' AND ce.source_kind='qq_event'
         AND json_extract(ce.participant,'$.role')='member'
         AND (${attention ? `json_extract(ce.participant,'$.id') IN (${placeholders})` : "1=1"})
@@ -170,37 +170,51 @@ export class OneBot11Adapter implements ConversationIngress {
           EXISTS(SELECT 1 FROM qq_observation_text t WHERE t.event_key=substr(ce.event_key,8) AND t.expires_at>?)
           OR EXISTS(SELECT 1 FROM qq_media_notes m WHERE m.event_key=substr(ce.event_key,8) AND m.expires_at>?)
         )`,
-        )
-        .get(
-          conversationId,
-          boundary,
-          ...(attention ?? []),
-          directEnabled ? 1 : 0,
-          conversationId,
-          new Date(this.now() * 1000).toISOString(),
-          new Date(this.now() * 1000).toISOString(),
-        ) as { n: number }
-    ).n;
+      )
+      .get(
+        conversationId,
+        boundary,
+        ...(attention ?? []),
+        directEnabled ? 1 : 0,
+        conversationId,
+        new Date(this.now() * 1000).toISOString(),
+        new Date(this.now() * 1000).toISOString(),
+      ) as { n: number; first_at: number | null };
+    // 没有合格输入就没有时间窗（空白周期不调用模型），所以这里必须回传"没有"。
+    return {
+      count: row.n,
+      firstEligibleSeconds: row.first_at === null ? null : Math.floor(row.first_at),
+    };
   }
 
-  /**
-   * 会话级自主批次机会的合并写入：pending（含退避中的重试）机会复用同一键，后到消息推高
-   * throughSeq 而 readyAt 不顺延；已结算批次的旧事件不重判，只有跨过其 throughSeq 的
-   * 新事件才拿新键——"新消息可形成新机会"。必须在调用方的事务内使用。
-   */
-  private coalesceChiming(conversationId: string, seq: number, nowSeconds: number) {
-    const latest = this.options.journal.db
+  private coalesceChiming(
+    conversationId: string,
+    seq: number,
+    readySeconds: number,
+    nowSeconds: number,
+  ) {
+    const readyAt = new Date(readySeconds * 1000).toISOString();
+    // 活动时刻永远是**现在**：为下界排队的未来 ready_at 不是"某条消息刚才到了"，写进
+    // created_at 会让"最新一条机会"的排序按未来算，扫描与恢复因此会读错批次。
+    const at = new Date(nowSeconds * 1000).toISOString();
+    // 只复用**未认领**的 pending：`source_from_seq IS NULL`＝下界还没冻结，这一条才是本批
+    // 仍可合并的机会。已认领的行（评分失败重排、或已判但回复失败后仍在重试）下界已冻结，
+    // 它评分成功与否都不是下一批，新人消息绝不推它的 throughSeq——否则阶段一冻结的候选、
+    // 同一 wake 的判定 raw 与幂等重试身份都会被改写。
+    const reusable = this.options.journal.db
       .query(
-        "SELECT status AS s,through_seq AS t,dedupe_key AS k FROM wake_signals WHERE conversation_id=? AND cause='chiming_in' ORDER BY created_at DESC,id DESC LIMIT 1",
+        `SELECT dedupe_key AS k FROM wake_signals
+      WHERE conversation_id=? AND cause='chiming_in' AND status='pending' AND source_from_seq IS NULL
+      ORDER BY created_at DESC,id DESC LIMIT 1`,
       )
-      .get(conversationId) as { s: string; t: number; k: string } | null;
+      .get(conversationId) as { k: string } | null;
     return this.options.wakes.enqueueChanged({
       conversationId,
       cause: "chiming_in",
       throughSeq: seq,
-      dedupeKey: latest?.s === "pending" ? latest.k : `chiming_in:${conversationId}:${seq}`,
-      readyAt: new Date(nowSeconds * 1000).toISOString(),
-      at: new Date(nowSeconds * 1000).toISOString(),
+      dedupeKey: reusable?.k ?? `chiming_in:${conversationId}:${seq}`,
+      readyAt,
+      at,
       priority: 50,
       mergeReadyAt: "earliest",
       onlyNewerSource: true,
@@ -320,67 +334,107 @@ export class OneBot11Adapter implements ConversationIngress {
       return;
     }
     if (path === "chiming_in") {
-      // 自主批次：合格成员事件数从 chimingInObservedSeq 边界与 journal 事实派生（不 seq 相减）。
-      // [X-Y, X+Y] 内形成判断机会；到 X+Y 仍无名额时 ON 保留一个合并机会、OFF 跳过并消费本批边界。
-      // available() 只是提示，真正的名额获取在模型准入。
+      // 自主批次的两维窗口：条数与时间都是**资源名额**而非随机采样或防抖，任一成熟即可判。
+      // 时间窗关闭时退回纯计数模式（只看 [X−Y, X+Y]），与 0054 的行为逐字一致；没有合格
+      // 输入就没有窗口，空白周期不调用模型。
       const rhythm = schemeRhythm(scheme);
-      const count = this.eligibleChimingCount(
+      const nowSeconds = this.now();
+      const eligible = this.eligibleChimingCount(
         conversation.id,
         journal.chimingInObservedSeq(conversation.id),
         attention,
         triggers.direct_reply,
       );
-      const lower = rhythm.initiative_batch_target_count - rhythm.initiative_batch_jitter_count;
-      if (count < lower) {
-        report("BATCH_INSUFFICIENT", "skipped", undefined, { cause: path, count });
+      const judgedAt = journal.chimingInJudgedAt(conversation.id);
+      const window = qqChimingBatchWindow({
+        rhythm,
+        count: eligible.count,
+        firstEligibleSeconds: eligible.firstEligibleSeconds,
+        judgedAtSeconds: judgedAt === null ? null : Math.floor(Date.parse(judgedAt) / 1000),
+        nowSeconds,
+      });
+      if (window.kind === "none") {
+        report("BATCH_INSUFFICIENT", "skipped", undefined, { cause: path, count: window.count });
         return;
+      }
+      // 会话级合并：只有未认领且仍含未判消息的 pending 才是本批可合并机会；已认领的重试
+      // （无论评分成功与否）都不并入，已结算批次的旧事件也不重判。判定游标之后的输入才
+      // 形成新机会——"新消息可形成新机会"。
+      const reusable = journal.db
+        .query(
+          `SELECT through_seq AS t FROM wake_signals
+      WHERE conversation_id=? AND cause='chiming_in' AND status='pending' AND source_from_seq IS NULL
+      ORDER BY created_at DESC,id DESC LIMIT 1`,
+        )
+        .get(conversation.id) as { t: number } | null;
+      if (!reusable) {
+        // 没有可合并的未认领机会时，只有跨过**本会话已认领/已结算过的最大范围**的输入才
+        // 另起一批。范围相等也算覆盖：已认领的重试（判定失败或回复失败重排）虽然下界
+        // 冻结、不接受新人消息，但它覆盖的那些 source 仍在同一条唤醒里等重试，
+        // 恢复扫描不得为同一批范围再开一条新机会。
+        const covered = journal.db
+          .query(
+            "SELECT MAX(through_seq) AS t FROM wake_signals WHERE conversation_id=? AND cause='chiming_in'",
+          )
+          .get(conversation.id) as { t: number | null };
+        if (covered.t !== null && seq <= covered.t) {
+          report("BATCH_ALREADY_SETTLED", "skipped", undefined, { cause: path });
+          return;
+        }
       }
       // 名额提示按实际判断模型取（global+provider 两条件都在准入里判定）；
       // settings 的判断模型为空时跟随绑定助手的对话模型。真实获取仍只在模型准入。
       const judgeModel =
         readQqSettings(orm).judgementModelName ?? getAgentRow(orm, binding.agentId)?.modelName;
-      const upper = rhythm.initiative_batch_target_count + rhythm.initiative_batch_jitter_count;
-      const busy =
-        count >= upper && !(this.options.admission?.available(judgeModel || undefined) ?? true);
-      if (busy && !rhythm.initiative_queue_on_busy) {
-        journal.db
-          .transaction(() => {
-            const throughSeq = journal.sourceThroughSeq(conversation.id);
-            // 本事件先并入会话级机会（ensure/coalesce），再把该机会在同一事务结算为
-            // skipped 终态——持久台账 = no_output+BATCH_SKIPPED_BUSY 行，随后推进边界；
-            // 不留"以后会 judge 已消费范围"的 pending，已在跑的（leased）不动。
-            const coalesced = this.coalesceChiming(conversation.id, seq, this.now());
-            if (coalesced.wake.status === "pending") {
-              wakes.skipPending(coalesced.wake.id, {
-                at: new Date(this.now() * 1000).toISOString(),
-                throughSeq,
-                errorCode: "BATCH_SKIPPED_BUSY",
-              });
-            }
-            journal.advanceChimingInObservedSeq(conversation.id, throughSeq);
-          })
-          .immediate();
-        report("BATCH_SKIPPED_BUSY", "skipped", undefined, { cause: path, count });
+      if (window.expired && !(this.options.admission?.available(judgeModel || undefined) ?? true)) {
+        if (!rhythm.initiative_queue_on_busy) {
+          journal.db
+            .transaction(() => {
+              const throughSeq = journal.sourceThroughSeq(conversation.id);
+              // 本事件先并入会话级机会，再把该机会在同一事务结算为 skipped 终态——持久
+              // 台账 = no_output+BATCH_SKIPPED_BUSY 行，随后推进边界；不留"以后会 judge
+              // 已消费范围"的 pending，已在跑的（leased）不动。跳过不是有效判定：只消费
+              // 边界，不写 chiming_in_judged_at，所以时间窗不从此刻重计。
+              const coalesced = this.coalesceChiming(conversation.id, seq, nowSeconds, nowSeconds);
+              if (coalesced.wake.status === "pending") {
+                wakes.skipPending(coalesced.wake.id, {
+                  at: new Date(nowSeconds * 1000).toISOString(),
+                  throughSeq,
+                  errorCode: "BATCH_SKIPPED_BUSY",
+                });
+              }
+              journal.advanceChimingInObservedSeq(conversation.id, throughSeq);
+            })
+            .immediate();
+          report("BATCH_SKIPPED_BUSY", "skipped", undefined, { cause: path, count: window.count });
+          return;
+        }
+        // 繁忙 ON：保留同一个未判机会，不推 ready_at、不重置退避，只是让上界到期这件事
+        // 本身成为可以判定的理由——判定时机由宿主读时间锚决定，不靠这里再排一次队。
+        const kept = this.coalesceChiming(conversation.id, seq, nowSeconds, nowSeconds);
+        if (kept.changed) {
+          report("WAKE_SCHEDULED", "scheduled", kept.wake.id, {
+            cause: path,
+            readyAt: kept.wake.readyAt,
+            merged: previous?.id === kept.wake.id,
+            count: window.count,
+            busy: true,
+          });
+          this.options.wake?.();
+        }
         return;
       }
-      // 会话级合并：pending（含退避中的重试）机会复用同一键；已结算批次的旧事件不再重判，
-      // 只有跨过其 throughSeq 的新事件才形成新机会——"新消息可形成新机会"。
-      const latest = journal.db
-        .query(
-          "SELECT status AS s,through_seq AS t,dedupe_key AS k FROM wake_signals WHERE conversation_id=? AND cause='chiming_in' ORDER BY created_at DESC,id DESC LIMIT 1",
-        )
-        .get(conversation.id) as { s: string; t: number; k: string } | null;
-      if (latest && latest.s !== "pending" && seq <= latest.t) {
-        report("BATCH_ALREADY_SETTLED", "skipped", undefined, { cause: path });
-        return;
-      }
-      const coalesced = this.coalesceChiming(conversation.id, seq, this.now());
+      // 未过期：机会照入队；时间窗还没到下界时 ready_at 落在下界那一刻，否则 worker 会
+      // 领走一批时间上还不该判的消息。条数已够就立刻可领。上界由起算锚独立推出。
+      const readySeconds = window.kind === "waiting" ? window.readyAtSeconds : nowSeconds;
+      const coalesced = this.coalesceChiming(conversation.id, seq, readySeconds, nowSeconds);
       if (coalesced.changed) {
         report("WAKE_SCHEDULED", "scheduled", coalesced.wake.id, {
           cause: path,
           readyAt: coalesced.wake.readyAt,
           merged: previous?.id === coalesced.wake.id,
-          count,
+          count: window.count,
+          waitingForSeconds: window.kind === "waiting",
         });
         this.options.wake?.();
       }
@@ -541,9 +595,137 @@ export class OneBot11Adapter implements ConversationIngress {
       })
       .immediate();
   }
+  /**
+   * 时间维度的扫尾：时间窗的成熟与上界都来自持久事实，不依赖又一条入站消息。
+   *
+   * 未认领的自主机会到点即可被领取，所以这里只处理一件事——上界已过而模型名额仍被占用时，
+   * 按繁忙设置要么保留、要么在同一事务里显式跳过并消费边界。跳过不是有效判定：只推进观察
+   * 边界，不写判定时刻，所以时间窗不会从此刻重计。已认领的重试不在这里动。
+   */
+  /**
+   * 时间维度的扫尾，在派发之前跑。
+   *
+   * 两件事，都用**当前**唯一游标与判定时刻重新派生，所以不需要新消息来触发：
+   *
+   * 1) 重锚。有效判定会在判定途中更新游标与判定时刻，此前为下一批排好的 ready_at 因此过时：
+   *    若不纠正，它会在旧时刻被领取，把刚判完的这一轮立刻再判一次——那等于用同一条消息
+   *    开了第二个窗。等待中的机会按当前锚与 [A−B, A+B] 重新推出 ready_at，**可以往后**；
+   *    条数已成熟的仍立刻可领。重锚只碰未认领的行，已认领的重试下界已冻结，一字不动。
+   * 2) 上界扫尾。到上界仍无模型名额时，按繁忙设置显式跳过并消费边界；跳过不是有效判定，
+   *    只推进观察边界，不写判定时刻，所以时间窗不从此刻重计。
+   */
+  private sweepChimingWindows(nowSeconds: number): void {
+    const { orm, journal, wakes, telemetry } = this.options;
+    const rows = journal.db
+      .query(
+        `SELECT w.id AS id,w.conversation_id AS conversation_id,w.through_seq AS through_seq,
+          w.ready_at AS ready_at,c.source_id AS binding_id
+      FROM wake_signals w JOIN conversations c ON c.id=w.conversation_id
+      WHERE w.cause='chiming_in' AND w.status='pending' AND w.source_from_seq IS NULL
+        AND c.closed_at IS NULL AND c.channel='onebot11'`,
+      )
+      .all() as {
+      id: string;
+      conversation_id: string;
+      through_seq: number;
+      ready_at: string;
+      binding_id: string;
+    }[];
+    for (const row of rows) {
+      const binding = readQqBinding(orm, row.binding_id);
+      if (!binding || binding.paused) continue;
+      const settings = readQqSettings(orm);
+      if (settings.enabled !== 1 || settings.accountId !== binding.accountId) continue;
+      const scheme = readEffectiveQqScheme(orm, binding);
+      if (!scheme) continue;
+      const rhythm = schemeRhythm(scheme);
+      const eligible = this.eligibleChimingCount(
+        row.conversation_id,
+        journal.chimingInObservedSeq(row.conversation_id),
+        attentionTriggerFilter(binding),
+        effectiveQqTriggers(binding, scheme).direct_reply,
+      );
+      const judgedAt = journal.chimingInJudgedAt(row.conversation_id);
+      const window = qqChimingBatchWindow({
+        rhythm,
+        count: eligible.count,
+        firstEligibleSeconds: eligible.firstEligibleSeconds,
+        judgedAtSeconds: judgedAt === null ? null : Math.floor(Date.parse(judgedAt) / 1000),
+        nowSeconds,
+      });
+      // 材料没了（合格输入为 0），或还有输入但没到条数下界：这两种都关掉这条过时机会，
+      // 因为它留在可领集合里就会被在条件不足时领走。关闭不推进观察边界、不写判定时刻，
+      // 消息仍然保留并继续计入，之后的新输入凑够下界时另起一批。
+      if (eligible.count === 0 || window.kind === "none") {
+        const noSource = eligible.count === 0;
+        const reason = noSource ? "BATCH_NO_ELIGIBLE_SOURCE" : "BATCH_WAITING_FOR_COUNT";
+        journal.db
+          .transaction(() => {
+            wakes.skipPending(row.id, {
+              at: new Date(nowSeconds * 1000).toISOString(),
+              throughSeq: row.through_seq,
+              errorCode: reason,
+            });
+          })
+          .immediate();
+        telemetry?.record("bot.wake.offer", {
+          channel: "onebot11",
+          stage: "wake",
+          status: "skipped",
+          code: reason,
+          conversationId: row.conversation_id,
+          agentId: binding.agentId,
+          wakeId: row.id,
+          sourceSeq: row.through_seq,
+          details: { cause: "chiming_in", count: eligible.count, swept: true },
+        });
+        continue;
+      }
+      if (window.kind === "waiting") {
+        const derivedAt = new Date(window.readyAtSeconds * 1000).toISOString();
+        // 只往后纠正：更早的 ready_at 由领取侧的到期判定处理，这里不把机会拉回过去。
+        if (derivedAt > row.ready_at) {
+          journal.db
+            .query(
+              "UPDATE wake_signals SET ready_at=? WHERE id=? AND status='pending' AND source_from_seq IS NULL AND ready_at<?",
+            )
+            .run(derivedAt, row.id, derivedAt);
+        }
+      }
+      if (!window.expired) continue;
+      const judgeModel =
+        readQqSettings(orm).judgementModelName ?? getAgentRow(orm, binding.agentId)?.modelName;
+      if (this.options.admission?.available(judgeModel || undefined) ?? true) continue;
+      if (rhythm.initiative_queue_on_busy) continue;
+      journal.db
+        .transaction(() => {
+          const throughSeq = journal.sourceThroughSeq(row.conversation_id);
+          wakes.skipPending(row.id, {
+            at: new Date(nowSeconds * 1000).toISOString(),
+            throughSeq: Math.max(row.through_seq, throughSeq),
+            errorCode: "BATCH_SKIPPED_BUSY",
+          });
+          journal.advanceChimingInObservedSeq(row.conversation_id, throughSeq);
+        })
+        .immediate();
+      telemetry?.record("bot.wake.offer", {
+        channel: "onebot11",
+        stage: "wake",
+        status: "skipped",
+        code: "BATCH_SKIPPED_BUSY",
+        conversationId: row.conversation_id,
+        agentId: binding.agentId,
+        wakeId: row.id,
+        sourceSeq: row.through_seq,
+        details: { cause: "chiming_in", count: window.count, swept: true },
+      });
+    }
+  }
+
   sweep(nowSeconds = this.now()) {
     this.migrateLegacyCandidates();
     this.scanImmediate();
+    this.sweepChimingWindows(nowSeconds);
     const { orm, journal, wakes, telemetry } = this.options;
     return sweepQqIdleTopics(
       orm,
@@ -551,11 +733,17 @@ export class OneBot11Adapter implements ConversationIngress {
       {
         hasPending(binding) {
           const c = journal.ensureOneBot(binding.id)!;
+          // 冷场发起有自己的安静前提，不能被一条**尚未到判定时刻**的自主机会永久挡住。
+          // 已认领的自主批、判定失败重排、以及已到 ready_at 的自主机会仍然是真实待办。
           return !!journal.db
             .query(
-              "SELECT 1 FROM wake_signals WHERE conversation_id=? AND status IN('pending','leased')",
+              `SELECT 1 FROM wake_signals
+        WHERE conversation_id=? AND (
+          status='leased'
+          OR (status='pending' AND NOT (cause='chiming_in' AND source_from_seq IS NULL AND ready_at>?))
+        )`,
             )
-            .get(c.id);
+            .get(c.id, new Date(nowSeconds * 1000).toISOString());
         },
         enqueue(input) {
           const c = journal.ensureOneBot(input.binding.id)!;

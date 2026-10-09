@@ -268,6 +268,9 @@ export class OneBotHost {
       // 连续交谈（follow_up）是"必回且按人回"：即使方案关了按发言人拆分，也要按人各回一条
       // （规格 §3.3）。direct 与主动路径尊重方案开关；存储的 split 设置不改。
       split = path === "follow_up" ? true : schemeReply(scheme).split_by_speaker;
+    const sourceFromSeq = path === "chiming_in" ? o.wakes.getSourceFromSeq(wake.id) : null;
+    if (path === "chiming_in" && sourceFromSeq === null)
+      throw new Error("CHIMING_SOURCE_BOUNDARY_REQUIRED");
     const focus = o.journal.eventsAfter(conversation.id, Math.max(0, wake.throughSeq - 1), 1)
       .items[0];
     const focusKey =
@@ -361,7 +364,7 @@ export class OneBotHost {
      * 取合格成员入站事件（含注意力过滤与来源有效期），已确认回复的跳过。每个成员一条候选。
      */
     const chimingOpportunities = (): ReturnType<WakeRepository["readyParticipants"]> => {
-      const boundary = o.journal.chimingInObservedSeq(conversation.id);
+      const boundary = o.wakes.getSourceFromSeq(wake.id) ?? 0;
       const attention = attentionTriggerFilter(binding);
       const items = o.journal.eventsAfter(conversation.id, boundary, Number.MAX_SAFE_INTEGER).items;
       const bySpeaker = new Map<
@@ -1119,6 +1122,7 @@ export class OneBotHost {
             runtime,
             spec,
             path,
+            ...(path === "chiming_in" ? { sourceFromSeq: sourceFromSeq! } : {}),
             ...(focusKey
               ? {
                   trigger: {
@@ -1922,6 +1926,16 @@ export class OneBotHost {
           throw Object.assign(new Error("JUDGEMENT_TARGET_MISSING"), {
             code: "JUDGEMENT_TARGET_MISSING",
           });
+        const assertJudgementCurrent = () => {
+          source.assertCurrent();
+          guard.assertSources(groupOwner, prepared.sources);
+        };
+        if (path === "chiming_in")
+          db.transaction(() => {
+            assertJudgementCurrent();
+            o.journal.markChimingInJudged(conversation.id, wake.throughSeq, now());
+          }).immediate();
+        else assertJudgementCurrent();
         const minScore = schemeRhythm(scheme).initiative_min_score;
         const licensesOut = new Map<string, { allowed: boolean; stateDigest: string }>();
         // 许可按 **targetId** 唯一存放：同一 stateDigest 下不同人的分数/意图各自成项，不互相覆盖。
@@ -1946,6 +1960,8 @@ export class OneBotHost {
         topology: conversation.topology,
         participantIds: initiative ? [null] : targets.map((t) => t.speakerId),
         attentionMembers: attentionTriggerFilter(binding) ?? undefined,
+        purpose: path,
+        ...(path === "chiming_in" ? { usedSources: source.sources } : {}),
       });
       const relevant = (event: ConversationEvent) => observationRelevant(event, audience());
       const generationAttempts = new Map<string, number>();

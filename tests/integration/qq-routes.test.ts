@@ -122,6 +122,11 @@ describe("QQ scheme routes", () => {
         initiative_batch_target_count: 15,
         initiative_batch_jitter_count: 5,
         initiative_queue_on_busy: true,
+        // 0055: the time window rides with the count window, and a new scheme opens it at
+        // the user-fixed 60±20 (an existing scheme stays off through the 0055 DDL default).
+        initiative_time_window_enabled: true,
+        initiative_time_target_seconds: 60,
+        initiative_time_jitter_seconds: 20,
       });
       // The second decided group: what the judgement and the reply each get to see.
       expect(created.context).toEqual({

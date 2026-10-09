@@ -182,23 +182,29 @@ function sameCollectionIds(
 }
 
 /**
- * 差异里的批量参数组合后仍须满足节奏契约：只改 Y（或只改 X）时，另一个值取当前
- * 基础方案的现值参与校验，不拿缺省 15/5 假判。用 Zod 的关系 refine 在合并后的
+ * 差异里的批量参数组合后仍须满足节奏契约：只改半径（或只改中心）时，另一个值取当前
+ * 基础方案的现值参与校验，不拿缺省值假判。用 Zod 的关系 refine 在合并后的
  * 完整 rhythm 上跑一次，失败按既有 repo 错误映射返回。
+ *
+ * 0055 的时间窗口走同一条校验：区间形态与计数窗口一致（[A−B,A+B]、B<A），所以边界不重复写
+ * 一套范围判断，只声明「这几个字段参与合并后校验」，其余交给 QqSchemeRhythmSchema。
  */
 function assertQqGroupBatchRelation(base: QqSchemeRhythm, overrides: QqGroupSchemeOverrides): void {
+  const rhythm = overrides.rhythm;
   if (
-    overrides.rhythm?.initiative_batch_target_count === undefined &&
-    overrides.rhythm?.initiative_batch_jitter_count === undefined
+    rhythm?.initiative_batch_target_count === undefined &&
+    rhythm?.initiative_batch_jitter_count === undefined &&
+    rhythm?.initiative_time_target_seconds === undefined &&
+    rhythm?.initiative_time_jitter_seconds === undefined
   ) {
     return;
   }
   const merged = QqSchemeRhythmSchema.safeParse({
     ...base,
-    ...overrides.rhythm,
+    ...rhythm,
   });
   if (merged.success) return;
-  fail("MEMORY_SOURCE_INVALID", "自主接话的计数区间为[X-Y,X+Y]，要求Y<X");
+  fail("MEMORY_SOURCE_INVALID", "自主接话的区间为[X-Y,X+Y]与[A-B,A+B]，要求半径小于中心");
 }
 
 /** 选择没变就不校验（可能已超界，运行时按交集生效）；这次真的换了选择才要求落在授权之内。 */

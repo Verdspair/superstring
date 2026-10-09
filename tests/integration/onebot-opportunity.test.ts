@@ -18,7 +18,10 @@ afterEach(() => {
   for (const h of handles.splice(0)) h.close();
 });
 const time = 2_000_000_000;
-function setup(follow = false) {
+function setup(
+  follow = false,
+  overrides: { rhythm?: Partial<typeof QQ_RHYTHM_DEFAULT>; admission?: boolean } = {},
+) {
   const h = openBusinessDb();
   handles.push(h);
   ensureDefaults(h.orm, "synthetic");
@@ -30,6 +33,7 @@ function setup(follow = false) {
       ...QQ_RHYTHM_DEFAULT,
       merge_window_seconds: 15,
       judgement_interval_turns: 1,
+      ...overrides.rhythm,
     },
   });
   const bindingId = crypto.randomUUID();
@@ -48,6 +52,8 @@ function setup(follow = false) {
     journal = new ConversationEventRepository(h.db),
     wakes = new WakeRepository(h.db);
   let notifications = 0;
+  // 局部捕获：属性读不会把窄化带进闭包，const 才能让 available 在分支里是 boolean。
+  const available = overrides.admission;
   const adapter = new OneBot11Adapter({
     orm: h.orm,
     journal,
@@ -56,6 +62,7 @@ function setup(follow = false) {
     wake: () => {
       notifications++;
     },
+    ...(available === undefined ? {} : { admission: { available: () => available } }),
   });
   const now = () => new Date(clock.seconds * 1000).toISOString();
   const receive = (id: string, speaker = 20002, ingress = true) =>
@@ -135,7 +142,8 @@ function receiveBatch(h: ReturnType<typeof setup>, count: number, startId = 1, i
 }
 describe("source-backed participant opportunities", () => {
   it("restoration is idempotent and never extends the deadline or re-notifies unchanged source", () => {
-    const h = setup();
+    // 恢复扫描本身与两维窗口无关：这里关掉时间窗，只证明"同一来源不重复通知"。
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     receiveBatch(h, 10);
     const original = h.rows();
     for (const offset of [1, 8, 15, 100]) {
@@ -327,6 +335,262 @@ describe("source-backed participant opportunities", () => {
   });
 });
 
+describe("chiming time window (A60/B20 alongside count X15/Y5)", () => {
+  const timeOn = { initiative_time_window_enabled: true } as const;
+  /** 冷场安静门槛压到 1 分钟，好让「已经安静」与「自主窗口还没到下界」同时成立。 */
+  const quietEnough = { initiative_time_window_enabled: true } as const;
+  /** 下界 100s：t+60 已安静但时间窗未成熟，t+100 已成熟，两次观察同一个占位。 */
+  const slowTimeOn = {
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 120,
+    initiative_time_jitter_seconds: 20,
+  } as const;
+  it("time alone readies the batch at the lower bound without reaching the count lower bound", () => {
+    const h = setup(false, { rhythm: timeOn });
+    h.receive("1", 20002);
+    const [armed] = h.rows();
+    // 一条远低于条数下界(10)，但时间窗下界(40s)把它排进同一个合并机会。
+    expect(armed).toBeDefined();
+    expect(armed!.cause).toBe("chiming_in");
+    expect(armed!.ready_at).toBe(new Date((time + 40) * 1000).toISOString());
+    expect(
+      h.wakes.claim({ at: new Date((time + 39) * 1000).toISOString(), leaseMs: 60000 }),
+    ).toBeNull();
+    h.clock.seconds = time + 40;
+    expect(h.wakes.claim({ at: h.now(), leaseMs: 60000 })?.id).toBe(armed!.id);
+  });
+  it("a mature time window readies the batch with no new inbound message", () => {
+    const h = setup(false, { rhythm: timeOn });
+    h.receive("1", 20002);
+    const armed = h.rows()[0]!;
+    // 判定时刻与边界在领取时推进；此处只证明"到点可判"不依赖又一条入站消息。
+    h.clock.seconds = time + 40;
+    const claimed = h.wakes.claim({ at: h.now(), leaseMs: 60000 })!;
+    const conversation = h.journal.ensureOneBot(h.bindingId)!;
+    h.journal.markChimingInJudged(conversation.id, claimed.throughSeq, h.now());
+    h.wakes.complete(claimed.id, claimed.leaseToken!, "no_output", claimed.throughSeq, h.now());
+    h.receive("2", 20003);
+    const next = h.rows().find((r) => r.id !== armed.id)!;
+    // 刚判完的这一轮不能因为时间已过去 40s 立刻再判：锚取较晚的那个（判定时刻）。
+    expect(next.ready_at).toBe(new Date((time + 40 + 40) * 1000).toISOString());
+    expect(h.wakes.claim({ at: h.now(), leaseMs: 60000 })).toBeNull();
+  });
+  it("time OFF keeps the pre-0055 behaviour: a low count never readies a judgement", () => {
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
+    h.receive("1", 20002);
+    expect(h.rows()).toEqual([]);
+    h.clock.seconds = time + 600;
+    h.adapter.sweep();
+    expect(h.rows()).toEqual([]);
+    receiveBatch(h, 9, 2);
+    const [armed] = h.rows();
+    expect(armed!.ready_at).toBe(h.now());
+  });
+  it("count maturity readies the same wake earlier than the time lower bound", () => {
+    const h = setup(false, { rhythm: timeOn });
+    receiveBatch(h, 10);
+    const [armed] = h.rows();
+    expect(armed!.cause).toBe("chiming_in");
+    // 条数已够就立刻可领，不因为时间窗还没到下界而压后。
+    expect(armed!.ready_at).toBe(h.now());
+    expect(h.wakes.claim({ at: h.now(), leaseMs: 60000 })?.id).toBe(armed!.id);
+  });
+  it("the upper bound with no model slot skips the batch without waiting for new input", () => {
+    const h = setup(false, { rhythm: timeOn });
+    h.db.exec("UPDATE qq_schemes SET initiative_queue_on_busy=0");
+    const busyAdapter = new OneBot11Adapter({
+      orm: h.orm,
+      journal: h.journal,
+      wakes: h.wakes,
+      nowSeconds: () => h.clock.seconds,
+      admission: { available: () => false },
+    });
+    const receiveWith = (id: string, seconds: number, speaker: number) => {
+      h.clock.seconds = seconds;
+      recordInbound(
+        h.orm,
+        normalizeOneBotMessage(
+          {
+            post_type: "message",
+            message_type: "group",
+            sub_type: "normal",
+            time: seconds,
+            self_id: 10001,
+            user_id: speaker,
+            group_id: 30003,
+            message_id: id,
+            message: [{ type: "text", data: { text: "synthetic" } }],
+            sender: { nickname: "synthetic" },
+          },
+          "10001",
+        ),
+        { accountId: "10001", conversationIngress: busyAdapter },
+      );
+    };
+    receiveWith("1", time, 20002);
+    expect(h.rows()[0]!.status).toBe("pending");
+    // 到上界(80s)仍无名额，且期间没有新消息：扫尾按同一策略显式跳过并消费边界。
+    h.clock.seconds = time + 80;
+    busyAdapter.sweep();
+    const settled = h.rows()[0]!;
+    expect(settled.status).toBe("no_output");
+    expect(settled.error_code).toBe("BATCH_SKIPPED_BUSY");
+    const conversation = h.journal.ensureOneBot(h.bindingId)!;
+    expect(h.journal.chimingInObservedSeq(conversation.id)).toBe(
+      h.journal.sourceThroughSeq(conversation.id),
+    );
+    // 跳过不是有效判定：判定时刻不写，时间窗因此不从此刻重计。
+    expect(h.journal.chimingInJudgedAt(conversation.id)).toBeNull();
+  });
+  it("only a mature autonomous opportunity is a pending candidate that blocks the idle sweep", () => {
+    const h = setup(false, { rhythm: slowTimeOn });
+    h.receive("1", 20002);
+    const armed = h.rows()[0]!;
+    // 120±20 的下界是 t+100。
+    expect(armed.ready_at).toBe(new Date((time + 100) * 1000).toISOString());
+    h.db.exec("UPDATE qq_schemes SET trigger_idle_topic=1,idle_quiet_minutes=1");
+    // t+61：会话已安静 1 分钟（冷场前提成立），但自主窗口还差 39 秒才成熟。此时那条占位
+    // 不是真实待办，不能把这间会话判成 candidate_pending。
+    h.clock.seconds = time + 61;
+    const early = h.adapter.sweep(h.clock.seconds)!;
+    expect(early.skipped.find((s) => s.conversationKey.includes("30003"))?.reason).not.toBe(
+      "candidate_pending",
+    );
+    expect(early.scheduled.some((s) => s.conversationKey.includes("30003"))).toBe(true);
+    expect(h.rows().some((r) => r.cause === "idle_topic")).toBe(true);
+    // t+100：同一条占位已到判定时刻，它就是真实待办，冷场应当让位。
+    h.clock.seconds = time + 100;
+    const mature = h.adapter.sweep(h.clock.seconds)!;
+    expect(mature.skipped.find((s) => s.conversationKey.includes("30003"))?.reason).toBe(
+      "candidate_pending",
+    );
+    expect(quietEnough.initiative_time_window_enabled).toBe(true);
+  });
+  it("a valid judgement re-anchors the next unarmed window so the same messages are not judged twice", () => {
+    const h = setup(false, { rhythm: timeOn });
+    const conversation = h.journal.ensureOneBot(h.bindingId)!;
+    // 稀疏群：一条消息就由时间窗排出一批（条数远未到下界）。
+    h.receive("1", 20002);
+    const first = h.rows()[0]!;
+    expect(first.ready_at).toBe(new Date((time + 40) * 1000).toISOString());
+    h.clock.seconds = time + 40;
+    const claimed = h.wakes.claim({ at: h.now(), leaseMs: 60000 })!;
+    // 判定途中又到一条：下一批 arm 时锚还是最早那条合格消息，ready_at 因此已经过期。
+    h.clock.seconds = time + 45;
+    h.receive("2", 20003);
+    const armed = h.rows().find((r) => r.status === "pending")!;
+    expect(armed.id).not.toBe(claimed.id);
+    // 第一批的有效判定发生在下一批的旧 deadline 之后：游标与判定时刻同事务推进，
+    // 随后本批按原语义结算（会话内串行由租约保证，同一时刻只有一条在飞）。
+    const judgedAtSeconds = time + 100;
+    h.clock.seconds = judgedAtSeconds;
+    h.journal.markChimingInJudged(conversation.id, claimed.throughSeq, h.now());
+    // 租约在领取后 60s 到期，所以这批的结算必须落在租约内；判定时刻仍是 tJ。
+    h.clock.seconds = judgedAtSeconds - 1;
+    h.wakes.complete(claimed.id, claimed.leaseToken!, "no_output", claimed.throughSeq, h.now());
+    h.clock.seconds = judgedAtSeconds;
+    // 扫尾按当前锚重排：等待中的机会顺延到判定时刻 + 下界，不会被旧 deadline 立刻领走。
+    h.adapter.sweep(h.clock.seconds);
+    const rearmed = h.rows().find((r) => r.status === "pending")!;
+    expect(rearmed.id).toBe(armed.id);
+    expect(rearmed.ready_at).toBe(new Date((judgedAtSeconds + 40) * 1000).toISOString());
+    expect(
+      h.wakes.claim({ at: new Date((judgedAtSeconds + 39) * 1000).toISOString(), leaseMs: 60000 }),
+    ).toBeNull();
+    h.clock.seconds = judgedAtSeconds + 40;
+    expect(h.wakes.claim({ at: h.now(), leaseMs: 60000 })?.id).toBe(armed.id);
+  });
+  it("the count dimension still preempts a re-anchored time window", () => {
+    const h = setup(false, { rhythm: timeOn });
+    const conversation = h.journal.ensureOneBot(h.bindingId)!;
+    h.receive("1", 20002);
+    h.clock.seconds = time + 40;
+    const claimed = h.wakes.claim({ at: h.now(), leaseMs: 60000 })!;
+    h.clock.seconds = time + 45;
+    h.receive("2", 20003);
+    const judgedAtSeconds = time + 100;
+    h.clock.seconds = judgedAtSeconds;
+    h.journal.markChimingInJudged(conversation.id, claimed.throughSeq, h.now());
+    h.clock.seconds = judgedAtSeconds - 1;
+    h.wakes.complete(claimed.id, claimed.leaseToken!, "no_output", claimed.throughSeq, h.now());
+    h.clock.seconds = judgedAtSeconds;
+    // 判定之后又攒够条数（下界 10）：条数窗成熟就不再等时间下界，扫尾不得把它推后。
+    receiveBatch(h, 10, 20);
+    h.adapter.sweep(h.clock.seconds);
+    const ready = h.rows().filter((r) => r.status === "pending");
+    // 判定后的那条输入已经自己 arm 了一条新机会（它属于下一批），所以这里要按它自己的
+    // 锚判断是否条数成熟，而不是假设旧那条被复用。
+    expect(ready.length).toBeGreaterThan(0);
+    expect(ready.every((r) => Date.parse(r.ready_at) <= h.clock.seconds * 1000)).toBe(true);
+    expect(h.wakes.claim({ at: h.now(), leaseMs: 60000 })).not.toBeNull();
+  });
+  it("count-only mode does not judge below the count lower bound after a valid judgement reset", () => {
+    // X3/Y0 + 时间窗关闭：只有条数这一维，所以「低于下界」必须真的不能判。
+    const h = setup(false, {
+      rhythm: {
+        initiative_time_window_enabled: false,
+        initiative_batch_target_count: 3,
+        initiative_batch_jitter_count: 0,
+      },
+    });
+    const conversation = h.journal.ensureOneBot(h.bindingId)!;
+    receiveBatch(h, 3);
+    const first = h.wakes.claim({ at: h.now(), leaseMs: 60000 })!;
+    expect(first.cause).toBe("chiming_in");
+    // 第一批判定期间又到一条：它借用旧批次的计数，立刻形成一条 ready 的下一批。
+    h.clock.seconds = time + 5;
+    h.receive("4", 20004);
+    const armed = h.rows().find((r) => r.status === "pending")!;
+    expect(armed.id).not.toBe(first.id);
+    expect(armed.ready_at).toBe(h.now());
+    const judgedAtSeconds = time + 20;
+    h.clock.seconds = judgedAtSeconds;
+    h.journal.markChimingInJudged(conversation.id, first.throughSeq, h.now());
+    h.wakes.complete(
+      first.id,
+      first.leaseToken!,
+      "no_output",
+      first.throughSeq,
+      new Date((judgedAtSeconds - 1) * 1000).toISOString(),
+    );
+    // 判定之后实际只剩 1 条未判消息，低于下界 3：扫尾必须让它退出可领集合。
+    expect(h.journal.chimingInObservedSeq(conversation.id)).toBe(first.throughSeq);
+    h.adapter.sweep(h.clock.seconds);
+    expect(h.wakes.claim({ at: h.now(), leaseMs: 60000 })).toBeNull();
+    // 关闭不是判定也不是消费：游标与判定时刻都没动，那条消息仍然计入。
+    expect(h.journal.chimingInObservedSeq(conversation.id)).toBe(first.throughSeq);
+    expect(h.journal.chimingInJudgedAt(conversation.id)).toBe(
+      new Date(judgedAtSeconds * 1000).toISOString(),
+    );
+    const closed = h.rows().find((r) => r.id === armed.id)!;
+    expect(closed.status).toBe("no_output");
+    expect(closed.error_code).toBe("BATCH_WAITING_FOR_COUNT");
+    // 再来两条：计数重新累加到下界，形成且仅形成一条成熟机会。
+    receiveBatch(h, 2, 5);
+    const mature = h.rows().filter((r) => r.status === "pending");
+    expect(mature).toHaveLength(1);
+    expect(mature[0]!.id).not.toBe(armed.id);
+    expect(mature[0]!.ready_at).toBe(h.now());
+    const claimed = h.wakes.claim({ at: h.now(), leaseMs: 60000 })!;
+    expect(claimed.id).toBe(mature[0]!.id);
+    expect(h.rows().filter((r) => r.status === "leased")).toHaveLength(1);
+  });
+  it("an immature count-only opportunity is never claimable while the time window is off", () => {
+    const h = setup(false, {
+      rhythm: {
+        initiative_time_window_enabled: false,
+        initiative_batch_target_count: 3,
+        initiative_batch_jitter_count: 0,
+      },
+    });
+    receiveBatch(h, 2);
+    expect(h.rows()).toEqual([]);
+    h.clock.seconds += 600;
+    h.adapter.sweep();
+    expect(h.rows()).toEqual([]);
+    expect(h.wakes.claim({ at: h.now(), leaseMs: 60000 })).toBeNull();
+  });
+});
 describe("continuous rolling windows", () => {
   it("a member message rolls its own deadline to arrival+merge without requiring earlier assistant speech", () => {
     const h = setup(true);
@@ -370,7 +634,7 @@ describe("continuous rolling windows", () => {
 
 describe("chiming batch gating (production X15/Y5)", () => {
   it("below lower(10) no judge opportunity; reaching lower forms one coalesced wake", () => {
-    const h = setup();
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     receiveBatch(h, 9);
     expect(h.rows()).toEqual([]);
     receiveBatch(h, 1, 10);
@@ -383,7 +647,7 @@ describe("chiming batch gating (production X15/Y5)", () => {
     expect(rows[0]!.through_seq).toBe(h.journal.sourceThroughSeq(c.id));
   });
   it("addressed events belong to direct reply and never count into the batch", () => {
-    const h = setup();
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     receiveBatch(h, 9);
     h.receiveMention("99", 20008);
     // 9 条普通 + 1 条指名 = 指名那条不计数（direct 独占），仍未到下界。
@@ -392,7 +656,7 @@ describe("chiming batch gating (production X15/Y5)", () => {
     expect(h.rows().filter((r) => r.cause === "chiming_in")).toHaveLength(1);
   });
   it("direct off: addressed events stay eligible and count toward the batch lower bound", () => {
-    const h = setup();
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     h.db.exec(`UPDATE qq_bindings SET trigger_direct_reply=0 WHERE id='${h.bindingId}'`);
     receiveBatch(h, 9);
     h.receiveMention("99", 20008);
@@ -400,7 +664,7 @@ describe("chiming batch gating (production X15/Y5)", () => {
     expect(h.rows().filter((r) => r.cause === "chiming_in")).toHaveLength(1);
   });
   it("a direct_handled source never counts even when direct is off afterwards", () => {
-    const h = setup();
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     // direct 先开启：9 条普通 + 1 条指名（direct 机会真实存在），再关闭 direct。
     receiveBatch(h, 9);
     h.receiveMention("99", 20008);
@@ -414,7 +678,7 @@ describe("chiming batch gating (production X15/Y5)", () => {
   });
 
   it("busy ON keeps an unclaimed coalesced wake; the resource gate blocks claim until admission frees", async () => {
-    const h = setup();
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     let judgeModelAsked: string | undefined;
     const bounded = new OneBot11Adapter({
       orm: h.orm,
@@ -482,7 +746,7 @@ describe("chiming batch gating (production X15/Y5)", () => {
     expect(h.rows()[0]!.status).toBe("leased");
   });
   it("busy OFF at the upper bound consumes the boundary in the offer transaction", () => {
-    const h = setup();
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     h.db.exec("UPDATE qq_schemes SET initiative_queue_on_busy=0");
     const offers: { code: string; status: string; details?: Record<string, unknown> }[] = [];
     const bounded = new OneBot11Adapter({
@@ -539,7 +803,7 @@ describe("chiming batch gating (production X15/Y5)", () => {
     expect(settled[0]!.through_seq).toBe(h.journal.sourceThroughSeq(c.id));
   });
   it("a busy provider does not block another conversation whose judge provider is free (no HOL)", async () => {
-    const h = setup();
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
     // 第二个绑定/会话：独立 scheme 命名，同一 account。
     receiveBatch(h, 10);
     receiveBatch(h, 10, 100);

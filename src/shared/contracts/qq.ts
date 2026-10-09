@@ -87,6 +87,19 @@ export const QqSchemeRhythmSchema = z
     /** 达到 X+Y 上界仍无模型名额时：true 保留一个合并机会，false 跳过本批并显式记录。 */
     initiative_queue_on_busy: z.boolean(),
     /**
+     * 自主接话的时间窗口是否启用。关闭时退回纯计数模式（只看 [X−Y,X+Y]），
+     * 与 0054 的行为逐字一致；开关只影响「稀疏对话够不到计数下界」这一种情形。
+     */
+    initiative_time_window_enabled: z.boolean(),
+    /**
+     * 时间窗口中心 A（秒）。语义与 X 相同：合格成员消息进入 [A−B, A+B] 区间即择机，
+     * 所以这一维也是资源名额而不是防抖——A 是区间中心、B 是半径，B 必须小于 A。
+     * 时间窗口从「上批已判时刻或首条未见合格消息」中较晚的那个起算，不随后续消息顺延。
+     */
+    initiative_time_target_seconds: z.number().int().min(10).max(1800),
+    /** 时间窗口半径 B（秒）。B=0 表示固定等 A 秒，没有随机采样，也没有额外一次模型判定。 */
+    initiative_time_jitter_seconds: z.number().int().min(0).max(1799),
+    /**
      * §7.1's wait for a related supplement after a failed addressed media read. The user decided
      * (2026-09-24) that "related" means the SAME SPEAKER within this window, and that the number is
      * editable with a 10-minute default. 0 = do not wait (the first read still happens).
@@ -97,7 +110,15 @@ export const QqSchemeRhythmSchema = z
   // 0054 CHECK enforces the same relation so a row the API accepts cannot be refused by the DB.
   .refine((rhythm) => rhythm.initiative_batch_jitter_count < rhythm.initiative_batch_target_count, {
     message: "initiative_batch_jitter_count 必须小于 initiative_batch_target_count",
-  });
+  })
+  // 时间窗口与计数窗口同一形态：B 是 A 的半径，B===A 会把下界压到 0（等价于不等），
+  // 所以这里和 0054 一样用严格小于，0055 的 CHECK 也写同一条关系。
+  .refine(
+    (rhythm) => rhythm.initiative_time_jitter_seconds < rhythm.initiative_time_target_seconds,
+    {
+      message: "initiative_time_jitter_seconds 必须小于 initiative_time_target_seconds",
+    },
+  );
 export type QqSchemeRhythm = z.infer<typeof QqSchemeRhythmSchema>;
 
 /**

@@ -961,8 +961,10 @@ describe("cache-refresh-hydration integration tests", () => {
     });
 
     // The re-saved cache in storage must contain only B and C.
-    const reloadedCache = await loadTracesCache(storage, filterK);
-    expect(reloadedCache?.items.map((t) => t.traceId)).toEqual(["tr-C", "tr-B"]);
+    await vi.waitFor(async () => {
+      const reloadedCache = await loadTracesCache(storage, filterK);
+      expect(reloadedCache?.items.map((t) => t.traceId)).toEqual(["tr-C", "tr-B"]);
+    });
   });
 
   it("13. trace failure clears preview and rejects late cache: authoritative error landing before slow cache decryption leaves screen empty and purges storage cache", async () => {

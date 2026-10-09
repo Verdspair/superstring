@@ -55,6 +55,9 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     initiative_batch_target_count: 15,
     initiative_batch_jitter_count: 5,
     initiative_queue_on_busy: true,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
   },
   context: {
     judgement_message_limit: 20,
@@ -1059,6 +1062,26 @@ it("renders rhythm batch fields and queue on busy three-state override in partic
   ) as HTMLInputElement;
   expect(targetInput).toBeTruthy();
   expect(jitterInput).toBeTruthy();
+
+  // initiative_time_window_enabled 三态开关
+  const timeWindowSelect = view.container.querySelector(
+    'select[data-field="rhythm.initiative_time_window_enabled"]',
+  ) as HTMLSelectElement;
+  expect(timeWindowSelect).toBeTruthy();
+  expect(timeWindowSelect.value).toBe("inherit");
+
+  fireEvent.change(timeWindowSelect, { target: { value: "off" } });
+  expect(editorOf()?.overrides.rhythm?.initiative_time_window_enabled).toBe(false);
+
+  // 目标时间与浮动时间输入框就位
+  const targetTimeInput = view.container.querySelector(
+    'input[data-field="rhythm.initiative_time_target_seconds"]',
+  ) as HTMLInputElement;
+  const jitterTimeInput = view.container.querySelector(
+    'input[data-field="rhythm.initiative_time_jitter_seconds"]',
+  ) as HTMLInputElement;
+  expect(targetTimeInput).toBeTruthy();
+  expect(jitterTimeInput).toBeTruthy();
 });
 
 it("enforces mutual exclusivity between follow_up and chiming_in switches in group config", async () => {

@@ -1308,6 +1308,12 @@ export const qqSchemes = sqliteTable(
     initiativeBatchTargetCount: integer("initiative_batch_target_count").notNull().default(15),
     initiativeBatchJitterCount: integer("initiative_batch_jitter_count").notNull().default(5),
     initiativeQueueOnBusy: integer("initiative_queue_on_busy").notNull().default(1),
+    // 0055：自主接话的第二维时间窗口 [A−B, A+B] 秒，与 0054 的计数窗口同一形态（关系 B<A）。
+    // DDL 默认 0/60/20：存量方案保持 0054 的纯计数行为（用户定「新方案开、已有方案关」），
+    // 新方案走 QQ_RHYTHM_DEFAULT 的 true/60/20，两侧不同是决定本身，不是漏回填。
+    initiativeTimeWindowEnabled: integer("initiative_time_window_enabled").notNull().default(0),
+    initiativeTimeTargetSeconds: integer("initiative_time_target_seconds").notNull().default(60),
+    initiativeTimeJitterSeconds: integer("initiative_time_jitter_seconds").notNull().default(20),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
@@ -1395,6 +1401,19 @@ export const qqSchemes = sqliteTable(
       sql`${t.initiativeBatchJitterCount} >= 0 AND ${t.initiativeBatchJitterCount} < ${t.initiativeBatchTargetCount}`,
     ),
     check("qq_scheme_initiative_queue_on_busy", sql`${t.initiativeQueueOnBusy} IN (0, 1)`),
+    // 0055：A 10..1800、B 0..1799 且 B<A，与 Zod 契约同边界——API 收下的行 DB 不再拒。
+    check(
+      "qq_scheme_initiative_time_window_enabled",
+      sql`${t.initiativeTimeWindowEnabled} IN (0, 1)`,
+    ),
+    check(
+      "qq_scheme_initiative_time_target_seconds",
+      sql`${t.initiativeTimeTargetSeconds} >= 10 AND ${t.initiativeTimeTargetSeconds} <= 1800`,
+    ),
+    check(
+      "qq_scheme_initiative_time_jitter_seconds",
+      sql`${t.initiativeTimeJitterSeconds} >= 0 AND ${t.initiativeTimeJitterSeconds} <= 1799 AND ${t.initiativeTimeJitterSeconds} < ${t.initiativeTimeTargetSeconds}`,
+    ),
     // A prompt must be non-blank and bounded. Blank is not "no preference" — it is a model
     // with no instruction, which is why the request layer uses `nonBlankString` too and why
     // clearing a field by accident cannot silently drop a rule. The 16000 ceiling matches the
@@ -1696,29 +1715,51 @@ export const conversations = sqliteTable("conversations", {
   // 0054：自主接话的持久观察边界。direct 的 consumed_seq 不能代替它——两条路径各自推进，
   // 互不吞并；条数永远从边界与事件事实派生，不另存冗余 count。
   chimingInObservedSeq: integer("chiming_in_observed_seq").notNull().default(0),
+  /**
+   * 0055：自主接话上一次**完整有效判定**（含决定沉默）的时刻，是时间窗口的起算锚之一。
+   * NULL＝本会话还没有过有效判定。回复子任务是否跑完不参与：判定一完成就与游标同事务写入，
+   * 所以它记的是「判过了」，不是「说完了」。
+   */
+  chimingInJudgedAt: text("chiming_in_judged_at"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   closedAt: text("closed_at"),
 });
 
-export const wakeSignals = sqliteTable("wake_signals", {
-  id: text("id").primaryKey().notNull(),
-  conversationId: text("conversation_id")
-    .notNull()
-    .references(() => conversations.id, { onDelete: "cascade" }),
-  cause: text("cause").notNull(),
-  throughSeq: integer("through_seq").notNull(),
-  dedupeKey: text("dedupe_key").notNull(),
-  readyAt: text("ready_at").notNull(),
-  priority: integer("priority").notNull(),
-  status: text("status").notNull(),
-  leaseToken: text("lease_token"),
-  leaseExpiresAt: text("lease_expires_at"),
-  attempts: integer("attempts").notNull().default(0),
-  errorCode: text("error_code"),
-  createdAt: text("created_at").notNull(),
-  completedAt: text("completed_at"),
-});
+export const wakeSignals = sqliteTable(
+  "wake_signals",
+  {
+    id: text("id").primaryKey().notNull(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    cause: text("cause").notNull(),
+    throughSeq: integer("through_seq").notNull(),
+    /**
+     * 0055：这条唤醒被首次认领时冻结的来源下界（自主接话＝当时的 chiming_in_observed_seq）。
+     * NULL＝尚未认领的 pending，或非自主接话的唤醒。认领后才不可变：重试复用同一条唤醒时
+     * 下界不跟着推进过的活游标走，判定期间后到的消息因此只进入下一批。
+     */
+    sourceFromSeq: integer("source_from_seq"),
+    dedupeKey: text("dedupe_key").notNull(),
+    readyAt: text("ready_at").notNull(),
+    priority: integer("priority").notNull(),
+    status: text("status").notNull(),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: text("lease_expires_at"),
+    attempts: integer("attempts").notNull().default(0),
+    errorCode: text("error_code"),
+    createdAt: text("created_at").notNull(),
+    completedAt: text("completed_at"),
+  },
+  (t) => [
+    // 0055：下界是非负序号，NULL 表示还没有冻结。
+    check(
+      "wake_signals_source_from_seq",
+      sql`${t.sourceFromSeq} IS NULL OR ${t.sourceFromSeq} >= 0`,
+    ),
+  ],
+);
 
 // 0039: inference ownership and source-bound input snapshots.
 export const agentRuns = sqliteTable(

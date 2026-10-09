@@ -59,6 +59,9 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     initiative_batch_target_count: 15,
     initiative_batch_jitter_count: 5,
     initiative_queue_on_busy: true,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
   },
   context: {
     judgement_message_limit: 20,
@@ -1398,6 +1401,33 @@ describe("0052 两组进本群稀疏覆盖（T12）", () => {
       expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor, scheme10)).toBe(
         true,
       );
+    });
+
+    it("时间窗口字段支持本群覆盖及 jitter < target 合并校验", async () => {
+      ready(fakeClient({ getQqGroupConfig: async () => qqConfig() }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+
+      // 覆盖时间窗口开关与目标秒数
+      store.getState().patchQqGroupOverride("rhythm", "initiative_time_window_enabled", false);
+      store.getState().patchQqGroupOverride("rhythm", "initiative_time_target_seconds", "100");
+      store.getState().patchQqGroupOverride("rhythm", "initiative_time_jitter_seconds", "30");
+
+      expect(store.getState().qqGroupConfigEditor?.overrides.rhythm).toEqual(
+        expect.objectContaining({
+          initiative_time_window_enabled: false,
+          initiative_time_target_seconds: 100,
+          initiative_time_jitter_seconds: 30,
+        }),
+      );
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(false);
+
+      // 设置 jitter >= target (100 >= 100) 导致合并后非法
+      store.getState().patchQqGroupOverride("rhythm", "initiative_time_jitter_seconds", "100");
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(true);
+
+      // 取消覆盖回到跟随基线 (60/20)
+      store.getState().patchQqGroupOverride("rhythm", "initiative_time_jitter_seconds", undefined);
+      expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(false);
     });
   });
 });

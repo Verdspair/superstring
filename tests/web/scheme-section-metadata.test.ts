@@ -30,6 +30,9 @@ const EXPECTED_SECTION: Readonly<Record<string, string>> = {
   "rhythm.initiative_min_score": "participation",
   "rhythm.initiative_batch_target_count": "participation",
   "rhythm.initiative_batch_jitter_count": "participation",
+  "rhythm.initiative_time_window_enabled": "participation",
+  "rhythm.initiative_time_target_seconds": "participation",
+  "rhythm.initiative_time_jitter_seconds": "participation",
   "rhythm.initiative_queue_on_busy": "participation",
   "rhythm.merge_window_seconds": "participation",
   "rhythm.reply_cooldown_seconds": "participation",
@@ -136,5 +139,20 @@ describe("scheme sections metadata", () => {
     // 该字段是"回复草稿再生成次数"，不是主动发言门槛：不能留在发言时机组。
     expect(qqSchemeFieldSection("rhythm.max_recompute_count")).toBe("response");
     expect(qqSchemeFieldSection("rhythm.initiative_min_score")).toBe("participation");
+  });
+
+  it("maps autonomous time window rhythm fields to participation section", () => {
+    expect(qqSchemeFieldSection("rhythm.initiative_time_window_enabled")).toBe("participation");
+    expect(qqSchemeFieldSection("rhythm.initiative_time_target_seconds")).toBe("participation");
+    expect(qqSchemeFieldSection("rhythm.initiative_time_jitter_seconds")).toBe("participation");
+    expect(QQ_SCHEME_FIELD_LABELS["rhythm.initiative_time_window_enabled"]).toBe(
+      "connections.initiativeTimeWindowEnabled",
+    );
+    expect(QQ_SCHEME_FIELD_LABELS["rhythm.initiative_time_target_seconds"]).toBe(
+      "connections.initiativeTimeTargetSeconds",
+    );
+    expect(QQ_SCHEME_FIELD_LABELS["rhythm.initiative_time_jitter_seconds"]).toBe(
+      "connections.initiativeTimeJitterSeconds",
+    );
   });
 });

@@ -269,3 +269,94 @@ describe("自主观察边界（chiming_in_observed_seq）", () => {
     expect(journal2.chimingInObservedSeq(conversation.id)).toBe(e2.seq);
   });
 });
+
+describe("自主有效判定时刻（chiming_in_judged_at）", () => {
+  function judgedFixture() {
+    const h = setup();
+    const scheme = createQqScheme(h.orm, { name: "判定时刻方案" });
+    const bindingId = groupBinding(h, scheme.id, "20040");
+    const journal = new ConversationEventRepository(h.db);
+    const conversation = journal.ensureOneBot(bindingId);
+    if (conversation === null) throw new Error("conversation fixture missing");
+    const ev = (key: string) =>
+      journal.append({
+        conversationId: conversation.id,
+        eventKey: key,
+        kind: "inbound",
+        source: { kind: "qq_observation", id: key, revision: "1" },
+        occurredAt: nowIso(),
+        participant: { id: "20040", label: "群友", role: "member" },
+      });
+    return { h, journal, conversation, ev };
+  }
+
+  it("完整有效判定立即推进游标并记录判定时刻，重开库两者都持久", () => {
+    const { h, journal, conversation, ev } = judgedFixture();
+    ev("t-judged-1");
+    const e2 = ev("t-judged-2");
+    expect(journal.chimingInJudgedAt(conversation.id)).toBeNull();
+
+    // 判定（含决定沉默）一完成就同事务落库：时间窗口的起算锚，不是回复送达的回执。
+    const judgedAt = "2026-10-09T08:00:00.000Z";
+    journal.markChimingInJudged(conversation.id, e2.seq, judgedAt);
+    expect(journal.chimingInObservedSeq(conversation.id)).toBe(e2.seq);
+    expect(journal.chimingInJudgedAt(conversation.id)).toBe(judgedAt);
+
+    const image = h.db.serialize();
+    h.close();
+    handles.splice(handles.indexOf(h), 1);
+    const db2 = Database.deserialize(image);
+    db2.run("PRAGMA foreign_keys = ON");
+    const reopened = toOrmHandle(db2);
+    handles.push(reopened);
+    const journal2 = new ConversationEventRepository(db2);
+    expect(journal2.chimingInObservedSeq(conversation.id)).toBe(e2.seq);
+    expect(journal2.chimingInJudgedAt(conversation.id)).toBe(judgedAt);
+  });
+
+  it("同一 throughSeq 复用不刷新判定时刻，真正的新批判定才推进它", () => {
+    const { journal, conversation, ev } = judgedFixture();
+    const e1 = ev("t-judged-3");
+    const e2 = ev("t-judged-4");
+    const first = "2026-10-09T08:00:00.000Z";
+    journal.markChimingInJudged(conversation.id, e2.seq, first);
+
+    // 旧唤醒重试复用同一（或更早）来源边界：不重置时间窗口的钟。
+    journal.markChimingInJudged(conversation.id, e2.seq, "2026-10-09T08:30:00.000Z");
+    journal.markChimingInJudged(conversation.id, e1.seq, "2026-10-09T09:00:00.000Z");
+    expect(journal.chimingInJudgedAt(conversation.id)).toBe(first);
+    expect(journal.chimingInObservedSeq(conversation.id)).toBe(e2.seq);
+
+    // 判定之后又有新人类消息：这是一个新批，判定时刻随新边界推进。
+    const e3 = ev("t-judged-5");
+    const second = "2026-10-09T09:30:00.000Z";
+    journal.markChimingInJudged(conversation.id, e3.seq, second);
+    expect(journal.chimingInObservedSeq(conversation.id)).toBe(e3.seq);
+    expect(journal.chimingInJudgedAt(conversation.id)).toBe(second);
+  });
+
+  it("跳过与失败不伪造判定时刻，坏输入不落任何状态", () => {
+    const { journal, conversation, ev } = judgedFixture();
+    const e1 = ev("t-judged-6");
+    // 无判定的收尾（名额跳过/取消类）只推进来源边界，不产生一个假的"已判"时刻。
+    journal.advanceChimingInObservedSeq(conversation.id, e1.seq);
+    expect(journal.chimingInObservedSeq(conversation.id)).toBe(e1.seq);
+    expect(journal.chimingInJudgedAt(conversation.id)).toBeNull();
+
+    expect(() => journal.markChimingInJudged(conversation.id, e1.seq, "不是时刻")).toThrow(
+      "CONVERSATION_TIMESTAMP_INVALID",
+    );
+    expect(() => journal.markChimingInJudged(conversation.id, -1, nowIso())).toThrow(
+      "CONVERSATION_SEQUENCE_INVALID",
+    );
+    expect(journal.chimingInJudgedAt(conversation.id)).toBeNull();
+    expect(journal.chimingInObservedSeq(conversation.id)).toBe(e1.seq);
+
+    // 失败之后正常判定仍然可用：新批推进游标并首次落判定时刻。
+    const e2 = ev("t-judged-7");
+    const judgedAt = "2026-10-09T10:00:00.000Z";
+    journal.markChimingInJudged(conversation.id, e2.seq, judgedAt);
+    expect(journal.chimingInJudgedAt(conversation.id)).toBe(judgedAt);
+    expect(journal.chimingInObservedSeq(conversation.id)).toBe(e2.seq);
+  });
+});

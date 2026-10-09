@@ -116,6 +116,48 @@ describe("neutral Bot worker lifecycle", () => {
     await worker.stop();
     expect([calls, errors]).toEqual([2, 1]);
   });
+  it("drains the paired scheduler alongside the timer loop on shutdown", async () => {
+    let drained = false;
+    let cycles = 0;
+    const worker = new BotWorker({
+      sweep() {},
+      canAdvance: () => true,
+      advance: async () => {
+        cycles += 1;
+      },
+      drain: async () => {
+        await Promise.resolve();
+        drained = true;
+      },
+    });
+    worker.start();
+    await worker.runCycle();
+    await worker.stop();
+    expect([cycles, drained]).toEqual([1, true]);
+  });
+  it("re-cycles promptly on a settle notification after a short dispatch cycle", async () => {
+    let worker: BotWorker,
+      cycles = 0,
+      finish!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    worker = new BotWorker({
+      sweep() {},
+      pollIntervalMs: 60_000,
+      canAdvance: () => true,
+      // 短 tick：只派发即返回，模型在后台；结算方稍后经 wake() 通知复查。
+      advance: async () => {
+        if (++cycles === 2) finish();
+      },
+    });
+    worker.start();
+    await Promise.resolve();
+    worker.wake();
+    await done;
+    await worker.stop();
+    expect(cycles).toBe(2);
+  });
 });
 
 it("keeps the nearest durable deadline when another participant wakes the worker, and polls while offline", async () => {

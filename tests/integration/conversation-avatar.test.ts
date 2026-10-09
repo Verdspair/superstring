@@ -292,11 +292,12 @@ describe("server-shared conversation avatars", () => {
     old.close();
     const h = openBusinessDb({ path: filename });
     handles.push(h);
-    expect(h.db.query("PRAGMA user_version").get()).toEqual({ user_version: 54 });
-    // 0054 追加的观察边界列带 DEFAULT 0：旧行数据不变，新增列取默认值。
+    expect(h.db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
+    // 0054/0055 追加的观察边界与判定时刻列带默认值：旧行数据不变，新增列取默认值。
     expect(h.db.query("SELECT * FROM conversations").all()).toEqual(
       (prior as Record<string, unknown>[]).map((row) => ({
         chiming_in_observed_seq: 0,
+        chiming_in_judged_at: null,
         ...row,
       })),
     );

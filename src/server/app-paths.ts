@@ -325,6 +325,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0054_qq_initiative_batches.sql",
     ),
+    qqInitiativeTimeWindowMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0055_qq_initiative_time_window.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

@@ -354,6 +354,12 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0054_qq_initiative_batches.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0055_qq_initiative_time_window.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.
