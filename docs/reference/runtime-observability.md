@@ -1,8 +1,8 @@
 # Runtime observability
 
-The **Agent → Runtime observability** page searches execution metadata across Web,
-OneBot, memory and knowledge work. A conversation's **Observability** tab uses the
-same explorer with the conversation filter fixed. The conversation header reads
+Open **Conversations → Runtime observability** to search execution metadata across
+Web, OneBot, memory and knowledge work. Choose **Current conversation** to keep the
+conversation filter fixed, or **Global** to inspect activity across conversations. The conversation header reads
 live connection, wake queue and delivery state separately from historical counts.
 
 ## Investigating a missing reply
@@ -13,7 +13,7 @@ live connection, wake queue and delivery state separately from historical counts
 3. Open a Trace to follow parent/child stages. Inspect the reason code, source
    sequence, Run ID, Wake ID and Output ID. Run details link to the existing
    authorized context inspector; delivery details show each part's outcome.
-4. For background work or cross-conversation diagnosis, use the global page.
+4. For background work or cross-conversation diagnosis, choose the global scope.
    Filter by channel, stage, status, model, time, agent, conversation, run or trace.
 
 Search covers the complete retained, authorized result set on the server, not
@@ -39,9 +39,10 @@ On application restart, previously unfinished spans become `unknown` with reason
 
 Records contain metadata only. Prompt snapshots and attachment bytes remain in
 their existing source-owned stores. Existing conversation/assistant ownership is
-checked on every read, including trace drilldown and aggregate counts. Records
-expire after at most 14 days and earlier when an input source expires; the earliest
-source lifetime applies to the complete trace. Conversation, agent, user and run
+checked on every read, including trace drilldown and aggregate counts. Trace retention is configurable from 1 to 3650 days, with a default of 14 days.
+Each trace freezes its retention deadline when it starts; changing the setting
+does not extend traces already stored. Source expiry can shorten that deadline,
+and the earliest source lifetime applies to the complete trace. Conversation, agent, user and run
 deletion cascades through their associated metadata. Old activity is not fabricated
 as new telemetry during upgrade.
 

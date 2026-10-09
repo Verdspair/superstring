@@ -52,9 +52,9 @@ For rollback: fully quit the application and confirm the sidecar has stopped; pr
 
 ## Window and process behavior
 
-The existing **background / exit** preference controls the window close action. In background mode the page is destroyed while the service continues Agent, OneBot and maintenance work; reopen using the tray, macOS Dock or application launcher. Desktops without a tray can reopen the same instance from the launcher. Explicit **Quit Superstring** always requests service shutdown and waits for database work to settle.
+Closing the desktop window exits the application and the service it started. The old **background / exit** setting does not keep the current desktop host running after the window closes. On macOS and Linux, window close and **Quit Superstring** use the same service shutdown path and wait for pending database work. The Windows C# launcher instead ends its owned process tree when its Edge application window closes; it does not wait for model calls or the HTTP stop endpoint.
 
-The host does not forcibly kill an active database writer on a timer. A long shutdown presents a native status dialog and access to logs. If the host crashes, pipe EOF tells its own sidecar to shut down. A separate SQLite lifetime lock prevents a replacement host from opening the same profile concurrently while that shutdown finishes. Unexpected process/window failure offers retry, logs and quit; retry waits for the old service to exit.
+The macOS/Linux host does not forcibly kill an active database writer on a timer. A long shutdown presents a native status dialog and access to logs. If the host crashes, pipe EOF tells its own sidecar to shut down. A separate SQLite lifetime lock prevents a replacement host from opening the same profile concurrently while that shutdown finishes. Unexpected process/window failure offers retry, logs and quit; retry waits for the old service to exit.
 
 ## Implementation map
 
@@ -91,7 +91,7 @@ npm run build:desktop:cross-platform -- --platform=darwin --arch=arm64
 # Linux example: --platform=linux --arch=x64
 ```
 
-Build tools create artifacts only under `artifacts/desktop` and `dist/desktop-*`; they do not inspect an installed user profile. `--dir` produces an unpacked validation app. Package builds download Electron and packaging tools; use CI when local space is limited.
+Build outputs use `artifacts/build` and `dist/desktop-*`; Windows installers are written to `dist/installers`. Validation reports and temporary test profiles use `artifacts/validation`. The builders do not inspect an installed user profile. `--dir` produces an unpacked validation app. Package builds download Electron and packaging tools; use CI when local space is limited.
 
 The `Desktop packages` workflow accepts an **existing** version tag and an explicit release flag. The tag must match `package.json`. Release builds sign and notarize macOS packages when the macOS secrets (`MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) are configured; missing credentials produce ad-hoc signed, not notarized packages and the draft release notes state that, rather than failing or silently claiming a signed release. Configure the `desktop-release` environment protection for the final draft-release job. All native package jobs, smoke reports and complete asset/hash checks must pass first.
 
@@ -99,6 +99,6 @@ The smoke runs a real packaged renderer and sidecar with a disposable profile, c
 
 ## 简要使用说明
 
-macOS 提供 Apple Silicon / Intel 的 DMG、ZIP；Linux 提供 x64 / arm64 的 DEB、AppImage。Windows 保留原安装器。安装包自带运行时，模型服务仍需单独配置。关闭窗口遵循已有的“后台运行／退出”设置；菜单中的“退出 Superstring”会等待服务安全关闭。帮助菜单可打开日志、数据目录和更新页面。
+macOS 提供 Apple Silicon / Intel 的 DMG、ZIP；Linux 提供 x64 / arm64 的 DEB、AppImage。Windows 保留原安装器。安装包自带运行时，模型服务仍需单独配置。关闭桌面窗口会退出程序及其启动的服务。macOS/Linux 会等待服务完成必要的数据库写入；Windows C# 启动器会直接结束本次自有进程树。旧“后台运行／退出”设置不再让桌面宿主保持后台运行。帮助菜单可打开日志、数据目录和更新页面。
 
-数据保存在系统用户目录，升级或删除应用不会自动删除数据。只有需要数据库迁移时才生成备份，`backup.json` 是备份完整标记。正式 macOS 发布必须签名并公证；PR 验证产物不能当作正式发行。各平台构建与真实安装包冒烟由 CI 执行，源码测试通过不等于已完成签名或所有桌面环境验证。
+数据保存在系统用户目录，升级或删除应用不会自动删除数据。只有需要数据库迁移时才生成备份，`backup.json` 是备份完整标记。配置完整签名凭据时，macOS 包可使用开发者签名并公证；没有这些凭据时发布临时签名、未公证的包，并在版本说明中注明。PR 验证产物不能当作正式发行。各平台构建与真实安装包冒烟由 CI 执行，源码测试通过不等于已完成签名或所有桌面环境验证。

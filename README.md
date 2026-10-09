@@ -17,9 +17,9 @@ A local Agent workspace primarily for everyday companionship and chat, supportin
 
 ### 有上下文的对话工作区
 
-在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。界面支持 简体中文与 English 切换。
+在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。模型、提示词和聊天行为都可以按自己的习惯灵活配置。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。界面支持 简体中文与 English 切换。
 
-Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号，也不提供 Superstring 云端数据同步服务；会话记录与密钥保存在本地，仅按已授予的权限将必要的上下文与参数发送给已配置的模型服务商或工具服务。
+Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、配置、长期记忆与密钥保存在本机，不提供云端数据同步服务，也不要求注册云端账号；调用已配置的模型服务商或工具服务时，仅按已授予的权限将必要的上下文与参数发送至对应端点。
 
 ### 愿景与说明
 
@@ -33,16 +33,16 @@ Superstring 不内置模型权重或 QQ 客户端，不要求注册云端账号�
 
 连接独立运行的 OneBot 11 WebSocket 服务（例如 NapCat），再将群或私聊绑定到 Agent 与聊天方案。
 
-新消息到达已绑定的会话时直接显示。旧历史读取期间，新到达的消息无需等待更早历史加载完成即可即时显示，无需手动刷新页面，已加载的内容与滚动位置保持不变。群聊中的进行中模型父任务显示在消息记录上方并可点击查看；父级详情列出子任务，点击某个子任务查看该项详情，并在其结束时更新一次，不会预先拉取所有子任务正文。
+新消息到达已绑定的会话时直接显示。加载聊天记录时，新消息不再等旧记录读完才显示，保持当前阅读位置不受影响。群聊顶部显示正在进行的模型任务，点开任务可查看子任务及模型输入输出详情，任务结束后会更新最终结果。
 
-- 独立控制直接回应、连续交谈、自主接话和冷场发起四种模式。直接回应不要求兴趣评分，Agent 仍可选择沉默；自主接话支持设置分批消息目标步长（默认 15）与随机扰动量（默认 5），并支持忙时排队。
-- 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。收件人和提及由程序确定，模型不能自行指定任意目标；回复引用与用户提及原生转换为 OneBot 消息段投递，引用与提及彼此独立，元数据挂载于首个实际投递部件（支持纯表情或纯提及回复）。
+- 可选用连续交谈或自主接话（两种模式互斥）。直接回应与冷场发起可分别配置。直接回应不要求兴趣评分，Agent 仍可选择保持沉默；自主接话支持设置触发间隔消息数（默认 15）与扰动量（默认 5），并支持忙时排队。
+- 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。QQ 回复可在当前授权范围内引用消息、@ 成员或搭配表情。引用和 @ 相互独立，表情需由方案授权。
 - 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用同一方案，不会因此共享会话历史。
-- 分别配置判断和回复窗口。超出回复窗口的消息进入水位缓冲，达到阈值后在后台任务队列压缩为上下文包；判断阶段不读取这些包。
+- 分别配置判断和回复窗口。超出回复窗口的消息进入缓冲队列，达到阈值后在后台任务队列压缩为上下文包；判断阶段不读取这些包。
 - QQ 群名称与用户自定义备注名解耦独立保存。设置自定义备注时优先显示备注，未设置时显示 QQ 原群名，均无则显示群号；支持群名预加载，更换绑定或助手不会丢失备注名。
 - 支持在会话卡片和群会话顶部随时启用或停用群发言。停用后群消息照常接收保存，Agent 不发言且不产生新模型任务。
 
-**本群配置**为单个 QQ 账号 × 群 × Agent 提供独立设置页。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用 12 项系统能力，停用即时生效，切换时旧证据永久失效。
+**本群配置**已整合至方案与群目录中，为特定群提供独立的个性化设置与覆盖项。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。
 
 QQ 接入前置步骤与运行要求：
 
@@ -58,20 +58,20 @@ QQ 接入前置步骤与运行要求：
 
 ### 多模态与媒体处理
 
-- **图片输入双模式**：支持原生图片输入（`native`）与文本描述（`description`）双模式。原生模式将图片直接传入支持图片的模型；描述模式调用已配置的视觉模型提取文字描述。可在决策、评估与生成三阶段独立控制图片输入；不支持原生图片的模型可使用描述模式，模型明确报错不支持图片时也会回退提取描述并记录负缓存（非所有网络错误均自动回退）。
-- **图片缓存与准备**：图片资产按范围缓存，支持预生成多分辨率副本与动图抽帧；入站媒体改为按需读取，减少无效资源消耗。
-- **结构化回复引用**：记录多部件消息事实与回复引用链（`reply_to_message_id`），支持按需多层引用；成员记录区分群名片与个人昵称，标注来源属于平台原始上报还是本地目录记录。
+- **图片输入双模式**：支持原生图片输入（`native`）与文本描述（`description`）双模式。原生模式将图片直接传入支持视觉的模型；描述模式调用已配置的视觉模型提取文字描述。可在决策、评估与生成三阶段独立控制图片输入；不支持原生图片的模型可使用描述模式，模型明确报错不支持图片时也会回退提取描述并记录负缓存（非所有网络错误均自动回退）。
+- **图片缓存与准备**：图片资产按范围缓存，支持预生成多分辨率副本与动图抽帧；入站媒体按需读取，减少不必要的资源消耗。
+- **结构化回复记录**：记录多部件消息与回复引用链，支持按需多层引用；成员记录区分群名片与个人昵称，标注来源属于平台原始上报还是本地目录记录。
 - **表情素材管理**：导入表情素材，编辑说明与标签，经检查启用后授权给方案；支持文字、表情或图文混合回复。
-- **输出预留上限放宽**：方案判断与回复输出预留上限放宽至 32768，适应长输出调用；默认值保持 512 与 2048 不变。
-- **QQ 数据保留期限**：新增 QQ 数据保留期限设置（1–3650 天，默认 14 天），覆盖消息正文、媒体阅读记录、助手发言、发送台账与昵称。到期内容不可读；物理清理需在存储面板中手动预览确认。运行追踪的保留天数在「系统能力 → 执行限制」中独立配置，两者互不影响。
+- **输出预留上限**：方案判断与回复输出预留上限最高可设为 32768，适应长输出调用；默认值保持 512 与 2048 不变。
+- **QQ 数据保留期限**：支持配置 QQ 数据保留期限（1–3650 天，默认 14 天），覆盖消息正文、媒体阅读记录、助手发言、发送记录与昵称。到期内容不可读；物理清理需在存储面板中手动预览确认。运行追踪的保留天数在「系统能力 → 执行限制」中独立配置，两者互不影响。
 
 ### 统一 Agent 内核、扩展与工具
 
 导航包含**对话、Agent、系统能力、方案、资料、扩展** 6 个主入口，另设**模型服务**与**偏好**入口。
 
-- **工作区整合**：对话工作区整合消息、运行观测与任务三页签，支持在当前会话与全局范围之间切换。
+- **工作区整合**：对话工作区整合消息、运行状态与任务三页签，支持在当前会话与全局范围之间切换。
 - **扩展与 MCP 客户端**：在「扩展 → 工具」中查看已注册的系统工具与外部 MCP 工具；支持通过 stdio、HTTP 与 SSE 连接外部 Model Context Protocol 服务，登记的服务默认未启用，支持配置超时与结果限额；环境变量凭据仅保存变量名。
-- **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 4 个系统技能（证据读取、媒体读取、任务执行、网络研究）。
+- **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 5 个系统技能（证据读取、媒体读取、QQ回复、任务执行、网络研究）。
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
@@ -81,7 +81,7 @@ QQ 接入前置步骤与运行要求：
 
 - 按 Agent 和来源分区管理长期记忆，查看出处并纠正或屏蔽内容。QQ 记忆按会话与绑定隔离，与本人私聊共享需显式配置。
 - 导入 UTF-8 文本或 Markdown 到知识库，分类管理并逐个授权 Agent；导入不等于自动授权。
-- 为对话、判断、视觉、记忆与整理等用途独立选择本地模型或外部 OpenAI 兼容模型外部服务分别保存端点、加密凭据与声明的能力。
+- 为对话、判断、视觉、记忆与整理等用途独立选择本地模型或外部 OpenAI 兼容模型，分别保存端点、加密凭据与声明的能力。
 
 当前版本不提供语音转写、完整视频理解、AI 绘图或未受控的多 Agent 协作。
 
@@ -110,9 +110,9 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 ### 数据与升级
 
-Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口会直接结束程序自有进程树；常规服务停机仍先取消任务、处理在途写入并安全关闭数据库。再次双击启动器即可重新启动。
+Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口后，Superstring 自行启动的服务与相关进程一起退出。再次双击启动器即可重新启动。
 
-升级前请完整退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。业务数据库结构版本为 54。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。业务数据库结构版本为 54。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -131,6 +131,8 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建�
 - [版本说明](RELEASE_NOTES.md)
 - [升级指南](UPGRADING.md)
 - [跨平台桌面打包](tools/desktop/build/cross-platform/README.md)
+- [桌面参考](docs/reference/desktop.md)
+- [运行观测参考](docs/reference/runtime-observability.md)
 - [Agent 内核架构](docs/architecture/agent-runtime.md)与[前端工作区架构](docs/architecture/frontend-workspaces.md)
 - [MIT 许可证](LICENSE)；依赖项附带各自的许可证与 NOTICE 原文
 
@@ -140,9 +142,9 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建�
 
 ### Conversations, with context
 
-Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context. The interface supports English and Simplified Chinese.
+Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Configure models, prompts, and chat behavior to suit how you use the app. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context. The interface supports English and Simplified Chinese.
 
-Superstring does not bundle model weights or a QQ client, does not require a cloud account, and does not provide a Superstring cloud sync service. Conversation records and credentials remain local, sending only authorized context and arguments to your configured model providers and tool services.
+Superstring runs locally on Windows, macOS, and Linux. Conversation history, configurations, long-term memory, and encryption keys stay on your machine. Superstring does not require a cloud account, nor does it provide cloud sync services. When connecting to configured model providers or tool services, it sends only authorized context and necessary parameters to the designated endpoints.
 
 ### Vision and notes
 
@@ -156,16 +158,16 @@ The current experience may not match mature commercial alternatives. Feedback is
 
 Connect a standalone OneBot 11 WebSocket service (such as NapCat), then bind a group or private chat to an Agent and a chat scheme.
 
-Incoming messages in bound conversations appear automatically. Freshly arrived messages appear immediately without waiting for older history pagination to complete, leaving loaded rows and scroll position undisturbed. In QQ group chats, an ongoing model parent task appears above the message history and can be opened to view its task chain; selecting a child task inspects its details and refreshes upon completion, without eagerly prefetching all child payloads.
+Incoming messages in bound conversations appear automatically. When loading chat history, fresh messages appear right away without waiting for older records to finish loading, keeping your current scroll position undisturbed. In QQ group chats, running model tasks appear above the message history; click a task to view subtasks and model inputs/outputs, and the final result updates upon completion.
 
-- Control direct responses, follow-up conversation, spontaneous participation, and idle-topic initiation independently. Direct responses bypass interest scoring, while the Agent may still choose silence; spontaneous participation supports configurable batch message targets (default 15) with random jitter (default 5) and queue-on-busy controls.
-- Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. The application enforces recipients and mentions; models cannot invent destinations; reply quotes and user mentions map natively to OneBot message segments, operating independently with metadata attached to the first delivered carrier part (supporting sticker-only or mention-only replies).
+- Choose continuous conversation or autonomous participation; these two modes are mutually exclusive. Direct responses and idle-topic initiation can be configured separately. Direct responses bypass interest scoring, while the Agent may still choose silence; autonomous participation supports configurable trigger message counts (default 15) with random jitter (default 5) and queue-on-busy controls.
+- Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. QQ replies can quote messages, mention members, or include stickers within authorized permissions. Quotes and mentions are mutually independent; stickers require scheme authorization.
 - Edit scheme prompts across scene, judgement, reply, review, sticker, media, and compression roles. Multiple bindings can share schemes without sharing conversation history.
-- Configure separate judgement and reply windows. Messages outside the reply window enter a watermark buffer and are compressed into context packages in a background task queue; judgement does not consume these packages.
+- Configure separate judgement and reply windows. Messages outside the reply window enter a buffer queue and are compressed into context packages in a background task queue; judgement does not consume these packages.
 - Decouple original QQ group names from custom aliases. Custom aliases take precedence with fallback to group names; rebinding does not overwrite aliases, and group names support preloading.
 - Enable or disable group participation directly from conversation cards or conversation headers. Disabled groups continue to receive and store messages while the Agent stays silent without starting model tasks.
 
-**Group settings** provides a dedicated configuration page for each QQ account × group × Agent pair. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. Up to 12 system capabilities can be disabled per group with immediate fail-closed enforcement, permanently invalidating earlier evidence.
+**Group settings** are integrated into scheme and group workflows, providing dedicated configurations and overrides for specific groups. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. System capabilities can be disabled per group with immediate effect.
 
 Prerequisites and operational notes for QQ integration:
 
@@ -181,12 +183,12 @@ Operational details:
 
 ### Multimodal and media processing
 
-- **Dual-mode image input**: Choose between native multimodal input (`native`) and text description extraction (`description`). Native mode passes images directly to image-capable models; description mode extracts text descriptions using a configured vision model. Image inputs are toggled independently across decision, evaluation, and generation stages; models lacking native image support should use description mode, and explicit model rejection triggers fallback to descriptions with in-process negative caching (general network failures do not trigger fallback).
-- **Image caching and preparation**: Scoped asset caches store multi-resolution variants and animated GIF frames; inbound media switches to on-demand reading, reducing unnecessary processing.
-- **Structured reply quotes**: Multi-part message facts track structured reply quote chains (`reply_to_message_id`) with multi-level quoting. Member records distinguish group cards from personal nicknames, tracking platform wire events versus local directory sources.
+- **Dual-mode image input**: Choose between native multimodal input (`native`) and text description extraction (`description`). Native mode passes images directly to image-capable models; description mode extracts text descriptions using a configured vision model. Image inputs are toggled independently across decision, evaluation, and generation stages; models lacking native image support can use description mode, and explicit model rejection triggers fallback to descriptions with in-process negative caching (general network failures do not trigger fallback).
+- **Image caching and preparation**: Scoped asset caches store multi-resolution variants and animated GIF frames; inbound media is loaded on demand, reducing unnecessary processing.
+- **Structured reply records**: Tracks multi-part messages and structured reply quote chains with multi-level quoting. Member records distinguish group cards from personal nicknames, tracking platform wire events versus local directory sources.
 - **Sticker management**: Import sticker collections, manage tags and descriptions, and authorize collections for chat schemes; supports text, sticker, or combined responses.
-- **Expanded output reserve caps**: Scheme judgement and reply output reserve limits expand to 32768, accommodating long outputs from thinking models; defaults remain 512 and 2048.
-- **QQ data retention**: Configurable retention period (1–3650 days, default 14 days) covering message text, media reading notes, assistant speech, send ledgers, and nicknames. Expired content becomes unreadable; physical deletion requires manual user preview and confirmation in the storage panel. Telemetry trace retention is configured independently under System capabilities → Execution limits.
+- **Output reserve caps**: Scheme judgement and reply output reserve limits can be set up to 32768 to accommodate long outputs from thinking models; defaults remain 512 and 2048.
+- **QQ data retention**: Configurable retention period (1–3650 days, default 14 days) covering message text, media reading records, assistant speech, delivery logs, and nicknames. Expired content becomes unreadable; physical deletion requires manual user preview and confirmation in the storage panel. Telemetry trace retention is configured independently under System capabilities → Execution limits.
 
 ### Unified Agent core, extensions, and tools
 
@@ -194,7 +196,7 @@ The interface provides six primary sections: **Conversations**, **Agents**, **Sy
 
 - **Workspace tabs**: The conversation workspace integrates Messages, Runs, and Tasks tabs, switchable between conversation and global scopes.
 - **Extensions & MCP client**: View registered built-in and external MCP tools under Extensions → Tools; connect to external Model Context Protocol services over stdio, HTTP, and SSE; registered servers are disabled by default, with configurable timeouts and result caps; environment credentials store variable names only.
-- **Skills catalog**: View installed skill documentation and four bundled system skills (evidence reading, media reading, task execution, web research) under Extensions → Skills.
+- **Skills catalog**: View installed skill documentation and five bundled system skills (evidence reading, media reading, QQ reply, task execution, web research) under Extensions → Skills.
 - **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
@@ -233,7 +235,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 ### Data and upgrades
 
-On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window directly terminates the application-owned process tree; standard service stops continue to cancel active tasks, settle in-flight writes, and close the database safely. Double-click the launcher again to restart.
+On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window exits background services and processes started by Superstring. Double-click the launcher again to restart.
 
 Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The application database schema version is 54. See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
@@ -254,6 +256,8 @@ Services bind to `127.0.0.1:17861` by default, with automatic fallback to availa
 - [Release notes](RELEASE_NOTES.md)
 - [Upgrade guide](UPGRADING.md)
 - [Desktop packaging](tools/desktop/build/cross-platform/README.md)
+- [Desktop reference](docs/reference/desktop.md)
+- [Runtime observability reference](docs/reference/runtime-observability.md)
 - [Agent runtime architecture](docs/architecture/agent-runtime.md) and [Frontend workspace architecture](docs/architecture/frontend-workspaces.md)
 - [MIT license](LICENSE); third-party license and NOTICE texts accompany packaged dependencies
 
