@@ -10,13 +10,17 @@
 //  - the 51→52 upgrade preserves legacy evidence: old scheme switches untouched,
 //    old member nickname stays a `legacy` fact, old media notes import as legacy
 //    read tasks with model/expiry/attempts intact (failures are not zeroed)
-//  - an unknown future version (56) is still rejected
+//  - an unknown future version (current + 1) is still rejected
 
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { BUSINESS_MIGRATION_FILES, ensureBusinessSchema } from "../../src/server/db/schema-gate";
+import {
+  BUSINESS_MIGRATION_FILES,
+  BUSINESS_SCHEMA_VERSION,
+  ensureBusinessSchema,
+} from "../../src/server/db/schema-gate";
 import { cloneBusinessDb } from "../harness/business-db";
 
 const NOW = "2026-01-01T00:00:00.000000Z";
@@ -435,7 +439,9 @@ describe("0052 message facts and media persistence", () => {
 
       ensureBusinessSchema(db);
 
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
       // Old switches and old custom values survive byte for byte.
       const after = db.prepare("SELECT * FROM qq_schemes").all() as Record<string, unknown>[];
       for (const key of Object.keys(before[0])) {
@@ -512,7 +518,7 @@ describe("0052 message facts and media persistence", () => {
   it("still rejects an unknown future version", () => {
     const h = cloneBusinessDb();
     try {
-      h.db.exec("PRAGMA user_version = 56");
+      h.db.exec("PRAGMA user_version = 57");
       expect(() => ensureBusinessSchema(h.db)).toThrow("REJECT_UNKNOWN_VERSION");
     } finally {
       h.close();

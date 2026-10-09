@@ -166,6 +166,7 @@ export function createOneBotConversationRuntime(options: {
     enqueueCompression: (job) => compression.enqueue(job),
     wakes,
     outbox,
+    onDeliveryCommitted: (conversationId) => delivery.notifyCommitted(conversationId),
     stickers: {
       counts: ["confirmed"],
       isAvailable: (asset) => options.store.copyExists(asset.fileName),

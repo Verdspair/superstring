@@ -12,7 +12,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { ConversationSummary } from "../../../shared/contracts/conversation";
+import type {
+  ConversationSummary,
+  DeliveryStaleReason,
+} from "../../../shared/contracts/conversation";
 import { formatDate } from "../../i18n/runtime";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
@@ -27,6 +30,21 @@ export const deliveryLabels = {
   stale: "observability.replyExpired",
   not_sent: "observability.notSent",
 };
+
+export function staleReasonLabelKey(reason?: DeliveryStaleReason | null): string {
+  switch (reason) {
+    case "DELIVERY_TTL_EXPIRED":
+      return "observability.deliveryStaleTtlExpired";
+    case "CONVERSATION_CHANGED":
+      return "observability.deliveryStaleConversationChanged";
+    case "DELIVERY_AUTHORITY_CHANGED":
+      return "observability.deliveryStaleAuthorityChanged";
+    case "SOURCE_EXPIRED":
+      return "observability.deliveryStaleSourceExpired";
+    default:
+      return "observability.deliveryStaleNeutral";
+  }
+}
 export function DeliveryDetails({
   outputId,
   conversation,
@@ -76,7 +94,9 @@ export function DeliveryEvidence({
         <div className="flex gap-2">
           {data && (
             <Badge variant={data.status === "failed" ? "destructive" : "secondary"}>
-              {t(deliveryLabels[data.status])}
+              {data.status === "stale"
+                ? t(staleReasonLabelKey(data.staleReason))
+                : t(deliveryLabels[data.status])}
             </Badge>
           )}
           {partial && (
@@ -151,7 +171,9 @@ export function DeliveryEvidence({
                   <TableCell>
                     <span className="flex items-center gap-1">
                       {part.status === "confirmed" && <CheckCheck className="size-4" />}
-                      {t(deliveryLabels[part.status])}
+                      {part.status === "stale"
+                        ? t(staleReasonLabelKey(data.staleReason))
+                        : t(deliveryLabels[part.status])}
                     </span>
                   </TableCell>
                   <TableCell className="font-mono text-xs">

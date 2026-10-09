@@ -21,11 +21,38 @@ export class OutboundDelivery {
   private readonly laneWaiters: Array<() => void> = [];
   /** 本实例正在跑投递循环的会话：跨 runOnce 去重，同一会话不会占两个空车道。 */
   private readonly activeConversations = new Set<string>();
+  /** A committed-intent notification arrived during this conversation's current snapshot. */
+  private readonly notifiedWhileActive = new Set<string>();
+  private readonly pumpRuns = new Set<Promise<number>>();
   /** Finish an in-flight receipt, while leaving unstarted work durable for a new worker. */
   stop(): void {
     this.stopped = true;
     // 等待名额的循环被唤醒后按 stopped 退出；已在飞的发送仍会收到回执并结算。
     for (const wake of this.laneWaiters.splice(0)) wake();
+  }
+  /** 停机收尾：等待已有投递结算；不再开始新发送。 */
+  async waitForIdle(): Promise<void> {
+    while (this.pumpRuns.size > 0) await Promise.allSettled([...this.pumpRuns]);
+  }
+  /** Durable intent 已提交后的后台 kick；提交结果不依赖异步投递成功与否。 */
+  notifyCommitted(conversationId: string): void {
+    if (this.stopped) return;
+    const run = this.runOnce(conversationId);
+    void run.catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        this.options.telemetry?.record("bot.delivery.pump", {
+          channel: "onebot11",
+          stage: "delivery",
+          status: "failed",
+          code: "DELIVERY_PUMP_FAILED",
+          details: { name: error instanceof Error ? error.name : typeof error },
+        });
+      } catch (observerError) {
+        console.warn("[qq-delivery] asynchronous pump failure reporting failed", observerError);
+      }
+      console.warn(`[qq-delivery] asynchronous pump failed: ${message}`);
+    });
   }
   /**
    * 策略调高/撤销后由装配处调用（接既有配置更新通知，无定时器轮询）：唤醒等待者按**当前**
@@ -242,7 +269,8 @@ export class OutboundDelivery {
       if (staleCode) {
         span?.update({ code: staleCode, details: { staleReason: staleCode } });
         const stale = repository.db.transaction(() => {
-          const result = repository.stale(id, this.now());
+          // 判据与持久化同源：这次算出的代码就是写进 stale_reason 的那一个，不另设映射表。
+          const result = repository.stale(id, this.now(), staleCode);
           if (result) {
             this.projectLegacy(id);
             this.revision(id);
@@ -396,10 +424,24 @@ export class OutboundDelivery {
    * 模型帽，且由实例共享，所以并发多次 runOnce 也不会超发；同一会话已有循环在跑就不再起一条，
    * 避免重复会话占空车道。停止后不再发新请求，等待者按 stopped 退出。
    */
-  async runOnce(): Promise<number> {
+  runOnce(conversationId?: string): Promise<number> {
+    if (this.stopped) return Promise.resolve(0);
+    if (conversationId && this.activeConversations.has(conversationId)) {
+      this.notifiedWhileActive.add(conversationId);
+      return Promise.resolve(0);
+    }
+    const run = this.runPending(conversationId);
+    this.pumpRuns.add(run);
+    void run.then(
+      () => this.pumpRuns.delete(run),
+      () => this.pumpRuns.delete(run),
+    );
+    return run;
+  }
+  private async runPending(conversationId?: string): Promise<number> {
     if (this.stopped) return 0;
     const byConversation = new Map<string, string[]>();
-    for (const delivery of this.options.repository.pending()) {
+    for (const delivery of this.options.repository.pending(conversationId)) {
       const ids = byConversation.get(delivery.conversationId);
       if (ids) ids.push(delivery.id);
       else byConversation.set(delivery.conversationId, [delivery.id]);
@@ -407,28 +449,47 @@ export class OutboundDelivery {
     let count = 0;
     const workers: Promise<void>[] = [];
     for (const [conversationId, ids] of byConversation) {
-      if (this.activeConversations.has(conversationId)) continue;
+      if (this.activeConversations.has(conversationId)) {
+        this.notifiedWhileActive.add(conversationId);
+        continue;
+      }
       this.activeConversations.add(conversationId);
       workers.push(
         (async () => {
+          const seen = new Set<string>();
           try {
             if (!(await this.acquireLane())) return;
             try {
-              for (const id of ids) {
+              let pendingIds = ids;
+              while (!this.stopped) {
+                for (const id of pendingIds) {
+                  if (this.stopped) break;
+                  seen.add(id);
+                  await this.deliver(id);
+                  count++;
+                }
                 if (this.stopped) break;
-                await this.deliver(id);
-                count++;
+                if (!this.notifiedWhileActive.delete(conversationId)) break;
+                // The notification is only a hint; the durable outbox remains the source of truth.
+                pendingIds = this.options.repository
+                  .pending(conversationId)
+                  .filter((delivery) => !seen.has(delivery.id))
+                  .map((delivery) => delivery.id);
+                if (pendingIds.length === 0) break;
               }
             } finally {
               this.releaseLane();
             }
           } finally {
+            this.notifiedWhileActive.delete(conversationId);
             this.activeConversations.delete(conversationId);
           }
         })(),
       );
     }
-    await Promise.all(workers);
+    const settled = await Promise.allSettled(workers);
+    const failed = settled.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
     this.housekeep();
     return count;
   }

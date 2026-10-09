@@ -197,6 +197,7 @@ export interface OneBotHostOptions {
   policy: () => OneBotPolicy;
   now?: () => string;
   onDiagnostic?: (event: BotHostDiagnostic) => void | Promise<void>;
+  onDeliveryCommitted?: (conversationId: string) => void;
   enqueueCompression?: (job: BotCompressionJob) => void;
   /** 外部（MCP）动作：每次唤醒现取；没有登记时返回空表（行为与不加这个功能一致）。 */
   externalActions?: () => readonly BuiltInAction[];
@@ -2669,8 +2670,8 @@ export class OneBotHost {
                     output: PreparedOutput,
                     runId: string,
                     meta: { ordinal: number; at: string },
-                  ): Promise<boolean> =>
-                    db
+                  ): Promise<boolean> => {
+                    const committed = db
                       .transaction(() => {
                         if (committedTargets.has(output.targetId)) return false;
                         source.assertCurrent();
@@ -2680,7 +2681,10 @@ export class OneBotHost {
                           undefined
                         );
                       })
-                      .immediate(),
+                      .immediate();
+                    if (committed) o.onDeliveryCommitted?.(conversation.id);
+                    return committed;
+                  },
                 }),
           });
         } finally {

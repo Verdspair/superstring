@@ -217,7 +217,7 @@ describe("scheme identity", () => {
     // 既有方案的参与时机；回填值 0/60/20 因此与新方案的 true/60/20 不同，这是决定本身。
     const db = new Database(":memory:");
     try {
-      for (const file of BUSINESS_MIGRATION_FILES.slice(0, -1))
+      for (const file of BUSINESS_MIGRATION_FILES.slice(0, 54))
         db.exec(
           readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
         );

@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import type { Delivery, DeliveryPart } from "../../shared/contracts/conversation";
+import type {
+  Delivery,
+  DeliveryPart,
+  DeliveryStaleReason,
+} from "../../shared/contracts/conversation";
 import type { SourceRef } from "../../shared/contracts/evidence";
 export type OutboundTarget = {
   accountId: string;
@@ -48,6 +52,7 @@ type IntentRow = {
   created_at: string;
   expires_at: string;
   legacy_send_id: string | null;
+  stale_reason: DeliveryStaleReason | null;
 };
 type PartRow = {
   id: string;
@@ -117,6 +122,8 @@ export class OutboundIntentRepository {
           conversationId: r.conversation_id,
           ordinal: r.output_ordinal,
           status: r.status,
+          // 原因只随失效出现，不跟着已确认/失败/未知的终态走。
+          staleReason: r.status === "stale" ? r.stale_reason : null,
           sourceThroughSeq: r.source_through_seq,
           deliverBy: r.deliver_by,
           createdAt: r.created_at,
@@ -187,9 +194,10 @@ export class OutboundIntentRepository {
       if (byId !== null) {
         if (byId.status !== "planned") return byId;
         this.db.query("DELETE FROM outbound_parts WHERE intent_id=?").run(id);
+        // 替换后的计划尚未失效，旧的失效原因同时清掉。
         this.db
           .query(
-            "UPDATE outbound_intents SET run_id=?, deliver_by=?, created_at=?, expires_at=? WHERE id=?",
+            "UPDATE outbound_intents SET run_id=?, deliver_by=?, created_at=?, expires_at=?, stale_reason=NULL WHERE id=?",
           )
           .run(input.runId, input.deliverBy, input.createdAt, input.expiresAt, id);
         for (const [ordinal, part] of input.parts.entries())
@@ -225,13 +233,15 @@ export class OutboundIntentRepository {
       return this.get(id)!;
     })();
   }
-  pending(): Delivery[] {
+  pending(conversationId?: string): Delivery[] {
+    const filter = conversationId === undefined ? "" : " AND conversation_id=?";
+    const args = conversationId === undefined ? [] : [conversationId];
     return (
       this.db
         .query(
-          "SELECT id FROM outbound_intents WHERE status IN ('planned','delivering') ORDER BY created_at,output_ordinal,id",
+          `SELECT id FROM outbound_intents WHERE status IN ('planned','delivering')${filter} ORDER BY created_at,output_ordinal,id`,
         )
-        .all() as { id: string }[]
+        .all(...args) as { id: string }[]
     ).map((r) => this.get(r.id)!);
   }
   /**
@@ -330,7 +340,11 @@ export class OutboundIntentRepository {
               : "delivering";
     this.db.query("UPDATE outbound_intents SET status=? WHERE id=?").run(status, id);
   }
-  stale(id: string, at: string): boolean {
+  /**
+   * 判这次未送达为失效，原因与状态同事务落库。`reason` 缺省 null 是未记录原因，
+   * 不是期限到期。已判失效的行原样保留上面的守卫，不会被后到的清理覆写。
+   */
+  stale(id: string, at: string, reason: DeliveryStaleReason | null = null): boolean {
     return this.db.transaction(() => {
       const r = this.row(id);
       if (
@@ -344,7 +358,9 @@ export class OutboundIntentRepository {
           "UPDATE outbound_parts SET status='stale',finished_at=? WHERE intent_id=? AND status='planned'",
         )
         .run(at, id);
-      this.db.query("UPDATE outbound_intents SET status='stale' WHERE id=?").run(id);
+      this.db
+        .query("UPDATE outbound_intents SET status='stale',stale_reason=? WHERE id=?")
+        .run(reason, id);
       return true;
     })();
   }
@@ -419,6 +435,13 @@ export class OutboundIntentRepository {
           )
           .run(at, row.id);
         this.refreshStatus(row.id);
+        // 只有 refreshStatus 判成 stale 的行才记原因：部件状态优先级先于它，
+        // 回执未知或发送中的行不算来源过期。
+        this.db
+          .query(
+            "UPDATE outbound_intents SET stale_reason='SOURCE_EXPIRED' WHERE id=? AND status='stale' AND stale_reason IS NULL",
+          )
+          .run(row.id);
       }
       return this.db
         .query(

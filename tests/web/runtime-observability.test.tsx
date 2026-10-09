@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Delivery } from "../../src/shared/contracts/conversation";
 import type {
   RuntimeSpan,
   RuntimeSpansPage,
@@ -406,4 +407,149 @@ it("shows confirmed and unknown parts independently and aborts delivery inspecti
   fireEvent.blur(window);
   // 失焦保留已展开的送达详情，不再强制收起。
   expect(screen.getByText("receipt")).toBeTruthy();
+});
+
+it("renders stale delivery causes and legacy neutral in DeliveryEvidence, preserves partial confirmed, and ignores reason when non-stale", async () => {
+  const makeDelivery = (patch: Partial<Delivery> = {}): Delivery => ({
+    id: "del-stale",
+    runId: "run-1",
+    conversationId,
+    ordinal: 0,
+    target: { peerId: "12345", participantId: "p1" },
+    status: "stale",
+    staleReason: null,
+    sourceThroughSeq: 1,
+    deliverBy: now,
+    createdAt: now,
+    parts: [
+      {
+        id: "part-stale",
+        ordinal: 0,
+        kind: "text",
+        status: "stale",
+        platformMessageId: null,
+        attemptedAt: now,
+        finishedAt: null,
+        stickerId: null,
+      },
+    ],
+    ...patch,
+  });
+
+  const cases: Array<{ reason: Delivery["staleReason"]; zh: string; en: string }> = [
+    { reason: "DELIVERY_TTL_EXPIRED", zh: "发送超时", en: "Delivery timeout" },
+    { reason: "CONVERSATION_CHANGED", zh: "对话已有新进展", en: "New conversation updates" },
+    { reason: "DELIVERY_AUTHORITY_CHANGED", zh: "发送条件变化", en: "Delivery conditions changed" },
+    { reason: "SOURCE_EXPIRED", zh: "原内容保留期已到", en: "Content retention expiration" },
+    { reason: null, zh: "回复已失效", en: "Reply no longer valid" },
+  ];
+
+  for (const c of cases) {
+    await i18n.changeLanguage("zh-CN");
+    const d = makeDelivery({ id: `del-${c.reason ?? "null"}`, staleReason: c.reason });
+    setup({ getDelivery: vi.fn().mockResolvedValue(d) });
+    const view = render(<DeliveryDetails outputId={d.id} />);
+    await pointer(screen.getByRole("button", { name: /送达详情/ }));
+    await screen.findByRole("table");
+    // intent badge and stale part both render the localized stale reason
+    expect(screen.getAllByText(c.zh).length).toBe(2);
+
+    await i18n.changeLanguage("en");
+    expect(screen.getAllByText(c.en).length).toBe(2);
+    view.unmount();
+  }
+
+  // Non-stale status ignores staleReason: labels remain original namespace values
+  const nonStaleCases = [
+    { status: "confirmed" as const, zh: "已送达", en: "Delivered" },
+    { status: "unknown" as const, zh: "发送结果待确认", en: "Delivery outcome unconfirmed" },
+  ];
+  for (const ns of nonStaleCases) {
+    await i18n.changeLanguage("zh-CN");
+    const d = makeDelivery({
+      id: `del-ns-${ns.status}`,
+      status: ns.status,
+      staleReason: "DELIVERY_AUTHORITY_CHANGED",
+      parts: [
+        {
+          id: "part-1",
+          ordinal: 0,
+          kind: "text",
+          status: ns.status,
+          platformMessageId: "plat-id",
+          attemptedAt: now,
+          finishedAt: now,
+          stickerId: null,
+        },
+      ],
+    });
+    setup({ getDelivery: vi.fn().mockResolvedValue(d) });
+    const view = render(<DeliveryDetails outputId={d.id} />);
+    await pointer(screen.getByRole("button", { name: /送达详情/ }));
+    await screen.findByRole("table");
+    expect(screen.getAllByText(ns.zh).length).toBe(2);
+    expect(screen.queryByText("发送条件变化")).toBeNull();
+
+    await i18n.changeLanguage("en");
+    expect(screen.getAllByText(ns.en).length).toBe(2);
+    expect(screen.queryByText("Delivery conditions changed")).toBeNull();
+    view.unmount();
+  }
+
+  // Mixed parts: partial confirmed badge preserved; confirmed/failed parts never overridden
+  await i18n.changeLanguage("zh-CN");
+  const mixed = makeDelivery({
+    id: "del-mixed",
+    status: "stale",
+    staleReason: "DELIVERY_AUTHORITY_CHANGED",
+    parts: [
+      {
+        id: "p-conf",
+        ordinal: 0,
+        kind: "text",
+        status: "confirmed",
+        platformMessageId: "p-1",
+        attemptedAt: now,
+        finishedAt: now,
+        stickerId: null,
+      },
+      {
+        id: "p-stale",
+        ordinal: 1,
+        kind: "text",
+        status: "stale",
+        platformMessageId: null,
+        attemptedAt: now,
+        finishedAt: null,
+        stickerId: null,
+      },
+      {
+        id: "p-fail",
+        ordinal: 2,
+        kind: "text",
+        status: "failed",
+        platformMessageId: null,
+        attemptedAt: now,
+        finishedAt: now,
+        stickerId: null,
+      },
+    ],
+  });
+  setup({ getDelivery: vi.fn().mockResolvedValue(mixed) });
+  const mixedView = render(<DeliveryDetails outputId={mixed.id} />);
+  await pointer(screen.getByRole("button", { name: /送达详情/ }));
+  await screen.findByRole("table");
+  expect(screen.getAllByText("发送条件变化").length).toBe(2);
+  expect(screen.getByText("已送达")).toBeTruthy();
+  expect(screen.getByText("发送失败")).toBeTruthy();
+  expect(screen.getByText("部分内容已送达，请查看各部分结果。")).toBeTruthy();
+
+  await i18n.changeLanguage("en");
+  expect(screen.getAllByText("Delivery conditions changed").length).toBe(2);
+  expect(screen.getByText("Delivered")).toBeTruthy();
+  expect(screen.getByText("Delivery failed")).toBeTruthy();
+  expect(screen.getByText("Some parts were delivered. Check each part's outcome.")).toBeTruthy();
+  mixedView.unmount();
+
+  await i18n.changeLanguage("zh-CN");
 });

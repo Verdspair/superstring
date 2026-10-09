@@ -19,6 +19,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import { conversationRoutes } from "../../src/server/api/conversations";
+import { deliveryRoutes } from "../../src/server/api/deliveries";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
@@ -34,7 +35,11 @@ import {
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { OneBotSendRequest } from "../../src/server/services/onebot-connection";
-import { ConversationEventsSchema } from "../../src/shared/contracts/conversation";
+import {
+  ConversationEventsSchema,
+  DeliverySchema,
+  type DeliveryStaleReason,
+} from "../../src/shared/contracts/conversation";
 import type { QqMessagePart } from "../../src/shared/contracts/qq-message";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
@@ -87,7 +92,13 @@ function commitOutbound(
   bindingId: string,
   intentId: string,
   parts: ({ kind: "text"; text: string } | { kind: "sticker"; stickerId: string })[],
-  options: { target?: Partial<OutboundTarget>; seedFacts?: boolean; deliverBy?: string } = {},
+  options: {
+    target?: Partial<OutboundTarget>;
+    seedFacts?: boolean;
+    deliverBy?: string;
+    expiresAt?: string;
+    sourceThroughSeq?: number;
+  } = {},
 ) {
   const runId = `run-${intentId}`;
   new AgentRunRepository(f.h.db).createRun({
@@ -127,10 +138,10 @@ function commitOutbound(
     ordinal: 0,
     target,
     speechKind: "direct_reply",
-    sourceThroughSeq: 0,
+    sourceThroughSeq: options.sourceThroughSeq ?? 0,
     deliverBy: options.deliverBy ?? far,
     createdAt: now,
-    expiresAt: far,
+    expiresAt: options.expiresAt ?? far,
     parts,
   });
   f.journal.append({
@@ -429,16 +440,43 @@ describe("T13 outbound delivery event fact details via existing events projectio
       occurredAt: now,
     });
     const app = appFor(f);
-    const { page } = await readEvents(app, f.conversation);
+    const { page, raw } = await readEvents(app, f.conversation);
     for (const forged of ["forged:sibling", "forged:ghost"]) {
       const item = page.items.find((candidate) => candidate.eventKey === forged);
       expect(item).toBeDefined();
       expect(item?.qqMessageFacts).toBeUndefined();
+      expect(item?.text).toBeNull();
+      expect(item?.deliveryStatus).toBeNull();
+      expect(item?.deliveryStaleReason).toBeNull();
+      expect(item?.media).toEqual([]);
     }
+    expect(raw).not.toContain("B会话正文");
     // 对照：B 会话自己的事件有详情。
     const { page: pageB } = await readEvents(app, conversationB);
     const factsB = pageB.items.flatMap((item) => item.qqMessageFacts ?? []);
     expect(factsB.map((fact) => fact.platformMessageId)).toEqual(["-9400"]);
+    const staleB = commitOutbound(f, conversationB, bindingB, crypto.randomUUID(), [
+      { kind: "text", text: "B expired draft" },
+    ]);
+    f.outbox.stale(staleB.id, now, "DELIVERY_AUTHORITY_CHANGED");
+    f.journal.append({
+      conversationId: f.conversation,
+      eventKey: "forged:expired-metadata",
+      kind: "delivery",
+      source: {
+        kind: "outbound_intent",
+        id: staleB.id,
+        revision: "stale",
+        expiresAt: "2026-10-01T15:00:00.000000Z",
+      },
+      occurredAt: now,
+    });
+    const foreign = (await readEvents(app, f.conversation)).page.items.find(
+      (event) => event.eventKey === "forged:expired-metadata",
+    );
+    expect(foreign?.text).toBeNull();
+    expect(foreign?.deliveryStatus).toBeNull();
+    expect(foreign?.deliveryStaleReason).toBeNull();
     f.h.close();
   });
 
@@ -669,5 +707,215 @@ describe("T13 outbound delivery event fact details via existing events projectio
     ).toBe(true);
     expect(raw.includes("base64")).toBe(false);
     f.h.close();
+  });
+});
+
+describe("recorded delivery invalidation reasons", () => {
+  const readDelivery = async (f: Fixture, id: string) => {
+    const app = new Hono().route("/v2/deliveries", deliveryRoutes(f.h.db, { includeShared: true }));
+    const response = await app.request(`/v2/deliveries/${id}`);
+    expect(response.status).toBe(200);
+    return DeliverySchema.parse(await response.json());
+  };
+  const checkProjection = async (f: Fixture, id: string, reason: DeliveryStaleReason | null) => {
+    expect((await readDelivery(f, id)).staleReason).toBe(reason);
+    const { page } = await readEvents(appFor(f), f.conversation);
+    const items = page.items.filter((event) => event.outputId === id);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((event) => event.deliveryStaleReason === reason)).toBe(true);
+  };
+  const deliveryFor = (f: Fixture, authorize = true) =>
+    new OutboundDelivery({
+      orm: f.h.orm,
+      repository: f.outbox,
+      journal: f.journal,
+      stickerFile: () => null,
+      authorize: () => authorize,
+      now: () => now,
+      port: {
+        async send() {
+          throw new Error("unexpected send");
+        },
+      },
+    });
+
+  for (const reason of [
+    "DELIVERY_TTL_EXPIRED",
+    "CONVERSATION_CHANGED",
+    "DELIVERY_AUTHORITY_CHANGED",
+    "SOURCE_EXPIRED",
+  ] as const) {
+    it(`persists ${reason} through delivery and timeline routes`, async () => {
+      const f = setup();
+      const intent = commitOutbound(
+        f,
+        f.conversation,
+        bindingA,
+        crypto.randomUUID(),
+        [{ kind: "text", text: "unconfirmed synthetic body" }],
+        {
+          deliverBy: reason === "DELIVERY_TTL_EXPIRED" ? "2026-10-01T15:00:00.000000Z" : far,
+          expiresAt: reason === "SOURCE_EXPIRED" ? "2026-10-01T15:30:00.000000Z" : far,
+        },
+      );
+      const delivery = deliveryFor(f, reason !== "DELIVERY_AUTHORITY_CHANGED");
+      if (reason === "CONVERSATION_CHANGED") {
+        f.journal.append({
+          conversationId: f.conversation,
+          eventKey: "new-related-input",
+          kind: "inbound",
+          source: { kind: "qq_event", id: "synthetic-input", revision: "1" },
+          participant: { id: "50001", label: "Member", role: "member" },
+          addressing: { reasons: ["mention"], mentionIds: [] },
+          occurredAt: now,
+        });
+      }
+      if (reason === "SOURCE_EXPIRED") delivery.housekeep();
+      else await delivery.deliver(intent.id);
+      expect(f.outbox.get(intent.id)?.status).toBe("stale");
+      expect(new OutboundIntentRepository(f.h.db).get(intent.id)?.staleReason).toBe(reason);
+      await checkProjection(f, intent.id, reason);
+      delivery.housekeep();
+      expect(f.outbox.get(intent.id)?.staleReason).toBe(reason);
+      if (reason === "SOURCE_EXPIRED") expect(f.outbox.parts(intent.id)[0]?.payload).toBeNull();
+      const { raw } = await readEvents(appFor(f), f.conversation);
+      expect(raw).not.toContain("unconfirmed synthetic body");
+    });
+  }
+
+  it("keeps unrecorded historical reasons unknown and preserves an already recorded reason", async () => {
+    const f = setup();
+    const legacy = commitOutbound(f, f.conversation, bindingA, crypto.randomUUID(), [
+      { kind: "text", text: "legacy draft" },
+    ]);
+    expect(f.outbox.stale(legacy.id, now)).toBe(true);
+    await checkProjection(f, legacy.id, null);
+    expect(f.outbox.stale(legacy.id, now, "DELIVERY_TTL_EXPIRED")).toBe(false);
+    expect(f.outbox.get(legacy.id)?.staleReason).toBeNull();
+    const ttl = commitOutbound(
+      f,
+      f.conversation,
+      bindingA,
+      crypto.randomUUID(),
+      [{ kind: "text", text: "recorded draft" }],
+      {
+        deliverBy: "2026-10-01T15:00:00.000000Z",
+        expiresAt: "2026-10-01T16:30:00.000000Z",
+      },
+    );
+    await deliveryFor(f).deliver(ttl.id);
+    f.outbox.purgeExpired("2026-10-01T17:00:00.000000Z");
+    expect(f.outbox.get(ttl.id)?.staleReason).toBe("DELIVERY_TTL_EXPIRED");
+  });
+
+  it("exposes null on non-stale records and clears residual reasons when replacing a planned draft", async () => {
+    const f = setup();
+    const intent = commitOutbound(f, f.conversation, bindingA, crypto.randomUUID(), [
+      { kind: "text", text: "first draft" },
+    ]);
+    // A valid but inconsistent stored reason must not override the actual status.
+    f.h.db
+      .query("UPDATE outbound_intents SET stale_reason='DELIVERY_TTL_EXPIRED' WHERE id=?")
+      .run(intent.id);
+    await checkProjection(f, intent.id, null);
+    const row = f.outbox.row(intent.id)!;
+    const replacementRunId = crypto.randomUUID();
+    new AgentRunRepository(f.h.db).createRun({
+      runId: replacementRunId,
+      specId: "main",
+      specVersion: "1",
+      owner: { kind: "conversation", id: f.conversation },
+      at: now,
+    });
+    f.outbox.commit({
+      id: intent.id,
+      runId: replacementRunId,
+      conversationId: f.conversation,
+      ordinal: 0,
+      target: JSON.parse(row.target),
+      speechKind: "direct_reply",
+      sourceThroughSeq: 0,
+      deliverBy: far,
+      createdAt: now,
+      expiresAt: far,
+      parts: [{ kind: "text", text: "replacement draft" }],
+    });
+    expect(f.outbox.row(intent.id)?.stale_reason).toBeNull();
+    await deliverIntent(f, intent.id, [{ kind: "confirmed", messageId: "-9960" }]);
+    f.h.db
+      .query("UPDATE outbound_intents SET stale_reason='SOURCE_EXPIRED' WHERE id=?")
+      .run(intent.id);
+    await checkProjection(f, intent.id, null);
+  });
+
+  it("retains authorized confirmed partial text until its content retention expires", async () => {
+    const f = setup();
+    const intent = commitOutbound(f, f.conversation, bindingA, crypto.randomUUID(), [
+      { kind: "text", text: "confirmed partial body" },
+      { kind: "text", text: "unconfirmed tail body" },
+    ]);
+    const claimed = f.outbox.claimPart(intent.id, now)!;
+    f.outbox.settlePart(claimed.part.id, { status: "confirmed", messageId: "-9961" }, now);
+    expect(f.outbox.stale(intent.id, now, "DELIVERY_AUTHORITY_CHANGED")).toBe(true);
+    await checkProjection(f, intent.id, "DELIVERY_AUTHORITY_CHANGED");
+    let page = await readEvents(appFor(f), f.conversation);
+    expect(page.page.items.find((event) => event.outputId === intent.id)?.text).toBe(
+      "confirmed partial body",
+    );
+    expect(page.raw).not.toContain("unconfirmed tail body");
+    expect(f.outbox.parts(intent.id).map((part) => part.status)).toEqual(["confirmed", "stale"]);
+    // An older event cap can expire before the current intent retention cap.
+    f.journal.append({
+      conversationId: f.conversation,
+      eventKey: "expired-output-metadata",
+      kind: "delivery",
+      source: {
+        kind: "outbound_intent",
+        id: intent.id,
+        revision: "expired-cap",
+        expiresAt: "2026-10-01T15:00:00.000000Z",
+      },
+      occurredAt: now,
+      runId: intent.runId,
+      outputId: intent.id,
+    });
+    const cappedPage = await readEvents(appFor(f), f.conversation);
+    const capped = cappedPage.page.items.find(
+      (event) => event.eventKey === "expired-output-metadata",
+    );
+    expect(capped?.text).toBeNull();
+    expect(capped?.deliveryStaleReason).toBe("DELIVERY_AUTHORITY_CHANGED");
+
+    // Expiration hides the body without changing the recorded invalidation cause or receipt.
+    f.h.db
+      .query("UPDATE outbound_intents SET expires_at='2026-10-01T15:00:00.000000Z' WHERE id=?")
+      .run(intent.id);
+    deliveryFor(f).housekeep();
+    page = await readEvents(appFor(f), f.conversation);
+    expect(page.page.items.find((event) => event.outputId === intent.id)?.text).toBeNull();
+    expect(f.outbox.parts(intent.id).every((part) => part.payload === null)).toBe(true);
+    expect(f.outbox.get(intent.id)?.staleReason).toBe("DELIVERY_AUTHORITY_CHANGED");
+    expect(f.outbox.parts(intent.id)[0]?.platform_message_id).toBe("-9961");
+  });
+
+  it("does not replace in-flight or unknown receipt states with a stale cause", () => {
+    const f = setup();
+    const intent = commitOutbound(
+      f,
+      f.conversation,
+      bindingA,
+      crypto.randomUUID(),
+      [{ kind: "text", text: "in-flight body" }],
+      { expiresAt: "2026-10-01T15:30:00.000000Z" },
+    );
+    const claim = f.outbox.claimPart(intent.id, now)!;
+    expect(f.outbox.stale(intent.id, now, "DELIVERY_TTL_EXPIRED")).toBe(false);
+    f.outbox.purgeExpired(now);
+    expect(f.outbox.get(intent.id)?.status).toBe("delivering");
+    expect(f.outbox.get(intent.id)?.staleReason).toBeNull();
+    f.outbox.settlePart(claim.part.id, { status: "unknown" }, now);
+    f.outbox.purgeExpired(now);
+    expect(f.outbox.get(intent.id)?.status).toBe("unknown");
+    expect(f.outbox.get(intent.id)?.staleReason).toBeNull();
   });
 });

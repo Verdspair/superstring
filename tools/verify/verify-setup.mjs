@@ -360,6 +360,9 @@ try {
           installRoot,
           "app/resources/migrations/versions/0055_qq_initiative_time_window.sql",
         ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0056_outbound_stale_reason.sql"),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

@@ -16,6 +16,7 @@ export function projectConversationEvent(
     contentState: "unavailable",
     media: [],
     deliveryStatus: null,
+    deliveryStaleReason: null,
   };
   if (event.kind === "wake" && event.source.kind === "wake") {
     const wake = db
@@ -49,7 +50,9 @@ export function projectConversationEvent(
     };
   }
   const expired = (until: string | null | undefined) => !!until && until <= at;
-  if (expired(event.source.expiresAt)) return { ...base, contentState: "expired" };
+  // Delivery metadata survives content retention; its branch still hides expired payloads.
+  if (event.source.kind !== "outbound_intent" && expired(event.source.expiresAt))
+    return { ...base, contentState: "expired" };
   if (event.source.kind === "web_message") {
     const m = db
       .query(
@@ -186,14 +189,25 @@ export function projectConversationEvent(
   }
   if (event.source.kind === "outbound_intent") {
     const i = db
-      .query("SELECT status,expires_at FROM outbound_intents WHERE id=?")
-      .get(event.source.id) as {
+      .query(
+        "SELECT status,expires_at,stale_reason FROM outbound_intents WHERE id=? AND conversation_id=?",
+      )
+      .get(event.source.id, event.conversationId) as {
       status: ConversationEventView["deliveryStatus"];
       expires_at: string;
+      stale_reason: ConversationEventView["deliveryStaleReason"];
     } | null;
     if (!i) return base;
-    if (expired(i.expires_at))
-      return { ...base, contentState: "expired", deliveryStatus: i.status };
+    // 原因只随失效出现：非失效行（含残留合法代码的历史行）一律按 null 投影，与 repo.get 同口径。
+    const staleReason = i.status === "stale" ? i.stale_reason : null;
+    // 正文回收与未送达原因各自独立，早退分支仍带出原因。
+    if (expired(i.expires_at) || expired(event.source.expiresAt))
+      return {
+        ...base,
+        contentState: "expired",
+        deliveryStatus: i.status,
+        deliveryStaleReason: staleReason,
+      };
     const parts = db
       .query("SELECT kind,payload,status FROM outbound_parts WHERE intent_id=? ORDER BY ordinal")
       .all(event.source.id) as { kind: string; payload: string | null; status: string }[];
@@ -205,6 +219,7 @@ export function projectConversationEvent(
       text: words.length ? words.join("\n") : null,
       contentState: "active",
       deliveryStatus: i.status,
+      deliveryStaleReason: staleReason,
       media: parts
         .filter((p) => p.kind === "sticker" && p.payload)
         .map((p) => ({

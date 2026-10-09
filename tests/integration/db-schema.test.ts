@@ -17,7 +17,8 @@
 
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { getTableConfig } from "drizzle-orm/sqlite-core";
 import { openConnection } from "../../src/server/db/connection";
@@ -194,6 +195,11 @@ const AGENT_RUNS_SQL = readFileSync(
   "utf8",
 );
 /** Every ordered business migration, joined for a complete reference database. */
+const V56_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0056_outbound_stale_reason.sql"),
+  "utf8",
+);
+
 const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
 ${QQ_DISPATCH_SQL}
 ${QQ_MEDIA_PURPOSES_SQL}
@@ -227,7 +233,8 @@ ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0051_qq_gro
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0052_qq_message_multimodal.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0053_qq_group_names.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0054_qq_initiative_batches.sql"), "utf8")}
-${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0055_qq_initiative_time_window.sql"), "utf8")}`;
+${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0055_qq_initiative_time_window.sql"), "utf8")}
+${V56_SQL}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };
@@ -1172,6 +1179,162 @@ describe("business schema gate", () => {
     db.run(`PRAGMA user_version = ${BUSINESS_SCHEMA_VERSION}`);
     expect(() => ensureBusinessSchema(db)).not.toThrow();
     db.close();
+  });
+});
+
+// 6.1 0056 functional: historical 55 upgrades to 56 additively; stale_reason stays NULL on
+// historical rows, rejects non-enum values, and leaves prior intent data untouched.
+describe("0056 outbound_intents.stale_reason (55 to 56 upgrade)", () => {
+  const SEED = `
+    INSERT INTO users (id, name, created_at) VALUES ('u1', 'u', '2026-01-01T00:00:00Z');
+    INSERT INTO agents (id, name, system_prompt, description, additional_instructions, p5_config,
+      model_name, memory_consolidation_prompt, memory_consolidation_additional_instructions,
+      memory_retrieval_prompt, created_at, updated_at)
+      VALUES ('a1', 'a', '', '', '', '{}', '', '', '', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+    INSERT INTO conversations (id, channel, topology, source_id, agent_id, user_id, binding_epoch,
+      created_at, updated_at)
+      VALUES ('c1', 'onebot11', 'shared', 's1', 'a1', 'u1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+    INSERT INTO agent_runs (run_id, spec_id, spec_version, owner_kind, owner_id, status, started_at)
+      VALUES ('r1', 'sp', '1', 'conversation', 'c1', 'completed', '2026-01-01T00:00:00Z');
+    INSERT INTO outbound_intents (id, run_id, conversation_id, output_ordinal, target, speech_kind,
+      source_through_seq, deliver_by, status, created_at, expires_at)
+      VALUES ('i1', 'r1', 'c1', 0, '{}', 'chiming_in', 0, '2026-01-01T00:05:00Z', 'stale',
+        '2026-01-01T00:01:00Z', '2026-01-01T14:01:00Z');
+  `;
+  const V55_SQL = ALL_MIGRATION_SQL.slice(0, ALL_MIGRATION_SQL.indexOf(V56_SQL));
+
+  it("upgrades a real historical-55 file database to 56 via openBusinessDb: stale intent and its part payload survive byte-identical with unknown (NULL) reason", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ss-0056-"));
+    const file = path.join(dir, "business.sqlite");
+    let intentBefore: unknown[];
+    let partBefore: unknown[];
+    const old = new Database(file);
+    try {
+      old.exec(V55_SQL);
+      old.exec(`PRAGMA user_version = 55;${SEED}`);
+      old
+        .query(
+          "INSERT INTO outbound_parts (id, intent_id, ordinal, kind, payload, status) VALUES ('p1', 'i1', 0, 'text', ?, 'stale')",
+        )
+        .run(JSON.stringify({ text: "synthetic body for 0056 upgrade" }));
+      expect(old.query("SELECT count(*) AS n FROM outbound_intents").get()).toEqual({ n: 1 });
+      expect(old.query("SELECT count(*) AS n FROM outbound_parts").get()).toEqual({ n: 1 });
+      intentBefore = old
+        .query(
+          "SELECT id, run_id, conversation_id, output_ordinal, target, speech_kind, source_through_seq, deliver_by, status, created_at, expires_at, legacy_send_id FROM outbound_intents",
+        )
+        .all();
+      partBefore = old.query("SELECT * FROM outbound_parts").all();
+    } finally {
+      old.close();
+    }
+    // The real entrypoint validates resources, applies 0056 on the real file, and stamps 56.
+    const reopened = openBusinessDb({ path: file });
+    try {
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
+      const intent = reopened.db
+        .query("SELECT * FROM outbound_intents WHERE id='i1'")
+        .get() as Record<string, unknown>;
+      expect(intent.stale_reason).toBeNull();
+      const intentAfter = reopened.db
+        .query(
+          "SELECT id, run_id, conversation_id, output_ordinal, target, speech_kind, source_through_seq, deliver_by, status, created_at, expires_at, legacy_send_id FROM outbound_intents",
+        )
+        .all();
+      expect(intentAfter).toEqual(intentBefore);
+      expect(reopened.db.query("SELECT * FROM outbound_parts").all()).toEqual(partBefore);
+      expect(reopened.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(reopened.db.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+    } finally {
+      reopened.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("upgrades an in-memory historical-55 database via ensureBusinessSchema with identical guarantees", () => {
+    const old = new Database(":memory:");
+    try {
+      old.exec(V55_SQL);
+      old.exec(`PRAGMA user_version = 55;${SEED}`);
+      const cols =
+        "id, run_id, conversation_id, output_ordinal, target, speech_kind, source_through_seq, deliver_by, status, created_at, expires_at, legacy_send_id";
+      const before = old.query(`SELECT ${cols} FROM outbound_intents`).all();
+      expect(before.length).toBe(1);
+      const preColumns = old.query("PRAGMA table_info(outbound_intents)").all() as Array<{
+        name: string;
+      }>;
+      expect(preColumns.some((c) => c.name === "stale_reason")).toBe(false);
+      ensureBusinessSchema(old);
+      expect(old.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
+      const row = old.query("SELECT * FROM outbound_intents WHERE id='i1'").get() as Record<
+        string,
+        unknown
+      >;
+      expect(row.stale_reason).toBeNull();
+      const after = old.query(`SELECT ${cols} FROM outbound_intents`).all();
+      expect(after).toEqual(before);
+      expect(old.query("PRAGMA foreign_key_check").all()).toEqual([]);
+      expect(old.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+      const fresh = new Database(":memory:");
+      fresh.exec(ALL_MIGRATION_SQL);
+      const shape = (db: Database) =>
+        db
+          .query(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE tbl_name='outbound_intents' ORDER BY type, name",
+          )
+          .all();
+      expect(shape(old)).toEqual(shape(fresh));
+      fresh.close();
+    } finally {
+      old.close();
+    }
+  });
+
+  it("accepts the four enum reasons and NULL, rejects any other value", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(ALL_MIGRATION_SQL);
+      db.exec(SEED.replace("', 'stale',", "', 'confirmed',"));
+      const update = (value: string) =>
+        db.query("UPDATE outbound_intents SET stale_reason=? WHERE id='i1'").run(value);
+      for (const reason of [
+        "DELIVERY_TTL_EXPIRED",
+        "CONVERSATION_CHANGED",
+        "DELIVERY_AUTHORITY_CHANGED",
+        "SOURCE_EXPIRED",
+      ]) {
+        update(reason);
+        expect(
+          (
+            db.query("SELECT stale_reason FROM outbound_intents WHERE id='i1'").get() as {
+              stale_reason: string;
+            }
+          ).stale_reason,
+        ).toBe(reason);
+      }
+      expect(() => update("SOMETHING_ELSE")).toThrow(/CHECK constraint failed/);
+      expect(
+        (
+          db.query("SELECT stale_reason FROM outbound_intents WHERE id='i1'").get() as {
+            stale_reason: string | null;
+          }
+        ).stale_reason,
+      ).not.toBe("SOMETHING_ELSE");
+      db.query("UPDATE outbound_intents SET stale_reason=NULL WHERE id='i1'").run();
+      expect(
+        (
+          db.query("SELECT stale_reason FROM outbound_intents WHERE id='i1'").get() as {
+            stale_reason: string | null;
+          }
+        ).stale_reason,
+      ).toBeNull();
+    } finally {
+      db.close();
+    }
   });
 });
 

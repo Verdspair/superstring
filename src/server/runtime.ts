@@ -571,6 +571,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       bot.release();
       const settling = [
         botWorker.stop(),
+        bot.delivery.waitForIdle(),
         bot.compression.stop(),
         tasks.stop(),
         mcpHost?.stop() ?? Promise.resolve(),

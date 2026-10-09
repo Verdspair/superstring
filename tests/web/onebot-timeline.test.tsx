@@ -6,6 +6,7 @@ import type {
   Delivery,
 } from "../../src/shared/contracts/conversation";
 import type { SuperstringApi } from "../../src/web/api";
+import { i18n } from "../../src/web/i18n/runtime";
 import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
 import { timelineRows } from "../../src/web/screens/conversations/timeline-projection";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -482,4 +483,125 @@ it("correctly resolves quotes with bySourceMap and handles duplicate quotes and 
   expect(replyTarget2).toBeDefined();
   if (replyTarget1) expect(bySourceMap.get(replyTarget1)).toBe(targetEvent);
   if (replyTarget2) expect(bySourceMap.get(replyTarget2)).toBe(targetEvent);
+});
+
+it("renders stale delivery causes and legacy neutral, ignores reasons on non-stale, and offers no resend", async () => {
+  await i18n.changeLanguage("zh-CN");
+  const testDelivery: Delivery = {
+    id: "out-stale",
+    runId: "run-stale",
+    target: { peerId: "peer", participantId: "member" },
+    conversationId: "bot",
+    ordinal: 0,
+    status: "stale",
+    staleReason: "DELIVERY_TTL_EXPIRED",
+    sourceThroughSeq: 1,
+    deliverBy: now,
+    createdAt: now,
+    parts: [
+      {
+        id: "p1",
+        ordinal: 0,
+        kind: "text",
+        status: "stale",
+        platformMessageId: null,
+        attemptedAt: now,
+        finishedAt: now,
+        stickerId: null,
+      },
+    ],
+  };
+
+  const baseObserved: ConversationEventView = {
+    ...observed,
+    seq: 10,
+    eventKey: "e-stale-ttl",
+    outputId: "out-stale",
+    text: "Stale reply",
+    deliveryStatus: "stale",
+    deliveryStaleReason: "DELIVERY_TTL_EXPIRED",
+  };
+
+  const convChangedEvent = {
+    ...baseObserved,
+    seq: 11,
+    eventKey: "e-stale-conv",
+    outputId: "out-conv",
+    deliveryStaleReason: "CONVERSATION_CHANGED" as const,
+  };
+
+  const authChangedEvent = {
+    ...baseObserved,
+    seq: 12,
+    eventKey: "e-stale-auth",
+    outputId: "out-auth",
+    deliveryStaleReason: "DELIVERY_AUTHORITY_CHANGED" as const,
+  };
+
+  const sourceExpiredEvent = {
+    ...baseObserved,
+    seq: 13,
+    eventKey: "e-stale-src",
+    outputId: "out-src",
+    deliveryStaleReason: "SOURCE_EXPIRED" as const,
+  };
+
+  const legacyNullEvent = {
+    ...baseObserved,
+    seq: 14,
+    eventKey: "e-stale-legacy",
+    outputId: "out-legacy",
+    deliveryStaleReason: null,
+  };
+
+  const nonStaleWithReasonEvent = {
+    ...baseObserved,
+    seq: 15,
+    eventKey: "e-confirmed",
+    outputId: "out-confirmed",
+    deliveryStatus: "confirmed" as const,
+    deliveryStaleReason: "DELIVERY_AUTHORITY_CHANGED" as const,
+  };
+
+  setup({
+    getConversationEvents: async () => ({
+      items: [
+        baseObserved,
+        convChangedEvent,
+        authChangedEvent,
+        sourceExpiredEvent,
+        legacyNullEvent,
+        nonStaleWithReasonEvent,
+      ],
+      nextSeq: 16,
+      hasMore: false,
+    }),
+    getDelivery: async () => testDelivery,
+  });
+
+  render(<ConversationTimeline conversation={summary()} />);
+
+  // In zh-CN
+  expect(await screen.findByText("发送超时")).toBeTruthy();
+  expect(screen.getByText("对话已有新进展")).toBeTruthy();
+  expect(screen.getByText("发送条件变化")).toBeTruthy();
+  expect(screen.getByText("原内容保留期已到")).toBeTruthy();
+  expect(screen.getByText("回复已失效")).toBeTruthy();
+  // Non-stale status ignores reason: confirmed remains "已送达"
+  expect(screen.getByText("已送达")).toBeTruthy();
+  // No resend button
+  expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
+
+  // Test en
+  await i18n.changeLanguage("en");
+  expect(await screen.findByText("Delivery timeout")).toBeTruthy();
+  expect(screen.getByText("New conversation updates")).toBeTruthy();
+  expect(screen.getByText("Delivery conditions changed")).toBeTruthy();
+  expect(screen.getByText("Content retention expiration")).toBeTruthy();
+  expect(screen.getByText("Reply no longer valid")).toBeTruthy();
+  expect(screen.getByText("Delivered")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
+
+  // Reset to zh-CN
+  await i18n.changeLanguage("zh-CN");
 });

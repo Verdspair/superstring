@@ -13,6 +13,7 @@ import {
 import { businessTables } from "../../src/server/db/schema";
 import {
   BUSINESS_MIGRATION_FILES,
+  BUSINESS_SCHEMA_VERSION,
   BUSINESS_TABLE_NAMES,
   ensureBusinessSchema,
   openBusinessDb,
@@ -73,7 +74,9 @@ describe("editable QQ prompt storage and HTTP", () => {
           )
           .get(),
       ).toEqual({ revision: 7, judgement_output_reserved: 512, reply_output_reserved: 2048 });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
     } finally {
       db.close();
     }
@@ -121,7 +124,9 @@ describe("editable QQ prompt storage and HTTP", () => {
       expect(row.name).toBe("existing");
       for (const slot of QQ_PROMPT_SLOTS)
         expect(row[`prompt_${slot}`]).toBe(QQ_PROMPT_DEFAULTS[slot]);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
     } finally {
       db.close();
     }
@@ -180,7 +185,9 @@ describe("editable QQ prompt storage and HTTP", () => {
         initiative_time_target_seconds: 60,
         initiative_time_jitter_seconds: 20,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
     } finally {
       db.close();
     }
@@ -191,7 +198,7 @@ describe("editable QQ prompt storage and HTTP", () => {
     try {
       for (const f of BUSINESS_MIGRATION_FILES)
         db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
-      db.exec("PRAGMA user_version=56;");
+      db.exec("PRAGMA user_version=57;");
       expect(() => ensureBusinessSchema(db)).toThrow(/REJECT_UNKNOWN_VERSION/);
     } finally {
       db.close();

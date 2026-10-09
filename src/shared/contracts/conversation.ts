@@ -53,6 +53,15 @@ export const ConversationSummarySchema = z.strictObject({
   lastSeq: z.number().int().nonnegative(),
   consumedSeq: z.number().int().nonnegative(),
 });
+/** 未送达的原因：期限到、会话变化、授权变化，或来源保留期到期。历史行没有记录原因，按未知处理。 */
+export const DeliveryStaleReasonSchema = z.enum([
+  "DELIVERY_TTL_EXPIRED",
+  "CONVERSATION_CHANGED",
+  "DELIVERY_AUTHORITY_CHANGED",
+  "SOURCE_EXPIRED",
+]);
+export type DeliveryStaleReason = z.infer<typeof DeliveryStaleReasonSchema>;
+
 export const ConversationEventSchema = z.strictObject({
   conversationId: z.string(),
   seq: z.number().int().positive(),
@@ -91,6 +100,8 @@ export const ConversationEventViewSchema = ConversationEventSchema.extend({
   deliveryStatus: z
     .enum(["planned", "delivering", "confirmed", "failed", "unknown", "stale"])
     .nullable(),
+  /** 仅 deliveryStatus="stale" 有实义；其余事件恒为 null。 */
+  deliveryStaleReason: DeliveryStaleReasonSchema.nullable().optional(),
   /** QQ 事件详情（规格 §6 后台消息详情）：仅授权可读的入站事件携带；缺失即无详情。 */
   qqMessageFacts: z.array(QqMessageFactSchema).optional(),
 });
@@ -137,6 +148,8 @@ export const DeliverySchema = z.strictObject({
   conversationId: z.string(),
   ordinal: z.number().int().nonnegative(),
   status: z.enum(["planned", "delivering", "confirmed", "failed", "unknown", "stale"]),
+  /** 仅 status="stale" 有实义；null＝未记录原因。 */
+  staleReason: DeliveryStaleReasonSchema.nullable().optional(),
   sourceThroughSeq: z.number().int().nonnegative(),
   deliverBy: z.string(),
   createdAt: z.string(),

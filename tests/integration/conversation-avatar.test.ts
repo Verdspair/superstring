@@ -18,7 +18,11 @@ import {
   nowIso,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { BUSINESS_MIGRATION_FILES, openBusinessDb } from "../../src/server/db/schema-gate";
+import {
+  BUSINESS_MIGRATION_FILES,
+  BUSINESS_SCHEMA_VERSION,
+  openBusinessDb,
+} from "../../src/server/db/schema-gate";
 import {
   ConversationListSchema,
   ConversationSummarySchema,
@@ -292,7 +296,9 @@ describe("server-shared conversation avatars", () => {
     old.close();
     const h = openBusinessDb({ path: filename });
     handles.push(h);
-    expect(h.db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
+    expect(h.db.query("PRAGMA user_version").get()).toEqual({
+      user_version: BUSINESS_SCHEMA_VERSION,
+    });
     // 0054/0055 追加的观察边界与判定时刻列带默认值：旧行数据不变，新增列取默认值。
     expect(h.db.query("SELECT * FROM conversations").all()).toEqual(
       (prior as Record<string, unknown>[]).map((row) => ({

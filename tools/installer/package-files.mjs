@@ -88,6 +88,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0053_qq_group_names.sql",
     "versions/0054_qq_initiative_batches.sql",
     "versions/0055_qq_initiative_time_window.sql",
+    "versions/0056_outbound_stale_reason.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

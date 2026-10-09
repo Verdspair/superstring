@@ -1904,6 +1904,7 @@ export const outboundIntents = sqliteTable("outbound_intents", {
   createdAt: text("created_at").notNull(),
   expiresAt: text("expires_at").notNull(),
   legacySendId: text("legacy_send_id"),
+  staleReason: text("stale_reason"),
 });
 
 export const outboundParts = sqliteTable("outbound_parts", {

@@ -121,6 +121,7 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     readFileSync(paths.qqGroupNamesMigration, "utf8"),
     readFileSync(paths.qqInitiativeBatchesMigration, "utf8"),
     readFileSync(paths.qqInitiativeTimeWindowMigration, "utf8"),
+    readFileSync(paths.outboundStaleReasonMigration, "utf8"),
   ] as const;
   if (businessMigrationSql.some((sql) => !sql.trim())) throw new Error("EMPTY_MIGRATION_RESOURCE");
   if (env.SUPERSTRING_SERVE_WEB === "1") readFileSync(path.join(paths.webDir, "index.html"));

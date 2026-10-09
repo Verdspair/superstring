@@ -331,6 +331,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0055_qq_initiative_time_window.sql",
     ),
+    outboundStaleReasonMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0056_outbound_stale_reason.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

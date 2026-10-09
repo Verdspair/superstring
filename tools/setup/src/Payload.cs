@@ -113,6 +113,7 @@ namespace Superstring.Setup
         "app/resources/migrations/versions/0053_qq_group_names.sql",
         "app/resources/migrations/versions/0054_qq_initiative_batches.sql",
         "app/resources/migrations/versions/0055_qq_initiative_time_window.sql",
+        "app/resources/migrations/versions/0056_outbound_stale_reason.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

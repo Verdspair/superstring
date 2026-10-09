@@ -7,9 +7,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import { inputUnits } from "../../src/server/agent/context-engine";
+import { ConversationHost } from "../../src/server/agent/conversation-host";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
+import { createOneBotConversationRuntime } from "../../src/server/channels/onebot11/create-runtime";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
@@ -23,6 +25,7 @@ import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contrac
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
+import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
 import { estimateTokens } from "../../src/server/services/token-estimate";
 import { cloneBusinessDb } from "../harness/business-db";
 
@@ -100,6 +103,8 @@ function setup(
     capacity?: number;
     judgementBudget?: number;
     batchSize?: number;
+    clockTime?: number;
+    mergeWindowSeconds?: number;
   } = {},
 ) {
   const h = cloneBusinessDb();
@@ -139,7 +144,7 @@ function setup(
       new Date(time * 1000).toISOString(),
       new Date(time * 1000).toISOString(),
     );
-  const clock = { seconds: time };
+  const clock = { seconds: options.clockTime ?? time };
   const now = () => new Date(clock.seconds * 1000).toISOString();
   const journal = new ConversationEventRepository(h.db),
     wakes = new WakeRepository(h.db),
@@ -231,6 +236,8 @@ function setup(
     calls,
     adapter,
     host,
+    agentRuntime: runtime,
+    gateway,
     scheme,
     clock,
     now,
@@ -386,6 +393,82 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
     // 完整有效判断消费本批已观察边界：chiming_in_observed_seq 推进到冻结的 wake.throughSeq。
     expect(f.journal.chimingInObservedSeq(conversation.id)).toBeGreaterThan(0);
     expect(f.journal.chimingInJudgedAt(conversation.id)).toBe(f.now());
+  });
+
+  it("production OneBot runtime sends a fast early-committed target before the gated sibling finishes", async () => {
+    let releaseSlow: () => void = () => {};
+    let slowStarted = false;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+      pendingGates.push(releaseSlow);
+    });
+    const f = setup({
+      clockTime: Math.floor(Date.now() / 1000) - 2,
+      mergeWindowSeconds: 0,
+      replyComplete: async (req) => {
+        if (authorizedTargetOf(req) === "20003") {
+          slowStarted = true;
+          await slowGate;
+        }
+        return inlineFinal(authorizedTargetOf(req), "reply body");
+      },
+    });
+    const sends: Array<{ target: string | undefined; at: string; request: unknown }> = [];
+    const bot = createOneBotConversationRuntime({
+      orm: f.orm,
+      db: f.db,
+      gateway: f.gateway,
+      agentRuntime: f.agentRuntime,
+      host: new ConversationHost({ runtime: f.agentRuntime }),
+      journal: f.journal,
+      store: new QqStickerStore({ directory: "synthetic-qq-stickers" }),
+      port: {
+        async send(request) {
+          sends.push({ target: request.peerId, at: f.now(), request });
+          return { kind: "confirmed", messageId: `synthetic-${sends.length}` };
+        },
+      },
+      wake: () => {},
+      policy: () => ({
+        maxSteps: 20,
+        deliveryTtlSeconds: 600,
+        retryDelayMs: 1000,
+        maxAttempts: 3,
+        globalConcurrency: 4,
+        modelCallConcurrency: 1,
+      }),
+    });
+    f.receive("1", "20002");
+    f.clock.seconds += 1;
+    f.receive("2", "20003");
+    const activeBatch = bot.scheduler.runOnce();
+    try {
+      await waitFor(() => slowStarted);
+      await waitFor(() => sends.length === 1);
+      expect(sends[0]?.target).toBe("30003");
+      expect(sends[0]?.at).toBe(f.now());
+      expect(f.outbox.list({}).some((delivery) => delivery.target?.participantId === "20003")).toBe(
+        false,
+      );
+      // The sibling remains gated while the production-wired delivery completes.
+      expect(
+        f.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.initiative.batch'").get(),
+      ).toEqual({ status: "generating" });
+    } finally {
+      releaseSlow();
+      await Promise.allSettled([activeBatch]);
+      bot.scheduler.stop();
+      bot.delivery.stop();
+      await bot.delivery.waitForIdle();
+      bot.release();
+    }
+    expect(
+      f.outbox
+        .list({})
+        .map((delivery) => delivery.target?.participantId)
+        .sort(),
+    ).toEqual(["20002", "20003"]);
+    expect(f.outbox.list({}).every((delivery) => delivery.status === "confirmed")).toBe(true);
   });
 
   it("an invalid batch protocol does not advance the judgement time", async () => {

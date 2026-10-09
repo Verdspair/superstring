@@ -8,7 +8,7 @@ import type { QqIdentity } from "../../../shared/contracts/qq-message";
 import { Badge } from "../../components/ui/badge";
 import { timelineKey } from "../../features/conversations/use-timeline-scroll";
 import { cn } from "../../lib/utils";
-import { DeliveryDetails } from "../runs/DeliveryEvidence";
+import { DeliveryDetails, staleReasonLabelKey } from "../runs/DeliveryEvidence";
 import { RunLink } from "../runs/RunEntry";
 
 const deliveryLabels = {
@@ -309,7 +309,9 @@ function EventRecordComponent({
               variant="outline"
               className={event.deliveryStatus === "failed" ? "text-destructive" : undefined}
             >
-              {t(deliveryLabels[event.deliveryStatus])}
+              {event.deliveryStatus === "stale"
+                ? t(staleReasonLabelKey(event.deliveryStaleReason))
+                : t(deliveryLabels[event.deliveryStatus])}
             </Badge>
           )}
           {event.runId && <RunLink runId={event.runId} />}

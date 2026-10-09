@@ -522,6 +522,149 @@ describe("outbox delivery: one intent's parts are strictly serial and in ordinal
   });
 });
 
+describe("outbox delivery: active conversation drain notices and shutdown", () => {
+  it("coalesces same-conversation commits during an active lane into one scoped outbox re-read", async () => {
+    const f = setup();
+    const conversation = f.addConversation(BINDING, "30003");
+    const stub = onebotStub(okResult);
+    const { port } = await listen(stub.handler);
+    const first = f.commitIntent(conversation, BINDING, "active-first", [
+      { kind: "text", text: "first", mentions: [] },
+    ]);
+    const pendingCalls: Array<string | undefined> = [];
+    const pending = f.outbox.pending.bind(f.outbox);
+    f.outbox.pending = (conversationId) => {
+      pendingCalls.push(conversationId);
+      return pending(conversationId);
+    };
+    const delivery = deliveryFor(f, port, 1);
+    const run = delivery.runOnce(conversation);
+    running.push(run);
+    await waitFor(() => stub.inflight.length === 1, "first conversation send");
+    const late = Array.from({ length: 8 }, (_, index) => {
+      const id = `active-late-${String(index + 1).padStart(2, "0")}`;
+      const intent = f.commitIntent(conversation, BINDING, id, [
+        { kind: "text", text: id, mentions: [] },
+      ]);
+      delivery.notifyCommitted(conversation);
+      expect(f.outbox.get(intent.id)?.status).toBe("planned");
+      return intent;
+    });
+    expect(pendingCalls).toEqual([conversation]);
+    stub.releaseFor("30003", "first-receipt");
+    for (let index = 1; index < 9; index += 1) {
+      await waitFor(() => stub.inflight.length === 1, `intent ${index} enters send lane`);
+      stub.releaseFor("30003", `receipt-${index}`);
+    }
+    await run;
+    expect(stub.arrivals).toEqual(Array(9).fill("30003"));
+    expect(f.outbox.get(first.id)?.status).toBe("confirmed");
+    for (const intent of late) expect(f.outbox.get(intent.id)?.status).toBe("confirmed");
+    expect(pendingCalls).toEqual([conversation, conversation]);
+  });
+
+  it("stop drain waits for sibling conversation receipt after another lane rejects", async () => {
+    const f = setup();
+    const conversationA = f.addConversation(BINDING, "30003");
+    const conversationB = f.addConversation(BINDING_B, "30004");
+    const first = f.commitIntent(conversationA, BINDING, "drain-reject-a", [
+      { kind: "text", text: "A", mentions: [] },
+    ]);
+    const second = f.commitIntent(conversationB, BINDING_B, "drain-held-b", [
+      { kind: "text", text: "B", mentions: [] },
+    ]);
+    let releaseB: () => void = () => {};
+    let enteredB = false;
+    const gateB = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const sends: string[] = [];
+    const failedPartId = f.outbox.parts(first.id)[0]!.id;
+    const settlePart = f.outbox.settlePart.bind(f.outbox);
+    f.outbox.settlePart = (partId, result, at) => {
+      if (partId === failedPartId) throw new Error("synthetic receipt persistence failure");
+      return settlePart(partId, result, at);
+    };
+    const delivery = new OutboundDelivery({
+      orm: f.h.orm,
+      repository: f.outbox,
+      journal: f.journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      now: () => now,
+      deliveryConcurrency: 2,
+      port: {
+        async send(request) {
+          sends.push(request.peerId);
+          if (request.peerId === "30003") return { kind: "confirmed", messageId: "receipt-a" };
+          enteredB = true;
+          await gateB;
+          return { kind: "confirmed", messageId: "receipt-b" };
+        },
+      },
+    });
+    const run = delivery.runOnce();
+    running.push(run);
+    try {
+      await waitFor(() => enteredB, "second conversation send is in flight");
+      delivery.stop();
+      let idle = false;
+      const drain = delivery.waitForIdle().then(() => {
+        idle = true;
+      });
+      await Promise.resolve();
+      expect(idle).toBe(false);
+      releaseB();
+      await expect(run).rejects.toThrow("synthetic receipt persistence failure");
+      await drain;
+      expect(idle).toBe(true);
+      expect(sends.sort()).toEqual(["30003", "30004"]);
+      expect(f.outbox.get(first.id)?.status).toBe("delivering");
+      expect(f.outbox.parts(second.id)[0]?.status).toBe("confirmed");
+      expect(f.outbox.get(second.id)?.status).toBe("confirmed");
+      delivery.recover();
+      expect(f.outbox.get(first.id)?.status).toBe("unknown");
+      await delivery.runOnce();
+      expect(sends).toHaveLength(2);
+    } finally {
+      releaseB();
+      delivery.stop();
+      await delivery.waitForIdle();
+    }
+  });
+
+  it("stop waits for an in-flight receipt, prevents new sends, and leaves later durable work pending", async () => {
+    const f = setup();
+    const conversation = f.addConversation(BINDING, "30003");
+    const stub = onebotStub(okResult);
+    const { port } = await listen(stub.handler);
+    const first = f.commitIntent(conversation, BINDING, "stop-first", [
+      { kind: "text", text: "first", mentions: [] },
+    ]);
+    const delivery = deliveryFor(f, port, 1);
+    const run = delivery.runOnce();
+    running.push(run);
+    await waitFor(() => stub.inflight.length === 1, "stop test send");
+    const second = f.commitIntent(conversation, BINDING, "stop-later", [
+      { kind: "text", text: "later", mentions: [] },
+    ]);
+    delivery.stop();
+    let idle = false;
+    const drain = delivery.waitForIdle().then(() => {
+      idle = true;
+    });
+    await Promise.resolve();
+    expect(idle).toBe(false);
+    stub.releaseFor("30003", "stop-receipt");
+    await run;
+    await drain;
+    expect(idle).toBe(true);
+    expect(stub.arrivals).toEqual(["30003"]);
+    expect(f.outbox.parts(first.id)[0]?.status).toBe("confirmed");
+    expect(f.outbox.get(second.id)?.status).toBe("planned");
+  });
+});
+
 describe("outbox delivery: unknown results are recorded, never replayed", () => {
   it("a failed first part leaves the rest not_sent and recovery sends nothing again", async () => {
     const f = setup();

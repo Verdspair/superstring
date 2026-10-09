@@ -30,7 +30,11 @@ import {
 import { createQqStickerCollection } from "../../src/server/db/qq-sticker-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { BUSINESS_MIGRATION_FILES, ensureBusinessSchema } from "../../src/server/db/schema-gate";
+import {
+  BUSINESS_MIGRATION_FILES,
+  BUSINESS_SCHEMA_VERSION,
+  ensureBusinessSchema,
+} from "../../src/server/db/schema-gate";
 import { createAgent } from "../../src/server/services/agent-service";
 import {
   createQqBinding,
@@ -670,7 +674,9 @@ describe("0051 迁移：老开关列搬进记录且仍是布尔形态", () => {
         PRAGMA user_version=50;
       `);
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 55 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
 
       const orm = toOrmHandle(db).orm;
       const row = readQqGroupConfigRow(orm, "grp-1", "agent-1");
