@@ -12,15 +12,26 @@ import type { PermissionEditor } from "../../features/access/permission-state";
 import { dirtyPages } from "../../features/agents/page-drafts";
 import { knowledgeReadDirty } from "../../features/knowledge/types";
 import { translateNotice } from "../../i18n";
+import {
+  useMcpServersResource,
+  useSkillsResource,
+  useToolDirectoryResource,
+} from "../../services/connection-resources";
 import { useSuperstringStore } from "../../store";
 import {
+  type BuiltInCapabilityEntry,
   CAPABILITY_CATALOG,
   type CapabilityEntry,
   capabilityByRoute,
+  FUNCTION_GROUPS,
+  isBuiltInCapability,
+  SKILL_HUMAN_LABELS,
+  TOOL_HUMAN_LABELS,
 } from "../../workspace/capability-catalog";
 import { KnowledgeToolSettings, MemoryToolSettings } from "../assistants/ResourceRules";
 import { ExecutionSettings } from "../runs/execution-settings";
 import { CapabilityPolicyPanel } from "./capability-policy-panel";
+import { ExternalIntegrationsCard } from "./external-components";
 import { SystemComponents } from "./system-components";
 import { WebAccessPanel } from "./web-access-panel";
 
@@ -44,10 +55,13 @@ const FACT_KEYS: Record<CapabilityFact["kind"], string> = {
 };
 
 function capabilityFact(entry: CapabilityEntry, editor: PermissionEditor | null): CapabilityFact {
-  if (entry.detail === "memory" || entry.detail === "knowledge") return { kind: "perAgent" };
-  if (entry.detail === "link") return { kind: "followsSession" };
-  // 执行按功能配置（研究/代码/任务各有各的限制），不能用单一 tasks 开关冒充整体状态。
-  if (entry.detail === "execution") return { kind: "perFunction" };
+  if (isBuiltInCapability(entry)) {
+    if (entry.detail === "memory" || entry.detail === "knowledge") return { kind: "perAgent" };
+    if (entry.detail === "link") return { kind: "followsSession" };
+    if (entry.detail === "execution") return { kind: "perFunction" };
+  } else {
+    return { kind: "perFunction" };
+  }
   if (!editor) return { kind: "unread" };
   const modules = executionPolicy(editor.snapshot.policy).modules;
   const switches = entry.detail === "web" ? [modules.web] : [modules.qqMedia, modules.qqStickers];
@@ -64,6 +78,7 @@ function CapabilityDirectory({
   hidden?: boolean;
 } = {}) {
   const { t, i18n } = useTranslation();
+  const apiClient = useSuperstringStore((s) => s.apiClient);
   const s = useSuperstringStore(
     useShallow((state) => ({
       loadPermissionSettings: state.loadPermissionSettings,
@@ -73,20 +88,98 @@ function CapabilityDirectory({
     })),
   );
   const [query, setQuery] = useState("");
+
+  const tools = useToolDirectoryResource(apiClient, active && !hidden);
+  const skills = useSkillsResource(apiClient, active && !hidden);
+  const mcp = useMcpServersResource(apiClient, active && !hidden);
+  const toolData = tools.data;
+  const skillData = skills.data;
+  const mcpData = mcp.data;
+  const catalogErrors = [
+    { kind: "tool", error: tools.error, refresh: tools.refresh },
+    { kind: "skill", error: skills.error, refresh: skills.refresh },
+    { kind: "mcp", error: mcp.error || mcpData?.code, refresh: mcp.refresh },
+  ].filter((resource) => resource.error);
+
   useEffect(() => {
     if (!active) return;
     void s.loadPermissionSettings();
   }, [active, s.loadPermissionSettings]);
-  const visible = useMemo(() => {
+
+  const matchingGroups = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase(i18n.language);
-    if (!needle) return CAPABILITY_CATALOG;
-    return CAPABILITY_CATALOG.filter((entry) =>
-      [t(entry.nameKey), t(entry.descriptionKey), ...entry.keywordKeys.map((key) => t(key))]
+    return FUNCTION_GROUPS.map((group) => {
+      const groupEntries = group.entryIds
+        .map((id) => CAPABILITY_CATALOG.find((e) => e.id === id))
+        .filter((e): e is CapabilityEntry => !!e);
+
+      if (!needle) {
+        return { ...group, entries: groupEntries };
+      }
+
+      const groupMatches = [t(group.titleKey), t(group.descriptionKey)]
         .join(" ")
         .toLocaleLowerCase(i18n.language)
-        .includes(needle),
-    );
-  }, [query, t, i18n.language]);
+        .includes(needle);
+
+      const matchingEntries = groupEntries.filter((entry) => {
+        if (groupMatches) return true;
+
+        if (entry.id === "external-integrations") {
+          const serverNames = (mcpData?.servers ?? []).map((s) => s.config.name).join(" ");
+          const customSkills = (skillData?.skills ?? [])
+            .filter((s) => s.origin !== "system")
+            .map((s) => s.name)
+            .join(" ");
+          const mcpTools = (toolData?.tools ?? [])
+            .filter((t) => t.origin === "mcp")
+            .map((t) => t.name)
+            .join(" ");
+          const fullExternal = [
+            t(entry.nameKey),
+            t(entry.descriptionKey),
+            ...entry.keywordKeys.map((k) => t(k)),
+            serverNames,
+            customSkills,
+            mcpTools,
+          ]
+            .join(" ")
+            .toLocaleLowerCase(i18n.language);
+          return fullExternal.includes(needle);
+        }
+
+        const baseText = [
+          t(entry.nameKey),
+          t(entry.descriptionKey),
+          ...entry.keywordKeys.map((k) => t(k)),
+        ].join(" ");
+
+        const actualTools = (toolData?.tools ?? [])
+          .filter((tool) => tool.functionId === entry.id)
+          .map(
+            (tool) =>
+              `${tool.name} ${TOOL_HUMAN_LABELS[tool.name] ? t(TOOL_HUMAN_LABELS[tool.name]) : ""}`,
+          )
+          .join(" ");
+
+        const actualSkills = (skillData?.skills ?? [])
+          .filter((skill) => entry.skills.includes(skill.name) && skill.origin === "system")
+          .map(
+            (skill) =>
+              `${skill.name} ${SKILL_HUMAN_LABELS[skill.name] ? t(SKILL_HUMAN_LABELS[skill.name]) : ""}`,
+          )
+          .join(" ");
+
+        const fullSearchable = `${baseText} ${actualTools} ${actualSkills}`.toLocaleLowerCase(
+          i18n.language,
+        );
+        return fullSearchable.includes(needle);
+      });
+
+      return { ...group, entries: matchingEntries };
+    }).filter((g) => g.entries.length > 0);
+  }, [query, t, i18n.language, toolData, skillData, mcpData]);
+
   return (
     <section
       hidden={hidden}
@@ -125,46 +218,85 @@ function CapabilityDirectory({
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
-        {visible.length > 0 ? (
-          <ul className="divide-y overflow-hidden rounded-xl border">
-            {visible.map((entry) => {
-              const fact = capabilityFact(entry, s.permissionEditor);
-              return (
-                <li key={entry.id}>
-                  <button
-                    type="button"
-                    onClick={() => s.openSettingsRoute(entry.route)}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <entry.icon className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium">{t(entry.nameKey)}</span>
-                        <Badge
-                          variant={fact.kind === "on" ? "secondary" : "outline"}
-                          className="h-auto max-w-full whitespace-normal break-words text-left"
+        {catalogErrors.length > 0 && (
+          <div className="mb-4 space-y-2">
+            {catalogErrors.map((resource) => (
+              <div
+                key={resource.kind}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+              >
+                <p role="alert" className="text-sm text-destructive">
+                  {resource.error}
+                </p>
+                <Button variant="outline" size="sm" onClick={resource.refresh}>
+                  {t("capabilities.retry")}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        {matchingGroups.length > 0 ? (
+          <div className="space-y-6">
+            {matchingGroups.map((group) => (
+              <section key={group.id} className="space-y-3">
+                <div className="border-b pb-1">
+                  <h2 className="text-sm font-semibold tracking-tight text-foreground">
+                    {t(group.titleKey)}
+                  </h2>
+                  <p className="text-xs text-muted-foreground">{t(group.descriptionKey)}</p>
+                </div>
+                <ul className="divide-y overflow-hidden rounded-xl border">
+                  {group.entries.map((entry) => {
+                    if (entry.id === "external-integrations") {
+                      return (
+                        <li key={entry.id} className="p-3 bg-card">
+                          <ExternalIntegrationsCard active={active && !hidden} />
+                        </li>
+                      );
+                    }
+                    const fact = capabilityFact(entry, s.permissionEditor);
+                    return (
+                      <li key={entry.id} className="bg-card">
+                        <button
+                          type="button"
+                          onClick={() => s.openSettingsRoute(entry.route)}
+                          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
-                          {t(FACT_KEYS[fact.kind])}
-                        </Badge>
-                      </span>
-                      <span className="mt-0.5 block text-xs text-muted-foreground">
-                        {t(entry.descriptionKey)}
-                      </span>
-                    </span>
-                    <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                  </button>
-                  <div className="px-4 pb-3">
-                    <SystemComponents entry={entry} />
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        ) : (
+                          <entry.icon className="size-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium">{t(entry.nameKey)}</span>
+                              <Badge
+                                variant={fact.kind === "on" ? "secondary" : "outline"}
+                                className="h-auto max-w-full whitespace-normal break-words text-left"
+                              >
+                                {t(FACT_KEYS[fact.kind])}
+                              </Badge>
+                            </span>
+                            <span className="mt-0.5 block text-xs text-muted-foreground">
+                              {t(entry.descriptionKey)}
+                            </span>
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+                            <span>{t("connections.components.primaryConfig")}</span>
+                            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                          </span>
+                        </button>
+                        <div className="px-4 pb-3">
+                          <SystemComponents entry={entry} active={active && !hidden} />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </div>
+        ) : catalogErrors.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
             {t("capabilities.directory.empty")}
           </p>
-        )}
+        ) : null}
       </div>
     </section>
   );
@@ -172,9 +304,11 @@ function CapabilityDirectory({
 
 function CapabilityDetailShell({
   entry,
+  active = true,
   children,
 }: {
-  entry: CapabilityEntry;
+  entry: BuiltInCapabilityEntry;
+  active?: boolean;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -203,7 +337,7 @@ function CapabilityDetailShell({
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
         <div className="px-4 pt-5">
-          <SystemComponents entry={entry} />
+          <SystemComponents entry={entry} active={active} />
         </div>
         {children}
       </div>
@@ -243,8 +377,6 @@ function capabilityGuards(state: {
   ].some(Boolean);
 }
 
-// 自动读取目标优先级：当前合法的 editorAgentId > 新会话候选 > 列表首个。
-// 保存后 pageEditor 已清空但当前助手仍然有效时必须留在它上面，不无故切到第一助手。
 function autoLoadTarget(state: {
   agents: { id: string }[];
   editorAgentId: string;
@@ -256,7 +388,6 @@ function autoLoadTarget(state: {
   return preferred?.id ?? state.agents[0]?.id ?? null;
 }
 
-// 自动读取失败后只接受显式重试，避免形成请求循环。
 function useAgentAutoLoad(active = true) {
   const targetId = useSuperstringStore((s) => autoLoadTarget(s));
   const pageEditor = useSuperstringStore((s) => s.pageEditor);
@@ -275,7 +406,13 @@ function useAgentAutoLoad(active = true) {
   }, []);
 }
 
-function AgentScopedDetail({ entry, active = true }: { entry: CapabilityEntry; active?: boolean }) {
+function AgentScopedDetail({
+  entry,
+  active = true,
+}: {
+  entry: BuiltInCapabilityEntry;
+  active?: boolean;
+}) {
   const { t } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -380,7 +517,6 @@ function AgentScopedDetail({ entry, active = true }: { entry: CapabilityEntry; a
               <p role="status" className="text-sm text-muted-foreground">
                 {t("library.loading")}
               </p>
-              {/* 未就绪且无错误/脏稿时保留显式重试兜底，避免停在裸加载态；忙时禁用。 */}
               <Button variant="outline" size="sm" disabled={busy} onClick={() => attempt()}>
                 {t("capabilities.retry")}
               </Button>
@@ -392,7 +528,13 @@ function AgentScopedDetail({ entry, active = true }: { entry: CapabilityEntry; a
   );
 }
 
-function SessionLinkDetail({ entry, active = true }: { entry: CapabilityEntry; active?: boolean }) {
+function SessionLinkDetail({
+  entry,
+  active = true,
+}: {
+  entry: BuiltInCapabilityEntry;
+  active?: boolean;
+}) {
   const { t } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -489,7 +631,6 @@ function SessionLinkDetail({ entry, active = true }: { entry: CapabilityEntry; a
               <p role="status" className="text-sm text-muted-foreground">
                 {t("library.loading")}
               </p>
-              {/* 同一守卫：未就绪且无错误时保留显式重试兜底，忙时禁用。 */}
               <Button
                 variant="outline"
                 size="sm"
@@ -506,19 +647,24 @@ function SessionLinkDetail({ entry, active = true }: { entry: CapabilityEntry; a
   );
 }
 
-function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; active?: boolean }) {
+function CapabilityDetail({
+  entry,
+  active = true,
+}: {
+  entry: BuiltInCapabilityEntry;
+  active?: boolean;
+}) {
   const { t } = useTranslation();
   const openSettingsRoute = useSuperstringStore((state) => state.openSettingsRoute);
   if (entry.detail === "memory" || entry.detail === "knowledge")
     return (
-      <CapabilityDetailShell entry={entry}>
+      <CapabilityDetailShell entry={entry} active={active}>
         <AgentScopedDetail entry={entry} active={active} />
       </CapabilityDetailShell>
     );
-  // 面板自带标题与内边距（联网/执行）：壳层只补“允许尝试≠完整可用”的事实行。
   if (entry.detail === "web")
     return (
-      <CapabilityDetailShell entry={entry}>
+      <CapabilityDetailShell entry={entry} active={active}>
         <p className="border-b px-4 py-3 text-sm text-muted-foreground">
           {t("capabilities.web.scopeNote")}
         </p>
@@ -527,7 +673,7 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
     );
   if (entry.detail === "media")
     return (
-      <CapabilityDetailShell entry={entry}>
+      <CapabilityDetailShell entry={entry} active={active}>
         <div className="w-full space-y-6 px-4 py-6">
           <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight">{t(entry.nameKey)}</h1>
@@ -557,7 +703,7 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
     );
   if (entry.detail === "execution")
     return (
-      <CapabilityDetailShell entry={entry}>
+      <CapabilityDetailShell entry={entry} active={active}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
           <p className="text-sm text-muted-foreground">{t("capabilities.execution.scopeNote")}</p>
           <Button variant="outline" size="sm" onClick={() => openSettingsRoute("task-ledger")}>
@@ -568,7 +714,7 @@ function CapabilityDetail({ entry, active = true }: { entry: CapabilityEntry; ac
       </CapabilityDetailShell>
     );
   return (
-    <CapabilityDetailShell entry={entry}>
+    <CapabilityDetailShell entry={entry} active={active}>
       <SessionLinkDetail entry={entry} active={active} />
     </CapabilityDetailShell>
   );

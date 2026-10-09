@@ -58,7 +58,7 @@ export const PAGE_AGENT_FIELDS = {
   identity: ["additional_instructions"],
   expression: ["persona_intensity"],
   "long-memory": ["memory_consolidation_prompt", "memory_consolidation_additional_instructions"],
-  "memory-tools": [],
+  "memory-tools": ["memory_retrieval_prompt"],
   context: [],
 } as const;
 export const PAGE_PERSONA_FIELDS = {
@@ -121,13 +121,7 @@ export function mergeRetrievalPresets(
 ) {
   const merged = { ...baseline };
   for (const mode of ["conservative", "standard", "broad"] as const) {
-    // Only tool allowances are editable; retain the stored relevance instruction verbatim.
-    merged[mode] = {
-      ...baseline[mode],
-      candidate_limit: draft[mode].candidate_limit,
-      max_entries: draft[mode].max_entries,
-      max_tokens: draft[mode].max_tokens,
-    };
+    merged[mode] = { ...baseline[mode], ...draft[mode] };
   }
   return merged;
 }

@@ -22,7 +22,7 @@ const LONG_MEMORY_PAYLOAD_KEYS = [
 ];
 
 /** memory-tools 的 Agent 载荷白名单：只拥有 p5 读取字段。 */
-const MEMORY_TOOLS_PAYLOAD_KEYS = ["expected_version", "p5_config"];
+const MEMORY_TOOLS_PAYLOAD_KEYS = ["expected_version", "memory_retrieval_prompt", "p5_config"];
 
 /** 保存替身：返回 store 可接受的已存对象（真实 api 会走网络与解析）。 */
 function saveMocks() {
@@ -254,7 +254,7 @@ describe("agent retrieval presets", () => {
     const broadScan = within(broadItem as HTMLElement).getByLabelText(
       "每次查询扫描候选上限",
     ) as HTMLInputElement;
-    expect([broadScan.min, broadScan.max]).toEqual(["1", "300"]);
+    expect([broadScan.min, broadScan.max]).toEqual(["1", "10000"]);
     fireEvent.change(broadScan, { target: { value: "150" } });
     const presets = store.getState().pageEditor?.draft.p5_config.retrieval_presets;
     expect(presets?.broad.candidate_limit).toBe(150);

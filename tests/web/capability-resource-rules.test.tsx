@@ -28,7 +28,7 @@ const LONG_MEMORY_KEYS = [
   "memory_consolidation_additional_instructions",
   "memory_consolidation_prompt",
 ];
-const MEMORY_TOOLS_KEYS = ["expected_version", "p5_config"];
+const MEMORY_TOOLS_KEYS = ["expected_version", "memory_retrieval_prompt", "p5_config"];
 
 /** 可累积的替身：每次 updateAgent 合并载荷并推进 config_version，模拟服务端基线。 */
 function toolMocks() {
@@ -462,7 +462,11 @@ describe("保存基线显式刷新", () => {
     if (!lastCall) throw new Error("Missing save call");
     expect(lastCall[0]).toBe(A);
     expect(lastCall[1].expected_version).toBe(4);
-    expect(Object.keys(lastCall[1]).sort()).toEqual(["expected_version", "p5_config"]);
+    expect(Object.keys(lastCall[1]).sort()).toEqual([
+      "expected_version",
+      "memory_retrieval_prompt",
+      "p5_config",
+    ]);
     editor = store.getState().pageEditor;
     expect(editor?.draft.p5_config.retrieval_mode).toBe("broad");
     expect(dirtyPages(editor)).toEqual(["models", "long-memory"]);

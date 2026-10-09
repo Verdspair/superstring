@@ -14,11 +14,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 import { agentPageDirty } from "@/features/agents/page-drafts";
 import { knowledgeModelDirty, knowledgeReadDirty } from "@/features/knowledge/types";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
-import { P5ConfigSchema } from "../../../shared/contracts/models";
+import { P5ConfigSchema, RetrievalPresetSchema } from "../../../shared/contracts/models";
 
 const MODES = {
   off: "library.retrieval.off",
@@ -190,6 +191,19 @@ export function MemoryToolSettings() {
             />
           </>
         )}
+        <Field
+          label="library.memory.tools.retrieval.prompt"
+          info="library.memory.tools.retrieval.prompt.hint"
+        >
+          <Textarea
+            disabled={busy}
+            maxLength={16000}
+            value={editor.draft.memory_retrieval_prompt}
+            onChange={(event) =>
+              s.patchPageAgent("memory-tools", { memory_retrieval_prompt: event.target.value })
+            }
+          />
+        </Field>
         <p className="text-sm text-muted-foreground">{t("library.memory.tools.on.demand")}</p>
         <Accordion type="multiple" defaultValue={[...PRESET_MODES]}>
           {PRESET_MODES.map((mode) => {
@@ -216,13 +230,14 @@ export function MemoryToolSettings() {
                           <Input
                             type="number"
                             disabled={busy}
-                            min={1}
+                            min={RetrievalPresetSchema.shape[key].minValue ?? undefined}
                             max={
-                              key === "max_tokens"
-                                ? 1048576
-                                : key === "candidate_limit"
-                                  ? 300
-                                  : Math.min(100, preset.candidate_limit)
+                              key === "max_entries"
+                                ? Math.min(
+                                    RetrievalPresetSchema.shape[key].maxValue!,
+                                    preset.candidate_limit,
+                                  )
+                                : (RetrievalPresetSchema.shape[key].maxValue ?? undefined)
                             }
                             value={preset[key]}
                             onChange={(e) =>
@@ -238,6 +253,24 @@ export function MemoryToolSettings() {
                       </div>
                     ))}
                   </div>
+                  <Field
+                    label="library.memory.tools.relevance.instruction"
+                    info="library.memory.tools.relevance.instruction.hint"
+                  >
+                    <Textarea
+                      disabled={busy}
+                      maxLength={16000}
+                      value={preset.relevance_instruction}
+                      onChange={(event) =>
+                        patch({
+                          retrieval_presets: {
+                            ...p5.retrieval_presets,
+                            [mode]: { ...preset, relevance_instruction: event.target.value },
+                          },
+                        })
+                      }
+                    />
+                  </Field>
                   <p className="text-sm text-muted-foreground">
                     {t("library.memory.tools.limits.hint")}
                   </p>

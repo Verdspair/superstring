@@ -55,6 +55,9 @@ beforeEach(() => {
   store.getState().resetForTests({
     ...api,
     getPermissions: vi.fn().mockResolvedValue(permissionsFixture),
+    getToolDirectory: vi.fn().mockResolvedValue({ tools: [] }),
+    getSkills: vi.fn().mockResolvedValue({ skills: [] }),
+    getMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
   } as unknown as typeof api);
 });
 

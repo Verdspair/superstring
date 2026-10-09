@@ -70,6 +70,7 @@ QQ 接入前置步骤与运行要求：
 导航包含**对话、Agent、系统能力、方案、资料、扩展** 6 个主入口，另设**模型服务**与**偏好**入口。
 
 - **工作区整合**：对话工作区整合消息、运行状态与任务三页签，支持在当前会话与全局范围之间切换。
+- **系统能力分类**：按资料读取、联网、QQ、任务执行和外置扩展查看相关工具、技能与 MCP，点击进入功能配置或组件详情。记忆查询页可编辑检索提示词与每档相关性要求。
 - **扩展与 MCP 客户端**：在「扩展 → 工具」中查看已注册的系统工具与外部 MCP 工具；支持通过 stdio、HTTP 与 SSE 连接外部 Model Context Protocol 服务，登记的服务默认未启用，支持配置超时与结果限额；环境变量凭据仅保存变量名。
 - **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 5 个系统技能（证据读取、媒体读取、QQ回复、任务执行、网络研究）。
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
@@ -195,6 +196,7 @@ Operational details:
 The interface provides six primary sections: **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library**, and **Extensions**, along with entrances for **Model services** and **Preferences**.
 
 - **Workspace tabs**: The conversation workspace integrates Messages, Runs, and Tasks tabs, switchable between conversation and global scopes.
+- **Capability groups**: Browse related tools, skills, and MCP services under material reading, web access, QQ, execution, and external extensions. Open the existing settings or component details directly. Memory query settings include the retrieval prompt and each mode’s relevance criteria.
 - **Extensions & MCP client**: View registered built-in and external MCP tools under Extensions → Tools; connect to external Model Context Protocol services over stdio, HTTP, and SSE; registered servers are disabled by default, with configurable timeouts and result caps; environment credentials store variable names only.
 - **Skills catalog**: View installed skill documentation and five bundled system skills (evidence reading, media reading, QQ reply, task execution, web research) under Extensions → Skills.
 - **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.

@@ -6,6 +6,7 @@ import {
   AgentResponseSchema,
   type PersonaResponse,
   PersonaResponseSchema,
+  UpdateAgentRequestSchema,
 } from "../../src/shared/contracts";
 import type { SuperstringApi } from "../../src/web/api";
 
@@ -56,7 +57,13 @@ it("模型页可提交检索模型草稿；工具额度与上下文白名单互�
   expect(memory.retrieval_presets.broad).toEqual({
     ...editor.agent.p5_config.retrieval_presets.broad,
     candidate_limit: 200,
+    relevance_instruction: "ignored",
   });
+  expect(pageAgentPayload(editor, "memory-tools")).toHaveProperty(
+    "memory_retrieval_prompt",
+    "ignored prompt",
+  );
+  expect(pageAgentPayload(editor, "context")).not.toHaveProperty("memory_retrieval_prompt");
   expect(memory.summary_read_max_tokens).toBeUndefined();
   expect(memory.auxiliary_timeout_seconds).toBe(900);
   expect(context.max_catalog_batches).toBe(100);
@@ -729,5 +736,96 @@ describe("页面草稿与白名单保存", () => {
     } finally {
       store.setState({ saveMemoryCorrection: originalSave });
     }
+  });
+});
+
+describe("memory reading text settings", () => {
+  it("edits preset relevance and the common prompt through the page save without other drafts", async () => {
+    store.getState().openSettingsRoute("memory-tools");
+    await act(async () => render(<MemoryToolSettings />));
+    const originalPresets = structuredClone(persisted.p5_config.retrieval_presets);
+    store.getState().patchPageAgent("models", { model_name: "unsaved model" });
+    store
+      .getState()
+      .patchPageAgent("long-memory", { memory_consolidation_prompt: "unsaved maintenance" });
+    fireEvent.change(screen.getByLabelText("记忆检索提示词"), {
+      target: { value: "选择有证据的记忆" },
+    });
+    fireEvent.change(screen.getAllByLabelText("相关性要求")[1], {
+      target: { value: "包含必要背景" },
+    });
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    const [id, body] = (client.updateAgent as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(id).toBe("A");
+    expect(Object.keys(body).sort()).toEqual([
+      "expected_version",
+      "memory_retrieval_prompt",
+      "p5_config",
+    ]);
+    expect(body.memory_retrieval_prompt).toBe("选择有证据的记忆");
+    expect(persisted.p5_config.retrieval_presets.standard.relevance_instruction).toBe(
+      "包含必要背景",
+    );
+    expect(persisted.p5_config.retrieval_presets.conservative).toEqual(
+      originalPresets.conservative,
+    );
+    expect(persisted.p5_config.retrieval_presets.broad).toEqual(originalPresets.broad);
+    expect(persisted.model_name).toBe("model");
+    expect(store.getState().pageEditor?.draft.model_name).toBe("unsaved model");
+    expect(store.getState().pageEditor?.draft.memory_consolidation_prompt).toBe(
+      "unsaved maintenance",
+    );
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["models", "long-memory"]);
+  });
+
+  it("keeps edited text after a save conflict and discards only the memory page", async () => {
+    store.getState().openSettingsRoute("memory-tools");
+    await act(async () => render(<MemoryToolSettings />));
+    fireEvent.change(screen.getByLabelText("记忆检索提示词"), { target: { value: "保留草稿" } });
+    fireEvent.change(screen.getAllByLabelText("相关性要求")[0], {
+      target: { value: "只选直接相关" },
+    });
+    (client.updateAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("conflict"));
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(false);
+    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("保留草稿");
+    expect(
+      store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative
+        .relevance_instruction,
+    ).toBe("只选直接相关");
+    expect(dirtyPages(store.getState().pageEditor)).toContain("memory-tools");
+    store.getState().patchPageAgent("basic", { name: "kept basic draft" });
+    store.getState().discardSettingsPages("memory-tools");
+    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe(
+      persisted.memory_retrieval_prompt,
+    );
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets).toEqual(
+      persisted.p5_config.retrieval_presets,
+    );
+    expect(store.getState().pageEditor?.draft.name).toBe("kept basic draft");
+  });
+
+  it("uses contract numeric bounds and retains blank relevance rejected by the save endpoint", async () => {
+    const persist = client.updateAgent;
+    client.updateAgent = vi.fn(async (id, body) =>
+      persist(id, UpdateAgentRequestSchema.parse(body)),
+    );
+    store.getState().openSettingsRoute("memory-tools");
+    await act(async () => render(<MemoryToolSettings />));
+    const candidates = screen.getAllByLabelText("每次查询扫描候选上限")[0] as HTMLInputElement;
+    const entries = screen.getAllByLabelText("每页最大返回项")[0] as HTMLInputElement;
+    expect(candidates.max).toBe("10000");
+    fireEvent.change(candidates, { target: { value: "10000" } });
+    expect(entries.max).toBe("10000");
+    fireEvent.change(entries, { target: { value: "10000" } });
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    fireEvent.change(screen.getAllByLabelText("相关性要求")[0], { target: { value: " " } });
+    const calls = (client.updateAgent as ReturnType<typeof vi.fn>).mock.calls.length;
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(false);
+    expect(client.updateAgent).toHaveBeenCalledTimes(calls + 1);
+    expect(persisted.p5_config.retrieval_presets.conservative.relevance_instruction).not.toBe(" ");
+    expect(
+      store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative
+        .relevance_instruction,
+    ).toBe(" ");
   });
 });

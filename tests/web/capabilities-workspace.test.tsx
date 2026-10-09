@@ -81,7 +81,12 @@ async function openRoute(
   route: SettingsRoute,
   patch: Partial<SuperstringState> = {},
 ) {
-  store.getState().resetForTests({ ...api, ...fake } as unknown as typeof api);
+  const metadataMocks = {
+    getToolDirectory: vi.fn().mockResolvedValue({ tools: [] }),
+    getSkills: vi.fn().mockResolvedValue({ skills: [] }),
+    getMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+  };
+  store.getState().resetForTests({ ...api, ...metadataMocks, ...fake } as unknown as typeof api);
   store.setState({ page: "settings", settingsView: "workspace", settingsRoute: route, ...patch });
   render(<CapabilitiesWorkspace />);
   await act(async () => {});
@@ -380,6 +385,9 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
     store.getState().resetForTests({
       ...api,
       getPermissions: vi.fn().mockResolvedValue(permissions),
+      getToolDirectory: vi.fn().mockResolvedValue({ tools: [] }),
+      getSkills: vi.fn().mockResolvedValue({ skills: [] }),
+      getMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
       getRuntimeStorage: summary,
       listRuntimeStorageItems: list,
     } as unknown as typeof api);

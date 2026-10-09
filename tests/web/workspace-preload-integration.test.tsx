@@ -177,7 +177,16 @@ describe("workspace first mount after prewarm", () => {
 
   it("能力：预热事实直出不再显示未读取，挂载单次复验且不循环", async () => {
     const getPermissions = vi.fn().mockResolvedValue(permSnapshot());
-    store.getState().resetForTests({ ...api, getPermissions } as unknown as typeof api);
+    const getToolDirectory = vi.fn().mockResolvedValue({ tools: [] });
+    const getSkills = vi.fn().mockResolvedValue({ skills: [], problems: [] });
+    const getMcpServers = vi.fn().mockResolvedValue({ revision: "", code: null, servers: [] });
+    store.getState().resetForTests({
+      ...api,
+      getPermissions,
+      getToolDirectory,
+      getSkills,
+      getMcpServers,
+    } as unknown as typeof api);
 
     await registryEntry("capabilities")?.loadData?.();
     expect(store.getState().permissionEditor).not.toBeNull();
@@ -197,6 +206,9 @@ describe("workspace first mount after prewarm", () => {
     await act(async () => {});
     await act(async () => {});
     expect(getPermissions).toHaveBeenCalledTimes(2);
+    expect(getToolDirectory).toHaveBeenCalledTimes(1);
+    expect(getSkills).toHaveBeenCalledTimes(1);
+    expect(getMcpServers).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

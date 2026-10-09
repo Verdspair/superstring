@@ -137,23 +137,23 @@ describe("fresh assistant studio", () => {
     const budget = within(panel).getByLabelText(
       "每轮记忆工具结果总预算（UTF-8 字节）",
     ) as HTMLInputElement;
-    expect([candidates.min, candidates.max]).toEqual(["1", "300"]);
+    expect([candidates.min, candidates.max]).toEqual(["1", "10000"]);
     expect([budget.min, budget.max]).toEqual(["1", "1048576"]);
     fireEvent.change(candidates, { target: { value: "200" } });
-    expect(entries.max).toBe("100");
+    expect(entries.max).toBe("200");
     fireEvent.change(candidates, { target: { value: "30" } });
     expect(entries.max).toBe("30");
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad).toEqual(broad);
     expect(
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative.candidate_limit,
     ).toBe(30);
-    expect(screen.queryByLabelText("相关性判断指令")).toBeNull();
-    expect(screen.queryByLabelText("记忆读取提示词")).toBeNull();
+    expect(screen.getAllByLabelText("相关性要求")).toHaveLength(3);
+    expect(screen.getByLabelText("记忆检索提示词")).toBeTruthy();
     expect(screen.queryByLabelText("最多目录批次")).toBeNull();
     expect(screen.queryByLabelText("每批目录条数")).toBeNull();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getAllByRole("textbox")).toHaveLength(4);
     expect(screen.getByText(/技能文本不能授予资料访问权限/)).toBeTruthy();
-    expect(within(panel).getByText(/每次查询最多扫描 300 条候选/)).toBeTruthy();
+    expect(within(panel).getByText(/最终返回条数不能超过候选上限/)).toBeTruthy();
     expect(screen.getByText(/全局每轮预算：2048 UTF-8 字节/)).toBeTruthy();
   });
   it.each(["full_catalog", "full_body"] as const)(
