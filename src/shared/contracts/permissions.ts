@@ -74,6 +74,7 @@ export const ExecutionModulesSchema = z.strictObject({
   knowledgeJobs: z.boolean().default(true),
   qqMedia: z.boolean().default(true),
   qqStickers: z.boolean().default(true),
+  qqMembers: z.boolean().default(true),
 });
 export type ExecutionModules = z.infer<typeof ExecutionModulesSchema>;
 export const EXECUTION_MODULE_KEYS = ExecutionModulesSchema.keyof().options;
@@ -140,6 +141,7 @@ export function toolExecutionEnabled(execution: ExecutionPolicy, name: string): 
     !execution.pausedTools.includes(name) &&
     (!name.startsWith("mcp.") || execution.modules.mcp) &&
     (!name.startsWith("skill.") || execution.modules.skills) &&
+    (!name.startsWith("qq.members.") || execution.modules.qqMembers) &&
     (!name.startsWith("web.") ||
       (execution.modules.web && !execution.pausedTools.includes(WEB_PERMISSION_RESOURCE)))
   );

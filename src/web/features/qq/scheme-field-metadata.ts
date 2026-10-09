@@ -239,4 +239,5 @@ export const QQ_GROUP_CAPABILITY_LABELS: Record<QqGroupCapability, string> = {
   mcp: "schemes.qq.groupConfig.capability.mcp",
   skills: "schemes.qq.groupConfig.capability.skills",
   history_summary: "schemes.qq.groupConfig.capability.historySummary",
+  members_read: "schemes.qq.groupConfig.capability.membersRead",
 };

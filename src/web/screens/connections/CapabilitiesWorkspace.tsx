@@ -64,7 +64,12 @@ function capabilityFact(entry: CapabilityEntry, editor: PermissionEditor | null)
   }
   if (!editor) return { kind: "unread" };
   const modules = executionPolicy(editor.snapshot.policy).modules;
-  const switches = entry.detail === "web" ? [modules.web] : [modules.qqMedia, modules.qqStickers];
+  const switches =
+    entry.detail === "web"
+      ? [modules.web]
+      : entry.detail === "members"
+        ? [modules.qqMembers]
+        : [modules.qqMedia, modules.qqStickers];
   const on = switches.filter(Boolean).length;
   if (on === switches.length) return { kind: "on" };
   return on === 0 ? { kind: "off" } : { kind: "partial" };
@@ -696,6 +701,29 @@ function CapabilityDetail({
             </Button>
             <Button variant="outline" size="sm" onClick={() => openSettingsRoute("models")}>
               {t("library.open.model.services")}
+            </Button>
+          </div>
+        </div>
+      </CapabilityDetailShell>
+    );
+  if (entry.detail === "members")
+    return (
+      <CapabilityDetailShell entry={entry} active={active}>
+        <div className="w-full space-y-6 px-4 py-6">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight">{t(entry.nameKey)}</h1>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              {t(entry.descriptionKey)}
+            </p>
+          </div>
+          <p className="text-sm text-muted-foreground">{t("capabilities.members.scopeNote")}</p>
+          <CapabilityPolicyPanel modules={["qqMembers"]} active={active} />
+          <div className="flex flex-wrap gap-2 border-t pt-4">
+            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("qq-app-groups")}>
+              {t("schemes.qq.groupConfigTitle")}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("qq-connection")}>
+              {t("schemes.qq.connectionTitle")}
             </Button>
           </div>
         </div>

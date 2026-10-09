@@ -115,6 +115,117 @@ async function ready(f = fixture()) {
   return { ...f, socket };
 }
 
+describe("OneBot group member transport", () => {
+  it("uses the roster action parameters and projects unknown fields as absent", async () => {
+    const f = await ready();
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_list")
+        f.socket.respond(request, [
+          {
+            user_id: "9007199254740993",
+            group_id: "30003",
+            nickname: "roster member",
+            role: "future_role",
+            join_time: 0,
+            last_sent_time: 0,
+          },
+        ]);
+    };
+
+    const result = await f.connection.getGroupMembers("30003");
+
+    const request = f.socket.sent.at(-1);
+    if (!request) throw new Error("Missing synthetic roster request");
+    expect(request).toEqual({
+      action: "get_group_member_list",
+      params: { group_id: 30003 },
+      echo: request.echo,
+    });
+    expect(result).toEqual({
+      kind: "ok",
+      members: [{ user_id: "9007199254740993", group_id: "30003", nickname: "roster member" }],
+    });
+  });
+
+  it("uses detail params and rejects response identities outside the requested scope", async () => {
+    const f = await ready();
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_info")
+        f.socket.respond(request, {
+          user_id: "20002",
+          group_id: "30003",
+          nickname: "detail member",
+          role: "owner",
+          join_time: 0,
+          last_sent_time: 0,
+        });
+    };
+
+    const result = await f.connection.getGroupMember("30003", "20002");
+    expect(f.socket.sent.at(-1)).toMatchObject({
+      action: "get_group_member_info",
+      params: { group_id: 30003, user_id: 20002, no_cache: false },
+    });
+    expect(result).toEqual({
+      kind: "ok",
+      member: { user_id: "20002", group_id: "30003", nickname: "detail member", role: "owner" },
+    });
+
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_info")
+        f.socket.respond(request, { user_id: "20003", group_id: "30003" });
+    };
+    expect(await f.connection.getGroupMember("30003", "20002")).toEqual({
+      kind: "unavailable",
+      reason: "scope_mismatch",
+    });
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_info")
+        f.socket.respond(request, { user_id: "20002", group_id: "30004" });
+    };
+    expect(await f.connection.getGroupMember("30003", "20002")).toEqual({
+      kind: "unavailable",
+      reason: "scope_mismatch",
+    });
+  });
+
+  it("rejects unsafe numeric request IDs and honors cancellation without closing the shared socket", async () => {
+    const f = fixture();
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    await expect(
+      f.connection.getGroupMembers("30003", alreadyAborted.signal),
+    ).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    const connected = await ready(f);
+    const beforeInvalid = connected.socket.sent.length;
+    expect(await connected.connection.getGroupMembers("9007199254740993")).toEqual({
+      kind: "unavailable",
+      reason: "invalid_scope",
+    });
+    expect(await connected.connection.getGroupMember("30003", "9007199254740993")).toEqual({
+      kind: "unavailable",
+      reason: "invalid_scope",
+    });
+    expect(connected.socket.sent).toHaveLength(beforeInvalid);
+
+    const cancel = new AbortController();
+    const roster = connected.connection.getGroupMembers("30003", cancel.signal);
+    const detail = connected.connection.getGroupMember("30003", "20002");
+    expect(connected.connection.pendingCount).toBe(2);
+    cancel.abort();
+    await expect(roster).rejects.toMatchObject({ name: "AbortError" });
+    expect(connected.connection.pendingCount).toBe(1);
+    expect(connected.socket.readyState).toBe(1);
+    expect(connected.socket.terminations).toBe(0);
+    const detailRequest = connected.socket.sent.at(-1) as Request;
+    connected.socket.respond(detailRequest, { user_id: "20002", group_id: "30003" });
+    expect((await detail).kind).toBe("ok");
+    expect(connected.connection.pendingCount).toBe(0);
+  });
+});
+
 describe("OneBot connection lifecycle", () => {
   it("is inert until connected, uses a header token, and requires identity plus status", async () => {
     const f = fixture({ accountId: "010001" });
@@ -135,6 +246,8 @@ describe("OneBot connection lifecycle", () => {
     socket.respond(socket.sent[0], { user_id: "010001", nickname: "ignored" });
     await Promise.resolve();
     expect(f.connection.state.phase).toBe("verifying");
+    await Promise.resolve();
+    await Promise.resolve();
     expect(socket.sent[1].action).toBe("get_status");
     socket.respond(socket.sent[1], { online: true, good: true });
     expect(await promise).toEqual({ kind: "ready", accountId: "10001" });
@@ -506,6 +619,110 @@ describe("OneBot request correlation and uncertain delivery", () => {
         reason: "invalid_request",
       });
     expect(f.socket.sent).toHaveLength(2);
+  });
+});
+
+describe("OneBot group member transport", () => {
+  it("uses only group_id for roster and preserves string IDs while omitting unknown fields", async () => {
+    const f = await ready();
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_list")
+        f.socket.respond(request, [
+          {
+            user_id: "9007199254740993",
+            group_id: "30003",
+            role: "future",
+            join_time: 0,
+            last_sent_time: 0,
+          },
+        ]);
+    };
+    const result = await f.connection.getGroupMembers("30003");
+    expect(f.socket.sent.at(-1)?.params).toEqual({ group_id: 30003 });
+    expect(result).toEqual({
+      kind: "ok",
+      members: [{ user_id: "9007199254740993", group_id: "30003" }],
+    });
+  });
+
+  it("uses detail protocol params and rejects mismatched group or member identities", async () => {
+    const f = await ready();
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_info")
+        f.socket.respond(request, {
+          user_id: "20002",
+          group_id: "30003",
+          role: "owner",
+          join_time: 0,
+          last_sent_time: 0,
+        });
+    };
+    expect(await f.connection.getGroupMember("30003", "20002")).toEqual({
+      kind: "ok",
+      member: { user_id: "20002", group_id: "30003", role: "owner" },
+    });
+    expect(f.socket.sent.at(-1)?.params).toEqual({
+      group_id: 30003,
+      user_id: 20002,
+      no_cache: false,
+    });
+
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_info")
+        f.socket.respond(request, { user_id: "20003", group_id: "30003" });
+    };
+    expect(await f.connection.getGroupMember("30003", "20002")).toEqual({
+      kind: "unavailable",
+      reason: "scope_mismatch",
+    });
+    f.socket.onSend = (request) => {
+      if (request.action === "get_group_member_info")
+        f.socket.respond(request, { user_id: "20002", group_id: "30004" });
+    };
+    expect(await f.connection.getGroupMember("30003", "20002")).toEqual({
+      kind: "unavailable",
+      reason: "scope_mismatch",
+    });
+  });
+
+  it("refuses unsafe wire numbers without sending", async () => {
+    const f = await ready();
+    const sent = f.socket.sent.length;
+    expect(await f.connection.getGroupMembers("9007199254740993")).toEqual({
+      kind: "unavailable",
+      reason: "invalid_scope",
+    });
+    expect(await f.connection.getGroupMember("30003", "9007199254740993")).toEqual({
+      kind: "unavailable",
+      reason: "invalid_scope",
+    });
+    expect(f.socket.sent).toHaveLength(sent);
+  });
+
+  it("cancels only the owned pending request and reports an already-aborted signal", async () => {
+    const f = fixture();
+    const stopped = new AbortController();
+    stopped.abort();
+    await expect(f.connection.getGroupMembers("30003", stopped.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+
+    const connected = await ready(f);
+    const cancel = new AbortController();
+    const roster = connected.connection.getGroupMembers("30003", cancel.signal);
+    const detail = connected.connection.getGroupMember("30003", "20002");
+    expect(connected.connection.pendingCount).toBe(2);
+    cancel.abort();
+    await expect(roster).rejects.toMatchObject({ name: "AbortError" });
+    expect(connected.connection.pendingCount).toBe(1);
+    expect(connected.socket.readyState).toBe(1);
+    expect(connected.socket.terminations).toBe(0);
+    connected.socket.respond(connected.socket.sent.at(-1) as Request, {
+      user_id: "20002",
+      group_id: "30003",
+    });
+    expect((await detail).kind).toBe("ok");
+    expect(connected.connection.pendingCount).toBe(0);
   });
 });
 

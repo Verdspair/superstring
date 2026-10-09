@@ -59,6 +59,7 @@ import { QqIntakeRuntime } from "./services/qq-intake";
 import { createQqMediaAdapter } from "./services/qq-media-adapter";
 import { qqMediaPolicyRevision } from "./services/qq-media-contract";
 import { createQqMediaSourceFetcher } from "./services/qq-media-source";
+import { qqExecutionModuleSourceAccess } from "./services/qq-member-roster-sources";
 import type { QqSendPort } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
 import { createSkillActions } from "./skills/actions";
@@ -179,6 +180,12 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   );
   // 权限优先；本群能力其次（停用即时生效）；会话证据在技能与外部注入解析器之前，用持久存储复验。
   const resolveDomainSource: ModuleSourceResolver = (source, owner, at) =>
+    qqExecutionModuleSourceAccess(
+      source,
+      owner,
+      permissions.snapshot().revision,
+      execution().modules.qqMembers,
+    ) ??
     qqGroupGuard.sourceAccess(source, owner) ??
     permissions.sourceAccess(source, owner) ??
     conversationEvidenceSourceAccess(business, source, owner, at) ??
@@ -370,6 +377,20 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       tasks,
       stickersEnabled: () => execution().modules.qqStickers,
       mediaEnabled: () => execution().modules.qqMedia,
+      memberTools: {
+        enabled: () => execution().modules.qqMembers,
+        policyRevision: () => permissions.snapshot().revision,
+        sourceExpiresAt: () =>
+          new Date(Date.now() + execution().telemetry.retentionDays * 86_400_000).toISOString(),
+        platform: {
+          list: (groupId, signal) =>
+            qqIntake.connection?.getGroupMembers(groupId, signal) ??
+            Promise.resolve({ kind: "unavailable" as const, reason: "not_ready" }),
+          read: (groupId, userId, signal) =>
+            qqIntake.connection?.getGroupMember(groupId, userId, signal) ??
+            Promise.resolve({ kind: "unavailable" as const, reason: "not_ready" }),
+        },
+      },
       // 配置保存通知：投递车道按新发送上限 drain（与模型准入同一订阅源）。
       onPolicyChange: (listener) => permissions.subscribe(listener),
       mediaAdapter: (scheme) =>
@@ -463,7 +484,14 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       conversationJournal: journal,
       modules,
       resolveSource: (source, owner, at) =>
-        skillSourceAccess(options.skillRoot, source) ?? options.resolveSource?.(source, owner, at),
+        qqExecutionModuleSourceAccess(
+          source,
+          owner,
+          permissions.snapshot().revision,
+          execution().modules.qqMembers,
+        ) ??
+        skillSourceAccess(options.skillRoot, source) ??
+        options.resolveSource?.(source, owner, at),
       qqTransportKeyPath: options.qqTransportKeyPath,
       modelProviderKeyPath: options.modelProviderKeyPath,
       // The page reads the transport's own state; nothing is inferred from a saved endpoint.

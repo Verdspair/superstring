@@ -18,6 +18,7 @@ import type { ModuleSourceResolver } from "../modules/composition";
 import { stringifyJsonSpaced } from "../services/memory-contract";
 import { qqMediaSourceAccess } from "../services/qq-media-sources";
 import { qqMediaReadTaskSourceAccess } from "../services/qq-media-task-sources";
+import { qqMemberRosterSourceAccess } from "../services/qq-member-roster-sources";
 import { qqMemberNameSourceAccess } from "../services/qq-member-sources";
 import { qqMemoryJobSourceAccess } from "../services/qq-memory-fact-input";
 import { qqMessageFactSourceAccess } from "../services/qq-message-fact-sources";
@@ -40,6 +41,7 @@ const DIRECT_SOURCE_KINDS: ReadonlySet<string> = new Set([
   "qq_media_read_task",
   "qq_observation",
   "qq_media_source",
+  "qq_member_roster",
 ]);
 
 function isDirectSourceKind(kind: string): boolean {
@@ -220,6 +222,8 @@ export function sourceAccess(
     return qqMessageFactSourceAccess(db, source, owner, principal, now) ?? "revoked";
   if (source.kind === "qq_member_name")
     return qqMemberNameSourceAccess(db, source, owner, principal, now) ?? "revoked";
+  if (source.kind === "qq_member_roster")
+    return qqMemberRosterSourceAccess(db, source, owner, now, principal) ?? "revoked";
   // Same owner-first delegate for confirmed outbound part facts: the service checks
   // owner authorization before any expiry, so a cross-owner never learns an expired
   // state (R21 order). The kind is direct-domain: an optional external resolver can

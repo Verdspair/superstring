@@ -22,6 +22,7 @@ const permissionsFixture = {
         knowledgeJobs: true,
         qqMedia: true,
         qqStickers: true,
+        qqMembers: true,
       },
       maintenance: { memoryTimeoutSeconds: 3600, knowledgeTimeoutSeconds: 3600 },
       telemetry: { retentionDays: 14 },

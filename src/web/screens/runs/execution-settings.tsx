@@ -174,9 +174,10 @@ const SECTION_ORDER: SectionKey[] = [
   "retention",
 ];
 
-// web 与 QQ 媒体的能力开关在各自的能力专页维护；本页只保存其余模块与数值/研究/代码字段。
+// web 与 QQ 媒体及群成员的能力开关在各自的能力专页维护；本页只保存其余模块与数值/研究/代码字段。
 const PAGE_MODULE_KEYS = EXECUTION_MODULE_KEYS.filter(
-  (module) => module !== "web" && module !== "qqMedia" && module !== "qqStickers",
+  (module) =>
+    module !== "web" && module !== "qqMedia" && module !== "qqStickers" && module !== "qqMembers",
 );
 const PAGE_SCOPE: PermissionScope = {
   executionKeys: [...NUMERIC_KEYS, "research", "code"],

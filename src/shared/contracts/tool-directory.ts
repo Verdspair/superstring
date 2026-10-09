@@ -7,6 +7,7 @@ export const SystemFunctionIdSchema = z.enum([
   "media-stickers",
   "execution-limits",
   "session-history-summary",
+  "qq-members",
 ]);
 export type SystemFunctionId = z.infer<typeof SystemFunctionIdSchema>;
 

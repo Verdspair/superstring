@@ -49,13 +49,14 @@ const context = {
 const BUILTIN_NAMES = [
   "system-evidence-reading",
   "system-media-reading",
+  "system-qq-members",
   "system-qq-reply",
   "system-task-execution",
   "system-web-research",
 ];
 
 describe("bundled system skills", () => {
-  it("loads five system components from real on-disk SKILL.md files without a root", () => {
+  it("loads six system components from real on-disk SKILL.md files without a root", () => {
     const catalog = loadMergedSkillCatalog();
     expect(catalog.problems).toEqual([]);
     expect(catalog.skills.map((entry) => entry.metadata.name)).toEqual(BUILTIN_NAMES);
@@ -93,7 +94,7 @@ describe("bundled system skills", () => {
     const actions = createSkillActions();
     const catalogAction = actionNamed(actions, "skill.catalog");
     const listing = await executor.execute(catalogAction, {}, context);
-    expect(listing.sources).toHaveLength(5);
+    expect(listing.sources).toHaveLength(BUILTIN_NAMES.length);
     expect(() => catalogAction.assertAvailable?.()).not.toThrow();
     expect(() => createSkillActions()[1].assertAvailable?.()).not.toThrow();
     const again = loadMergedSkillCatalog();

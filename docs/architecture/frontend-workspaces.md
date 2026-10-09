@@ -111,6 +111,9 @@ External MCP services show their own tools, not a guessed built-in function. A c
 presence or global switch does not grant permission. The memory-reading page owns the common
 retrieval prompt and each preset’s relevance instruction along with its numeric settings;
 its existing page draft and versioned save keep model and maintenance drafts separate.
+QQ member queries have their own `qq-member-tools` capability page using the existing global
+permission draft for `qqMembers`. Group settings use `members_read` to follow or disable
+the capability locally; this never changes reply targets, media switches or tool grants.
 Extensions does not contain QQ connection/data
 management or display QQ connection status. The display name and Puzzle icon do not rename the
 internal `connections` space or component directories, or change their business behavior.
@@ -152,7 +155,7 @@ QQ 应用三 Tab「方案 / 连接 / 数据与保留」分别对应 `qq-app-sche
 MCP 工具），逐行标注来源、读写、全局状态与授权摘要；共用同一授权资源的多个工具只编辑那一份
 授权。内置定义随应用提供，不能删除或改定义，只有全局开关会使其灰显，缺某个助手的授权不会
 灰显。随包系统文档技能（标准 `SKILL.md` 指南）以「系统组件」身份出现在技能目录，规则相同。
-系统能力页按资料读取、联网、QQ、任务执行和外置扩展分组，保留原配置入口和具体组件详情。工具成员从权威目录的 `functionId` 投影；技能关系明确登记，外置 MCP 按服务展示其工具，不猜内置功能归属。组件存在或全局开关不代表授权。记忆查询页用原助手草稿和版本保存共用检索提示词、每档相关性要求及数值设置，不夹带模型或维护草稿。扩展不含 QQ 连接/数据页，不显示 QQ
+系统能力页按资料读取、联网、QQ、任务执行和外置扩展分组，保留原配置入口和具体组件详情。工具成员从权威目录的 `functionId` 投影；技能关系明确登记，外置 MCP 按服务展示其工具，不猜内置功能归属。组件存在或全局开关不代表授权。记忆查询页用原助手草稿和版本保存共用检索提示词、每档相关性要求及数值设置，不夹带模型或维护草稿。成员查询使用独立的`qq-member-tools`专页，复用原全局权限草稿保存`qqMembers`；本群`members_read`跟随或停用，不改变回复对象、媒体开关或工具授权。扩展不含 QQ 连接/数据页，不显示 QQ
 连接状态。管理正文全宽、`px-4`（左右16px），沿用原 tokens、主题、风格与组件，消息与 composer
 宽度不变；复用面板、刷新机制与运行追踪视图，各视图保留自己的真实刷新。
 入口迁移不改变后端契约、默认值、权限或业务。

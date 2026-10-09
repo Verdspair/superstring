@@ -136,6 +136,12 @@ export const SETTINGS_ROUTES = [
     state: "transition",
     note: "capabilities.session.description",
   },
+  {
+    id: "qq-member-tools",
+    title: "capabilities.members.name",
+    state: "transition",
+    note: "capabilities.members.description",
+  },
   // 方案（P9）：独立一级目录；按应用登记（QQ 现在唯一实现），应用详情沿用既有 qq 路由。
   {
     id: "scheme-library",

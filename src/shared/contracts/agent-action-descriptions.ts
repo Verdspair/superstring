@@ -352,3 +352,25 @@ export const STICKER_SEARCH_DESCRIPTION: SharedActionDescription = {
     "Search authorized usable stickers; empty query browses. Results fit context and paginate. Use returned IDs; prefer recentlyUsed=false.",
   parameters: z.toJSONSchema(StickerSearchSchema),
 };
+
+// QQ 群成员只读工具：DTO/参数 schema 在 qq-members 单一维护。
+import { QqMemberQuerySchema, QqMemberReadSchema } from "./qq-members";
+
+export const QQ_MEMBER_TOOL_DESCRIPTIONS = {
+  "qq.members.query": {
+    name: "qq.members.query",
+    capability: "qq.members.read",
+    effect: "read",
+    parameters: z.toJSONSchema(QqMemberQuerySchema),
+    description:
+      "Look up members in the current bound QQ group only. Use when the answer depends on who is in this group, a member's QQ group role, or matching a member by name/ID. Do not call for ordinary chat that does not rely on membership. One roster snapshot is read per run; keyword/role filters and cursor pages slice that same snapshot. Results are platform snapshot data, not send authorization. Missing role/title/times are unknown; do not infer them.",
+  },
+  "qq.members.read": {
+    name: "qq.members.read",
+    capability: "qq.members.read",
+    effect: "read",
+    parameters: z.toJSONSchema(QqMemberReadSchema),
+    description:
+      "Read one named member's details from the current bound QQ group. Use only when a specific member's detail is needed and the same-run member list does not already contain it. The member ID must be an ID from this run's bound-group roster. Missing fields are unknown; role does not grant app permissions or sending rights.",
+  },
+} as const;

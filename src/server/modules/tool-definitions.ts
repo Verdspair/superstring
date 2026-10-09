@@ -2,6 +2,7 @@ import {
   codeRunDescription,
   evidenceToolDescriptions,
   QQ_MEDIA_TOOL_DESCRIPTIONS,
+  QQ_MEMBER_TOOL_DESCRIPTIONS,
   RESEARCH_ACTION_DESCRIPTION,
   STICKER_SEARCH_DESCRIPTION,
   TASK_READ_DESCRIPTION,
@@ -27,6 +28,16 @@ export const SYSTEM_TOOL_DEFINITIONS: readonly SystemToolDefinition[] = [
   ...evidenceDefinitions("knowledge", "knowledge-query"),
   ...evidenceDefinitions("history", "session-history-summary"),
   ...evidenceDefinitions("summary", "session-history-summary"),
+  {
+    description: QQ_MEMBER_TOOL_DESCRIPTIONS["qq.members.query"],
+    sandboxCallable: false,
+    functionId: "qq-members",
+  },
+  {
+    description: QQ_MEMBER_TOOL_DESCRIPTIONS["qq.members.read"],
+    sandboxCallable: false,
+    functionId: "qq-members",
+  },
   { description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.list"], functionId: "media-stickers" },
   { description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.note.read"], functionId: "media-stickers" },
   {

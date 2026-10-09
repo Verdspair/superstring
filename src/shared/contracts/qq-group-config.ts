@@ -39,6 +39,7 @@ export const QqGroupCapabilitySchema = z.enum([
   "mcp",
   "skills",
   "history_summary",
+  "members_read",
 ]);
 export type QqGroupCapability = z.infer<typeof QqGroupCapabilitySchema>;
 

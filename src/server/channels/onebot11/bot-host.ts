@@ -81,6 +81,7 @@ import type {
   QqMediaReadImageService,
 } from "../../services/qq-media-tools";
 import { createQqMediaTools } from "../../services/qq-media-tools";
+import { createQqMemberTools, type QqMemberReadPort } from "../../services/qq-member-tools";
 import type { QqPreparedReply } from "../../services/qq-prepared-reply";
 import {
   parseQqBatchJudgement,
@@ -199,6 +200,12 @@ export interface OneBotHostOptions {
   enqueueCompression?: (job: BotCompressionJob) => void;
   /** 外部（MCP）动作：每次唤醒现取；没有登记时返回空表（行为与不加这个功能一致）。 */
   externalActions?: () => readonly BuiltInAction[];
+  memberTools?: {
+    platform: QqMemberReadPort;
+    enabled: () => boolean;
+    policyRevision: () => string;
+    sourceExpiresAt: () => string;
+  };
   tasks?: AgentTaskService;
   /** 本群能力 guard：缺省按开发默认构造（测试可注入同一份事实的替身）。 */
   guard?: QqGroupCapabilityGuard;
@@ -1603,8 +1610,36 @@ export class OneBotHost {
           : [];
       // 本群停用系统能力后，模型可见工具目录里不再出现对应动作——不是只在界面隐藏
       // （ADR0019 §13.3 D）。历史原文（history）不属能力停用面，照旧保留。
+      const memberActions =
+        binding.kind === "group" &&
+        o.memberTools &&
+        o.memberTools.enabled() &&
+        guard.allowed(groupOwner, "members_read")
+          ? createQqMemberTools({
+              conversationId: conversation.id,
+              bindingId: binding.id,
+              agentId: binding.agentId,
+              accountId: binding.accountId,
+              groupId: binding.peerId,
+              bindingRevision: binding.revision,
+              bindingAuthorityRevision: binding.authorityRevision,
+              bindingEpoch: conversation.bindingEpoch,
+              platform: o.memberTools.platform,
+              enabled: o.memberTools.enabled,
+              policyRevision: o.memberTools.policyRevision,
+              capabilitySource: () => guard.sources(groupOwner, "members_read"),
+              sourceExpiresAt: o.memberTools.sourceExpiresAt,
+              assertCurrent: () => source.assertCurrent(),
+              now,
+              fit: (name, args, value, refs, actionSignal) =>
+                source
+                  .actionResultFitter(name, args, actionSignal)
+                  .then((accept) => accept(value, refs)),
+            })
+          : [];
       const actions = [
         ...source.actions,
+        ...memberActions,
         ...mediaActions,
         ...(o.tasks?.conversationActions(conversation.id) ?? o.externalActions?.() ?? []),
         ...(stickersEnabled

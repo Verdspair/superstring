@@ -225,6 +225,7 @@ const CAPABILITIES: readonly CapabilityRow[] = (
     ["mcp", { kind: "grants", prefix: "mcp" }],
     ["skills", { kind: "grants", prefix: "skill" }],
     ["history_summary", { kind: "followsSession" }],
+    ["members_read", { kind: "module", module: "qqMembers" }],
   ] as const
 ).map(([id, upper]) => ({ id, labelKey: CAPABILITY_LABELS[id], upper }));
 

@@ -30,6 +30,7 @@ const permissions: PermissionsResponse = {
         knowledgeJobs: true,
         qqMedia: true,
         qqStickers: false,
+        qqMembers: true,
       },
       pausedTools: [],
       maintenance: { memoryTimeoutSeconds: 3600, knowledgeTimeoutSeconds: 7200 },

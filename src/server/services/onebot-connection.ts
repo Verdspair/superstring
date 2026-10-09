@@ -94,6 +94,44 @@ export type OneBotSendRequest = z.infer<typeof SendRequest>;
 
 const GoodStatus = z.object({ online: z.boolean().nullable(), good: z.boolean() });
 
+const WireMemberId = z.union([
+  z.number().int().positive().refine(Number.isSafeInteger).transform(String),
+  z.string().regex(/^[1-9]\d*$/),
+]);
+const WireMemberRole = z.enum(["owner", "admin", "member"]).optional().catch(undefined);
+const WireMemberTime = z
+  .number()
+  .int()
+  .nonnegative()
+  .optional()
+  .transform((value) => (value && value > 0 ? value : undefined));
+const GroupMember = z
+  .object({
+    user_id: WireMemberId,
+    group_id: WireMemberId.optional(),
+    nickname: z.string().optional(),
+    card: z.string().optional(),
+    role: WireMemberRole,
+    title: z.string().optional(),
+    join_time: WireMemberTime,
+    last_sent_time: WireMemberTime,
+  })
+  .transform(({ user_id, group_id, nickname, card, role, title, join_time, last_sent_time }) => ({
+    user_id,
+    ...(group_id === undefined ? {} : { group_id }),
+    ...(nickname === undefined ? {} : { nickname }),
+    ...(card === undefined ? {} : { card }),
+    ...(role === undefined ? {} : { role }),
+    ...(title === undefined ? {} : { title }),
+    ...(join_time === undefined ? {} : { join_time }),
+    ...(last_sent_time === undefined ? {} : { last_sent_time }),
+  }));
+
+function safeWireId(id: string): number | null {
+  const value = Number(id);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 const MediaSourceRequest = z.strictObject({
   kind: z.enum(["image", "record", "video"]),
   sourceRef: z.string().min(1),
@@ -110,6 +148,8 @@ type RequestResult =
 interface Pending {
   timer: ReturnType<typeof setTimeout>;
   resolve: (result: RequestResult) => void;
+  signal?: AbortSignal;
+  abort?: () => void;
 }
 interface ConnectionAttempt {
   socket: OneBotSocket;
@@ -280,6 +320,75 @@ export class OneBotConnection {
     return Object.freeze({ kind: "source", reference: file.trim() });
   }
 
+  async getGroupMembers(
+    groupId: string,
+    signal?: AbortSignal,
+  ): Promise<
+    | { kind: "ok"; members: ReturnType<typeof GroupMember.parse>[] }
+    | { kind: "unavailable"; reason: string }
+  > {
+    signal?.throwIfAborted();
+    const id = normalizeOneBotAccountId(groupId);
+    const group = id && safeWireId(id);
+    if (!group) return { kind: "unavailable", reason: "invalid_scope" };
+    const attempt = this.#active;
+    if (!attempt || this.#state.phase !== "ready")
+      return { kind: "unavailable", reason: "not_ready" };
+    const result = await this.#request(
+      attempt,
+      "get_group_member_list",
+      { group_id: group },
+      signal,
+    );
+    if (result.kind !== "response") return { kind: "unavailable", reason: result.reason };
+    if (!this.#successful(result)) return { kind: "unavailable", reason: "rejected" };
+    const data = result.value.data;
+    if (!Array.isArray(data)) return { kind: "unavailable", reason: "malformed_response" };
+    const members = data.map((entry) => GroupMember.safeParse(entry));
+    if (members.some((entry) => !entry.success))
+      return { kind: "unavailable", reason: "malformed_response" };
+    const parsed = members.map((entry) => (entry as Extract<typeof entry, { success: true }>).data);
+    if (parsed.some((entry) => entry.group_id !== undefined && entry.group_id !== id))
+      return { kind: "unavailable", reason: "scope_mismatch" };
+    return { kind: "ok", members: parsed };
+  }
+
+  async getGroupMember(
+    groupId: string,
+    userId: string,
+    signal?: AbortSignal,
+  ): Promise<
+    | { kind: "ok"; member: ReturnType<typeof GroupMember.parse> }
+    | { kind: "unavailable"; reason: string }
+  > {
+    signal?.throwIfAborted();
+    const group = normalizeOneBotAccountId(groupId);
+    const user = normalizeOneBotAccountId(userId);
+    const groupNumber = group && safeWireId(group);
+    const userNumber = user && safeWireId(user);
+    if (!group || !user || !groupNumber || !userNumber)
+      return { kind: "unavailable", reason: "invalid_scope" };
+    const attempt = this.#active;
+    if (!attempt || this.#state.phase !== "ready")
+      return { kind: "unavailable", reason: "not_ready" };
+    const result = await this.#request(
+      attempt,
+      "get_group_member_info",
+      { group_id: groupNumber, user_id: userNumber, no_cache: false },
+      signal,
+    );
+    if (result.kind !== "response") return { kind: "unavailable", reason: result.reason };
+    if (!this.#successful(result)) return { kind: "unavailable", reason: "rejected" };
+    const member = GroupMember.safeParse(result.value.data);
+    if (!member.success) return { kind: "unavailable", reason: "malformed_response" };
+    if (
+      member.data.user_id !== user ||
+      (member.data.group_id !== undefined && member.data.group_id !== group)
+    )
+      return { kind: "unavailable", reason: "scope_mismatch" };
+    return { kind: "ok", member: member.data };
+  }
+
   /**
    * One read-only `get_group_info` for the group display name (0053). Standard OneBot 11
    * action, `no_cache: false`; never sent for sending, waking or inference. Any transport
@@ -345,10 +454,17 @@ export class OneBotConnection {
     );
   }
 
-  #request(attempt: ConnectionAttempt, action: string, params: object): Promise<RequestResult> {
+  #request(
+    attempt: ConnectionAttempt,
+    action: string,
+    params: object,
+    signal?: AbortSignal,
+  ): Promise<RequestResult> {
     if (this.#active !== attempt || attempt.socket.readyState !== 1) {
       return Promise.resolve({ kind: "not_sent", reason: "not_ready" });
     }
+    if (signal?.aborted)
+      return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
     const echo = `${this.#prefix}:${++this.#sequence}`;
     let payload: string;
     try {
@@ -360,14 +476,22 @@ export class OneBotConnection {
     const timer = setTimeout(() => {
       this.#settle(echo, { kind: "unknown", reason: "timeout" });
     }, this.#config.requestTimeoutMs);
-    this.#pending.set(echo, { timer, resolve: deferred.resolve });
+    const pending: Pending = { timer, resolve: deferred.resolve, signal };
+    if (signal) {
+      pending.abort = () => this.#settle(echo, { kind: "unknown", reason: "disconnected" });
+      signal.addEventListener("abort", pending.abort, { once: true });
+    }
+    this.#pending.set(echo, pending);
     try {
       attempt.socket.send(payload);
     } catch {
       this.#settle(echo, { kind: "unknown", reason: "transport_error" });
       this.#finish(attempt, "connect_error");
     }
-    return deferred.promise;
+    return deferred.promise.then((result) => {
+      if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      return result;
+    });
   }
 
   #settle(echo: string, result: RequestResult): void {
@@ -375,6 +499,7 @@ export class OneBotConnection {
     if (!pending) return;
     this.#pending.delete(echo);
     clearTimeout(pending.timer);
+    if (pending.signal && pending.abort) pending.signal.removeEventListener("abort", pending.abort);
     pending.resolve(result);
   }
 

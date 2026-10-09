@@ -20,7 +20,12 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { FilePermissionStore, PermissionService } from "../../src/server/permissions/service";
 import { createRuntime } from "../../src/server/runtime";
 import { createSkillActions } from "../../src/server/skills/actions";
-import { loadSkill, loadSkillCatalog, resolveSkillFile } from "../../src/server/skills/config";
+import {
+  loadSkill,
+  loadSkillCatalog,
+  resolveSkillFile,
+  SYSTEM_SKILL_NAMES,
+} from "../../src/server/skills/config";
 import { skillSourceAccess } from "../../src/server/skills/sources";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 
@@ -850,7 +855,7 @@ describe("skill source references", () => {
     expect(catalog.sources.filter((source) => source.id === "demo")).toEqual([
       { kind: "skill_document", id: "demo", revision },
     ]);
-    expect(catalog.sources).toHaveLength(6);
+    expect(catalog.sources).toHaveLength(SYSTEM_SKILL_NAMES.length + 1);
     const read = await h.executor.execute(
       actionNamed(actions, "skill.read"),
       { name: "demo" },

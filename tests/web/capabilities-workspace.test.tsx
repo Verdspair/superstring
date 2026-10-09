@@ -48,6 +48,7 @@ const permissions: PermissionsResponse = {
         knowledgeJobs: true,
         qqMedia: true,
         qqStickers: true,
+        qqMembers: true,
       },
       maintenance: { memoryTimeoutSeconds: 3600, knowledgeTimeoutSeconds: 3600 },
       telemetry: { retentionDays: 14 },
@@ -99,6 +100,7 @@ const rows: Array<[string, SettingsRoute]> = [
   ["媒体与表情", "media-tools"],
   ["任务与执行限制", "execution-settings"],
   ["会话历史摘要", "session-history"],
+  ["群成员名册", "qq-member-tools"],
 ];
 
 beforeEach(() => {

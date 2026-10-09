@@ -1,11 +1,27 @@
-import { BookOpen, Brain, Globe, Image, ListChecks, MessagesSquare, Puzzle } from "lucide-react";
+import {
+  BookOpen,
+  Brain,
+  Globe,
+  Image,
+  ListChecks,
+  MessagesSquare,
+  Puzzle,
+  Users,
+} from "lucide-react";
 import type {
   SystemComponentTarget,
   ToolDirectoryEntry,
 } from "../../shared/contracts/tool-directory";
 import type { SettingsRoute } from "./settings-routes";
 
-export type CapabilityDetail = "memory" | "knowledge" | "web" | "media" | "execution" | "link";
+export type CapabilityDetail =
+  | "memory"
+  | "knowledge"
+  | "web"
+  | "media"
+  | "members"
+  | "execution"
+  | "link";
 
 export interface BaseCapabilityEntry {
   id: string;
@@ -101,6 +117,16 @@ export const CAPABILITY_CATALOG: readonly CapabilityEntry[] = [
     actionNoteKey: "capabilities.qqReply.actionNote",
   },
   {
+    id: "qq-members",
+    nameKey: "capabilities.members.name",
+    descriptionKey: "capabilities.members.description",
+    keywordKeys: ["capabilities.members.keywords"],
+    route: "qq-member-tools",
+    detail: "members",
+    icon: Users,
+    skills: ["system-qq-members"],
+  },
+  {
     id: "execution-limits",
     nameKey: "capabilities.execution.name",
     descriptionKey: "capabilities.execution.description",
@@ -155,7 +181,7 @@ export const FUNCTION_GROUPS: readonly FunctionGroup[] = [
     id: "qq",
     titleKey: "capabilities.group.qq",
     descriptionKey: "capabilities.group.qq.description",
-    entryIds: ["media-stickers", "qq-reply"],
+    entryIds: ["media-stickers", "qq-reply", "qq-members"],
   },
   {
     id: "execution",
@@ -191,6 +217,8 @@ export const TOOL_HUMAN_LABELS: Record<string, string> = {
   "task.read": "capabilities.labels.taskRead",
   "research.run": "capabilities.labels.researchRun",
   "code.run": "capabilities.labels.codeRun",
+  "qq.members.query": "capabilities.labels.qqMembersQuery",
+  "qq.members.read": "capabilities.labels.qqMembersRead",
 };
 
 export const SKILL_HUMAN_LABELS: Record<string, string> = {
@@ -199,6 +227,7 @@ export const SKILL_HUMAN_LABELS: Record<string, string> = {
   "system-media-reading": "capabilities.labels.skillMediaReading",
   "system-task-execution": "capabilities.labels.skillTaskExecution",
   "system-qq-reply": "capabilities.labels.skillQqReply",
+  "system-qq-members": "capabilities.labels.skillQqMembers",
 };
 
 export function capabilityComponents(

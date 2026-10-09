@@ -91,6 +91,7 @@ export function activeSpace(
       "web-access",
       "execution-settings",
       "session-history",
+      "qq-member-tools",
     ].includes(state.settingsRoute)
   )
     return "capabilities";

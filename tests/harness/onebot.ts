@@ -67,6 +67,7 @@ import {
 } from "../../src/server/services/qq-binding-contract";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
+import { qqExecutionModuleSourceAccess } from "../../src/server/services/qq-member-roster-sources";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import type { QqSendPort } from "../../src/server/services/qq-send-transport";
 import type { MemoryContentResponse } from "../../src/shared/contracts";
@@ -192,6 +193,8 @@ export interface OneBotHarnessOptions {
    * 缺省 false＝既有行为（诊断只到 `onDiagnostic` 订阅者，不写库）。
    */
   readonly telemetry?: boolean;
+  /** Host-only member reads for synthetic OneBot runtime integration tests. */
+  readonly memberTools?: ConstructorParameters<typeof OneBotHost>[0]["memberTools"];
 }
 
 export interface OneBotHarness {
@@ -501,6 +504,7 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
     });
     const adapter = new OneBot11Adapter({ orm, journal, wakes, nowSeconds: () => clock.seconds });
     const host = new OneBotHost({
+      memberTools: options.memberTools,
       orm,
       journal,
       wakes,
@@ -524,7 +528,15 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
         return options.onDiagnostic?.(event);
       },
       // 与运行时同一份 guard：本群能力来源引用按当前纪元复验（停用或旧纪元一律不可用）。
-      resolveSource: (source, owner) => guard.sourceAccess(source, owner),
+      resolveSource: (source, owner) =>
+        (options.memberTools
+          ? qqExecutionModuleSourceAccess(
+              source,
+              owner,
+              options.memberTools.policyRevision(),
+              options.memberTools.enabled(),
+            )
+          : undefined) ?? guard.sourceAccess(source, owner),
       // 与运行时同构：媒体工具按方案取提示词与帧参数；合成适配器只替换视觉模型本身。
       ...(mediaOn
         ? {

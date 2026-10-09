@@ -74,6 +74,31 @@ afterEach(() => {
 });
 
 describe("capability policy scope", () => {
+  it("saves the member module alone while retaining web and execution drafts", async () => {
+    const f = setup();
+    await renderWith(
+      { getPermissions: f.get, savePermissions: f.save },
+      <CapabilityPolicyPanel modules={["qqMembers"]} />,
+    );
+    const modules = editorOf().execution.modules;
+    await act(async () => {
+      store.getState().patchExecutionSettings({
+        modules: { ...modules, qqMembers: false, web: true },
+        loopMaxSteps: "not-a-number",
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await act(async () => {});
+    const [payload] = f.save.mock.calls[0];
+    expect(payload.policy.execution?.modules.qqMembers).toBe(false);
+    expect(payload.policy.execution?.modules.web).toBe(false);
+    expect(payload.policy.execution?.loop.maxSteps).toBe(16);
+    expect(payload.policy.grants).toEqual(snapshot().policy.grants);
+    expect(editorOf().execution.modules.web).toBe(true);
+    expect(editorOf().execution.loopMaxSteps).toBe("not-a-number");
+    expect(permissionSettingsDirty(editorOf(), { modules: ["qqMembers"] })).toBe(false);
+  });
+
   it("shows approval-free web resources without an ineffective approval checkbox", async () => {
     const value = snapshot();
     value.resources[0].approvalRequired = false;

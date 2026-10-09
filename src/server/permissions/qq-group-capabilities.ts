@@ -39,6 +39,7 @@ const ACTION_CAPABILITIES: ReadonlyArray<
   { name: "research.run", capability: "research" },
   { name: "code.run", capability: "code" },
   { prefix: "memory.", capability: "memory_read" },
+  { prefix: "qq.members.", capability: "members_read" },
   { prefix: "knowledge.", capability: "knowledge_read" },
   { prefix: "summary.", capability: "history_summary" },
   { prefix: "media.", capability: "media" },

@@ -22,6 +22,7 @@ import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/com
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
+import type { QqMemberReadPort } from "../../services/qq-member-tools";
 import { type QqSendPort, qqStickerFileReference } from "../../services/qq-send-transport";
 import { qqStickerSelectionForScheme } from "../../services/qq-sticker-candidates";
 import { qqStickerUsable } from "../../services/qq-sticker-contract";
@@ -121,6 +122,12 @@ export function createOneBotConversationRuntime(options: {
   tasks?: AgentTaskService;
   stickersEnabled?: () => boolean;
   mediaEnabled?: () => boolean;
+  memberTools?: {
+    platform: QqMemberReadPort;
+    enabled: () => boolean;
+    policyRevision: () => string;
+    sourceExpiresAt: () => string;
+  };
   mediaAdapter?: (scheme: QqSchemeRow) => QqMediaReadAdapter;
   /** T11 B：同源组装的媒体准备服务（factory 产物，按方案取 prompt/节奏，与 mediaAdapter 同侧同形）；缺省＝不接自动图。 */
   mediaInputService?: (scheme: QqSchemeRow) => QqMediaInputService;

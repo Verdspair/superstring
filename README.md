@@ -71,8 +71,9 @@ QQ 接入前置步骤与运行要求：
 
 - **工作区整合**：对话工作区整合消息、运行状态与任务三页签，支持在当前会话与全局范围之间切换。
 - **系统能力分类**：按资料读取、联网、QQ、任务执行和外置扩展查看相关工具、技能与 MCP，点击进入功能配置或组件详情。记忆查询页可编辑检索提示词与每档相关性要求。
+- **QQ 群成员查询**：助手可按需查看当前群的成员 ID、昵称、群名片和群主／管理员／成员身份，包括自己；支持查找、筛选和按需详情。普通聊天不查询，同轮名单复用；平台未提供的信息明确标为未知。开关在系统能力配置，各群可单独停用。
 - **扩展与 MCP 客户端**：在「扩展 → 工具」中查看已注册的系统工具与外部 MCP 工具；支持通过 stdio、HTTP 与 SSE 连接外部 Model Context Protocol 服务，登记的服务默认未启用，支持配置超时与结果限额；环境变量凭据仅保存变量名。
-- **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 5 个系统技能（证据读取、媒体读取、QQ回复、任务执行、网络研究）。
+- **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 6 个系统技能（证据读取、媒体读取、QQ成员查询、QQ回复、任务执行、网络研究）。
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
@@ -197,8 +198,9 @@ The interface provides six primary sections: **Conversations**, **Agents**, **Sy
 
 - **Workspace tabs**: The conversation workspace integrates Messages, Runs, and Tasks tabs, switchable between conversation and global scopes.
 - **Capability groups**: Browse related tools, skills, and MCP services under material reading, web access, QQ, execution, and external extensions. Open the existing settings or component details directly. Memory query settings include the retrieval prompt and each mode’s relevance criteria.
+- **QQ group members**: Assistants can look up IDs, nicknames, group cards, and owner/admin/member roles in the current group, including their own identity. Search, filters, and individual details are available on demand. Ordinary chat needs no lookup; a roster is reused within the run, and missing fields remain unknown. Configure the global switch in System capabilities or disable it per group.
 - **Extensions & MCP client**: View registered built-in and external MCP tools under Extensions → Tools; connect to external Model Context Protocol services over stdio, HTTP, and SSE; registered servers are disabled by default, with configurable timeouts and result caps; environment credentials store variable names only.
-- **Skills catalog**: View installed skill documentation and five bundled system skills (evidence reading, media reading, QQ reply, task execution, web research) under Extensions → Skills.
+- **Skills catalog**: View installed skill documentation and six bundled system skills (evidence reading, media reading, QQ members, QQ reply, task execution, web research) under Extensions → Skills.
 - **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
