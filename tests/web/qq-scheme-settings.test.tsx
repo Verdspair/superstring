@@ -599,11 +599,15 @@ describe("Shared scheme studio", () => {
     expect(timeSwitch.getAttribute("aria-checked")).toBe("true");
     expect(targetSeconds.value).toBe("60");
     expect(jitterSeconds.value).toBe("20");
+    expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
 
-    // 切换开关
+    // 切换开关为关闭：出现未启用提示，但目标/浮动时间依然可预配置输入且未被禁用
     await userEvent.click(timeSwitch);
     expect(timeSwitch.getAttribute("aria-checked")).toBe("false");
     expect(store.getState().qqSchemeEditor?.rhythm.initiative_time_window_enabled).toBe(false);
+    expect(screen.getByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeTruthy();
+    expect(targetSeconds.disabled).toBe(false);
+    expect(jitterSeconds.disabled).toBe(false);
 
     // 设置 jitter >= target (60 >= 60) 阻止保存
     fireEvent.change(jitterSeconds, { target: { value: "60" } });

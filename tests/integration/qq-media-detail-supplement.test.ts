@@ -57,7 +57,16 @@ const imageBytes = encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(64), 8, 8);
 afterEach(() => {});
 
 type DescribeValue =
-  | { status: "described"; described: true; attempt: number }
+  | {
+      status: "described";
+      described: true;
+      attempt: number;
+      id: string;
+      model: string;
+      text: string;
+      offset: number;
+      nextOffset: number | null;
+    }
   | { status: "failed"; described: false; attempt: number; awaitSupplement: boolean }
   | { status: "unavailable"; code: string };
 
@@ -463,6 +472,11 @@ describe("QQ media detail supplement closure (attempt-2 gate on the detail row)"
       status: "described",
       described: true,
       attempt: 1,
+      id: img,
+      model: "vision-local",
+      text: "描述",
+      offset: 0,
+      nextOffset: null,
     });
     const row = f.taskRows().find((entry) => entry.purpose === "detail");
     expect(row).toMatchObject({ attempts: 1, status: "succeeded" });
@@ -483,6 +497,11 @@ describe("QQ media detail supplement closure (attempt-2 gate on the detail row)"
       status: "described",
       described: true,
       attempt: 1,
+      id: img,
+      model: "vision-local",
+      text: "第一次描述",
+      offset: 0,
+      nextOffset: null,
     });
     const seeded = f.taskRows().find((row) => row.purpose === "baseline");
     expect(seeded).toMatchObject({ attempts: 1, status: "succeeded", note: "第一次描述" });
@@ -496,6 +515,11 @@ describe("QQ media detail supplement closure (attempt-2 gate on the detail row)"
       status: "described",
       described: true,
       attempt: 1,
+      id: img,
+      model: "vision-local",
+      text: "第一次描述",
+      offset: 0,
+      nextOffset: null,
     });
     // 缓存命中零预算消耗：仍是那一次尝试，视觉没有被调用。
     expect(late.stats.calls).toBe(0);

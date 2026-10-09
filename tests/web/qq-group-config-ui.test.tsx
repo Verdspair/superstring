@@ -1063,17 +1063,20 @@ it("renders rhythm batch fields and queue on busy three-state override in partic
   expect(targetInput).toBeTruthy();
   expect(jitterInput).toBeTruthy();
 
-  // initiative_time_window_enabled 三态开关
+  // initiative_time_window_enabled 三态开关：基线为开启时跟随基线不展示未启用提示
   const timeWindowSelect = view.container.querySelector(
     'select[data-field="rhythm.initiative_time_window_enabled"]',
   ) as HTMLSelectElement;
   expect(timeWindowSelect).toBeTruthy();
   expect(timeWindowSelect.value).toBe("inherit");
+  expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
 
+  // 显式覆盖为关闭：展示未启用提示，但目标/浮动时间输入框依然可编辑（支持预配置）且未被禁用
   fireEvent.change(timeWindowSelect, { target: { value: "off" } });
   expect(editorOf()?.overrides.rhythm?.initiative_time_window_enabled).toBe(false);
+  expect(screen.getByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeTruthy();
 
-  // 目标时间与浮动时间输入框就位
+  // 目标时间与浮动时间输入框就位且未被禁用
   const targetTimeInput = view.container.querySelector(
     'input[data-field="rhythm.initiative_time_target_seconds"]',
   ) as HTMLInputElement;
@@ -1082,6 +1085,78 @@ it("renders rhythm batch fields and queue on busy three-state override in partic
   ) as HTMLInputElement;
   expect(targetTimeInput).toBeTruthy();
   expect(jitterTimeInput).toBeTruthy();
+  expect(targetTimeInput.disabled).toBe(false);
+  expect(jitterTimeInput.disabled).toBe(false);
+
+  // 显式覆盖为开启：提示消失
+  fireEvent.change(timeWindowSelect, { target: { value: "on" } });
+  expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
+
+  // 切回跟随基线：基线为开启，提示保持不展示
+  fireEvent.change(timeWindowSelect, { target: { value: "inherit" } });
+  expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
+});
+
+it("displays disabled notice when group inherits a scheme with time window disabled", async () => {
+  const disabledBaseScheme = qqScheme({
+    rhythm: { ...qqScheme().rhythm, initiative_time_window_enabled: false },
+  });
+  const view = await renderPage({
+    getQqGroupConfig: vi.fn(async () =>
+      qqConfig({
+        base_scheme: disabledBaseScheme,
+        effective_scheme: disabledBaseScheme,
+      }),
+    ),
+  });
+  await userEvent.click(screen.getByRole("tab", { name: "发言时机" }));
+
+  const timeWindowSelect = view.container.querySelector(
+    'select[data-field="rhythm.initiative_time_window_enabled"]',
+  ) as HTMLSelectElement;
+  expect(timeWindowSelect.value).toBe("inherit");
+  // 基线为关闭时，跟随基线必须展示未启用提示
+  expect(screen.getByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeTruthy();
+
+  // 显式开启：覆盖基线后提示消失
+  fireEvent.change(timeWindowSelect, { target: { value: "on" } });
+  expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
+
+  // 显式关闭：依然展示未启用提示
+  fireEvent.change(timeWindowSelect, { target: { value: "off" } });
+  expect(screen.getByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeTruthy();
+});
+
+it("does not show time window disabled notice when inheriting unread scheme, but shows on explicit off", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "发言时机" }));
+
+  // 切换待选目标方案未读取（schemeId 存在但不在 state.qqSchemes 中）：
+  // pendingTarget 为 null，baseScheme/baseBag 为 null（即 base === null，基线为“未读”）
+  act(() => {
+    store.getState().patchQqGroupConfigScheme("unloaded-scheme-id", "keep");
+  });
+
+  const timeWindowSelect = view.container.querySelector(
+    'select[data-field="rhythm.initiative_time_window_enabled"]',
+  ) as HTMLSelectElement;
+  expect(timeWindowSelect).toBeTruthy();
+  expect(timeWindowSelect.value).toBe("inherit");
+
+  // 基线为未读 (base === null) 且处于跟随 (inherit) 时，继承 UNKNOWN 不应提示时间窗口未启用
+  expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
+
+  // 显式覆盖为关闭：即便基线未读，明确选择关闭仍须展示未启用提示
+  fireEvent.change(timeWindowSelect, { target: { value: "off" } });
+  expect(screen.getByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeTruthy();
+
+  // 显式覆盖为开启：提示不展示
+  fireEvent.change(timeWindowSelect, { target: { value: "on" } });
+  expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
+
+  // 切回跟随：回到基线未读状态，提示再次隐藏
+  fireEvent.change(timeWindowSelect, { target: { value: "inherit" } });
+  expect(screen.queryByText(/时间窗口未启用，以下数值保存但不触发判定/)).toBeNull();
 });
 
 it("enforces mutual exclusivity between follow_up and chiming_in switches in group config", async () => {

@@ -2067,6 +2067,7 @@
   "capabilities.qqReply.runtimeAction": "Runtime action",
   "connections.initiativeTimeWindowEnabled": "Enable time window",
   "connections.initiativeTimeWindowEnabledHint": "Trigger initiative evaluation by dual count and elapsed time windows; either window maturity readies the opportunity",
+  "connections.initiativeTimeWindowDisabledNotice": "Time window is disabled; values below will be saved but will not trigger judgements.",
   "connections.initiativeTimeTargetSeconds": "Target time (seconds)",
   "connections.initiativeTimeTargetSecondsHint": "Triggers when elapsed time after initial unjudged message reaches [target - variation, target + variation]",
   "connections.initiativeTimeJitterSeconds": "Variation time (seconds)",

@@ -1,14 +1,18 @@
 // 0.4.0 P5 媒体工具（ADR0019 §8.11）的宿主边界测试：合成库＋合成网关，零隐式视觉。
 //
 // 这里断言的全部是宿主事实：list/note.read 不碰模型、每 run 引用披露（未披露/跨会话拒绝）、
-// 过期逐次复验、取消不写、describe 只回元信息、重试至多两次且只认"更晚、在窗口内、晚于上一次
+// 过期逐次复验、取消不写、成功 describe 返回有界正文、重试至多两次且只认"更晚、在窗口内、晚于上一次
 // 尝试"的补充事实。
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
+import { AgentRuntime } from "../../src/server/agent/agent-runtime";
+import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import type { ActionContext, BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { assertContextSources } from "../../src/server/agent/context-access";
+import { textMessage } from "../../src/server/agent/context-engine";
+import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { readBindingByConversation } from "../../src/server/db/qq-binding-repository";
 import {
@@ -27,6 +31,8 @@ import {
   createQqMediaTools,
   type QqMediaToolsOptions,
 } from "../../src/server/services/qq-media-tools";
+import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
+import { SpeechReplyArgumentsSchema } from "../../src/shared/contracts/agent-output";
 import type { ConversationAddressing } from "../../src/shared/contracts/conversation";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 
@@ -321,6 +327,139 @@ function open() {
 }
 
 describe("run-scoped QQ media tools", () => {
+  it("lets the Agent answer after describe without a note.read tool call", async () => {
+    const f = open();
+    try {
+      const img = f.image("agent-inline-description");
+      const media = f.mount({ read: async () => "甲乙丙丁" });
+      const actions = media.actions;
+      const list = media.named("media.list");
+      const described = media.named("media.describe");
+      const repository = new AgentRunRepository(f.h.db);
+      let modelCalls = 0;
+      let listedValue: Promise<unknown> | undefined;
+      const runtime = new AgentRuntime({
+        repository,
+        actions,
+        model: {
+          async complete(request) {
+            modelCalls++;
+            if (modelCalls === 1)
+              return JSON.stringify({
+                kind: "invoke",
+                name: "media.describe",
+                arguments: { id: img.id },
+              });
+            const observation = request.messages
+              .flatMap((message) =>
+                message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+              )
+              .map((text) => {
+                try {
+                  return JSON.parse(text) as {
+                    kind?: string;
+                    value?: { name?: string; value?: unknown };
+                  };
+                } catch {
+                  return null;
+                }
+              })
+              .find(
+                (item) =>
+                  item?.kind === "action_observation" && item.value?.name === "media.describe",
+              );
+            expect(observation?.value?.value).toMatchObject({
+              status: "described",
+              described: true,
+              attempt: 1,
+              id: img.id,
+              model: "vision-local",
+              text: "甲乙丙丁",
+              offset: 0,
+              nextOffset: null,
+            });
+            expect(
+              request.messages
+                .flatMap((message) =>
+                  message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+                )
+                .join("\n"),
+            ).not.toContain('"name":"media.note.read"');
+            return JSON.stringify({
+              kind: "invoke",
+              name: "speech.reply",
+              arguments: {
+                outputs: [{ kind: "inline", targetId: "peer", text: "已读到图片描述" }],
+              },
+            });
+          },
+          async *streamText() {},
+          async completeMultimodal() {
+            throw new Error("not used");
+          },
+        },
+      });
+      const actionDescriptions = [
+        list.description,
+        described.description,
+        SPEECH_REPLY_DESCRIPTION,
+      ];
+      const agentSpec: AgentSpec = {
+        id: "qq.inline-description.test",
+        version: "1",
+        model: "synthetic-model",
+        instructions: "Use the listed media description if available, then reply.",
+        context: "conversation",
+        availableActions: actionDescriptions,
+        limits: { steps: 4 },
+      };
+      const result = await runtime.run(agentSpec, {
+        owner: {
+          kind: "conversation",
+          id: f.conversation.id,
+          userId: DEFAULT_USER_ID,
+          agentId: AGENT,
+        },
+        conversationId: f.conversation.id,
+        authorizedTargets: ["peer"],
+        outputMode: "buffered",
+        terminalAction: {
+          name: "speech.reply",
+          description: SPEECH_REPLY_DESCRIPTION,
+          parse: (args) => SpeechReplyArgumentsSchema.parse(args).outputs,
+        },
+        actions,
+        context: {
+          bindRun(actionContext) {
+            listedValue = list.execute({}, actionContext);
+          },
+          async read({ signal }) {
+            signal.throwIfAborted();
+            const value = (await listedValue) as { value?: unknown } | undefined;
+            return {
+              pending: [
+                textMessage("user", `Listed image: ${img.id}`),
+                ...(value?.value === undefined
+                  ? []
+                  : [textMessage("user", JSON.stringify(value.value))]),
+              ],
+            };
+          },
+          assertCurrent() {},
+        },
+      });
+      expect(result.status).toBe("completed");
+      expect(result.outputs).toMatchObject([{ targetId: "peer", text: "已读到图片描述" }]);
+      expect(modelCalls).toBe(2);
+      expect(repository.getRun(result.runId)?.steps.map((step) => step.phase)).toEqual([
+        "next",
+        "next",
+      ]);
+      expect(media.stats.calls).toBe(1);
+    } finally {
+      f.h.close();
+    }
+  });
   it("lists bounded image metadata without touching the model", async () => {
     const f = open();
     try {
@@ -388,7 +527,16 @@ describe("run-scoped QQ media tools", () => {
       const { ctx } = f.context();
       await tool.execute("media.list", {}, ctx);
       const described = await tool.execute("media.describe", { id: img.id }, ctx);
-      expect(described.value).toEqual({ status: "described", described: true, attempt: 1 });
+      expect(described.value).toEqual({
+        status: "described",
+        described: true,
+        attempt: 1,
+        id: img.id,
+        model: "vision-local",
+        text: "甲乙丙丁",
+        offset: 0,
+        nextOffset: null,
+      });
       // typed 成功只签发一个真实任务引用：正文修订驻留在 typed 任务（qq_media_read_task），
       // 旧 qq_media_note 引用链退役；typed 结果不回写 legacy note。
       expect(described.sources).toHaveLength(1);
@@ -404,8 +552,7 @@ describe("run-scoped QQ media tools", () => {
         attempts: 0,
       });
       expectSourcesValid(f, described.sources);
-      // describe 只回元信息：正文不在它的值里。
-      expect(JSON.stringify(described.value)).not.toContain("甲乙丙丁");
+      // 成功 describe 返回一段有界正文；note.read 仍可按 offset 续页。
       expect(tool.stats.calls).toBe(1);
       expect(tool.stats.described).toEqual(["img-1"]);
       const headObservation = await tool.execute("media.note.read", { id: img.id, limit: 2 }, ctx);
@@ -429,6 +576,43 @@ describe("run-scoped QQ media tools", () => {
         .query("UPDATE qq_media_read_tasks SET note='被改写的描述' WHERE media_note_id=?")
         .run(img.id);
       expectSourcesRevoked(f, described.sources);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  // 旧契约（优化前实测，见批次 ROOT-CONFIRMED-LEGACY-DRIFT）：typed 任务仍成功、正文与
+  // 模型仍在、只是资产来源到期签不出结果引用时，note.read 必须按 segment_changed 拒绝。
+  // 共享分页读取把这条落空合并进了 undescribed，等于把"来源失效"说成"从未描述"。
+  it("refuses a served note as source-expired instead of reporting it undescribed", async () => {
+    const f = open();
+    try {
+      const img = f.image("img-1", { sourceRef: "asset-expiry-ref" });
+      const tool = f.mount({ read: async () => "真实描述" });
+      const { ctx } = f.context();
+      await tool.execute("media.list", {}, ctx);
+      // 真实冷描述：走生产 tools 真路径（合成库＋合成网关，零隐式视觉）。
+      expect((await tool.execute("media.describe", { id: img.id }, ctx)).value).toMatchObject({
+        status: "described",
+        described: true,
+        attempt: 1,
+      });
+      expect(
+        expectNoteText((await tool.execute("media.note.read", { id: img.id }, ctx)).value),
+      ).toMatchObject({ status: "ok", text: "真实描述" });
+      expect(tool.stats.calls).toBe(1);
+      const assets = f.h.db.query("SELECT id FROM qq_media_assets").all() as { id: string }[];
+      expect(assets).toHaveLength(1);
+      // 只让消费来源到期：typed 任务与媒体行都还活着。
+      f.h.orm.update(schema.qqMediaAssets).set({ expiresAt: "2000-01-01T00:00:00.000Z" }).run();
+      const expired = await tool.execute("media.note.read", { id: img.id }, ctx);
+      expect(expired.value).toEqual({ status: "unavailable", code: "segment_changed" });
+      expect(expired.sources).toEqual([]);
+      // 拒绝不是新尝试：不补视觉调用，不新建任务行。
+      expect(tool.stats.calls).toBe(1);
+      expect(
+        f.h.db.query("SELECT id FROM qq_media_read_tasks WHERE media_note_id=?").all(img.id),
+      ).toHaveLength(1);
     } finally {
       f.h.close();
     }
@@ -464,12 +648,22 @@ describe("run-scoped QQ media tools", () => {
         status: "described",
         described: true,
         attempt: 1,
+        id: first.id,
+        model: "vision-local",
+        text: "橘猫",
+        offset: 0,
+        nextOffset: null,
       });
       // 同内容的新载体：cache 命中，不花第二次视觉调用，也不新建账本行。
       expect((await tool.execute("media.describe", { id: second.id }, ctx)).value).toEqual({
         status: "described",
         described: true,
         attempt: 1,
+        id: second.id,
+        model: "vision-local",
+        text: "橘猫",
+        offset: 0,
+        nextOffset: null,
       });
       expect(tool.stats.calls).toBe(1);
       // typed 成功不回写 legacy note：两行 note 全空。
@@ -848,11 +1042,18 @@ describe("run-scoped QQ media tools", () => {
         }
       }
       // 接线内的调用照常，且这些失败没有留下任何运行态或视觉花费。
-      expect((await tool.execute("media.describe", { id: img.id }, wired.ctx)).value).toEqual({
-        status: "described",
-        described: true,
-        attempt: 1,
-      });
+      expect((await tool.execute("media.describe", { id: img.id }, wired.ctx)).value).toMatchObject(
+        {
+          status: "described",
+          described: true,
+          attempt: 1,
+          id: img.id,
+          model: "vision-local",
+          text: "橘猫",
+          offset: 0,
+          nextOffset: null,
+        },
+      );
       expect(tool.stats.calls).toBe(1);
     } finally {
       f.h.close();
@@ -918,11 +1119,18 @@ describe("run-scoped QQ media tools", () => {
       ).rejects.toMatchObject({ name: "AbortError" });
       expect(tool.stats.calls).toBe(0);
       const again = f.context("run-abort");
-      expect((await tool.execute("media.describe", { id: img.id }, again.ctx)).value).toEqual({
-        status: "described",
-        described: true,
-        attempt: 1,
-      });
+      expect((await tool.execute("media.describe", { id: img.id }, again.ctx)).value).toMatchObject(
+        {
+          status: "described",
+          described: true,
+          attempt: 1,
+          id: img.id,
+          model: "vision-local",
+          text: "橘猫",
+          offset: 0,
+          nextOffset: null,
+        },
+      );
       expect(tool.stats.calls).toBe(1);
 
       // 建立这张表的信号中止＝回收：新信号也不能再消费旧披露，监听器被回收。
@@ -1035,7 +1243,16 @@ describe("run-scoped QQ media tools", () => {
       // 预算拒绝不写结果缓存：放开预算后同一 run 的第二次调用真的去读。
       allowed = true;
       const described = await tool.execute("media.describe", { id: img.id }, ctx);
-      expect(described.value).toEqual({ status: "described", described: true, attempt: 1 });
+      expect(described.value).toMatchObject({
+        status: "described",
+        described: true,
+        attempt: 1,
+        id: img.id,
+        model: "vision-local",
+        text: "橘猫",
+        offset: 0,
+        nextOffset: null,
+      });
       expect(tool.stats.calls).toBe(1);
       // 结果记在 typed 任务账本上；legacy 行不回写。
       expect(mediaNoteRow(f.h.orm, "img-1", 0)).toMatchObject({ attempts: 0, note: null });

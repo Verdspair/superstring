@@ -36,7 +36,12 @@ const BINDING_Y = "44444444-4444-4444-8444-444444444444";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
 const PEER_X = "20001";
 const PEER_Y = "20002";
-const NOW_SECONDS = Math.floor(Date.parse("2026-09-25T12:00:00.000Z") / 1000);
+/**
+ * 观察发生时刻：取**当下真实墙钟**并回退一分钟。不能用固定日期常量——正文的到期戳由生产
+ * 按「发生时刻 + 保留窗口」打点，而 pendingConditions 用真实 nowIso() 比对；固定日期一旦跨过
+ * 当天中午的到期点，整批观察就永久读不到，这些用例会在没人改过产品的情况下整片变红。
+ */
+const observedAtSeconds = (index: number): number => Math.floor(Date.now() / 1000) - 60 + index;
 
 const VALID_DRAFT = {
   memory: {
@@ -203,7 +208,7 @@ function observe(
     },
     eventKey: key,
     messageId: `-${index}`,
-    occurredAtSeconds: NOW_SECONDS + index,
+    occurredAtSeconds: observedAtSeconds(index),
     subType: "normal",
     speaker: { kind: "member", id: "30001", displayName: "群友" },
     segments: [{ kind: "text", text: `消息${index}` }],

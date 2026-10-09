@@ -75,7 +75,16 @@ const png8 = (fill: number) => encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(f
 const bytes = () => png8(64);
 
 type DescribeValue =
-  | { status: "described"; described: true; attempt: number }
+  | {
+      status: "described";
+      described: true;
+      attempt: number;
+      id: string;
+      model: string;
+      text: string;
+      offset: number;
+      nextOffset: number | null;
+    }
   | { status: "failed"; described: false; attempt: number; awaitSupplement: boolean }
   | { status: "unavailable"; code: string };
 
@@ -631,7 +640,18 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     );
     traces.push(run3);
     // spec：detail 独立预算第二次尝试由真实更晚补充解锁，产出真实描述。
-    expect(run3.detailValues).toEqual([{ status: "described", described: true, attempt: 2 }]);
+    expect(run3.detailValues).toEqual([
+      {
+        status: "described",
+        described: true,
+        attempt: 2,
+        id: mediaId,
+        model: "vision-stub",
+        text: SUPPLEMENT_DESCRIPTION,
+        offset: 0,
+        nextOffset: null,
+      },
+    ]);
     expect(run3.visionDelta).toHaveLength(1);
     expect(pairingOf(run3)).toEqual(["detail"]);
     const detailRow3 = uniqueLedgerRow(run3.ledgerAfter, "detail");
@@ -882,13 +902,31 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mount.execute("media.list", {}, ctxA);
     expect(
       (await mount.execute("media.describe", { id: segA.id }, ctxA)).value as DescribeValue,
-    ).toEqual({ status: "described", described: true, attempt: 1 });
+    ).toEqual({
+      status: "described",
+      described: true,
+      attempt: 1,
+      id: segA.id,
+      model: "vision-stub",
+      text: "首次描述",
+      offset: 0,
+      nextOffset: null,
+    });
     expect(mount.stats.calls).toBe(1);
     const ctxB = mount.context("run-45b").ctx;
     await mount.execute("media.list", {}, ctxB);
     expect(
       (await mount.execute("media.describe", { id: segB.id }, ctxB)).value as DescribeValue,
-    ).toEqual({ status: "described", described: true, attempt: 1 });
+    ).toEqual({
+      status: "described",
+      described: true,
+      attempt: 1,
+      id: segB.id,
+      model: "vision-stub",
+      text: "首次描述",
+      offset: 0,
+      nextOffset: null,
+    });
     expect(mount.stats.calls).toBe(1);
     let rows = taskRows(h);
     expect(rows).toHaveLength(1);
@@ -938,7 +976,16 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mount.execute("media.list", {}, ctxC);
     expect(
       (await mount.execute("media.describe", { id: segB.id }, ctxC)).value as DescribeValue,
-    ).toEqual({ status: "described", described: true, attempt: 2 });
+    ).toEqual({
+      status: "described",
+      described: true,
+      attempt: 2,
+      id: segB.id,
+      model: "vision-stub",
+      text: "首次描述",
+      offset: 0,
+      nextOffset: null,
+    });
     expect(mount.stats.calls).toBe(2);
     expect(taskRows(h)).toHaveLength(1);
     expect(taskRows(h)[0]).toMatchObject({ attempts: 2, status: "succeeded" });
@@ -1170,7 +1217,16 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mountA.execute("media.list", {}, ctxA);
     expect(
       (await mountA.execute("media.describe", { id: segA.id }, ctxA)).value as DescribeValue,
-    ).toEqual({ status: "described", described: true, attempt: 1 });
+    ).toEqual({
+      status: "described",
+      described: true,
+      attempt: 1,
+      id: segA.id,
+      model: "vision-stub",
+      text: "mount 描述",
+      offset: 0,
+      nextOffset: null,
+    });
     expect(mountA.stats.calls).toBe(1);
     const schemeB = createQqScheme(h.orm, { name: "p5-group-b" });
     const bindingBId = "22222222-2222-4222-8222-222222222222";
@@ -1204,7 +1260,16 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mountB.execute("media.list", {}, ctxB);
     expect(
       (await mountB.execute("media.describe", { id: segB.id }, ctxB)).value as DescribeValue,
-    ).toEqual({ status: "described", described: true, attempt: 1 });
+    ).toEqual({
+      status: "described",
+      described: true,
+      attempt: 1,
+      id: segB.id,
+      model: "vision-stub",
+      text: "mount 描述",
+      offset: 0,
+      nextOffset: null,
+    });
     expect(mountB.stats.calls).toBe(1);
     expect(mountA.stats.calls).toBe(1);
     let rows = taskRows(h);
@@ -1275,7 +1340,16 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mountC.execute("media.list", {}, ctxC);
     expect(
       (await mountC.execute("media.describe", { id: segC.id }, ctxC)).value as DescribeValue,
-    ).toEqual({ status: "described", described: true, attempt: 1 });
+    ).toEqual({
+      status: "described",
+      described: true,
+      attempt: 1,
+      id: segC.id,
+      model: "vision-stub",
+      text: "mount 描述",
+      offset: 0,
+      nextOffset: null,
+    });
     expect(mountC.stats.calls).toBe(1);
     rows = taskRows(h);
     expect(rows).toHaveLength(3);
@@ -1326,7 +1400,16 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mount.execute("media.list", {}, ctx1);
     expect(
       (await mount.execute("media.describe", { id: segA.id }, ctx1)).value as DescribeValue,
-    ).toEqual({ status: "described", described: true, attempt: 1 });
+    ).toEqual({
+      status: "described",
+      described: true,
+      attempt: 1,
+      id: segA.id,
+      model: "vision-stub",
+      text: "首次描述",
+      offset: 0,
+      nextOffset: null,
+    });
     expect(mount.stats.calls).toBe(1);
     const scope = {
       conversationId: h.conversationId,

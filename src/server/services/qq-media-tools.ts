@@ -73,7 +73,7 @@ type NoteReadValue =
     }
   | { readonly status: "undescribed"; readonly id: string; readonly attempts: number }
   | { readonly status: "unavailable"; readonly code: string };
-type DescribeValue =
+type DescribeStatus =
   | { readonly status: "described"; readonly described: true; readonly attempt: number }
   | {
       readonly status: "failed";
@@ -82,8 +82,9 @@ type DescribeValue =
       readonly awaitSupplement: boolean;
     }
   | { readonly status: "unavailable"; readonly code: string };
+type DescribeValue = DescribeStatus;
 interface DescribeOutcome {
-  readonly value: DescribeValue;
+  readonly value: DescribeStatus;
   readonly sources: SourceRef[];
 }
 
@@ -1173,6 +1174,195 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     },
   };
 
+  /** Resolve a result only through the current carrier task or the guarded identity reader. */
+  function servedDescription(input: {
+    row: QqMediaNoteRow;
+    event: typeof schema.qqEvents.$inferSelect;
+    purpose: "baseline" | "detail";
+    question: QqMediaQuestionAnchor | null;
+    taskId?: string;
+  }): QqServableMediaDescription | null {
+    const task = findMediaReadTask(options.orm, {
+      mediaNoteId: input.row.id,
+      purpose: input.purpose,
+      ...(input.question === null ? {} : { questionKey: input.question.questionKey }),
+    });
+    if (
+      task !== null &&
+      task.status === "succeeded" &&
+      task.note !== null &&
+      task.modelName !== null &&
+      describedForCurrentModelPolicy(task, "image") &&
+      (input.taskId === undefined || input.taskId === task.id)
+    ) {
+      const ref = readTaskRefOrNull(task.id, now());
+      if (ref === null) return null;
+      return {
+        note: task.note,
+        modelName: task.modelName,
+        policy: task.policy,
+        attempts: task.attempts,
+        taskId: task.id,
+        sources: [ref],
+      };
+    }
+    return servableDescription({
+      row: input.row,
+      event: input.event,
+      purpose: input.purpose,
+      ...(input.question === null ? {} : { questionKey: input.question.questionKey }),
+      ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+      metadataOnly: false,
+      assertCurrent: describeTaskGuard(input.event),
+      ...(input.question === null
+        ? {}
+        : {
+            question: {
+              eventKey: input.question.eventKey,
+              bodyRevision: input.question.bodyRevision,
+              assertQuestionCurrent: input.question.assertQuestionCurrent,
+            },
+          }),
+    });
+  }
+
+  /** Deliver a bounded page through the shared fitter and final source/question checks. */
+  async function deliverDescriptionPage(input: {
+    state: MediaRunState;
+    context: ActionContext;
+    fits: FitCapture;
+    id: string;
+    row: QqMediaNoteRow;
+    event: typeof schema.qqEvents.$inferSelect;
+    purpose: "baseline" | "detail";
+    question: QqMediaQuestionAnchor | null;
+    offset: number;
+    limit: number;
+    served: QqServableMediaDescription;
+    resolveFresh: () => QqServableMediaDescription | null;
+    wrap: (page: Extract<NoteReadValue, { status: "ok" }>) => unknown;
+  }): Promise<Omit<ActionObservation, "id" | "name">> {
+    const points = [...input.served.note];
+    if (input.offset > points.length) fail("CONTEXT_INVALID_SELECTION", "正文分页位置超出范围");
+    const snapshotAtRead = snapshot(input.row);
+    const anchorStillCurrent = () => input.question?.assertQuestionCurrent(options.orm);
+    const remaining = points.length - input.offset;
+    for (
+      let length = Math.max(1, Math.min(input.limit, remaining));
+      length >= 1;
+      length = Math.floor(length / 2)
+    ) {
+      const end = Math.min(input.offset + length, points.length);
+      const page: Extract<NoteReadValue, { status: "ok" }> = {
+        status: "ok",
+        id: input.id,
+        model: input.served.modelName,
+        text: points.slice(input.offset, end).join(""),
+        offset: input.offset,
+        nextOffset: end < points.length ? end : null,
+      };
+      const value = input.wrap(page);
+      boundary(input.state, input.context);
+      if (!(await input.fits())(value, [...input.served.sources])) continue;
+      boundary(input.state, input.context);
+      const check = revalidated(snapshotAtRead);
+      if (!check.ok) return refuse(input.state, input.context, input.fits, check.code);
+      anchorStillCurrent();
+      const fresh = input.resolveFresh();
+      if (
+        fresh === null ||
+        fresh.taskId !== input.served.taskId ||
+        fresh.note !== input.served.note ||
+        fresh.modelName !== input.served.modelName
+      )
+        return refuse(input.state, input.context, input.fits, "segment_changed");
+      boundary(input.state, input.context);
+      return { value, sources: [...fresh.sources] };
+    }
+    return { value: unavailableValue(), sources: [] };
+  }
+
+  /** The single authorized description reader used for explicit paging and describe success. */
+  async function readDescriptionPage(input: {
+    state: MediaRunState;
+    context: ActionContext;
+    fits: FitCapture;
+    id: string;
+    row: QqMediaNoteRow;
+    event: typeof schema.qqEvents.$inferSelect;
+    purpose: "baseline" | "detail";
+    question: QqMediaQuestionAnchor | null;
+    offset: number;
+    limit: number;
+    wrap: (page: Extract<NoteReadValue, { status: "ok" }>) => unknown;
+  }): Promise<Omit<ActionObservation, "id" | "name">> {
+    const task = findMediaReadTask(options.orm, {
+      mediaNoteId: input.id,
+      purpose: input.purpose,
+      ...(input.question === null ? {} : { questionKey: input.question.questionKey }),
+    });
+    if (
+      task?.status === "succeeded" &&
+      task.note !== null &&
+      (task.modelName === null || !describedForCurrentModelPolicy(task, "image"))
+    )
+      return refuse(input.state, input.context, input.fits, "cache_mismatch");
+    const resolveFresh = () => servedDescription(input);
+    const served = resolveFresh();
+    if (served !== null) return deliverDescriptionPage({ ...input, served, resolveFresh });
+    // 已成功的 typed 任务在上面的 cache_mismatch 之后必然模型与当前策略相符，唯一落空
+    // 只剩结果引用签不出（来源到期/被删/时间线漂移）——那是来源失效，不是否定描述：
+    // 按 segment_changed 拒绝，与结果引用现签现用同一条规则，不冒充"从未描述"。
+    if (task?.status === "succeeded" && task.note !== null)
+      return refuse(input.state, input.context, input.fits, "segment_changed");
+    const anchorStillCurrent = () => input.question?.assertQuestionCurrent(options.orm);
+    return settle(
+      input.state,
+      input.context,
+      input.fits,
+      {
+        status: "undescribed",
+        id: input.id,
+        attempts: task?.attempts ?? (input.purpose === "detail" ? 0 : input.row.attempts),
+      },
+      [],
+      snapshot(input.row),
+      anchorStillCurrent,
+    );
+  }
+
+  /** Same reader and result fitter as note.read, with describe's existing status fields. */
+  async function describeWithPage(input: {
+    state: MediaRunState;
+    context: ActionContext;
+    fits: FitCapture;
+    id: string;
+    row: QqMediaNoteRow;
+    event: typeof schema.qqEvents.$inferSelect;
+    purpose: "baseline" | "detail";
+    question: QqMediaQuestionAnchor | null;
+    attempt: number;
+    taskId: string;
+  }): Promise<Omit<ActionObservation, "id" | "name">> {
+    const resolveFresh = () => servedDescription(input);
+    const served = resolveFresh();
+    if (served === null || served.taskId !== input.taskId)
+      return refuse(input.state, input.context, input.fits, "segment_changed");
+    return deliverDescriptionPage({
+      ...input,
+      offset: 0,
+      limit: DEFAULT_READ_LIMIT,
+      served,
+      resolveFresh,
+      wrap: (page) => ({
+        ...page,
+        status: "described",
+        described: true,
+        attempt: input.attempt,
+      }),
+    });
+  }
+
   const noteRead: BuiltInAction = {
     description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.note.read"],
     release: releaseRun,
@@ -1191,8 +1381,6 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       if (!event) return refuse(state, context, fits, "segment_missing");
       const scope = scopeFor(row, event);
       if (!scope.ok) return refuse(state, context, fits, scope.code);
-      // 问题指针只选已成功的任务：宿主复验后才成为问题身份，解析失败按原 reason 穿透；
-      // 绝不退化成 baseline——那会把新问题当首次读取、把旧概述冒充 detail 正文。
       const select:
         | { readonly purpose: "baseline" }
         | { readonly purpose: "detail"; readonly question: QqMediaQuestionAnchor } =
@@ -1205,147 +1393,19 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
                 questionMessageId: input.questionMessageId,
               }),
             };
-      // 同一个 noteReader 按 purpose 参数化复用：baseline 与 detail 只有任务键、授权
-      // 守卫与锚复验不同，正文分页与来源签发走完全同一条路，避免两份 reader 漂移。
-      // row/event 以真实非空参数传入：函数声明不继承外层 early-return 的 null narrow。
-      async function readNote(
-        row: QqMediaNoteRow,
-        event: typeof schema.qqEvents.$inferSelect,
-      ): Promise<Omit<ActionObservation, "id" | "name">> {
-        const question = select.purpose === "detail" ? select.question : null;
-        const detail = question !== null;
-        const taskOf = () =>
-          findMediaReadTask(options.orm, {
-            mediaNoteId: input.id,
-            purpose: select.purpose,
-            ...(question === null ? {} : { questionKey: question.questionKey }),
-          });
-        // fit 末复验：detail 交付前问题锚必须仍然新鲜——问题正文改写/图范围漂移按原
-        // authority 失败穿透，绝不把漂移后的问题当同一个问题交付。
-        const anchorStillCurrent = () => {
-          if (question !== null) question.assertQuestionCurrent(options.orm);
-        };
-        // typed 账本是唯一描述来源，且只出示"当前有效"的结果：与 reader 缓存匹配同一套
-        // 语义——成功任务须匹配当前 adapter 实际会选的模型与冻结策略串（legacy 迁移任务
-        // 按其已验规则只认同模型）。不匹配＝这条缓存对当前配置不可服务，绝不冒充正文。
-        const task = taskOf();
-        // 跨 carrier 同内容：identity 账本的已服务结果（正文与模型来自那一行的真实读出，
-        // 预算没有第二次消费）。两证据来源由宿主受控签发，任一失效即不交正文。
-        if (task === null || task.status !== "succeeded" || task.note === null) {
-          const served = servableDescription({
-            row,
-            event,
-            purpose: select.purpose,
-            ...(question === null ? {} : { questionKey: question.questionKey }),
-            metadataOnly: false,
-            assertCurrent: describeTaskGuard(event),
-            ...(question === null
-              ? {}
-              : {
-                  question: {
-                    eventKey: question.eventKey,
-                    bodyRevision: question.bodyRevision,
-                    assertQuestionCurrent: question.assertQuestionCurrent,
-                  },
-                }),
-          });
-          if (served !== null) {
-            const servedOffset = input.offset ?? 0;
-            const servedLimit = input.limit ?? DEFAULT_READ_LIMIT;
-            const servedPoints = [...served.note];
-            if (servedOffset > servedPoints.length)
-              fail("CONTEXT_INVALID_SELECTION", "正文分页位置超出范围");
-            const servedEnd = Math.min(servedOffset + servedLimit, servedPoints.length);
-            const servedValue: NoteReadValue = {
-              status: "ok",
-              id: row.id,
-              model: served.modelName,
-              text: servedPoints.slice(servedOffset, servedEnd).join(""),
-              offset: servedOffset,
-              nextOffset: servedEnd < servedPoints.length ? servedEnd : null,
-            };
-            return settle(
-              state,
-              context,
-              fits,
-              servedValue,
-              [...served.sources],
-              snapshot(row),
-              anchorStillCurrent,
-            );
-          }
-          // 未描述＝零消耗出口：不花新尝试、不调模型、不写任何预算。detail 没有旧账可
-          // 兜底（legacy 只迁 baseline），attempts 是本 purpose 任务的真实计数。
-          return settle(
-            state,
-            context,
-            fits,
-            {
-              status: "undescribed",
-              id: row.id,
-              attempts: task?.attempts ?? (detail ? 0 : row.attempts),
-            },
-            [],
-            snapshot(row),
-            anchorStillCurrent,
-          );
-        }
-        if (task.modelName === null || !describedForCurrentModelPolicy(task, "image"))
-          return refuse(state, context, fits, "cache_mismatch");
-        // typed 结果引用按真实任务现值签发；minter 失败（删除/时间线漂移/窗口死）即拒绝。
-        const typedRef = readTaskRefOrNull(task.id, now());
-        if (typedRef === null) return refuse(state, context, fits, "segment_changed");
-        const sources: SourceRef[] = [typedRef];
-        const offset = input.offset ?? 0;
-        const limit = input.limit ?? DEFAULT_READ_LIMIT;
-        const points = [...task.note];
-        if (offset > points.length) fail("CONTEXT_INVALID_SELECTION", "正文分页位置超出范围");
-        const remaining = points.length - offset;
-        if (remaining === 0) {
-          const value: NoteReadValue = {
-            status: "ok",
-            id: row.id,
-            model: task.modelName,
-            text: "",
-            offset,
-            nextOffset: null,
-          };
-          return settle(state, context, fits, value, sources, snapshot(row), anchorStillCurrent);
-        }
-        // fit 通过还不够：等待期间任务/行/范围/问题锚可能被改、被删或被撤权，缩短前缀
-        // 重试，复验通过才交出去。任务正文变了就是新 revision，typed 引用复算即拒绝。
-        for (
-          let length = Math.min(limit, remaining);
-          length >= 1;
-          length = Math.floor(length / 2)
-        ) {
-          const end = offset + length;
-          const value: NoteReadValue = {
-            status: "ok",
-            id: row.id,
-            model: task.modelName,
-            text: points.slice(offset, end).join(""),
-            offset,
-            nextOffset: end < points.length ? end : null,
-          };
-          boundary(state, context);
-          if (!(await fits())(value, sources)) continue;
-          boundary(state, context);
-          const check = revalidated(snapshot(row));
-          if (!check.ok) return refuse(state, context, fits, check.code);
-          // 交付前再锚一次同一 purpose 的真实任务：任务被删（媒体清理）、来源 link 消失
-          // 或正文改写都会让引用复算失败——绝不把过期的正文交出去。
-          const fresh = taskOf();
-          const freshRef = fresh ? readTaskRefOrNull(fresh.id, now()) : null;
-          if (!fresh || fresh.id !== task.id || fresh.note !== task.note || freshRef === null)
-            return refuse(state, context, fits, "segment_changed");
-          anchorStillCurrent();
-          boundary(state, context);
-          return { value, sources: [freshRef] };
-        }
-        return { value: unavailableValue(), sources: [] };
-      }
-      return readNote(row, event);
+      return readDescriptionPage({
+        state,
+        context,
+        fits,
+        id: input.id,
+        row,
+        event,
+        purpose: select.purpose,
+        question: select.purpose === "detail" ? select.question : null,
+        offset: input.offset ?? 0,
+        limit: input.limit ?? DEFAULT_READ_LIMIT,
+        wrap: (page) => page,
+      });
     },
   };
 
@@ -1380,10 +1440,15 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
        * 真实 typed 来源签发，绝不复述本 run 里可能已失效的 prior memo。
        */
       const cachePath = async (
-        attemptValue: (attempt: number) => DescribeValue,
+        attemptValue: (attempt: number) => DescribeStatus,
         purpose: "baseline" | "detail" = "baseline",
         question?: QqMediaQuestionAnchor,
-      ): Promise<DescribeOutcome> => {
+      ): Promise<{
+        value: DescribeValue;
+        sources: SourceRef[];
+        taskId: string | null;
+        attempt: number;
+      }> => {
         // 本 carrier 上的那一行：baseline 与 detail 是两条独立预算行，键必须跟着
         // 本次读取的 purpose 走，绝不拿 baseline 行冒充 detail 结果。
         const carrierRow = (): ReturnType<typeof findMediaReadTask> =>
@@ -1421,12 +1486,26 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
             // 本 carrier 刚花出的预算：结果引用锁在本 carrier 的任务行上。
             const task = carrierRow();
             if (!task || task.id !== result.taskId)
-              return { value: { status: "unavailable", code: "segment_changed" }, sources: [] };
+              return {
+                value: { status: "unavailable", code: "segment_changed" },
+                sources: [],
+                taskId: null,
+                attempt: 0,
+              };
             const ref = readTaskRefOrNull(task.id, now());
             if (ref === null)
-              return { value: { status: "unavailable", code: "segment_changed" }, sources: [] };
-            options.onDescribed?.(row.eventKey, task.id);
-            return { value: attemptValue(result.attempt), sources: [ref] };
+              return {
+                value: { status: "unavailable", code: "segment_changed" },
+                sources: [],
+                taskId: null,
+                attempt: 0,
+              };
+            return {
+              value: attemptValue(result.attempt),
+              sources: [ref],
+              taskId: task.id,
+              attempt: result.attempt,
+            };
           }
           // cache/legacy：权威 reader 已在自己的边界里复验过模型、策略、身份与窗口。
           // 结果引用锁在那一行自己的 carrier 上，所以先问「这一行的 carrier 是不是本
@@ -1440,8 +1519,18 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
           if (own !== null && own.id === result.taskId) {
             const ref = readTaskRefOrNull(own.id, now());
             if (ref === null)
-              return { value: { status: "unavailable", code: "segment_changed" }, sources: [] };
-            return { value: attemptValue(result.attempt), sources: [ref] };
+              return {
+                value: { status: "unavailable", code: "segment_changed" },
+                sources: [],
+                taskId: null,
+                attempt: 0,
+              };
+            return {
+              value: attemptValue(result.attempt),
+              sources: [ref],
+              taskId: own.id,
+              attempt: result.attempt,
+            };
           }
           const served = servableDescription({
             row,
@@ -1461,13 +1550,33 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
               : {}),
           });
           if (served === null || served.taskId !== result.taskId)
-            return { value: { status: "unavailable", code: "segment_changed" }, sources: [] };
+            return {
+              value: { status: "unavailable", code: "segment_changed" },
+              sources: [],
+              taskId: null,
+              attempt: 0,
+            };
           // 同 A 分支：复用成功按同规则通知（幂等结清诊断 + 宿主视图失效），报主账本行。
-          options.onDescribed?.(row.eventKey, served.taskId);
-          return { value: attemptValue(result.attempt), sources: [...served.sources] };
+          return {
+            value: attemptValue(result.attempt),
+            sources: [...served.sources],
+            taskId: served.taskId,
+            attempt: result.attempt,
+          };
         }
-        if (result.kind === "failed") return { value: attemptValue(result.attempt), sources: [] };
-        return { value: { status: "unavailable", code: result.reason }, sources: [] };
+        if (result.kind === "failed")
+          return {
+            value: attemptValue(result.attempt),
+            sources: [],
+            taskId: null,
+            attempt: result.attempt,
+          };
+        return {
+          value: { status: "unavailable", code: result.reason },
+          sources: [],
+          taskId: null,
+          attempt: 0,
+        };
       };
 
       /**
@@ -1488,7 +1597,23 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
             "detail",
             question,
           );
-          return settle(state, context, fits, outcome.value, outcome.sources, snapshot(row));
+          if (outcome.taskId === null)
+            return settle(state, context, fits, outcome.value, outcome.sources, snapshot(row));
+          state.outcomes.set(input.id, { value: outcome.value, sources: [...outcome.sources] });
+          options.onDescribed?.(row.eventKey, outcome.taskId);
+          const delivered = await describeWithPage({
+            state,
+            context,
+            fits,
+            id: input.id,
+            row,
+            event,
+            purpose: "detail",
+            question,
+            attempt: outcome.attempt,
+            taskId: outcome.taskId,
+          });
+          return delivered;
         }
         // 结果信封上界都装不下时不认领尝试、不调模型、不写缓存。
         boundary(state, context);
@@ -1540,48 +1665,20 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         );
         boundary(state, context);
         if (detail.kind === "described") {
-          const ownDetail = findMediaReadTask(options.orm, {
-            mediaNoteId: input.id,
-            purpose: "detail",
-            questionKey: question.questionKey,
-          });
-          if (ownDetail !== null && ownDetail.id === detail.taskId) {
-            const task = ownDetail;
-            if (!task || task.id !== detail.taskId)
-              return refuse(state, context, fits, "segment_changed");
-            const ref = readTaskRefOrNull(task.id, now());
-            if (ref === null) return refuse(state, context, fits, "segment_changed");
-            options.onDescribed?.(row.eventKey, task.id);
-            const value: DescribeValue = {
-              status: "described",
-              described: true,
-              attempt: detail.attempt,
-            };
-            return settle(state, context, fits, value, [ref], snapshot(row));
-          }
-          const served = servableDescription({
+          const taskId = detail.taskId;
+          options.onDescribed?.(row.eventKey, taskId);
+          return describeWithPage({
+            state,
+            context,
+            fits,
+            id: input.id,
             row,
             event,
             purpose: "detail",
-            questionKey: question.questionKey,
-            metadataOnly: false,
-            assertCurrent: describeTaskGuard(event),
-            question: {
-              eventKey: question.eventKey,
-              bodyRevision: question.bodyRevision,
-              assertQuestionCurrent: question.assertQuestionCurrent,
-            },
-          });
-          if (served === null || served.taskId !== detail.taskId)
-            return refuse(state, context, fits, "segment_changed");
-          // detail 复用成功：与 own 分支同规则通知（幂等），报主账本行。
-          options.onDescribed?.(row.eventKey, served.taskId);
-          const value: DescribeValue = {
-            status: "described",
-            described: true,
+            question,
             attempt: detail.attempt,
-          };
-          return settle(state, context, fits, value, [...served.sources], snapshot(row));
+            taskId,
+          });
         }
         if (detail.kind === "failed") {
           const value: DescribeValue = {
@@ -1607,7 +1704,22 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
             described: true,
             attempt,
           }));
-          return settle(state, context, fits, outcome.value, outcome.sources, snapshot(row));
+          if (outcome.taskId === null)
+            return settle(state, context, fits, outcome.value, outcome.sources, snapshot(row));
+          options.onDescribed?.(row.eventKey, outcome.taskId);
+          const delivered = await describeWithPage({
+            state,
+            context,
+            fits,
+            id: input.id,
+            row,
+            event,
+            purpose: "baseline",
+            question: null,
+            attempt: outcome.attempt,
+            taskId: outcome.taskId,
+          });
+          return delivered;
         }
         return settle(state, context, fits, prior.value, [], snapshot(row));
       }
@@ -1621,8 +1733,23 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
           described: true,
           attempt,
         }));
-        state.outcomes.set(input.id, outcome);
-        return settle(state, context, fits, outcome.value, outcome.sources, snapshot(row));
+        if (outcome.taskId === null)
+          return settle(state, context, fits, outcome.value, outcome.sources, snapshot(row));
+        state.outcomes.set(input.id, { value: outcome.value, sources: [...outcome.sources] });
+        options.onDescribed?.(row.eventKey, outcome.taskId);
+        const result = await describeWithPage({
+          state,
+          context,
+          fits,
+          id: input.id,
+          row,
+          event,
+          purpose: "baseline",
+          question: null,
+          attempt: outcome.attempt,
+          taskId: outcome.taskId,
+        });
+        return result;
       }
 
       // 先花预算、后花视觉：结果信封上界都装不下时不认领尝试、不调模型、不写缓存、不发宿主通知。
@@ -1682,41 +1809,31 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         context.signal,
       );
       boundary(state, context);
-      let value: DescribeValue;
-      let sources: SourceRef[] = [];
       let snap: RowSnapshot | null = snapshot(row);
       if (result.kind === "described") {
-        // 本 carrier 拥有这一行 ⇒ 签它自己的任务引用；否则那一行属于旧 carrier，
-        // 改由受控消费按「identity 结果 ref + 本 carrier 媒体 ref」两证据签发。
-        const own = baselineTask(input.id);
-        if (own !== null && own.id === result.taskId) {
-          const ref = readTaskRefOrNull(own.id, now());
-          if (ref === null) return refuse(state, context, fits, "segment_changed");
-          value = { status: "described", described: true, attempt: result.attempt };
-          sources = [ref];
-          snap = snapshot(row);
-          options.onDescribed?.(row.eventKey, own.id);
-        } else {
-          const served = servableDescription({
-            row,
-            event,
-            purpose: "baseline",
-            taskId: result.taskId,
-            metadataOnly: false,
-            assertCurrent: describeTaskGuard(event),
-          });
-          if (served === null || served.taskId !== result.taskId)
-            return refuse(state, context, fits, "segment_changed");
-          value = { status: "described", described: true, attempt: result.attempt };
-          sources = [...served.sources];
-          snap = snapshot(row);
-          // 跨 carrier 复用成功＝本 carrier 在本 run 同样拿到了一份可服务读结果，按与
-          // own 分支同一条规则通知（幂等，宿主只做结清诊断与视图失效）；复用的仍是
-          // 账本那唯一一行，所以报它的 taskId。
-          options.onDescribed?.(row.eventKey, served.taskId);
-        }
+        const value: DescribeStatus = {
+          status: "described",
+          described: true,
+          attempt: result.attempt,
+        };
+        const taskId = result.taskId;
+        state.outcomes.set(input.id, { value, sources: [] });
+        options.onDescribed?.(row.eventKey, taskId);
+        const delivered = await describeWithPage({
+          state,
+          context,
+          fits,
+          id: input.id,
+          row,
+          event,
+          purpose: "baseline",
+          question: null,
+          attempt: result.attempt,
+          taskId,
+        });
+        return delivered;
       } else if (result.kind === "failed") {
-        value = {
+        const value: DescribeStatus = {
           status: "failed",
           described: false,
           attempt: result.attempt,
@@ -1724,13 +1841,15 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         };
         const task = baselineTask(input.id);
         if (task) options.onDescribed?.(row.eventKey, task.id);
-      } else {
-        value = { status: "unavailable", code: result.reason };
-        snap = null;
+        const outcome: DescribeOutcome = { value, sources: [] };
+        state.outcomes.set(input.id, outcome);
+        return settle(state, context, fits, value, [], snap);
       }
-      const outcome: DescribeOutcome = { value, sources };
+      const value: DescribeStatus = { status: "unavailable", code: result.reason };
+      snap = null;
+      const outcome: DescribeOutcome = { value, sources: [] };
       state.outcomes.set(input.id, outcome);
-      return settle(state, context, fits, value, sources, snap);
+      return settle(state, context, fits, value, [], snap);
     },
   };
 

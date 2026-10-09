@@ -935,6 +935,11 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                           <span className="block text-xs font-normal leading-5 text-muted-foreground">
                             {t("connections.initiativeTimeWindowEnabledHint")}
                           </span>
+                          {!editor.rhythm.initiative_time_window_enabled && (
+                            <span className="block text-xs font-normal text-muted-foreground">
+                              {t("connections.initiativeTimeWindowDisabledNotice")}
+                            </span>
+                          )}
                         </span>
                       </Label>
                       {participationFields.map(([name, label, info]) => (

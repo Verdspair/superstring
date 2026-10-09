@@ -29,7 +29,12 @@ import type {
 const MODEL = "qwen/qwen3-4b-2507";
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const MISSING_BINDING_ID = "00000000-0000-4000-8000-0000000000ff";
-const NOW_SECONDS = Math.floor(Date.parse("2026-09-25T12:00:00.000Z") / 1000);
+/**
+ * 观察发生时刻：取**当下真实墙钟**并回退一分钟。不能用固定日期常量——正文的到期戳由生产按
+ * 「发生时刻 + 保留窗口」打点，而 pendingConditions 用真实 nowIso() 比对；固定日期一旦跨过当天
+ * 中午的到期点，整批观察就永久读不到，pending 与 verdict 会在没人改过产品的情况下整片变红。
+ */
+const observedAtSeconds = (index: number): number => Math.floor(Date.now() / 1000) - 60 + index;
 
 type App = ReturnType<typeof createApp>;
 
@@ -113,7 +118,7 @@ function observe(orm: Orm, key: string, index: number): void {
     },
     eventKey: key,
     messageId: `-${index}`,
-    occurredAtSeconds: NOW_SECONDS + index,
+    occurredAtSeconds: observedAtSeconds(index),
     subType: "normal",
     speaker: { kind: "member", id: "30001", displayName: "群友" },
     segments: [{ kind: "text", text: `消息${index}` }],

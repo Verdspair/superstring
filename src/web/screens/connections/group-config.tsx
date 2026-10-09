@@ -724,6 +724,7 @@ function ThreeStateField({
   name,
   labelKey,
   infoKey,
+  disabledNoticeKey,
 }: {
   editor: QqGroupConfigEditor;
   base: Record<string, unknown> | null;
@@ -731,6 +732,7 @@ function ThreeStateField({
   name: string;
   labelKey: string;
   infoKey?: string;
+  disabledNoticeKey?: string;
 }) {
   const { t } = useTranslation();
   const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
@@ -794,6 +796,9 @@ function ThreeStateField({
               })
             : t("schemes.qq.groupConfig.followsBase", { "0": baseText })}
       </p>
+      {disabledNoticeKey && (custom ? value === false : base !== null && !baseValue) && (
+        <p className="mt-1.5 text-xs text-muted-foreground">{t(disabledNoticeKey)}</p>
+      )}
     </Field>
   );
 }
@@ -1770,6 +1775,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                           name="initiative_time_window_enabled"
                           labelKey="connections.initiativeTimeWindowEnabled"
                           infoKey="connections.initiativeTimeWindowEnabledHint"
+                          disabledNoticeKey="connections.initiativeTimeWindowDisabledNotice"
                         />
                       </div>
                     )}

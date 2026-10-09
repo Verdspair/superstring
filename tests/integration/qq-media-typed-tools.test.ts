@@ -372,10 +372,15 @@ describe("typed QQ media tools (t08 finish2)", () => {
       const tool = f.mount({ read: async () => "橘猫" });
       const run1 = f.context("run-memo");
       await tool.execute("media.list", {}, run1.ctx);
-      expect((await tool.execute("media.describe", { id: img.id }, run1.ctx)).value).toEqual({
+      expect((await tool.execute("media.describe", { id: img.id }, run1.ctx)).value).toMatchObject({
         status: "described",
         described: true,
         attempt: 1,
+        id: img.id,
+        model: "vision-local",
+        text: "橘猫",
+        offset: 0,
+        nextOffset: null,
       });
       // 新 run、换策略：任务身份不含策略，尝试保留；缓存对当前策略不匹配＝不可服务，
       // 绝不因任何 prior memo 显示成功，也绝不为不匹配再烧尝试。
@@ -627,7 +632,16 @@ describe("typed QQ media tools (t08 finish2)", () => {
             ctx,
           )
         ).value,
-      ).toMatchObject({ status: "described", described: true, attempt: 1 });
+      ).toMatchObject({
+        status: "described",
+        described: true,
+        attempt: 1,
+        id: img.id,
+        model: "vision-local",
+        text: "细节正文",
+        offset: 0,
+        nextOffset: null,
+      });
       // 同指针 note.read 读 detail 正文（来源真实可复验）；id-only 仍是 baseline。
       const detailRead = await tool.execute(
         "media.note.read",
@@ -728,7 +742,16 @@ describe("typed QQ media tools (t08 finish2)", () => {
             ctx,
           )
         ).value,
-      ).toMatchObject({ status: "described", described: true, attempt: 1 });
+      ).toMatchObject({
+        status: "described",
+        described: true,
+        attempt: 1,
+        id: img.id,
+        model: "vision-local",
+        text: "细节正文",
+        offset: 0,
+        nextOffset: null,
+      });
       expect(tool.stats.calls).toBe(1);
       // fit 期间问题正文改写：fit 末的锚复验按原 reason 穿透，账本原样。
       let bodyRevision = "body-1";
