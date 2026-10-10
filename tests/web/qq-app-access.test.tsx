@@ -286,8 +286,8 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
     const fake = await renderBindings({ bound: true });
     await openManage();
     // 四组平铺后无内层 Tab：重要人物卡直出。
-    fireEvent.change(screen.getByLabelText("重要的人模式"), { target: { value: "hard" } });
-    fireEvent.change(screen.getByLabelText("重要的人名单"), { target: { value: "123, 456" } });
+    fireEvent.change(screen.getByLabelText("管理员模式"), { target: { value: "hard" } });
+    fireEvent.change(screen.getByLabelText("管理员名单"), { target: { value: "123, 456" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存名单" })));
     expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_ID, {
       attention: { mode: "hard", members: ["123", "456"] },

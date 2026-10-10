@@ -237,6 +237,10 @@ const qqStickerAuthorizationSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0022_qq_sticker_authorization.sql"),
   "utf8",
 );
+const historyOutputIdentityIndexesSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0057_history_output_identity_indexes.sql"),
+  "utf8",
+);
 const resources = [
   sql,
   knowledgeSql,
@@ -294,6 +298,7 @@ const resources = [
   qqInitiativeBatchesSql,
   qqInitiativeTimeWindowSql,
   outboundStaleReasonSql,
+  historyOutputIdentityIndexesSql,
 ] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
@@ -362,6 +367,7 @@ describe("explicit migration resources", () => {
               qqInitiativeBatchesSql,
               qqInitiativeTimeWindowSql,
               outboundStaleReasonSql,
+              historyOutputIdentityIndexesSql,
             ],
           }),
         ).toThrow();
@@ -436,11 +442,12 @@ describe("explicit migration resources", () => {
             qqInitiativeBatchesSql,
             qqInitiativeTimeWindowSql,
             outboundStaleReasonSql,
+            historyOutputIdentityIndexesSql,
           ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 56 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -717,12 +724,19 @@ describe("explicit migration resources", () => {
         path.join(import.meta.dir, "../../migrations/versions/0056_outbound_stale_reason.sql"),
         path.join(versions, "0056_outbound_stale_reason.sql"),
       );
+      copyFileSync(
+        path.join(
+          import.meta.dir,
+          "../../migrations/versions/0057_history_output_identity_indexes.sql",
+        ),
+        path.join(versions, "0057_history_output_identity_indexes.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(56);
+      expect(layout?.businessMigrationSql.length).toBe(57);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {

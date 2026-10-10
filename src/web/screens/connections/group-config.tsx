@@ -1,7 +1,7 @@
 // 本群配置页：QQ 群相对基础方案的逐字段稀疏改写 + 本群能力停用，只写本群这一层。
 // 原文先进 store（合法性由契约判定，非法留 rawTexts 并拦保存），blur 后才提示错误；换基础方案先预览 keep/reset。
 
-import { ChevronLeft, MessageSquare } from "lucide-react";
+import { ChevronLeft, MessageSquare, Shield } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -64,6 +64,7 @@ import {
 import { translateNotice } from "../../i18n";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
+import { BindingEditor } from "./binding-editor";
 import { QqMessagePreview } from "./qq-message-preview";
 import { SchemeFieldCard } from "./scheme-field-shared";
 import {
@@ -1523,6 +1524,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
   const [onlyCustom, setOnlyCustom] = useState(false);
   const [preview, setPreview] = useState(false);
   const [resetAll, setResetAll] = useState(false);
+  const [adminEditorOpen, setAdminEditorOpen] = useState(false);
   const changes = useMemo(
     () => (visibleEditor ? qqGroupConfigChanges(visibleEditor) : []),
     [visibleEditor],
@@ -1633,6 +1635,18 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           </div>
         )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {visibleEditor && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+              disabled={saving || state.qqGroupConfigLoading}
+              onClick={() => setAdminEditorOpen(true)}
+            >
+              <Shield className="size-3.5" />
+              {t("connections.administrators")}
+            </Button>
+          )}
           {summary && (
             <Button
               variant="outline"
@@ -2381,6 +2395,24 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             </Button>
           </div>
         </AlertDialog>
+      )}
+      {adminEditorOpen && visibleEditor && (
+        <BindingEditor
+          conversation={{
+            account_id: visibleEditor.source.binding.account_id,
+            kind: visibleEditor.source.binding.kind,
+            peer_id: visibleEditor.source.binding.peer_id,
+            messages: 0,
+            last_at_seconds: 0,
+            binding_id: visibleEditor.source.binding.id,
+          }}
+          binding={
+            state.qqBindings.find((b) => b.id === visibleEditor.source.binding.id) ??
+            visibleEditor.source.binding
+          }
+          initialSection="administrators"
+          onClose={() => setAdminEditorOpen(false)}
+        />
       )}
     </section>
   );

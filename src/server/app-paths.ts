@@ -337,6 +337,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0056_outbound_stale_reason.sql",
     ),
+    historyOutputIdentityIndexesMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0057_history_output_identity_indexes.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

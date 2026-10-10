@@ -71,6 +71,77 @@ const eventFromRow = (r: EventRow): ConversationEvent => ({
   outputId: r.output_id,
 });
 
+const canonicalLegacySend = (
+  conversationId: string,
+  sendId: string,
+  aliasExpiresAt: string,
+) => `EXISTS (
+  SELECT 1 FROM outbound_intents intent INDEXED BY ix_outbound_legacy_send_conversation
+  JOIN conversations conv ON conv.id=intent.conversation_id
+  JOIN qq_bindings binding ON binding.id=conv.source_id
+  JOIN qq_send_log legacy_send ON legacy_send.id=intent.legacy_send_id
+  JOIN conversation_events canonical
+    ON canonical.conversation_id=intent.conversation_id
+    AND canonical.kind='delivery'
+    AND canonical.source_kind='outbound_intent'
+    AND canonical.source_id=intent.id
+  WHERE intent.conversation_id=${conversationId}
+    AND intent.legacy_send_id=${sendId}
+    AND conv.channel='onebot11'
+    AND legacy_send.account_id=binding.account_id
+    AND legacy_send.conversation_kind=binding.conversation_kind
+    AND legacy_send.peer_id=binding.peer_id
+    AND legacy_send.agent_id=conv.agent_id
+    AND ${aliasExpiresAt} IS NOT NULL
+    AND legacy_send.expires_at>=${aliasExpiresAt}
+    AND intent.expires_at>=${aliasExpiresAt}
+    AND canonical.source_expires_at>=${aliasExpiresAt}
+)`;
+const canonicalSpeechAlias = (eventAlias: string) => `EXISTS (
+  SELECT 1 FROM conversation_events send_alias INDEXED BY ix_conversation_send_speech_source
+  JOIN conversations conv ON conv.id=send_alias.conversation_id
+  JOIN qq_bindings binding ON binding.id=conv.source_id
+  JOIN qq_send_log send ON send.id=send_alias.source_id
+  JOIN qq_speech_log speech ON speech.id=json_extract(send_alias.sources,'$[1].id')
+  WHERE send_alias.conversation_id=${eventAlias}.conversation_id
+    AND send_alias.kind='outbound'
+    AND send_alias.source_kind='qq_send'
+    AND send_alias.event_key='send:'||send.id
+    AND send_alias.source_revision=send.recorded_at
+    AND json_extract(send_alias.sources,'$[0].kind')='qq_send'
+    AND json_extract(send_alias.sources,'$[0].id')=send.id
+    AND json_extract(send_alias.sources,'$[0].revision')=send.recorded_at
+    AND json_extract(send_alias.sources,'$[0].expiresAt')=send.expires_at
+    AND json_extract(send_alias.sources,'$[1].kind')='qq_speech'
+    -- Unary + removes RHS column affinity while preserving the indexed JSON expression.
+    AND json_extract(send_alias.sources,'$[1].id')=+${eventAlias}.source_id
+    AND json_extract(send_alias.sources,'$[1].revision')=CAST(speech.spoke_at_seconds AS TEXT)
+    AND json_extract(send_alias.sources,'$[1].expiresAt')=speech.expires_at
+    AND ${eventAlias}.source_id=speech.id
+    AND ${eventAlias}.source_revision=CAST(speech.spoke_at_seconds AS TEXT)
+    AND ${eventAlias}.source_expires_at=speech.expires_at
+    AND send_alias.source_expires_at>=${eventAlias}.source_expires_at
+    AND send.expires_at>=${eventAlias}.source_expires_at
+    AND conv.channel='onebot11'
+    AND send.account_id=binding.account_id
+    AND send.conversation_kind=binding.conversation_kind
+    AND send.peer_id=binding.peer_id
+    AND send.agent_id=conv.agent_id
+    AND speech.account_id=binding.account_id
+    AND speech.conversation_kind=binding.conversation_kind
+    AND speech.peer_id=binding.peer_id
+    AND speech.agent_id=conv.agent_id
+    AND EXISTS (
+      SELECT 1 FROM qq_send_part part
+      WHERE part.send_id=send.id AND part.result='confirmed'
+    )
+)`;
+
+const canonicalLegacyProjectionFilter = `(
+  (e.source_kind='qq_send' AND NOT ${canonicalLegacySend("e.conversation_id", "e.source_id", "e.source_expires_at")})
+  OR (e.source_kind='qq_speech' AND NOT ${canonicalSpeechAlias("e")})
+)`;
+
 /** Source-reference journal. SQLite allocates seq inside the same transaction as dedup. */
 export class ConversationEventRepository {
   constructor(readonly db: Database) {}
@@ -259,8 +330,14 @@ export class ConversationEventRepository {
       if (remaining <= 0) break;
       const local = cursor - epoch.offset;
       const query = before
-        ? "SELECT e.* FROM conversation_events e WHERE e.conversation_id=? AND e.seq<? ORDER BY e.seq DESC LIMIT ?"
-        : "SELECT e.* FROM conversation_events e WHERE e.conversation_id=? AND e.seq>? ORDER BY e.seq ASC LIMIT ?";
+        ? `SELECT e.* FROM conversation_events e
+          WHERE e.conversation_id=? AND e.seq<?
+            AND (e.source_kind NOT IN('qq_send','qq_speech') OR ${canonicalLegacyProjectionFilter})
+          ORDER BY e.seq DESC LIMIT ?`
+        : `SELECT e.* FROM conversation_events e
+          WHERE e.conversation_id=? AND e.seq>?
+            AND (e.source_kind NOT IN('qq_send','qq_speech') OR ${canonicalLegacyProjectionFilter})
+          ORDER BY e.seq ASC LIMIT ?`;
       const rows = this.db.query(query).all(epoch.id, local, remaining) as EventRow[];
       found.push(...rows.map((row) => ({ event: eventFromRow(row), seq: row.seq + epoch.offset })));
     }
@@ -793,19 +870,28 @@ export class ConversationEventRepository {
       recorded_at: string;
       confirmed: number;
     }[];
-    // The old schema has no send->speech FK. Match one-to-one within the same scope,
-    // timestamp and speech kind in original recording order; preserve unmatched speech.
+    // Direct ID is the live one-to-one relation. Keep the original ordered time/kind
+    // compatibility matcher only for old rows with different IDs and no direct match.
     const matched = new Set<string>();
     const sendSpeech = new Map<string, (typeof speeches)[number]>();
+    const speechById = new Map(speeches.map((speech) => [speech.id, speech]));
+    for (const send of sends) {
+      if (!send.confirmed) continue;
+      const speech = speechById.get(send.id);
+      if (!speech) continue;
+      matched.add(speech.id);
+      sendSpeech.set(send.id, speech);
+    }
     const speechQueues = new Map<string, { items: typeof speeches; next: number }>();
     for (const speech of speeches) {
+      if (matched.has(speech.id)) continue;
       const key = `${speech.time}\0${speech.kind}`;
       const queue = speechQueues.get(key);
       if (queue) queue.items.push(speech);
       else speechQueues.set(key, { items: [speech], next: 0 });
     }
     for (const send of sends) {
-      if (!send.confirmed) continue;
+      if (!send.confirmed || sendSpeech.has(send.id)) continue;
       const queue = speechQueues.get(`${send.sent_at_seconds}\0${send.kind}`);
       const speech = queue?.items[queue.next++];
       if (speech) {
@@ -829,6 +915,17 @@ export class ConversationEventRepository {
           .query("SELECT event_key FROM conversation_events WHERE conversation_id=?")
           .all(c.id) as { event_key: string }[]
       ).map((e) => e.event_key),
+    );
+    const representedLegacySends = new Set(
+      (
+        this.db
+          .query(`SELECT send.id AS send_id FROM qq_send_log send
+            WHERE send.account_id=? AND send.conversation_kind=? AND send.peer_id=? AND send.agent_id=?
+              AND ${canonicalLegacySend("?", "send.id", "send.expires_at")}`)
+          .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id, c.id) as {
+          send_id: string;
+        }[]
+      ).map((send) => send.send_id),
     );
     const missingMediaParents = new Set(
       (
@@ -876,7 +973,7 @@ export class ConversationEventRepository {
         continue;
       }
       if (r.type === "send") {
-        if (recorded.has(`send:${r.id}`)) continue;
+        if (recorded.has(`send:${r.id}`) || representedLegacySends.has(r.id)) continue;
         const send = sendsById.get(r.id)!;
         const speech = sendSpeech.get(r.id);
         const source: SourceRef = {

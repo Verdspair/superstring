@@ -198,7 +198,7 @@ describe("editable QQ prompt storage and HTTP", () => {
     try {
       for (const f of BUSINESS_MIGRATION_FILES)
         db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
-      db.exec("PRAGMA user_version=57;");
+      db.exec(`PRAGMA user_version=${BUSINESS_SCHEMA_VERSION + 1};`);
       expect(() => ensureBusinessSchema(db)).toThrow(/REJECT_UNKNOWN_VERSION/);
     } finally {
       db.close();
@@ -360,21 +360,20 @@ describe("QQ prompt assembly", () => {
     expect(anonScene).toContain("这一轮你要回的是 匿名群友");
     expect(anonScene).not.toContain("开头会由程序 @ 他");
   });
-  it("marks the attention list in the timeline and explains its own marker", () => {
+  it("marks configured conversation Agent administrators as peers without granting permissions", () => {
     const sections = buildQqPrompt({
       ...base,
       timeline: [message],
       attentionMembers: ["20002", "30003"],
     });
     const timeline = sections.find((s) => s.origin === "timeline")?.body ?? "";
-    // The marker is the program's, so the program explains it (0031) — never a user prompt edit.
-    expect(timeline).toContain("标注「（重要的人）」");
-    expect(timeline).toContain("群友(20002)（重要的人）");
-    // （软优先的实际语义）：名单说明的是"执行时优先听谁的"，不是"更显眼"；
-    // 同时说清它不改变任何发言门槛——门槛仍由 attention 模式决定。
-    expect(timeline).toContain("他们的请求与要求优先考虑");
-    expect(timeline).toContain("以他们为准");
-    expect(timeline).toContain("这不改变任何发言门槛");
+    // The program supplies this marker; it does not come from a user-editable prompt.
+    expect(timeline).toContain("标注「（管理员）」");
+    expect(timeline).toContain("群友(20002)（管理员）");
+    // Priority stays within the host's authorized target, source, and configuration scope.
+    expect(timeline).toContain("此会话 Agent 的主人，名单由用户配置、多人同级");
+    expect(timeline).toContain("优先听从其要求");
+    expect(timeline).toContain("宿主权限、来源范围与发言门槛不变");
     // Someone outside the list is rendered exactly as before.
     const other = buildQqPrompt({
       ...base,
@@ -382,8 +381,8 @@ describe("QQ prompt assembly", () => {
       attentionMembers: ["99999"],
     });
     const otherTimeline = other.find((s) => s.origin === "timeline")?.body ?? "";
-    expect(otherTimeline).toContain("标注「（重要的人）」");
-    expect(otherTimeline).not.toContain("群友(20002)（重要的人）");
+    expect(otherTimeline).toContain("标注「（管理员）」");
+    expect(otherTimeline).not.toContain("群友(20002)（管理员）");
   });
 
   it("keeps timeline, media descriptions and retrieved material out of system messages", () => {

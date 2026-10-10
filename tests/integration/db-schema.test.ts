@@ -199,6 +199,10 @@ const V56_SQL = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0056_outbound_stale_reason.sql"),
   "utf8",
 );
+const V57_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0057_history_output_identity_indexes.sql"),
+  "utf8",
+);
 
 const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
 ${QQ_DISPATCH_SQL}
@@ -234,7 +238,8 @@ ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0052_qq_mes
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0053_qq_group_names.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0054_qq_initiative_batches.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0055_qq_initiative_time_window.sql"), "utf8")}
-${V56_SQL}`;
+${V56_SQL}
+${V57_SQL}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };

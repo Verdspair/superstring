@@ -1,4 +1,4 @@
-import { Plus, RefreshCw, Search } from "lucide-react";
+import { Plus, RefreshCw, Search, Shield } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -8,6 +8,7 @@ import { Input } from "../../components/ui/input";
 import { filterQqGroupRows, projectQqGroupRows } from "../../features/qq/group-directory";
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
+import { BindingEditor } from "./binding-editor";
 
 /**
  * QQ 应用级本群配置目录：展示所有已绑定的 QQ 群，跨方案列出。
@@ -16,6 +17,7 @@ import { useSuperstringStore } from "../../store";
 export function QqGroupDirectory({ active = true }: { active?: boolean } = {}) {
   const { t, i18n } = useTranslation();
   const [query, setQuery] = useState("");
+  const [adminEditingBindingId, setAdminEditingBindingId] = useState<string | null>(null);
 
   const state = useSuperstringStore(
     useShallow((s) => ({
@@ -190,15 +192,27 @@ export function QqGroupDirectory({ active = true }: { active?: boolean } = {}) {
                         </span>
                       </div>
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy}
-                      className="h-auto min-h-8 shrink-0 whitespace-normal"
-                      onClick={() => openQqGroupConfig(row.bindingId)}
-                    >
-                      {t("schemes.qq.groupConfig.controls.configure")}
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        className="h-auto min-h-8 shrink-0 whitespace-normal"
+                        onClick={() => setAdminEditingBindingId(row.bindingId)}
+                      >
+                        <Shield className="size-3.5" />
+                        {t("connections.administrators")}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        className="h-auto min-h-8 shrink-0 whitespace-normal"
+                        onClick={() => openQqGroupConfig(row.bindingId)}
+                      >
+                        {t("schemes.qq.groupConfig.controls.configure")}
+                      </Button>
+                    </div>
                   </div>
                 </li>
               ))}
@@ -206,6 +220,26 @@ export function QqGroupDirectory({ active = true }: { active?: boolean } = {}) {
           )}
         </div>
       )}
+      {adminEditingBindingId &&
+        (() => {
+          const adminBinding = qqBindings.find((b) => b.id === adminEditingBindingId) ?? null;
+          if (!adminBinding) return null;
+          return (
+            <BindingEditor
+              conversation={{
+                account_id: adminBinding.account_id,
+                kind: adminBinding.kind,
+                peer_id: adminBinding.peer_id,
+                messages: 0,
+                last_at_seconds: 0,
+                binding_id: adminBinding.id,
+              }}
+              binding={adminBinding}
+              initialSection="administrators"
+              onClose={() => setAdminEditingBindingId(null)}
+            />
+          );
+        })()}
     </div>
   );
 }

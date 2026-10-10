@@ -518,7 +518,7 @@ describe("0052 message facts and media persistence", () => {
   it("still rejects an unknown future version", () => {
     const h = cloneBusinessDb();
     try {
-      h.db.exec("PRAGMA user_version = 57");
+      h.db.exec(`PRAGMA user_version = ${BUSINESS_SCHEMA_VERSION + 1}`);
       expect(() => ensureBusinessSchema(h.db)).toThrow("REJECT_UNKNOWN_VERSION");
     } finally {
       h.close();

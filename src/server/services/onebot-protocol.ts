@@ -1,19 +1,13 @@
 import { z } from "zod";
+import {
+  OneBotAccountIdSchema as AccountId,
+  OneBotWireIdSchema as WireId,
+} from "../../shared/contracts/onebot-identity";
+
+export { normalizeOneBotAccountId } from "../../shared/contracts/onebot-identity";
 
 // External protocol types stay separate from published HTTP/Turn contracts.
 // No sockets, storage, model calls, logging or automatic retries belong here.
-const WireId = z.union([z.number().int(), z.string().regex(/^-?\d+$/)]).transform((value) => {
-  const text = String(value);
-  const negative = text.startsWith("-");
-  const digits = (negative ? text.slice(1) : text).replace(/^0+(?=\d)/, "");
-  return negative && digits !== "0" ? `-${digits}` : digits;
-});
-const AccountId = WireId.refine((id) => id !== "0" && !id.startsWith("-"));
-
-export function normalizeOneBotAccountId(input: unknown): string | null {
-  const parsed = AccountId.safeParse(input);
-  return parsed.success ? parsed.data : null;
-}
 const WireSegment = z.object({
   type: z.string().min(1),
   data: z.record(z.string(), z.unknown()).nullable(),

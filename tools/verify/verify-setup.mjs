@@ -363,6 +363,12 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0056_outbound_stale_reason.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0057_history_output_identity_indexes.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

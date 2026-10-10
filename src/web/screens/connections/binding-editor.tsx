@@ -1,16 +1,19 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+
 import type {
   QqBindingResponse,
   QqConversationListItem,
   QqSchemeResponse,
   UpdateQqBindingRequest,
 } from "../../../shared/contracts/qq";
+
 import {
   isEmptyQqGroupOverrides,
   type QqGroupSchemeOverrides,
 } from "../../../shared/contracts/qq-group-config";
 import { Field } from "../../components/form-field";
+import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
   Dialog,
@@ -29,12 +32,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../../components/ui/sheet";
-import { parseAttentionMembers } from "../../features/qq/draft-state";
+import { parseAdminMembers } from "../../features/qq/draft-state";
 import { QQ_SCHEME_FIELD_LABELS, TRIGGER_LABELS } from "../../features/qq/scheme-field-metadata";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { msg, translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { BindingMemoryControls } from "../library/BindingMemoryControls";
+import { AdminMembersEditor } from "./admin-members-editor";
 import { SchemeFieldCard } from "./scheme-field-shared";
 
 /** 预览值的中性文本：数组按集合去序、装配冗余按百分比，其余 String()。 */
@@ -127,16 +131,19 @@ export function BindingEditor({
   binding,
   onClose,
   onCloseAutoFocus,
+  initialSection,
 }: {
   conversation: QqConversationListItem;
   binding: QqBindingResponse | null;
   onClose: () => void;
   onCloseAutoFocus?: (event: Event) => void;
+  initialSection?: "administrators";
 }) {
   const { t } = useTranslation();
   const state = useSuperstringStore();
   const [choices, setChoices] = useQqInput("choices");
   const [attention, setAttention] = useQqInput("attention");
+  const adminSectionRef = useRef<HTMLDivElement | null>(null);
   const key = binding?.id ?? `${conversation.kind}:${conversation.peer_id}`;
   const choice = choices[key] ?? {
     agentId: binding?.agent_id ?? state.agents[0]?.id ?? "",
@@ -241,6 +248,21 @@ export function BindingEditor({
     >
       <SheetContent
         className="w-full overflow-y-auto sm:max-w-xl"
+        onOpenAutoFocus={(event) => {
+          if (initialSection === "administrators" && adminSectionRef.current) {
+            event.preventDefault();
+            const prefersReducedMotion =
+              typeof window !== "undefined" &&
+              window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+            adminSectionRef.current.scrollIntoView({
+              behavior: prefersReducedMotion ? "auto" : "smooth",
+              block: "start",
+            });
+            const firstControl =
+              adminSectionRef.current.querySelector<HTMLElement>("select, input, button");
+            firstControl?.focus();
+          }
+        }}
         onCloseAutoFocus={onCloseAutoFocus}
       >
         <SheetHeader className="border-b pb-6">
@@ -392,76 +414,124 @@ export function BindingEditor({
                   {t("connections.triggersMutualExclusionHint")}
                 </p>
               </SchemeFieldCard>
-              <SchemeFieldCard
-                title={t("connections.importantPeople")}
-                description="schemes.bindings.attention.hint"
-              >
-                {attentionValue && (
-                  <>
-                    <Field label="connections.attentionMode">
-                      <NativeSelect
-                        value={attentionValue.mode}
-                        disabled={saving}
-                        onChange={(e) =>
-                          setAttention((old) => ({
-                            ...old,
-                            [binding.id]: {
-                              ...attentionValue,
-                              mode: e.target.value as "off" | "soft" | "hard",
-                            },
-                          }))
-                        }
-                      >
-                        <option value="off">{t("connections.off2")}</option>
-                        <option value="soft">{t("connections.softPriority")}</option>
-                        <option value="hard">{t("connections.onlyReplyToTheList")}</option>
-                      </NativeSelect>
-                    </Field>
-                    <Field label="connections.attentionList" info="connections.softPriorityHint">
-                      <Input
-                        value={attentionValue.members}
-                        disabled={saving || attentionValue.mode === "off"}
-                        placeholder={t("connections.qqNumbersSeparatedByCommasOrSpaces")}
-                        onChange={(e) =>
-                          setAttention((old) => ({
-                            ...old,
-                            [binding.id]: { ...attentionValue, members: e.target.value },
-                          }))
-                        }
-                      />
-                    </Field>
-                    <Button
-                      disabled={
-                        saving ||
-                        (attentionValue.mode !== "off" &&
-                          !parseAttentionMembers(attentionValue.members).length)
-                      }
-                      onClick={() =>
-                        void state
-                          .updateQqBindingRow(attentionValue.source, {
-                            attention:
-                              attentionValue.mode === "off"
-                                ? { mode: "off", members: [] }
-                                : {
-                                    mode: attentionValue.mode,
-                                    members: parseAttentionMembers(attentionValue.members),
+              <div ref={adminSectionRef} data-section="administrators">
+                <SchemeFieldCard
+                  title={t("connections.importantPeople")}
+                  description="schemes.bindings.attention.hint"
+                >
+                  {attentionValue &&
+                    (() => {
+                      const savedAgent = state.agents.find((a) => a.id === binding?.agent_id);
+                      const savedAgentName = savedAgent?.name ?? binding?.agent_id ?? "";
+                      const hasPendingAgentChange =
+                        choice.agentId && choice.agentId !== binding?.agent_id;
+                      const pendingAgentName =
+                        state.agents.find((a) => a.id === choice.agentId)?.name ?? choice.agentId;
+                      const parsedAttention = parseAdminMembers(attentionValue.members);
+                      const canSaveAttention =
+                        !saving &&
+                        (attentionValue.mode === "off" ||
+                          (parsedAttention.canonicalCount > 0 &&
+                            !parsedAttention.hasInvalid &&
+                            !parsedAttention.isOverLimit));
+
+                      return (
+                        <>
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground pb-2 border-b">
+                            <span>{t("connections.scopeNote")}:</span>
+                            <Badge variant="outline">{conversation.peer_id}</Badge>
+                            <span>·</span>
+                            <span>
+                              {t("schemes.qq.groupConfig.agent")}: {savedAgentName}
+                            </span>
+                            {hasPendingAgentChange && (
+                              <span className="text-muted-foreground font-normal">
+                                （
+                                {t("connections.pendingAgentChangeNote", {
+                                  "0": pendingAgentName,
+                                })}
+                                ）
+                              </span>
+                            )}
+                            <span className="text-[11px] text-muted-foreground">
+                              ({t("connections.scopeHint")})
+                            </span>
+                          </div>
+                          <Field label="connections.attentionMode">
+                            <NativeSelect
+                              value={attentionValue.mode}
+                              disabled={saving}
+                              onChange={(e) =>
+                                setAttention((old) => ({
+                                  ...old,
+                                  [binding.id]: {
+                                    ...attentionValue,
+                                    mode: e.target.value as "off" | "soft" | "hard",
                                   },
-                          })
-                          .then((ok) => {
-                            if (ok)
-                              setAttention((old) => {
-                                const next = { ...old };
-                                delete next[binding.id];
-                                return next;
-                              });
-                          })
-                      }
-                    >
-                      {t("connections.saveList")}
-                    </Button>
-                  </>
-                )}
-              </SchemeFieldCard>
+                                }))
+                              }
+                            >
+                              <option value="off">{t("connections.off2")}</option>
+                              <option value="soft">{t("connections.softPriority")}</option>
+                              <option value="hard">{t("connections.onlyReplyToTheList")}</option>
+                            </NativeSelect>
+                          </Field>
+                          <Field
+                            label="connections.attentionList"
+                            info="connections.softPriorityHint"
+                          >
+                            <Input
+                              value={attentionValue.members}
+                              disabled={saving || attentionValue.mode === "off"}
+                              placeholder={t("connections.qqNumbersSeparatedByCommasOrSpaces")}
+                              onChange={(e) =>
+                                setAttention((old) => ({
+                                  ...old,
+                                  [binding.id]: { ...attentionValue, members: e.target.value },
+                                }))
+                              }
+                            />
+                          </Field>
+                          <AdminMembersEditor
+                            value={attentionValue.members}
+                            disabled={saving || attentionValue.mode === "off"}
+                            onChange={(next) =>
+                              setAttention((old) => ({
+                                ...old,
+                                [binding.id]: { ...attentionValue, members: next },
+                              }))
+                            }
+                          />
+                          <Button
+                            disabled={!canSaveAttention}
+                            onClick={() =>
+                              void state
+                                .updateQqBindingRow(attentionValue.source, {
+                                  attention:
+                                    attentionValue.mode === "off"
+                                      ? { mode: "off", members: [] }
+                                      : {
+                                          mode: attentionValue.mode,
+                                          members: parsedAttention.validCanonicalMembers,
+                                        },
+                                })
+                                .then((ok) => {
+                                  if (ok)
+                                    setAttention((old) => {
+                                      const next = { ...old };
+                                      delete next[binding.id];
+                                      return next;
+                                    });
+                                })
+                            }
+                          >
+                            {t("connections.saveList")}
+                          </Button>
+                        </>
+                      );
+                    })()}
+                </SchemeFieldCard>
+              </div>
               <SchemeFieldCard
                 title={t("connections.memoryOrganising")}
                 description="schemes.bindings.memory.hint"

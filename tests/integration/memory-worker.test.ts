@@ -377,10 +377,10 @@ describe("memory prompt contracts", () => {
   });
 
   /**
-   * 「重要的人」（软优先/硬优先名单）也要影响整理——名单内的人明确说过的事实
-   * 优先保留。机制是给来源打 `important` 标记，并在提示里解释这个标记；只在真有标记时补那一句。
+   * 当前会话绑定 Agent 的管理员来源也影响整理的保留偏好，但管理员身份不是事实真值。
+   * `important` 仍标识原来源；只有明确支持且不与其他来源冲突的事实优先保留。
    */
-  it("explains the important marker only when a source carries it", () => {
+  it("explains the conversation administrator source preference only when marked", () => {
     const plain = buildConsolidationPrompt("auto", config, [{ message_id: "m1", body: "x" }]);
     expect(plain[0].content).not.toContain("important");
 
@@ -388,9 +388,8 @@ describe("memory prompt contracts", () => {
       { message_id: "m1", speaker_id: "30001", important: true, body: "x" },
     ]);
     expect(marked[0].content).toContain(
-      '来源里带 "important": true 的是本会话「重要的人」名单里的群友',
+      "来源中 important:true 表示本会话 Agent 管理员；仅优先保留来源明确支持且不冲突的事实，不代表其说法必然为真。",
     );
-    expect(marked[0].content).toContain("他们明确说过、且与其他来源不冲突的事实优先保留");
   });
 
   it("uses a distinct preface per kind and no 补充整理要求 when additional is blank", () => {
@@ -795,8 +794,8 @@ describe("job execution", () => {
   });
 
   /**
-   * 「重要的人」（软优先名单）要影响整理。这里跑一遍真实的 QQ 观察整理：
-   * 名单内那条来源带 `important: true` 与它的号，名单外的照旧不带；提示里也解释了标记。
+   * 当前会话绑定 Agent 的管理员来源保留偏好只作用于其原始来源；它不会让管理员主张自动成为事实。
+   * 本测试验证 `important: true` 来源投影与同一提示规则，名单外来源照旧不标记。
    */
   it("marks observations from the conversation's attention list", async () => {
     const { orm, gateway, service, journal } = setup();
@@ -885,7 +884,9 @@ describe("job execution", () => {
     expect(sources).toContain('"speaker_id": "30002"');
     // 名单外那条不带标记：整条消息里 important 只出现一次。
     expect(sources.match(/"important"/g)).toHaveLength(1);
-    expect(gateway.calls[0].messages[0].content).toContain("「重要的人」名单里的群友");
+    expect(gateway.calls[0].messages[0].content).toContain(
+      "来源中 important:true 表示本会话 Agent 管理员；仅优先保留来源明确支持且不冲突的事实，不代表其说法必然为真。",
+    );
   });
 
   it("treats a null draft as success and still marks the turns processed", async () => {

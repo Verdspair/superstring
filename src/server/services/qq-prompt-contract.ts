@@ -489,7 +489,7 @@ function speakerLabel(
   const id = message.speakerId;
   if (id === null) return "匿名群友";
   const base = qqSpeakerLabel(id, labels);
-  return important?.has(id) ? `${base}（重要的人）` : base;
+  return important?.has(id) ? `${base}（管理员）` : base;
 }
 
 /** Minutes matter here, sub-minute does not: the windows themselves are enforced in code. */
@@ -527,11 +527,10 @@ export function renderQqTimeline(
       : new Set(options.attentionMembers);
   const lines = ["以下为最近的群聊记录，按时间从旧到新，方括号内是距现在的时长。"];
   if (important !== null) {
-    // （软优先的实际语义）：名单不只是"更显眼"——它说明这个人执行时该优先听谁的。
-    // 门槛一个不动（这条切换仍由 attention 模式决定），这里改的是提示词说清了什么。
+    // The configured people guide request priority; they do not gain host permissions.
     lines.push(
-      "标注「（重要的人）」的是这个人指定要更留意的群友：他们的请求与要求优先考虑，" +
-        "同一件事上与其他人的说法冲突时以他们为准；这不改变任何发言门槛。",
+      "标注「（管理员）」的是此会话 Agent 的主人，名单由用户配置、多人同级；" +
+        "优先听从其要求，但宿主权限、来源范围与发言门槛不变。",
     );
   }
   for (const message of timeline) {

@@ -1547,5 +1547,9 @@
   "默认模型已保存；已有明确覆盖和其他草稿保持不变。": "Default models saved. Existing overrides and other drafts are unchanged.",
   "默认每批 30 条；限制每次检查量，不是最终使用条数。": "Default: 30 entries per batch. Limits each check, not the final number used.",
   "默认读取强度": "Default retrieval strength",
-  "默认跟随模型加载容量。保存后从下一轮生效，重试沿用原轮预算。": "Follows the loaded model capacity by default. Saved changes apply from the next turn; retries keep the earlier budget."
+  "默认跟随模型加载容量。保存后从下一轮生效，重试沿用原轮预算。": "Follows the loaded model capacity by default. Saved changes apply from the next turn; retries keep the earlier budget.",
+  "管理员": "Administrators",
+  "请填写管理员名单，或关闭此模式。": "Please enter the administrator list, or turn this mode off.",
+  "请更正格式无效的管理员账号后再保存。": "Please correct invalid administrator account IDs before saving.",
+  "管理员数量超过上限（最多 50 人）。": "Administrator count exceeds the maximum limit (maximum 50)."
 }

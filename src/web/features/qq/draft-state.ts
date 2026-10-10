@@ -1,4 +1,6 @@
+import { normalizeOneBotAccountId } from "../../../shared/contracts/onebot-identity";
 import {
+  QQ_ATTENTION_MEMBER_LIMIT,
   type QqBindingResponse,
   type QqConversationListItem,
   QqSchemeRhythmSchema,
@@ -96,6 +98,46 @@ export const parseAttentionMembers = (text: string) =>
     .map((part) => part.trim())
     .filter(Boolean);
 
+export interface ParsedAdminMembers {
+  rawItems: string[];
+  validCanonicalMembers: string[];
+  invalidTokens: string[];
+  canonicalCount: number;
+  hasInvalid: boolean;
+  hasDuplicates: boolean;
+  isOverLimit: boolean;
+}
+
+export function parseAdminMembers(text: string): ParsedAdminMembers {
+  const rawItems = parseAttentionMembers(text);
+  const validList: string[] = [];
+  const invalidTokens: string[] = [];
+
+  for (const token of rawItems) {
+    const canonical = normalizeOneBotAccountId(token);
+    if (canonical !== null) {
+      validList.push(canonical);
+    } else {
+      invalidTokens.push(token);
+    }
+  }
+
+  const validCanonicalMembers = Array.from(new Set(validList));
+  const hasDuplicates =
+    validList.length > validCanonicalMembers.length ||
+    new Set(invalidTokens).size < invalidTokens.length;
+
+  return {
+    rawItems,
+    validCanonicalMembers,
+    invalidTokens,
+    canonicalCount: validCanonicalMembers.length,
+    hasInvalid: invalidTokens.length > 0,
+    hasDuplicates,
+    isOverLimit: validCanonicalMembers.length > QQ_ATTENTION_MEMBER_LIMIT,
+  };
+}
+
 /** 观察目录行与草稿里的选中值共用一种会话键。 */
 export const qqConversationKey = (
   row: Pick<QqConversationListItem, "account_id" | "kind" | "peer_id">,
@@ -136,11 +178,16 @@ const connectionDirty = (draft: QqInputs["connection"]) =>
 const choiceDirty = (draft: QqInputs["choices"][string]) =>
   !!draft.source &&
   (draft.agentId !== draft.source.agent_id || draft.schemeId !== draft.source.scheme_id);
-const attentionDirty = (draft: QqInputs["attention"][string]) =>
-  draft.mode !== draft.source.attention.mode ||
-  (draft.mode !== "off" &&
-    parseAttentionMembers(draft.members).sort().join(" ") !==
-      [...draft.source.attention.members].sort().join(" "));
+const attentionDirty = (draft: QqInputs["attention"][string]) => {
+  if (draft.mode !== draft.source.attention.mode) return true;
+  if (draft.mode === "off") return false;
+  const currentParsed = parseAdminMembers(draft.members);
+  if (currentParsed.hasInvalid) return true;
+  return (
+    [...currentParsed.validCanonicalMembers].sort().join(" ") !==
+    [...draft.source.attention.members].sort().join(" ")
+  );
+};
 const storageDirty = (draft: QqInputs["storage"]) =>
   !!draft && qqStorageDaysChanged(draft.days, draft.source.retention_days);
 
@@ -493,7 +540,7 @@ export function qqDraftChanges(
     if (attentionDirty(draft))
       rows.push({
         id: `attention:${draft.source.id}`,
-        resource: `${msg("重要的人")} · ${draft.source.peer_id}`,
+        resource: `${msg("管理员")} · ${draft.source.peer_id}`,
         changes: [
           `${draft.source.attention.mode} → ${draft.mode}`,
           `${draft.source.attention.members.join(" ")} → ${draft.members}`,
@@ -628,11 +675,22 @@ export function createQqDraftActions(
       }
       for (const [id, draft] of Object.entries(get().qqInputs.attention)) {
         if (!attentionDirty(draft)) continue;
-        const members = draft.mode === "off" ? [] : parseAttentionMembers(draft.members);
-        if (draft.mode !== "off" && !members.length) {
-          set({ error: msg("请填写重要人物名单，或关闭此模式。") });
-          return false;
+        const parsed = parseAdminMembers(draft.members);
+        if (draft.mode !== "off") {
+          if (parsed.hasInvalid) {
+            set({ error: msg("请更正格式无效的管理员账号后再保存。") });
+            return false;
+          }
+          if (parsed.isOverLimit) {
+            set({ error: msg("管理员数量超过上限（最多 50 人）。") });
+            return false;
+          }
+          if (parsed.canonicalCount === 0) {
+            set({ error: msg("请填写管理员名单，或关闭此模式。") });
+            return false;
+          }
         }
+        const members = draft.mode === "off" ? [] : parsed.validCanonicalMembers;
         // A prior successful edit in this same save may have advanced the binding revision.
         const binding = draft.source;
         if (
