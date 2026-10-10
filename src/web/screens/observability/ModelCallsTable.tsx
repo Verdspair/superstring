@@ -9,8 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { RuntimeSpan } from "../../../shared/contracts/runtime-observability";
-import { taskLabels } from "./labels";
-import { milliseconds, phaseLabels, StatusMark } from "./presentation";
+import { milliseconds, phaseLabels, StatusMark, taskName } from "./presentation";
 export function ModelCallsTable({
   items,
   selected,
@@ -40,11 +39,7 @@ export function ModelCallsTable({
             key={item.spanId}
             data-state={selected === item.spanId ? "selected" : undefined}
           >
-            <TableCell>
-              {t(
-                taskLabels[String(item.details.specId)] ?? String(item.details.specId ?? item.name),
-              )}
-            </TableCell>
+            <TableCell>{taskName(String(item.details.specId ?? item.name), t)}</TableCell>
             <TableCell>
               {t(phaseLabels[String(item.details.phase)] ?? String(item.details.phase ?? "—"))}
             </TableCell>

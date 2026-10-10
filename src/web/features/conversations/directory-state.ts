@@ -45,6 +45,9 @@ export function createDirectoryActions(
   "rememberConversation" | "refreshConversationSummary" | "loadConversations" | "selectConversation"
 > {
   let activeRead = 0;
+  let nextSummaryToken = 0;
+  const activeSummaryTokens = new Map<string, number>();
+
   return {
     rememberConversation: (summary) =>
       set((state) => ({
@@ -57,12 +60,26 @@ export function createDirectoryActions(
         directoryRevision: state.directoryRevision + 1,
       })),
     refreshConversationSummary: async (id: string) => {
+      const capturedApi = get().apiClient;
+      const token = ++nextSummaryToken;
+      activeSummaryTokens.set(id, token);
+      const initialSummary = get().summaryById[id];
       try {
-        const summary = await get().apiClient.getConversation(id);
-        get().rememberConversation(summary);
+        const summary = await capturedApi.getConversation(id);
+        if (
+          get().apiClient === capturedApi &&
+          activeSummaryTokens.get(id) === token &&
+          get().summaryById[id] === initialSummary
+        ) {
+          get().rememberConversation(summary);
+        }
         return true;
       } catch {
         return false;
+      } finally {
+        if (activeSummaryTokens.get(id) === token) {
+          activeSummaryTokens.delete(id);
+        }
       }
     },
     loadConversations: async (mode = "refresh") => {

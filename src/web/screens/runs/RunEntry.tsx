@@ -23,7 +23,7 @@ import { useConversationChangeSubscription } from "../../services/conversation-c
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
 import { ModelEvidence } from "../observability/ModelEvidence";
-import { phaseLabels, ReadError } from "../observability/presentation";
+import { phaseLabels, ReadError, taskName } from "../observability/presentation";
 
 const runLabels: Record<RunStatus, string> = {
   prepared: "observability.waiting",
@@ -208,7 +208,10 @@ export function RunWorkspace({
           <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4">
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-lg font-semibold">{run.specId}</h3>
+                <h3 className="text-lg font-semibold">{taskName(run.specId, t)}</h3>
+                {taskName(run.specId, t) !== run.specId && (
+                  <span className="font-mono text-xs text-muted-foreground">{run.specId}</span>
+                )}
                 <Badge variant={run.status === "failed" ? "destructive" : "secondary"}>
                   {t(runStatusLabel(run.status, run.steps.at(-1)?.phase))}
                 </Badge>

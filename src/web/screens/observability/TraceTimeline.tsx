@@ -9,8 +9,8 @@ import type {
   RuntimeTraceDetail,
 } from "../../../shared/contracts/runtime-observability";
 import { type WaterfallNode, waterfallLayout } from "../../features/observability/waterfall-layout";
-import { operationLabels, stageLabels } from "./labels";
-import { milliseconds, StatusMark } from "./presentation";
+import { stageLabels } from "./labels";
+import { milliseconds, StatusMark, spanTitle } from "./presentation";
 export function TraceTimeline({
   data,
   selected,
@@ -69,7 +69,7 @@ export function TraceTimeline({
                     ? "observability.expandChildrenOfValue"
                     : "observability.collapseChildrenOfValue",
                   {
-                    "0": t(operationLabels[item.name] ?? item.name),
+                    "0": spanTitle(item, t),
                   },
                 )}
                 aria-expanded={!hidden}
@@ -101,7 +101,7 @@ export function TraceTimeline({
               onClick={() => onSelect(item)}
             >
               <span id={`${childId}-title`} className="text-xs font-medium">
-                {t(operationLabels[item.name] ?? item.name)}
+                {spanTitle(item, t)}
               </span>
               <span className="max-w-full break-all text-[11px] text-muted-foreground">
                 {item.model ?? t(stageLabels[item.stage])}

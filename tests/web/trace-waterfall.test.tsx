@@ -165,12 +165,10 @@ it("uses a full-width ledger and opens a dedicated, complete trace without mixin
   render(<ExecutionWorkspace />);
   const ledger = await screen.findByRole("table", { name: "执行记录" });
   expect(within(ledger).getAllByRole("row")).toHaveLength(3);
-  await pointer(within(ledger).getByRole("button", { name: /OneBot 主 Agent/ }));
+  await pointer(within(ledger).getByRole("button", { name: /QQ对话/ }));
   const region = await screen.findByRole("region", { name: "追踪链路" });
   expect(screen.queryByRole("table", { name: "执行记录" })).toBeNull();
-  expect(
-    await within(region).findByRole("button", { name: "折叠 Agent 运行 的子步骤" }),
-  ).toBeTruthy();
+  expect(await within(region).findByRole("button", { name: "折叠 QQ对话 的子步骤" })).toBeTruthy();
   expect(detail.mock.calls[0][0]).toBe(traceId);
   expect(within(region).queryByText("second.task")).toBeNull();
   await pointer(screen.getByRole("button", { name: "返回执行记录" }));
@@ -188,7 +186,7 @@ it("keeps true causal parents and handles missing ancestors without inventing re
 it("uses real keyboard branch controls and reveals the selected evidence ancestry", async () => {
   const onSelect = vi.fn();
   const view = render(<TraceTimeline data={data} selected={null} onSelect={onSelect} />);
-  const button = screen.getByRole("button", { name: "折叠 Agent 运行 的子步骤" });
+  const button = screen.getByRole("button", { name: "折叠 QQ对话 的子步骤" });
   button.focus();
   await userEvent.setup().keyboard("{Enter}");
   expect(button.getAttribute("aria-expanded")).toBe("false");

@@ -2080,5 +2080,21 @@
   "connections.initiativeTimeTargetSeconds": "Target time (seconds)",
   "connections.initiativeTimeTargetSecondsHint": "Triggers when elapsed time after initial unjudged message reaches [target - variation, target + variation]",
   "connections.initiativeTimeJitterSeconds": "Variation time (seconds)",
-  "connections.initiativeTimeJitterSecondsHint": "Must be less than target time (0–1799 seconds, and variation less than target)"
+  "connections.initiativeTimeJitterSecondsHint": "Must be less than target time (0–1799 seconds, and variation less than target)",
+  "observability.qqMessageSummary": "QQ message summary",
+  "observability.webConversationSummary": "Web conversation summary",
+  "observability.webConversation": "Web conversation",
+  "observability.qqConversation": "QQ conversation",
+  "observability.qqProactiveSpeech": "QQ proactive speech",
+  "observability.evaluateProactiveSpeech": "Evaluate proactive speech",
+  "observability.understandImageContent": "Understand image content",
+  "observability.generateStickerDescription": "Generate sticker description",
+  "observability.selectReplySticker": "Select reply sticker",
+  "observability.selectRelevantMemories": "Select relevant memories",
+  "observability.organizeLongTermMemory": "Organize long-term memory",
+  "observability.checkMemorySuppressed": "Check if memory is suppressed",
+  "observability.organizeKnowledgeDocuments": "Organize knowledge documents",
+  "observability.researchSubtask": "Research subtask",
+  "observability.multipleTasksRunning": "Multiple tasks running",
+  "observability.backgroundHistorySummary": "Background history summary"
 }

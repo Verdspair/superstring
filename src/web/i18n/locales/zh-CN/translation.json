@@ -2080,5 +2080,21 @@
   "connections.initiativeTimeTargetSeconds": "目标时间（秒）",
   "connections.initiativeTimeTargetSecondsHint": "首条未判消息后等待进入 [目标 - 浮动, 目标 + 浮动] 范围时择机派发",
   "connections.initiativeTimeJitterSeconds": "浮动时间（秒）",
-  "connections.initiativeTimeJitterSecondsHint": "必须小于目标时间（0–1799 秒，且浮动小于目标）"
+  "connections.initiativeTimeJitterSecondsHint": "必须小于目标时间（0–1799 秒，且浮动小于目标）",
+  "observability.qqMessageSummary": "QQ历史消息摘要",
+  "observability.webConversationSummary": "网页历史对话摘要",
+  "observability.webConversation": "网页对话",
+  "observability.qqConversation": "QQ对话",
+  "observability.qqProactiveSpeech": "QQ主动发言",
+  "observability.evaluateProactiveSpeech": "判断是否主动发言",
+  "observability.understandImageContent": "理解图片内容",
+  "observability.generateStickerDescription": "生成表情描述",
+  "observability.selectReplySticker": "选择回复表情",
+  "observability.selectRelevantMemories": "挑选相关记忆",
+  "observability.organizeLongTermMemory": "整理长期记忆",
+  "observability.checkMemorySuppressed": "检查记忆是否被屏蔽",
+  "observability.organizeKnowledgeDocuments": "整理知识文档",
+  "observability.researchSubtask": "研究子任务",
+  "observability.multipleTasksRunning": "多任务运行",
+  "observability.backgroundHistorySummary": "后台历史摘要"
 }

@@ -1119,6 +1119,45 @@ export function createQqAccessActions(
     bindingsInFlight = null;
     set({ qqBindingsReadId: get().qqBindingsReadId + 1, qqBindingsLoading: false });
   };
+  // 变更操作的模块级令牌：`resetForTests` 会把 store 里的代次清零，单靠代次无法区分
+  // 「重置后新操作恰好拿到同一编号」；令牌不随重置回收，与 API 实例一起判定「仍是当前写操作」。
+  let accessWriteToken = 0;
+  let currentWriteOp: { token: number; api: SuperstringApi } | null = null;
+  const beginAccessWrite = () => {
+    accessWriteToken += 1;
+    const op = {
+      token: accessWriteToken,
+      api: get().apiClient,
+    };
+    currentWriteOp = op;
+    set({ qqAccessSaving: true, error: null, feedback: "" });
+    invalidateAccessReads();
+    return op;
+  };
+  const isCurrentAccessWriteApi = (op: ReturnType<typeof beginAccessWrite>) =>
+    currentWriteOp?.token === op.token && get().apiClient === op.api;
+  const endAccessWrite = (op: ReturnType<typeof beginAccessWrite>) => {
+    if (currentWriteOp?.token === op.token && get().apiClient === op.api) {
+      currentWriteOp = null;
+      set({ qqAccessSaving: false });
+    }
+  };
+  /**
+   * 保存行立即落地：确权时作废写期间新启读的 owner，防止 precommit 读取晚到覆盖新写入；
+   * 更新 qqBindings 对应行，不造 pending projection，也不捏造全目录 ready。
+   */
+  const publishSavedBinding = (saved: QqBindingResponse) => {
+    invalidateAccessReads();
+    const current = get().qqBindings;
+    const index = current.findIndex((row) => row.id === saved.id);
+    const nextBindings =
+      index >= 0 ? current.map((row, i) => (i === index ? saved : row)) : [...current, saved];
+    set({
+      qqBindings: nextBindings,
+      ...(get().qqBindingsLoaded ? { qqBindingsError: null } : {}),
+    });
+    get().syncQqGroupConfigBinding(saved);
+  };
   /** 绑定写入成功后当前方案的使用量可能已变：清为未知再真实重读，旧计数 0 不得放行删除。 */
   const refreshSchemeUsage = () => {
     const editor = get().qqSchemeEditor;
@@ -1199,10 +1238,10 @@ export function createQqAccessActions(
     agentId: string;
     schemeId: string;
   }): Promise<boolean> => {
-    set({ qqAccessSaving: true, error: null, feedback: "" });
-    invalidateAccessReads();
+    if (get().qqAccessSaving) return false;
+    const op = beginAccessWrite();
     try {
-      await get().apiClient.createQqBinding({
+      const saved = await op.api.createQqBinding({
         account_id: input.accountId,
         kind: input.kind,
         peer_id: input.peerId,
@@ -1212,15 +1251,21 @@ export function createQqAccessActions(
         memory_batch_size: null,
         share_web_memory: false,
       });
-      await reload();
+      if (!isCurrentAccessWriteApi(op)) return false;
+      publishSavedBinding(saved);
+      if (!get().qqBindingsLoaded) {
+        void reload().catch(() => {});
+      }
       refreshSchemeUsage();
       set({ feedback: "已绑定会话" });
       return true;
     } catch (error) {
-      report(error);
+      if (isCurrentAccessWriteApi(op)) {
+        report(error);
+      }
       return false;
     } finally {
-      set({ qqAccessSaving: false });
+      endAccessWrite(op);
     }
   };
   return {
@@ -1370,22 +1415,25 @@ export function createQqAccessActions(
     saveQqJudgementModel: async (modelName) => {
       const settings = get().qqSettings;
       if (!settings || get().qqAccessSaving) return false;
-      set({ qqAccessSaving: true, error: null, feedback: "" });
-      invalidateAccessReads();
+      const op = beginAccessWrite();
       try {
+        const updated = await op.api.updateQqSettings({
+          judgement_model_name: modelName,
+          expected_revision: settings.revision,
+        });
+        if (!isCurrentAccessWriteApi(op)) return false;
         set({
-          qqSettings: await get().apiClient.updateQqSettings({
-            judgement_model_name: modelName,
-            expected_revision: settings.revision,
-          }),
+          qqSettings: updated,
           feedback: "已保存判断模型",
         });
         return true;
       } catch (error) {
-        report(error);
+        if (isCurrentAccessWriteApi(op)) {
+          report(error);
+        }
         return false;
       } finally {
-        set({ qqAccessSaving: false });
+        endAccessWrite(op);
       }
     },
     refreshQqConnection: async () => {
@@ -1407,8 +1455,7 @@ export function createQqAccessActions(
     saveQqSurface: async (patch, expectedRevision) => {
       const settings = get().qqSettings;
       if (!settings || get().qqAccessSaving) return false;
-      set({ qqAccessSaving: true, error: null, feedback: "" });
-      invalidateAccessReads();
+      const op = beginAccessWrite();
       /**
        * 共享同一条 qq_settings 修订链的另一个草稿（保留设置）：每个成功步都把它的基线 revision
        * 推进到写入后的值——天数原文与旧 source 其余字段保留供脏比较；部分成功也留下有效基线。
@@ -1431,11 +1478,13 @@ export function createQqAccessActions(
         let current = { ...settings, revision: expectedRevision ?? settings.revision };
         const baseRevision = current.revision;
         if (patch.enabled !== undefined || patch.account_id !== undefined) {
-          current = await get().apiClient.updateQqSettings({
+          const updatedSettings = await op.api.updateQqSettings({
             ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
             ...(patch.account_id === undefined ? {} : { account_id: patch.account_id }),
             expected_revision: current.revision,
           });
+          if (!isCurrentAccessWriteApi(op)) return false;
+          current = updatedSettings;
           set((state) => ({
             qqSettings: current,
             qqInputs: {
@@ -1451,20 +1500,25 @@ export function createQqAccessActions(
         }
         if (patch.endpoint !== undefined || patch.token !== undefined) {
           const before = current.revision;
-          current = await get().apiClient.updateQqTransport({
+          const updatedTransport = await op.api.updateQqTransport({
             ...(patch.endpoint === undefined ? {} : { endpoint: patch.endpoint }),
             ...(patch.token === undefined ? {} : { token: patch.token }),
             expected_revision: current.revision,
           });
+          if (!isCurrentAccessWriteApi(op)) return false;
+          current = updatedTransport;
           advanceStorageBaseline(before, current.revision);
         }
+        if (!isCurrentAccessWriteApi(op)) return false;
         set({ qqSettings: current, feedback: "已保存接入设置" });
         return true;
       } catch (error) {
-        report(error);
+        if (isCurrentAccessWriteApi(op)) {
+          report(error);
+        }
         return false;
       } finally {
-        set({ qqAccessSaving: false });
+        endAccessWrite(op);
       }
     },
     bindQqConversation: async ({ conversation, agentId, schemeId }) => {
@@ -1500,47 +1554,52 @@ export function createQqAccessActions(
       // 本群配置保存进行中同样不开始：两个写会落在同一行绑定上，让保存方先落地，
       // 冲突留给 CAS 与显式刷新如实呈现。
       if (get().qqAccessSaving || get().qqGroupConfigSaving) return false;
-      set({ qqAccessSaving: true, error: null, feedback: "" });
-      invalidateAccessReads();
+      const op = beginAccessWrite();
       try {
         // 方案切换的显式决定（keep/reset, ADR0019 §13.2 G）与绑定补丁走同一个 PUT；字段已是
         // 真实 public 类型，缺省不携带＝这不是一次「移动到其他方案」的保存，不伪造决定。
-        const saved = await get().apiClient.updateQqBinding(binding.id, {
+        const saved = await op.api.updateQqBinding(binding.id, {
           ...patch,
           ...(patch.scheme_change ? { scheme_change: patch.scheme_change } : {}),
           expected_revision: binding.revision,
         });
-        // 已知自身的写结果：只推进本群配置编辑器持有的 binding 基线（行/Agent/方案未变时），
-        // 不重读、不覆盖未保存的草稿；换方案/改绑由 sync 自己拒绝，留给 CAS 如实冲突后显式刷新。
-        get().syncQqGroupConfigBinding(saved);
-        await reload();
+        if (!isCurrentAccessWriteApi(op)) return false;
+        // 已知自身的写结果：立即就地替换对应绑定行并推进本群配置编辑器持有的 binding 基线，
+        // 明确按 write 结果反馈，不再进行整页 4GET 回读。
+        publishSavedBinding(saved);
         refreshSchemeUsage();
         set({ feedback: "已更新绑定" });
         return true;
       } catch (error) {
-        report(error);
+        if (isCurrentAccessWriteApi(op)) {
+          report(error);
+        }
         return false;
       } finally {
-        set({ qqAccessSaving: false });
+        endAccessWrite(op);
       }
     },
     // 「立即整理」: the answer is a verdict, so it is returned rather than written into the shared
     // feedback line — several rows can be on screen, and the sentence belongs to the row clicked.
     organiseQqMemoryRow: async (binding) => {
       if (get().qqAccessSaving) return null;
-      set({ qqAccessSaving: true, error: null, feedback: "" });
-      invalidateAccessReads();
+      const op = beginAccessWrite();
       try {
-        const verdict = await get().apiClient.organiseQqMemory(binding.id);
-        // A queued job consumes the observations the row just counted, so the list is read again
-        // rather than patched from the verdict's `pending`.
-        if (verdict.status === "queued") await reload();
+        const verdict = await op.api.organiseQqMemory(binding.id);
+        if (!isCurrentAccessWriteApi(op)) return null;
+        // A queued job consumes the observations the row just counted; read runs in its own
+        // lifecycle without holding the write lock or clearing queued verdict on read error.
+        if (verdict.status === "queued") {
+          void reload().catch(() => {});
+        }
         return verdict;
       } catch (error) {
-        report(error);
+        if (isCurrentAccessWriteApi(op)) {
+          report(error);
+        }
         return null;
       } finally {
-        set({ qqAccessSaving: false });
+        endAccessWrite(op);
       }
     },
   };

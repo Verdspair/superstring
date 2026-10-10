@@ -123,13 +123,21 @@ export function conversationRoutes(
       finish = resolve;
     });
     const unsubscribe = subscribeConversationChanges(db, (change) => {
-      if (
-        visibleConversation(db, repository, change.conversationId, principal, options.includeShared)
-      )
+      // One guard pass is the whole display projection: the view already speaks the
+      // read contract (history-root id, globally remapped seq) the timeline cursor
+      // compares against, while the hub keeps its physical execution identity.
+      const view = visibleConversation(
+        db,
+        repository,
+        change.conversationId,
+        principal,
+        options.includeShared,
+      );
+      if (view)
         writer?.send("conversation_changed", {
-          conversationId: change.conversationId,
-          seq: change.seq,
-          bindingEpoch: change.bindingEpoch,
+          conversationId: view.id,
+          seq: view.lastSeq,
+          bindingEpoch: view.bindingEpoch,
         });
     });
     return createSseResponse(

@@ -303,7 +303,7 @@ describe("Trace aggregate recovery & latest wake presentation", () => {
 
       // 等待标题渲染
       const heading = await screen.findByRole("heading", { level: 2 });
-      expect(heading.textContent).toContain("OneBot 主 Agent");
+      expect(heading.textContent).toContain("QQ对话");
 
       // 1. 顶部 Header 里的聚合状态依然显示「处理失败」，不可被替换成已完成
       const header = heading.closest("header");

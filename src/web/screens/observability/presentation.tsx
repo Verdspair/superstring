@@ -25,14 +25,54 @@ export function ReadError({ error }: { error: string }) {
     </p>
   ) : null;
 }
-export function traceTask(trace: RuntimeTrace, t: (key: string) => string) {
-  return (
-    trace.specIds.map((id) => t(taskLabels[id] ?? id)).join(" · ") ||
-    t(operationLabels[trace.root.name] ?? trace.root.name)
-  );
+export function taskName(specId: string, t: (key: string) => string): string {
+  if (Object.hasOwn(taskLabels, specId)) {
+    return t(taskLabels[specId]);
+  }
+  return specId;
 }
-export function traceCause(trace: RuntimeTrace, t: (key: string) => string) {
-  return trace.causes.map((id) => t(triggerLabels[id] ?? id)).join(" · ");
+export function spanTitle(span: RuntimeSpan, t: (key: string) => string): string {
+  const specId = span.details?.specId ? String(span.details.specId) : null;
+  if (span.name === "agent.run" && specId && Object.hasOwn(taskLabels, specId)) {
+    return taskName(specId, t);
+  }
+  return t(operationLabels[span.name] ?? span.name);
+}
+const GENERIC_OPERATIONS = new Set(["agent.run", "agent.model", "agent.action", "agent.context"]);
+
+export function traceTask(trace: RuntimeTrace, t: (key: string) => string): string {
+  const rootSpecId = trace.root.details?.specId ? String(trace.root.details.specId) : null;
+  if (rootSpecId) {
+    return taskName(rootSpecId, t);
+  }
+  if (trace.specIds.length === 1) {
+    return taskName(trace.specIds[0], t);
+  }
+  if (trace.specIds.length > 1) {
+    if (
+      !GENERIC_OPERATIONS.has(trace.root.name) &&
+      Object.hasOwn(operationLabels, trace.root.name)
+    ) {
+      return t(operationLabels[trace.root.name]);
+    }
+    return t("observability.multipleTasksRunning");
+  }
+  if (Object.hasOwn(operationLabels, trace.root.name)) {
+    return t(operationLabels[trace.root.name]);
+  }
+  return trace.root.name;
+}
+export function traceCause(trace: RuntimeTrace, t: (key: string) => string): string {
+  if (trace.causes && trace.causes.length > 0) {
+    return trace.causes.map((id) => t(triggerLabels[id] ?? id)).join(" · ");
+  }
+  const rootSpec = trace.root.details?.specId ? String(trace.root.details.specId) : null;
+  const isSoleEvents =
+    !rootSpec && trace.specIds.length === 1 && trace.specIds[0] === "context.compress.events";
+  if (rootSpec === "context.compress.events" || isSoleEvents) {
+    return t("observability.backgroundHistorySummary");
+  }
+  return "";
 }
 export function milliseconds(value: number) {
   return new Intl.NumberFormat(i18n.language, {

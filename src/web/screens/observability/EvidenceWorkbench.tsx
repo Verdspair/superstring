@@ -9,9 +9,9 @@ import type { RuntimeSpan } from "../../../shared/contracts/runtime-observabilit
 import { formatDate } from "../../i18n/runtime";
 import { DeliveryEvidence } from "../runs/DeliveryEvidence";
 import { RunWorkspace } from "../runs/RunEntry";
-import { detailLabels, operationLabels, reasonLabels } from "./labels";
+import { detailLabels, reasonLabels } from "./labels";
 import { ModelEvidence } from "./ModelEvidence";
-import { phaseLabels, StatusMark } from "./presentation";
+import { phaseLabels, StatusMark, spanTitle } from "./presentation";
 export function EvidenceWorkbench({
   item,
   autoInspect = false,
@@ -96,7 +96,7 @@ export function EvidenceWorkbench({
               tabIndex={-1}
               className="text-base font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {t(operationLabels[item.name] ?? item.name)}
+              {spanTitle(item, t)}
             </h3>
             <StatusMark status={item.status} />
             {item.details.phase && (
