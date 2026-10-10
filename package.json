@@ -20,7 +20,7 @@
     "build:desktop": "node tools/desktop/build/build.mjs",
     "check:i18n": "i18next-cli extract --ci --config tools/verify/i18next.config.ts && i18next-cli lint --config tools/verify/i18next.config.ts",
     "build:desktop:cross-platform": "node tools/desktop/build/cross-platform/build.mjs",
-    "test:desktop:packaging": "node --test tests/desktop/packaging.test.mjs tests/desktop/palette.test.mjs",
+    "test:desktop:packaging": "node --test tests/desktop/packaging.test.mjs tests/desktop/palette.test.mjs tests/desktop/launcher-failure.test.mjs",
     "test:desktop": "bun test tests/desktop/backend.test.ts tests/desktop/security.test.ts tests/integration/desktop-access.test.ts tests/integration/desktop-profile.test.ts tests/integration/desktop-preferences.test.ts tests/integration/desktop-server.test.ts"
   },
   "dependencies": {

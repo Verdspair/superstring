@@ -62,7 +62,12 @@ const checks = [
   [
     "desktop-packaging",
     node,
-    ["--test", "tests/desktop/packaging.test.mjs", "tests/desktop/palette.test.mjs"],
+    [
+      "--test",
+      "tests/desktop/packaging.test.mjs",
+      "tests/desktop/palette.test.mjs",
+      "tests/desktop/launcher-failure.test.mjs",
+    ],
   ],
   ["web-tests", node, [packageBin("vitest", "vitest.mjs"), "run", "--config", "vitest.config.ts"]],
   ["web-build", node, [packageBin("vite", "bin/vite.js"), "build"]],

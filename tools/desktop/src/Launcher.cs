@@ -279,7 +279,9 @@ namespace Superstring.Desktop
             _log.Error(detail);
             lock (_processLock)
             {
-                if (_server != null && !_server.HasExited) { _server.Kill(); _server.WaitForExit(); }
+                // Kill the whole owned job before waiting. A descendant can inherit
+                // the server's redirected stdout/stderr pipes, so waiting on the
+                // server first can block until that descendant closes its handles.
                 _processes.StopChildren();
                 if (_server != null) { _server.Dispose(); _server = null; }
                 if (_browser != null) { _browser.Dispose(); _browser = null; }
