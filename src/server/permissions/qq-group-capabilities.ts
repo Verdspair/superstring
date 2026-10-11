@@ -36,6 +36,7 @@ const ACTION_CAPABILITIES: ReadonlyArray<
   | { prefix: string; capability: QqGroupCapability }
 > = [
   { name: "sticker.search", capability: "stickers" },
+  { name: "reply.sticker", capability: "stickers" },
   { name: "research.run", capability: "research" },
   { name: "code.run", capability: "code" },
   { prefix: "memory.", capability: "memory_read" },
@@ -255,9 +256,50 @@ export class QqGroupCapabilityGuard {
     return capability === undefined ? true : this.allowed(owner, capability);
   }
 
-  assertAction(action: BuiltInAction, owner: RunOwner): void {
+  assertAction(
+    action: BuiltInAction,
+    owner: RunOwner,
+    options?: {
+      readonly retainedCarrierObservation?: {
+        readonly name: string;
+        readonly sources: readonly SourceRef[];
+      };
+    },
+  ): void {
     const capability = actionCapability(action.description.name);
-    if (capability !== undefined) this.assert(owner, capability);
+    if (capability === undefined) return;
+    const observation = options?.retainedCarrierObservation;
+    if (
+      action.description.name === "sticker.search" &&
+      observation?.name === "sticker.search" &&
+      capability === "stickers"
+    ) {
+      const scope = this.scope(owner);
+      if (scope.kind === "unresolved")
+        fail("QQ_GROUP_CAPABILITY_DISABLED", "无法确认这条 QQ 绑定，按停用处理");
+      if (scope.kind === "group") {
+        // The completed search is a carrier for a later host decision. Its own capability may be off;
+        // only an observation carrying this exact binding/agent capability can use that rule.
+        const expectedId = capabilityRefId(scope.bindingId, scope.agentId, "stickers");
+        if (
+          !observation.sources.some((source) => {
+            const ref =
+              source.kind === QQ_GROUP_CAPABILITY_SOURCE_KIND
+                ? parseCapabilityRefId(source.id)
+                : null;
+            return (
+              ref?.bindingId === scope.bindingId &&
+              ref.agentId === scope.agentId &&
+              ref.capability === "stickers" &&
+              source.id === expectedId
+            );
+          })
+        )
+          this.assert(owner, capability);
+      }
+      return;
+    }
+    this.assert(owner, capability);
   }
 
   /** 能力当前启用的来源引用：非群、停用或归属不明时为 []。自动装配（非工具）同样靠它把产出绑定到当前纪元。 */

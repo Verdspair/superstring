@@ -39,6 +39,35 @@ export const OutputDraftSchema = z.discriminatedUnion("kind", [
 ]);
 export type InlineOutputDraft = z.infer<typeof InlineOutputDraftSchema>;
 export type OutputDraft = z.infer<typeof OutputDraftSchema>;
+
+const replyContributionBase = {
+  targetId: z.string().min(1),
+  replyToMessageId: outputBase.replyToMessageId,
+  mentionIds: outputBase.mentionIds,
+};
+export const ReplyTextOutputSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ ...replyContributionBase, kind: z.literal("inline"), text: z.string() }),
+  z.strictObject({
+    ...replyContributionBase,
+    kind: z.literal("generate"),
+    instructions: z.string(),
+  }),
+]);
+export type ReplyTextOutput = z.infer<typeof ReplyTextOutputSchema>;
+export const ReplyTextArgumentsSchema = z.strictObject({
+  outputs: z.array(ReplyTextOutputSchema).min(1),
+});
+export type ReplyTextArguments = z.infer<typeof ReplyTextArgumentsSchema>;
+export const ReplyStickerOutputSchema = z.strictObject({
+  ...replyContributionBase,
+  stickerId: z.string().min(1),
+});
+export type ReplyStickerOutput = z.infer<typeof ReplyStickerOutputSchema>;
+export const ReplyStickerArgumentsSchema = z.strictObject({
+  outputs: z.array(ReplyStickerOutputSchema).min(1),
+});
+export type ReplyStickerArguments = z.infer<typeof ReplyStickerArgumentsSchema>;
+
 /** `speech.reply` 的参数：每项对应一个逻辑目标，允许多项。 */
 export const SpeechReplyArgumentsSchema = z.strictObject({
   outputs: z.array(InlineOutputDraftSchema).min(1),

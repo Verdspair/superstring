@@ -42,6 +42,7 @@ export const QqTaskExecutionSnapshotSchema = z
     agentConfigVersion: z.number().int().positive(),
     taskClass: z.enum(QQ_CONVERSATION_TASK_CLASS),
     cause: z.enum(QQ_CONVERSATION_TASK_CAUSE),
+    stickerFrequency: z.enum(["low", "medium", "high"]).optional(),
     sourceFromSeq: z.number().int().nonnegative(),
     sourceThroughSeq: z.number().int().nonnegative(),
     sourceExpiresAt: z.string().datetime().nullable(),

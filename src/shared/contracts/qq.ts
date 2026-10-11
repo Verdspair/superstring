@@ -197,12 +197,14 @@ export const QqSchemeStickersSchema = z.strictObject({
   sticker_min_repeat_minutes: z.number().int().min(0).max(1440),
   /** §9.3 最近几次表情尽量避开, in utterances; 0 means the soft rule is off. */
   sticker_recent_avoid_count: z.number().int().min(0).max(20),
+  frequency: z.enum(["low", "medium", "high"]).default("medium"),
 });
 export type QqSchemeStickers = z.infer<typeof QqSchemeStickersSchema>;
 /** A new scheme starts with a ten-minute spacing and remembers the last five stickers. */
 export const QQ_STICKER_DEDUP_DEFAULT: QqSchemeStickers = Object.freeze({
   sticker_min_repeat_minutes: 10,
   sticker_recent_avoid_count: 5,
+  frequency: "medium",
 });
 
 /**

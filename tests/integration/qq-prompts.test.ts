@@ -194,6 +194,37 @@ describe("editable QQ prompt storage and HTTP", () => {
     }
   });
 
+  it("0064 defaults sticker frequency and replaces only the exact legacy sticker prompt", () => {
+    const db = new Database(":memory:");
+    const oldPrompt =
+      "你只做一件事：从给定候选里挑一张最贴合当前语境的图。\n只输出候选编号；没有贴合的就不选，不要勉强凑一张。\n不选与话题无关的图，也不选刚发过的那张。";
+    const nextPrompt = QQ_PROMPT_DEFAULTS.sticker;
+    try {
+      for (const f of BUSINESS_MIGRATION_FILES.slice(0, 63))
+        db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
+      db.exec("PRAGMA user_version=63");
+      db.query(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,prompt_sticker,max_sticker_count) VALUES ('exact','exact',1,'then','then',?,3)",
+      ).run(oldPrompt);
+      db.query(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,prompt_sticker,max_sticker_count) VALUES ('custom','custom',1,'then','then',?,2)",
+      ).run(`${oldPrompt} `);
+      ensureBusinessSchema(db);
+      const rows = db
+        .query(
+          "SELECT id, sticker_frequency AS frequency, prompt_sticker AS sticker, max_sticker_count AS maxCount FROM qq_schemes ORDER BY id",
+        )
+        .all() as { id: string; frequency: string; sticker: string; maxCount: number }[];
+      expect(rows).toEqual([
+        { id: "custom", frequency: "medium", sticker: `${oldPrompt} `, maxCount: 2 },
+        { id: "exact", frequency: "medium", sticker: nextPrompt, maxCount: 3 },
+      ]);
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
+    } finally {
+      db.close();
+    }
+  });
+
   it("a future schema version is refused instead of silently downgraded", () => {
     const db = new Database(":memory:");
     try {

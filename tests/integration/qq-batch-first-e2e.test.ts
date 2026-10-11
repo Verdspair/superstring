@@ -293,7 +293,19 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
     for (const reply of replies) {
       const text = JSON.stringify(reply.request.messages);
       expect(text.includes("intent-alpha") !== text.includes("intent-beta")).toBe(true);
-      expect(reply.request.tools?.map((tool) => tool.name)).toContain("speech.reply");
+      expect(reply.request.tools?.map((tool) => tool.name)).toEqual([
+        "memory.query",
+        "memory.read",
+        "knowledge.query",
+        "knowledge.read",
+        "history.query",
+        "history.read",
+        "summary.query",
+        "summary.read",
+        "sticker.search",
+        "reply.text",
+        "reply.sticker",
+      ]);
     }
     expect(entered).toBe(2);
 

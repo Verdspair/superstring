@@ -427,9 +427,12 @@ describe("run-scoped QQ media tools", () => {
         authorizedTargets: ["peer"],
         outputMode: "buffered",
         terminalAction: {
-          name: "speech.reply",
-          description: SPEECH_REPLY_DESCRIPTION,
-          parse: (args) => SpeechReplyArgumentsSchema.parse(args).outputs,
+          descriptions: [SPEECH_REPLY_DESCRIPTION],
+          parse: (calls) => {
+            if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+              throw new Error("invalid terminal reply contribution");
+            return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
+          },
         },
         actions,
         context: {

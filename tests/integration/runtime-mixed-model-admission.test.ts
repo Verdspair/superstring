@@ -127,8 +127,8 @@ function providerStub() {
               kind: "invoke",
               calls: [
                 {
-                  name: "speech.reply",
-                  arguments: { outputs: [{ kind: "inline", targetId: PEER, text: "QQAnswer" }] },
+                  name: "reply.text",
+                  arguments: { outputs: [{ targetId: PEER, kind: "inline", text: "QQAnswer" }] },
                 },
               ],
             })

@@ -323,7 +323,11 @@ describe("the selection a scheme and a conversation produce", () => {
       const scheme = createQqScheme(h.orm, {
         name: "慢速方案",
         stickerCollections: [collection.id],
-        stickers: { sticker_min_repeat_minutes: 10, sticker_recent_avoid_count: 5 },
+        stickers: {
+          sticker_min_repeat_minutes: 10,
+          sticker_recent_avoid_count: 5,
+          frequency: "medium",
+        },
         rhythm: { ...QQ_RHYTHM_DEFAULT, max_sticker_count: 3 },
       });
       const selection = qqStickerSelectionForScheme(h.orm, {

@@ -265,6 +265,10 @@ const qqMediaRequestIdentitySql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
   "utf8",
 );
+const qqSchemeStickerFrequencySql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0064_qq_scheme_sticker_frequency.sql"),
+  "utf8",
+);
 const resources = [
   sql,
   knowledgeSql,
@@ -329,6 +333,7 @@ const resources = [
   qqTaskReadyAtSql,
   qqMediaSpecUnificationSql,
   qqMediaRequestIdentitySql,
+  qqSchemeStickerFrequencySql,
 ] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
@@ -404,6 +409,7 @@ describe("explicit migration resources", () => {
               qqTaskReadyAtSql,
               qqMediaSpecUnificationSql,
               qqMediaRequestIdentitySql,
+              qqSchemeStickerFrequencySql,
             ],
           }),
         ).toThrow();
@@ -485,11 +491,12 @@ describe("explicit migration resources", () => {
             qqTaskReadyAtSql,
             qqMediaSpecUnificationSql,
             qqMediaRequestIdentitySql,
+            qqSchemeStickerFrequencySql,
           ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -797,12 +804,19 @@ describe("explicit migration resources", () => {
         path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
         path.join(versions, "0063_qq_media_request_identity.sql"),
       );
+      copyFileSync(
+        path.join(
+          import.meta.dir,
+          "../../migrations/versions/0064_qq_scheme_sticker_frequency.sql",
+        ),
+        path.join(versions, "0064_qq_scheme_sticker_frequency.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(63);
+      expect(layout?.businessMigrationSql.length).toBe(64);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {

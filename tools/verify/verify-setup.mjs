@@ -399,6 +399,12 @@ try {
           installRoot,
           "app/resources/migrations/versions/0063_qq_media_request_identity.sql",
         ),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0064_qq_scheme_sticker_frequency.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

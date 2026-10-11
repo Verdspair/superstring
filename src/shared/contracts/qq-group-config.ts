@@ -134,6 +134,7 @@ const OverridesShapeBase = z.strictObject({
     .strictObject({
       sticker_min_repeat_minutes: Scheme.stickers.sticker_min_repeat_minutes.optional(),
       sticker_recent_avoid_count: Scheme.stickers.sticker_recent_avoid_count.optional(),
+      frequency: stripDefault(Scheme.stickers.frequency).optional(),
     })
     .optional(),
   /** 素材集合整体替换：必须落在基础方案已授权的集合之内，不能借本群配置扩大授权。 */

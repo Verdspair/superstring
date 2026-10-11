@@ -38,6 +38,7 @@ import {
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { NativeSelect } from "../../components/ui/native-select";
+import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
 import { permissionResources } from "../../features/access/permission-state";
@@ -296,6 +297,98 @@ function FieldState({
           ? t("schemes.qq.groupConfig.customValue", { "0": baseText, "1": currentText })
           : t("schemes.qq.groupConfig.followsBase", { "0": baseText })}
       </p>
+    </div>
+  );
+}
+
+/** 表情发送倾向（低/中/高）：紧凑 RadioGroup，支持稀疏覆盖与恢复跟随。 */
+function StickerFrequencyField({
+  editor,
+  base,
+}: {
+  editor: QqGroupConfigEditor;
+  base: Record<string, unknown> | null;
+}) {
+  const { t } = useTranslation();
+  const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
+  const patch = useSuperstringStore((s) => s.patchQqGroupOverride);
+  const radioId = useId();
+
+  const group = "stickers";
+  const name = "frequency";
+  const { custom, value } = overrideOf(editor, group, name);
+  const baseValue = typeof base?.[name] === "string" ? (base[name] as string) : null;
+  const labels = ENUM_OPTION_LABELS[`${group}.${name}`] ?? {};
+  const raw = editor.rawTexts[`${group}.${name}`];
+  const errorId = useId();
+  const hasError = raw !== undefined;
+
+  const currentValue = custom ? String(value) : (baseValue ?? "");
+
+  const options = [
+    {
+      value: "low",
+      labelKey: "connections.stickerFrequencyLow",
+      hintKey: "connections.stickerFrequencyLowHint",
+    },
+    {
+      value: "medium",
+      labelKey: "connections.stickerFrequencyMedium",
+      hintKey: "connections.stickerFrequencyMediumHint",
+    },
+    {
+      value: "high",
+      labelKey: "connections.stickerFrequencyHigh",
+      hintKey: "connections.stickerFrequencyHighHint",
+    },
+  ] as const;
+
+  const handleChange = (val: string) => {
+    patch(group, name, val);
+  };
+
+  return (
+    <div className="space-y-2 sm:col-span-2">
+      <div className="text-sm font-medium">{t("connections.stickerFrequency")}</div>
+      <RadioGroup
+        value={currentValue}
+        onValueChange={handleChange}
+        disabled={saving}
+        aria-invalid={hasError || undefined}
+        aria-describedby={hasError ? errorId : undefined}
+        className="grid gap-3 sm:grid-cols-3"
+      >
+        {options.map((opt) => (
+          <Label
+            key={opt.value}
+            htmlFor={`${radioId}-${opt.value}`}
+            className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+          >
+            <RadioGroupItem value={opt.value} id={`${radioId}-${opt.value}`} className="mt-0.5" />
+            <div className="space-y-1">
+              <span className="block font-medium leading-none">{t(opt.labelKey)}</span>
+              <span className="block text-xs font-normal leading-normal text-muted-foreground">
+                {t(opt.hintKey)}
+              </span>
+            </div>
+          </Label>
+        ))}
+      </RadioGroup>
+      <FieldState
+        label={t("connections.stickerFrequency")}
+        custom={custom}
+        baseText={baseValue === null ? t("capabilities.state.unread") : t(labels[baseValue] ?? "")}
+        currentText={custom ? t(labels[String(value)] ?? "") : t(labels[baseValue ?? ""] ?? "")}
+        disabled={saving}
+        canCustom={baseValue !== null}
+        onFollow={() => patch(group, name, undefined)}
+        onCustom={() => baseValue !== null && patch(group, name, baseValue)}
+      />
+      {hasError && (
+        <p id={errorId} role="alert" className="mt-1 text-xs text-destructive">
+          {raw}
+        </p>
+      )}
     </div>
   );
 }
@@ -2213,6 +2306,9 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   description="schemes.studio.stickerParamsHint"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
+                    {visible("stickers", "frequency") && (
+                      <StickerFrequencyField editor={visibleEditor} base={baseBag("stickers")} />
+                    )}
                     {stickerFields
                       .filter(([group, name]) => visible(group, name))
                       .map(([group, name, label]) => (
@@ -2220,7 +2316,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                           key={name}
                           editor={visibleEditor}
                           base={baseBag(group)}
-                          group={group === "rhythm" ? "rhythm" : "stickers"}
+                          group="stickers"
                           name={name}
                           labelKey={label}
                         />

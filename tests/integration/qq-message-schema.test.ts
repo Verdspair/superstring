@@ -91,11 +91,13 @@ describe("0052 message facts and media persistence", () => {
         "initiative_time_target_seconds",
         "initiative_time_jitter_seconds",
       ]);
-      // 0059 appends exactly the three task-cap columns after the frozen block.
+      // 0059 appends the task-cap columns after the frozen block; 0064 appends the
+      // independent sticker-frequency setting without changing any earlier columns.
       expect(schemeColumns.slice(settingsStart + 8)).toEqual([
         "mention_task_limit",
         "ordinary_task_limit",
         "input_anti_spam_enabled",
+        "sticker_frequency",
       ]);
       expect(columns("qq_message_facts")).toEqual([
         "event_key",
@@ -454,11 +456,26 @@ describe("0052 message facts and media persistence", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({
         user_version: BUSINESS_SCHEMA_VERSION,
       });
-      // Old switches and old custom values survive byte for byte.
+      // Preserve every legacy field, except the exact factory sticker prompt that 0064
+      // explicitly migrates. The new frequency column receives its approved default.
       const after = db.prepare("SELECT * FROM qq_schemes").all() as Record<string, unknown>[];
-      for (const key of Object.keys(before[0])) {
-        expect(after[0][key]).toEqual(before[0][key]);
+      const oldFactoryStickerPrompt =
+        "你只做一件事：从给定候选里挑一张最贴合当前语境的图。\n" +
+        "只输出候选编号；没有贴合的就不选，不要勉强凑一张。\n" +
+        "不选与话题无关的图，也不选刚发过的那张。";
+      const expectedLegacyScheme = {
+        ...before[0],
+        prompt_sticker:
+          before[0].prompt_sticker === oldFactoryStickerPrompt
+            ? "按当前语境自主选择文字、表情或两者组合；没有合适内容时可以不回复。\n" +
+              "需要表情时，先用 sticker.search 查看候选，再用 reply.sticker 选择本次已披露的素材 ID；每个目标至多一张。只发文字时使用 reply.text，不必另行声明不用表情。\n" +
+              "不要为了装饰勉强加图，不选无关或刚发过的素材。"
+            : before[0].prompt_sticker,
+      };
+      for (const [key, value] of Object.entries(expectedLegacyScheme)) {
+        expect(after[0][key]).toEqual(value);
       }
+      expect(after[0].sticker_frequency).toBe("medium");
       // The new groups arrive as the approved defaults: native mode, untouched modules.
       expect(JSON.parse(after[0].media_input as string)).toMatchObject({ mode: "native" });
       expect(JSON.parse(after[0].message_settings as string)).toMatchObject({

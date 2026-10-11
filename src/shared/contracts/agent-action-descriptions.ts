@@ -12,7 +12,11 @@
 // task.start 的可用工具清单都是调用参数，本模块不做任何清单的静态快照。
 
 import { z } from "zod";
-import { SpeechReplyArgumentsSchema } from "./agent-output";
+import {
+  ReplyStickerArgumentsSchema,
+  ReplyTextArgumentsSchema,
+  SpeechReplyArgumentsSchema,
+} from "./agent-output";
 import { TaskPlanSchema } from "./agent-task";
 
 /** 与 server 侧 ActionDescription 结构兼容的描述形状（本模块不依赖 server）。 */
@@ -318,6 +322,28 @@ export const QQ_MEDIA_TOOL_DESCRIPTIONS: Record<
       "Receive one listed image id as picture input for the next step (only images; only ids from media.list in this run). Returns {status, mediaId, category, images:[{sourceId,revision,mimeType,sha256,width,height,frameIndex}]} metadata only — never the picture bytes. Whether the picture is actually attached to the next step still follows the conversation's image settings. Read-only for the conversation: preparing the picture is a derived cache, not an external write. Cancels with the run.",
     parameters: z.toJSONSchema(QQ_MEDIA_TOOL_SCHEMAS["media.read"]),
   },
+};
+
+// ---------------------------------------------------------------------------
+// QQ 回复贡献工具（host terminal contributions）
+// ---------------------------------------------------------------------------
+
+export const REPLY_TEXT_DESCRIPTION: SharedActionDescription = {
+  name: "reply.text",
+  capability: "conversation.reply",
+  effect: "write",
+  parameters: z.toJSONSchema(ReplyTextArgumentsSchema),
+  description:
+    "Contribute text for each authorized QQ target. Choose inline text or generation instructions; replyToMessageId and mentionIds are independent optional fields. Calling this tool without reply.sticker means this target is text-only.",
+};
+
+export const REPLY_STICKER_DESCRIPTION: SharedActionDescription = {
+  name: "reply.sticker",
+  capability: "conversation.reply",
+  effect: "write",
+  parameters: z.toJSONSchema(ReplyStickerArgumentsSchema),
+  description:
+    "Contribute one sticker for each authorized QQ target, using only an ID disclosed by sticker.search in this run. This may be sticker-only or combine with reply.text; quote and mention fields are independent and optional.",
 };
 
 // ---------------------------------------------------------------------------

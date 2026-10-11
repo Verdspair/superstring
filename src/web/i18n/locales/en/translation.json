@@ -2133,5 +2133,14 @@
   "schemes.bindings.taskLimits.title": "Concurrent Task Limits",
   "schemes.bindings.taskLimits.hint": "Override concurrent task limits from the scheme; leave blank to follow scheme.",
   "schemes.bindings.inputAntiSpam.title": "Input Anti-Spam",
-  "schemes.bindings.inputAntiSpam.hint": "Override the input anti-spam switch from the scheme; select 'Follow Scheme' to use scheme default."
+  "schemes.bindings.inputAntiSpam.hint": "Override the input anti-spam switch from the scheme; select 'Follow Scheme' to use scheme default.",
+  "connections.stickerFrequency": "Sticker sending tendency",
+  "connections.stickerFrequencyLow": "Low",
+  "connections.stickerFrequencyLowHint": "Prefers text when both fit; avoids decorative stickers but still permits pure sticker replies when best",
+  "connections.stickerFrequencyMedium": "Medium",
+  "connections.stickerFrequencyMediumHint": "Balances text, stickers, or combinations according to context without forcing count",
+  "connections.stickerFrequencyHigh": "High",
+  "connections.stickerFrequencyHighHint": "More openly considers appropriate stickers or combinations, without forcing them when unsuitable",
+  "capabilities.labels.replyText": "QQ text reply",
+  "capabilities.labels.replySticker": "QQ sticker reply"
 }

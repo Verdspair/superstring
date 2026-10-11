@@ -30,6 +30,7 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
   createQqStickerCollection,
   importQqSticker,
+  readQqStickerAsset,
   setQqStickerEnabled,
 } from "../../src/server/db/qq-sticker-repository";
 import {
@@ -125,7 +126,7 @@ function pauseGroup(orm: Orm): void {
 }
 
 /** 走 create-runtime 装配的投递链：排队意图 → 授权复核 → 素材复核 → 发送。 */
-function openDelivery(h: OneBotHarness) {
+function openDelivery(h: OneBotHarness, stickersEnabled?: () => boolean, onReadCopy?: () => void) {
   const agentRuntime = new AgentRuntime({
     repository: h.runs,
     now: () => h.now(),
@@ -152,7 +153,10 @@ function openDelivery(h: OneBotHarness) {
     },
     store: {
       copyExists: () => true,
-      readCopy: () => new Uint8Array([1, 2, 3]),
+      readCopy: () => {
+        onReadCopy?.();
+        return new Uint8Array([1, 2, 3]);
+      },
     } as unknown as QqStickerStore,
     port: {
       async send(request) {
@@ -160,6 +164,7 @@ function openDelivery(h: OneBotHarness) {
         return { kind: "confirmed", messageId: `mock-${sent.length}` };
       },
     } satisfies QqSendPort,
+    ...(stickersEnabled === undefined ? {} : { stickersEnabled }),
     wake: () => {},
   });
   return { runtime, sent };
@@ -169,7 +174,10 @@ function openDelivery(h: OneBotHarness) {
 function queueIntent(
   h: OneBotHarness,
   runtime: ReturnType<typeof openDelivery>["runtime"],
-  parts: ({ kind: "sticker"; stickerId: string } | { kind: "text"; text: string })[],
+  parts: (
+    | { kind: "sticker"; stickerId: string; stickerSources?: readonly SourceRef[] }
+    | { kind: "text"; text: string }
+  )[],
   sources: SourceRef[] = [],
 ) {
   const binding = readQqBinding(h.orm, h.bindingId);
@@ -222,6 +230,12 @@ function queueIntent(
     parts,
   });
   return delivery.id;
+}
+
+function stickerSource(orm: Orm, assetId: string): SourceRef {
+  const asset = readQqStickerAsset(orm, assetId);
+  if (!asset) throw new Error("missing sticker");
+  return { kind: "qq_sticker", id: asset.id, revision: asset.updatedAt };
 }
 
 function stickerAsset(orm: Orm, collectionIds: string[]): string {
@@ -685,7 +699,7 @@ describe("后台压缩的暂停与停用边界", () => {
 });
 
 describe("排队中的表情素材按本群生效集合与撤权复核", () => {
-  function stickerSetup() {
+  function stickerSetup(stickersEnabled?: () => boolean, onReadCopy?: () => void) {
     const h = createOneBotHarness({ model: [] });
     const inside = createQqStickerCollection(h.orm, { name: "本群保留" });
     const outside = createQqStickerCollection(h.orm, { name: "本群排除" });
@@ -700,7 +714,7 @@ describe("排队中的表情素材按本群生效集合与撤权复核", () => {
     setGroupConfig(h.orm, h.bindingId, {
       overrides: { sticker_collections: { collection_ids: [inside.id] } },
     });
-    const { runtime, sent } = openDelivery(h);
+    const { runtime, sent } = openDelivery(h, stickersEnabled, onReadCopy);
     return { h, runtime, sent, inside, outside, insideAsset, outsideAsset };
   }
 
@@ -724,12 +738,142 @@ describe("排队中的表情素材按本群生效集合与撤权复核", () => {
     expect(sent[0]?.message[0]?.type).toBe("image");
   });
 
+  it("global switch changed during sticker file read blocks only the sticker part in create-runtime", async () => {
+    let stickersEnabled = true;
+    const setupResult = stickerSetup(
+      () => stickersEnabled,
+      () => {
+        stickersEnabled = false;
+      },
+    );
+    const { h, runtime, sent, insideAsset } = setupResult;
+    const commonSearchSource = capabilityRef(h, "sticker.search");
+    const selectedAssetSource = stickerSource(h.orm, insideAsset);
+    const queued = queueIntent(
+      h,
+      runtime,
+      [
+        { kind: "text", text: "文字仍然合法" },
+        {
+          kind: "sticker",
+          stickerId: insideAsset,
+          stickerSources: [selectedAssetSource, commonSearchSource],
+        },
+      ],
+      [commonSearchSource],
+    );
+
+    await runtime.delivery.deliver(queued);
+
+    expect(runtime.outbox.get(queued)?.parts.map((part) => part.status)).toEqual([
+      "confirmed",
+      "not_sent",
+    ]);
+    expect(runtime.outbox.parts(queued)[1]?.attempted_at).not.toBeNull();
+    expect(runtime.outbox.get(queued)?.status).toBe("failed");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message.some((segment) => segment.type === "image")).toBe(false);
+  });
+
   it("排队后本群停用表情：素材不再落地", async () => {
     const { h, runtime, sent, insideAsset } = stickerSetup();
     const queued = queueIntent(h, runtime, [{ kind: "sticker", stickerId: insideAsset }]);
     setGroupConfig(h.orm, h.bindingId, { capabilities: ["stickers"] });
     await runtime.delivery.runOnce();
+    expect(runtime.outbox.get(queued)?.status).toBe("failed");
+    expect(runtime.outbox.get(queued)?.parts.map((part) => part.status)).toEqual(["not_sent"]);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("本群停用表情不作废合法文字：只在表情部件边界拒绝", async () => {
+    const { h, runtime, sent, insideAsset } = stickerSetup();
+    const assetSource = stickerSource(h.orm, insideAsset);
+    const searchSource = capabilityRef(h, "sticker.search");
+    const queued = queueIntent(h, runtime, [
+      { kind: "text", text: "群能力关闭时仍可发文字" },
+      { kind: "sticker", stickerId: insideAsset, stickerSources: [assetSource, searchSource] },
+    ]);
+    setGroupConfig(h.orm, h.bindingId, { capabilities: ["stickers"] });
+
+    await runtime.delivery.deliver(queued);
+
+    expect(runtime.outbox.get(queued)?.parts.map((part) => part.status)).toEqual([
+      "confirmed",
+      "not_sent",
+    ]);
+    expect(runtime.outbox.parts(queued)[1]?.attempted_at).not.toBeNull();
+    expect(runtime.outbox.get(queued)?.status).toBe("failed");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message.some((segment) => segment.type === "image")).toBe(false);
+  });
+
+  it("valid sticker-part sources authorize selected asset independently of common evidence", async () => {
+    const { h, runtime, sent, insideAsset } = stickerSetup();
+    const sources = [stickerSource(h.orm, insideAsset), capabilityRef(h, "sticker.search")];
+    const queued = queueIntent(h, runtime, [
+      { kind: "sticker", stickerId: insideAsset, stickerSources: sources },
+    ]);
+
+    await runtime.delivery.deliver(queued);
+
+    expect(runtime.outbox.get(queued)?.status).toBe("confirmed");
+    expect(runtime.outbox.get(queued)?.parts.map((part) => part.status)).toEqual(["confirmed"]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message.some((segment) => segment.type === "image")).toBe(true);
+  });
+
+  it("stale selected-asset revision blocks only its sticker part at pre-send", async () => {
+    const { h, runtime, sent, insideAsset } = stickerSetup();
+    const currentCapability = capabilityRef(h, "sticker.search");
+    const queued = queueIntent(h, runtime, [
+      { kind: "text", text: "不依赖素材的文字" },
+      {
+        kind: "sticker",
+        stickerId: insideAsset,
+        stickerSources: [
+          { kind: "qq_sticker", id: insideAsset, revision: "old-revision" },
+          currentCapability,
+        ],
+      },
+    ]);
+
+    await runtime.delivery.deliver(queued);
+
+    expect(runtime.outbox.get(queued)?.parts.map((part) => part.status)).toEqual([
+      "confirmed",
+      "not_sent",
+    ]);
+    expect(runtime.outbox.get(queued)?.status).toBe("failed");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message.some((segment) => segment.type === "image")).toBe(false);
+  });
+
+  it("same sticker-search source used as common evidence remains a whole-intent authorization", async () => {
+    const { h, runtime, sent, insideAsset } = stickerSetup();
+    const assetSource = stickerSource(h.orm, insideAsset);
+    const commonSearchSource = capabilityRef(h, "sticker.search");
+    const queued = queueIntent(
+      h,
+      runtime,
+      [
+        { kind: "text", text: "素材来源也用于正文" },
+        {
+          kind: "sticker",
+          stickerId: insideAsset,
+          stickerSources: [assetSource, commonSearchSource],
+        },
+      ],
+      [commonSearchSource],
+    );
+    setGroupConfig(h.orm, h.bindingId, { capabilities: ["stickers"] });
+
+    await runtime.delivery.deliver(queued);
+
     expect(runtime.outbox.get(queued)?.status).toBe("stale");
+    expect(runtime.outbox.get(queued)?.parts.map((part) => part.status)).toEqual([
+      "stale",
+      "stale",
+    ]);
     expect(sent).toHaveLength(0);
   });
 

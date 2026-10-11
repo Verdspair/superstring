@@ -1,9 +1,15 @@
 import type { Database } from "bun:sqlite";
-import { SPEECH_REPLY_DESCRIPTION } from "../../../shared/contracts/agent-action-descriptions";
+import {
+  REPLY_STICKER_DESCRIPTION,
+  REPLY_TEXT_DESCRIPTION,
+} from "../../../shared/contracts/agent-action-descriptions";
 import type { OutputDraft } from "../../../shared/contracts/agent-output";
 import {
   AGENT_DECISION_JSON_SCHEMA,
-  SpeechReplyArgumentsSchema,
+  ReplyStickerArgumentsSchema,
+  type ReplyStickerOutput,
+  ReplyTextArgumentsSchema,
+  type ReplyTextOutput,
 } from "../../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
 import type { ConversationEvent, WakeSignal } from "../../../shared/contracts/conversation";
@@ -15,6 +21,7 @@ import { qqEffectiveInputAntiSpamEnabled } from "../../../shared/contracts/qq-ta
 import type { AgentRuntime, PreparedOutput, TargetHooks } from "../../agent/agent-runtime";
 import type { AgentSpec } from "../../agent/agent-specs";
 import type { BuiltInAction } from "../../agent/built-in-actions";
+import type { ActionObservation } from "../../agent/context-engine";
 import { inputUnits, textMessage, uniqueSources } from "../../agent/context-engine";
 import { ConversationHost } from "../../agent/conversation-host";
 import { createImageByteResolver } from "../../agent/image-byte-resolver";
@@ -56,6 +63,7 @@ import {
   schemePrompts,
   schemeReply,
   schemeRhythm,
+  schemeStickers,
 } from "../../db/qq-scheme-repository";
 import { readQqRetentionDays, readQqSettings } from "../../db/qq-settings-repository";
 import { newestMemberMessageSeconds } from "../../db/qq-speech-repository";
@@ -72,7 +80,10 @@ import type { WakeRepository } from "../../db/wake-repository";
 import { fail } from "../../errors";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
-import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
+import {
+  QQ_GROUP_CAPABILITY_SOURCE_KIND,
+  QqGroupCapabilityGuard,
+} from "../../permissions/qq-group-capabilities";
 import {
   captureQqTask,
   checkQqTask,
@@ -241,6 +252,117 @@ export interface QqTaskExecutionDescriptor {
   readonly task: QqConversationTaskRow;
   readonly snapshot: QqTaskExecutionSnapshot;
   readonly leaseToken: string;
+}
+
+type ReplyContributionCall = {
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+};
+type ReplyTextContribution = ReplyTextOutput;
+type ReplyStickerContribution = ReplyStickerOutput;
+
+type ReplyContributionValue = {
+  text?: ReplyTextContribution;
+  sticker?: ReplyStickerContribution;
+};
+
+function sameMentionIds(left: readonly string[], right: readonly string[]): boolean {
+  const normalizedLeft = [...new Set(left)];
+  const normalizedRight = [...new Set(right)];
+  return (
+    normalizedLeft.length === normalizedRight.length &&
+    normalizedLeft.every((id) => normalizedRight.includes(id))
+  );
+}
+
+function aggregateReplyContributions(
+  calls: readonly ReplyContributionCall[],
+  authorizedTargets: readonly string[],
+): OutputDraft[] {
+  const byTarget = new Map<string, ReplyContributionValue>();
+  const touch = (targetId: string) => {
+    if (!authorizedTargets.includes(targetId)) throw new Error("AGENT_TARGET_UNAUTHORIZED");
+    const current = byTarget.get(targetId) ?? {};
+    byTarget.set(targetId, current);
+    return current;
+  };
+  let textCalls = 0;
+  let stickerCalls = 0;
+  const selectedStickerIds = new Set<string>();
+  for (const call of calls) {
+    if (call.name === REPLY_TEXT_DESCRIPTION.name) {
+      if (++textCalls > 1) throw new Error("AGENT_OUTPUT_INVALID");
+      const parsed = ReplyTextArgumentsSchema.parse(call.arguments);
+      const localTargets = new Set<string>();
+      for (const output of parsed.outputs) {
+        if (localTargets.has(output.targetId)) throw new Error("AGENT_OUTPUT_INVALID");
+        localTargets.add(output.targetId);
+        const entry = touch(output.targetId);
+        if (entry.text) throw new Error("AGENT_OUTPUT_INVALID");
+        entry.text = output;
+      }
+    } else if (call.name === REPLY_STICKER_DESCRIPTION.name) {
+      if (++stickerCalls > 1) throw new Error("AGENT_OUTPUT_INVALID");
+      const parsed = ReplyStickerArgumentsSchema.parse(call.arguments);
+      const localTargets = new Set<string>();
+      for (const output of parsed.outputs) {
+        if (localTargets.has(output.targetId)) throw new Error("AGENT_OUTPUT_INVALID");
+        localTargets.add(output.targetId);
+        const entry = touch(output.targetId);
+        if (entry.sticker || selectedStickerIds.has(output.stickerId))
+          throw new Error("AGENT_OUTPUT_INVALID");
+        selectedStickerIds.add(output.stickerId);
+        entry.sticker = output;
+      }
+    } else {
+      throw new Error("AGENT_OUTPUT_INVALID");
+    }
+  }
+  if (byTarget.size === 0) throw new Error("AGENT_OUTPUT_INVALID");
+  const drafts: OutputDraft[] = [];
+  for (const [targetId, value] of byTarget) {
+    const text = value.text;
+    const sticker = value.sticker;
+    if (text && sticker) {
+      const quoteText = text.replyToMessageId;
+      const quoteSticker = sticker.replyToMessageId;
+      if (quoteText !== undefined && quoteSticker !== undefined && quoteText !== quoteSticker)
+        throw new Error("AGENT_OUTPUT_INVALID");
+      const mentionsText = text.mentionIds;
+      const mentionsSticker = sticker.mentionIds;
+      if (
+        mentionsText !== undefined &&
+        mentionsSticker !== undefined &&
+        !sameMentionIds(mentionsText, mentionsSticker)
+      )
+        throw new Error("AGENT_OUTPUT_INVALID");
+    }
+    if (text) {
+      drafts.push({
+        ...text,
+        targetId,
+        ...(sticker ? { stickerIds: [sticker.stickerId] } : { stickerIds: [] }),
+        ...(text.replyToMessageId === undefined && sticker?.replyToMessageId !== undefined
+          ? { replyToMessageId: sticker.replyToMessageId }
+          : {}),
+        ...(text.mentionIds === undefined && sticker?.mentionIds !== undefined
+          ? { mentionIds: sticker.mentionIds }
+          : {}),
+      } as OutputDraft);
+    } else if (sticker) {
+      drafts.push({
+        kind: "inline",
+        targetId,
+        text: "",
+        stickerIds: [sticker.stickerId],
+        ...(sticker.replyToMessageId === undefined
+          ? {}
+          : { replyToMessageId: sticker.replyToMessageId }),
+        ...(sticker.mentionIds === undefined ? {} : { mentionIds: sticker.mentionIds }),
+      });
+    }
+  }
+  return drafts;
 }
 
 /** One host for direct and shared conversations; topology changes targets, not the model loop. */
@@ -608,11 +730,23 @@ export class OneBotHost {
           return false;
         const delivery = o.outbox.get(id),
           row = o.outbox.row(id);
-        return (
-          delivery !== null &&
-          row !== null &&
-          this.deliveryAuthorize(JSON.parse(row.target) as OutboundTarget, delivery)
-        );
+        if (
+          delivery === null ||
+          row === null ||
+          !this.deliveryAuthorize(JSON.parse(row.target) as OutboundTarget, delivery)
+        )
+          return false;
+        const stickerHardOff =
+          o.stickersEnabled?.() === false || !guard.allowed(groupOwner, "stickers");
+        const pureStickerPlanNotStarted =
+          status === "planned" &&
+          replaceable === 1 &&
+          delivery.parts.length > 0 &&
+          delivery.parts.every(
+            (part) =>
+              part.kind === "sticker" && part.status === "planned" && part.attemptedAt === null,
+          );
+        return !(stickerHardOff && pureStickerPlanNotStarted);
       });
     };
     if (
@@ -1199,16 +1333,24 @@ export class OneBotHost {
     // 本群停用叠在全局开关上：停用后既不出现在工具目录，也不在执行与发送边界放行。
     const stickersEnabled =
       o.stickersEnabled?.() !== false && guard.allowed(groupOwner, "stickers");
-    const stickerCatalog = () => {
-      const catalog = currentQqStickerCatalog(o.orm, stickerRequest());
-      return stickersEnabled ? catalog : { ...catalog, state: "disabled" as const, assets: [] };
-    };
-    const stickerState = stickerCatalog();
+    const stickersCurrentlyEnabled = () =>
+      o.stickersEnabled?.() !== false && guard.allowed(groupOwner, "stickers");
     // 决策档：主动路径（chiming_in/idle_topic）先走判断档做阶段一评分；direct/continuous 直接
     // 走回复档。回复 run 用 `source.setRun` 换到回复档（同一 source 顺序复用，不建第二 source）。
     const decisionTier = initiative ? ("judgement" as const) : ("reply" as const);
     // 输出预留既参与容量预算，也必须作为 max_tokens 下发，否则模型可以超出预留输出。
     const reserves = schemeOutputReserve(scheme);
+    const stickerFrequency = execution
+      ? execution.snapshot.stickerFrequency
+      : schemeStickers(scheme).frequency;
+    const stickerFrequencyGuide =
+      stickerFrequency === undefined
+        ? ""
+        : {
+            low: "表情发送倾向（low）：少一些主动或装饰性表情；文字与表情同样合适时偏向文字；若表情本身最合适，仍可只发表情。",
+            medium: "表情发送倾向（medium）：按当前语境平衡选择文字、表情或组合，不刻意凑数。",
+            high: "表情发送倾向（high）：更积极考虑相关表情或图文组合；不适合时不强加。",
+          }[stickerFrequency];
     // 指令按 tier 组合：scene 两档共用；回复 run 才带"直接回话/自写回复"要求；review 收尾共用。
     // 主动路径不再保留"先写清意图、再评分"的前置层（规格 §2.2/§2.5：评分本身是首次调用）。
     const sceneRules = [
@@ -1217,8 +1359,9 @@ export class OneBotHost {
       QQ_MEDIA_RULE,
       QQ_EXPRESSION_MEDIA_RULE,
       "需要理解图片时先调用 media.list 获取本会话图片 ID；已有描述用 media.note.read 分页读取，未描述时显式调用 media.describe，再读取描述。media.describe 会调用视觉模型并保存缓存，不是只读工具。目录、未读图片和未返回的描述均不代表已经理解图片。若用户这条消息就是在问某张图的细节，把该图 ID 与本轮问题消息的 messageId 一起传给 media.describe 或 media.read 做细读：程序会核验问题身份并按细节规格取图，同时在本轮后续决策里把该图按更细的规格提供给你；问题不是本轮这条、或这张图不在它的图范围内时会被拒绝，不会退化成普通读取。",
-      `表情偏好（忽略旧编号格式，以stickerIds协议为准）：\n${schemePrompts(scheme).sticker}`,
-      `表情能力：${stickerState.state}，当前可用 ${stickerState.assets.length} 张。inline/generate 共用 stickerIds：[]=明确不用；[id]=指定一张，ID 必须来自本 run sticker.search 已返回的候选或 pending_plan 的已选 ID，不要编造或复用旧 ID。有候选而省略/null 会被要求重选（STICKER_SELECTION_REQUIRED）；未披露或已失效的 ID 会被拒绝（STICKER_SELECTION_UNAVAILABLE）。允许空正文仅发图；真正不发则返回 none。output_feedback 表示尚未发送的无效计划，须纠正。`,
+      schemePrompts(scheme).sticker,
+      ...(stickerFrequencyGuide ? [stickerFrequencyGuide] : []),
+      `QQ 回复动作：只用文字时调用 reply.text，不必另行声明不用表情；需要表情时先调用 sticker.search 查看候选，再用 reply.sticker 选择本次已披露的素材 ID。每个目标至多一张，可只发文字、只发表情或组合。没有合适内容时可以不回复。未披露或已失效的素材 ID 会被拒绝（STICKER_SELECTION_UNAVAILABLE）。`,
       `这是 OneBot ${binding.kind === "private" ? "私聊" : "群聊"}。只向 authorizedTargets 中的目标输出；${
         split
           ? "每个目标一条回复。"
@@ -1779,7 +1922,9 @@ export class OneBotHost {
           .get(disclosureKey(runIdOverride ?? runRef.current, owner))
           ?.get(id);
         if (revision === undefined) return undefined;
-        const asset = stickerCatalog().assets.find((entry) => entry.id === id);
+        const asset = currentQqStickerCatalog(o.orm, stickerRequest()).assets.find(
+          (entry) => entry.id === id,
+        );
         return asset && asset.updatedAt === revision ? asset : undefined;
       };
       /** 显式请求身份的键域标记：键域变更即全体旧 requestId 断版（§5.7 单 owner）。 */
@@ -2169,7 +2314,11 @@ export class OneBotHost {
               createQqStickerSearch({
                 orm: o.orm,
                 request: stickerRequest,
-                assertCurrent: () => source.assertCurrent(),
+                assertCurrent: () => {
+                  source.assertCurrent();
+                  if (o.stickersEnabled?.() === false)
+                    throw new Error("QQ_STICKER_MODULE_DISABLED");
+                },
                 fit: (arguments_, actionSignal) =>
                   source.actionResultFitter("sticker.search", arguments_, actionSignal),
                 onDisclosed: (context, refs) => {
@@ -2183,6 +2332,9 @@ export class OneBotHost {
             ]
           : []),
       ].filter((action) => guard.actionAllowed(action, groupOwner));
+      const replyTerminalDescriptions = stickersEnabled
+        ? [REPLY_TEXT_DESCRIPTION, REPLY_STICKER_DESCRIPTION]
+        : [REPLY_TEXT_DESCRIPTION];
       /**
        * ── 许可（0.4.0 P4 §4.1 后半，batch-first 后）──
        *
@@ -2505,15 +2657,15 @@ export class OneBotHost {
         }
         return licensesOut;
       };
-      // 终结回复能力由 runtime 经 terminalAction.description 进入同次投递目录（系统声明与原生
-      // tools 都广告它），这里只登记普通工具。
+      // reply.sticker is a terminal contribution, not an executable system action. Its
+      // global and group capability state is projected alongside ordinary QQ actions.
       spec.availableActions = actions.map((a) => a.description);
       const audience = () => ({
         topology: conversation.topology,
         participantIds: initiative ? [null] : targets.map((t) => t.speakerId),
         attentionMembers: attentionTriggerFilter(binding) ?? undefined,
         purpose: path,
-        ...(path === "chiming_in" ? { usedSources: source.sources } : {}),
+        ...(path === "chiming_in" ? { usedSources: source.commonSources } : {}),
       });
       const relevant = (event: ConversationEvent) => observationRelevant(event, audience());
       const generationAttempts = new Map<string, number>();
@@ -2538,7 +2690,7 @@ export class OneBotHost {
             })),
           },
           uniqueSources([
-            ...source.sources,
+            ...source.commonSources,
             ...pendingOutputs.flatMap((output) => output.sources ?? []),
           ]),
         );
@@ -2566,7 +2718,65 @@ export class OneBotHost {
         return true;
       };
       const staged = new Map<string, QqPreparedReply>();
+      const selectedStickerCarrierSources = new Map<string, SourceRef[]>();
+      const selectedStickerObservationSources = (
+        stickerId: string,
+        stickerRevision: string,
+        observations: readonly ActionObservation[],
+      ): SourceRef[] => {
+        const observation = [...observations]
+          .reverse()
+          .find(
+            (candidate) =>
+              candidate.name === "sticker.search" &&
+              candidate.sources.some(
+                (source) =>
+                  source.kind === "qq_sticker" &&
+                  source.id === stickerId &&
+                  source.revision === stickerRevision,
+              ),
+          );
+        if (!observation) return [];
+        return uniqueSources([
+          ...observation.sources.filter(
+            (source) =>
+              source.kind === "qq_sticker" &&
+              source.id === stickerId &&
+              source.revision === stickerRevision,
+          ),
+          ...observation.sources.filter(
+            (source) => source.kind === QQ_GROUP_CAPABILITY_SOURCE_KIND,
+          ),
+        ]);
+      };
+      const isStickerOnlyDisabledOutput = (output: PreparedOutput): boolean => {
+        const pending = staged.get(output.outputId);
+        return (
+          activeOutputOrigins.get(output.outputId) === "terminal-composition" &&
+          (output.text ?? "").trim() === "" &&
+          pending?.stickerId === null &&
+          (selectedStickerCarrierSources.get(output.outputId)?.length ?? 0) > 0 &&
+          !stickersCurrentlyEnabled() &&
+          output.status === "blocked" &&
+          (output.code === "EMPTY_OUTPUT" || output.code === "AGENT_EARLY_COMMIT_REJECTED")
+        );
+      };
+      const noOutputFromDisabledStickerPlans = (outputs: readonly PreparedOutput[]): boolean =>
+        !stickersCurrentlyEnabled() &&
+        [...staged.entries()].some(
+          ([outputId, pending]) =>
+            pending.stickerId === null &&
+            pending.text === null &&
+            activeOutputOrigins.get(outputId) === "terminal-composition" &&
+            (selectedStickerCarrierSources.get(outputId)?.length ?? 0) > 0 &&
+            outputs.every(
+              (output) =>
+                committedTargets.has(output.targetId) ||
+                (output.outputId === outputId && isStickerOnlyDisabledOutput(output)),
+            ),
+        );
       const reserved = new Set<string>();
+      const activeOutputOrigins = new Map<string, "final" | "terminal-composition">();
       /** 已早提交的目标（规格 §4.1）：整批终态结算时不再重复写 intent/事件。 */
       const committedTargets = new Set<string>();
       const resolveQuote = (messageId: string): SourceRef[] =>
@@ -2588,11 +2798,17 @@ export class OneBotHost {
         opportunitySeq: number,
       ): string | undefined => {
         if (output.status !== "prepared" || committedTargets.has(output.targetId)) return undefined;
-        // 本群停用「表情」后，仍带素材的提交不再放行（停用即时生效，不等下一轮）。
-        if ((output.stickerIds?.length ?? 0) > 0) guard.assert(groupOwner, "stickers");
         const pending = staged.get(output.outputId);
         if (!pending) throw new Error("OUTPUT_PREPARATION_MISSING");
         // 引用来源提交前复验：重新解析引用并比对保存的 refs 修订（必须相同，不重铸覆盖）；源守卫照常检验。
+        const currentStickerCarrierSources = pending.stickerId
+          ? (selectedStickerCarrierSources.get(output.outputId) ?? [])
+          : [];
+        const commitReply =
+          pending.stickerId && !stickersCurrentlyEnabled()
+            ? { ...pending, stickerId: null }
+            : pending;
+        if (commitReply !== pending) staged.set(output.outputId, commitReply);
         if (pending.replyToMessageId) {
           const freshQuoteSources = resolveQuote(pending.replyToMessageId);
           for (const fresh of freshQuoteSources) {
@@ -2606,8 +2822,22 @@ export class OneBotHost {
           source.assertSources(output.sources ?? []);
           source.assertSources(freshQuoteSources);
         }
-        const plan = planQqPreparedReply(o.orm, pending, o.stickers);
-        if (plan.kind !== "planned") throw new Error("OUTPUT_CHANGED_AT_COMMIT");
+        const plan = planQqPreparedReply(o.orm, commitReply, o.stickers);
+        if (plan.kind === "abandoned") {
+          if (commitReply !== pending) {
+            staged.set(output.outputId, commitReply);
+            output.status = "blocked";
+            output.code = "EMPTY_OUTPUT";
+            return undefined;
+          }
+          throw new Error("OUTPUT_CHANGED_AT_COMMIT");
+        }
+        if (commitReply !== pending) staged.set(output.outputId, commitReply);
+        const parts = plan.parts.map((part) =>
+          part.kind === "sticker" && commitReply.stickerId
+            ? { ...part, stickerSources: currentStickerCarrierSources }
+            : part,
+        );
         // 每次提交都现读保留窗口：改设置只影响之后写出的到期戳，已在队列里的行保持原样。
         const expiresAt = speechExpiresAt(
           Math.floor(Date.parse(at) / 1000),
@@ -2636,7 +2866,7 @@ export class OneBotHost {
             schemeId: scheme.id,
             schemeRevision: scheme.revision,
             agentConfigVersion: agent.configVersion,
-            sources: uniqueSources([...source.sources, ...(output.sources ?? [])]),
+            sources: uniqueSources([...source.commonSources, ...(output.sources ?? [])]),
             attentionMembers: attentionTriggerFilter(binding) ?? undefined,
           },
           speechKind: path,
@@ -2644,7 +2874,7 @@ export class OneBotHost {
           deliverBy: new Date(Date.parse(at) + policy.deliveryTtlSeconds * 1000).toISOString(),
           createdAt: at,
           expiresAt,
-          parts: [...plan.parts],
+          parts,
         });
         o.journal.append({
           conversationId: conversation.id,
@@ -2703,8 +2933,16 @@ export class OneBotHost {
         const validMentions = validateMentions(output.mentionIds);
         output.mentionIds = [...validMentions];
         // 显式选图在发前再对一次当前事实：本 run 披露过、素材仍在目录里且修订未变。
+        const origin = activeOutputOrigins.get(output.outputId);
         const explicitId = output.stickerIds?.[0] ?? null;
+        if (explicitId && origin !== "terminal-composition") {
+          output.status = "blocked";
+          output.code = "AGENT_OUTPUT_INVALID";
+          return;
+        }
         const selectedAsset = explicitId ? disclosedSticker(explicitId, runIdOverride) : undefined;
+        const stickerAvailableNow = stickersCurrentlyEnabled();
+        const plannedSticker = selectedAsset && stickerAvailableNow ? selectedAsset : undefined;
         if (explicitId && !selectedAsset) {
           output.status = "blocked";
           output.code = "STICKER_SELECTION_UNAVAILABLE";
@@ -2718,26 +2956,26 @@ export class OneBotHost {
         }
         diagnose({
           stage: "sticker",
-          status: selectedAsset ? "selected" : "none",
+          status: plannedSticker ? "selected" : "none",
           targetId: output.targetId,
-          code: selectedAsset ? undefined : stickersEnabled ? "explicit_none" : "module_paused",
-          details: selectedAsset ? { stickerId: selectedAsset.id } : undefined,
+          code: plannedSticker
+            ? undefined
+            : stickerAvailableNow
+              ? "explicit_none"
+              : "module_paused",
+          details: plannedSticker ? { stickerId: plannedSticker.id } : undefined,
         });
-        output.stickerIds = selectedAsset ? [selectedAsset.id] : [];
-        const stickerSources = selectedAsset
-          ? [
-              {
-                kind: "qq_sticker" as const,
-                id: selectedAsset.id,
-                revision: selectedAsset.updatedAt,
-              },
-            ]
+        output.stickerIds = plannedSticker ? [plannedSticker.id] : [];
+        const carrierSources = plannedSticker
+          ? (selectedStickerCarrierSources.get(output.outputId) ?? [])
           : [];
-        output.sources = uniqueSources([
-          ...(output.sources ?? []),
-          ...stickerSources,
-          ...quoteSources,
-        ]);
+        if (plannedSticker) selectedStickerCarrierSources.set(output.outputId, carrierSources);
+        output.sources = uniqueSources([...(output.sources ?? []), ...quoteSources]);
+        if (plannedSticker && carrierSources.length === 0) {
+          output.status = "blocked";
+          output.code = "STICKER_SELECTION_UNAVAILABLE";
+          return;
+        }
         const target = targets.find((t) => t.id === output.targetId)!;
         const pending: QqPreparedReply = {
           text: text || null,
@@ -2748,7 +2986,7 @@ export class OneBotHost {
           path,
           nowSeconds: seconds(),
           selection,
-          stickerId: selectedAsset?.id ?? null,
+          stickerId: plannedSticker?.id ?? null,
           targetSpeakerId: target.speakerId,
           // 显式 @ 走结构化 IDs（宿主已按真实合法成员/授权校验）；正文 CQ 只作文字。
           mentionIds: validMentions,
@@ -2795,12 +3033,9 @@ export class OneBotHost {
             // 同形状走同一提交路径；不执行工具、不返回模型确认。目标/mention 由 prepareOutput
             // 与提交边界照常校验。
             terminalAction: {
-              name: SPEECH_REPLY_DESCRIPTION.name,
-              description: SPEECH_REPLY_DESCRIPTION,
-              parse: (arguments_) => {
-                const parsed = SpeechReplyArgumentsSchema.parse(arguments_);
-                return parsed.outputs;
-              },
+              descriptions: replyTerminalDescriptions,
+              ...(stickersEnabled ? { retainedCarrierActions: ["sticker.search"] } : {}),
+              parse: (calls, allowedTargets) => aggregateReplyContributions(calls, allowedTargets),
             },
             signal,
             onEvent(event) {
@@ -3020,9 +3255,9 @@ export class OneBotHost {
                   : {}),
               };
             },
-            prepareOutput: async (draft) => {
-              // 阶段一资格/门槛已在进入回复 run 前判定（authorizedTargets 只含达标目标），这里只做
-              // 每目标一次的预留与素材校验，不再重跑资格判断。
+            prepareOutput: async (draft, _ordinal, meta) => {
+              if (meta?.origin === "final" && (draft.stickerIds?.length ?? 0) > 0)
+                return { blocked: true, code: "AGENT_OUTPUT_INVALID" };
               if (reserved.has(draft.targetId))
                 return {
                   blocked: true,
@@ -3031,16 +3266,24 @@ export class OneBotHost {
               if (draft.stickerIds && draft.stickerIds.length > 1)
                 return { blocked: true, code: "STICKER_COUNT_EXCEEDED" };
               const stickerId = draft.stickerIds?.[0];
-              if (draft.stickerIds == null) {
-                // 有候选＝必须显式决定（[] 或 [id]）；关闭/无候选＝归一为不选，普通会话不必多答一题。
-                if (stickerCatalog().state === "available")
-                  return { blocked: true, code: "STICKER_SELECTION_REQUIRED" };
-                draft.stickerIds = [];
-              } else if (stickerId && !disclosedSticker(stickerId, ref.current))
+              if (draft.stickerIds == null) draft.stickerIds = [];
+              const disclosedAsset = stickerId
+                ? disclosedSticker(stickerId, ref.current)
+                : undefined;
+              if (stickerId && !disclosedAsset)
                 return { blocked: true, code: "STICKER_SELECTION_UNAVAILABLE" };
               const outputId = crypto.randomUUID();
-              // 阶段一评分与门槛已在进入回复 run 前完成，且回复 run 的 authorizedTargets 只含达标目标：
-              // 这里不再二次评分（删除旧的 prepareOutput 批量许可 wrapper）。
+              if (stickerId && disclosedAsset) {
+                const carrierSources = selectedStickerObservationSources(
+                  stickerId,
+                  disclosedAsset.updatedAt,
+                  meta?.observations ?? [],
+                );
+                if (!carrierSources.some((sourceRef) => sourceRef.kind === "qq_sticker"))
+                  return { blocked: true, code: "STICKER_SELECTION_UNAVAILABLE" };
+                selectedStickerCarrierSources.set(outputId, carrierSources);
+              }
+              activeOutputOrigins.set(outputId, meta?.origin ?? "final");
               reserved.add(draft.targetId);
               return { outputId };
             },
@@ -3081,32 +3324,56 @@ export class OneBotHost {
             reconsider: async (outputs) => {
               if (await refresh([], outputs)) return true;
               let invalidOutput = false;
+              let disabledStickerOnly = false;
               for (const output of outputs) {
                 // 已早提交的目标不再复核/重开（不被 reconsider 再次提交或抹除）。
                 if (committedTargets.has(output.targetId)) continue;
                 if (output.status !== "prepared") {
-                  if (
+                  if (output.code === "AGENT_OUTPUT_INVALID")
+                    throw Object.assign(
+                      new Error("QQ stickers must be contributed with reply.sticker"),
+                      {
+                        code: "AGENT_OUTPUT_INVALID",
+                      },
+                    );
+                  if (isStickerOnlyDisabledOutput(output)) disabledStickerOnly = true;
+                  else if (
                     output.code === "STICKER_COUNT_EXCEEDED" ||
-                    output.code === "STICKER_SELECTION_REQUIRED" ||
                     output.code === "STICKER_SELECTION_UNAVAILABLE"
                   )
                     invalidOutput = true;
                   continue;
                 }
                 stageOutput(output, ref.current);
-                if (output.status !== "prepared") invalidOutput = true;
+                if (output.status !== "prepared") {
+                  if (isStickerOnlyDisabledOutput(output)) disabledStickerOnly = true;
+                  else invalidOutput = true;
+                }
               }
               if (await refresh([], outputs)) return true;
               if (invalidOutput) {
                 rememberPlan("output_feedback", [], outputs);
                 return true;
               }
+              if (
+                disabledStickerOnly &&
+                outputs.every(
+                  (output) =>
+                    committedTargets.has(output.targetId) || isStickerOnlyDisabledOutput(output),
+                )
+              )
+                return "no_output";
               return false;
             },
             commitOutputs: async (outputs: readonly PreparedOutput[], currentRunId, terminal) => {
-              // 连续交谈（follow_up）是"必回"：这一轮没有可提交输出（模型返回 none 或全部被
-              // 静默挡下）时明确拒绝，不静默当 no_output——沉默不是对要求回话的合法回答。
-              if (path === "follow_up" && !outputs.some((output) => output.status === "prepared"))
+              const noOutputFromDisabledStickers =
+                terminal.status === "no_output" && noOutputFromDisabledStickerPlans(outputs);
+              // 连续交谈仍拒绝普通 none/空正文；只有宿主确认仅表情因硬关闭不可发时允许 no_output。
+              if (
+                path === "follow_up" &&
+                !outputs.some((output) => output.status === "prepared") &&
+                !noOutputFromDisabledStickers
+              )
                 throw Object.assign(new Error("CONTINUOUS_REPLY_REQUIRED"), {
                   code: "CONTINUOUS_REPLY_REQUIRED",
                 });
@@ -3234,10 +3501,19 @@ export class OneBotHost {
                         if (committedTargets.has(output.targetId)) return false;
                         source.assertCurrent();
                         stageOutput(output, runId);
-                        return (
-                          commitIntentFor(output, runId, meta.at, meta.ordinal, wake.throughSeq) !==
-                          undefined
+                        const intentId = commitIntentFor(
+                          output,
+                          runId,
+                          meta.at,
+                          meta.ordinal,
+                          wake.throughSeq,
                         );
+                        if (!intentId && isStickerOnlyDisabledOutput(output)) {
+                          output.status = "blocked";
+                          output.code = "EMPTY_OUTPUT";
+                          return false;
+                        }
+                        return intentId !== undefined;
                       })
                       .immediate();
                     if (committed) o.onDeliveryCommitted?.(conversation.id);
@@ -3304,7 +3580,7 @@ export class OneBotHost {
           ...(execution ? { workClass: execution.snapshot.taskClass } : {}),
           conversationId: conversation.id,
           signal,
-          sources: parentBatch.source.sources,
+          sources: parentBatch.source.commonSources,
           usage,
           budget,
           onRunId: (runId) => {
@@ -3390,7 +3666,7 @@ export class OneBotHost {
             const run = buildRun(
               {
                 parent: parentBatch.source,
-                intents: { value: task.intents, sources: parentBatch.source.sources },
+                intents: { value: task.intents, sources: parentBatch.source.commonSources },
               },
               buildReplySpec(),
               [...task.targets],

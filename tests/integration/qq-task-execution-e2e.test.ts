@@ -20,12 +20,19 @@ import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
-import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { readQqBinding } from "../../src/server/db/qq-binding-repository";
+import {
+  readQqGroupAgentConfig,
+  updateQqGroupConfig,
+} from "../../src/server/db/qq-group-config-repository";
+import { createQqScheme, readQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
+import { recoverQqConversationTaskLease } from "../../src/server/db/qq-task-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
 import { cloneBusinessDb } from "../harness/business-db";
 import { scriptedModel } from "../harness/model";
@@ -159,13 +166,30 @@ function setup(options: { model: ModelPort }) {
     binding: {
       schemeName: string;
       taskLimits?: { mention_task_limit: number; ordinary_task_limit: number };
+      stickerFrequency?: "low" | "medium" | "high";
+      followUp?: boolean;
+      mergeWindowSeconds?: number;
     } = { schemeName: "task-execution-e2e" },
   ) => {
     const scheme = createQqScheme(h.orm, {
       name: binding.schemeName,
-      triggers: { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: false },
+      triggers: binding.followUp
+        ? { direct_reply: true, follow_up: true, chiming_in: false, idle_topic: false }
+        : { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: false },
       reply: { split_by_speaker: true },
+      ...(binding.mergeWindowSeconds === undefined
+        ? {}
+        : { rhythm: { ...QQ_RHYTHM_DEFAULT, merge_window_seconds: binding.mergeWindowSeconds } }),
       ...(binding.taskLimits ? { taskLimits: binding.taskLimits } : {}),
+      ...(binding.stickerFrequency
+        ? {
+            stickers: {
+              sticker_min_repeat_minutes: 10,
+              sticker_recent_avoid_count: 5,
+              frequency: binding.stickerFrequency,
+            },
+          }
+        : {}),
     });
     const bindingId = crypto.randomUUID();
     h.db
@@ -182,7 +206,35 @@ function setup(options: { model: ModelPort }) {
       );
     return bindingId;
   };
-  const receive = (group: number, messageId: string, speaker: string, text: string) => {
+  const setGroupFrequency = (bindingId: string, frequency: "low" | "medium" | "high") => {
+    const binding = readQqBinding(h.orm, bindingId);
+    if (!binding) throw new Error("missing binding");
+    const baseRow = readQqScheme(h.orm, binding.schemeId);
+    if (!baseRow) throw new Error("missing scheme");
+    const current = readQqGroupAgentConfig(h.orm, binding);
+    return updateQqGroupConfig(h.orm, {
+      bindingId,
+      payload: {
+        agent_id: binding.agentId,
+        expected_binding_revision: binding.revision,
+        expected_scheme_revision: baseRow.revision,
+        expected_revision: current.revision,
+        overrides: {
+          ...current.overrides,
+          stickers: { ...current.overrides.stickers, frequency },
+        },
+        disabled_capabilities: current.disabled_capabilities,
+      },
+    });
+  };
+
+  const receive = (
+    group: number,
+    messageId: string,
+    speaker: string,
+    text: string,
+    addressed = true,
+  ) => {
     const normalized = normalizeOneBotMessage(
       {
         post_type: "message",
@@ -194,7 +246,7 @@ function setup(options: { model: ModelPort }) {
         group_id: group,
         message_id: messageId,
         message: [
-          { type: "at", data: { qq: "10001" } },
+          ...(addressed ? [{ type: "at", data: { qq: "10001" } }] : []),
           { type: "text", data: { text } },
         ],
         sender: { nickname: speaker },
@@ -247,7 +299,18 @@ function setup(options: { model: ModelPort }) {
     composed.push(bot);
     return { bot, sends };
   };
-  return { orm: h.orm, db: h.db, journal, wakes, outbox, makeBinding, receive, compose };
+  return {
+    orm: h.orm,
+    db: h.db,
+    journal,
+    wakes,
+    outbox,
+    clock,
+    makeBinding,
+    setGroupFrequency,
+    receive,
+    compose,
+  };
 }
 
 /** 每条决策请求里程序写的激活触发（activation_trigger dump 的 value）。 */
@@ -317,6 +380,72 @@ function decisionStub(
 }
 
 describe("qq task execution end to end (production composition)", () => {
+  it("freezes effective sticker frequency on first claim, preserves it through same-task lease recovery, and captures a later override for a new task", async () => {
+    const routes = new Map<
+      number,
+      (request: ModelRequest, trigger: ActivationTrigger) => Promise<string> | string
+    >();
+    const routed: { seq: number; sourceId: string; request: ModelRequest }[] = [];
+    const f = setup({ model: decisionStub(routes, routed) });
+    const bindingId = f.makeBinding(30003, {
+      schemeName: "task-sticker-frequency-e2e",
+      stickerFrequency: "medium",
+    });
+    f.setGroupFrequency(bindingId, "low");
+    const { bot } = f.compose();
+
+    // An explicit @ creates the durable task through the real ingress/runtime path. The first
+    // scheduler claim freezes the effective group override into its execution snapshot.
+    f.receive(30003, "92001", "20002", "first task");
+    expect(await bot.scheduler.runOnce()).toBe(true);
+    const claimed = taskRows(f.db)[0];
+    if (!claimed) throw new Error("first task missing after production claim");
+    expect(claimed.status).toBe("completed");
+    const frozenText = claimed.execution_snapshot;
+    if (!frozenText) throw new Error("first claim did not persist execution snapshot");
+    expect((JSON.parse(frozenText) as Record<string, unknown>).stickerFrequency).toBe("low");
+
+    // Change the group override, then recover an expired lease for this same durable task.
+    // The scheduler reclaims the persisted snapshot; it must not mint the current high value.
+    f.setGroupFrequency(bindingId, "high");
+    f.db
+      .query(
+        "UPDATE qq_conversation_tasks SET status='running', lease_token='expired-token', lease_expires_at='2026-01-01T00:00:00.000Z', finished_at=NULL WHERE id=?",
+      )
+      .run(claimed.id);
+    expect(
+      recoverQqConversationTaskLease(f.orm, {
+        taskId: claimed.id,
+        leaseToken: "expired-token",
+        at: new Date().toISOString(),
+        resolveExistingRunAndOutbox: () => "resume",
+      }),
+    ).toBe("resume");
+    expect(await bot.scheduler.dispatchOnce()).toBe(true);
+    await bot.scheduler.waitForIdle();
+    const reclaimed = taskRows(f.db)[0];
+    if (!reclaimed) throw new Error("reclaimed task missing");
+    expect(reclaimed.status).toBe("no_output");
+    expect(reclaimed.execution_snapshot).toBe(frozenText);
+    expect(
+      (JSON.parse(reclaimed.execution_snapshot!) as Record<string, unknown>).stickerFrequency,
+    ).toBe("low");
+
+    // A new task created after the group override changes freezes the new effective value.
+    f.receive(30003, "92002", "20002", "second task");
+    expect(await bot.scheduler.runOnce()).toBe(true);
+    const second = taskRows(f.db)[1];
+    if (!second?.execution_snapshot)
+      throw new Error("second claim did not persist execution snapshot");
+    expect(
+      (JSON.parse(second.execution_snapshot) as Record<string, unknown>).stickerFrequency,
+    ).toBe("high");
+    expect(
+      (JSON.parse(reclaimed.execution_snapshot!) as Record<string, unknown>).stickerFrequency,
+    ).toBe("low");
+    expect(routed.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("two same-sender @ messages execute as two concurrent tasks with independent focus; the fast sibling early-commits and delivers", async () => {
     const gateA = controlledGate();
     const gateB = controlledGate();

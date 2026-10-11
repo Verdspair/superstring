@@ -53,7 +53,9 @@
 
 #### 当前 main 源码更新
 
-本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **63**，新增迁移 0055–0063。
+本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **64**，新增迁移 0055–0064。
+
+QQ 回复现在可自主选择文字、单张表情或组合，并可按方案设置三档表情倾向；本群可覆盖，私聊跟随方案。同任务恢复保留首次领取的档位，新任务读取新的有效配置。全局或本群关闭表情后，尚未开始发送的图片不再发送，合法文字不受影响。0064 新增倾向字段，仅更新逐字等于旧出厂默认的表情提示词；自定义提示词与旧数量存值保留。
 
 源码新增独立 QQ 回复任务、方案与会话的任务上限和输入防刷屏设置，并统一静图、动图规格，取消旧补充时间窗。新建方案开启防刷屏，已有方案保持关闭；会话覆盖留空时跟随方案。已有记录与其它配置保留，退役媒体设置不再使用。
 
@@ -118,7 +120,9 @@ Unknown schemas or downgrade attempts are rejected to protect data safety. Rolli
 
 #### Current source updates on main
 
-This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **63**, with migrations 0055–0063.
+This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **64**, with migrations 0055–0064.
+
+QQ replies can now independently choose text, one sticker, or a combination, with three levels of scheme-level sticker guidance. Groups can override the setting; private chats follow the scheme. Resumed tasks retain the value captured at first claim, while new tasks use the new effective setting. Global or group sticker disable blocks unstarted image sends without blocking valid text. Migration 0064 adds the guidance field and updates only sticker prompts that exactly match the old factory default. Custom prompts and stored legacy count values are preserved.
 
 Source updates add independent QQ reply tasks, scheme and conversation task limits, and input anti-spam settings. Still images and animations use unified settings, and the old supplement time window is removed. Anti-spam is enabled for new schemes and kept off for existing schemes. Empty conversation overrides follow the scheme. Existing records and other settings are retained; retired media settings are no longer used.
 

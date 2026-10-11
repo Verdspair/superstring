@@ -303,6 +303,22 @@ describe("0052 消息设置与图片输入组的稀疏差异（T01 Step5）", ()
   });
 });
 
+describe("QQ sticker frequency sparse override", () => {
+  it("keeps an omitted frequency sparse and merges explicit values over the scheme", () => {
+    const base = baseScheme();
+    const follow = QqGroupSchemeOverridesSchema.parse({ stickers: {} });
+    expect(follow).toEqual({});
+    expect(mergeQqGroupScheme(base, follow).stickers.frequency).toBe("medium");
+
+    const override = QqGroupSchemeOverridesSchema.parse({ stickers: { frequency: "high" } });
+    expect(override).toEqual({ stickers: { frequency: "high" } });
+    expect(mergeQqGroupScheme(base, override).stickers.frequency).toBe("high");
+    expect(
+      QqGroupSchemeOverridesSchema.safeParse({ stickers: { frequency: "sometimes" } }).success,
+    ).toBe(false);
+  });
+});
+
 describe("0054 自主接话批量参数的稀疏覆盖与互斥解析", () => {
   it("三个批量字段逐字段覆盖，缺席＝跟随基础方案；关系在合并后的完整节奏上校验", () => {
     const base = baseScheme();

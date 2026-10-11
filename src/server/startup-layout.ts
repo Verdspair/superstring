@@ -54,6 +54,7 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     paths.qqTaskReadyAtMigration,
     paths.qqMediaSpecUnificationMigration,
     paths.qqMediaRequestIdentityMigration,
+    paths.qqSchemeStickerFrequencyMigration,
   ]) {
     let current = path.parse(target).root;
     for (const component of path.relative(current, target).split(path.sep)) {
@@ -135,6 +136,7 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     readFileSync(paths.qqTaskReadyAtMigration, "utf8"),
     readFileSync(paths.qqMediaSpecUnificationMigration, "utf8"),
     readFileSync(paths.qqMediaRequestIdentityMigration, "utf8"),
+    readFileSync(paths.qqSchemeStickerFrequencyMigration, "utf8"),
   ] as const;
   if (businessMigrationSql.some((sql) => !sql.trim())) throw new Error("EMPTY_MIGRATION_RESOURCE");
   if (env.SUPERSTRING_SERVE_WEB === "1") readFileSync(path.join(paths.webDir, "index.html"));

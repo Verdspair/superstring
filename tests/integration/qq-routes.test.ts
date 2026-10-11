@@ -144,6 +144,7 @@ describe("QQ scheme routes", () => {
       expect(created.stickers).toEqual({
         sticker_min_repeat_minutes: 10,
         sticker_recent_avoid_count: 5,
+        frequency: "medium",
       });
       expect(created.description).toBeNull();
       expect(created.revision).toBe(1);

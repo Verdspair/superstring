@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { ActionExecutor } from "../../src/server/agent/action-executor";
 import {
   AgentRuntime,
   AgentRuntimeError,
@@ -12,7 +13,11 @@ import {
   type BuiltInAction,
   createBuiltInActions,
 } from "../../src/server/agent/built-in-actions";
-import { inputUnits, textMessage } from "../../src/server/agent/context-engine";
+import {
+  type ActionObservation,
+  inputUnits,
+  textMessage,
+} from "../../src/server/agent/context-engine";
 import { estimateMessages } from "../../src/server/agent/conversation-context";
 import {
   createModelAdmission,
@@ -24,7 +29,11 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createLmStudioVisionClient } from "../../src/server/llm/vision-client";
 import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
-import { SpeechReplyArgumentsSchema } from "../../src/shared/contracts/agent-output";
+import {
+  ReplyStickerArgumentsSchema,
+  ReplyTextArgumentsSchema,
+  SpeechReplyArgumentsSchema,
+} from "../../src/shared/contracts/agent-output";
 import {
   type RunEvent,
   RunEventSchema,
@@ -78,11 +87,11 @@ const direct = {
 };
 
 const terminalAction = {
-  name: "speech.reply",
-  description: SPEECH_REPLY_DESCRIPTION,
-  parse: (arguments_: Record<string, unknown>) => {
-    const parsed = SpeechReplyArgumentsSchema.parse(arguments_);
-    return parsed.outputs;
+  descriptions: [SPEECH_REPLY_DESCRIPTION],
+  parse: (calls: readonly { name: string; arguments: Record<string, unknown> }[]) => {
+    if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+      throw new Error("invalid terminal reply contribution");
+    return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
   },
 };
 function setup(
@@ -1693,6 +1702,491 @@ describe("AgentRuntime context source bindRun lifecycle", () => {
     expect(modelCalls).toBe(0);
     const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
     expect(["failed", "cancelled"]).toContain(run.status);
+  });
+});
+
+describe("retained carrier action assertions", () => {
+  it("passes only successful host-declared carrier observations to the canonical executor assertion", async () => {
+    const assertions: Array<{
+      name: string;
+      retained?: Pick<ActionObservation, "name" | "sources">;
+    }> = [];
+    class RecordingExecutor extends ActionExecutor {
+      override assert(
+        action: BuiltInAction,
+        context: ActionContext,
+        mode: "direct" | "sandbox" = "direct",
+        approvalKey?: string,
+        options?: {
+          readonly retainedCarrierObservation?: Pick<ActionObservation, "name" | "sources">;
+        },
+      ): void {
+        assertions.push({
+          name: action.description.name,
+          retained: options?.retainedCarrierObservation,
+        });
+        super.assert(action, context, mode, approvalKey, options);
+      }
+    }
+    let decisions = 0;
+    const action = boundAction("sticker.search");
+    const { runtime } = setup(
+      {
+        async complete() {
+          decisions++;
+          if (decisions === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [{ name: "sticker.search", arguments: { query: "x" } }],
+            });
+          return JSON.stringify({
+            kind: "final",
+            outputs: [{ kind: "inline", targetId: "web", text: "plain", stickerIds: [] }],
+          });
+        },
+      },
+      { actionExecutor: new RecordingExecutor() },
+    );
+    await runtime.run(
+      { ...spec, availableActions: [action.description] },
+      {
+        ...direct,
+        authorizedTargets: ["web"],
+        outputMode: "buffered",
+        actions: [action],
+        terminalAction: {
+          descriptions: [],
+          retainedCarrierActions: ["sticker.search"],
+          parse: () => [],
+        },
+      },
+    );
+    expect(decisions).toBe(2);
+    const retained = assertions.filter((entry) => entry.retained !== undefined);
+    expect(retained.length).toBeGreaterThan(0);
+    expect(
+      retained.every(
+        (entry) => entry.name === "sticker.search" && entry.retained?.name === "sticker.search",
+      ),
+    ).toBe(true);
+    expect(retained.every((entry) => Array.isArray(entry.retained?.sources))).toBe(true);
+    expect(
+      assertions.some((entry) => entry.name === "sticker.search" && entry.retained === undefined),
+    ).toBe(true);
+  });
+});
+
+describe("legacy single terminal reply target handling", () => {
+  it("preserves per-target unauthorized outcomes for one speech.reply contribution", async () => {
+    const { runtime } = setup({
+      async complete() {
+        return JSON.stringify({
+          kind: "invoke",
+          name: "speech.reply",
+          arguments: {
+            outputs: [
+              { targetId: "allowed", kind: "inline", text: "ok" },
+              { targetId: "forbidden", kind: "inline", text: "blocked" },
+            ],
+          },
+        });
+      },
+    });
+    const result = await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["allowed"],
+      outputMode: "buffered",
+      terminalAction,
+    });
+    expect(result.outputs.map(({ targetId, status, code }) => [targetId, status, code])).toEqual([
+      ["allowed", "prepared", undefined],
+      ["forbidden", "blocked", "AGENT_TARGET_UNAUTHORIZED"],
+    ]);
+  });
+});
+
+describe("composable terminal reply action", () => {
+  const terminalComposition = {
+    descriptions: [
+      { ...SPEECH_REPLY_DESCRIPTION, name: "reply.text", description: "Contribute text" },
+      { ...SPEECH_REPLY_DESCRIPTION, name: "reply.sticker", description: "Contribute one sticker" },
+    ],
+    parse(
+      calls: readonly { name: string; arguments: Record<string, unknown> }[],
+      authorizedTargets?: readonly string[],
+    ) {
+      const textOutputs = calls
+        .filter((call) => call.name === "reply.text")
+        .flatMap((call) => ReplyTextArgumentsSchema.parse(call.arguments).outputs);
+      const stickerOutputs = calls
+        .filter((call) => call.name === "reply.sticker")
+        .flatMap((call) => ReplyStickerArgumentsSchema.parse(call.arguments).outputs);
+      const targets = new Map<
+        string,
+        {
+          text?: (typeof textOutputs)[number];
+          sticker?: (typeof stickerOutputs)[number];
+        }
+      >();
+      for (const output of textOutputs) {
+        const target = targets.get(output.targetId) ?? {};
+        if (target.text) throw new Error("duplicate text target");
+        target.text = output;
+        targets.set(output.targetId, target);
+      }
+      const selectedStickers = new Set<string>();
+      for (const output of stickerOutputs) {
+        const target = targets.get(output.targetId) ?? {};
+        if (target.sticker || selectedStickers.has(output.stickerId))
+          throw new Error("duplicate sticker contribution");
+        selectedStickers.add(output.stickerId);
+        target.sticker = output;
+        targets.set(output.targetId, target);
+      }
+      for (const targetId of targets.keys())
+        if (authorizedTargets && !authorizedTargets.includes(targetId))
+          throw new Error("unauthorized target");
+      return [...targets].map(([targetId, { text, sticker }]) => {
+        if (
+          text?.replyToMessageId !== undefined &&
+          sticker?.replyToMessageId !== undefined &&
+          text.replyToMessageId !== sticker.replyToMessageId
+        )
+          throw new Error("conflicting replyToMessageId");
+        if (
+          text?.mentionIds !== undefined &&
+          sticker?.mentionIds !== undefined &&
+          JSON.stringify(text.mentionIds) !== JSON.stringify(sticker.mentionIds)
+        )
+          throw new Error("conflicting mentionIds");
+        const replyToMessageId = text?.replyToMessageId ?? sticker?.replyToMessageId;
+        const mentionIds = text?.mentionIds ?? sticker?.mentionIds;
+        const common = {
+          targetId,
+          ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
+          ...(mentionIds === undefined ? {} : { mentionIds }),
+          stickerIds: sticker ? [sticker.stickerId] : [],
+        };
+        if (text?.kind === "generate") {
+          if (text.instructions === "") throw new Error("empty response contribution");
+          return { ...common, kind: "generate" as const, instructions: text.instructions };
+        }
+        const body = text?.text ?? "";
+        if (!sticker && body === "") throw new Error("empty response contribution");
+        return { ...common, kind: "inline" as const, text: body };
+      });
+    },
+  };
+
+  it("accepts a text-only contribution without requiring a sticker choice", async () => {
+    let calls = 0;
+    const { runtime } = setup({
+      async complete() {
+        calls++;
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.text",
+              arguments: { outputs: [{ targetId: "web", kind: "inline", text: "plain" }] },
+            },
+          ],
+        });
+      },
+    });
+    const prepared: unknown[] = [];
+    const result = await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web"],
+      outputMode: "buffered",
+      terminalAction: terminalComposition,
+      prepareOutput(draft, _ordinal, meta) {
+        prepared.push({ draft, meta });
+        return Promise.resolve({ outputId: "text-only" });
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result.outputs).toMatchObject([{ targetId: "web", text: "plain", stickerIds: [] }]);
+    expect(prepared[0]).toMatchObject({
+      draft: { kind: "inline", targetId: "web", text: "plain", stickerIds: [] },
+      meta: { origin: "terminal-composition", observations: [] },
+    });
+  });
+
+  it("combines text and sticker contributions for the same target in one step", async () => {
+    const { runtime } = setup({
+      async complete() {
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.text",
+              arguments: { outputs: [{ targetId: "web", kind: "inline", text: "hello" }] },
+            },
+            {
+              name: "reply.sticker",
+              arguments: { outputs: [{ targetId: "web", stickerId: "shown" }] },
+            },
+          ],
+        });
+      },
+    });
+    const result = await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web"],
+      outputMode: "buffered",
+      terminalAction: terminalComposition,
+    });
+    expect(result.outputs).toMatchObject([
+      { targetId: "web", text: "hello", stickerIds: ["shown"] },
+    ]);
+  });
+
+  it("rejects a mixed terminal and ordinary action batch before the ordinary action executes", async () => {
+    let ordinaryCalls = 0;
+    const { runtime } = setup({
+      async complete() {
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.text",
+              arguments: { outputs: [{ targetId: "web", kind: "inline", text: "hello" }] },
+            },
+            { name: "records.query", arguments: { query: "x" } },
+          ],
+        });
+      },
+    });
+    await expect(
+      runtime.run(spec, {
+        ...direct,
+        authorizedTargets: ["web"],
+        outputMode: "buffered",
+        terminalAction: terminalComposition,
+        actions: [
+          {
+            ...boundAction("records.query"),
+            async execute() {
+              ordinaryCalls++;
+              return { value: {}, sources: [] };
+            },
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
+    expect(ordinaryCalls).toBe(0);
+  });
+
+  it("rejects duplicate contribution targets and cross-tool quote or mention conflicts", async () => {
+    const cases = [
+      {
+        calls: [
+          {
+            name: "reply.text",
+            arguments: {
+              outputs: [
+                { targetId: "web", kind: "inline", text: "one" },
+                { targetId: "web", kind: "inline", text: "two" },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        calls: [
+          {
+            name: "reply.text",
+            arguments: {
+              outputs: [{ targetId: "web", kind: "inline", text: "one", replyToMessageId: "m1" }],
+            },
+          },
+          {
+            name: "reply.sticker",
+            arguments: { outputs: [{ targetId: "web", stickerId: "s", replyToMessageId: "m2" }] },
+          },
+        ],
+      },
+      {
+        calls: [
+          {
+            name: "reply.text",
+            arguments: {
+              outputs: [{ targetId: "web", kind: "inline", text: "one", mentionIds: ["u1"] }],
+            },
+          },
+          {
+            name: "reply.sticker",
+            arguments: { outputs: [{ targetId: "web", stickerId: "s", mentionIds: ["u2"] }] },
+          },
+        ],
+      },
+    ];
+    for (const scenario of cases) {
+      const { runtime } = setup({
+        async complete() {
+          return JSON.stringify({ kind: "invoke", calls: scenario.calls });
+        },
+      });
+      await expect(
+        runtime.run(spec, {
+          ...direct,
+          authorizedTargets: ["web"],
+          outputMode: "buffered",
+          terminalAction: terminalComposition,
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
+    }
+  });
+
+  it("supports sticker-only outputs and none without an extra decision", async () => {
+    let stickerCalls = 0;
+    const sticker = setup({
+      async complete() {
+        stickerCalls++;
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.sticker",
+              arguments: { outputs: [{ targetId: "web", stickerId: "shown" }] },
+            },
+          ],
+        });
+      },
+    });
+    const stickerResult = await sticker.runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web"],
+      outputMode: "buffered",
+      terminalAction: terminalComposition,
+    });
+    expect(stickerCalls).toBe(1);
+    expect(stickerResult.outputs).toMatchObject([
+      { targetId: "web", status: "prepared", text: "", stickerIds: ["shown"] },
+    ]);
+
+    let noneCalls = 0;
+    const none = setup({
+      async complete() {
+        noneCalls++;
+        return JSON.stringify({ kind: "none" });
+      },
+    });
+    const noneResult = await none.runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web"],
+      outputMode: "buffered",
+      terminalAction: terminalComposition,
+    });
+    expect(noneCalls).toBe(1);
+    expect(noneResult.status).toBe("no_output");
+    expect(noneResult.outputs).toEqual([]);
+  });
+
+  it("parses native tool markers and retains distinct target contributions", async () => {
+    const { runtime } = setup({
+      async complete() {
+        return [
+          JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: {
+                  outputs: [
+                    { targetId: "web", kind: "inline", text: "hello" },
+                    { targetId: "peer", kind: "inline", text: "there" },
+                  ],
+                },
+              },
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "peer", stickerId: "one" }] },
+              },
+            ],
+          }),
+          '<｜DSML｜｜invoke name="reply.text">',
+          "</｜DSML｜｜invoke>",
+        ].join("\n");
+      },
+    });
+    const result = await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web", "peer"],
+      outputMode: "buffered",
+      terminalAction: terminalComposition,
+    });
+    expect(result.outputs).toMatchObject([
+      { targetId: "web", text: "hello", stickerIds: [] },
+      { targetId: "peer", text: "there", stickerIds: ["one"] },
+    ]);
+  });
+
+  it("commits composed inline drafts through the existing early-commit hook", async () => {
+    let decisions = 0;
+    const { runtime } = setup({
+      async complete() {
+        decisions++;
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.text",
+              arguments: { outputs: [{ targetId: "web", kind: "inline", text: "early" }] },
+            },
+          ],
+        });
+      },
+    });
+    const committed: string[] = [];
+    const result = await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web"],
+      outputMode: "buffered",
+      terminalAction: terminalComposition,
+      async commitOutput(output) {
+        committed.push(output.targetId);
+      },
+    });
+    expect(decisions).toBe(1);
+    expect(committed).toEqual(["web"]);
+    expect(result.status).toBe("completed");
+    expect(result.outputs).toMatchObject([{ targetId: "web", text: "early", stickerIds: [] }]);
+  });
+
+  it("validates every composed target before any output preparation", async () => {
+    const { runtime } = setup({
+      async complete() {
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.text",
+              arguments: { outputs: [{ targetId: "web", kind: "inline", text: "ok" }] },
+            },
+            {
+              name: "reply.sticker",
+              arguments: { outputs: [{ targetId: "unauthorized", stickerId: "shown" }] },
+            },
+          ],
+        });
+      },
+    });
+    let prepared = 0;
+    await expect(
+      runtime.run(spec, {
+        ...direct,
+        authorizedTargets: ["web"],
+        outputMode: "buffered",
+        terminalAction: terminalComposition,
+        async prepareOutput() {
+          prepared++;
+          return { outputId: "prepared" };
+        },
+      }),
+    ).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
+    expect(prepared).toBe(0);
   });
 });
 

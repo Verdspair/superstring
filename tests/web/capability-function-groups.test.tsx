@@ -268,7 +268,8 @@ describe("5 Function Groups in Capabilities Workspace", () => {
 
     const qqButton = screen.getByRole("button", { name: /^QQ 对话与接话/ });
     expect(qqButton).toBeTruthy();
-    expect(screen.getByText("speech.reply")).toBeTruthy();
+    expect(screen.getByText("reply.text")).toBeTruthy();
+    expect(screen.getByText("reply.sticker")).toBeTruthy();
     expect(screen.getByText("运行时动作")).toBeTruthy();
     expect(await screen.findByRole("button", { name: /system-qq-reply/ })).toBeTruthy();
 

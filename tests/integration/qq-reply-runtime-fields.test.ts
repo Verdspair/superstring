@@ -53,10 +53,12 @@ const direct: Pick<ConversationInput, "owner" | "authorizedTargets" | "outputMod
 };
 
 const terminalAction = {
-  name: "speech.reply",
-  description: SPEECH_REPLY_DESCRIPTION,
-  parse: (arguments_: Record<string, unknown>) =>
-    SpeechReplyArgumentsSchema.parse(arguments_).outputs,
+  descriptions: [SPEECH_REPLY_DESCRIPTION],
+  parse: (calls: readonly { name: string; arguments: Record<string, unknown> }[]) => {
+    if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+      throw new Error("invalid terminal reply contribution");
+    return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
+  },
 };
 
 it("preserves an independently selected reply reference through terminal inline output", async () => {

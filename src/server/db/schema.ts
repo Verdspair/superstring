@@ -1275,6 +1275,9 @@ export const qqSchemes = sqliteTable(
     stickerRecentAvoidCount: integer("sticker_recent_avoid_count")
       .notNull()
       .default(QQ_STICKER_DEDUP_DEFAULT.sticker_recent_avoid_count),
+    stickerFrequency: text("sticker_frequency")
+      .notNull()
+      .default(QQ_STICKER_DEDUP_DEFAULT.frequency),
     // 0034: the unprompted-speech threshold. The judge answers with an interest SCORE (0–10) and
     // this is the number it has to reach; 0 = "any readable score speaks", 10 = "almost never".
     // Kept beside the rhythm limits because it binds the same two initiative paths and nothing else.
@@ -1477,6 +1480,7 @@ export const qqSchemes = sqliteTable(
       "qq_scheme_sticker_recent_avoid",
       sql`${t.stickerRecentAvoidCount} >= 0 AND ${t.stickerRecentAvoidCount} <= 20`,
     ),
+    check("qq_scheme_sticker_frequency", sql`${t.stickerFrequency} IN ('low', 'medium', 'high')`),
     check(
       "qq_scheme_initiative_min_score",
       sql`${t.initiativeMinScore} >= 0 AND ${t.initiativeMinScore} <= 10`,

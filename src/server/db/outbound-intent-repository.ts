@@ -25,7 +25,12 @@ export type OutboundTarget = {
 };
 export type OutboundPartPayload =
   | { text: string; mentions?: readonly string[]; replyToMessageId?: string }
-  | { stickerId: string; mentions?: readonly string[]; replyToMessageId?: string };
+  | {
+      stickerId: string;
+      mentions?: readonly string[];
+      replyToMessageId?: string;
+      stickerSources?: readonly SourceRef[];
+    };
 /**
  * 落库形状。`mentions` 键只在调用方给了结构化协议时才写入：有键＝新协议（新提交恒带，可为
  * 空数组），无键＝变更前计划的旧部件。发送与出站事实的读回都靠这个区别还原真实线上段，
@@ -37,6 +42,9 @@ function payloadJson(part: OutboundPartPayload): Record<string, unknown> {
     ...payload,
     ...(part.mentions === undefined ? {} : { mentions: [...part.mentions] }),
     ...(part.replyToMessageId === undefined ? {} : { replyToMessageId: part.replyToMessageId }),
+    ...("stickerId" in part && part.stickerSources !== undefined
+      ? { stickerSources: [...part.stickerSources] }
+      : {}),
   };
 }
 type IntentRow = {
@@ -178,6 +186,7 @@ export class OutboundIntentRepository {
           stickerId: string;
           mentions?: readonly string[];
           replyToMessageId?: string;
+          stickerSources?: readonly SourceRef[];
         }
     )[];
   }): Delivery {

@@ -64,7 +64,7 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
   },
   compression: { watermark_trigger: 200, package_limit: 8, headroom_ratio: 0.05 },
   output_reserve: { judgement_output_reserved: 512, reply_output_reserved: 2048 },
-  stickers: { sticker_min_repeat_minutes: 10, sticker_recent_avoid_count: 5 },
+  stickers: { sticker_min_repeat_minutes: 10, sticker_recent_avoid_count: 5, frequency: "medium" },
   sticker_collections: { collection_ids: [] },
   prompts: {
     scene: "场景提示词",

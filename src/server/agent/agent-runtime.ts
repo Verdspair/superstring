@@ -3,7 +3,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   AGENT_DECISION_JSON_SCHEMA,
-  type AgentDecision,
   AgentDecisionSchema,
   type OutputDraft,
   parseAgentDecision,
@@ -168,6 +167,10 @@ export interface ConversationInput {
   prepareOutput?: (
     draft: OutputDraft,
     ordinal: number,
+    meta?: {
+      readonly origin: "final" | "terminal-composition";
+      readonly observations: readonly ActionObservation[];
+    },
   ) => Promise<{ outputId: string } | { blocked: true; code: string }>;
   /**
    * 「被程序挡下」不等于「运行失败」（0.4.0 P4 §4.1）：许可不通过时这一轮该**静默结束**
@@ -288,11 +291,15 @@ export interface ConversationInput {
    * 调用。`parse` 由宿主提供（白名单/授权校验）；省略＝运行时无此终结路径（旧行为逐字不变）。
    */
   terminalAction?: {
-    name: string;
-    /** 参与同一次投递目录的终结能力描述（系统声明与原生 tools 都广告它）。 */
-    description: ActionDescription;
-    /** 把动作参数解析为 inline 草稿列表；非法即抛（该轮失败，不静默）。 */
-    parse: (arguments_: Record<string, unknown>) => readonly OutputDraft[];
+    /** 参与同一次投递目录的终结贡献能力；名称唯一，由此列表广告。 */
+    descriptions: readonly ActionDescription[];
+    /** Host-declared carrier actions whose successful observations may remain in use after action deactivation. */
+    retainedCarrierActions?: readonly string[];
+    /** 把一批终结贡献聚合为既有草稿列表；非法即抛（该轮失败，不静默）。 */
+    parse: (
+      calls: readonly { readonly name: string; readonly arguments: Record<string, unknown> }[],
+      authorizedTargets: readonly string[],
+    ) => readonly OutputDraft[];
   };
 }
 export interface ConversationRunResult {
@@ -774,8 +781,22 @@ export class AgentRuntime {
         requestId: input.requestId,
       };
       const usedActions = new Set<BuiltInAction>();
+      const usedActionObservations = new Map<BuiltInAction, ActionObservation>();
       active.assertActions = () => {
-        for (const action of usedActions) this.executor.assert(action, actionContext, mode);
+        for (const action of usedActions) {
+          const retainedCarrierObservation = input.terminalAction?.retainedCarrierActions?.includes(
+            action.description.name,
+          )
+            ? usedActionObservations.get(action)
+            : undefined;
+          this.executor.assert(
+            action,
+            actionContext,
+            mode,
+            undefined,
+            retainedCarrierObservation ? { retainedCarrierObservation } : undefined,
+          );
+        }
       };
       input.context.bindRun?.(actionContext);
       await this.emit(active, {
@@ -794,7 +815,7 @@ export class AgentRuntime {
         // 都看到它——模型只对**本轮已广告**的终结名调用才被接受（下方 terminalDecision 校验），
         // 但它的执行不经 ActionExecutor（它没有可执行体）：转成 final 草稿走输出校验/提交边界。
         const advertisedActions = input.terminalAction
-          ? [...availableActions, input.terminalAction.description]
+          ? [...availableActions, ...input.terminalAction.descriptions]
           : availableActions;
         input.context.configureActions?.(advertisedActions);
         // 规格 §10：本步决策的实际响应 schema 选择——投影（read）完成后现取并冻结一次，
@@ -955,17 +976,38 @@ export class AgentRuntime {
           await this.commitAndFinish(active, input, [], "no_output", { type: "no_output" });
           return { runId: active.runId, status: "no_output", outputs: [] };
         }
-        // 终结回复动作：模型一次 invoke speech.reply 直接给出正文——与 final 的 inline 草稿
-        // 同形状，走同一下面的输出/提交路径。不执行工具、不返回确认、不追加第二次调用。
-        // 只接受**本轮已广告**（availableActions 含其名）的终结名；未广告的调用不在这里被
-        // 截取，按普通 invoke 落到 ActionExecutor 的授权校验（未知动作即被拒）。
-        if (
-          decision.kind === "invoke" &&
-          input.terminalAction &&
-          advertisedActions.some((action) => action.name === input.terminalAction?.name)
-        ) {
-          const settledTerminal = this.terminalDecision(input.terminalAction, decision);
-          if (settledTerminal) decision = settledTerminal;
+        let outputOrigin: "final" | "terminal-composition" = "final";
+        if (decision.kind === "invoke" && input.terminalAction) {
+          const terminalNames = new Set(input.terminalAction.descriptions.map(({ name }) => name));
+          if (decision.calls.some(({ name }) => terminalNames.has(name))) {
+            if (decision.calls.some(({ name }) => !terminalNames.has(name)))
+              throw new AgentRuntimeError(
+                "AGENT_OUTPUT_INVALID",
+                "A terminal reply contribution cannot be mixed with other actions",
+              );
+            const names = decision.calls.map(({ name }) => name);
+            if (new Set(names).size !== names.length)
+              throw new AgentRuntimeError(
+                "AGENT_OUTPUT_INVALID",
+                "A terminal reply contribution may occur only once per action",
+              );
+            let drafts: readonly OutputDraft[];
+            try {
+              drafts = input.terminalAction.parse(decision.calls, input.authorizedTargets);
+            } catch {
+              throw new AgentRuntimeError(
+                "AGENT_OUTPUT_INVALID",
+                "Terminal reply contribution parameters are invalid",
+              );
+            }
+            if (drafts.length === 0)
+              throw new AgentRuntimeError(
+                "AGENT_OUTPUT_INVALID",
+                "A terminal reply action carried no output",
+              );
+            decision = { kind: "final", outputs: [...drafts] };
+            outputOrigin = "terminal-composition";
+          }
         }
         if (decision.kind === "invoke") {
           // 一批调用（0.4.0 P2）：先整体校验再执行——任何一条不可用就整批拒绝，
@@ -1038,7 +1080,7 @@ export class AgentRuntime {
             const result = settled.get(entry);
             if (!result)
               throw new AgentRuntimeError("AGENT_ACTION_UNAVAILABLE", "Action produced no result");
-            const observation = {
+            const observation: ActionObservation = {
               ...result,
               ...(entry.repeat
                 ? { repeatWarning: "同一个调用这是第 2 次：换个做法，不要原样重试" }
@@ -1052,6 +1094,7 @@ export class AgentRuntime {
               sources: uniqueSources([...result.sources]),
             };
             observations.push(observation);
+            usedActionObservations.set(entry.action, observation);
             await this.emit(active, {
               type: "action_result",
               name: entry.call.name,
@@ -1107,7 +1150,10 @@ export class AgentRuntime {
           }
           let outputId: string = randomUUID();
           try {
-            const reservation = await input.prepareOutput?.(draft, ordinal);
+            const reservation = await input.prepareOutput?.(draft, ordinal, {
+              origin: outputOrigin,
+              observations: [...observations],
+            });
             if (reservation && "blocked" in reservation) {
               slots[ordinal] = {
                 outputId,
@@ -1335,30 +1381,6 @@ export class AgentRuntime {
         }
       }
     }
-  }
-
-  /**
-   * 终结回复动作 → final 决策：整批只有这一个调用且是声明的终结动作时，把参数解析为 inline
-   * 草稿，作为 `final` 走既有输出路径；否则返回 undefined（按普通 invoke 处理）。含其它调用
-   * 或解析失败＝非法，显式抛错（该轮失败，不静默把正文丢掉）。
-   */
-  private terminalDecision(
-    terminal: NonNullable<ConversationInput["terminalAction"]>,
-    decision: Extract<AgentDecision, { kind: "invoke" }>,
-  ): Extract<AgentDecision, { kind: "final" }> | undefined {
-    if (!decision.calls.some((call) => call.name === terminal.name)) return undefined;
-    if (decision.calls.length > 1)
-      throw new AgentRuntimeError(
-        "AGENT_OUTPUT_INVALID",
-        "A terminal reply action must be the only call in its step",
-      );
-    const drafts = terminal.parse(decision.calls[0].arguments);
-    if (drafts.length === 0)
-      throw new AgentRuntimeError(
-        "AGENT_OUTPUT_INVALID",
-        "A terminal reply action carried no output",
-      );
-    return { kind: "final", outputs: [...drafts] };
   }
 
   /** 并行生成段里单个目标的一次模型调用；resolved 回写本目标的 sink。 */

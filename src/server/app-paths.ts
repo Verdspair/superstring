@@ -379,6 +379,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0063_qq_media_request_identity.sql",
     ),
+    qqSchemeStickerFrequencyMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0064_qq_scheme_sticker_frequency.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

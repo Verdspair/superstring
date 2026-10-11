@@ -205,6 +205,7 @@ describe("scheme identity", () => {
         "mention_task_limit",
         "ordinary_task_limit",
         "input_anti_spam_enabled",
+        "sticker_frequency",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -337,6 +338,7 @@ describe("scheme identity", () => {
       expect(schemeStickers(created)).toEqual({
         sticker_min_repeat_minutes: 10,
         sticker_recent_avoid_count: 5,
+        frequency: "medium",
       });
     } finally {
       h.business.close();
@@ -349,7 +351,11 @@ describe("scheme identity", () => {
       const created = createQqScheme(h.orm, { name: "默认方案" });
       const saved = updateQqScheme(h.orm, created.id, {
         name: "默认方案",
-        stickers: { sticker_min_repeat_minutes: 0, sticker_recent_avoid_count: 0 },
+        stickers: {
+          sticker_min_repeat_minutes: 0,
+          sticker_recent_avoid_count: 0,
+          frequency: "medium",
+        },
         expectedRevision: created.revision,
       });
       // 0 must survive as 0 on both columns: the group's "no limit" settings are values, so a
@@ -357,27 +363,50 @@ describe("scheme identity", () => {
       expect(schemeStickers(saved)).toEqual({
         sticker_min_repeat_minutes: 0,
         sticker_recent_avoid_count: 0,
+        frequency: "medium",
       });
       expect(saved.revision).toBe(2);
       const noop = updateQqScheme(h.orm, created.id, {
         name: "默认方案",
-        stickers: { sticker_min_repeat_minutes: 0, sticker_recent_avoid_count: 0 },
+        stickers: {
+          sticker_min_repeat_minutes: 0,
+          sticker_recent_avoid_count: 0,
+          frequency: "medium",
+        },
         expectedRevision: saved.revision,
       });
       expect(noop.revision).toBe(2);
+      const frequencyOnly = updateQqScheme(h.orm, created.id, {
+        name: "默认方案",
+        stickers: { ...schemeStickers(noop), frequency: "high" },
+        expectedRevision: noop.revision,
+      });
+      expect(schemeStickers(frequencyOnly).frequency).toBe("high");
+      expect(frequencyOnly.revision).toBe(3);
+      const unchangedFrequency = updateQqScheme(h.orm, created.id, {
+        name: "默认方案",
+        stickers: { ...schemeStickers(frequencyOnly) },
+        expectedRevision: frequencyOnly.revision,
+      });
+      expect(unchangedFrequency.revision).toBe(3);
       // Omitting the group leaves it alone rather than resetting it to the project defaults.
       const renamed = updateQqScheme(h.orm, created.id, {
         name: "改个名",
-        expectedRevision: noop.revision,
+        expectedRevision: unchangedFrequency.revision,
       });
       expect(schemeStickers(renamed)).toEqual({
         sticker_min_repeat_minutes: 0,
         sticker_recent_avoid_count: 0,
+        frequency: "high",
       });
       expect(() =>
         updateQqScheme(h.orm, created.id, {
           name: "改个名",
-          stickers: { sticker_min_repeat_minutes: 1441, sticker_recent_avoid_count: 5 },
+          stickers: {
+            sticker_min_repeat_minutes: 1441,
+            sticker_recent_avoid_count: 5,
+            frequency: "high",
+          },
           expectedRevision: renamed.revision,
         }),
       ).toThrow(TypeError);

@@ -931,15 +931,27 @@ export class BotContextSource {
     return [...new Set([...bySpeaker.values()].flat())];
   }
   get sources(): SourceRef[] {
-    return uniqueSources(
-      [...this.views.values()]
-        .flatMap((view) => view.material.sources ?? [])
-        .concat(
-          this.observations.flatMap((observation) => observation.sources),
-          this.pendingPlan?.sources ?? [],
-          this.batchIntents?.sources ?? [],
-        ),
-    );
+    return uniqueSources([
+      ...[...this.views.values()].flatMap((view) => view.material.sources ?? []),
+      ...this.observations.flatMap((observation) => observation.sources),
+      ...(this.pendingPlan?.sources ?? []),
+      ...(this.batchIntents?.sources ?? []),
+    ]);
+  }
+  /** QQ common-source occurrences, kept separate from sticker.search carrier provenance. */
+  get commonSources(): SourceRef[] {
+    return [
+      ...[...this.views.values()].flatMap((view) => [
+        ...(view.material.sources ?? []),
+        ...(view.material.evidence ?? []).flatMap((entry) => entry.sources),
+        ...(view.material.summaries ?? []).flatMap((entry) => entry.sources),
+      ]),
+      ...this.observations
+        .filter((observation) => observation.name !== "sticker.search")
+        .flatMap((observation) => observation.sources),
+      ...(this.pendingPlan?.sources ?? []),
+      ...(this.batchIntents?.sources ?? []),
+    ];
   }
   /** Host-owned, source-bound prior work, never a system instruction or permission to send. */
   setPendingPlan(value: unknown, sources: readonly SourceRef[]): void {
@@ -1523,7 +1535,26 @@ ${intent.trim()}`,
   }
   assertCurrent(): void {
     this.options.assertCurrent();
-    this.assertSources(this.sources, false);
+    assertBotContextSources(this.options, this.owner, this.commonSources);
+  }
+  /** Recheck a rendered decision projection with material roles still distinct from action observations. */
+  assertRenderedSources(
+    sources: readonly SourceRef[],
+    additionalCommonSources: readonly SourceRef[] = [],
+  ): void {
+    this.options.assertCurrent();
+    const key = (source: SourceRef) => JSON.stringify([source.kind, source.id, source.revision]);
+    const common = new Set([...this.commonSources, ...additionalCommonSources].map(key));
+    const carriers = new Set(
+      this.observations
+        .filter((observation) => observation.name === "sticker.search")
+        .flatMap((observation) => observation.sources.map(key)),
+    );
+    assertBotContextSources(
+      this.options,
+      this.owner,
+      sources.filter((source) => !carriers.has(key(source)) || common.has(key(source))),
+    );
   }
   /** P2 修复：真实调用 owner（ActionContext.owner，conversation 域）——registry 登记/查询同 owner。 */
   private runOwner?: RunOwner;

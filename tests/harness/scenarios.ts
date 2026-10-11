@@ -648,7 +648,7 @@ export async function knowledgeRevocation(): Promise<ScenarioRun> {
 /**
  * 真纯图负例（wire 无 text 段，receive text:null）：同秒同人两条纯图（不同 message id →
  * 不同 eventKey/fileRef，身份稳定性由真实 source 裁定，夹具不猜时间），批评分后回复任务
- * 逐张读图——一失败一成功，模型经 terminal speech.reply 尝试发布——失败图必须在提交处
+ * 逐张读图——一失败一成功，模型经新 QQ reply.text 能力尝试发布——失败图必须在提交处
  * 挡下：整轮 MEDIA_READ_FAILED、零出站、零发送、恰两次视觉调用。
  * 不入 ALL_SCENARIOS（基线记录器消费面不变），只由 owned 断言文件接线。
  */
@@ -678,8 +678,8 @@ export async function mediaReadFailureImageOnly(): Promise<ScenarioRun> {
       const next = listed[described.length];
       if (next !== undefined) return [decideInvoke("media.describe", { id: next })];
       return [
-        decideInvoke("speech.reply", {
-          outputs: [{ kind: "inline", targetId: "20002", text: "看到了图", stickerIds: [] }],
+        decideInvoke("reply.text", {
+          outputs: [{ targetId: "20002", kind: "inline", text: "看到了图" }],
         }),
       ];
     }

@@ -121,6 +121,7 @@ namespace Superstring.Setup
         "app/resources/migrations/versions/0061_qq_task_ready_at.sql",
         "app/resources/migrations/versions/0062_qq_media_spec_unification.sql",
         "app/resources/migrations/versions/0063_qq_media_request_identity.sql",
+        "app/resources/migrations/versions/0064_qq_scheme_sticker_frequency.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

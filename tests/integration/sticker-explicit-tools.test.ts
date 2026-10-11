@@ -220,11 +220,21 @@ describe("explicit sticker tools without an auto selector", () => {
         complete: async (request) => {
           calls++;
           if (calls === 1) return invokeSearch;
-          return decision("final", {
-            kind: "generate",
-            targetId: "20002",
-            instructions: "answer",
-            stickerIds: [stickerObservation(request).items[0].id],
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: {
+                  outputs: [{ targetId: "20002", kind: "generate", instructions: "answer" }],
+                },
+              },
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
           });
         },
         async *streamText() {
@@ -246,7 +256,12 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(selectorRuns(h)).toBe(0);
     expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([
       { text: "你好", mentions: [] },
-      { stickerId: id },
+      expect.objectContaining({
+        stickerId: id,
+        stickerSources: expect.arrayContaining([
+          expect.objectContaining({ kind: "qq_sticker", id }),
+        ]),
+      }),
     ]);
   });
   it("sends a text-only reply for an explicit empty choice in one decision with no search", async () => {
@@ -273,32 +288,131 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(selectorRuns(h)).toBe(0);
     expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "不用表情", mentions: [] }]);
   });
-  it("asks once more with bounded feedback when a draft with candidates omits the choice", async () => {
-    let calls = 0,
-      generations = 0;
+  it("treats a reply.text contribution as an explicit text-only choice without sticker search or correction", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async () => {
+          calls++;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "只发文字" }] },
+              },
+            ],
+          });
+        },
+      },
+      { stickersAvailable: true },
+    );
+    addSticker(h);
+    h.receive("1");
+    expect((await activate(h)).status).toBe("completed");
+    expect(calls).toBe(1);
+    expect(h.requests).toHaveLength(1);
+    expect(h.requests[0]?.tools?.map((tool) => tool.name)).toContain("reply.text");
+    expect(JSON.stringify(h.requests[0]?.messages)).not.toContain("STICKER_SELECTION_REQUIRED");
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "只发文字", mentions: [] }]);
+  });
+  it("combines reply.text and reply.sticker for one target in a single intent", async () => {
+    let calls = 0;
     const h = setup(
       {
         complete: async (request) => {
           calls++;
-          if (calls === 1)
-            return decision("final", {
-              kind: "generate",
-              targetId: "20002",
-              instructions: "answer",
-            });
-          expect(JSON.stringify(request.messages)).toContain("output_feedback");
-          expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_REQUIRED");
-          expect(generations).toBe(0);
-          return decision("final", {
-            kind: "inline",
-            targetId: "20002",
-            text: "好的",
-            stickerIds: [],
+          if (calls === 1) return invokeSearch;
+          if (calls > 3)
+            throw new Error(
+              `HOST_DEBUG_CALLS=${calls}; observations=${JSON.stringify(modelData(request, "action_observation"))}`,
+            );
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "你好" }] },
+              },
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
           });
         },
-        async *streamText() {
-          generations++;
-          yield "should not generate";
+      },
+      { stickersAvailable: true },
+    );
+    const id = addSticker(h);
+    h.receive("1", "回个招呼");
+    expect((await activate(h)).status).toBe("completed");
+    expect(calls).toBe(2);
+    const intents = h.outbox.list({});
+    expect(intents).toHaveLength(1);
+    expect(payloads(h, intents[0]!.id)).toEqual([
+      { text: "你好", mentions: [] },
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
+    ]);
+    const storedTarget = JSON.parse(h.outbox.row(intents[0]!.id)!.target) as {
+      sources: { kind: string; id: string }[];
+    };
+    expect(storedTarget.sources).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "qq_sticker", id })]),
+    );
+  });
+  it("rejects a repeated sticker ID across distinct authorized targets as one invalid batch", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls === 1) return invokeSearch;
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.sticker",
+                arguments: {
+                  outputs: [
+                    { targetId: "20002", stickerId: id },
+                    { targetId: "20003", stickerId: id },
+                  ],
+                },
+              },
+            ],
+          });
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const id = addSticker(h);
+    h.receive("1", "wave to both");
+    h.db.query("UPDATE qq_schemes SET split_reply_by_speaker=1 WHERE id=?").run(h.scheme.id);
+    await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
+    expect(calls).toBe(2);
+    expect(h.outbox.list({})).toEqual([]);
+    expect(h.db.query("SELECT COUNT(*) AS n FROM outbound_intents").get()).toEqual({ n: 0 });
+    expect(id).toBeTruthy();
+  });
+
+  it("does not search or request an explicit no-sticker declaration for a text-only reply", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async () => {
+          calls++;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "好的" }] },
+              },
+            ],
+          });
         },
       },
       { stickersAvailable: true },
@@ -306,19 +420,16 @@ describe("explicit sticker tools without an auto selector", () => {
     addSticker(h);
     h.receive("1", "在吗");
     expect((await activate(h)).status).toBe("completed");
-    expect(calls).toBe(2);
-    expect(generations).toBe(0);
-    expect(h.requests).toHaveLength(2);
+    expect(calls).toBe(1);
+    expect(h.requests).toHaveLength(1);
     expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "好的", mentions: [] }]);
   });
-  it("bounds repeated omission at the configured step budget instead of looping forever", async () => {
+  it("does not repeat an omitted sticker choice; a plain final without sticker ID remains text", async () => {
     let calls = 0;
     const h = setup(
       {
-        complete: async (request) => {
+        complete: async () => {
           calls++;
-          if (calls > 1)
-            expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_REQUIRED");
           return decision("final", { kind: "inline", targetId: "20002", text: "你好" });
         },
       },
@@ -326,32 +437,39 @@ describe("explicit sticker tools without an auto selector", () => {
     );
     addSticker(h);
     h.receive("1");
-    await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_STEP_LIMIT" });
-    expect(calls).toBe(12);
-    expect(h.outbox.list({})).toEqual([]);
+    expect((await activate(h)).status).toBe("completed");
+    expect(calls).toBe(1);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "你好", mentions: [] }]);
   });
-  it("refuses a guessed id until this run's search discloses one", async () => {
+  it("refuses a guessed sticker tool contribution until this run's search discloses one", async () => {
     let calls = 0;
     const h = setup(
       {
         complete: async (request) => {
           calls++;
           if (calls === 1)
-            return decision("final", {
-              kind: "inline",
-              targetId: "20002",
-              text: "",
-              stickerIds: ["00000000-0000-4000-8000-000000000000"],
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: "not-disclosed" }] },
+                },
+              ],
             });
           if (calls === 2) {
             expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_UNAVAILABLE");
             return invokeSearch;
           }
-          return decision("final", {
-            kind: "inline",
-            targetId: "20002",
-            text: "",
-            stickerIds: [stickerObservation(request).items[0].id],
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
           });
         },
       },
@@ -361,42 +479,57 @@ describe("explicit sticker tools without an auto selector", () => {
     h.receive("1", "来个表情");
     expect((await activate(h)).status).toBe("completed");
     expect(calls).toBe(3);
-    expect(selectorRuns(h)).toBe(0);
-    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ stickerId: id }]);
+    expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
+    ]);
   });
-  it("refuses an id disclosed by an earlier run until this run searches on its own", async () => {
-    let calls = 0,
-      disclosed = "";
+  it("refuses a sticker ID disclosed by an earlier run", async () => {
+    let calls = 0;
+    let disclosed = "";
     const h = setup(
       {
         complete: async (request) => {
           calls++;
           if (calls === 1) return invokeSearch;
           if (calls === 2) {
-            disclosed = stickerObservation(request).items[0].id;
-            return decision("final", {
-              kind: "inline",
-              targetId: "20002",
-              text: "第一轮",
-              stickerIds: [],
+            disclosed = stickerObservation(request).items[0]!.id;
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.text",
+                  arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "第一轮" }] },
+                },
+              ],
             });
           }
           if (calls === 3)
-            return decision("final", {
-              kind: "inline",
-              targetId: "20002",
-              text: "第二轮",
-              stickerIds: [disclosed],
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: disclosed }] },
+                },
+              ],
             });
           if (calls === 4) {
             expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_UNAVAILABLE");
             return invokeSearch;
           }
-          return decision("final", {
-            kind: "inline",
-            targetId: "20002",
-            text: "第二轮",
-            stickerIds: [stickerObservation(request).items[0].id],
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "第二轮" }] },
+              },
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
           });
         },
       },
@@ -414,10 +547,10 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(payloads(h, intents[0]!.id)).toEqual([{ text: "第一轮", mentions: [] }]);
     expect(payloads(h, intents[1]!.id)).toEqual([
       { text: "第二轮", mentions: [] },
-      { stickerId: id },
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
     ]);
   });
-  it("refuses an id that fell into the repeat interval before the pick was staged", async () => {
+  it("keeps text when a searched sticker becomes unusable before preparation", async () => {
     let calls = 0;
     const h = setup(
       {
@@ -425,8 +558,7 @@ describe("explicit sticker tools without an auto selector", () => {
           calls++;
           if (calls === 1) return invokeSearch;
           if (calls === 2) {
-            const id = stickerObservation(request).items[0].id;
-            // 搜索之后、提交之前，这张图在会话里“刚发过”：最短重复间隔把它移出当前目录。
+            const id = stickerObservation(request).items[0]!.id;
             recordQqSend(h.orm, {
               scope: {
                 kind: "qq",
@@ -447,19 +579,29 @@ describe("explicit sticker tools without an auto selector", () => {
                 },
               ],
             });
-            return decision("final", {
-              kind: "inline",
-              targetId: "20002",
-              text: "",
-              stickerIds: [id],
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.text",
+                  arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "那算了" }] },
+                },
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+                },
+              ],
             });
           }
           expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_UNAVAILABLE");
-          return decision("final", {
-            kind: "inline",
-            targetId: "20002",
-            text: "那算了",
-            stickerIds: [],
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "那算了" }] },
+              },
+            ],
           });
         },
       },
@@ -472,18 +614,77 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "那算了", mentions: [] }]);
     expect(JSON.stringify(h.outbox.list({}))).not.toContain(id);
   });
-  it("supports an explicit sticker-only reply", async () => {
+  it("settles sticker-only terminal output as no_output when the global sticker switch closes before staging", async () => {
+    let calls = 0;
+    let enabled = true;
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls === 1) return invokeSearch;
+          const id = stickerObservation(request).items[0]!.id;
+          enabled = false;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
+          });
+        },
+      },
+      { stickersAvailable: true, stickersEnabled: () => enabled },
+    );
+    addSticker(h);
+    h.receive("1", "只发表情");
+    expect((await activate(h)).status).toBe("no_output");
+    expect(calls).toBe(2);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+  it("keeps ordinary empty output under the existing step-budget failure path", async () => {
+    let calls = 0;
+    const h = setup({
+      complete: async () => {
+        calls++;
+        return decision("final", { kind: "inline", targetId: "20002", text: "", stickerIds: [] });
+      },
+    });
+    h.receive("1");
+    await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_STEP_LIMIT" });
+    expect(calls).toBe(12);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+  it("rejects sticker IDs from a plain QQ final decision before preparation", async () => {
+    const h = setup(
+      {
+        complete: async () =>
+          decision("final", { kind: "inline", targetId: "20002", text: "bad", stickerIds: ["x"] }),
+      },
+      { stickersAvailable: true },
+    );
+    addSticker(h);
+    h.receive("1");
+    await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
+    expect(h.outbox.list({})).toEqual([]);
+  });
+  it("supports a sticker-only reply through the trusted contribution tool", async () => {
     let calls = 0;
     const h = setup(
       {
         complete: async (request) => {
           calls++;
           if (calls === 1) return invokeSearch;
-          return decision("final", {
-            kind: "inline",
-            targetId: "20002",
-            text: "",
-            stickerIds: [stickerObservation(request).items[0].id],
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
           });
         },
       },
@@ -495,7 +696,9 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(calls).toBe(2);
     const intents = h.outbox.list({});
     expect(intents).toHaveLength(1);
-    expect(payloads(h, intents[0]!.id)).toEqual([{ stickerId: id }]);
+    expect(payloads(h, intents[0]!.id)).toEqual([
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
+    ]);
     expect(selectorRuns(h)).toBe(0);
   });
   it("normalizes an omitted choice and hides search when the sticker module is off", async () => {
@@ -506,8 +709,15 @@ describe("explicit sticker tools without an auto selector", () => {
         complete: async (request) => {
           calls++;
           tools.push((request.tools ?? []).map((tool) => tool.name));
-          expect(JSON.stringify(request.messages)).toContain("disabled");
-          return decision("final", { kind: "inline", targetId: "20002", text: "普通回复" });
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "普通回复" }] },
+              },
+            ],
+          });
         },
       },
       { stickersAvailable: true, stickersEnabled: () => false },
@@ -516,6 +726,8 @@ describe("explicit sticker tools without an auto selector", () => {
     h.receive("1");
     expect((await activate(h)).status).toBe("completed");
     expect(calls).toBe(1);
+    expect(tools[0]).toEqual(expect.arrayContaining(["reply.text"]));
+    expect(tools[0]).not.toContain("reply.sticker");
     expect(tools[0]).not.toContain("sticker.search");
     expect(selectorRuns(h)).toBe(0);
     expect(payloads(h, h.outbox.list({})[0]!.id)).toEqual([{ text: "普通回复", mentions: [] }]);

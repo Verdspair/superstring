@@ -896,7 +896,8 @@ describe("raw wire 保留（id58 补块）", () => {
         "media.describe",
         "media.read",
         "sticker.search",
-        "speech.reply",
+        "reply.text",
+        "reply.sticker",
       ]);
       // schema 逐字：三次调用（判断/决策/生成）全带结构化响应 schema。
       expect((h.model?.calls ?? []).map((call) => call.schema)).toEqual([true, true, true]);

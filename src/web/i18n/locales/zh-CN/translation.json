@@ -2133,5 +2133,14 @@
   "schemes.bindings.taskLimits.title": "并行任务上限",
   "schemes.bindings.taskLimits.hint": "覆盖方案的并行任务上限；留空表示跟随方案配置。",
   "schemes.bindings.inputAntiSpam.title": "输入防刷屏",
-  "schemes.bindings.inputAntiSpam.hint": "覆盖方案的输入防刷屏开关；选择「跟随方案」以使用方案默认。"
+  "schemes.bindings.inputAntiSpam.hint": "覆盖方案的输入防刷屏开关；选择「跟随方案」以使用方案默认。",
+  "connections.stickerFrequency": "表情发送倾向",
+  "connections.stickerFrequencyLow": "较少使用",
+  "connections.stickerFrequencyLowHint": "文字和表情同样合适时倾向文字，避免装饰性表情；纯表情仍可在最合适时使用",
+  "connections.stickerFrequencyMedium": "平衡选择",
+  "connections.stickerFrequencyMediumHint": "根据当前语境平衡选择文字、表情或图文组合，不刻意凑数",
+  "connections.stickerFrequencyHigh": "积极考虑",
+  "connections.stickerFrequencyHighHint": "更积极考虑合适的表情或图文组合，不适合时不强加",
+  "capabilities.labels.replyText": "QQ 文字回复",
+  "capabilities.labels.replySticker": "QQ 表情回复"
 }

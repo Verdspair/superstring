@@ -20,13 +20,13 @@ import type { QqOutputPlan } from "../../../src/server/services/qq-output-plan";
 import {
   planQqPreparedReply,
   type QqStickerStage,
-  selectQqSticker,
 } from "../../../src/server/services/qq-sticker-runner";
 import { type QqJudgementRun, type QqReplyOpening, runQqJudgement } from "./qq-judgement-runner";
 import { recomputeQqReply } from "./qq-recompute-runner";
 import { generateQqTextReply, type QqPendingReview } from "./qq-reply-runner";
 import { pendingQqReview, reviewQqSupplement } from "./qq-review-runner";
 import { checkQqTextPreflight } from "./qq-send-preflight";
+import { selectQqSticker } from "./qq-sticker-selector";
 
 const Input = z.strictObject({
   bindingId: z.uuid(),

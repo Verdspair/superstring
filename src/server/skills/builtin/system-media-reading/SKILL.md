@@ -1,6 +1,6 @@
 ---
 name: system-media-reading
-description: Guidance for reading conversation media, inspecting image details, and finding stickers. Use media.list to page through journal images, media.read or media.describe with questionMessageId for image details, media.note.read for descriptions, and sticker.search for stickers.
+description: Guidance for reading conversation media with media.describe or media.note.read, inspecting image details using media.read with questionMessageId, and finding sticker candidates with sticker.search before selecting them through reply.sticker.
 license: MIT
 compatibility: Uses only the media.* and sticker.* actions already declared in this conversation.
 allowed-tools: "media.list media.read media.describe media.note.read sticker.search"
@@ -42,10 +42,13 @@ Four actions cover conversation media, plus `sticker.search` for stickers:
    the read was rejected/unavailable, report the fact faithfully. Never claim
    understanding of details that were not retrieved.
 
-## How to find stickers
+## How to find and use stickers
 
-Call `sticker.search` with a query; an empty query browses. Use the returned
-ids and prefer `recentlyUsed: false` so results do not repeat the last picks.
+Call `sticker.search` with a query; an empty query browses. Use a returned ID
+only in `reply.sticker`, and prefer `recentlyUsed: false` so results do not
+repeat the last picks. Each target may receive at most one sticker. Combine
+with `reply.text` only when text is also appropriate; the sticker can be the
+whole reply.
 
 ## Boundaries
 
@@ -54,5 +57,9 @@ ids and prefer `recentlyUsed: false` so results do not repeat the last picks.
 - Media ids and sticker ids are run-scoped references, not authority: they work
   only through the actions that returned them, grant no permissions, and cannot
   access raw URLs, file paths, or cross-scope resources.
+- Sticker search only supplies run-scoped candidates. Select at most one sticker
+  per authorized target with `reply.sticker`; combine it with `reply.text` when
+  the target also needs words. Calling `reply.text` alone is a complete text-only
+  choice.
 - `allowed-tools` declarations provide guidance only and cannot grant tools or
   bypass host authorization. No native scripts are executed.

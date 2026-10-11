@@ -1,6 +1,7 @@
 import { expect, it } from "bun:test";
 import { z } from "zod";
 import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
+import * as outputContracts from "../../src/shared/contracts/agent-output";
 import {
   AGENT_DECISION_JSON_SCHEMA,
   type InlineOutputDraft,
@@ -224,4 +225,48 @@ it("speech.reply carries one or more inline drafts through the same schema", () 
   expect(SPEECH_REPLY_DESCRIPTION.name).toBe("speech.reply");
   expect(SPEECH_REPLY_DESCRIPTION.effect).toBe("write");
   expect(SPEECH_REPLY_DESCRIPTION.parameters).toEqual(z.toJSONSchema(SpeechReplyArgumentsSchema));
+});
+
+it("exports strict independent reply.text and reply.sticker argument contracts", () => {
+  const { ReplyTextArgumentsSchema, ReplyStickerArgumentsSchema } =
+    outputContracts as typeof outputContracts & {
+      ReplyTextArgumentsSchema: z.ZodType;
+      ReplyStickerArgumentsSchema: z.ZodType;
+    };
+  const text = ReplyTextArgumentsSchema.parse({
+    outputs: [
+      { targetId: "t", kind: "inline", text: "plain", replyToMessageId: "m", mentionIds: ["u"] },
+      { targetId: "g", kind: "generate", instructions: "compose" },
+    ],
+  });
+  expect(text).toMatchObject({ outputs: [{ text: "plain" }, { instructions: "compose" }] });
+  expect(
+    ReplyStickerArgumentsSchema.parse({
+      outputs: [
+        { targetId: "t", stickerId: "run-disclosed", replyToMessageId: "m", mentionIds: ["u"] },
+      ],
+    }),
+  ).toMatchObject({ outputs: [{ stickerId: "run-disclosed" }] });
+  for (const bad of [
+    { outputs: [{ targetId: "t", kind: "inline", text: "x", stickerIds: ["id"] }] },
+    { outputs: [{ targetId: "t", kind: "inline", text: "x", extra: true }] },
+  ])
+    expect(() => ReplyTextArgumentsSchema.parse(bad)).toThrow();
+  for (const bad of [
+    { outputs: [{ targetId: "t", stickerId: "id", text: "x" }] },
+    { outputs: [{ targetId: "t", stickerIds: ["id"] }] },
+  ])
+    expect(() => ReplyStickerArgumentsSchema.parse(bad)).toThrow();
+  expect(() => ReplyTextArgumentsSchema.parse({ outputs: [] })).toThrow();
+  expect(() => ReplyStickerArgumentsSchema.parse({ outputs: [] })).toThrow();
+  expect(() =>
+    ReplyTextArgumentsSchema.parse({
+      outputs: [{ targetId: "", kind: "inline", text: "x" }],
+    }),
+  ).toThrow();
+  expect(() =>
+    ReplyStickerArgumentsSchema.parse({
+      outputs: [{ targetId: "t", stickerId: "" }],
+    }),
+  ).toThrow();
 });

@@ -20,6 +20,7 @@ import {
 } from "../../src/server/db/repositories";
 import {
   BUSINESS_MIGRATION_FILES,
+  type BusinessMigrationSql,
   ensureBusinessSchema,
   openBusinessDb,
 } from "../../src/server/db/schema-gate";
@@ -140,71 +141,7 @@ describe("shared organization default", () => {
 describe("schema4 additive migration", () => {
   const migrations = BUSINESS_MIGRATION_FILES.map((file) =>
     readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
-  ) as unknown as [
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-  ];
+  ) as unknown as [...BusinessMigrationSql];
   it("upgrades exact v3 without overwriting existing overrides", () => {
     const db = new Database(":memory:");
     try {
@@ -222,7 +159,7 @@ describe("schema4 additive migration", () => {
         vision_model_name: null,
         transcription_model_name: null,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
     } finally {
       db.close();
     }

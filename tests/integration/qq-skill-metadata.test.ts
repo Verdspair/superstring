@@ -64,10 +64,21 @@ describe("skill metadata discovery", () => {
       )
     ).value as { status: string; kind: string; instructions: string; bodyChars: number };
     expect(value).toMatchObject({ status: "ok", kind: "task_guidance" });
-    expect(value.instructions).toContain("End the turn with one `speech.reply` call");
+    expect(value.instructions).toContain(
+      "Choose whether to reply with text, a sticker, both, or no output",
+    );
+    expect(value.instructions).toContain(
+      "Use `reply.text` for each authorized target that needs text",
+    );
+    expect(value.instructions).toContain("Use `reply.sticker` only for a");
     expect(value.bodyChars).toBe([...value.instructions].length);
     const description = actionNamed(actions, "skill.catalog").description.description;
-    expect(description).not.toContain("End the turn with one `speech.reply` call");
+    expect(description).not.toContain(
+      "Choose whether to reply with text, a sticker, both, or no output",
+    );
+    expect(description).not.toContain(
+      "Use `reply.text` for each authorized target that needs text",
+    );
   });
 
   it("stops advertising skill actions when the skills module is disabled", () => {

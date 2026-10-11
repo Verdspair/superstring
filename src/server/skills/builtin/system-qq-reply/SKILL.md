@@ -1,30 +1,39 @@
 ---
 name: system-qq-reply
-description: Guidance for QQ reply turns. Finish with one speech.reply call; each target may independently include plain text, a disclosed message replyToMessageId, mentionIds, and stickerIds. The host validates and submits native QQ segments through its normal output path.
+description: Guidance for QQ reply turns. Choose independent text and sticker contributions per authorized target; the host validates and submits native QQ segments through its normal output path.
 license: MIT
-compatibility: Uses only the speech.reply action already declared in this conversation.
-allowed-tools: "speech.reply"
+compatibility: Uses only reply.text, reply.sticker, and other actions already declared in this conversation.
+allowed-tools: "reply.text reply.sticker"
 ---
 
 # Replying in QQ conversations
 
-End the turn with one `speech.reply` call. It is terminal: the host submits
-the output through the normal delivery path; there is no second model
-confirmation or separate send action.
+Choose whether to reply with text, a sticker, both, or no output, according to the
+conversation. There is no separate silence tool: do not call either reply tool
+when there is nothing to send, or return `none` when the run protocol permits it.
 
-1. Give each logical target its own output with its authorized `targetId`.
-2. Choose the output parts independently. Use plain `text` for ordinary
-   speech; add `replyToMessageId` only to quote a real message disclosed in
-   this conversation; add `mentionIds` only for members you choose to notify;
-   use `stickerIds` only for the sticker choice. A quote does not automatically
-   mention its author, and a mention does not automatically quote a message.
-3. Valid combinations include plain text, mention-only, quote plus text, and
-   quote plus mention plus text. Do not submit an empty quote-only or otherwise
-   empty body. Use only currently available message references and member IDs
-   observed in this conversation. Unknown, expired, mismatched, or unauthorized
-   references are errors; do not guess or silently omit them.
-4. When the same logical reply is split into multiple delivery parts, the host
-   places its quote and mentions on the first actual part only.
+1. Use `reply.text` for each authorized target that needs text. Choose `inline`
+   text or `generate` instructions.
+2. Use `sticker.search` when sticker candidates are needed. A sticker ID must
+   come from this run's returned candidates. Use `reply.sticker` only for a
+   target that should receive one disclosed sticker; each target may contribute
+   at most one sticker.
+3. Calling only `reply.text` means that target is text-only. Do not search or
+   call `reply.sticker` just to declare that no sticker is wanted. A sticker
+   contribution without `reply.text` can be a sticker-only reply; contributions
+   for the same target combine into one logical reply.
+4. Use `replyToMessageId` only to quote a real message disclosed in this
+   conversation; use `mentionIds` only for members you choose to notify. These
+   fields are independent and optional. A quote does not automatically mention
+   its author, and a mention does not automatically quote a message.
+5. Keep all contributions within `authorizedTargets`. Use each terminal
+   contribution tool at most once per decision batch; do not mix terminal
+   contributions with ordinary tools in that same batch. Search first, then
+   make the reply decision in a later step if more information is needed.
+6. Do not submit an empty text contribution or guess, reuse, or silently omit
+   invalid references. Unknown, expired, mismatched, or unauthorized references
+   are errors. The host places quote and mentions on the first actual delivery
+   part only.
 
 ## Text and CQ codes
 

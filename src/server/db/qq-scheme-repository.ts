@@ -464,18 +464,21 @@ export function schemeStickers(row: QqSchemeRow): QqSchemeStickers {
   return parseQqSchemeStickers({
     sticker_min_repeat_minutes: row.stickerMinRepeatMinutes,
     sticker_recent_avoid_count: row.stickerRecentAvoidCount,
+    frequency: row.stickerFrequency,
   });
 }
 function stickerColumns(value: QqSchemeStickers) {
   return {
     stickerMinRepeatMinutes: value.sticker_min_repeat_minutes,
     stickerRecentAvoidCount: value.sticker_recent_avoid_count,
+    stickerFrequency: value.frequency,
   };
 }
 function sameStickers(left: QqSchemeStickers, right: QqSchemeStickers): boolean {
   return (
     left.sticker_min_repeat_minutes === right.sticker_min_repeat_minutes &&
-    left.sticker_recent_avoid_count === right.sticker_recent_avoid_count
+    left.sticker_recent_avoid_count === right.sticker_recent_avoid_count &&
+    left.frequency === right.frequency
   );
 }
 

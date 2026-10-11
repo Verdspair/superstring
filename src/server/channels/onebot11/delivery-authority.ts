@@ -69,12 +69,6 @@ export function qqDeliveryAuthorize(deps: DeliveryAuthorityDeps) {
       userId: DEFAULT_USER_ID,
       agentId: target.agentId,
     };
-    // 本群停用能力即时生效：停用「表情」后，本次投递里的素材部件不再放行；纯文字部分照旧。
-    if (
-      intent.parts.some((part) => part.kind === "sticker") &&
-      !guard.allowed(bindingOwner, "stickers")
-    )
-      return false;
     return (target.sources ?? []).every((source) => {
       // 本群能力引用以 guard 为准：它判定的结果不得被任何外部解析器翻回可用（撤权不可覆盖）。
       const access = guard.sourceAccess(source, bindingOwner);

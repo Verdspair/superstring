@@ -1,4 +1,5 @@
 import type { Delivery } from "../../shared/contracts/conversation";
+import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ConversationEventRepository } from "../db/conversation-event-repository";
 import type { OutboundIntentRepository, OutboundTarget } from "../db/outbound-intent-repository";
 import { confirmQqOutboundPart } from "../db/qq-message-repository";
@@ -70,7 +71,12 @@ export class OutboundDelivery {
       journal: ConversationEventRepository;
       port: QqSendPort;
       stickerFile: QqStickerFileReference;
-      stickerAvailable?: (stickerId: string, target: OutboundTarget, at: string) => boolean;
+      stickerAvailable?: (
+        stickerId: string,
+        target: OutboundTarget,
+        at: string,
+        stickerSources?: readonly SourceRef[],
+      ) => boolean;
       authorize: (target: OutboundTarget, delivery: Delivery) => boolean;
       onStale?: (delivery: Delivery) => void;
       now?: () => string;
@@ -335,14 +341,19 @@ export class OutboundDelivery {
             ),
           });
         } else {
-          const file =
-            this.options.stickerAvailable?.(claim.payload.stickerId, target, this.now()) === false
-              ? null
-              : this.options.stickerFile(claim.payload.stickerId);
-          if (!file) {
+          const payload = claim.payload;
+          const file = this.options.stickerFile(payload.stickerId);
+          const allowed =
+            file !== null &&
+            this.options.stickerAvailable?.(
+              payload.stickerId,
+              target,
+              this.now(),
+              payload.stickerSources,
+            ) !== false;
+          if (!file || !allowed) {
             result = { kind: "not_sent", reason: "invalid_request" };
           } else {
-            const payload = claim.payload;
             const firstPart = claim.part.ordinal === 0;
             result = await this.options.port.send({
               kind: target.conversationKind,

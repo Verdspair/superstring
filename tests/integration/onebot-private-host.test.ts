@@ -23,6 +23,7 @@ import {
   createQqStickerCollection,
   editQqSticker,
   importQqSticker,
+  readQqStickerAssetRow,
   setQqStickerEnabled,
 } from "../../src/server/db/qq-sticker-repository";
 import {
@@ -57,6 +58,7 @@ function setup(
   model?: Partial<ModelPort>,
   options: {
     stickersAvailable?: boolean;
+    stickersEnabled?: () => boolean;
     onDiagnostic?: ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"];
     enqueueCompression?: ConstructorParameters<typeof OneBotHost>[0]["enqueueCompression"];
     externalActions?: ConstructorParameters<typeof OneBotHost>[0]["externalActions"];
@@ -131,6 +133,7 @@ function setup(
     agentRuntime: runtime,
     modules: options.modules,
     stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
+    stickersEnabled: options.stickersEnabled,
     onDiagnostic: options.onDiagnostic,
     enqueueCompression: options.enqueueCompression,
     externalActions: options.externalActions,
@@ -801,15 +804,19 @@ describe("private feature preservation", () => {
               name: "sticker.search",
               arguments: { query: "wave" },
             });
-          // 空正文仅发图：显式 stickerIds 必须来自本轮 sticker.search 实际披露的候选。
+          const id = stickerObservation(request).items[0]!.id;
           return JSON.stringify({
-            kind: "final",
-            outputs: [
+            kind: "invoke",
+            calls: [
               {
-                kind: "generate",
-                targetId: "20002",
-                instructions: "answer",
-                stickerIds: [stickerObservation(request).items[0].id],
+                name: "reply.text",
+                arguments: {
+                  outputs: [{ targetId: "20002", kind: "generate", instructions: "answer" }],
+                },
+              },
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
               },
             ],
           });
@@ -828,7 +835,7 @@ describe("private feature preservation", () => {
     expect(result.status).toBe("completed");
     expect(decisions).toBe(4);
     expect(h.outbox.parts(h.outbox.list({})[0]!.id).map((p) => JSON.parse(p.payload!))).toEqual([
-      { stickerId: id },
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
     ]);
     // 后置自动选择叶子已移除：显式选择路径下不存在 onebot.sticker.select 运行。
     expect(
@@ -847,7 +854,20 @@ describe("private feature preservation", () => {
     );
     expect(refs.map((ref) => ref.kind)).toContain("qq_observation");
     expect(refs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
+    // Search observations remain ordinary model context, but only the selected asset is carried
+    // on the outbox sticker part; it is never copied into target/common source authorization.
     expect(refs).toContainEqual(expect.objectContaining({ kind: "qq_sticker", id }));
+    const intent = h.outbox.list({})[0]!;
+    const intentParts = h.outbox.parts(intent.id).map((part) => JSON.parse(part.payload!));
+    expect(intentParts).toHaveLength(1);
+    expect(intentParts[0].stickerSources).toContainEqual(
+      expect.objectContaining({ kind: "qq_sticker", id }),
+    );
+    const targetSources = JSON.parse(h.outbox.row(intent.id)!.target).sources as {
+      kind: string;
+      id: string;
+    }[];
+    expect(targetSources).not.toContainEqual(expect.objectContaining({ kind: "qq_sticker", id }));
     h.db.query("DELETE FROM memory_entries WHERE id=?").run(memoryId);
     // 撤权后必须经检查接口复验为 revoked，原文才不再保留（惰性脱敏）。
     const withMemory = snapshots.filter((snapshot) =>
@@ -911,13 +931,11 @@ describe("private feature preservation", () => {
           const result = stickerObservation(request);
           expect(result.items).toHaveLength(1);
           return JSON.stringify({
-            kind: "final",
-            outputs: [
+            kind: "invoke",
+            calls: [
               {
-                kind: "inline",
-                targetId: "20002",
-                text: "",
-                stickerIds: [result.items[0].id],
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: result.items[0].id }] },
               },
             ],
           });
@@ -930,7 +948,7 @@ describe("private feature preservation", () => {
     await activate(h);
     expect(calls).toBe(2);
     expect(h.outbox.parts(h.outbox.list({})[0]!.id).map((p) => JSON.parse(p.payload!))).toEqual([
-      { stickerId: id },
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
     ]);
     expect(
       h.db
@@ -1150,15 +1168,31 @@ describe("private feature preservation", () => {
               name: "sticker.search",
               arguments: { query: "wave" },
             });
-          // 先经本轮检索拿到 ID，再据此决定"文字 + 表情"的发送计划。
+          const id = stickerObservation(request).items[0]!.id;
+          if (calls === 2)
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.text",
+                  arguments: {
+                    outputs: [{ targetId: "20002", kind: "generate", instructions: "answer" }],
+                  },
+                },
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+                },
+              ],
+            });
           return JSON.stringify({
-            kind: "final",
-            outputs: [
+            kind: "invoke",
+            calls: [
               {
-                kind: "generate",
-                targetId: "20002",
-                instructions: "answer",
-                stickerIds: [stickerObservation(request).items[0].id],
+                name: "reply.text",
+                arguments: {
+                  outputs: [{ targetId: "20002", kind: "inline", text: "[CQ:at,qq=20002] hello" }],
+                },
               },
             ],
           });
@@ -1614,24 +1648,22 @@ it("把输出预留下发为 max_tokens：私聊决策与生成都用回复预�
   expect(find("Write only the response body")?.maxTokens).toBe(896);
 });
 
-it("private conversation commits one logical output while retaining all transport parts", async () => {
+it("private conversation commits one logical text contribution with multipart transport", async () => {
   const h = setup({
     complete: async () =>
       JSON.stringify({
-        kind: "final",
-        outputs: [
-          { kind: "generate", targetId: "20002", instructions: "first" },
-          { kind: "inline", targetId: "20002", text: "duplicate", stickerIds: [] },
+        kind: "invoke",
+        calls: [
+          {
+            name: "reply.text",
+            arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "first\nsecond" }] },
+          },
         ],
       }),
   });
   h.receive("1");
   const result = await activate(h);
   expect(result.status).toBe("completed");
-  expect("outputs" in result ? result.outputs.map((output) => output.status) : []).toEqual([
-    "prepared",
-    "blocked",
-  ]);
   const intents = h.outbox.list({});
   expect(intents).toHaveLength(1);
   expect(h.outbox.parts(intents[0]!.id).map((part) => JSON.parse(part.payload!).text)).toEqual([
@@ -1724,135 +1756,242 @@ describe("optional Bot retrieval failure", () => {
   );
 });
 
-describe("model-visible sticker contract", () => {
+describe("model-visible sticker contribution contract", () => {
   for (const kind of ["inline", "generate"] as const) {
-    for (const scenario of [
-      {
-        title: "re-asks an omitted choice and accepts an explicit []",
-        initial: undefined,
-        correction: "empty",
-      },
-      {
-        title: "re-asks a null choice and accepts a searched id",
-        initial: null,
-        correction: "search",
-      },
-      {
-        title: "resolves an explicit [] in a single decision",
-        initial: [] as const,
-        correction: "direct",
-      },
-    ] as const) {
-      it(`${kind} ${scenario.title}`, async () => {
-        let calls = 0;
-        let generations = 0;
-        const outline = (stickerIds?: readonly string[] | null) =>
-          JSON.stringify({
-            kind: "final",
-            outputs: [
-              {
-                kind,
-                targetId: "20002",
-                ...(kind === "inline" ? { text: "你好" } : { instructions: "answer" }),
-                ...(stickerIds === undefined ? {} : { stickerIds }),
-              },
-            ],
-          });
-        const h = setup(
-          {
-            complete: async (request) => {
-              calls++;
-              if (scenario.correction === "direct") return outline(scenario.initial);
-              if (calls === 1) return outline(scenario.initial);
-              if (calls === 2) {
-                // 有候选却省略/null：先反馈 STICKER_SELECTION_REQUIRED，且不得先生成正文。
-                expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_REQUIRED");
-                expect(generations).toBe(0);
-                if (scenario.correction === "empty") return outline([]);
-                return JSON.stringify({
-                  kind: "invoke",
-                  name: "sticker.search",
-                  arguments: { query: "wave" },
-                });
-              }
-              // 显式选图只认本轮搜索实际披露的候选 ID，而不是本地常量。
-              return outline([stickerObservation(request).items[0].id]);
-            },
-            async *streamText() {
-              generations++;
-              yield "你好";
-            },
+    it(`${kind} text-only contribution needs no sticker search or explicit none`, async () => {
+      let calls = 0;
+      let generations = 0;
+      const h = setup(
+        {
+          complete: async () => {
+            calls++;
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.text",
+                  arguments: {
+                    outputs: [
+                      kind === "inline"
+                        ? { targetId: "20002", kind: "inline", text: "你好" }
+                        : { targetId: "20002", kind: "generate", instructions: "answer" },
+                    ],
+                  },
+                },
+              ],
+            });
           },
-          { stickersAvailable: true },
-        );
-        const id = addSticker(h);
-        h.receive("1");
-        const result = await activate(h);
-        expect(result.status).toBe("completed");
-        const parts = h.outbox
-          .parts(h.outbox.list({})[0]!.id)
-          .map((part) => JSON.parse(part.payload!));
-        expect(parts).toEqual(
-          scenario.correction === "search"
-            ? [{ text: "你好", mentions: [] }, { stickerId: id }]
-            : [{ text: "你好", mentions: [] }],
-        );
-        expect(calls).toBe(
-          scenario.correction === "search" ? 3 : scenario.correction === "empty" ? 2 : 1,
-        );
-        // 只有走完合法计划才会真正生成一次；inline 不经过生成。
-        expect(generations).toBe(kind === "generate" ? 1 : 0);
-      });
-    }
+          async *streamText() {
+            generations++;
+            yield "你好";
+          },
+        },
+        { stickersAvailable: true },
+      );
+      addSticker(h);
+      h.receive("1");
+      expect((await activate(h)).status).toBe("completed");
+      expect(calls).toBe(1);
+      expect(generations).toBe(kind === "generate" ? 1 : 0);
+      expect(h.outbox.list({})).toHaveLength(1);
+      expect(
+        h.outbox.parts(h.outbox.list({})[0]!.id).map((part) => JSON.parse(part.payload!)),
+      ).toEqual([{ text: "你好", mentions: [] }]);
+    });
   }
-  it("corrects a nonexistent explicit ID using a discoverable candidate instead of silently doing nothing", async () => {
+  it("searches, then combines same-target text and one disclosed sticker", async () => {
     let calls = 0;
+    let generations = 0;
     const h = setup(
       {
         complete: async (request) => {
           calls++;
           if (calls === 1)
             return JSON.stringify({
-              kind: "final",
-              outputs: [{ kind: "inline", targetId: "20002", text: "", stickerIds: ["smile"] }],
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
             });
-          if (calls === 2) {
-            expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_UNAVAILABLE");
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: {
+                  outputs: [{ targetId: "20002", kind: "generate", instructions: "answer" }],
+                },
+              },
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
+          });
+        },
+        async *streamText() {
+          generations++;
+          yield "你好";
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const id = addSticker(h);
+    h.receive("1");
+    expect((await activate(h)).status).toBe("completed");
+    expect(calls).toBe(2);
+    expect(generations).toBe(1);
+    expect(
+      h.outbox.parts(h.outbox.list({})[0]!.id).map((part) => JSON.parse(part.payload!)),
+    ).toEqual([
+      { text: "你好", mentions: [] },
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
+    ]);
+  });
+  it("attaches only the latest same-run search revision and its carrier capability sources", async () => {
+    let calls = 0;
+    let firstRevision = "";
+    let currentRevision = "";
+    let stickerId = "";
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls === 1)
             return JSON.stringify({
               kind: "invoke",
               name: "sticker.search",
-              arguments: { query: "" },
+              arguments: { query: "wave" },
+            });
+          if (calls === 2) {
+            firstRevision = readQqStickerAssetRow(h.orm, stickerId)!.updatedAt;
+            editQqSticker(h.orm, stickerId, { description: "new revision after first search" });
+            currentRevision = readQqStickerAssetRow(h.orm, stickerId)!.updatedAt;
+            if (firstRevision === currentRevision) throw new Error("asset revision did not change");
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
             });
           }
+          const latest = stickerObservation(request);
+          expect(latest.items.map((item) => item.id)).toContain(stickerId);
+          const chosen = latest.items.find((item) => item.id === stickerId);
+          if (!chosen) throw new Error("latest search omitted sticker");
+          const disclosedRevisions = modelData(request, "action_observation")
+            .filter((observation) => observation.name === "sticker.search")
+            .flatMap((observation) => observation.sources ?? [])
+            .filter(
+              (source: { kind: string; id: string }) =>
+                source.kind === "qq_sticker" && source.id === stickerId,
+            )
+            .map((source: { revision: string }) => source.revision);
+          expect(disclosedRevisions).toEqual([firstRevision, currentRevision]);
           return JSON.stringify({
-            kind: "final",
-            outputs: [
-              {
-                kind: "inline",
-                targetId: "20002",
-                text: "",
-                stickerIds: [stickerObservation(request).items[0].id],
-              },
+            kind: "invoke",
+            calls: [
+              { name: "reply.sticker", arguments: { outputs: [{ targetId: "20002", stickerId }] } },
             ],
           });
         },
       },
       { stickersAvailable: true },
     );
-    const id = addSticker(h);
-    h.receive("1", "为什么没有表情包");
-    const result = await activate(h);
-    expect(result.status).toBe("completed");
+    stickerId = addSticker(h);
+    h.receive("1", "repeat search before selecting");
+    expect((await activate(h)).status).toBe("completed");
     expect(calls).toBe(3);
-    expect(
-      h.outbox.parts(h.outbox.list({})[0]!.id).map((part) => JSON.parse(part.payload!)),
-    ).toEqual([{ stickerId: id }]);
+    const intent = h.outbox.list({})[0]!;
+    const partPayload = JSON.parse(h.outbox.parts(intent.id)[0]!.payload!) as {
+      stickerSources: { kind: string; id: string; revision: string }[];
+    };
+    expect(partPayload.stickerSources).toContainEqual({
+      kind: "qq_sticker",
+      id: stickerId,
+      revision: currentRevision,
+    });
+    expect(partPayload.stickerSources).not.toContainEqual({
+      kind: "qq_sticker",
+      id: stickerId,
+      revision: firstRevision,
+    });
   });
-  it("fails an uncorrected empty plan at the configured step budget instead of recording normal silence", async () => {
+
+  it("supports sticker-only through reply.sticker and preserves inherited sources", async () => {
+    let decisions = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          decisions++;
+          if (decisions === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "knowledge.query",
+              arguments: { query: "apples" },
+            });
+          if (decisions === 2) {
+            const page = actionObservation(request, "knowledge.query");
+            const item = page.value.items?.[0];
+            if (!item?.bodyRef) throw new Error("missing knowledge bodyRef");
+            return JSON.stringify({
+              kind: "invoke",
+              name: "knowledge.read",
+              arguments: { bodyRef: item.bodyRef },
+            });
+          }
+          if (decisions === 3)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          const id = stickerObservation(request).items[0]!.id;
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
+          });
+        },
+        async *streamText() {
+          yield "";
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const id = addSticker(h);
+    setMemoryMode(h, "off");
+    const library = new KnowledgeRepository(h.db);
+    const doc = library.importDocument({
+      name: "apples",
+      category_id: "default",
+      original_text: "apples optional knowledge",
+    });
+    library.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
+    h.receive("1");
+    expect((await activate(h)).status).toBe("completed");
+    expect(decisions).toBe(4);
+    const intent = h.outbox.list({})[0]!;
+    expect(h.outbox.parts(intent.id).map((part) => JSON.parse(part.payload!))).toEqual([
+      expect.objectContaining({ stickerId: id, stickerSources: expect.any(Array) }),
+    ]);
+    const targetSources = JSON.parse(h.outbox.row(intent.id)!.target).sources as {
+      kind: string;
+      id: string;
+    }[];
+    expect(targetSources).toContainEqual(
+      expect.objectContaining({ kind: "knowledge_document", id: doc.id }),
+    );
+    expect(targetSources).not.toContainEqual(expect.objectContaining({ kind: "qq_sticker", id }));
+  });
+  it("preserves the existing empty-plan error path", async () => {
     let calls = 0;
     const h = setup({
-      complete: async (request) => {
-        if (++calls > 1) expect(JSON.stringify(request.messages)).toContain("EMPTY_OUTPUT");
+      complete: async () => {
+        calls++;
         return JSON.stringify({
           kind: "final",
           outputs: [{ kind: "inline", targetId: "20002", text: "", stickerIds: [] }],
@@ -1862,12 +2001,9 @@ describe("model-visible sticker contract", () => {
     h.receive("1");
     await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_STEP_LIMIT" });
     expect(calls).toBe(12);
-    expect(
-      h.db.query("SELECT status,error_code FROM agent_runs WHERE spec_id='onebot.main'").get(),
-    ).toEqual({ status: "failed", error_code: "AGENT_STEP_LIMIT" });
     expect(h.outbox.list({})).toEqual([]);
   });
-  it("retains a selected sticker and its source in the pending plan after a new message", async () => {
+  it("retains a selected sticker and its carrier source in the pending plan after a new message", async () => {
     let calls = 0;
     let receive: ReturnType<typeof setup>["receive"];
     const h = setup(
@@ -1880,30 +2016,41 @@ describe("model-visible sticker contract", () => {
               name: "sticker.search",
               arguments: { query: "wave" },
             });
-          if (calls === 2)
-            // 从本轮检索披露的候选里显式选图，然后再请求生成。
+          if (calls === 2) {
+            const id = stickerObservation(request).items[0]!.id;
             return JSON.stringify({
-              kind: "final",
-              outputs: [
+              kind: "invoke",
+              calls: [
                 {
-                  kind: "generate",
-                  targetId: "20002",
-                  instructions: "answer",
-                  stickerIds: [stickerObservation(request).items[0].id],
+                  name: "reply.text",
+                  arguments: {
+                    outputs: [{ targetId: "20002", kind: "generate", instructions: "answer" }],
+                  },
+                },
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
                 },
               ],
             });
+          }
           const output = pendingOutput(request);
           // 计划保留搜索阶段显式选中的 ID；来源快照由出站与末次上下文断言覆盖。
           expect(output.stickerIds).toEqual([id]);
           return JSON.stringify({
-            kind: "final",
-            outputs: [
+            kind: "invoke",
+            calls: [
               {
-                kind: "inline",
-                targetId: output.targetId,
-                text: output.text,
-                stickerIds: output.stickerIds,
+                name: "reply.text",
+                arguments: {
+                  outputs: [{ targetId: output.targetId, kind: "inline", text: output.text }],
+                },
+              },
+              {
+                name: "reply.sticker",
+                arguments: {
+                  outputs: [{ targetId: output.targetId, stickerId: output.stickerIds[0] }],
+                },
               },
             ],
           });
@@ -1923,10 +2070,19 @@ describe("model-visible sticker contract", () => {
     const intent = h.outbox.list({})[0]!;
     expect(h.outbox.parts(intent.id).map((part) => JSON.parse(part.payload!))).toEqual([
       { text: "你好", mentions: [] },
-      { stickerId: id },
+      expect.objectContaining({
+        stickerId: id,
+        stickerSources: expect.arrayContaining([
+          { kind: "qq_sticker", id, revision: expect.any(String) },
+        ]),
+      }),
     ]);
     const target = JSON.parse(h.outbox.row(intent.id)!.target);
-    expect(target.sources).toContainEqual({ kind: "qq_sticker", id, revision: expect.any(String) });
+    expect(target.sources).not.toContainEqual({
+      kind: "qq_sticker",
+      id,
+      revision: expect.any(String),
+    });
     const context = h.db
       .query(
         "SELECT c.source_refs FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id WHERE s.run_id=? ORDER BY s.step_no DESC LIMIT 1",
@@ -2271,9 +2427,25 @@ describe("sticker search context and permissions", () => {
             });
           const id = stickerObservation(request).items[0].id;
           setQqStickerEnabled(h.orm, id, false);
+          if (calls === 2)
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+                },
+              ],
+            });
+          expect(JSON.stringify(request.messages)).toContain("STICKER_SELECTION_UNAVAILABLE");
           return JSON.stringify({
-            kind: "final",
-            outputs: [{ kind: "inline", targetId: "20002", text: "", stickerIds: [id] }],
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "那算了" }] },
+              },
+            ],
           });
         },
       },
@@ -2281,32 +2453,38 @@ describe("sticker search context and permissions", () => {
     );
     addSticker(h);
     h.receive("1");
-    await expect(activate(h)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
-    expect(h.outbox.list({})).toEqual([]);
+    expect((await activate(h)).status).toBe("completed");
+    expect(calls).toBe(3);
+    expect(
+      h.outbox.parts(h.outbox.list({})[0]!.id).map((part) => JSON.parse(part.payload!)),
+    ).toEqual([{ text: "那算了", mentions: [] }]);
   });
-  it("exposes unavailable capability without fabricating candidate IDs", async () => {
+  it("does not advertise sticker actions when the global sticker module is off", async () => {
     let calls = 0;
-    const h = setup({
-      complete: async (request) => {
-        if (++calls === 1) {
-          expect(JSON.stringify(request.messages)).toContain("disabled");
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          expect(request.tools?.map((tool) => tool.name)).toContain("reply.text");
+          expect(request.tools?.map((tool) => tool.name)).not.toContain("reply.sticker");
+          expect(request.tools?.map((tool) => tool.name)).not.toContain("sticker.search");
           return JSON.stringify({
             kind: "invoke",
-            name: "sticker.search",
-            arguments: { query: "" },
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "普通" }] },
+              },
+            ],
           });
-        }
-        expect(stickerObservation(request)).toEqual({
-          status: "disabled",
-          items: [],
-          nextCursor: null,
-        });
-        return '{"kind":"none"}';
+        },
       },
-    });
+      { stickersEnabled: () => false, stickersAvailable: true },
+    );
     h.receive("1");
-    expect((await activate(h)).status).toBe("no_output");
-    expect(calls).toBe(2);
+    expect((await activate(h)).status).toBe("completed");
+    expect(calls).toBe(1);
+    expect(h.outbox.list({})).toHaveLength(1);
   });
 });
 
@@ -2386,14 +2564,19 @@ for (const mode of ["throw", "reject"] as const) {
               name: "sticker.search",
               arguments: { query: "wave" },
             });
+          const id = stickerObservation(request).items[0]!.id;
           return JSON.stringify({
-            kind: "final",
-            outputs: [
+            kind: "invoke",
+            calls: [
               {
-                kind: "inline",
-                targetId: "20002",
-                text: "private reply content",
-                stickerIds: [stickerObservation(request).items[0].id],
+                name: "reply.text",
+                arguments: {
+                  outputs: [{ kind: "inline", targetId: "20002", text: "private reply content" }],
+                },
+              },
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
               },
             ],
           });
@@ -2426,15 +2609,19 @@ for (const mode of ["throw", "reject"] as const) {
 }
 
 describe("private direct terminal reply", () => {
-  it("commits the body from a first-call speech.reply without a generation step or second call", async () => {
+  it("commits the body from a first-call reply.text without a generation step or second call", async () => {
     let calls = 0;
     const model = {
       async complete() {
         calls++;
         return JSON.stringify({
           kind: "invoke",
-          name: "speech.reply",
-          arguments: { outputs: [{ kind: "inline", targetId: "20002", text: "hi" }] },
+          calls: [
+            {
+              name: "reply.text",
+              arguments: { outputs: [{ kind: "inline", targetId: "20002", text: "hi" }] },
+            },
+          ],
         });
       },
       async *streamText() {

@@ -9,13 +9,27 @@ import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
-import { createQqScheme, updateQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { writeQqGroupAgentConfigRow } from "../../src/server/db/qq-binding-repository";
+import {
+  createQqScheme,
+  schemeStickers,
+  updateQqScheme,
+} from "../../src/server/db/qq-scheme-repository";
 import { recordQqSend } from "../../src/server/db/qq-send-repository";
 import {
   readQqSettings,
   updateQqSettings,
   updateQqStorageSettings,
 } from "../../src/server/db/qq-settings-repository";
+import {
+  createQqStickerCollection,
+  importQqSticker,
+  setQqStickerEnabled,
+} from "../../src/server/db/qq-sticker-repository";
+import {
+  createQqConversationTask,
+  type QqConversationTaskSourceGuard,
+} from "../../src/server/db/qq-task-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
@@ -24,6 +38,10 @@ import { recordInbound } from "../../src/server/services/qq-intake";
 import { speechExpiresAt } from "../../src/server/services/qq-retention";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
+import {
+  QqTaskExecutionSnapshotSchema,
+  qqConversationTaskKey,
+} from "../../src/shared/contracts/qq-task";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -31,6 +49,25 @@ afterEach(() => {
 });
 const bindingId = "11111111-1111-4111-8111-111111111111",
   time = 2_000_000_000;
+function addSticker(h: ReturnType<typeof setup>) {
+  const collection = createQqStickerCollection(h.orm, { name: "test" });
+  const id = crypto.randomUUID();
+  importQqSticker(h.orm, {
+    id,
+    copy: { fileName: `${id}.png`, byteSize: 64, mediaType: "image" },
+    name: "wave",
+    width: 64,
+    height: 64,
+    collectionIds: [collection.id],
+  });
+  setQqStickerEnabled(h.orm, id, true);
+  updateQqScheme(h.orm, h.scheme.id, {
+    name: h.scheme.name,
+    stickerCollections: [collection.id],
+    expectedRevision: h.scheme.revision,
+  });
+  return id;
+}
 function setup(
   model: Partial<ModelPort> = {},
   options: {
@@ -38,9 +75,12 @@ function setup(
     recomputes?: number;
     mergeSeconds?: number;
     follow?: boolean;
+    stickerCollections?: readonly string[];
     stickersEnabled?: () => boolean;
+    stickersAvailable?: boolean;
     onCompression?: (job: unknown) => void;
     onCapacity?: () => void;
+    taskSourceState?: ConstructorParameters<typeof OneBotHost>[0]["taskSourceState"];
   } = {},
 ) {
   const h = openBusinessDb();
@@ -55,6 +95,7 @@ function setup(
   const scheme = createQqScheme(h.orm, {
     name: "group",
     reply: { split_by_speaker: options.split ?? true },
+    ...(options.stickerCollections ? { stickerCollections: [...options.stickerCollections] } : {}),
     // 连续与自主互斥（保存边界拒绝双 true）：默认只开自主，需要连续交谈的用例传 follow:true。
     triggers: {
       direct_reply: true,
@@ -130,10 +171,11 @@ function setup(
     outbox,
     agentRuntime: runtime,
     gateway,
-    stickers: { counts: ["confirmed"], isAvailable: () => false },
+    stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
     stickersEnabled: options.stickersEnabled,
     policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600 }),
     now,
+    ...(options.taskSourceState ? { taskSourceState: options.taskSourceState } : {}),
     ...(options.onCompression ? { enqueueCompression: options.onCompression } : {}),
   });
   const receive = (
@@ -188,11 +230,90 @@ function setup(
     scheme,
   };
 }
+const authorizedTargetIds = (request: ModelRequest): string[] => {
+  const matches = request.messages
+    .filter((message) => message.role === "system")
+    .flatMap((message) => message.content)
+    .filter(
+      (part): part is Extract<ModelMessage["content"][number], { kind: "text" }> =>
+        part.kind === "text",
+    )
+    .flatMap((part) => [...part.text.matchAll(/"authorizedTargets"\s*:\s*(\[[^\]]*\])/g)]);
+  const targets = matches.at(-1)?.[1];
+  if (!targets) throw new Error("request has no authorizedTargets fixture envelope");
+  return JSON.parse(targets) as string[];
+};
 const generate = (ids: string[]) =>
   JSON.stringify({
-    kind: "final",
-    outputs: ids.map((targetId) => ({ kind: "generate", targetId, instructions: "respond" })),
+    kind: "invoke",
+    calls: [
+      {
+        name: "reply.text",
+        arguments: {
+          outputs: ids.map((targetId) => ({ kind: "generate", targetId, instructions: "respond" })),
+        },
+      },
+    ],
   });
+const generateForRequest = (request: ModelRequest) => generate(authorizedTargetIds(request));
+const replyText = (outputs: { targetId: string; text: string; mentionIds?: readonly string[] }[]) =>
+  JSON.stringify({
+    kind: "invoke",
+    calls: [
+      {
+        name: "reply.text",
+        arguments: {
+          outputs: outputs.map(({ targetId, text, mentionIds }) => ({
+            targetId,
+            kind: "inline",
+            text,
+            ...(mentionIds ? { mentionIds } : {}),
+          })),
+        },
+      },
+    ],
+  });
+const replyTextForRequest = (request: ModelRequest, textForTarget: (targetId: string) => string) =>
+  replyText(
+    authorizedTargetIds(request).map((targetId) => ({ targetId, text: textForTarget(targetId) })),
+  );
+const stickerFrequencyGuides = {
+  low: "表情发送倾向（low）：少一些主动或装饰性表情；文字与表情同样合适时偏向文字；若表情本身最合适，仍可只发表情。",
+  medium: "表情发送倾向（medium）：按当前语境平衡选择文字、表情或组合，不刻意凑数。",
+  high: "表情发送倾向（high）：更积极考虑相关表情或图文组合；不适合时不强加。",
+} as const;
+const systemRequestText = (request: ModelRequest) =>
+  request.messages
+    .filter((message) => message.role === "system")
+    .flatMap((message) => message.content)
+    .flatMap((part) => (part.kind === "text" ? [part.text] : []))
+    .join("\n");
+const frequencyGuideLines = (request: ModelRequest) => {
+  const lines = new Set<string>(Object.values(stickerFrequencyGuides));
+  return systemRequestText(request)
+    .split("\n")
+    .filter((line) => lines.has(line));
+};
+const setGroupFrequency = (h: ReturnType<typeof setup>, frequency: "low" | "medium" | "high") => {
+  const row = h.db
+    .query(
+      "SELECT revision,scheme_overrides,disabled_capabilities FROM qq_group_agent_configs WHERE binding_id=? AND agent_id=?",
+    )
+    .get(bindingId, DEFAULT_AGENT_ID) as {
+    revision: number;
+    scheme_overrides: string;
+    disabled_capabilities: string;
+  } | null;
+  const overrides = row ? JSON.parse(row.scheme_overrides) : {};
+  overrides.stickers = { ...(overrides.stickers ?? {}), frequency };
+  writeQqGroupAgentConfigRow(h.orm, {
+    bindingId,
+    agentId: DEFAULT_AGENT_ID,
+    overrides,
+    disabledCapabilities: row ? JSON.parse(row.disabled_capabilities) : [],
+    expectedRevision: row?.revision ?? 0,
+  });
+};
 
 /** 从批量评分请求里取出本批候选 target id（data_only 的 qq_batch_targets 块）。 */
 const batchTargetIds = (request: { messages?: readonly { content?: unknown }[] }): string[] => {
@@ -257,6 +378,109 @@ const abortableWait = (gate: Promise<void>, signal?: AbortSignal): Promise<void>
     );
   });
 };
+const taskSourceState: QqConversationTaskSourceGuard = (transaction, identity) => {
+  const db = (
+    transaction as typeof transaction & { $client: ReturnType<typeof openBusinessDb>["db"] }
+  ).$client;
+  const source = db
+    .query("SELECT 1 AS ok FROM conversation_events WHERE conversation_id=? AND seq=?")
+    .get(identity.conversationId, identity.sourceThroughSeq);
+  return source ? "valid" : "revoked";
+};
+
+async function claimFrequencyTask(
+  h: ReturnType<typeof setup>,
+  frequency?: "low" | "medium" | "high",
+) {
+  const ingress = h.receive(
+    String(9_000_000 + Math.floor(h.clock.seconds % 100_000)),
+    "20002",
+    true,
+    "task frequency",
+  );
+  if (ingress.kind !== "recorded")
+    throw new Error(`frequency ingress failed: ${JSON.stringify(ingress)}`);
+  const conversation = h.journal.ensureOneBot(bindingId);
+  if (!conversation) throw new Error("missing conversation");
+  const wake = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" });
+  if (!wake?.leaseToken) throw new Error("missing leased direct_reply wake");
+  const binding = h.db
+    .query("SELECT revision,authority_revision FROM qq_bindings WHERE id=?")
+    .get(bindingId) as {
+    revision: number;
+    authority_revision: number;
+  };
+  const scheme = h.db.query("SELECT revision FROM qq_schemes WHERE id=?").get(h.scheme.id) as {
+    revision: number;
+  };
+  const agent = h.db
+    .query("SELECT config_version FROM agents WHERE id=?")
+    .get(DEFAULT_AGENT_ID) as { config_version: number };
+  const created = createQqConversationTask(
+    h.orm,
+    {
+      taskKey: qqConversationTaskKey.ordinary({
+        conversationId: conversation.id,
+        bindingEpoch: conversation.bindingEpoch,
+        agentId: DEFAULT_AGENT_ID,
+        wakeId: wake.id,
+      }),
+      conversationId: conversation.id,
+      bindingEpoch: conversation.bindingEpoch,
+      agentId: DEFAULT_AGENT_ID,
+      taskClass: "ordinary",
+      cause: "direct_reply",
+      sourceFromSeq: h.wakes.getSourceFromSeq(wake.id) ?? wake.throughSeq,
+      sourceThroughSeq: wake.throughSeq,
+      originWakeId: wake.id,
+      wakeLeaseToken: wake.leaseToken,
+      at: h.now(),
+    },
+    { validateSource: taskSourceState },
+  );
+  const snapshot = QqTaskExecutionSnapshotSchema.parse({
+    accountId: "10001",
+    conversationId: conversation.id,
+    bindingId,
+    bindingEpoch: conversation.bindingEpoch,
+    agentId: DEFAULT_AGENT_ID,
+    schemeId: h.scheme.id,
+    bindingRevision: binding.revision,
+    authorityRevision: binding.authority_revision,
+    schemeRevision: scheme.revision,
+    agentConfigVersion: agent.config_version,
+    taskClass: "ordinary",
+    cause: "direct_reply",
+    ...(frequency === undefined ? {} : { stickerFrequency: frequency }),
+    sourceFromSeq: created.task.sourceFromSeq,
+    sourceThroughSeq: created.task.sourceThroughSeq,
+    sourceExpiresAt: created.task.sourceExpiresAt,
+    authorizedTargets: ["20002"],
+    targetParticipants: [{ targetId: "20002", speakerId: "20002" }],
+    maxSteps: 20,
+    deliveryTtlSeconds: 600,
+    mentionTaskLimit: 4,
+    ordinaryTaskLimit: 1,
+    taskKey: created.task.taskKey,
+  });
+  const leaseToken = "frequency-test-lease";
+  const leaseExpiresAt = new Date(Date.parse(h.now()) + 120000).toISOString();
+  h.db
+    .query(
+      "UPDATE qq_conversation_tasks SET status='running',lease_token=?,lease_expires_at=?,execution_snapshot=?,claimed_at=?,updated_at=? WHERE id=?",
+    )
+    .run(leaseToken, leaseExpiresAt, JSON.stringify(snapshot), h.now(), h.now(), created.task.id);
+  const task = {
+    ...created.task,
+    status: "running" as const,
+    leaseToken,
+    leaseExpiresAt,
+    executionSnapshot: JSON.stringify(snapshot),
+    claimedAt: h.now(),
+  };
+  return { task, snapshot, leaseToken };
+}
+
 describe("shared Bot model-controlled conversation", () => {
   it("captures the sticker switch per reply and preserves the text path while paused", async () => {
     let enabled = true;
@@ -282,6 +506,115 @@ describe("shared Bot model-controlled conversation", () => {
     expect(f.outbox.list({})).toHaveLength(2);
   });
 
+  it("keeps a text contribution after a successful sticker search is group-disabled", async () => {
+    let calls = 0;
+    const h = setup({
+      complete: async () => {
+        calls++;
+        if (calls === 1)
+          return JSON.stringify({
+            kind: "invoke",
+            name: "sticker.search",
+            arguments: { query: "wave" },
+          });
+        if (calls === 2) {
+          const row = h.db
+            .query("SELECT revision FROM qq_group_agent_configs WHERE binding_id=? AND agent_id=?")
+            .get(bindingId, DEFAULT_AGENT_ID) as { revision: number } | null;
+          writeQqGroupAgentConfigRow(h.orm, {
+            bindingId,
+            agentId: DEFAULT_AGENT_ID,
+            overrides: {},
+            disabledCapabilities: ["stickers"],
+            expectedRevision: row?.revision ?? 0,
+          });
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: { outputs: [{ targetId: "20002", kind: "inline", text: "只发文字" }] },
+              },
+            ],
+          });
+        }
+        throw new Error("NO_CORRECTION_OR_EXTRA_MODEL_STEP_EXPECTED");
+      },
+    });
+    h.receive("9901", "20002", true, "回个招呼");
+    expect((await h.activate("direct_reply")).status).toBe("completed");
+    expect(calls).toBe(2);
+    expect(h.outbox.list({})).toHaveLength(1);
+    const intent = h.outbox.list({})[0]!;
+    expect(h.outbox.parts(intent.id).map((part) => part.kind)).toEqual(["text"]);
+    expect(
+      h.db.query("SELECT status FROM outbound_parts WHERE intent_id=?").all(intent.id),
+    ).toEqual([{ status: "planned" }]);
+  });
+  it("settles a sticker-only contribution as no_output when group stickers close after search", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          if (calls === 2) {
+            const row = h.db
+              .query(
+                "SELECT revision FROM qq_group_agent_configs WHERE binding_id=? AND agent_id=?",
+              )
+              .get(bindingId, DEFAULT_AGENT_ID) as { revision: number } | null;
+            writeQqGroupAgentConfigRow(h.orm, {
+              bindingId,
+              agentId: DEFAULT_AGENT_ID,
+              overrides: {},
+              disabledCapabilities: ["stickers"],
+              expectedRevision: row?.revision ?? 0,
+            });
+            const obs = request.messages
+              .flatMap((message) => message.content)
+              .flatMap((part) => {
+                if (part.kind !== "text") return [];
+                try {
+                  const parsed = JSON.parse(part.text);
+                  return parsed.kind === "action_observation" &&
+                    parsed.value?.name === "sticker.search"
+                    ? [parsed.value]
+                    : [];
+                } catch {
+                  return [];
+                }
+              })
+              .at(-1);
+            const id = obs?.value?.items?.[0]?.id;
+            if (!id) throw new Error("missing disclosed sticker");
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+                },
+              ],
+            });
+          }
+          throw new Error("no extra model call expected after group sticker hard-off");
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const stickerId = addSticker(h);
+    expect(stickerId).toBeTruthy();
+    h.receive("9910", "20002", true, "只发表情");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    expect(calls).toBe(2);
+    expect(h.outbox.list({})).toEqual([]);
+  });
   it("把输出预留下发为 max_tokens：direct/continuous 决策与生成都用回复预留，方案改值后新轮生效", async () => {
     const seen: ModelRequest[] = [];
     const h = setup({
@@ -319,7 +652,7 @@ describe("shared Bot model-controlled conversation", () => {
     expect(find("Write only the response body")?.maxTokens).toBe(896);
   });
 
-  it("group direct replies on the first call via speech.reply with native tools advertised and reply tier", async () => {
+  it("group direct replies on the first call via reply.text and advertises independent sticker contribution", async () => {
     let calls = 0;
     const seen: ModelRequest[] = [];
     const h = setup({
@@ -328,10 +661,12 @@ describe("shared Bot model-controlled conversation", () => {
         seen.push(request);
         return JSON.stringify({
           kind: "invoke",
-          name: "speech.reply",
-          arguments: {
-            outputs: [{ kind: "inline", targetId: "20002", text: "hi", stickerIds: [] }],
-          },
+          calls: [
+            {
+              name: "reply.text",
+              arguments: { outputs: [{ kind: "inline", targetId: "20002", text: "hi" }] },
+            },
+          ],
         });
       },
       async *streamText() {
@@ -344,8 +679,9 @@ describe("shared Bot model-controlled conversation", () => {
     // 首 call 直接回，不前置意图/生成。
     expect(calls).toBe(1);
     // 终结能力进同一次原生工具目录（系统声明与 tools 都能看到它）。
-    expect(seen[0].tools?.map((tool) => tool.name)).toContain("speech.reply");
-    expect(JSON.stringify(seen[0].messages)).toContain("speech.reply");
+    expect(seen[0].tools?.map((tool) => tool.name)).toContain("reply.text");
+    expect(seen[0].tools?.map((tool) => tool.name)).toContain("reply.sticker");
+    expect(JSON.stringify(seen[0].messages)).toContain("reply.text");
     // 首 call 就是**回复正文任务**：带 qqEffectiveReplyPrompt 的正文任务提示词（custom/sentinel）。
     expect(JSON.stringify(seen[0].messages)).toContain("写这一轮要发的话");
     // 群 direct 用回复档预留。
@@ -355,22 +691,7 @@ describe("shared Bot model-controlled conversation", () => {
 
   it("carries structured mentionIds into the committed outbox part", async () => {
     const h = setup({
-      complete: async () =>
-        JSON.stringify({
-          kind: "invoke",
-          name: "speech.reply",
-          arguments: {
-            outputs: [
-              {
-                kind: "inline",
-                targetId: "20002",
-                text: "ping",
-                mentionIds: ["20002"],
-                stickerIds: [],
-              },
-            ],
-          },
-        }),
+      complete: async () => replyText([{ targetId: "20002", text: "ping", mentionIds: ["20002"] }]),
     });
     h.receive("1", "20002", true);
     expect((await h.activate("direct_reply")).status).toBe("completed");
@@ -386,17 +707,9 @@ describe("shared Bot model-controlled conversation", () => {
       {
         complete: async (request) => {
           seen.push(request);
-          return JSON.stringify({
-            kind: "invoke",
-            name: "speech.reply",
-            // 两位不同发言人各一条：不合并成 room 单条，也不能 none。
-            arguments: {
-              outputs: [
-                { kind: "inline", targetId: "20002", text: "to A", stickerIds: [] },
-                { kind: "inline", targetId: "20003", text: "to B", stickerIds: [] },
-              ],
-            },
-          });
+          return replyTextForRequest(request, (targetId) =>
+            targetId === "20002" ? "to A" : "to B",
+          );
         },
         async *streamText() {
           yield "should-not-stream";
@@ -426,7 +739,7 @@ describe("shared Bot model-controlled conversation", () => {
     expect(first.status).toBe("completed");
     expect(second.status).toBe("completed");
     // 首 call 即回复档正文任务（回复提示词与终结能力出现在首条 wire），非判断档。
-    expect(JSON.stringify(seen[0].messages)).toContain("speech.reply");
+    expect(JSON.stringify(seen[0].messages)).toContain("reply.text");
     expect(seen[0].maxTokens).toBe(2048);
     // 连续交谈强制按人：两位各一条，按 speaker 目标（scheme split 关了也如此）。
     expect(
@@ -435,6 +748,80 @@ describe("shared Bot model-controlled conversation", () => {
         .map((d) => d.target?.participantId)
         .sort(),
     ).toEqual(["20002", "20003"]);
+  });
+
+  it("continuous (follow_up) settles a pure sticker contribution as no_output after group hard-off", async () => {
+    let calls = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          calls++;
+          if (calls === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          const row = h.db
+            .query("SELECT revision FROM qq_group_agent_configs WHERE binding_id=? AND agent_id=?")
+            .get(bindingId, DEFAULT_AGENT_ID) as { revision: number } | null;
+          writeQqGroupAgentConfigRow(h.orm, {
+            bindingId,
+            agentId: DEFAULT_AGENT_ID,
+            overrides: {},
+            disabledCapabilities: ["stickers"],
+            expectedRevision: row?.revision ?? 0,
+          });
+          const observation = request.messages
+            .flatMap((message) => message.content)
+            .flatMap((part) => {
+              if (part.kind !== "text") return [];
+              try {
+                const parsed = JSON.parse(part.text);
+                return parsed.kind === "action_observation" &&
+                  parsed.value?.name === "sticker.search"
+                  ? [parsed.value]
+                  : [];
+              } catch {
+                return [];
+              }
+            })
+            .at(-1);
+          const id = observation?.value?.items?.[0]?.id;
+          if (!id) throw new Error("missing disclosed sticker");
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.sticker",
+                arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+              },
+            ],
+          });
+        },
+      },
+      { follow: true, stickersAvailable: true },
+    );
+    const stickerId = addSticker(h);
+    expect(stickerId).toBeTruthy();
+    recordQqSend(h.orm, {
+      scope: {
+        kind: "qq",
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "30003",
+        agentId: DEFAULT_AGENT_ID,
+      },
+      kind: "direct_reply",
+      parts: [{ kind: "text", result: "confirmed", messageId: "previous" }],
+      text: "previous",
+      sentAtSeconds: time - 10,
+    });
+    h.receive("1", "20002", false, "只发表情");
+    h.clock.seconds += 5;
+    expect((await h.activate("follow_up")).status).toBe("no_output");
+    expect(calls).toBe(2);
+    expect(h.outbox.list({})).toEqual([]);
   });
 
   it("continuous (follow_up) refuses a silent none instead of dropping a required reply", async () => {
@@ -532,7 +919,7 @@ describe("shared Bot model-controlled conversation", () => {
           });
         }
         decisions++;
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText(req) {
         generated.push(JSON.stringify(req.messages[0]));
@@ -558,7 +945,15 @@ describe("shared Bot model-controlled conversation", () => {
     expect(h.outbox.list({}).map((d) => h.outbox.parts(d.id).length)).toEqual([1, 1]);
   });
   it("keeps shared replies unsplit with no forced recipient when the scheme switch is off", async () => {
-    const h = setup({ complete: async () => generate(["30003", "30003"]) }, { split: false });
+    const h = setup(
+      {
+        complete: async (request) => generateForRequest(request),
+        async *streamText() {
+          yield "first\nsecond";
+        },
+      },
+      { split: false },
+    );
     h.receive("1", "20002", true);
     await h.activate("direct_reply");
     expect(h.outbox.list({})).toHaveLength(1);
@@ -683,7 +1078,7 @@ describe("shared configuration and races", () => {
   it("continues another recipient after one generation fails and preserves both output statuses", async () => {
     const h = setup({
       complete: async (req) =>
-        isBatchScore(req) ? batchScores(batchTargetIds(req)) : generate(["20002", "20003"]),
+        isBatchScore(req) ? batchScores(batchTargetIds(req)) : generateForRequest(req),
       async *streamText(req) {
         if (JSON.stringify(req.messages[0]).includes('authorizedTarget\\":\\"20002'))
           throw new Error("MODEL_FAILED");
@@ -708,7 +1103,7 @@ describe("shared configuration and races", () => {
     });
     const h = setup({
       complete: async (req) =>
-        isBatchScore(req) ? batchScores(batchTargetIds(req)) : generate(["20002", "20003"]),
+        isBatchScore(req) ? batchScores(batchTargetIds(req)) : generateForRequest(req),
       async *streamText(req) {
         // 慢目标挂起等待外部放行；快目标立刻产出正文，验证早提交不等整批。
         if (JSON.stringify(req.messages[0]).includes("20002")) {
@@ -757,7 +1152,7 @@ describe("shared configuration and races", () => {
               sourceSeqs: [],
             })),
           });
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText(req) {
         generationPrompts.push(JSON.stringify(req.messages));
@@ -789,7 +1184,7 @@ describe("shared configuration and races", () => {
     const h = setup(
       {
         complete: async (req) =>
-          isBatchScore(req) ? batchScores(batchTargetIds(req)) : generate(["20002", "20003"]),
+          isBatchScore(req) ? batchScores(batchTargetIds(req)) : generateForRequest(req),
         async *streamText() {
           yield "ok";
         },
@@ -814,7 +1209,7 @@ describe("shared configuration and races", () => {
           judgeCalls += 1;
           return batchScores(batchTargetIds(req));
         }
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText(req) {
         generations.push(JSON.stringify(req.messages));
@@ -860,7 +1255,7 @@ describe("shared configuration and races", () => {
           judgeCalls += 1;
           return batchScores(batchTargetIds(req));
         }
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText(req) {
         const isFast = JSON.stringify(req.messages[0]).includes("20002");
@@ -945,7 +1340,7 @@ describe("shared configuration and races", () => {
             })),
           });
         }
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText(req) {
         generationPrompts.push(JSON.stringify(req.messages));
@@ -1024,7 +1419,7 @@ describe("shared configuration and races", () => {
           judgeCalls += 1;
           return batchScores(batchTargetIds(req));
         }
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText(req) {
         const isFast = JSON.stringify(req.messages[0]).includes("20002");
@@ -1298,6 +1693,136 @@ describe("immediate opportunity coverage", () => {
     expect((await h.activate("follow_up")).status).toBe("completed");
     expect(h.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20003", "20002"]);
   });
+  it("does not treat a planned sticker-only reply as coverage after group stickers close", async () => {
+    let replyDecisions = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          if (isBatchScore(request)) return batchScores(batchTargetIds(request));
+          replyDecisions++;
+          if (replyDecisions === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: "sticker.search",
+              arguments: { query: "wave" },
+            });
+          if (replyDecisions === 2) {
+            const observation = request.messages
+              .flatMap((message) => message.content)
+              .flatMap((part) => {
+                if (part.kind !== "text") return [];
+                try {
+                  const parsed = JSON.parse(part.text);
+                  return parsed.kind === "action_observation" &&
+                    parsed.value?.name === "sticker.search"
+                    ? [parsed.value]
+                    : [];
+                } catch {
+                  return [];
+                }
+              })
+              .at(-1);
+            const id = observation?.value?.items?.[0]?.id;
+            if (!id) throw new Error("missing disclosed sticker");
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "reply.sticker",
+                  arguments: { outputs: [{ targetId: "20002", stickerId: id }] },
+                },
+              ],
+            });
+          }
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "reply.text",
+                arguments: {
+                  outputs: [{ targetId: "20002", kind: "inline", text: "text survives hard-off" }],
+                },
+              },
+            ],
+          });
+        },
+      },
+      { stickersAvailable: true },
+    );
+    const stickerId = addSticker(h);
+    h.receive("99001", "20002", false);
+    const conversation = h.journal.ensureOneBot(bindingId);
+    if (!conversation) throw new Error("missing conversation");
+    const inputEvent = h.journal
+      .eventsAfter(conversation.id, 0, Number.MAX_SAFE_INTEGER)
+      .items.find((event) => event.kind === "inbound");
+    if (!inputEvent) throw new Error("missing input event");
+    const initial = h.wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "chiming_in",
+      throughSeq: inputEvent.seq,
+      dedupeKey: "planned-sticker-hardoff-initial-chiming",
+      readyAt: h.now(),
+      at: h.now(),
+      priority: 100,
+    });
+    const initialWake = h.wakes.claim({
+      at: h.now(),
+      leaseMs: 120000,
+      cause: "chiming_in",
+      wakeId: initial.id,
+    });
+    if (!initialWake) throw new Error("missing initial chiming wake");
+    expect((await h.host.activate(initialWake, new AbortController().signal)).status).toBe(
+      "completed",
+    );
+    const original = h.outbox.list({})[0]!;
+    expect(original.target?.participantId).toBe("20002");
+    expect(h.outbox.parts(original.id).map((part) => part.status)).toEqual(["planned"]);
+    expect(JSON.parse(h.outbox.parts(original.id)[0]!.payload!).stickerId).toBe(stickerId);
+    expect(h.outbox.row(original.id)?.run_id).toBeTruthy();
+
+    const config = h.db
+      .query("SELECT revision FROM qq_group_agent_configs WHERE binding_id=? AND agent_id=?")
+      .get(bindingId, DEFAULT_AGENT_ID) as { revision: number } | null;
+    writeQqGroupAgentConfigRow(h.orm, {
+      bindingId,
+      agentId: DEFAULT_AGENT_ID,
+      overrides: {},
+      disabledCapabilities: ["stickers"],
+      expectedRevision: config?.revision ?? 0,
+    });
+    const direct = h.wakes.enqueue({
+      conversationId: conversation.id,
+      cause: "direct_reply",
+      throughSeq: inputEvent.seq,
+      dedupeKey: "planned-sticker-hardoff-second-direct",
+      readyAt: h.now(),
+      at: h.now(),
+      priority: 100,
+    });
+    const priorReplyDecisions = replyDecisions;
+    const wake = h.wakes.claim({
+      at: h.now(),
+      leaseMs: 120000,
+      cause: "direct_reply",
+      wakeId: direct.id,
+    });
+    if (!wake) throw new Error("missing hard-off direct wake");
+    const coverageResult = await h.host.activate(wake, new AbortController().signal);
+    expect(coverageResult).toMatchObject({ status: "completed" });
+    expect(replyDecisions).toBeGreaterThan(priorReplyDecisions);
+    expect(h.outbox.list({}).map((intent) => intent.target?.participantId)).toEqual([
+      "20002",
+      "20002",
+    ]);
+    expect(h.outbox.parts(h.outbox.list({})[1]!.id).map((part) => part.kind)).toEqual(["text"]);
+    expect(JSON.parse(h.outbox.parts(h.outbox.list({})[1]!.id)[0]!.payload!).text).toBe(
+      "text survives hard-off",
+    );
+    expect(h.outbox.parts(original.id).map((part) => part.status)).toEqual(["planned"]);
+  });
+
   it("does not regenerate an answer already durably owned by a planned in-flight reply", async () => {
     const h = setup({ complete: async () => generate(["20002"]) });
     previousSpeech(h);
@@ -1463,7 +1988,7 @@ describe("immediate opportunity coverage", () => {
           scored.push(batchTargetIds(req));
           return batchScores(batchTargetIds(req));
         }
-        return generate(["20002", "20004"]);
+        return generateForRequest(req);
       },
       async *streamText() {
         yield "reply\nfor target";
@@ -1523,7 +2048,7 @@ describe("immediate opportunity coverage", () => {
           scored.push(batchTargetIds(req));
           return batchScores(batchTargetIds(req));
         }
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText() {
         yield "reply\nfor target";
@@ -1550,7 +2075,7 @@ describe("immediate opportunity coverage", () => {
           scored.push(batchTargetIds(req));
           return batchScores(batchTargetIds(req));
         }
-        return generate(["20002", "20003"]);
+        return generateForRequest(req);
       },
       async *streamText() {
         yield "reply\nfor target";
@@ -1715,7 +2240,7 @@ describe("Agent-directed recovery", () => {
             return "invalid";
           }
           replies++;
-          return generate(["20002", "20003"]);
+          return generateForRequest(request);
         },
       });
       h.receive("1", "20002");
@@ -1747,19 +2272,13 @@ describe("Agent-directed recovery", () => {
             expect(plan?.outputs[0]?.text).toBe("original draft");
             expect(plan?.generationBudget[0]?.remaining).toBe(0);
             expect(JSON.stringify(request.messages)).toContain("additional detail");
-            return choice === "defer"
-              ? '{"kind":"none"}'
-              : JSON.stringify({
-                  kind: "final",
-                  outputs: [
-                    {
-                      kind: "inline",
-                      targetId: "20002",
-                      text: choice === "keep" ? plan!.outputs[0]!.text : "revised draft",
-                      stickerIds: [],
-                    },
-                  ],
-                });
+            if (choice === "defer") return '{"kind":"none"}';
+            if (choice === "keep") {
+              const pendingText = plan?.outputs[0]?.text;
+              if (pendingText === undefined) throw new Error("pending draft text is missing");
+              return replyText([{ targetId: "20002", text: pendingText }]);
+            }
+            return replyText([{ targetId: "20002", text: "revised draft" }]);
           },
           async *streamText() {
             generations++;
@@ -1793,12 +2312,7 @@ describe("Agent-directed recovery", () => {
           h.db.exec(
             "DELETE FROM qq_observation_text WHERE event_key IN (SELECT event_key FROM qq_events WHERE message_id='1')",
           );
-          return JSON.stringify({
-            kind: "final",
-            outputs: [
-              { kind: "inline", targetId: "20002", text: "original secret", stickerIds: [] },
-            ],
-          });
+          return replyText([{ targetId: "20002", text: "original secret" }]);
         },
         async *streamText() {
           h.clock.seconds++;
@@ -1841,7 +2355,7 @@ it.each(["revoked", "cancelled"])(
           scores++;
           return batchScores(batchTargetIds(request));
         }
-        return generate(["20002", "20003"]);
+        return generateForRequest(request);
       },
     });
     h.receive("1", "20002");
@@ -1868,17 +2382,8 @@ describe("durable participant windows across actual Host and delivery", () => {
     h = setup(
       {
         // 15/29 的按人滚动成熟属于连续交谈（follow_up），不是自主接话。
-        complete: async () =>
-          JSON.stringify({
-            kind: "invoke",
-            name: "speech.reply",
-            arguments: {
-              outputs: [
-                { kind: "inline", targetId: "20002", text: "to A", stickerIds: [] },
-                { kind: "inline", targetId: "20003", text: "to B", stickerIds: [] },
-              ],
-            },
-          }),
+        complete: async (request) =>
+          replyTextForRequest(request, (targetId) => (targetId === "20002" ? "to A" : "to B")),
         async *streamText() {
           yield "should-not-stream";
         },
@@ -2017,7 +2522,7 @@ describe("durable participant windows across actual Host and delivery", () => {
   it("keeps one room wake while a failed target child does not fail the parent or its sibling", async () => {
     const h = setup({
       complete: async (req) =>
-        isBatchScore(req) ? batchScores(batchTargetIds(req)) : generate(["20002", "20003"]),
+        isBatchScore(req) ? batchScores(batchTargetIds(req)) : generateForRequest(req),
       async *streamText(req) {
         if (JSON.stringify(req.messages[0]).includes("20002")) throw new Error("MODEL_A_FAILED");
         yield "B reply";
@@ -2275,6 +2780,79 @@ function observationCharge(observation: CommittedObservation): number {
   };
   return inputUnits([message]) - inputUnits([]);
 }
+
+describe("sticker frequency in actual QQ model requests", () => {
+  it.each(["low", "medium", "high"] as const)(
+    "sends exactly the %s system guidance from the durable task snapshot",
+    async (frequency) => {
+      const seen: ModelRequest[] = [];
+      const h = setup(
+        {
+          complete: async (request) => {
+            seen.push(request);
+            return replyTextForRequest(request, () => "frequency reply");
+          },
+        },
+        { taskSourceState },
+      );
+      updateQqScheme(h.orm, h.scheme.id, {
+        name: h.scheme.name,
+        stickers: { ...schemeStickers(h.scheme), frequency },
+        expectedRevision: h.scheme.revision,
+      });
+      const descriptor = await claimFrequencyTask(h, frequency);
+      expect(descriptor.snapshot.stickerFrequency).toBe(frequency);
+      expect((await h.host.activateTask(descriptor, new AbortController().signal)).status).toBe(
+        "completed",
+      );
+      expect(frequencyGuideLines(seen[0]!)).toEqual([stickerFrequencyGuides[frequency]]);
+      expect(h.outbox.list({}).map((intent) => intent.target?.participantId)).toEqual(["20002"]);
+    },
+  );
+
+  it("keeps the claimed low guidance for this run after the group override changes to high", async () => {
+    const seen: ModelRequest[] = [];
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return replyTextForRequest(request, () => "frozen reply");
+        },
+      },
+      { taskSourceState },
+    );
+    const descriptor = await claimFrequencyTask(h, "low");
+    setGroupFrequency(h, "high");
+    expect((await h.host.activateTask(descriptor, new AbortController().signal)).status).toBe(
+      "completed",
+    );
+    expect(frequencyGuideLines(seen[0]!)).toEqual([stickerFrequencyGuides.low]);
+  });
+
+  it("does not add any new frequency guidance for a legacy task snapshot without the field", async () => {
+    const seen: ModelRequest[] = [];
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return replyTextForRequest(request, () => "legacy reply");
+        },
+      },
+      { taskSourceState },
+    );
+    updateQqScheme(h.orm, h.scheme.id, {
+      name: h.scheme.name,
+      stickers: { ...schemeStickers(h.scheme), frequency: "high" },
+      expectedRevision: h.scheme.revision,
+    });
+    const descriptor = await claimFrequencyTask(h);
+    expect(Object.hasOwn(descriptor.snapshot, "stickerFrequency")).toBe(false);
+    expect((await h.host.activateTask(descriptor, new AbortController().signal)).status).toBe(
+      "completed",
+    );
+    expect(frequencyGuideLines(seen[0]!)).toEqual([]);
+  });
+});
 
 describe("Bot tool-first knowledge reading in the shared host", () => {
   function seedKnowledge(h: ReturnType<typeof setup>, name: string, text: string) {

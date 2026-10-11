@@ -64,6 +64,8 @@ QQ 接入前置步骤与运行要求：
 - **图片缓存与准备**：图片资产按范围缓存，支持预生成多分辨率副本与动图抽帧；入站媒体按需读取，减少不必要的资源消耗。
 - **结构化回复记录**：记录多部件消息与回复引用链，支持按需多层引用；成员记录区分群名片与个人昵称，标注来源属于平台原始上报还是本地目录记录。
 - **表情素材管理**：导入表情素材，编辑说明与标签，经检查启用后授权给方案；支持文字、表情或图文混合回复。
+- **自主文字与表情回复**：Agent 可选择纯文字、单张表情或图文组合。只发文字时无需额外声明不用表情。方案可设置较少使用、平衡选择或积极考虑三档表情倾向，默认平衡；本群可覆盖，私聊跟随方案。这是软倾向，不是发送比例或次数限制。
+- **表情关闭即时生效**：关闭全局或本群表情后，尚未开始发送的表情（含排队部件）不再发送，合法文字照常。已开始的请求不撤回，未知送达结果不盲目重发。回复仍至多一张表情，旧数量控件退役但不重写已保存值。
 - **输出预留上限**：方案判断与回复输出预留上限最高可设为 32768，适应长输出调用；默认值保持 512 与 2048 不变。
 - **QQ 数据保留期限**：支持配置 QQ 数据保留期限（1–3650 天，默认 14 天），覆盖消息正文、媒体阅读记录、助手发言、发送记录与昵称。到期内容不可读；物理清理需在存储面板中手动预览确认。运行追踪的保留天数在「系统能力 → 执行限制」中独立配置，两者互不影响。
 - **统一图片规格**：各类别的静图共用长边设置或保留原图，动图共用帧数与帧长边。取消单独的表情画质设置和补充时间窗。基本区提供自动／按需选择，高级区保留模式、三阶段开关与自定义配置。真实明确关联原图的新请求有独立的有界读取预算，同请求失败不自动重试；成功内容可在权限和有效期内复用。
@@ -117,7 +119,7 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口后，Superstring 自行启动的服务与相关进程一起退出。再次双击启动器即可重新启动。
 
-升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 63（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 64（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -194,6 +196,8 @@ Operational details:
 - **Image caching and preparation**: Scoped asset caches store multi-resolution variants and animated GIF frames; inbound media is loaded on demand, reducing unnecessary processing.
 - **Structured reply records**: Tracks multi-part messages and structured reply quote chains with multi-level quoting. Member records distinguish group cards from personal nicknames, tracking platform wire events versus local directory sources.
 - **Sticker management**: Import sticker collections, manage tags and descriptions, and authorize collections for chat schemes; supports text, sticker, or combined responses.
+- **Independent text and sticker replies**: The Agent can choose text, one sticker, or a combination. Text-only replies need no extra sticker opt-out. Schemes offer low, medium, or high sticker-use guidance, defaulting to medium; groups can override it, while private chats follow the scheme. This is a soft preference, not a sending ratio or count limit.
+- **Immediate sticker disable**: Turning off global or group stickers blocks unstarted sticker sends, including queued parts, without blocking valid text. Started requests are not withdrawn, and unknown delivery results are not blindly retried. Replies still allow at most one sticker. The old count control is retired without rewriting stored values.
 - **Output reserve caps**: Scheme judgement and reply output reserve limits can be set up to 32768 to accommodate long outputs from thinking models; defaults remain 512 and 2048.
 - **QQ data retention**: Configurable retention period (1–3650 days, default 14 days) covering message text, media reading records, assistant speech, delivery logs, and nicknames. Expired content becomes unreadable; physical deletion requires manual user preview and confirmation in the storage panel. Telemetry trace retention is configured independently under System capabilities → Execution limits.
 - **Unified image settings**: All still-image categories share a long-edge setting or retain the original image; animations share frame counts and frame dimensions. Separate expression quality settings and supplement time windows have been removed. Basic settings offer automatic or on-demand input, while advanced settings retain modes, per-stage switches, and custom configurations. A new explicit request linked to a source image has its own bounded read budget. Failed reads do not retry automatically within the same request; successful results can be reused while permissions and expiry checks remain valid.
@@ -247,7 +251,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window exits background services and processes started by Superstring. Double-click the launcher again to restart.
 
-Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 63 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 64 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
 ### Run from source
 

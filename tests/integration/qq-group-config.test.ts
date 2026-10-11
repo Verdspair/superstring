@@ -222,6 +222,30 @@ describe("本群 Agent 配置的 HTTP 读写", () => {
     expect(reread.revision).toBe(1);
   });
 
+  it("frequency override is sparse, survives save, and otherwise follows the base scheme", async () => {
+    const { orm, app, scheme } = setup();
+    const binding = groupBinding(orm, scheme.id, "20091");
+    const fresh = await currentConfig(app, binding.id);
+    expect(fresh.effective_scheme.stickers.frequency).toBe("medium");
+    expect(
+      readEffectiveQqScheme(orm, required(readQqBinding(orm, binding.id)))?.stickerFrequency,
+    ).toBe("medium");
+
+    const saved = await save(app, orm, binding.id, { stickers: { frequency: "high" } });
+    expect(saved.overrides).toEqual({ stickers: { frequency: "high" } });
+    expect(saved.effective_scheme.stickers.frequency).toBe("high");
+    expect(
+      readEffectiveQqScheme(orm, required(readQqBinding(orm, binding.id)))?.stickerFrequency,
+    ).toBe("high");
+
+    const follows = await save(app, orm, binding.id, { stickers: {} });
+    expect(follows.overrides).toEqual({});
+    expect(follows.effective_scheme.stickers.frequency).toBe("medium");
+    expect(
+      readEffectiveQqScheme(orm, required(readQqBinding(orm, binding.id)))?.stickerFrequency,
+    ).toBe("medium");
+  });
+
   it("全是空组的提交归一化成空差异：不产生记录，revision 保持 0", async () => {
     const { orm, app, scheme } = setup();
     const binding = groupBinding(orm, scheme.id, "20002");

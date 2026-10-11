@@ -24,6 +24,7 @@ import {
   effectiveQqTriggers,
   readQqScheme,
   schemeReply,
+  schemeStickers,
   schemeTaskLimits,
 } from "../../db/qq-scheme-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
@@ -282,7 +283,8 @@ export function createOneBotConversationRuntime(options: {
     // 发送车道＝既有 QQ wake 并发资源（不是模型帽）：每次准入现读 policy()，调低后不再按旧值放行。
     deliveryConcurrency: () => policy().globalConcurrency,
     stickerFile: qqStickerFileReference(orm, options.store),
-    stickerAvailable(stickerId, target, at) {
+    stickerAvailable(stickerId, target, at, stickerSources) {
+      if (options.stickersEnabled?.() === false) return false;
       const binding = readQqBinding(orm, target.bindingId);
       // 投递目标必须仍然是这条绑定本身：换绑、换群或换助手之后的旧素材不再放行。
       if (
@@ -294,14 +296,30 @@ export function createOneBotConversationRuntime(options: {
         binding.schemeId !== target.schemeId
       )
         return false;
-      // 本群停用「表情」后，已排队的素材发送也不得落地（停用即时生效，不只在下一轮）。
+      const bindingOwner = {
+        kind: "qq_binding" as const,
+        id: binding.id,
+        userId: DEFAULT_USER_ID,
+        agentId: binding.agentId,
+      };
+      if (!guard.allowed(bindingOwner, "stickers")) return false;
       if (
-        !guard.allowed(
-          { kind: "qq_binding", id: binding.id, userId: DEFAULT_USER_ID, agentId: binding.agentId },
-          "stickers",
-        )
+        stickerSources !== undefined &&
+        !stickerSources.some((source) => source.kind === "qq_sticker" && source.id === stickerId)
       )
         return false;
+      for (const source of stickerSources ?? []) {
+        if (source.kind === "qq_group_capability") {
+          if (guard.sourceAccess(source, bindingOwner) !== "available") return false;
+        } else if (source.kind === "qq_sticker" && source.id === stickerId) {
+          if (
+            sourceAccess(db, source, bindingOwner, { userId: DEFAULT_USER_ID }, at) !== "available"
+          )
+            return false;
+        } else {
+          return false;
+        }
+      }
       const selection = qqStickerSelectionForScheme(orm, {
         schemeId: binding.schemeId,
         // 显式带上本群绑定：生效素材集合与表情参数按本群差异读取，也不会被会话键查到的别的绑定带偏。
@@ -582,6 +600,7 @@ export function createOneBotConversationRuntime(options: {
         agentConfigVersion: agent.configVersion,
         taskClass: task.taskClass as QqTaskExecutionSnapshot["taskClass"],
         cause: task.cause as QqTaskExecutionSnapshot["cause"],
+        stickerFrequency: schemeStickers(scheme).frequency,
         sourceFromSeq: task.sourceFromSeq,
         sourceThroughSeq: task.sourceThroughSeq,
         sourceExpiresAt: task.sourceExpiresAt,

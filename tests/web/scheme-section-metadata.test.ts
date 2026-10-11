@@ -76,7 +76,7 @@ const EXPECTED_SECTION: Readonly<Record<string, string>> = {
   "rhythm.media_max_dimension": "image_understanding",
   "prompts.media": "image_understanding",
   // 表情发送
-  "rhythm.max_sticker_count": "sticker_sending",
+  "stickers.frequency": "sticker_sending",
   "stickers.sticker_min_repeat_minutes": "sticker_sending",
   "stickers.sticker_recent_avoid_count": "sticker_sending",
   "sticker_collections.collection_ids": "sticker_sending",

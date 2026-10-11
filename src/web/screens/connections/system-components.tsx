@@ -44,6 +44,11 @@ export function SystemComponents({
   const actionNote =
     "actionNoteKey" in entry && entry.actionNoteKey ? t(entry.actionNoteKey) : null;
 
+  const stickerTool = (toolData?.tools ?? []).find(
+    (tool) => tool.name === "reply.sticker" || tool.name.startsWith("sticker."),
+  );
+  const isStickerOff = stickerTool ? stickerTool.globalEnabled === false : false;
+
   return (
     <section
       className="space-y-3 rounded-lg border bg-muted/20 p-3 text-xs"
@@ -59,11 +64,42 @@ export function SystemComponents({
       {actionNote && <p className="text-[11px] text-muted-foreground">{actionNote}</p>}
 
       {isQqReply && (
-        <div className="flex items-center gap-2 pt-0.5">
-          <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-muted-foreground">
+        <div className="space-y-1.5 pt-0.5">
+          <span className="block text-[11px] font-medium text-muted-foreground">
             {t("capabilities.qqReply.runtimeAction")}
-          </Badge>
-          <span className="font-mono text-[11px] text-muted-foreground">speech.reply</span>
+          </span>
+          <div className="flex flex-wrap gap-1.5">
+            <div className="inline-flex items-center gap-2 rounded-md border bg-background/50 px-2.5 py-1 text-xs">
+              <Badge variant="outline" className="px-1 py-0 text-[10px] uppercase shrink-0">
+                {t("connections.components.tools")}
+              </Badge>
+              {TOOL_HUMAN_LABELS["reply.text"] && (
+                <span className="font-medium">{t(TOOL_HUMAN_LABELS["reply.text"])}</span>
+              )}
+              <span className="font-mono text-[11px] text-muted-foreground">reply.text</span>
+            </div>
+            <div
+              className={`inline-flex items-center gap-2 rounded-md border bg-background/50 px-2.5 py-1 text-xs ${
+                isStickerOff ? "opacity-60 bg-muted/50" : ""
+              }`}
+            >
+              <Badge
+                variant={isStickerOff ? "secondary" : "outline"}
+                className="px-1 py-0 text-[10px] uppercase shrink-0"
+              >
+                {t("connections.components.tools")}
+              </Badge>
+              {TOOL_HUMAN_LABELS["reply.sticker"] && (
+                <span className="font-medium">{t(TOOL_HUMAN_LABELS["reply.sticker"])}</span>
+              )}
+              <span className="font-mono text-[11px] text-muted-foreground">reply.sticker</span>
+              {isStickerOff && (
+                <span className="text-[10px] text-destructive shrink-0">
+                  ({t("connections.components.globalOff")})
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

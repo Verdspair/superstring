@@ -96,6 +96,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0061_qq_task_ready_at.sql",
     "versions/0062_qq_media_spec_unification.sql",
     "versions/0063_qq_media_request_identity.sql",
+    "versions/0064_qq_scheme_sticker_frequency.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

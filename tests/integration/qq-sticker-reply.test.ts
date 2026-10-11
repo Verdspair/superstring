@@ -145,6 +145,7 @@ function setup(input: { repeatMinutes?: number; avoidCount?: number } = {}) {
         input.repeatMinutes ?? QQ_STICKER_DEDUP_DEFAULT.sticker_min_repeat_minutes,
       sticker_recent_avoid_count:
         input.avoidCount ?? QQ_STICKER_DEDUP_DEFAULT.sticker_recent_avoid_count,
+      frequency: "medium",
     },
     stickerCollections: [collection.id],
   });

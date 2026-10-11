@@ -40,6 +40,14 @@ function removeTempDir(dir: string): void {
 
 const digest = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
+const oldFactoryStickerPrompt =
+  "你只做一件事：从给定候选里挑一张最贴合当前语境的图。\n" +
+  "只输出候选编号；没有贴合的就不选，不要勉强凑一张。\n" +
+  "不选与话题无关的图，也不选刚发过的那张。";
+const newFactoryStickerPrompt =
+  "按当前语境自主选择文字、表情或两者组合；没有合适内容时可以不回复。\n" +
+  "需要表情时，先用 sticker.search 查看候选，再用 reply.sticker 选择本次已披露的素材 ID；每个目标至多一张。只发文字时使用 reply.text，不必另行声明不用表情。\n" +
+  "不要为了装饰勉强加图，不选无关或刚发过的素材。";
 
 function verifyUpgrade(initiallyBoundToB: boolean) {
   const dir = mkdtempSync(path.join(realpathSync(tmpdir()), "superstring-refactor-restore-"));
@@ -174,7 +182,13 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
         rows: fixtureDb
           .query(sql)
           .all()
-          .map((row) => JSON.stringify(row))
+          .map((row) => {
+            const legacy = row as Record<string, unknown>;
+            if (name === "qq_schemes" && legacy.prompt_sticker === oldFactoryStickerPrompt) {
+              return JSON.stringify({ ...legacy, prompt_sticker: newFactoryStickerPrompt });
+            }
+            return JSON.stringify(row);
+          })
           .sort(),
       };
     });

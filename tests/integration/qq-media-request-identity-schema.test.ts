@@ -66,7 +66,7 @@ const INSERT_TASK = `INSERT INTO qq_media_read_tasks
   (id, media_note_id, asset_source_id, account_id, conversation_kind, peer_id, agent_id, identity_key, purpose, question_key, model_name, policy, attempts, status, last_attempt_at, note, request_id, revision, expires_at, recorded_at)
   VALUES (?, 'mn1', NULL, '10001', 'group', '20001', 'a1', ?, ?, ?, NULL, 'legacy', 0, 'pending', NULL, NULL, ?, 1, '${EXPIRES}', '${NOW}')`;
 
-function freshV63(): Database {
+function freshCurrent(): Database {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   for (const name of chain) db.exec(sql(name));
@@ -96,7 +96,7 @@ describe("0063 media request identity", () => {
         .all();
       const columnsBefore = db.query("PRAGMA table_info(qq_media_read_tasks)").all();
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
       // Physical tail column exists; every old column keeps its position and definition.
       const columnsAfter = db.query("PRAGMA table_info(qq_media_read_tasks)").all() as Array<{
         name: string;
@@ -136,7 +136,7 @@ describe("0063 media request identity", () => {
   });
 
   it("keeps old dedup semantics for ordinary rows and admits distinct explicit requests", () => {
-    const db = freshV63();
+    const db = freshCurrent();
     try {
       const st = db.prepare(INSERT_TASK);
       // Ordinary baseline + ordinary detail behave exactly as before.
@@ -165,7 +165,7 @@ describe("0063 media request identity", () => {
   });
 
   it("rejects request_id on baseline rows and empty/blank request values via CHECK", () => {
-    const db = freshV63();
+    const db = freshCurrent();
     try {
       const st = db.prepare(INSERT_TASK);
       expect(() => st.run("t-br", null, "baseline", null, "req-a")).toThrow(
@@ -203,9 +203,9 @@ describe("0063 media request identity", () => {
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 62 });
-      // The real 63-length chain upgrades the same database cleanly.
+      // The real 64-length chain upgrades the same database cleanly.
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
       expect(
         db.query("SELECT request_id FROM qq_media_read_tasks WHERE id='t-old-baseline'").get(),
       ).toEqual({ request_id: null });

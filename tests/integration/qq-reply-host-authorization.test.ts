@@ -16,7 +16,7 @@ describe("OneBotHost quote and mention authorization", () => {
   it("authorized quote reference sets replyToMessageId and delivers reply segment", async () => {
     const h = createOneBotHarness({
       model: [
-        decideInvoke("speech.reply", {
+        decideInvoke("reply.text", {
           outputs: [
             {
               kind: "inline",
@@ -42,7 +42,7 @@ describe("OneBotHost quote and mention authorization", () => {
   it("undisclosed or unknown message ID is rejected with CONTEXT_SOURCE_INVALID", async () => {
     const h = createOneBotHarness({
       model: [
-        decideInvoke("speech.reply", {
+        decideInvoke("reply.text", {
           outputs: [
             {
               kind: "inline",
@@ -69,7 +69,7 @@ describe("OneBotHost quote and mention authorization", () => {
   it("quote plus explicit mention delivers reply, text, and at segments without duplication", async () => {
     const h = createOneBotHarness({
       model: [
-        decideInvoke("speech.reply", {
+        decideInvoke("reply.text", {
           outputs: [
             {
               kind: "inline",
@@ -97,7 +97,7 @@ describe("OneBotHost quote and mention authorization", () => {
   it("unauthorized mention ID from unknown member is rejected with CONTEXT_SOURCE_INVALID", async () => {
     const h = createOneBotHarness({
       model: [
-        decideInvoke("speech.reply", {
+        decideInvoke("reply.text", {
           outputs: [
             {
               kind: "inline",
@@ -124,7 +124,7 @@ describe("OneBotHost quote and mention authorization", () => {
   it("delivers an explicit mention without a phantom text or recipient mention", async () => {
     const h = createOneBotHarness({
       model: [
-        decideInvoke("speech.reply", {
+        decideInvoke("reply.text", {
           outputs: [
             {
               kind: "inline",
@@ -148,7 +148,7 @@ describe("OneBotHost quote and mention authorization", () => {
     const h = createOneBotHarness({
       kind: "private",
       model: [
-        decideInvoke("speech.reply", {
+        decideInvoke("reply.text", {
           outputs: [
             {
               kind: "inline",
@@ -176,7 +176,7 @@ describe("OneBotHost quote and mention authorization", () => {
     const h = createOneBotHarness({
       kind: "private",
       model: [
-        decideInvoke("speech.reply", {
+        decideInvoke("reply.text", {
           outputs: [
             {
               kind: "inline",

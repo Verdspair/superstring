@@ -80,7 +80,6 @@ export const taskLimitsFields = [
 ] as const;
 
 export const stickerFields = [
-  ["rhythm", "max_sticker_count", "connections.stickersPerReply"],
   ["stickers", "sticker_min_repeat_minutes", "connections.shortestRepeatIntervalPerStickerMinutes"],
   ["stickers", "sticker_recent_avoid_count", "connections.avoidTheLastFew"],
 ] as const;
@@ -121,6 +120,7 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
   "output_reserve.judgement_output_reserved": "connections.judgementOutputReserveEstimatedBytes",
   "output_reserve.reply_output_reserved": "connections.replyOutputReserveEstimatedBytes",
+  "stickers.frequency": "connections.stickerFrequency",
   "sticker_collections.collection_ids": "connections.authorizedCollections",
   "prompts.scene": "connections.sceneAndBehaviour",
   "prompts.judge": "connections.judgementTask",
@@ -171,11 +171,7 @@ const rhythmSectionByName: Readonly<Record<string, QqSchemeSection>> = {
       .filter(([group]) => group === "rhythm")
       .map(([, name]) => [name, "image_understanding"]),
   ),
-  ...Object.fromEntries(
-    stickerFields
-      .filter(([group]) => group === "rhythm")
-      .map(([, name]) => [name, "sticker_sending"]),
-  ),
+
   active_hours_enabled: "participation",
   active_hours_start_minutes: "participation",
   active_hours_end_minutes: "participation",
@@ -228,6 +224,11 @@ export function qqSchemeFieldSection(field: string): QqSchemeSection {
 export const QQ_SCHEME_ENUM_OPTION_LABELS: Readonly<
   Record<string, Readonly<Record<string, string>>>
 > = {
+  "stickers.frequency": {
+    low: "connections.stickerFrequencyLow",
+    medium: "connections.stickerFrequencyMedium",
+    high: "connections.stickerFrequencyHigh",
+  },
   "message_settings.reply_mode": {
     one_then_on_demand: "connections.quoteMode.one_then_on_demand",
     configured_depth: "connections.quoteMode.configured_depth",

@@ -439,6 +439,75 @@ function ImageInputMethodRadio() {
   );
 }
 
+function StickerFrequencyRadio() {
+  const { t } = useTranslation();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patchQqScheme = useSuperstringStore((s) => s.patchQqScheme);
+  const radioId = useId();
+
+  if (!editor) return null;
+
+  const currentFrequency = editor.stickers.frequency;
+
+  const handleChange = (val: string) => {
+    if (val === "low" || val === "medium" || val === "high") {
+      patchQqScheme({
+        stickers: {
+          ...editor.stickers,
+          frequency: val,
+        },
+      });
+    }
+  };
+
+  const options = [
+    {
+      value: "low",
+      labelKey: "connections.stickerFrequencyLow",
+      hintKey: "connections.stickerFrequencyLowHint",
+    },
+    {
+      value: "medium",
+      labelKey: "connections.stickerFrequencyMedium",
+      hintKey: "connections.stickerFrequencyMediumHint",
+    },
+    {
+      value: "high",
+      labelKey: "connections.stickerFrequencyHigh",
+      hintKey: "connections.stickerFrequencyHighHint",
+    },
+  ] as const;
+
+  return (
+    <div className="space-y-2 sm:col-span-2">
+      <div className="text-sm font-medium">{t("connections.stickerFrequency")}</div>
+      <RadioGroup
+        value={currentFrequency}
+        onValueChange={handleChange}
+        disabled={saving}
+        className="grid gap-3 sm:grid-cols-3"
+      >
+        {options.map((opt) => (
+          <Label
+            key={opt.value}
+            htmlFor={`${radioId}-${opt.value}`}
+            className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+          >
+            <RadioGroupItem value={opt.value} id={`${radioId}-${opt.value}`} className="mt-0.5" />
+            <div className="space-y-1">
+              <span className="block font-medium leading-none">{t(opt.labelKey)}</span>
+              <span className="block text-xs font-normal leading-normal text-muted-foreground">
+                {t(opt.hintKey)}
+              </span>
+            </div>
+          </Label>
+        ))}
+      </RadioGroup>
+    </div>
+  );
+}
+
 /**
  * 普通静图规格：显式「原图 / 限制长边」二选一 + 数值输入。null＝原图是真实设置值，
  * 不是 0 或缺省——不允许把 0 当成原图（0 不在契约 64–2048 内，会拦保存）。
@@ -1507,6 +1576,7 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                     description="schemes.studio.stickerParamsHint"
                   >
                     <div className="grid gap-5 sm:grid-cols-2">
+                      <StickerFrequencyRadio />
                       {stickerFields.map(([group, name, label]) => (
                         <SchemeNumber key={name} group={group} name={name} label={label} />
                       ))}

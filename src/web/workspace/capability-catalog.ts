@@ -213,6 +213,8 @@ export const TOOL_HUMAN_LABELS: Record<string, string> = {
   "media.note.read": "capabilities.labels.mediaNoteRead",
   "media.describe": "capabilities.labels.mediaDescribe",
   "sticker.search": "capabilities.labels.stickerSearch",
+  "reply.text": "capabilities.labels.replyText",
+  "reply.sticker": "capabilities.labels.replySticker",
   "task.start": "capabilities.labels.taskStart",
   "task.read": "capabilities.labels.taskRead",
   "research.run": "capabilities.labels.researchRun",

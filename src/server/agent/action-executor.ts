@@ -4,7 +4,7 @@ import type { ExecutionMode } from "../../shared/contracts/permissions";
 import type { QqGroupCapability } from "../../shared/contracts/qq-group-config";
 import { type PermissionService, unconfiguredPermissions } from "../permissions/service";
 import type { ActionContext, BuiltInAction } from "./built-in-actions";
-import { uniqueSources } from "./context-engine";
+import { type ActionObservation, uniqueSources } from "./context-engine";
 
 /** 本群能力停用的执行边界。结构类型：Runtime 只装配一个 guard，缺省不传＝行为不变。 */
 export interface ActionGuard {
@@ -13,7 +13,11 @@ export interface ActionGuard {
   /** 能力当前启用的来源引用（含停用纪元）：非停用面＝[]，供入队等长生命周期点冻结纪元。 */
   sources(owner: RunOwner, capability: QqGroupCapability): readonly SourceRef[];
   actionAllowed(action: BuiltInAction, owner: RunOwner): boolean;
-  assertAction(action: BuiltInAction, owner: RunOwner): void;
+  assertAction(
+    action: BuiltInAction,
+    owner: RunOwner,
+    options?: { readonly retainedCarrierObservation?: Pick<ActionObservation, "name" | "sources"> },
+  ): void;
   actionSources(action: BuiltInAction, owner: RunOwner): readonly SourceRef[];
   assertSources(owner: RunOwner, sources: readonly SourceRef[]): void;
 }
@@ -45,10 +49,11 @@ export class ActionExecutor {
     context: ActionContext,
     mode: ExecutionMode = "direct",
     approvalKey?: string,
+    options?: { readonly retainedCarrierObservation?: Pick<ActionObservation, "name" | "sources"> },
   ): void {
     context.signal.throwIfAborted();
-    // 群能力停用即时生效：包围原权限断言，任一时刻被停用都在这里硬失败。
-    this.guard?.assertAction(action, context.owner);
+    // Group capability is rechecked at both sides of the permission assertion.
+    this.guard?.assertAction(action, context.owner, options);
     const effect = action.description.effect ?? "write";
     this.permissions.assert(
       action.permission,
@@ -58,7 +63,7 @@ export class ActionExecutor {
       action.sandboxCallable ?? effect === "read",
       approvalKey,
     );
-    this.guard?.assertAction(action, context.owner);
+    this.guard?.assertAction(action, context.owner, options);
     action.assertAvailable?.();
   }
   async executeBatch(
