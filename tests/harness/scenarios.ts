@@ -443,19 +443,30 @@ export async function mediaReadFailureThenSupplement(): Promise<ScenarioRun> {
     },
   });
   let mediaId: string | null = null;
+  let explicitQuestionId: string | undefined;
   driveToolFirst(harness, (observation) => {
     if (observation?.name === "media.list" && observation.value?.status === "ok") {
       const item = observation.value.items?.[0];
       if (item?.id !== undefined) {
         mediaId = item.id;
-        return [decideInvoke("media.describe", { id: item.id })];
+        return [
+          decideInvoke("media.describe", {
+            id: item.id,
+            ...(explicitQuestionId === undefined ? {} : { questionMessageId: explicitQuestionId }),
+          }),
+        ];
       }
       return [decideNone()];
     }
     if (observation?.name === "media.describe") {
       const status = observation.value?.status;
       if (status === "described" && mediaId !== null)
-        return [decideInvoke("media.note.read", { id: mediaId })];
+        return [
+          decideInvoke("media.note.read", {
+            id: mediaId,
+            ...(explicitQuestionId === undefined ? {} : { questionMessageId: explicitQuestionId }),
+          }),
+        ];
       // 读失败：想发布就会被闸门在提交处挡下（这一轮以失败结束）。
       if (status === "failed") return [decideGenerate("20002")];
     }
@@ -484,9 +495,16 @@ export async function mediaReadFailureThenSupplement(): Promise<ScenarioRun> {
     .find((run) => run.errorCode === "MEDIA_READ_FAILED");
   if (blockedRun === undefined) throw new Error("缺少被媒体闸门挡下的运行");
 
-  // ② 更晚、明确叫她看这张图的补充：直接回应路径重读一次（最后一次尝试）并收口。
+  // ② 新消息明确引用原图：独立 detail 请求预算，不重置已失败的 baseline。
   harness.advance(1);
-  harness.receive({ id: "2", speaker: "20002", addressed: true, text: "就是这张，你看下" });
+  explicitQuestionId = "2";
+  harness.receive({
+    id: "2",
+    speaker: "20002",
+    addressed: true,
+    replyTo: "1",
+    text: "再看这张图，里面是什么",
+  });
   harness.model?.push([decideInvoke("media.list", {})]);
   const result = await harness.activate("direct_reply");
   await harness.deliver();

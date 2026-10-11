@@ -85,7 +85,6 @@ const OverridesShapeBase = z.strictObject({
       active_hours_end_minutes: Scheme.rhythm.active_hours_end_minutes.optional(),
       max_recompute_count: Scheme.rhythm.max_recompute_count.optional(),
       max_sticker_count: Scheme.rhythm.max_sticker_count.optional(),
-      media_supplement_window_minutes: Scheme.rhythm.media_supplement_window_minutes.optional(),
       media_frame_count: Scheme.rhythm.media_frame_count.optional(),
       media_max_dimension: Scheme.rhythm.media_max_dimension.optional(),
       // 0054 的三个批量字段同样逐字段覆盖；带默认值的走 stripDefault，缺席＝跟随基础方案。
@@ -182,9 +181,6 @@ const OverridesShapeBase = z.strictObject({
         .optional(),
       max_images: Scheme.mediaInput.max_images.optional(),
       ordinary_still_max_dimension: Scheme.mediaInput.ordinary_still_max_dimension.optional(),
-      expression_max_dimension: Scheme.mediaInput.expression_max_dimension.optional(),
-      expression_frame_count: Scheme.mediaInput.expression_frame_count.optional(),
-      expression_frame_max_dimension: Scheme.mediaInput.expression_frame_max_dimension.optional(),
     })
     .optional(),
 });

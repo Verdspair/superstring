@@ -5,7 +5,7 @@
 // sampled frame, and the answer is constrained by a strict response schema — the same shape the
 // gateway's own calls use. These cases pin exactly that, with `fetch` injected.
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import http from "node:http";
 import { createLmStudioVisionClient } from "../../src/server/llm/vision-client";
 
@@ -180,7 +180,17 @@ describe("the multimodal request shape", () => {
    */
   it("falls back from json_schema to json_object when the service rejects the strict shape", async () => {
     const formats: (string | undefined)[] = [];
+    const originalTimeout = AbortSignal.timeout;
+    const timeoutSignals: AbortSignal[] = [];
+    const timeoutSpy = (milliseconds: number) => {
+      const signal = originalTimeout(milliseconds);
+      timeoutSignals.push(signal);
+      return signal;
+    };
+    const timeoutMock = spyOn(AbortSignal, "timeout").mockImplementation(timeoutSpy);
+    const fetchSignals: AbortSignal[] = [];
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      fetchSignals.push(init?.signal as AbortSignal);
       const body = JSON.parse(String(init?.body ?? "{}")) as {
         response_format?: { type?: string };
       };
@@ -193,20 +203,156 @@ describe("the multimodal request shape", () => {
       });
     }) as unknown as typeof fetch;
     const client = createLmStudioVisionClient(config, fetchImpl);
-    const answer = await client.annotate({
-      model: "vision-model",
-      prompt: "写一段说明",
-      images: [{ mimeType: "image/png", bytes: new Uint8Array([1]) }],
-      responseSchema: { type: "object" },
-    });
-    expect(answer).toBe('{"a":1}');
-    expect(formats).toEqual(["json_schema", "json_object"]);
+    try {
+      const answer = await client.annotate({
+        model: "vision-model",
+        prompt: "写一段说明",
+        images: [{ mimeType: "image/png", bytes: new Uint8Array([1]) }],
+        responseSchema: { type: "object" },
+      });
+      expect(answer).toBe('{"a":1}');
+      expect(formats).toEqual(["json_schema", "json_object"]);
+      expect(timeoutSignals).toHaveLength(1);
+      expect(fetchSignals).toHaveLength(2);
+      expect(fetchSignals[0]).toBe(fetchSignals[1]);
+    } finally {
+      timeoutMock.mockRestore();
+    }
   });
 
   /**
    * 413（输入超长）不是 schema 形状问题：与网关共用同一条降级资格谓词，视觉链同样只有
    * 一次失败，不把图字节重传、不降 schema 档。
    */
+  it("does not start the shared deadline until the first permit is granted", async () => {
+    const originalTimeout = AbortSignal.timeout;
+    const timeoutSpy = spyOn(AbortSignal, "timeout").mockImplementation(originalTimeout);
+    let grantFirst: (() => void) | undefined;
+    const permitWait = new Promise<void>((resolve) => {
+      grantFirst = resolve;
+    });
+    let sends = 0;
+    const seenSignals: AbortSignal[] = [];
+    const acquireSendPermit = async (_model: string, signal?: AbortSignal) => {
+      if (sends === 0) {
+        expect(signal).toBeUndefined();
+        await permitWait;
+      } else {
+        expect(signal).toBe(seenSignals[0]);
+      }
+      return () => {};
+    };
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      sends += 1;
+      seenSignals.push(init?.signal as AbortSignal);
+      if (sends === 1) return new Response("unsupported response_format", { status: 400 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(config, fetchImpl);
+    const result = client.annotate({
+      model: "vision-model",
+      prompt: "p",
+      images: [],
+      responseSchema: { type: "object" },
+      acquireSendPermit,
+    });
+    try {
+      expect(timeoutSpy).not.toHaveBeenCalled();
+      grantFirst?.();
+      await expect(result).resolves.toBe("ok");
+      expect(timeoutSpy).toHaveBeenCalledTimes(1);
+      expect(seenSignals).toHaveLength(2);
+      expect(seenSignals[0]).toBe(seenSignals[1]);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it("lets caller cancellation detach the first permit wait without starting a deadline", async () => {
+    const controller = new AbortController();
+    const timeoutMock = spyOn(AbortSignal, "timeout").mockImplementation(AbortSignal.timeout);
+    let sends = 0;
+    const acquireSendPermit = async (_model: string, signal?: AbortSignal) => {
+      await new Promise<never>((_resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      return () => {};
+    };
+    const fetchImpl = (async () => {
+      sends += 1;
+      return new Response("unexpected", { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(config, fetchImpl);
+    const result = client.annotate({
+      model: "vision-model",
+      prompt: "p",
+      images: [],
+      signal: controller.signal,
+      acquireSendPermit,
+    });
+    try {
+      expect(timeoutMock).not.toHaveBeenCalled();
+      const reason = new Error("caller cancelled while waiting");
+      controller.abort(reason);
+      await expect(result).rejects.toBe(reason);
+      expect(timeoutMock).not.toHaveBeenCalled();
+      expect(sends).toBe(0);
+    } finally {
+      timeoutMock.mockRestore();
+    }
+  });
+
+  it("keeps the original deadline while the schema retry waits for a permit", async () => {
+    const deadline = new AbortController();
+    const timeoutSignals: AbortSignal[] = [];
+    const timeoutMock = spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      timeoutSignals.push(deadline.signal);
+      return deadline.signal;
+    });
+    const fetchSignals: AbortSignal[] = [];
+    let permitCalls = 0;
+    let releaseRetry: (() => void) | undefined;
+    const acquireSendPermit = async (_model: string, signal?: AbortSignal) => {
+      permitCalls += 1;
+      if (permitCalls === 1) return () => {};
+      expect(signal).toBe(timeoutSignals[0]);
+      await new Promise<void>((resolve) => {
+        releaseRetry = resolve;
+      });
+      return () => {};
+    };
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      fetchSignals.push(init?.signal as AbortSignal);
+      return new Response("unsupported response_format", { status: 400 });
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(config, fetchImpl);
+    const result = client.annotate({
+      model: "vision-model",
+      prompt: "p",
+      images: [],
+      responseSchema: { type: "object" },
+      acquireSendPermit,
+    });
+    try {
+      while (releaseRetry === undefined) await Promise.resolve();
+      expect(timeoutMock).toHaveBeenCalledTimes(1);
+      deadline.abort(new DOMException("deadline", "TimeoutError"));
+      releaseRetry();
+      await expect(result).rejects.toMatchObject({ code: "MODEL_TIMEOUT" });
+      expect(fetchSignals).toHaveLength(1);
+      expect(permitCalls).toBe(2);
+    } finally {
+      timeoutMock.mockRestore();
+      releaseRetry?.();
+    }
+  });
+
   it("does not fall back on a 413 (input too long): one failure, generic code", async () => {
     const formats: (string | undefined)[] = [];
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
@@ -280,6 +426,40 @@ it("does not begin a vision request after its caller has cancelled", async () =>
  * 像网关一样绕开代理直达本地服务。本用例自带 stub 与环境变量（try/finally 还原），
  * 不改变其他用例的运行环境。
  */
+it("releases a send permit after fetch failure so the next vision request can proceed", async () => {
+  let active = false;
+  let calls = 0;
+  const acquireSendPermit = async () => {
+    if (active) throw new Error("permit overlapped");
+    active = true;
+    return () => {
+      active = false;
+    };
+  };
+  const fetchImpl = (async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("synthetic fetch failure");
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      status: 200,
+    });
+  }) as unknown as typeof fetch;
+  const client = createLmStudioVisionClient(config, fetchImpl);
+  await expect(
+    client.annotate({
+      model: "vision-model",
+      prompt: "p",
+      images: [],
+      acquireSendPermit,
+    }),
+  ).rejects.toMatchObject({ code: "MODEL_ERROR" });
+  expect(active).toBe(false);
+  await expect(
+    client.annotate({ model: "vision-model", prompt: "p", images: [], acquireSendPermit }),
+  ).resolves.toBe("ok");
+  expect(active).toBe(false);
+  expect(calls).toBe(2);
+});
+
 it("reaches the local model service directly despite a dead HTTP_PROXY", async () => {
   const saved = {
     HTTP_PROXY: process.env.HTTP_PROXY,

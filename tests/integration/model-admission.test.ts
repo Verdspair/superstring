@@ -31,7 +31,15 @@ function close(server: Server): Promise<void> {
     server.close(() => resolve());
   });
 }
-const CATALOG = ["svc-a/a1", "svc-a/a2", "svc-a/a3", "svc-b/b1", "svc-b/b2"];
+const CATALOG = [
+  "svc-a/a1",
+  "svc-a/a2",
+  "svc-a/a3",
+  "svc-a/a4",
+  "svc-a/a5",
+  "svc-b/b1",
+  "svc-b/b2",
+];
 
 /** loopback 模型桩：chat 请求一直挂住直到测试放行，因此"在飞"就是服务端真实收到的并发。 */
 function admissionStub() {
@@ -162,10 +170,36 @@ function controlledPort() {
   const events: string[] = [];
   const gate = Promise.withResolvers<void>();
   const gateway = {
-    async complete() {
-      return "ok";
+    async complete(request: {
+      model?: string;
+      signal?: AbortSignal;
+      acquireSendPermit?: (
+        model: string,
+        signal?: AbortSignal,
+        workClass?: "mention" | "ordinary",
+      ) => Promise<() => void>;
+    }) {
+      const release = request.acquireSendPermit
+        ? await request.acquireSendPermit(request.model ?? "svc-a/a1", request.signal)
+        : undefined;
+      try {
+        return "ok";
+      } finally {
+        release?.();
+      }
     },
-    async *streamChat(request: { signal?: AbortSignal }) {
+    async *streamChat(request: {
+      model?: string;
+      signal?: AbortSignal;
+      acquireSendPermit?: (
+        model: string,
+        signal?: AbortSignal,
+        workClass?: "mention" | "ordinary",
+      ) => Promise<() => void>;
+    }) {
+      const release = request.acquireSendPermit
+        ? await request.acquireSendPermit(request.model ?? "svc-a/a1", request.signal)
+        : undefined;
       events.push("stream:enter");
       const aborted = new Promise<never>((_, reject) => {
         const onAbort = () => reject(request.signal?.reason ?? new Error("aborted"));
@@ -178,13 +212,25 @@ function controlledPort() {
         yield "second";
       } finally {
         events.push("stream:exit");
+        release?.();
       }
     },
   };
   const vision = {
-    async annotate() {
-      events.push("vision:enter");
-      return "vision-ok";
+    async annotate(request: {
+      model: string;
+      signal?: AbortSignal;
+      acquireSendPermit?: (model: string, signal?: AbortSignal) => Promise<() => void>;
+    }) {
+      const release = request.acquireSendPermit
+        ? await request.acquireSendPermit(request.model, request.signal)
+        : undefined;
+      try {
+        events.push("vision:enter");
+        return "vision-ok";
+      } finally {
+        release?.();
+      }
     },
   };
   const client = createModelPort({
@@ -385,6 +431,33 @@ describe("model admission", () => {
     stub.releaseAll();
     await Promise.all([first, second, queued]);
     expect(stub.peakTotal()).toBe(2);
+  });
+
+  it("释放名额时mention先于ordinary，且同类仍按FIFO", async () => {
+    const { stub, client } = await portWith({ total: 1, perProvider: 1 });
+    const active = spawn(client.complete({ ...text("svc-a/a1"), workClass: "ordinary" }));
+    await waitFor(() => stub.inFlight() === 1, "ordinary active");
+    const ordinary1 = spawn(client.complete({ ...text("svc-a/a2"), workClass: "ordinary" }));
+    const ordinary2 = spawn(client.complete({ ...text("svc-a/a3"), workClass: "ordinary" }));
+    const mention1 = spawn(client.complete({ ...text("svc-a/a4"), workClass: "mention" }));
+    const mention2 = spawn(client.complete({ ...text("svc-a/a5"), workClass: "mention" }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stub.arrival()).toEqual(["svc-a/a1"]);
+    stub.release("svc-a/a1");
+    await waitFor(() => stub.arrival().length === 2, "first mention admitted");
+    expect(stub.arrival()).toEqual(["svc-a/a1", "svc-a/a4"]);
+    stub.release("svc-a/a4");
+    await waitFor(() => stub.arrival().length === 3, "second mention admitted");
+    expect(stub.arrival()).toEqual(["svc-a/a1", "svc-a/a4", "svc-a/a5"]);
+    stub.release("svc-a/a5");
+    await waitFor(() => stub.arrival().length === 4, "first ordinary admitted");
+    expect(stub.arrival()).toEqual(["svc-a/a1", "svc-a/a4", "svc-a/a5", "svc-a/a2"]);
+    stub.release("svc-a/a2");
+    await waitFor(() => stub.arrival().length === 5, "second ordinary admitted in FIFO order");
+    expect(stub.arrival()).toEqual(["svc-a/a1", "svc-a/a4", "svc-a/a5", "svc-a/a2", "svc-a/a3"]);
+    stub.release("svc-a/a3");
+    stub.releaseAll();
+    await Promise.all([active, ordinary1, ordinary2, mention1, mention2]);
   });
 
   it("上限调高后一次刷新可推进多个等待者", async () => {

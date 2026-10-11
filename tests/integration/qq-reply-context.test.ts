@@ -330,6 +330,44 @@ describe("reply relations (pure traversal)", () => {
     expect(result.roots[0]).toMatchObject({ state: "revoked", message: null, textPage: null });
   });
 
+  test("an unavailable window target keeps its platform identity when the body is revoked", () => {
+    const target = textFact("internal-target", "-803", "deleted snapshot text", {
+      seq: 1,
+      completeness: "unavailable",
+    });
+    const referrer = textFact("internal-referrer", "-804", "reply", {
+      seq: 2,
+      replyTo: { platformMessageId: "-803" },
+    });
+    let registrations = 0;
+    const projection = expandQqReplies({
+      scope,
+      window: [target, referrer],
+      focus,
+      settings: configured,
+      now: NOW,
+      remainingTextUnits: 1000,
+      load: () => null,
+      loadState: () => ({ state: "revoked", fact: null }),
+      register: () => {
+        registrations++;
+        return "unexpected-ref";
+      },
+      fits: () => true,
+    });
+    expect(projection.roots).toHaveLength(1);
+    expect(projection.roots[0]).toMatchObject({
+      targetMessageId: "-803",
+      state: "revoked",
+      message: null,
+      textPage: null,
+      bodyRef: null,
+    });
+    expect(projection.sources).toHaveLength(0);
+    expect(registrations).toBe(0);
+    expect(JSON.stringify(projection)).not.toContain("deleted snapshot text");
+  });
+
   test("window legacy_partial is supplemented from load and never claimed as full window body", () => {
     const windowPartial = factOf({
       id: "w901",

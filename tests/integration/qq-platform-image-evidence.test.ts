@@ -5,8 +5,10 @@
 //   * NapCat 实发 image 段：file/url/sub_type/summary/file_size；market face 被映射为
 //     image 段带 emoji_id/emoji_package_id/key/summary（NapNeko/NapCatQQ packages/napcat-onebot/api/msg.ts）；
 //   * go-cqhttp 实发驼峰 subType（Mrs4s/go-cqhttp coolq/cqcode.go，MiraiGo ImageBizType）。
-// 规则（已批最小方案）：emoji_id + emoji_package_id + summary 三键同现且均为非空 string
-// 才判 expression；单字段/误形/跨实现 subtype 数值/flash/gif URL 一律不猜，保持 unknown；
+// 规则（已批最小方案）：emoji_id + emoji_package_id + summary 三键同现才判 expression，
+// 其中 emoji_package_id 接受非空 string 或有限整数 number（NapCat 直传形态）；
+// emoji_id/summary 仍要求非空 string；单字段/误形/跨实现 subtype 数值/flash/gif URL
+// 一律不猜，保持 unknown；
 // 未知键维持既有丢弃契约（secret:"omit" 背书）；key/URL/summary 不作为命令或持久元数据保存。
 
 import { describe, expect, it } from "bun:test";
@@ -100,7 +102,7 @@ describe("platform image evidence normalization (spec §7.2)", () => {
       { ...MARKET_FACE, emoji_id: undefined },
       { ...MARKET_FACE, summary: undefined },
       { ...MARKET_FACE, emoji_id: "" },
-      { ...MARKET_FACE, emoji_package_id: 8 },
+      { ...MARKET_FACE, emoji_package_id: "" },
       { emoji_id: "00abc123" },
     ]) {
       const segment = imagePart(imageEvent(data));
@@ -108,6 +110,35 @@ describe("platform image evidence normalization (spec §7.2)", () => {
       expect(segment.categoryEvidence).toBeUndefined();
     }
     expect(storedCategory(imageEvent({ ...MARKET_FACE, emoji_id: 123 }))).toBe("unknown");
+  });
+
+  it("accepts a finite integer numeric emoji_package_id as reliable market evidence (P1)", () => {
+    // NapCat 把 emoji_package_id 声明为 number 且零转换直传；wire JSON 表达不了 NaN/Infinity，
+    // 但公开 normalizer 的实际输入是 JS 对象，非有限值按适用要求在此断言。
+    for (const pkg of [8, 0, -0]) {
+      const segment = imagePart(imageEvent({ ...MARKET_FACE, emoji_package_id: pkg }));
+      if (segment.kind !== "image") throw new Error("image segment expected");
+      expect(segment.categoryEvidence).toBe("expression");
+    }
+  });
+
+  it("keeps unknown for non-finite, non-integer or blank package IDs even with other keys", () => {
+    for (const data of [
+      { ...MARKET_FACE, emoji_package_id: Number.NaN },
+      { ...MARKET_FACE, emoji_package_id: Number.POSITIVE_INFINITY },
+      { ...MARKET_FACE, emoji_package_id: 1.5 },
+      { ...MARKET_FACE, emoji_package_id: "" },
+      { ...MARKET_FACE, emoji_package_id: "  " },
+      { ...MARKET_FACE, emoji_package_id: 8, emoji_id: "" },
+    ]) {
+      const segment = imagePart(imageEvent(data));
+      if (segment.kind !== "image") throw new Error("image segment expected");
+      expect(segment.categoryEvidence).toBeUndefined();
+    }
+  });
+
+  it("records a numeric package ID market face as expression through real intake", () => {
+    expect(storedCategory(imageEvent({ ...MARKET_FACE, emoji_package_id: 8 }))).toBe("expression");
   });
 
   it("never guesses from cross-implementation sub_type numbers, flash type or gif URLs", () => {

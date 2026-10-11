@@ -325,7 +325,11 @@ describe("model resolved prepare hook（T10 基础）", () => {
         model: "local/model",
         timeoutSeconds: 5,
       });
-      const port_ = createModelPort({ gateway });
+      const port_ = createModelPort({ gateway, modelCallConcurrency: 1 });
+      let admissionEvents = 0;
+      port_.admission?.subscribe(() => {
+        admissionEvents += 1;
+      });
       const result = await port_.complete({
         messages: TEXT,
         model: "local/model",
@@ -340,6 +344,8 @@ describe("model resolved prepare hook（T10 基础）", () => {
       expect(bodies[0]?.model).toBe("local/model");
       expect(bodies[1]?.model).toBe("local/model");
       expect(prepares).toBe(1);
+      // Each real HTTP schema attempt gets one permit; no ModelPort outer double-acquire.
+      expect(admissionEvents).toBe(4);
     } finally {
       await close(server);
     }

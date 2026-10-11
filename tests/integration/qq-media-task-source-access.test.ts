@@ -1,5 +1,6 @@
 import type { SQLQueryBindings } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import {
   assertContextSources,
@@ -54,6 +55,12 @@ interface Fixture {
     note?: string;
     model?: string;
     question?: string | null;
+    /** Host-resolved trusted request identity (§5.7): explicit detail only. */
+    requestId?: string;
+    /** Override the claimed controlled-bytes sha (default: per-media derived). */
+    controlledSha256?: string;
+    /** Media + asset + link carrier row only; no task is claimed or published. */
+    noTask?: boolean;
     /** 指向另一真实绑定/会话（跨群用例）：默认本 fixture 的绑定。 */
     bindingId?: string;
     agentId?: string;
@@ -180,21 +187,26 @@ function setup(): Fixture {
       mediaNoteId: media.id,
       purpose,
       questionKey,
+      requestId: input.requestId,
       modelName: input.model ?? "vision-synthetic",
       policy: "p1",
-      contentSha256: shaOfMedia(media.id),
+      contentSha256: input.controlledSha256 ?? shaOfMedia(media.id),
       assertCurrent: guard,
     });
     recordMediaReadTaskResult(h.orm, {
       mediaNoteId: media.id,
       purpose,
       questionKey,
+      requestId: input.requestId,
       note: input.note ?? "橘猫在沙发上睡觉",
       modelName: input.model ?? "vision-synthetic",
       expectedAttempts: claimed.attempt,
       claimToken: claimed.claimToken,
       assertCurrent: guard,
     });
+    if (input.noTask === true) {
+      return { taskId: "", mediaNoteId: media.id, eventKey: observation.observation.eventKey };
+    }
     // The fixture binds the task to the EXACT link it consumed (real FK, the
     // production repo wires this when a read carries bytes — this seam belongs
     // to the fixture, not a production change): with a link present the task
@@ -971,6 +983,75 @@ describe("qq_media_read_task source mint + access", () => {
         .query("SELECT segment_kind FROM qq_media_notes WHERE id=?")
         .get(media.id) as { segment_kind: string };
       expect(kindRow.segment_kind).toBe("record");
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("an explicit detail row (real requestId) mints/verifies across carriers; tampering request_id revokes, never re-keys", async () => {
+    const f = setup();
+    try {
+      // The fixture's carrier bytes are fixed: their REAL controlled sha is
+      // what the explicit task claims, so the row's identity binds the exact
+      // bytes any carrier of the same content re-proves.
+      const controlledSha = createHash("sha256")
+        .update(new Uint8Array([137, 80, 78, 71, 3]))
+        .digest("hex");
+      // REAL production chain with a host requestId: attempt → publish.
+      const created = await f.successTask({
+        question: "这只猫在做什么",
+        requestId: "req-explicit-access-1",
+        note: "它在睡觉",
+        controlledSha256: controlledSha,
+      });
+      expect(created).not.toBeNull();
+      if (!created) return;
+      const explicitRow = f.db
+        .query("SELECT request_id,identity_key FROM qq_media_read_tasks WHERE id=?")
+        .get(created.taskId) as { request_id: string | null; identity_key: string | null };
+      // The service persisted the trusted request id on its own row (0063).
+      expect(explicitRow.request_id).toBe("req-explicit-access-1");
+      expect(explicitRow.identity_key).not.toBeNull();
+      // A second carrier with the SAME controlled bytes, no task of its own.
+      const carrier = await f.successTask({ noTask: true });
+      expect(carrier).not.toBeNull();
+      if (!carrier) return;
+      expect(carrier.mediaNoteId).not.toBe(created.mediaNoteId);
+      const ref = createQqMediaReadTaskSourceRef(f.h, f.scope, created.taskId, nowIso(), {
+        carrierMediaNoteId: carrier.mediaNoteId,
+      });
+      expect(ref).not.toBeNull();
+      if (!ref) return;
+      expect(ref.id).toBe(created.taskId);
+      // The explicit row passes the SAME ordinary rules: owner shapes, unified
+      // entry — no new guard, no model/parameter input anywhere.
+      expect(
+        qqMediaReadTaskSourceAccess(f.db, ref, ownerFor(f, "conversation"), principal, nowIso()),
+      ).toBe("available");
+      expect(
+        qqMediaReadTaskSourceAccess(f.db, ref, ownerFor(f, "qq_binding"), principal, nowIso()),
+      ).toBe("available");
+      expect(sourceAccess(f.db, ref, ownerFor(f, "conversation"), principal, nowIso())).toBe(
+        "available",
+      );
+      // Negative: the row's request_id is tampered to another real value. The
+      // stored identity_key is immutable with the row, so the re-keyed 8-tuple
+      // no longer matches it: the unified entry fails closed revoked and mint
+      // refuses — the row's identity is never re-derived to fit the tamper.
+      f.db
+        .query("UPDATE qq_media_read_tasks SET request_id='req-tampered' WHERE id=?")
+        .run(created.taskId);
+      expect(
+        qqMediaReadTaskSourceAccess(f.db, ref, ownerFor(f, "conversation"), principal, nowIso()),
+      ).toBe("revoked");
+      expect(sourceAccess(f.db, ref, ownerFor(f, "conversation"), principal, nowIso())).toBe(
+        "revoked",
+      );
+      expect(
+        createQqMediaReadTaskSourceRef(f.h, f.scope, created.taskId, nowIso(), {
+          carrierMediaNoteId: carrier.mediaNoteId,
+        }),
+      ).toBeNull();
     } finally {
       f.h.close();
     }

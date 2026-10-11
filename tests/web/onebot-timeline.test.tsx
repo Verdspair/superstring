@@ -29,6 +29,8 @@ function setup(client: Partial<SuperstringApi>) {
   store.getState().resetForTests({
     getConversationRuntimeStatus: async () => ({
       pendingWakes: 0,
+      pendingTasks: 0,
+      queuedCount: 0,
       activeRuns: 0,
       failedWakes: 0,
       unknownDeliveries: 0,

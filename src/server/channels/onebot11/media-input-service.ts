@@ -304,8 +304,6 @@ export interface QqMediaProjectionInput {
   readonly detailMediaIds?: ReadonlySet<string>;
   /** per-call 覆盖 owner；缺省按 scope 精确派生 conversation owner，不扩大来源。 */
   readonly owner?: RunOwner;
-  /** description 读取的 addressedToAssistant（§7.2 重试规则）；缺省 true。 */
-  readonly addressedToAssistant?: boolean;
   /**
    * 分类缓存回读键（§7.2）：宿主透传给 consumeModelMediaData 的同一
    * `policyRevision`（＝mediaPolicyRevision，写侧真源）——与 typed baseline 读取任务的
@@ -422,20 +420,16 @@ function categorySourceOf(
   return "unknown";
 }
 
-/** §7.4 规格选择：普通/unknown 按 ordinary 规格；明确细问的表情本次升普通规格。 */
+/**
+ * §7.4 规格选择：统一规格后**类别不再决定画质**——所有类别共用 ordinary 的静图长边与
+ * rhythm 注入的动图帧数/边长。category 只保留分类事实与防刷屏用途；明确细问（detail）
+ * 的规格差异也随表情规格一并退役，不再有按类别/按 detail 的第二档画质。
+ */
 function specFor(
-  category: QqImageCategory,
-  detail: boolean,
+  _category: QqImageCategory,
+  _detail: boolean,
   settings: QqEffectiveMediaPolicy,
 ): { stillMaxDimension: number | null; frameCount: number; frameMaxDimension: number } {
-  const effective: QqImageCategory = category === "expression" && detail ? "ordinary" : category;
-  if (effective === "expression") {
-    return {
-      stillMaxDimension: settings.expression_max_dimension,
-      frameCount: settings.expression_frame_count,
-      frameMaxDimension: settings.expression_frame_max_dimension,
-    };
-  }
   return {
     stillMaxDimension: settings.ordinary_still_max_dimension,
     frameCount: settings.ordinary_frame_count,
@@ -443,7 +437,10 @@ function specFor(
   };
 }
 
-/** 准备副本策略键：规格内容决定，规格变了不复用旧副本（§8.2）。动图带帧后缀 `#f<i>`。 */
+/**
+ * 准备副本策略键：规格内容决定，规格变了不复用旧副本（§8.2）。动图带帧后缀 `#f<i>`。
+ * v1→v2：统一规格断版（§5.6）——旧表情/旧 detail 档规格产出的成功副本不再按旧键复用。
+ */
 function variantPolicyOf(
   spec: {
     category: QqImageCategory;
@@ -454,7 +451,7 @@ function variantPolicyOf(
   },
   frameIndex: number | null,
 ): string {
-  const base = `prepare/v1:${bodyRevision(
+  const base = `prepare/v2:${bodyRevision(
     JSON.stringify([
       spec.category,
       spec.detail,
@@ -550,7 +547,6 @@ export function createQqMediaInputService(
         purpose: "baseline",
         policy: baselinePolicy,
         modelConfig: options.modelConfig,
-        addressedToAssistant: input.addressedToAssistant ?? true,
         assertCurrent: input.assertCurrent,
         owner: {
           kind: "conversation",

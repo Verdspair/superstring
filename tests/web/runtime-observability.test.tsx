@@ -257,6 +257,8 @@ it("shows the real connection, queue, pending window and unknown delivery status
   setup({
     getConversationRuntimeStatus: async () => ({
       pendingWakes: 3,
+      pendingTasks: 0,
+      queuedCount: 3,
       activeRuns: 2,
       failedWakes: 4,
       unknownDeliveries: 5,
@@ -272,6 +274,27 @@ it("shows the real connection, queue, pending window and unknown delivery status
   expect(screen.getByText(/等待窗口至/)).toBeTruthy();
   expect(screen.getByText("处理失败的唤醒").nextElementSibling?.textContent).toBe("4");
   expect(screen.getByText("结果待确认的投递").nextElementSibling?.textContent).toBe("5");
+});
+it("shows unified task queue count when tasks are queued with no pending wakes", async () => {
+  const future = new Date(Date.now() + 60000).toISOString();
+  setup({
+    getConversationRuntimeStatus: async () => ({
+      pendingWakes: 0,
+      pendingTasks: 2,
+      queuedCount: 2,
+      activeRuns: 1,
+      failedWakes: 0,
+      unknownDeliveries: 0,
+      nextReadyAt: future,
+      lastActivityAt: now,
+      connectionPhase: "ready",
+      now,
+    }),
+  });
+  render(<ConversationRuntimeSummary conversationId={conversationId} />);
+  await screen.findByText("连接已就绪");
+  expect(screen.getByText("进行中 1 · 排队 2")).toBeTruthy();
+  expect(screen.getByText(/等待窗口至/)).toBeTruthy();
 });
 it("stops polling under a controlled hub pause and reports its real loading state", async () => {
   vi.useFakeTimers();

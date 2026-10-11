@@ -49,7 +49,6 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
     initiative_batch_target_count: 15,
@@ -92,14 +91,14 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   },
   reply: { split_by_speaker: true },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false },
   ...overrides,
 });
 
@@ -118,6 +117,9 @@ const qqBinding = (overrides: Partial<QqBindingResponse> = {}): QqBindingRespons
   revision: 4,
   authority_revision: 4,
   attention: { mode: "off", members: [] },
+  // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
+  task_limits: { mention_task_limit: null, ordinary_task_limit: null },
+  input_anti_spam: { enabled: null },
   ...overrides,
 });
 
@@ -838,23 +840,23 @@ it("数字字段错误提示有 id 且输入框 aria-describedby 指向该真实
   expect((input.getAttribute("aria-describedby") ?? "").split(" ")).toContain(alert.id);
 });
 
-it("普通静图规格：Field 标题以 htmlFor 关联选择框，数值框独立 aria-label 且错误 describedby 指真实 DOM", async () => {
+it("静图规格：Field 标题以 htmlFor 关联选择框，数值框独立 aria-label 且错误 describedby 指真实 DOM", async () => {
   const view = await renderPage();
   await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
   const choice = view.container.querySelector(
     'select[data-field="media_input.ordinary_still_max_dimension.choice"]',
   ) as HTMLSelectElement;
   expect(choice).toBeTruthy();
-  // Field 标题（普通静图规格）用 label[for] 关联选择框。
+  // Field 标题（静图规格）用 label[for] 关联选择框。
   const title = [...view.container.querySelectorAll("label")].find(
-    (node) => node.htmlFor === choice.id && node.textContent?.includes("普通静图规格"),
+    (node) => node.htmlFor === choice.id && node.textContent?.includes("静图规格"),
   );
   expect(title).toBeTruthy();
-  // 数值框保留独立 aria-label「普通静图长边上限」。
+  // 数值框保留独立 aria-label「静图长边上限」。
   const input = view.container.querySelector(
     'input[data-field="media_input.ordinary_still_max_dimension"]',
   ) as HTMLInputElement;
-  expect(input.getAttribute("aria-label")).toBe("普通静图长边上限");
+  expect(input.getAttribute("aria-label")).toBe("静图长边上限");
   // 0 非法 → blur 后错误出现，aria-describedby 指向该错误 DOM。
   fireEvent.change(input, { target: { value: "0" } });
   fireEvent.blur(input);

@@ -62,6 +62,7 @@ import {
   type ModelRequest,
   type ModelResolvedPrepareInput,
   type ModelResolvedPrepareOutput,
+  type ModelWorkClass,
   type TextModelGateway,
   textMessages,
 } from "./model-port";
@@ -71,6 +72,8 @@ import { createToolCatalog, type ToolCatalog } from "./tool-catalog";
 export interface LeafInput {
   messages: ChatMessage[];
   owner: RunOwner;
+  /** 可信宿主声明的任务类；缺省＝ordinary（ModelPort 原默认），不是新的持久状态。 */
+  workClass?: ModelWorkClass;
   signal?: AbortSignal;
   sources?: readonly SourceRef[];
   /** 与父 run 共用同一本账（可选）：叶子花的钱算进整棵树。 */
@@ -142,6 +145,8 @@ export interface TargetHooks {
 }
 export interface ConversationInput {
   owner: RunOwner;
+  /** 可信宿主声明的任务类；随本 run 全部 complete/streamText 请求发出。 */
+  workClass?: ModelWorkClass;
   context: ConversationContextSource;
   authorizedTargets: readonly string[];
   outputMode: "stream" | "buffered";
@@ -333,6 +338,8 @@ interface Running {
   runId: string;
   usage: RunUsage;
   budget?: RunBudget;
+  /** 本 run 的任务类；嵌套子 run 经 taskTree 继承 owning task 的类。 */
+  workClass?: ModelWorkClass;
   spec: LeafAgentSpec;
   signal: AbortSignal;
   callerSignal?: AbortSignal;
@@ -377,6 +384,7 @@ export class AgentRuntime {
   private readonly taskTree = new AsyncLocalStorage<{
     usage: RunUsage;
     budget?: RunBudget;
+    workClass?: ModelWorkClass;
     signal: AbortSignal;
   }>();
   private readonly contextEngine: ContextEngine;
@@ -449,6 +457,7 @@ export class AgentRuntime {
             temperature: spec.temperature,
             maxTokens: spec.maxTokens,
             responseSchema: spec.responseSchema,
+            ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
             signal: active.signal,
             onModelResolved,
             onResponseText: capture,
@@ -485,6 +494,7 @@ export class AgentRuntime {
                 temperature: spec.temperature,
                 maxTokens: spec.maxTokens,
                 responseSchema: spec.responseSchema,
+                ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
                 runId: active.runId,
                 owner: input.owner,
                 ...(input.imageResolver === undefined
@@ -553,6 +563,7 @@ export class AgentRuntime {
             prompt: input.prompt,
             images: input.images,
             responseSchema: spec.responseSchema,
+            ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
             signal: active.signal,
           });
           capture(raw, true);
@@ -619,6 +630,8 @@ export class AgentRuntime {
     spec: { id: string; version?: string },
     input: {
       owner: RunOwner;
+      /** 本任务树的类：嵌套子 run 经 taskTree 继承 owning task 的类，不必逐个传。 */
+      workClass?: ModelWorkClass;
       conversationId?: string;
       signal?: AbortSignal;
       sources?: readonly SourceRef[];
@@ -837,6 +850,7 @@ export class AgentRuntime {
               temperature: spec.temperature,
               maxTokens: spec.maxTokens ?? spec.limits.outputTokens,
               responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+              ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
               runId: active.runId,
               owner: input.owner,
               ...(input.imageResolver === undefined ? {} : { imageResolver: input.imageResolver }),
@@ -1383,6 +1397,7 @@ export class AgentRuntime {
             temperature: generationSpec.temperature,
             maxTokens: generationSpec.maxTokens,
             responseSchema: structured.responseSchema,
+            ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
             runId: active.runId,
             owner: input.owner,
             ...(imageResolver === undefined ? {} : { imageResolver: imageResolver }),
@@ -1442,6 +1457,7 @@ export class AgentRuntime {
           model: generationSpec.model,
           temperature: generationSpec.temperature,
           maxTokens: generationSpec.maxTokens,
+          ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
           runId: active.runId,
           owner: input.owner,
           ...(imageResolver === undefined ? {} : { imageResolver: imageResolver }),
@@ -1530,6 +1546,7 @@ export class AgentRuntime {
     spec: LeafAgentSpec,
     input: {
       owner: RunOwner;
+      workClass?: ModelWorkClass;
       signal?: AbortSignal;
       onEvent?: Running["onEvent"];
       conversationId?: string;
@@ -1584,6 +1601,7 @@ export class AgentRuntime {
       runId,
       usage: parent?.usage ?? input.usage ?? { calls: 0, inputUnits: 0 },
       budget: parent?.budget ?? input.budget,
+      workClass: parent?.workClass ?? input.workClass,
       spec,
       signal,
       trace,
@@ -1813,7 +1831,12 @@ export class AgentRuntime {
       }
     };
     return this.taskTree.run(
-      { usage: active.usage, budget: active.budget, signal: active.signal },
+      {
+        usage: active.usage,
+        budget: active.budget,
+        workClass: active.workClass,
+        signal: active.signal,
+      },
       () => (active.trace ? active.trace.within(execute) : execute()),
     );
   }

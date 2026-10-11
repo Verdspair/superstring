@@ -1,15 +1,31 @@
 import type { ConversationAddressing } from "../../../shared/contracts/conversation";
+
+import {
+  qqConversationTaskKey,
+  qqEffectiveInputAntiSpamEnabled,
+} from "../../../shared/contracts/qq-task";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { readQqBinding, readQqBindings } from "../../db/qq-binding-repository";
 import { readEffectiveQqScheme } from "../../db/qq-group-config-repository";
-import { effectiveQqTriggers, schemeRhythm } from "../../db/qq-scheme-repository";
+import {
+  effectiveQqTriggers,
+  readQqScheme,
+  schemeInputAntiSpam,
+  schemeRhythm,
+} from "../../db/qq-scheme-repository";
 import { platformMessageWasSentByAssistant, readQqSends } from "../../db/qq-send-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
 import { lastQqSpeech } from "../../db/qq-speech-repository";
+import {
+  createQqConversationTask,
+  type QqConversationTaskSourceGuard,
+} from "../../db/qq-task-repository";
 import { getAgentRow, type Orm } from "../../db/repositories";
 import type { WakeRepository } from "../../db/wake-repository";
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import type { QqObservation } from "../../services/onebot-protocol";
+
+import { qqConversationScopeOfBinding } from "../../services/qq-binding-contract";
 import { qqChimingBatchWindow } from "../../services/qq-chiming-time-window";
 import {
   attentionTriggerFilter,
@@ -18,6 +34,8 @@ import {
 } from "../../services/qq-dispatch";
 import type { ConversationIngress } from "../../services/qq-intake";
 import type { QqSpeechKind } from "../../services/qq-speaking-contract";
+import { projectQqMessageFacts } from "./message-projection";
+import { projectQqAntispamSequence } from "./qq-input-antispam-projection";
 /** OneBot supplies source/addressing facts; every Bot opportunity enters the same durable queue. */
 export class OneBot11Adapter implements ConversationIngress {
   constructor(
@@ -87,6 +105,10 @@ export class OneBot11Adapter implements ConversationIngress {
           observation.speaker.id,
           observation.speaker.kind,
           addressing.reasons.length > 0,
+          false,
+          mentions.includes(observation.accountId) || replyingToAgent
+            ? { accountId: observation.accountId, platformMessageId: observation.messageId }
+            : undefined,
         );
       if (span) span.within(offer);
       else offer();
@@ -146,16 +168,35 @@ export class OneBot11Adapter implements ConversationIngress {
    * attention 名单与来源内容有效期都在计数里过滤；匿名与系统消息从来不是合格目标。
    * `onebot:` 前缀是 journal 侧事件键的通道标记，观察表键没有这个前缀。
    */
-  private eligibleChimingCount(
+  /**
+   * 自主批次合格输入的派生计数（§5.4 单 owner）：既有 SQL 资格面（成员/attention/direct/
+   * 来源可读）不变；开关开启时再按同一冻结范围投影事件事实跑一次防刷屏派生——纯表情事件
+   * 被剔除，命中 burst 组整体按一个机会计（不是 0 也不是 N），组首事件作该组机会的窗起算
+   * 锚（§5.3：代表取组内最新合格载体，但窗成熟锚仍用组首）。开关关闭＝逐条计数，恢复原语义。
+   */
+  /**
+   * 自主批次合格输入的派生计数（§5.4 单 owner，P4 breaker 修正）：有界冻结范围内的完整
+   * journal 成员行先全部进入派生序列（self 的 direct/过期行是真实断组边界，不被资格过滤
+   * 抹掉；其它发送者的过期行不打断健康组），资格 Set 在派生**之后**裁决——direct（视开关）、
+   * 过期/不可投影、纯表情不计入名额，burst 命中组整体计 1（组首作窗成熟锚），其余合格普通行
+   * 逐条计。开关关闭＝原 cheap SQL 资格计数，逐字恢复 0054 语义。
+   */
+  private derivedChimingCount(
     conversationId: string,
     boundary: number,
     attention: readonly string[] | null,
     directEnabled: boolean,
   ): { count: number; firstEligibleSeconds: number | null } {
+    const db = this.options.journal.db;
     const placeholders = (attention ?? []).map(() => "?").join(",");
-    const row = this.options.journal.db
-      .query(
-        `SELECT COUNT(*) AS n,MIN(CAST(strftime('%s',ce.occurred_at) AS INTEGER)) AS first_at FROM conversation_events ce
+    const at = new Date(this.now() * 1000).toISOString();
+    const minSeconds = (value: number | null, candidate: number): number =>
+      value === null || candidate < value ? candidate : value;
+    /** 0054 cheap 资格 SQL 的唯一实现：OFF 与「快路径已正证无 image/face」共用一处真值。 */
+    const cheapEligibilityCount = (): { count: number; firstEligibleSeconds: number | null } => {
+      const row = db
+        .query(
+          `SELECT COUNT(*) AS n,MIN(CAST(strftime('%s',ce.occurred_at) AS INTEGER)) AS first_at FROM conversation_events ce
       WHERE ce.conversation_id=? AND ce.seq>? AND ce.kind='inbound' AND ce.source_kind='qq_event'
         AND json_extract(ce.participant,'$.role')='member'
         AND (${attention ? `json_extract(ce.participant,'$.id') IN (${placeholders})` : "1=1"})
@@ -167,24 +208,159 @@ export class OneBot11Adapter implements ConversationIngress {
           WHERE w.conversation_id=? AND w.cause='direct_reply'
         )
         AND (
-          EXISTS(SELECT 1 FROM qq_observation_text t WHERE t.event_key=substr(ce.event_key,8) AND t.expires_at>?)
-          OR EXISTS(SELECT 1 FROM qq_media_notes m WHERE m.event_key=substr(ce.event_key,8) AND m.expires_at>?)
+          EXISTS(SELECT 1 FROM qq_observation_text t WHERE t.event_key=ce.source_id AND t.expires_at>?)
+          OR EXISTS(SELECT 1 FROM qq_media_notes m WHERE m.event_key=ce.source_id AND m.expires_at>?)
         )`,
+        )
+        .get(
+          conversationId,
+          boundary,
+          ...(attention ?? []),
+          directEnabled ? 1 : 0,
+          conversationId,
+          at,
+          at,
+        ) as { n: number; first_at: number | null };
+      return {
+        count: row.n,
+        firstEligibleSeconds: row.first_at === null ? null : Math.floor(row.first_at),
+      };
+    };
+    const conversation = this.options.journal.get(conversationId);
+    const binding = conversation ? readQqBinding(this.options.orm, conversation.sourceId) : null;
+    const scheme = binding ? readEffectiveQqScheme(this.options.orm, binding) : null;
+    if (!conversation || !binding || !scheme) {
+      // 配置缺失＝无资格计数（既有 fail closed 面），不猜窗口。
+      return { count: 0, firstEligibleSeconds: null };
+    }
+    const antispamEnabled = qqEffectiveInputAntiSpamEnabled(
+      schemeInputAntiSpam(scheme),
+      binding.inputAntiSpam,
+    );
+    if (!antispamEnabled) {
+      // 开关关闭＝原 cheap SQL 资格计数（0054 逐字语义，唯一实现见 cheapEligibilityCount）。
+      return cheapEligibilityCount();
+    }
+    // 完整成员行基底（attention 只是资格面，不抹行；已处理的 direct 行也保留在序列里——
+    // 它们仍是 self 的真实断组边界）。身份用 ce.source_id（真实 stable qq_event id）。
+    const rows = db
+      .query(
+        `SELECT ce.seq AS seq, ce.source_id AS event_id, ce.occurred_at AS occurred_at,
+          json_extract(ce.participant,'$.id') AS speaker_id,
+          json_array_length(ce.addressing,'$.reasons') AS reasons
+      FROM conversation_events ce
+      WHERE ce.conversation_id=? AND ce.seq>? AND ce.kind='inbound' AND ce.source_kind='qq_event'
+        AND json_extract(ce.participant,'$.role')='member'
+        AND (${attention ? `json_extract(ce.participant,'$.id') IN (${placeholders})` : "1=1"})
+      ORDER BY ce.seq`,
+      )
+      .all(conversationId, boundary, ...(attention ?? [])) as {
+      seq: number;
+      event_id: string;
+      occurred_at: string;
+      speaker_id: string | null;
+      reasons: number;
+    }[];
+    // 没有合格输入就没有时间窗（空白周期不调用模型），所以这里必须回传"没有"。
+    if (rows.length === 0) return { count: 0, firstEligibleSeconds: null };
+    // 结构快路径（P4 性能，权限面不扩）：同一有界窗口内一条 scoped 查询同时做两件事——
+    // ① 逐行要求存在本 scope 内可解析的 facts parts（缺 fact 行 / JSON 非 array → 不满足）；
+    // ② 正证所有 parts 里没有任何 image/face 部件。两者同时成立才允许跳过派生：无
+    // image/face 事实部件的窗口不可能产生纯表情剔除或 image burst 组，资格真值与
+    // cheap SQL 完全一致，所以复用唯一 cheapEligibilityCount（不是关开关，也不是新口径）。
+    // 任一条件不成立（含过期 image——事实行与 media 残留仍在）→ 走原完整派生路径，
+    // 不猜、不因快路径放宽任何资格。窗口基集与上方 rows 同一口径（member/attention/seq）。
+    const structural = db
+      .query(
+        `SELECT
+        (SELECT COUNT(*) FROM conversation_events ce
+          WHERE ce.conversation_id=? AND ce.seq>? AND ce.kind='inbound' AND ce.source_kind='qq_event'
+            AND json_extract(ce.participant,'$.role')='member'
+            AND (${attention ? `json_extract(ce.participant,'$.id') IN (${placeholders})` : "1=1"})) AS window_rows,
+        (SELECT COUNT(*) FROM conversation_events ce
+          JOIN qq_events e ON e.event_key=ce.source_id
+          JOIN qq_message_facts f ON f.event_key=e.event_key
+          WHERE ce.conversation_id=? AND ce.seq>? AND ce.kind='inbound' AND ce.source_kind='qq_event'
+            AND json_extract(ce.participant,'$.role')='member'
+            AND (${attention ? `json_extract(ce.participant,'$.id') IN (${placeholders})` : "1=1"})
+            AND json_valid(f.parts) AND json_type(f.parts)='array'
+            AND NOT EXISTS(
+              SELECT 1 FROM json_each(f.parts) p
+              WHERE json_extract(p.value,'$.kind') IN ('image','face')
+            )) AS no_media_rows`,
       )
       .get(
         conversationId,
         boundary,
         ...(attention ?? []),
-        directEnabled ? 1 : 0,
         conversationId,
-        new Date(this.now() * 1000).toISOString(),
-        new Date(this.now() * 1000).toISOString(),
-      ) as { n: number; first_at: number | null };
-    // 没有合格输入就没有时间窗（空白周期不调用模型），所以这里必须回传"没有"。
-    return {
-      count: row.n,
-      firstEligibleSeconds: row.first_at === null ? null : Math.floor(row.first_at),
-    };
+        boundary,
+        ...(attention ?? []),
+      ) as { window_rows: number; no_media_rows: number };
+    if (structural.window_rows === structural.no_media_rows) {
+      // 全窗口每行都有合法 typed fact 且无 image/face：资格＝原 cheap SQL 逐字。
+      return cheapEligibilityCount();
+    }
+    // 本 run 一次批量投影（同一完整行集，Map 复用；不新增持久 cache）：
+    // 可读行带真实 fact；过期/不可投影行 fact 缺失（空 parts，硬边界）。
+    const factById = new Map(
+      projectQqMessageFacts(
+        { db, orm: this.options.orm },
+        qqConversationScopeOfBinding({
+          conversationId,
+          binding,
+          bindingEpoch: conversation.bindingEpoch,
+        }),
+        rows.map((row) => row.event_id),
+        at,
+      ).map((fact) => [fact.id, fact]),
+    );
+    const derivation = projectQqAntispamSequence(
+      rows.map((row) => ({
+        seq: row.seq,
+        eventId: row.event_id,
+        speakerId: row.speaker_id ?? `seq:${row.seq}`,
+        occurredAtSeconds: Math.floor(Date.parse(row.occurred_at) / 1000),
+        isDirect: row.reasons > 0,
+        fact: factById.get(row.event_id) ?? null,
+      })),
+    );
+    const excludedSeqs = new Set([
+      ...derivation.pureExpressionExcludedSeqs,
+      ...derivation.burstExcludedSeqs,
+    ]);
+    // 资格 Set 在派生之后：direct 是否计入随原 contract（direct 开启时被指名行由直接回应
+    // 独占不计；关闭时仍进剩余模式计数，但它仍是 explicitDirect 断组边界）；过期/不可投影
+    // （fact 缺失）只断组不计；被派生排除（纯表情/burst 成员）不计。
+    let count = derivation.burstGroups.length;
+    let firstEligibleSeconds: number | null = null;
+    for (const group of derivation.burstGroups) {
+      firstEligibleSeconds = minSeconds(firstEligibleSeconds, group.firstOccurredAtSeconds);
+    }
+    // 已被一次 direct 机会真正处理过的行：单独集合，只在资格计数阶段排除——
+    // 它们在派生序列里仍是 self direct 断组边界（不被 NOT IN 从序列里抹掉）。
+    const processedDirectSeqs = new Set(
+      (
+        db
+          .query(
+            `SELECT w.through_seq AS seq FROM wake_signals w
+      WHERE w.conversation_id=? AND w.cause='direct_reply'`,
+          )
+          .all(conversationId) as { seq: number }[]
+      ).map((entry) => entry.seq),
+    );
+    for (const row of rows) {
+      if (directEnabled && row.reasons > 0) continue;
+      if (processedDirectSeqs.has(row.seq)) continue;
+      if (excludedSeqs.has(row.seq)) continue;
+      if (!factById.has(row.event_id)) continue;
+      count += 1;
+      firstEligibleSeconds = minSeconds(
+        firstEligibleSeconds,
+        Math.floor(Date.parse(row.occurred_at) / 1000),
+      );
+    }
+    return { count, firstEligibleSeconds };
   }
 
   private coalesceChiming(
@@ -230,6 +406,7 @@ export class OneBot11Adapter implements ConversationIngress {
     speakerKind: string,
     addressed: boolean,
     restore = false,
+    mentionIdentity?: { accountId: string; platformMessageId: string },
   ): void {
     const { orm, journal, wakes } = this.options;
     const binding = readQqBinding(orm, bindingId);
@@ -298,6 +475,9 @@ export class OneBot11Adapter implements ConversationIngress {
       return;
     }
     const triggers = effectiveQqTriggers(binding, scheme);
+    // 输入防刷屏（§5.2/§5.3，单 owner 纯模块）：仅裁自主（chiming）资格——显式 @ / 合法
+    // 引用（direct_reply 路径）与私聊不经过这里。派生用既有有界来源（journal 边界到本事件），
+    // 一次投影共用三个消费面，不新增持久第二事实。
     const path: QqSpeechKind =
       (binding.kind === "private" || addressed) && triggers.direct_reply
         ? "direct_reply"
@@ -314,6 +494,107 @@ export class OneBot11Adapter implements ConversationIngress {
       report("TRIGGER_OFF", "skipped", undefined, { cause: path });
       return;
     }
+    const conversation = journal.ensureOneBot(bindingId)!;
+    if (
+      mentionIdentity &&
+      path === "direct_reply" &&
+      this.now() - occurredAt <= QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS
+    ) {
+      const current = conversation;
+      const currentBinding = readQqBinding(orm, bindingId);
+      const schemeRow = currentBinding ? readQqScheme(orm, currentBinding.schemeId) : null;
+      const agent = currentBinding ? getAgentRow(orm, currentBinding.agentId) : null;
+      if (
+        !current ||
+        !currentBinding ||
+        !schemeRow ||
+        !agent ||
+        current.agentId !== currentBinding.agentId
+      )
+        return;
+      const sourceEvent = journal.eventsAfter(conversation.id, seq - 1, 1).items[0];
+      if (!sourceEvent || sourceEvent.seq !== seq || sourceEvent.source.kind !== "qq_event") return;
+      const taskIdentity = {
+        taskKey: qqConversationTaskKey.mention({
+          accountId: mentionIdentity.accountId,
+          conversationId: current.id,
+          bindingEpoch: current.bindingEpoch,
+          platformMessageId: mentionIdentity.platformMessageId,
+          agentId: current.agentId,
+        }),
+        conversationId: current.id,
+        bindingEpoch: current.bindingEpoch,
+        agentId: current.agentId,
+        taskClass: "mention" as const,
+        cause: "direct_reply" as const,
+        sourceFromSeq: sourceEvent.seq,
+        sourceThroughSeq: sourceEvent.seq,
+        originEventKey: sourceEvent.source.id,
+        platformMessageId: mentionIdentity.platformMessageId,
+      };
+      const validateSource: QqConversationTaskSourceGuard = (transaction, identity) => {
+        const db = (transaction as Orm & { $client: import("bun:sqlite").Database }).$client;
+        const row = db
+          .query(`SELECT 1 AS ok FROM conversation_events ce
+          JOIN qq_events e ON e.event_key=ce.source_id
+          JOIN conversations c ON c.id=ce.conversation_id
+          JOIN qq_bindings b ON b.id=c.source_id
+          JOIN qq_schemes s ON s.id=b.scheme_id
+          JOIN agents a ON a.id=b.agent_id
+          WHERE ce.conversation_id=? AND ce.seq=? AND ce.source_kind='qq_event'
+            AND ce.source_id=? AND c.channel='onebot11' AND c.binding_epoch=?
+            AND c.agent_id=? AND c.closed_at IS NULL AND b.agent_id=c.agent_id
+            AND e.event_key=? AND e.message_id=? AND e.agent_id=?
+            AND e.account_id=b.account_id AND e.peer_id=b.peer_id
+            AND e.conversation_kind=b.conversation_kind`)
+          .get(
+            identity.conversationId,
+            identity.sourceThroughSeq,
+            identity.originEventKey ?? null,
+            identity.bindingEpoch,
+            identity.agentId,
+            identity.originEventKey ?? null,
+            identity.platformMessageId ?? null,
+            identity.agentId,
+          );
+        if (!row) return "revoked";
+        const readable = db
+          .query(`SELECT 1 AS ok FROM qq_observation_text t
+          WHERE t.event_key=? AND t.body IS NOT NULL AND t.expires_at>?
+          UNION ALL SELECT 1 AS ok FROM qq_media_notes n
+          WHERE n.event_key=? AND n.expires_at>?
+          UNION ALL SELECT 1 AS ok FROM qq_message_facts f
+          WHERE f.event_key=? AND f.expires_at>? LIMIT 1`)
+          .get(
+            identity.originEventKey ?? null,
+            new Date(this.now() * 1000).toISOString(),
+            identity.originEventKey ?? null,
+            new Date(this.now() * 1000).toISOString(),
+            identity.originEventKey ?? null,
+            new Date(this.now() * 1000).toISOString(),
+          );
+        return readable ? "valid" : "expired";
+      };
+      const factExpiry = journal.db
+        .query("SELECT expires_at FROM qq_message_facts WHERE event_key=?")
+        .get(sourceEvent.source.id) as { expires_at: string } | null;
+      createQqConversationTask(
+        orm,
+        {
+          ...taskIdentity,
+          sourceExpiresAt:
+            sourceEvent.sources
+              .map((source) => source.expiresAt)
+              .filter((expiresAt): expiresAt is string => expiresAt !== undefined)
+              .sort()[0] ??
+            factExpiry?.expires_at ??
+            null,
+          at: new Date(this.now() * 1000).toISOString(),
+        },
+        { validateSource },
+      );
+      this.options.wake?.();
+    }
     const immediate = path === "direct_reply";
     // 连续交谈是"必回"：只有 direct 是要抢时效的立即路径。continuous 不设额外硬超时，
     // 消息过不过期只由来源内容自己的保留期决定。
@@ -321,7 +602,6 @@ export class OneBot11Adapter implements ConversationIngress {
       report("OPPORTUNITY_EXPIRED", "skipped", undefined, { cause: path });
       return;
     }
-    const conversation = journal.ensureOneBot(bindingId)!;
     // A consumed cursor means "observed", not "answered every participant". Existing
     // per-person opportunities remain authoritative even after another participant's reply.
     if (wakes.hasOfferedSource(conversation.id, seq)) {
@@ -339,7 +619,7 @@ export class OneBot11Adapter implements ConversationIngress {
       // 输入就没有窗口，空白周期不调用模型。
       const rhythm = schemeRhythm(scheme);
       const nowSeconds = this.now();
-      const eligible = this.eligibleChimingCount(
+      const eligible = this.derivedChimingCount(
         conversation.id,
         journal.chimingInObservedSeq(conversation.id),
         attention,
@@ -639,7 +919,7 @@ export class OneBot11Adapter implements ConversationIngress {
       const scheme = readEffectiveQqScheme(orm, binding);
       if (!scheme) continue;
       const rhythm = schemeRhythm(scheme);
-      const eligible = this.eligibleChimingCount(
+      const eligible = this.derivedChimingCount(
         row.conversation_id,
         journal.chimingInObservedSeq(row.conversation_id),
         attentionTriggerFilter(binding),

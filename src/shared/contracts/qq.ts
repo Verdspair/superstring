@@ -13,6 +13,7 @@ import {
   type QqMessageSettings,
   QqMessageSettingsSchema,
 } from "./qq-message";
+import { QQ_CONVERSATION_TASK_LIMIT_DEFAULTS } from "./qq-task";
 
 /**
  * The four independently controllable speech paths, named exactly as the speech contract
@@ -73,7 +74,11 @@ export const QqSchemeRhythmSchema = z
     max_recompute_count: z.number().int().min(0).max(2),
     /** §8.1-4: stickers per reply. */
     max_sticker_count: z.number().int().min(1).max(3),
-    /** §7.1's 可改 sampling: frames taken from an animation, and the long edge they are scaled to. */
+    /**
+     * §7.1's 可改 sampling: frames taken from an animation, and the long edge they are
+     * scaled to. After the media spec unification these are the ONLY animation values
+     * (all categories); the retired expression frame fields never return here.
+     */
     media_frame_count: z.number().int().min(1).max(10),
     media_max_dimension: z.number().int().min(64).max(2048),
     /**
@@ -99,12 +104,6 @@ export const QqSchemeRhythmSchema = z
     initiative_time_target_seconds: z.number().int().min(10).max(1800),
     /** 时间窗口半径 B（秒）。B=0 表示固定等 A 秒，没有随机采样，也没有额外一次模型判定。 */
     initiative_time_jitter_seconds: z.number().int().min(0).max(1799),
-    /**
-     * §7.1's wait for a related supplement after a failed addressed media read. The user decided
-     * (2026-09-24) that "related" means the SAME SPEAKER within this window, and that the number is
-     * editable with a 10-minute default. 0 = do not wait (the first read still happens).
-     */
-    media_supplement_window_minutes: z.number().int().min(0).max(1440),
   })
   // Y is a radius around X, so Y === X would collapse the window's lower edge to zero; the
   // 0054 CHECK enforces the same relation so a row the API accepts cannot be refused by the DB.
@@ -704,6 +703,52 @@ export const QQ_MEDIA_INPUT_SCHEME_DEFAULT: QqSchemeMediaInput = Object.freeze({
   ...QQ_MEDIA_INPUT_DEFAULT,
 });
 
+/**
+ * 并行任务上限组（0059，规格：QQ 会话并行）。方案层的两个上限，值域与默认值单源复用
+ * `qq-task.ts` 的类型化常量——不引入第三个总量帽，也不与模型请求帽混用。
+ */
+const qqTaskLimitValue = z
+  .number()
+  .int()
+  .min(QQ_CONVERSATION_TASK_LIMIT_DEFAULTS.min)
+  .max(QQ_CONVERSATION_TASK_LIMIT_DEFAULTS.max);
+
+export const QqSchemeTaskLimitsSchema = z.strictObject({
+  mention_task_limit: qqTaskLimitValue,
+  ordinary_task_limit: qqTaskLimitValue,
+});
+export type QqSchemeTaskLimits = z.infer<typeof QqSchemeTaskLimitsSchema>;
+/** 新方案的并行任务上限初值；与 `qq-task.ts` 的已批准默认值同源。 */
+export const QQ_TASK_LIMITS_SCHEME_DEFAULT: QqSchemeTaskLimits = Object.freeze({
+  mention_task_limit: QQ_CONVERSATION_TASK_LIMIT_DEFAULTS.mentionTaskLimit,
+  ordinary_task_limit: QQ_CONVERSATION_TASK_LIMIT_DEFAULTS.ordinaryTaskLimit,
+});
+
+/**
+ * 输入防抖组（0059）：方案层只有一个开关。旧方案行的列默认是关（迁移 0059 的 DDL 兜底），
+ * 新建时写入侧显式落开——两条路都不靠读取侧的猜测。
+ */
+export const QqSchemeInputAntiSpamSchema = z.strictObject({ enabled: z.boolean() });
+export type QqSchemeInputAntiSpam = z.infer<typeof QqSchemeInputAntiSpamSchema>;
+/** 新方案的输入防抖初值。 */
+export const QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT: QqSchemeInputAntiSpam = Object.freeze({
+  enabled: true,
+});
+
+/**
+ * 本会话对两组设置的稀疏覆盖（0059）：成员 null＝跟随方案，非 null＝本会话覆盖。
+ * 与 triggers 覆盖同一三态语义：会话可以跟随、关掉或改上限，但不做第二处调参库。
+ */
+export const QqBindingTaskLimitsSchema = z.strictObject({
+  mention_task_limit: qqTaskLimitValue.nullable(),
+  ordinary_task_limit: qqTaskLimitValue.nullable(),
+});
+export type QqBindingTaskLimits = z.infer<typeof QqBindingTaskLimitsSchema>;
+export const QqBindingInputAntiSpamSchema = z.strictObject({
+  enabled: z.boolean().nullable(),
+});
+export type QqBindingInputAntiSpam = z.infer<typeof QqBindingInputAntiSpamSchema>;
+
 export const QqSchemeResponseSchema = z.strictObject({
   id: UuidSchema,
   // `nonBlankString` rather than a bare min(1): a name of spaces is not a name, and the
@@ -727,6 +772,10 @@ export const QqSchemeResponseSchema = z.strictObject({
   message_settings: QqSchemeMessageSettingsSchema,
   /** 0052 的图片输入组。同上：响应侧必填完整组，NULL 行按 `QQ_MEDIA_INPUT_SCHEME_DEFAULT` 兜底。 */
   media_input: QqSchemeMediaInputSchema,
+  /** 0059 的并行任务上限组。响应必填完整组（NOT NULL 列直读，无迁移间隙）。 */
+  task_limits: QqSchemeTaskLimitsSchema,
+  /** 0059 的输入防抖组。同上：NOT NULL 列直读。 */
+  input_anti_spam: QqSchemeInputAntiSpamSchema,
   revision: z.number().int().positive(),
   created_at: IsoTimestampSchema,
   updated_at: IsoTimestampSchema,
@@ -756,6 +805,10 @@ export const CreateQqSchemeRequestSchema = z.strictObject({
   message_settings: QqSchemeMessageSettingsSchema.optional(),
   /** 图片输入组（0052）。省略＝新建用默认（`QQ_MEDIA_INPUT_SCHEME_DEFAULT`）、更新保持不动。 */
   media_input: QqSchemeMediaInputSchema.optional(),
+  /** 并行任务上限组（0059）。省略＝新建用默认（`QQ_TASK_LIMITS_SCHEME_DEFAULT`）。 */
+  task_limits: QqSchemeTaskLimitsSchema.optional(),
+  /** 输入防抖组（0059）。省略＝新建显式落开（`QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT`）。 */
+  input_anti_spam: QqSchemeInputAntiSpamSchema.optional(),
 });
 export type CreateQqSchemeRequest = z.infer<typeof CreateQqSchemeRequestSchema>;
 
@@ -778,6 +831,10 @@ export const UpdateQqSchemeRequestSchema = z.strictObject({
   message_settings: QqSchemeMessageSettingsSchema.optional(),
   /** 图片输入组（0052）。省略＝不动。 */
   media_input: QqSchemeMediaInputSchema.optional(),
+  /** 并行任务上限组（0059）。省略＝不动。 */
+  task_limits: QqSchemeTaskLimitsSchema.optional(),
+  /** 输入防抖组（0059）。省略＝不动。 */
+  input_anti_spam: QqSchemeInputAntiSpamSchema.optional(),
   expected_revision: z.number().int().positive(),
 });
 export type UpdateQqSchemeRequest = z.infer<typeof UpdateQqSchemeRequestSchema>;
@@ -948,6 +1005,9 @@ export const QqBindingResponseSchema = z.strictObject({
   authority_revision: z.number().int().positive(),
   /** 「重要的人」(0031): which speakers this conversation listens to, and how strictly. */
   attention: QqBindingAttentionSchema,
+  /** 0059 的本会话覆盖两组：成员 null＝跟随方案；响应必填完整组。 */
+  task_limits: QqBindingTaskLimitsSchema,
+  input_anti_spam: QqBindingInputAntiSpamSchema,
 });
 export type QqBindingResponse = z.infer<typeof QqBindingResponseSchema>;
 
@@ -965,6 +1025,9 @@ export const CreateQqBindingRequestSchema = z.strictObject({
   /** `null` means automatic organising is off for this conversation, which is the default. */
   memory_batch_size: z.number().int().min(1).nullable().default(null),
   share_web_memory: z.boolean().default(false),
+  /** 0059 的覆盖两组。省略＝全新会话：全部跟随方案（成员全 null）。 */
+  task_limits: QqBindingTaskLimitsSchema.optional(),
+  input_anti_spam: QqBindingInputAntiSpamSchema.optional(),
 });
 export type CreateQqBindingRequest = z.infer<typeof CreateQqBindingRequestSchema>;
 
@@ -984,6 +1047,9 @@ export const UpdateQqBindingRequestSchema = z.strictObject({
    * 换 Agent 时按新 Agent 已保存的差异恢复，不适用本字段。
    */
   scheme_change: z.enum(["keep", "reset"]).optional(),
+  /** 0059 的覆盖两组。整组来或整组不动：省略保持现值，成员 null 恢复跟随方案。 */
+  task_limits: QqBindingTaskLimitsSchema.optional(),
+  input_anti_spam: QqBindingInputAntiSpamSchema.optional(),
   expected_revision: z.number().int().positive(),
 });
 export type UpdateQqBindingRequest = z.infer<typeof UpdateQqBindingRequestSchema>;

@@ -48,6 +48,12 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     paths.qqMembersMigration,
     paths.qqOutputReserveMigration,
     paths.qqStickersMigration,
+    paths.qqConversationTasksMigration,
+    paths.qqTaskLimitsAntispamMigration,
+    paths.qqTaskExecutionSnapshotMigration,
+    paths.qqTaskReadyAtMigration,
+    paths.qqMediaSpecUnificationMigration,
+    paths.qqMediaRequestIdentityMigration,
   ]) {
     let current = path.parse(target).root;
     for (const component of path.relative(current, target).split(path.sep)) {
@@ -123,6 +129,12 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     readFileSync(paths.qqInitiativeTimeWindowMigration, "utf8"),
     readFileSync(paths.outboundStaleReasonMigration, "utf8"),
     readFileSync(paths.historyOutputIdentityIndexesMigration, "utf8"),
+    readFileSync(paths.qqConversationTasksMigration, "utf8"),
+    readFileSync(paths.qqTaskLimitsAntispamMigration, "utf8"),
+    readFileSync(paths.qqTaskExecutionSnapshotMigration, "utf8"),
+    readFileSync(paths.qqTaskReadyAtMigration, "utf8"),
+    readFileSync(paths.qqMediaSpecUnificationMigration, "utf8"),
+    readFileSync(paths.qqMediaRequestIdentityMigration, "utf8"),
   ] as const;
   if (businessMigrationSql.some((sql) => !sql.trim())) throw new Error("EMPTY_MIGRATION_RESOURCE");
   if (env.SUPERSTRING_SERVE_WEB === "1") readFileSync(path.join(paths.webDir, "index.html"));

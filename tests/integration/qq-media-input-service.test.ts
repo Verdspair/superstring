@@ -75,9 +75,6 @@ const SETTINGS: QqEffectiveMediaPolicy = {
   ordinary_still_max_dimension: null,
   ordinary_frame_count: 3,
   ordinary_frame_max_dimension: 512,
-  expression_max_dimension: 512,
-  expression_frame_count: 3,
-  expression_frame_max_dimension: 512,
 };
 
 function createScheme(orm: Orm): { id: string } {
@@ -674,7 +671,7 @@ describe("native cache reuse details", () => {
       } finally {
         mock.restore();
       }
-      // 规格改变（表情规格）→ policy 键不同 → 不误命中，重新解码并新写副本。
+      // 规格改变（静图长边设置）→ policy 键不同 → 不误命中，重新解码并新写副本。
       const third = await service.prepareQqMediaProjection(
         baseInput(f, {
           facts: [fact],
@@ -873,7 +870,8 @@ describe("classification cache readback (§7.2)", () => {
       );
       expect(second.images[0]?.category).toBe("expression");
       expect(second.images[0]?.categorySource).toBe("model");
-      // expression 规格（64）生效：8x8 ≤ 64 不放大，但 policy 键应含 expression 规格。
+      // 分类升级为 expression：规格统一后类别不再改变规格，但分类事实进入 variant
+      // 策略键（分类是键的组成），所以 policy 键不同（8x8 同字节未缩放）。
       expect(second.images[0]?.variantPolicy).not.toBe(first.images[0]?.variantPolicy);
       expect(second.images[0]?.sha256).toBe(first.images[0]?.sha256); // 同字节（未缩放）
       // 平台优先：ordinary fact 的分类不被缓存覆盖。
@@ -887,7 +885,7 @@ describe("classification cache readback (§7.2)", () => {
       );
       expect(platformReadback.images[0]?.category).toBe("ordinary");
       expect(platformReadback.images[0]?.categorySource).toBe("platform");
-      // detail 显式升 ordinary 规格（明确细问表情）。
+      // detail 是独立准备身份（同一统一规格，不同 variant 键）。
       const detail = await service.prepareQqMediaProjection(
         baseInput(f, {
           facts: [fact],
@@ -1756,21 +1754,21 @@ describe("createQqMediaInputService.prepareByMediaId", () => {
           if (!questionCurrent) fail("CONTEXT_SOURCE_INVALID", "问题原文已变化");
         },
       };
-      // 正常细问：detail 升普通规格（§7.4），但不改图片原分类。
+      // 正常细问：统一规格（§5.5 类别不再决定画质），但不改图片原分类。
       const ok = await service.prepareByMediaId(
         onDemandInput(f, media.id, { facts: [fact], detail: anchor }),
       );
       expect(ok.detail).toBe(true);
       expect(ok.category).toBe("expression");
       expect(ok.categorySource).toBe("platform");
-      const expressionPolicy = ok.images[0]?.variantPolicy ?? "";
-      expect(expressionPolicy.length).toBeGreaterThan(0);
+      const detailPolicy = ok.images[0]?.variantPolicy ?? "";
+      expect(detailPolicy.length).toBeGreaterThan(0);
       // 锚真被调用过（读边界 + 每个写事务），否则下面那次「中途变化」会空跑成绿。
       expect(guardCalls).toBeGreaterThan(1);
       // 同一张图按普通规格再取（分类不变、只是 detail=false）：副本策略键必须不同。
       const plain = await service.prepareByMediaId(onDemandInput(f, media.id, { facts: [fact] }));
       expect(plain.detail).toBe(false);
-      expect(plain.images[0]?.variantPolicy).not.toBe(expressionPolicy);
+      expect(plain.images[0]?.variantPolicy).not.toBe(detailPolicy);
       // 问题真值在边界与写事务里各复验一次：中途变化即 authority 失败，零新写入。
       const assetsBefore = f.orm.select().from(schema.qqMediaAssets).all().length;
       const variantsBefore = f.orm.select().from(schema.qqMediaVariants).all().length;
@@ -1781,7 +1779,7 @@ describe("createQqMediaInputService.prepareByMediaId", () => {
           onDemandInput(f, media.id, {
             facts: [fact],
             detail: { ...anchor },
-            settings: { ...SETTINGS, expression_max_dimension: 64 },
+            settings: { ...SETTINGS, ordinary_still_max_dimension: 64 },
           }),
         ),
       ).rejects.toThrow();

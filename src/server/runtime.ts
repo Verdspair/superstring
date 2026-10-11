@@ -29,7 +29,7 @@ import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
 import { readModelProviders, resolveModelProviderRoute } from "./db/model-provider-repository";
 import { readOrganizationSettings } from "./db/organization-repository";
-import { schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
+import { schemeMediaInput, schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
 import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import { withCapacityCache } from "./llm/capacity-cache";
 import {
@@ -414,6 +414,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         const prompt = schemePrompts(scheme).media;
         const policyRevision = qqMediaPolicyRevision({
           prompt,
+          stillMaxDimension: schemeMediaInput(scheme).ordinary_still_max_dimension,
           frames: schemeRhythm(scheme).media_frame_count,
           maxDimension: schemeRhythm(scheme).media_max_dimension,
         });
@@ -451,9 +452,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
           // 填满车道而连续补派——能不能领由数据库与准入决定（同一会话已有租约时不发第二条，
           // 自主接话还要看模型名额），没抢到就 break，下一轮由 onSettled／到达的通知再来。
           // 后台结算照旧走 scheduler 的租约与 onSettled，所以启动与收尾不改变并发与租约语义。
-          const lanes = Math.max(1, bot.scheduler.concurrencyLimit);
           let dispatched = 0;
-          for (let lane = 0; lane < lanes; lane += 1) {
+          for (;;) {
             if (stopping || qqIntake.state.phase !== "ready") break;
             if (!(await bot.scheduler.dispatchOnce())) break;
             dispatched += 1;

@@ -66,31 +66,74 @@ describe("migration acceptance regression", () => {
     ).toContain(`upgrade-policy: supported schema list must include versions 1 through ${current}`);
   });
 
-  const names = ["0001_initial.sql", "0002_knowledge.sql"];
+  const names = migrations.slice(0, 2);
   const path = (name) => `path.join(installRoot, "app/resources/migrations/versions/${name}")`;
-  test("counts complete independent existsSync calls", () => {
+  const freshCheck = (pass, ...extraArgs) =>
+    [
+      "check(",
+      '  "fresh install writes the business migration",',
+      `  ${pass},`,
+      ...extraArgs,
+      ");",
+    ].join("\n");
+  test("counts each migration once when the pass chains independent existence calls", () => {
     expect(
       checkSetupMigrationExistence(
-        names.map((name) => `fs.existsSync(${path(name)},)`).join(" && "),
+        freshCheck(names.map((name) => `fs.existsSync(${path(name)},)`).join(" && ")),
         names,
       ),
     ).toEqual([]);
   });
-  test("rejects multiple paths passed as extra existsSync arguments", () => {
-    expect(
-      checkSetupMigrationExistence(`fs.existsSync(${names.map(path).join(",")})`, names),
-    ).toHaveLength(2);
+  test("rejects a migration whose own existence call is missing", () => {
+    const problems = checkSetupMigrationExistence(
+      freshCheck(`fs.existsSync(${path(names[0])})`),
+      names,
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain(`${names[1]} has 0 independent existence checks`);
   });
-  test("rejects && inside existsSync arguments and duplicated checks", () => {
-    expect(
-      checkSetupMigrationExistence(`fs.existsSync(${names.map(path).join(" && ")})`, names),
-    ).toHaveLength(2);
+  test("rejects duplicated checks and a migration parked in a detail or extra argument", () => {
     expect(
       checkSetupMigrationExistence(
-        `fs.existsSync(${path(names[0])}) && fs.existsSync(${path(names[0])})`,
+        freshCheck(`fs.existsSync(${path(names[0])}) && fs.existsSync(${path(names[0])})`),
         names,
       ),
     ).toHaveLength(2);
+    expect(
+      checkSetupMigrationExistence(
+        freshCheck(
+          `fs.existsSync(${path(names[0])})`,
+          `{ detail: fs.existsSync(${path(names[1])}) },`,
+        ),
+        names,
+      ),
+    ).toHaveLength(2);
+    expect(
+      checkSetupMigrationExistence(
+        freshCheck(
+          names.map((name) => `fs.existsSync(${path(name)})`).join(" && "),
+          "{ accepted: true },",
+          "{ trace: 0 },",
+        ),
+        names,
+      ),
+    ).toHaveLength(1);
+  });
+  test("rejects multiple paths passed as extra existsSync arguments", () => {
+    expect(
+      checkSetupMigrationExistence(
+        freshCheck(`fs.existsSync(${names.map(path).join(",")})`),
+        names,
+      ),
+    ).toHaveLength(3);
+  });
+  test("rejects && inside existsSync arguments", () => {
+    expect(
+      checkSetupMigrationExistence(
+        freshCheck(`fs.existsSync(${names.map(path).join(" && ")})`),
+        names,
+      ),
+    ).toHaveLength(3);
   });
 
   test("accepts every known prior schema only when upgrading to the current package", () => {

@@ -285,6 +285,8 @@ describe("focus and blur regression tests", () => {
       getConversationEvents: events,
       getConversationRuntimeStatus: vi.fn(async () => ({
         pendingWakes: 0,
+        pendingTasks: 0,
+        queuedCount: 0,
         activeRuns: 0,
         failedWakes: 0,
         unknownDeliveries: 0,

@@ -74,10 +74,14 @@ describe("0052 message facts and media persistence", () => {
         "personal_nickname",
         "name_state",
       ]);
-      // Appended scheme groups sit at the end, after 0049's reserve columns;
-      // 0054 appends the three initiative-batch rhythm columns and 0055 the three
-      // time-window columns after them.
-      expect(columns("qq_schemes").slice(-8)).toEqual([
+      // Appended scheme groups sit after 0049's reserve columns; 0054 appends the three
+      // initiative-batch rhythm columns and 0055 the three time-window columns after
+      // them. The frozen 0052 block is pinned by its own position, not the table tail:
+      // later approved migrations (0059) append further columns after it.
+      const schemeColumns = columns("qq_schemes");
+      const settingsStart = schemeColumns.indexOf("message_settings");
+      expect(settingsStart).toBeGreaterThan(0);
+      expect(schemeColumns.slice(settingsStart, settingsStart + 8)).toEqual([
         "message_settings",
         "media_input",
         "initiative_batch_target_count",
@@ -86,6 +90,12 @@ describe("0052 message facts and media persistence", () => {
         "initiative_time_window_enabled",
         "initiative_time_target_seconds",
         "initiative_time_jitter_seconds",
+      ]);
+      // 0059 appends exactly the three task-cap columns after the frozen block.
+      expect(schemeColumns.slice(settingsStart + 8)).toEqual([
+        "mention_task_limit",
+        "ordinary_task_limit",
+        "input_anti_spam_enabled",
       ]);
       expect(columns("qq_message_facts")).toEqual([
         "event_key",
@@ -155,6 +165,7 @@ describe("0052 message facts and media persistence", () => {
         "policy",
         "recorded_at",
       ]);
+      // 0052 golden 块原样（历史块不动），0063 在表尾追加 request_id（SQLite 只能尾部加列）。
       expect(columns("qq_media_read_tasks")).toEqual([
         "id",
         "media_note_id",
@@ -175,6 +186,7 @@ describe("0052 message facts and media persistence", () => {
         "revision",
         "expires_at",
         "recorded_at",
+        "request_id",
       ]);
     } finally {
       h.close();

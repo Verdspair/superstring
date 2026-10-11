@@ -431,6 +431,9 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           // 0052 两组随请求整组透传；未提供时 createQqScheme 在写入侧补已批准默认组。
           messageSettings: body.message_settings,
           mediaInput: body.media_input,
+          // 0059 两组同上：未提供时写入侧补默认（上限 4/1、防抖开）。
+          taskLimits: body.task_limits,
+          inputAntiSpam: body.input_anti_spam,
         }),
       ),
       201,
@@ -474,6 +477,9 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           // 0052 两组：整组透传，未提供＝updateQqScheme 保持现值。
           messageSettings: body.message_settings,
           mediaInput: body.media_input,
+          // 0059 两组：同上，未提供＝保持现值。
+          taskLimits: body.task_limits,
+          inputAntiSpam: body.input_anti_spam,
           expectedRevision: body.expected_revision,
         }),
       ),
@@ -847,6 +853,8 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
         memoryBatchSize: payload.memory_batch_size,
         triggers: payload.triggers,
         attention: payload.attention,
+        taskLimits: payload.task_limits,
+        inputAntiSpam: payload.input_anti_spam,
         shareWebMemory: payload.share_web_memory,
       },
       ownerFor(orm),
@@ -873,6 +881,9 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
     if (payload.memory_batch_size !== undefined) patch.memoryBatchSize = payload.memory_batch_size;
     if (payload.triggers !== undefined) patch.triggers = payload.triggers;
     if (payload.attention !== undefined) patch.attention = payload.attention;
+    // 0059 的两组整组透传；成员 null 是有意义的值（恢复跟随方案），保持 present key。
+    if (payload.task_limits !== undefined) patch.taskLimits = payload.task_limits;
+    if (payload.input_anti_spam !== undefined) patch.inputAntiSpam = payload.input_anti_spam;
     const result = updateQqBinding(current, patch, payload.expected_revision, ownerFor(orm));
     if (result.kind === "conflict") {
       fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");

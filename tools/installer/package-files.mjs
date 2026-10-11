@@ -90,6 +90,12 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0055_qq_initiative_time_window.sql",
     "versions/0056_outbound_stale_reason.sql",
     "versions/0057_history_output_identity_indexes.sql",
+    "versions/0058_qq_conversation_tasks.sql",
+    "versions/0059_qq_task_limits_antispam.sql",
+    "versions/0060_qq_task_execution_snapshot.sql",
+    "versions/0061_qq_task_ready_at.sql",
+    "versions/0062_qq_media_spec_unification.sql",
+    "versions/0063_qq_media_request_identity.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

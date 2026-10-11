@@ -33,10 +33,9 @@
 //      the same token; a stale failure callback cannot clobber a newer claim
 //      or a newer task state.
 // A running task is in-flight: a second claim on the same task fails closed
-// (`awaiting_supplement`) — the second attempt only exists after the first has
-// resolved as failed AND a genuinely later related supplement arrives, proved
-// by the host through `proveSupplementLaterThan` (a host-evidence callback;
-// the input boolean alone is never host evidence).
+// (`already_attempting`). Each task identity has ONE bounded attempt (§5.7):
+// a failure is recorded and reused, and a real new explicit request is a new
+// host-resolved identity (requestId) with its own budget.
 
 import { createHash } from "node:crypto";
 import { and, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
@@ -48,7 +47,11 @@ export type QqMediaReadTaskRow = typeof schema.qqMediaReadTasks.$inferSelect;
 export type QqMediaReadPurpose = "baseline" | "detail";
 export type QqMediaReadTaskStatus = "pending" | "running" | "succeeded" | "failed";
 
-export const QQ_MEDIA_READ_TASK_MAX_ATTEMPTS = 2;
+/**
+ * 每个任务身份一次有界尝试（§5.7）：失败结果复用，同请求 invoke/replay 不自动重试；
+ * 真实新请求是新的身份行、各自预算。旧补充时间窗/时间解锁流已退役。
+ */
+export const QQ_MEDIA_READ_TASK_MAX_ATTEMPTS = 1;
 
 /**
  * Host-side source revalidation, run with the LIVE transaction handle at every
@@ -71,6 +74,7 @@ function requireWholeTaskInput(input: {
   mediaNoteId: string;
   purpose: QqMediaReadPurpose;
   questionKey?: string | null;
+  requestId?: string | null;
 }): void {
   if (input.mediaNoteId.trim().length === 0)
     throw new TypeError("Invalid QQ media read task input");
@@ -89,6 +93,14 @@ function requireWholeTaskInput(input: {
   ) {
     throw new TypeError("A baseline read task never names a question");
   }
+  // §5.7 请求身份只能由宿主解析：`requestId` 是宿主从真实 platform message/run 派生并绑定
+  // scope/epoch/carrier/current request 的 trusted metadata，不是模型可传的字段、也不是
+  // legacy 兜底。缺席＝该 detail 读取没有显式请求身份，仍按原内容身份入账（不伪造 id）。
+  if (input.requestId !== undefined && input.requestId !== null) {
+    if (input.purpose !== "detail" || input.requestId.trim().length === 0) {
+      throw new TypeError("A request id is only valid for an explicit detail read");
+    }
+  }
 }
 
 /**
@@ -106,8 +118,40 @@ export function mediaReadTaskIdentityKey(input: {
   segmentKind: string;
   purpose: QqMediaReadPurpose;
   questionKey?: string | null;
+  /**
+   * 宿主 trusted 请求身份（§5.7）：存在且非空时进入身份键——真实新显式请求是独立的
+   * 有界任务，不与旧累计共享预算；缺席（普通读取，无显式请求）＝原内容身份语义不变。
+   * 只接受宿主传入；模型措辞/参数从不参与。
+   */
+  requestId?: string | null;
   contentSha256: string;
 }): string {
+  // 显式请求身份只在 detail 语义下成立。无 explicit（baseline、以及没有 requestId 的
+  // detail）＝**与旧版完全一致的 7 元组**——JSON.stringify 数组逐字节相同，旧 hash 不变；
+  // 只有真实 non-empty 的 explicit requestId 才追加第 8 个数组成员，成为新的独立身份。
+  if (
+    input.purpose !== "detail" ||
+    input.requestId === undefined ||
+    input.requestId === null ||
+    input.requestId.trim().length === 0
+  ) {
+    return createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.accountId,
+          input.conversationKind,
+          input.peerId,
+          input.agentId,
+          input.segmentKind,
+          input.purpose,
+          input.purpose === "detail" ? (input.questionKey ?? "") : "",
+        ]) +
+          "\n" +
+          input.contentSha256,
+      )
+      .digest("hex");
+  }
+  const requestPart = input.requestId.trim();
   return createHash("sha256")
     .update(
       JSON.stringify([
@@ -118,6 +162,7 @@ export function mediaReadTaskIdentityKey(input: {
         input.segmentKind,
         input.purpose,
         input.purpose === "detail" ? (input.questionKey ?? "") : "",
+        requestPart,
       ]) +
         "\n" +
         input.contentSha256,
@@ -161,11 +206,26 @@ function ledgerTaskFor(orm: Orm, identityKey: string): QqMediaReadTaskRow | null
 }
 
 /** The live, non-expired task for one identity, if one exists. */
+/**
+ * 载体行查找（claim/发布/失败的目标行解析）。§5.7/0063：请求身份是**行解析的一部分**——
+ * 带真实 explicit requestId 时按 `request_id` 精确相等取行；普通（baseline 与无显式请求的
+ * detail）按 `request_id IS NULL` 取行。同一 carrier + questionKey 下的显式请求行与普通行
+ * 因此互不冒充（旧 fail-closed「发布打错行」gap 的根因就在这里）。旧 7 元组普通身份语义不变。
+ */
 function taskFor(
   orm: Orm,
-  input: { mediaNoteId: string; purpose: QqMediaReadPurpose; questionKey?: string | null },
+  input: {
+    mediaNoteId: string;
+    purpose: QqMediaReadPurpose;
+    questionKey?: string | null;
+    requestId?: string | null;
+  },
   at: string,
 ): QqMediaReadTaskRow | null {
+  const explicitRequestId =
+    input.purpose === "detail" && input.requestId !== undefined && input.requestId !== null
+      ? input.requestId.trim()
+      : "";
   const row = orm
     .select()
     .from(schema.qqMediaReadTasks)
@@ -176,6 +236,9 @@ function taskFor(
         input.purpose === "detail"
           ? eq(schema.qqMediaReadTasks.questionKey, input.questionKey ?? "")
           : isNull(schema.qqMediaReadTasks.questionKey),
+        explicitRequestId.length > 0
+          ? eq(schema.qqMediaReadTasks.requestId, explicitRequestId)
+          : isNull(schema.qqMediaReadTasks.requestId),
         // Task expiry never exceeds the media's own window (0052 DDL takes the
         // media row's expiry at import; new tasks are bounded by their caller).
         gt(schema.qqMediaReadTasks.expiresAt, at),
@@ -215,6 +278,11 @@ export function recordMediaReadTask(
     mediaNoteId: string;
     purpose: QqMediaReadPurpose;
     questionKey?: string | null;
+    /**
+     * 宿主 trusted 请求身份（§5.7，仅 detail）：真实显式请求的独立预算维度。
+     * 缺席＝原内容身份；存在＝同内容同问题但不同请求 → 新账本行、各自预算。
+     */
+    requestId?: string | null;
     modelName?: string | null;
     policy: string;
     /** Upper bound: never later than the media row's own expiry. */
@@ -261,6 +329,7 @@ export function recordMediaReadTask(
     segmentKind: media.segmentKind,
     purpose: input.purpose,
     questionKey: input.purpose === "detail" ? (input.questionKey ?? null) : null,
+    requestId: input.purpose === "detail" ? (input.requestId ?? null) : null,
     contentSha256,
   });
   // Identity ledger first (window-blind): the same bytes in the same scope hit
@@ -289,6 +358,12 @@ export function recordMediaReadTask(
       identityKey,
       purpose: input.purpose,
       questionKey: input.purpose === "detail" ? (input.questionKey ?? "") : null,
+      // 0063：显式 detail 请求持久化宿主 trusted 请求 id（唯一行由 identity_key 唯一索引
+      // 保证）；普通/legacy 行恒 NULL，不回填。
+      requestId:
+        input.purpose === "detail" && input.requestId !== undefined && input.requestId !== null
+          ? input.requestId.trim()
+          : null,
       modelName: input.modelName ?? null,
       policy,
       attempts: 0,
@@ -309,7 +384,12 @@ export function recordMediaReadTask(
 
 export function findMediaReadTask(
   orm: Orm,
-  input: { mediaNoteId: string; purpose: QqMediaReadPurpose; questionKey?: string | null },
+  input: {
+    mediaNoteId: string;
+    purpose: QqMediaReadPurpose;
+    questionKey?: string | null;
+    requestId?: string | null;
+  },
 ): QqMediaReadTaskRow | null {
   requireWholeTaskInput(input);
   return taskFor(orm, input, nowIso());
@@ -332,6 +412,7 @@ export function findMediaReadTaskByIdentity(
     segmentKind: string;
     purpose: QqMediaReadPurpose;
     questionKey?: string | null;
+    requestId?: string | null;
     contentSha256: string;
   },
 ): QqMediaReadTaskRow | null {
@@ -340,6 +421,7 @@ export function findMediaReadTaskByIdentity(
     mediaReadTaskIdentityKey({
       ...input,
       questionKey: input.purpose === "detail" ? (input.questionKey ?? null) : null,
+      requestId: input.purpose === "detail" ? (input.requestId ?? null) : null,
     }),
   );
 }
@@ -373,6 +455,7 @@ export function findServableMediaReadTaskByIdentity(
     segmentKind: string;
     purpose: QqMediaReadPurpose;
     questionKey?: string | null;
+    requestId?: string | null;
     contentSha256: string;
     modelName: string;
     policy: string;
@@ -387,6 +470,82 @@ export function findServableMediaReadTaskByIdentity(
   if (legacy) return Date.parse(row.expiresAt) > Date.parse(input.now) ? row : null;
   if (row.policy !== input.policy.trim()) return null;
   return Date.parse(row.expiresAt) > Date.parse(input.now) ? row : null;
+}
+
+/**
+ * Cross-request SUCCESS-content lookup (§5.7, read-only): the most recent
+ * succeeded ledger row under this CONTENT identity (same scope/bytes/purpose/
+ * question — computed WITHOUT any requestId), still live at `now`, model and
+ * policy matched exactly. This is the cache dimension: it deliberately ignores
+ * which explicit request produced the success, so a real new explicit request
+ * can reuse an earlier success without paying a second model call, while
+ * failure attempts stay per-request rows. Returns the REAL row; the caller
+ * still re-verifies source/body ownership through the existing source refs
+ * (this function never mints refs and never bypasses source guards).
+ */
+export function findSucceededMediaReadTaskForContent(
+  orm: Orm,
+  input: {
+    accountId: string;
+    conversationKind: string;
+    peerId: string;
+    agentId: string;
+    segmentKind: string;
+    purpose: QqMediaReadPurpose;
+    questionKey?: string | null;
+    contentSha256: string;
+    modelName: string;
+    policy: string;
+    now: string;
+  },
+): QqMediaReadTaskRow | null {
+  // Candidate rows are the same-scope rows for this purpose/question (identity
+  // rows only; identity-NULL legacy rows have no same-content proof). Each row
+  // is then re-keyed through the ONE identity function **using that row's own
+  // request id**, so an explicit request's 8-tuple row is matched exactly while
+  // ordinary rows keep the unchanged 7-tuple key — never a second hash rule.
+  const candidates = orm
+    .select()
+    .from(schema.qqMediaReadTasks)
+    .where(
+      and(
+        eq(schema.qqMediaReadTasks.accountId, input.accountId),
+        eq(schema.qqMediaReadTasks.conversationKind, input.conversationKind),
+        eq(schema.qqMediaReadTasks.peerId, input.peerId),
+        eq(schema.qqMediaReadTasks.agentId, input.agentId),
+        eq(schema.qqMediaReadTasks.purpose, input.purpose),
+        input.purpose === "detail"
+          ? eq(schema.qqMediaReadTasks.questionKey, input.questionKey ?? "")
+          : isNull(schema.qqMediaReadTasks.questionKey),
+        sql`${schema.qqMediaReadTasks.identityKey} IS NOT NULL`,
+      ),
+    )
+    .all();
+  const matches = candidates.filter(
+    (row) =>
+      row.identityKey ===
+      mediaReadTaskIdentityKey({
+        accountId: input.accountId,
+        conversationKind: input.conversationKind,
+        peerId: input.peerId,
+        agentId: input.agentId,
+        segmentKind: input.segmentKind,
+        purpose: input.purpose,
+        questionKey: input.purpose === "detail" ? row.questionKey : null,
+        requestId: input.purpose === "detail" ? row.requestId : null,
+        contentSha256: input.contentSha256,
+      }),
+  );
+  const usable = matches
+    .filter((row) => row.status === "succeeded" && row.note !== null && row.note.trim().length > 0)
+    .filter((row) => row.modelName === input.modelName)
+    .filter((row) => {
+      const legacy = row.policy === "legacy" && row.id.startsWith("legacy-");
+      return legacy ? true : row.policy === input.policy.trim();
+    })
+    .filter((row) => Date.parse(row.expiresAt) > Date.parse(input.now))
+    .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+  return usable[0] ?? null;
 }
 
 /**
@@ -438,6 +597,8 @@ export function findMediaReadTasksForContent(
     peerId: string;
     agentId: string;
     segmentKind: string;
+    /** 宿主 trusted 显式请求 id（缺省＝只看无显式请求身份的行，不猜请求）。 */
+    requestId?: string | null;
     contentSha256: string;
   },
 ): QqMediaReadTaskRow[] {
@@ -465,6 +626,7 @@ export function findMediaReadTasksForContent(
         segmentKind: input.segmentKind,
         purpose: row.purpose === "detail" ? "detail" : "baseline",
         questionKey: row.purpose === "detail" ? row.questionKey : null,
+        requestId: row.purpose === "detail" ? (input.requestId ?? null) : null,
         contentSha256: input.contentSha256,
       }),
   );
@@ -480,7 +642,8 @@ export function findMediaReadTasksForContent(
  * carrier and recordedAt. Status moves succeeded → failed (the only enum-legal
  * state without a note/model pair) and revision advances, which revokes every
  * ref frozen before the transition. A later same-identity read then follows
- * the ordinary failed-task reclaim rules (remaining attempt, supplement gate)
+ * the ordinary failed-task reclaim rules (one bounded attempt per identity;
+ * a real new request is a new host-resolved identity row)
  * — the budget is never reset and a note-NULL "success" can never deadlock.
  * The caller MUST run this inside the purge's immediate transaction; running
  * tasks are unreachable here because the purge's protection predicate never
@@ -501,8 +664,7 @@ export function revokeMediaReadTaskResultsForSources(
       // The result's authorization ended with the consumed source: the ledger's
       // window ends at the transition, so the remaining attempt re-opens under a
       // FUTURE carrier's current window through the ordinary expired-row reclaim
-      // (never the failed-attempt supplement gate, which would make the cleared
-      // result's budget unreadable).
+      // (the retired supplement gate never gated this reclaim path).
       expiresAt: sql`min(${schema.qqMediaReadTasks.expiresAt}, ${at})`,
       revision: sql`${schema.qqMediaReadTasks.revision} + 1`,
     })
@@ -637,8 +799,7 @@ export function associateLegacyMediaReadTask(
  */
 export class MediaReadTaskRejectedError extends Error {
   readonly reason:
-    | "awaiting_supplement"
-    | "not_addressed"
+    | "already_attempting"
     | "attempts_exhausted"
     | "already_succeeded"
     | "task_expired"
@@ -655,28 +816,17 @@ export class MediaReadTaskRejectedError extends Error {
 }
 
 /**
- * Host-evidence callback: prove that a related supplement genuinely postdates
- * the consumed attempt (the host knows real message/event times; the caller's
- * boolean cannot substitute for it — T08b wires this to the actual supplement
- * query). Returning `false` (or omitting the callback while more attempts are
- * sought) keeps the task blocked.
- */
-export type SupplementEvidence = () => boolean;
-
-/**
- * Claim one attempt atomically (§8.1's two-attempt budget per task).
+ * Claim one attempt atomically (§5.7's one bounded attempt per task identity).
  *
  * The claim is a conditional UPDATE inside an immediate transaction, so racing
- * consumers cannot both take the same attempt number. The asymmetry from §7.2
- * carries over: a first failure waits for a related supplement; the model and
- * policy may change between attempts, the budget does not.
- *
- * Second-attempt gate: the same task claim is refused while an attempt is still
- * running (fail closed), and after a failed first attempt it requires the host
- * to prove a genuinely later related supplement through
- * `proveSupplementLaterThan`. `relatedSupplementArrived` alone records the
- * caller's assertion for attempt 1→2 selection but is never sufficient
- * evidence by itself — the callback must confirm it.
+ * consumers cannot both take the same attempt number. The supplement
+ * time-window/time-unlock flow is retired: a failed identity never waits for a
+ * related supplement — its failure result is recorded and reused, and a real
+ * new explicit request is a NEW identity row with its own budget (host-resolved
+ * requestId). The model and policy may change between claims, the budget does
+ * not. The same task claim is still refused while an attempt is running (fail
+ * closed) and repeated invoke/replay of the SAME request lands on the SAME
+ * ledger row via the CAS — never a new budget.
  *
  * The returned `claimToken` is required by `recordMediaReadTaskResult` /
  * `failMediaReadTask` to act on this attempt.
@@ -687,6 +837,8 @@ export async function attemptMediaReadTask(
     mediaNoteId: string;
     purpose: QqMediaReadPurpose;
     questionKey?: string | null;
+    /** 宿主 trusted 请求身份（§5.7，仅显式 detail）；缺席＝原内容身份。 */
+    requestId?: string | null;
     modelName?: string | null;
     policy: string;
     /** The controlled bytes' sha256 (see recordMediaReadTask). Required. */
@@ -697,9 +849,6 @@ export async function attemptMediaReadTask(
      * old row value.
      */
     expiresAt?: string;
-    relatedSupplementArrived?: boolean;
-    /** Host evidence: a related supplement postdating the consumed attempt. */
-    proveSupplementLaterThan?: SupplementEvidence;
     /**
      * Required host checkpoint: revalidate the frozen source state with the
      * live transaction handle before the claim's CAS write. Throwing (e.g. an
@@ -763,20 +912,13 @@ export async function attemptMediaReadTask(
       if (task.attempts >= QQ_MEDIA_READ_TASK_MAX_ATTEMPTS) {
         throw new MediaReadTaskRejectedError("attempts_exhausted");
       }
-      if (task.attempts === 1) {
-        // Fail closed while in-flight; attempt 2 on a failed first attempt
-        // exists only after host-proven genuinely-later supplement evidence.
-        // An EXPIRED succeeded row is the other path to its remaining attempt:
-        // the supplement gate is a failed-attempt rule (spec §8.1), and the
-        // expired row's re-open already re-proves the current authorization in
-        // this transaction — never a reset, never a body revival.
-        if (task.status === "running") {
-          throw new MediaReadTaskRejectedError("awaiting_supplement");
-        }
-        if (task.status === "failed" && !windowDead) {
-          const proven = (input.proveSupplementLaterThan?.() ?? false) === true;
-          if (!proven) throw new MediaReadTaskRejectedError("awaiting_supplement");
-        }
+      if (task.status === "running") {
+        // Fail closed while in-flight: one bounded attempt per identity — a
+        // repeated invoke/replay of the SAME request never re-opens the row.
+        // An EXPIRED succeeded row is the other re-open path (its remaining
+        // budget), and the expired row's re-open already re-proves the current
+        // authorization in this transaction — never a reset, never a revival.
+        throw new MediaReadTaskRejectedError("already_attempting");
       }
       // The CAS re-derives the window from the CURRENT carrier (never widens the
       // old expired value): cap = min(carrier expiry, caller cap). A carrier
@@ -876,6 +1018,8 @@ export function recordMediaReadTaskResult(
     mediaNoteId: string;
     purpose: QqMediaReadPurpose;
     questionKey?: string | null;
+    /** 宿主 trusted 请求身份（仅显式 detail）；发布按 taskFor 的 request_id 精确行解析。 */
+    requestId?: string | null;
     note: string;
     modelName: string;
     /** The exact attempt claimed by `attemptMediaReadTask`. Required. */
@@ -964,6 +1108,8 @@ export function failMediaReadTask(
     mediaNoteId: string;
     purpose: QqMediaReadPurpose;
     questionKey?: string | null;
+    /** 宿主 trusted 请求身份（仅显式 detail）；失败发布按 taskFor 的 request_id 精确行解析。 */
+    requestId?: string | null;
     /** The exact attempt claimed by `attemptMediaReadTask`. Required. */
     expectedAttempt: number;
     /** The task revision observed at claim time. Required. */

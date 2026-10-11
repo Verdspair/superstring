@@ -258,8 +258,9 @@ export function expandQqReplies(input: QqReplyInput): QqReplyProjection {
           root.state = "expired";
           continue;
         }
-        root.targetMessageId = windowFact.id;
         if (windowFact.completeness === "full") {
+          // Unreadable targets keep the original platform relation.
+          root.targetMessageId = windowFact.id;
           root.state = "in_window";
           root.message = metadataMessage(windowFact);
           bodyGiven.add(windowFact.id);

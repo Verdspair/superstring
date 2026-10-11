@@ -369,6 +369,36 @@ try {
           installRoot,
           "app/resources/migrations/versions/0057_history_output_identity_indexes.sql",
         ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0058_qq_conversation_tasks.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0059_qq_task_limits_antispam.sql",
+        ),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0060_qq_task_execution_snapshot.sql",
+        ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0061_qq_task_ready_at.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0062_qq_media_spec_unification.sql",
+        ),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0063_qq_media_request_identity.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

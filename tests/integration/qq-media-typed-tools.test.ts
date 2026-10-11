@@ -10,9 +10,8 @@
 //    末验拒绝。
 //  * note.read 只出示当前有效的结果：匹配当前 model/policy 的正文（legacy 已验规则）
 //    才给，且 typed 来源真实 mint。
-//  * 第二次尝试的补充证明基准＝claim 事务里现读的任务 lastAttemptAt（真实"第 N 次
-//    已消耗尝试"时刻）：早于/等于尝试时刻的补充拒、真正更晚的允许 exact attempt 2、
-//    lastAttemptAt NULL/NaN 的已消耗任务 fail closed。
+//  * baseline 一次有界尝试（§5.7 退役流）：失败结果记在任务账本行上复用，不自动
+//    第二次、不等补充；同 run 重复 describe 也不立即再花（任务 CAS/同 run memo 挡）。
 //  * policyRevision 是真实策略修订：宿主传入的实际形状串进入 typed 任务的 policy 匹配，
 //    换参数后旧缓存不匹配但已消耗的尝试不重置（任务身份不含模型/策略）。
 
@@ -91,7 +90,7 @@ type NoteReadValue =
   | { status: "unavailable"; code: string };
 type DescribeValue =
   | { status: "described"; described: true; attempt: number }
-  | { status: "failed"; described: false; attempt: number; awaitSupplement: boolean }
+  | { status: "failed"; described: false; attempt: number; giveUp: boolean }
   | { status: "unavailable"; code: string };
 
 /** 把工具交出的引用按宿主消费路径（context-access）复验一遍。 */
@@ -248,7 +247,6 @@ function open() {
         visionModelName: "vision-local",
         transcriptionModelName: null,
       },
-      supplementWindowMinutes: 30,
       // 冻结进任务的完整策略串＝形状前缀 + 宿主修订；POLICY 断言的是冻结后的整串。
       policyRevision: input.policyRevision ?? "test-policy",
       assertCurrent: () => {},
@@ -447,7 +445,7 @@ describe("typed QQ media tools (t08 finish2)", () => {
     }
   });
 
-  it("supplement proof: equal-or-earlier refuses, genuinely later allows exact attempt 2", async () => {
+  it("baseline fails once: the failure is recorded and reused across runs, never retried", async () => {
     const f = open();
     try {
       const img = f.image("img-1", { at: f.baseSeconds - 120 });
@@ -458,11 +456,12 @@ describe("typed QQ media tools (t08 finish2)", () => {
       });
       const run1 = f.context("run-1");
       await tool.execute("media.list", {}, run1.ctx);
+      // 一次有界尝试（§5.7）：失败即结清，giveUp 置真，不等待任何补充。
       expect((await tool.execute("media.describe", { id: img.id }, run1.ctx)).value).toEqual({
         status: "failed",
         described: false,
         attempt: 1,
-        awaitSupplement: true,
+        giveUp: true,
       });
       const claimedAt = (
         f.h.db
@@ -471,52 +470,40 @@ describe("typed QQ media tools (t08 finish2)", () => {
       ).last_attempt_at;
       expect(claimedAt).toBeString();
 
-      // 补充等于尝试时刻（严格 > 才算更晚）：拒。
-      const claimedSeconds = Math.floor(Date.parse(claimedAt) / 1000);
-      f.message("supp-equal", { at: claimedSeconds, reasons: ["mention"] });
+      // 同 run 重复 describe：复用失败结果，不烧第二次视觉。
+      expect((await tool.execute("media.describe", { id: img.id }, run1.ctx)).value).toEqual({
+        status: "failed",
+        described: false,
+        attempt: 1,
+        giveUp: true,
+      });
+      expect(tool.stats.calls).toBe(1);
+
+      // 后续新 run（即使来了更晚的 @ 消息）也不自动重试：旧失败不是等待状态，
+      // 权威重读按预算拒绝，不花第二次视觉。
+      f.message("later-mention", { at: f.baseSeconds + 120, reasons: ["mention"] });
       const run2 = f.context("run-2");
       await tool.execute("media.list", {}, run2.ctx);
       expect((await tool.execute("media.describe", { id: img.id }, run2.ctx)).value).toEqual({
         status: "unavailable",
-        code: "awaiting_supplement",
+        code: "attempts_exhausted",
       });
       expect(tool.stats.calls).toBe(1);
 
-      // 创建早于尝试的"补充"（在 claim 之前的旧消息）：拒——创建与 claim 之间的漂移
-      // 不得让旧消息授权新尝试。
-      f.message("supp-stale", { at: f.baseSeconds - 60, reasons: ["mention"] });
-      const run3 = f.context("run-3");
-      await tool.execute("media.list", {}, run3.ctx);
-      expect((await tool.execute("media.describe", { id: img.id }, run3.ctx)).value).toEqual({
-        status: "unavailable",
-        code: "awaiting_supplement",
-      });
-      expect(tool.stats.calls).toBe(1);
-
-      // 真正更晚、在窗口内的 @ 补充：允许 exact attempt 2。
-      f.message("supp-fresh", { at: f.baseSeconds + 120, reasons: ["mention"] });
-      const run4 = f.context("run-4");
-      await tool.execute("media.list", {}, run4.ctx);
-      expect((await tool.execute("media.describe", { id: img.id }, run4.ctx)).value).toEqual({
-        status: "failed",
-        described: false,
-        attempt: 2,
-        awaitSupplement: false,
-      });
-      expect(tool.stats.calls).toBe(2);
+      // 账本一行、一次已消耗尝试、失败状态与 claim 打点都在宿主时钟上。
       const task = f.h.db
         .query(
           "SELECT attempts,status,last_attempt_at FROM qq_media_read_tasks WHERE media_note_id=?",
         )
         .get(img.id) as { attempts: number; status: string; last_attempt_at: string };
-      expect(task).toMatchObject({ attempts: 2, status: "failed" });
-      expect(Date.parse(task.last_attempt_at)).toBeGreaterThan(Date.parse(claimedAt));
+      expect(task).toMatchObject({ attempts: 1, status: "failed" });
+      expect(Date.parse(task.last_attempt_at)).toBeGreaterThan(0);
     } finally {
       f.h.close();
     }
   });
 
-  it("a consumed task with a NULL lastAttemptAt stays fail closed", async () => {
+  it("a consumed failed task never re-opens as a second attempt", async () => {
     const f = open();
     try {
       const img = f.image("img-1", { at: f.baseSeconds - 120 });
@@ -531,18 +518,23 @@ describe("typed QQ media tools (t08 finish2)", () => {
         status: "failed",
         attempt: 1,
       });
-      // 直接抹掉 lastAttemptAt：claim 打点不可信＝证明基准缺失，fail closed。
+      // 抹掉 claim 打点：§5.7 退役流里重读资格只看"已消耗尝试"，不看时间戳；
+      // 失败行仍 fail closed，绝不被任何改动重新打开成第二次尝试。
       f.h.db
         .query("UPDATE qq_media_read_tasks SET last_attempt_at=NULL WHERE media_note_id=?")
         .run(img.id);
-      f.message("supp-later", { at: f.baseSeconds + 120, reasons: ["mention"] });
+      f.message("later-mention", { at: f.baseSeconds + 120, reasons: ["mention"] });
       const run2 = f.context("run-2");
       await tool.execute("media.list", {}, run2.ctx);
       expect((await tool.execute("media.describe", { id: img.id }, run2.ctx)).value).toEqual({
         status: "unavailable",
-        code: "awaiting_supplement",
+        code: "attempts_exhausted",
       });
       expect(tool.stats.calls).toBe(1);
+      const task = f.h.db
+        .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
+        .get(img.id) as { attempts: number; status: string };
+      expect(task).toMatchObject({ attempts: 1, status: "failed" });
     } finally {
       f.h.close();
     }
@@ -572,7 +564,7 @@ describe("typed QQ media tools (t08 finish2)", () => {
       expect((await tool.execute("media.describe", { id: img.id }, ctx)).value).toMatchObject({
         status: "failed",
         attempt: 1,
-        awaitSupplement: true,
+        giveUp: true,
       });
       expect((await tool.execute("media.describe", { id: img.id }, ctx)).value).toMatchObject({
         status: "failed",

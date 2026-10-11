@@ -203,6 +203,30 @@ const V57_SQL = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0057_history_output_identity_indexes.sql"),
   "utf8",
 );
+const V58_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0058_qq_conversation_tasks.sql"),
+  "utf8",
+);
+const V59_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0059_qq_task_limits_antispam.sql"),
+  "utf8",
+);
+const V60_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0060_qq_task_execution_snapshot.sql"),
+  "utf8",
+);
+const V61_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0061_qq_task_ready_at.sql"),
+  "utf8",
+);
+const V62_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0062_qq_media_spec_unification.sql"),
+  "utf8",
+);
+const V63_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
+  "utf8",
+);
 
 const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
 ${QQ_DISPATCH_SQL}
@@ -239,7 +263,13 @@ ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0053_qq_gro
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0054_qq_initiative_batches.sql"), "utf8")}
 ${readFileSync(path.join(import.meta.dir, "../../migrations/versions/0055_qq_initiative_time_window.sql"), "utf8")}
 ${V56_SQL}
-${V57_SQL}`;
+${V57_SQL}
+${V58_SQL}
+${V59_SQL}
+${V60_SQL}
+${V61_SQL}
+${V62_SQL}
+${V63_SQL}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };

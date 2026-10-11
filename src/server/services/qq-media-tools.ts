@@ -12,7 +12,7 @@
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import {
   QQ_MEDIA_TOOL_DESCRIPTIONS,
   QQ_MEDIA_TOOL_SCHEMAS,
@@ -27,9 +27,9 @@ import { mediaAssetForMediaNote } from "../db/qq-media-asset-repository";
 import type { QqMediaNoteRow } from "../db/qq-media-repository";
 import {
   findMediaReadTask,
-  findMediaReadTaskByIdentity,
   findServableMediaReadTaskById,
   findServableMediaReadTaskByIdentity,
+  findSucceededMediaReadTaskForContent,
   MediaReadTaskRejectedError,
   type MediaTaskSourceGuard,
   mediaReadTaskIdentityKey,
@@ -79,7 +79,8 @@ type DescribeStatus =
       readonly status: "failed";
       readonly described: false;
       readonly attempt: number;
-      readonly awaitSupplement: boolean;
+      /** 一次有界尝试用尽（§5.7）：失败结果复用，同身份不再自动重试。 */
+      readonly giveUp: boolean;
     }
   | { readonly status: "unavailable"; readonly code: string };
 type DescribeValue = DescribeStatus;
@@ -120,6 +121,27 @@ export interface QqMediaQuestionAnchor {
   readonly source: SourceRef;
   /** In-transaction re-check of focus/direct membership, body and media range. */
   readonly assertQuestionCurrent: MediaTaskSourceGuard;
+  /**
+   * 宿主 trusted 的真实新请求身份（§5.7）：仅当宿主证实本轮确是"真实新明确关联原图的
+   * 请求"（引用原图/明确再看，实证来自真实 current request message/run）时填充。
+   * `requestId` 由宿主从 request 消息的 event/platformID + binding epoch + scope 派生并
+   * 冻结——绝不是本图/问题锚自己的 eventKey，也绝不是模型措辞或参数。缺省（无此字段）
+   * ＝普通 detail：沿用原内容身份与旧生命周期（普通同文字跨消息仍共享旧预算）。
+   * 同一请求的重复 invoke/replay 落同一 requestId → 同一账本行去重，不自动重试。
+   */
+  readonly explicitRequest?: QqMediaExplicitRequest;
+}
+
+/** Host-frozen explicit-request metadata; only the host resolves it, never the model. */
+export interface QqMediaExplicitRequest {
+  /** 宿主派生的请求 id（scope/epoch/request-event 绑定），账本行与 attempt 预算按它隔离。 */
+  readonly requestId: string;
+  /** 当前请求消息自己的 journal event key（与被指原图/问题锚的载体 event 严格区分）。 */
+  readonly requestEventKey: string;
+  /** 平台消息 id：诊断/溯源用，不进身份 hash（身份只走 requestId）。 */
+  readonly requestMessageId?: string;
+  /** 请求时刻冻结的 binding epoch；一致性复验仍是宿主 assertCurrent 的职责。 */
+  readonly bindingEpoch: number;
 }
 
 /** Host resolver for the optional `questionMessageId` pointer; null = refuse. */
@@ -168,6 +190,12 @@ export type QqServableMediaDescriptionResolver = (input: {
   readonly mediaKind: string;
   readonly purpose: "baseline" | "detail";
   readonly questionKey?: string | null;
+  /**
+   * 宿主 trusted 显式请求 id（§5.7，仅 detail 有意义）：本次读取所属的真实新请求身份。
+   * 内部只读消费维度——不进任何模型可传的 action schema。按它做身份行查找；结果行
+   * 自己的 requestId 才进身份复核（跨请求成功复用的行带的是它自己的旧请求 id）。
+   */
+  readonly requestId?: string;
   /** The model the current adapter would pick; the ledger's own model must match. */
   readonly modelName: string;
   /** The frozen policy string; the ledger's own policy must match. */
@@ -250,8 +278,6 @@ const POLICY_BASELINE_SHAPE = "baseline/v1";
  * 匹配语义由 reader 按 `policy` 字段精确比较——同一修订串才复用，不比较子串。
  */
 const baselinePolicyOf = (policyRevision: string) => `${POLICY_BASELINE_SHAPE}/${policyRevision}`;
-/** 补充扫描的有界行数：窗口内最多看这么多条 journal 入站消息。 */
-const SUPPLEMENT_SCAN_LIMIT = 200;
 /** 每 run 的上限：到顶一律给安全 unavailable，绝不抛无码异常。 */
 const MAX_DISCLOSED = 512;
 const MAX_CURSORS = 512;
@@ -266,7 +292,6 @@ export interface QqMediaToolsOptions {
     readonly visionModelName: string | null;
     readonly transcriptionModelName: string | null;
   };
-  readonly supplementWindowMinutes: number;
   /**
    * baseline 读取的真实策略修订：宿主从生效方案的实际媒体输入形状规范化得出（prompt、
    * 帧数、最大边）。它是 typed 结果缓存的匹配维度——改方案参数后旧结果不再按旧策略复用，
@@ -558,111 +583,12 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     };
   }
 
-  /**
-   * §7.1/§8.11 的补充事实，全部来自 journal：更晚、在窗口内、晚于 typed 任务的最近一次
-   * 已消耗尝试（任务 lastAttemptAt——claim CAS 打点的真实时刻，result/fail 不回写）、且是
-   * member 的 @／reply_to_agent（群）或任意成员消息（私聊）。原图消息被显式排除——它不能
-   * 当自己的补充；原图自己的 originalEvent 永远不算它自己的补充证据。
-   */
-  function freshSupplementLaterThan(
-    row: QqMediaNoteRow,
-    event: typeof schema.qqEvents.$inferSelect,
-    notBeforeMs: number,
-  ): boolean {
-    const windowSeconds = Math.floor(options.supplementWindowMinutes * 60);
-    if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) return false;
-    const from = new Date(event.occurredAtSeconds * 1000).toISOString();
-    const to = new Date((event.occurredAtSeconds + windowSeconds) * 1000).toISOString();
-    const candidates = options.orm
-      .select({
-        eventKey: schema.conversationEvents.eventKey,
-        addressing: schema.conversationEvents.addressing,
-        participant: schema.conversationEvents.participant,
-        occurredAt: schema.conversationEvents.occurredAt,
-      })
-      .from(schema.conversationEvents)
-      .where(
-        and(
-          eq(schema.conversationEvents.conversationId, options.conversationId),
-          eq(schema.conversationEvents.kind, "inbound"),
-          gt(schema.conversationEvents.occurredAt, from),
-          lte(schema.conversationEvents.occurredAt, to),
-        ),
-      )
-      .orderBy(desc(schema.conversationEvents.seq))
-      .limit(SUPPLEMENT_SCAN_LIMIT)
-      .all();
-    return candidates.some((candidate) => {
-      // 原图消息不能当它自己的补充（journal key 逐一排除，不按 kind 猜）。
-      if (candidate.eventKey === journalKey(row.eventKey)) return false;
-      if (!(Date.parse(candidate.occurredAt) > notBeforeMs)) return false;
-      let role: unknown = null;
-      let reasons: unknown[] = [];
-      try {
-        role = candidate.participant
-          ? (JSON.parse(candidate.participant) as { role?: unknown }).role
-          : null;
-        const addressing = JSON.parse(candidate.addressing) as { reasons?: unknown };
-        reasons = Array.isArray(addressing.reasons) ? addressing.reasons : [];
-      } catch {
-        return false;
-      }
-      if (role !== "member") return false;
-      return binding.kind === "private"
-        ? true
-        : reasons.some(
-            (reason) =>
-              reason === "mention" || reason === "reply_to_agent" || reason === "legacy_addressed",
-          );
-    });
-  }
-
   /** typed baseline 任务的键：本片只做 baseline（无 questionKey）。 */
   const baselineKey = (mediaNoteId: string) => ({ mediaNoteId, purpose: "baseline" as const });
 
   /** typed 任务的真实现值（list 元数据与补充比较基准都用它，绝不看 media row 的旧账）。 */
   function baselineTask(mediaNoteId: string) {
     return findMediaReadTask(options.orm, baselineKey(mediaNoteId));
-  }
-
-  /**
-   * 补充证明的基准行：**同一 purpose 的那一条预算**，先按本载体找，找不到再按内容身份
-   * 找 identity 账本行（同内容跨载体投递＝同一条预算，不因换载体重开）。绝不退回另一条
-   * purpose 的行——detail 的基准永远不是 baseline，反之亦然。
-   */
-  function budgetRowForSupplement(input: {
-    readonly row: QqMediaNoteRow;
-    readonly event: typeof schema.qqEvents.$inferSelect;
-    readonly purpose: "baseline" | "detail";
-    readonly questionKey?: string;
-  }) {
-    const carrier = findMediaReadTask(options.orm, {
-      mediaNoteId: input.row.id,
-      purpose: input.purpose,
-      ...(input.purpose === "detail" ? { questionKey: input.questionKey ?? "" } : {}),
-    });
-    if (carrier !== null) return carrier;
-    const asset = mediaAssetForMediaNote(options.orm, {
-      mediaNoteId: input.row.id,
-      scope: {
-        accountId: binding.accountId,
-        conversationKind: binding.kind,
-        peerId: binding.peerId,
-        agentId: binding.agentId,
-      },
-      at: now(),
-    });
-    if (asset === null) return null;
-    return findMediaReadTaskByIdentity(options.orm, {
-      accountId: binding.accountId,
-      conversationKind: binding.kind,
-      peerId: binding.peerId,
-      agentId: binding.agentId,
-      segmentKind: input.row.segmentKind,
-      purpose: input.purpose,
-      ...(input.purpose === "detail" ? { questionKey: input.questionKey ?? "" } : {}),
-      contentSha256: asset.asset.contentSha256,
-    });
   }
 
   /**
@@ -708,8 +634,24 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       at: request.now,
     });
     if (asset === null) return null;
-    // 两条只读真源，共用上面这一个同内容证明：byId 先取「本次读取已证明的那一行」，
-    // byIdentity 按重算出的 identity 键取唯一预算行。两者都再受同一把闸。
+    // 三条只读真源，共用上面这一个同内容证明：byId 先取「本次读取已证明的那一行」；
+    // byIdentity 按重算出的 identity 键取唯一预算行（显式请求带本次 requestId，普通
+    // 读取走原 7 元组）；显式请求的成功内容缓存再按「内容身份（不含 requestId）」
+    // 复用已成功行（§5.7：真实新请求可复用更早的成功，不花第二次模型调用）。三者
+    // 都再受同一把闸。
+    const identityInput = {
+      accountId: binding.accountId,
+      conversationKind: binding.kind,
+      peerId: binding.peerId,
+      agentId: binding.agentId,
+      segmentKind: request.mediaKind,
+      purpose: request.purpose,
+      questionKey: request.questionKey ?? null,
+      contentSha256: asset.asset.contentSha256,
+      modelName: request.modelName,
+      policy: request.policy,
+      now: request.now,
+    };
     const row =
       findServableMediaReadTaskById(options.orm, {
         taskId: request.taskId ?? "",
@@ -718,22 +660,32 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         now: request.now,
       }) ??
       findServableMediaReadTaskByIdentity(options.orm, {
-        accountId: binding.accountId,
-        conversationKind: binding.kind,
-        peerId: binding.peerId,
-        agentId: binding.agentId,
-        segmentKind: request.mediaKind,
-        purpose: request.purpose,
-        questionKey: request.questionKey ?? null,
-        contentSha256: asset.asset.contentSha256,
-        modelName: request.modelName,
-        policy: request.policy,
-        now: request.now,
-      });
+        ...identityInput,
+        ...(request.purpose === "detail" && request.requestId !== undefined
+          ? { requestId: request.requestId }
+          : {}),
+      }) ??
+      (request.purpose === "detail" && request.requestId !== undefined
+        ? findSucceededMediaReadTaskForContent(options.orm, {
+            accountId: identityInput.accountId,
+            conversationKind: identityInput.conversationKind,
+            peerId: identityInput.peerId,
+            agentId: identityInput.agentId,
+            segmentKind: identityInput.segmentKind,
+            purpose: identityInput.purpose,
+            questionKey: identityInput.questionKey,
+            contentSha256: identityInput.contentSha256,
+            modelName: identityInput.modelName,
+            policy: identityInput.policy,
+            now: identityInput.now,
+          })
+        : null);
     if (row === null) return null;
-    // byId 那一支必须**当场重算** identity 键并与该行逐字比对：只有「这一行的
-    // identity_key == 本 carrier 现存活资产重算出的键」才证明这一行讲的是这张图。
-    // reader 曾经证明过 identity，不等于此刻对这张图可用——那一行可能属于另一张图。
+    // 每一支都必须**当场重算** identity 键并与该行逐字比对，而且重算用「该行自己的
+    // requestId」而不是本次请求的：跨请求成功复用时，那一行讲的是产生它的那个旧显式
+    // 请求（8 元组）；普通行没有 requestId，重算自然落在不变的 7 元组上。本次请求的
+    // requestId 只决定「按哪条身份找行」，绝不冒充行自己的身份。reader 曾经证明过
+    // identity，不等于此刻对这张图可用——那一行可能属于另一张图。
     if (row.identityKey === null || row.identityKey.trim().length === 0) return null;
     if (
       row.identityKey !==
@@ -745,6 +697,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         segmentKind: request.mediaKind,
         purpose: request.purpose,
         questionKey: request.purpose === "detail" ? (request.questionKey ?? null) : null,
+        requestId: request.purpose === "detail" ? row.requestId : null,
         contentSha256: asset.asset.contentSha256,
       })
     )
@@ -793,6 +746,8 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     readonly event: typeof schema.qqEvents.$inferSelect;
     readonly purpose: "baseline" | "detail";
     readonly questionKey?: string | null;
+    /** The host-frozen explicit request id of THIS read (detail only). */
+    readonly requestId?: string;
     /** The reader-proven ledger row for this read, when there is one. */
     readonly taskId?: string;
     readonly metadataOnly: boolean;
@@ -803,10 +758,17 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       readonly assertQuestionCurrent: MediaTaskSourceGuard;
     };
   }): QqServableMediaDescription | null {
+    // 载体行查找按本次读取的请求身份走：显式请求只认它自己的 8 元组行，普通行不得
+    // 冒充它的载体行；反过来，普通（无 requestId）读取也绝不拿显式行当载体行。
     const carrierTask = findMediaReadTask(options.orm, {
       mediaNoteId: input.row.id,
       purpose: input.purpose,
-      ...(input.purpose === "detail" ? { questionKey: input.questionKey ?? "" } : {}),
+      ...(input.purpose === "detail"
+        ? {
+            questionKey: input.questionKey ?? "",
+            ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+          }
+        : {}),
     });
     if (carrierTask !== null && describedForCurrentModelPolicy(carrierTask, "image")) return null; // 载体行有可服务结果时，消费接口不介入（同一真源，只走一条路）。
     const resolver = options.servableDescription ?? defaultServableDescription;
@@ -819,6 +781,9 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       mediaKind: input.row.segmentKind,
       purpose: input.purpose,
       ...(input.purpose === "detail" ? { questionKey: input.questionKey ?? "" } : {}),
+      ...(input.purpose === "detail" && input.requestId !== undefined
+        ? { requestId: input.requestId }
+        : {}),
       modelName: choice.model,
       policy: policyBaseline,
       ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
@@ -858,6 +823,18 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     if (anchor === null) return null;
     if (anchor.questionKey.trim().length === 0)
       fail("CONTEXT_SOURCE_INVALID", "问题消息没有可用的真实原文");
+    // explicitRequest 是宿主 trusted 事实：给了就必须完整（id/事件/epoch），残缺按宿主
+    // 接线错误失败穿透，不静默降级成普通 detail（否则请求身份会被静默吞掉）。
+    if (anchor.explicitRequest !== undefined) {
+      const er = anchor.explicitRequest;
+      if (
+        er.requestId.trim().length === 0 ||
+        er.requestEventKey.trim().length === 0 ||
+        !Number.isInteger(er.bindingEpoch)
+      ) {
+        fail("CONTEXT_SOURCE_INVALID", "显式请求身份不完整，拒绝读取");
+      }
+    }
     return anchor;
   }
 
@@ -1194,10 +1171,18 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     question: QqMediaQuestionAnchor | null;
     taskId?: string;
   }): QqServableMediaDescription | null {
+    // 本次读取的宿主 trusted 请求身份（§5.7，仅 detail 显式请求有）：载体行查找与
+    // 受控消费都按它走；结果行自己的 requestId 才进身份复核。
+    const requestId = input.question?.explicitRequest?.requestId;
     const task = findMediaReadTask(options.orm, {
       mediaNoteId: input.row.id,
       purpose: input.purpose,
-      ...(input.question === null ? {} : { questionKey: input.question.questionKey }),
+      ...(input.question === null
+        ? {}
+        : {
+            questionKey: input.question.questionKey,
+            ...(requestId === undefined ? {} : { requestId }),
+          }),
     });
     if (
       task !== null &&
@@ -1223,6 +1208,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       event: input.event,
       purpose: input.purpose,
       ...(input.question === null ? {} : { questionKey: input.question.questionKey }),
+      ...(requestId === undefined ? {} : { requestId }),
       ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
       metadataOnly: false,
       assertCurrent: describeTaskGuard(input.event),
@@ -1322,10 +1308,18 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     limit: number;
     wrap: (page: Extract<NoteReadValue, { status: "ok" }>) => unknown;
   }): Promise<Omit<ActionObservation, "id" | "name">> {
+    // 缓存命中/未描述判定同样按本次读取的请求身份找载体行：显式请求的 8 元组行与
+    // 普通 7 元组行互不冒充，普通旧账不得被读成显式请求的预算。
+    const requestId = input.question?.explicitRequest?.requestId;
     const task = findMediaReadTask(options.orm, {
       mediaNoteId: input.id,
       purpose: input.purpose,
-      ...(input.question === null ? {} : { questionKey: input.question.questionKey }),
+      ...(input.question === null
+        ? {}
+        : {
+            questionKey: input.question.questionKey,
+            ...(requestId === undefined ? {} : { requestId }),
+          }),
     });
     if (
       task?.status === "succeeded" &&
@@ -1472,14 +1466,20 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
           findMediaReadTask(options.orm, {
             mediaNoteId: input.id,
             purpose,
-            ...(purpose === "detail" ? { questionKey: question?.questionKey ?? "" } : {}),
+            ...(purpose === "detail"
+              ? {
+                  questionKey: question?.questionKey ?? "",
+                  ...(question?.explicitRequest === undefined
+                    ? {}
+                    : { requestId: question.explicitRequest.requestId }),
+                }
+              : {}),
           });
         const readInput: QqMediaTaskReadInput = {
           eventKey: row.eventKey,
           segmentIndex: row.segmentIndex,
           policy: policyBaseline,
           modelConfig: options.modelConfig,
-          addressedToAssistant: true,
           // 缓存/legacy 分支与新读分支共用同一把宿主时钟：命中判定与打点不再跨刻度。
           now,
           assertCurrent: describeTaskGuard(event),
@@ -1488,6 +1488,9 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
             ? {
                 purpose: "detail" as const,
                 questionKey: question.questionKey,
+                ...(question.explicitRequest === undefined
+                  ? {}
+                  : { requestId: question.explicitRequest.requestId }),
                 assertQuestionCurrent: question.assertQuestionCurrent,
               }
             : { purpose: "baseline" as const }),
@@ -1608,6 +1611,9 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
           mediaNoteId: row.id,
           purpose: "detail",
           questionKey: question.questionKey,
+          ...(question.explicitRequest === undefined
+            ? {}
+            : { requestId: question.explicitRequest.requestId }),
         });
         if (existing !== null && existing.status === "succeeded") {
           const outcome = await cachePath(
@@ -1635,33 +1641,13 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         }
         // 结果信封上界都装不下时不认领尝试、不调模型、不写缓存。
         boundary(state, context);
-        if (
-          !(await fits())(
-            { status: "failed", described: false, attempt: 2, awaitSupplement: false },
-            [],
-          )
-        )
+        if (!(await fits())({ status: "failed", described: false, attempt: 1, giveUp: true }, []))
           return { value: unavailableValue(), sources: [] };
         boundary(state, context);
-        // 第二次尝试的补充证明（detail 与 baseline 同规则、同基准来源）：回调在 claim
-        // 事务里被调用，此刻现读**本 detail 任务**（purpose=detail + 本 questionKey）
-        // 的真实现值——不是 baseline 行，也不是创建时的快照。基准取该行 claim CAS
-        // 打点的 lastAttemptAt（result/fail 不回写它）；缺失/不可解析 fail closed。
-        const proveDetailSupplementLaterThan = (): boolean => {
-          const current = budgetRowForSupplement({
-            row,
-            event,
-            purpose: "detail",
-            questionKey: question.questionKey,
-          });
-          if (current === null) return false;
-          if (current.status !== "failed" || current.attempts < 1) return false;
-          const stamp = current.lastAttemptAt;
-          if (stamp === null) return false;
-          const benchmarkMs = Date.parse(stamp);
-          if (!Number.isFinite(benchmarkMs)) return false;
-          return freshSupplementLaterThan(row, event, benchmarkMs);
-        };
+        // 请求身份（§5.7）：只有宿主在锚上冻结的 explicitRequest 才是新请求身份；
+        // 普通 detail（无 explicitRequest）不带 requestId，仍按原内容身份入账——
+        // 普通同文字跨消息共享旧生命周期不变。工具不猜 key、不从模型措辞/参数构造。
+        const requestId = question.explicitRequest?.requestId;
         const detail = await readQqMediaTaskOnce(
           options.orm,
           options.adapter,
@@ -1670,11 +1656,10 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
             segmentIndex: row.segmentIndex,
             purpose: "detail",
             questionKey: question.questionKey,
+            ...(requestId === undefined ? {} : { requestId }),
             assertQuestionCurrent: question.assertQuestionCurrent,
             policy: policyBaseline,
             modelConfig: options.modelConfig,
-            addressedToAssistant: true,
-            proveSupplementLaterThan: proveDetailSupplementLaterThan,
             now,
             assertCurrent: describeTaskGuard(event),
             owner: ownerOf(context),
@@ -1703,7 +1688,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
             status: "failed",
             described: false,
             attempt: detail.attempt,
-            awaitSupplement: detail.awaitSupplement,
+            giveUp: detail.giveUp,
           };
           return settle(state, context, fits, value, [], snapshot(row));
         }
@@ -1775,39 +1760,16 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       const resultFloor: DescribeValue = {
         status: "failed",
         described: false,
-        attempt: 2,
-        awaitSupplement: false,
+        attempt: 1,
+        giveUp: true,
       };
       boundary(state, context);
       if (!(await fits())(resultFloor, [])) return { value: unavailableValue(), sources: [] };
 
-      // 授权事实全部从宿主事实得出：原图被叫到（journal addressing），第二次尝试的补充
-      // 证据闭包在 claim 事务里同步重查真实 journal（基准＝typed 任务的真实现值时刻）。
-      const addressedByMessage = scope.reasons.some(
-        (reason) =>
-          reason === "mention" ||
-          reason === "reply_to_agent" ||
-          reason === "private" ||
-          reason === "legacy_addressed",
-      );
+      // baseline 一次自动读（§5.7）：失败不再等补充、不自动第二次、不循环——补充时间窗
+      // 与时间解锁流已退役。失败结果记在任务账本行上复用；真实新消息/新显式请求是新的
+      // 请求身份、各自预算，旧失败不构成永久门禁。
       const guard = describeTaskGuard(event);
-      // 第二次尝试的补充证明：回调在 claim 事务里执行，此刻现读同一任务的真实"最近一次
-      // 已消耗尝试"时刻（lastAttemptAt，claim CAS 打点）与 state，再扫宿主 journal。
-      // 基准绝不取 recordedAt/内存快照——创建与第二次 claim 之间的漂移不得用旧基准
-      // 授权；lastAttemptAt 为 NULL/NaN 的已消耗任务 fail closed，不解锁。
-      // 构造不以原图 addressing 为前提：原图未被 @ 的第一次尝试仍走既有主动读（无已
-      // 消耗任务时闭包恒为 false），但更晚的真实 @/私聊补充事实同样解锁第二次尝试。
-      const proveSupplementLaterThan = (): boolean => {
-        const current = budgetRowForSupplement({ row, event, purpose: "baseline" });
-        if (current === null) return false;
-        if (current.status !== "failed" || current.attempts < 1) return false;
-        const stamp = current.lastAttemptAt;
-        if (stamp === null) return false;
-        const benchmarkMs = Date.parse(stamp);
-        if (!Number.isFinite(benchmarkMs)) return false;
-        return freshSupplementLaterThan(row, event, benchmarkMs);
-      };
-      const addressedToAssistant = addressedByMessage || proveSupplementLaterThan();
       boundary(state, context);
       const result = await readQqMediaTaskOnce(
         options.orm,
@@ -1818,8 +1780,6 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
           purpose: "baseline",
           policy: policyBaseline,
           modelConfig: options.modelConfig,
-          addressedToAssistant,
-          ...(addressedToAssistant ? { proveSupplementLaterThan } : {}),
           now,
           assertCurrent: guard,
           owner: ownerOf(context),
@@ -1855,7 +1815,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
           status: "failed",
           described: false,
           attempt: result.attempt,
-          awaitSupplement: result.awaitSupplement,
+          giveUp: result.giveUp,
         };
         const task = baselineTask(input.id);
         if (task) options.onDescribed?.(row.eventKey, task.id);

@@ -1,23 +1,44 @@
 import type { Database } from "bun:sqlite";
+import {
+  QqConversationTaskCauseSchema,
+  type QqTaskExecutionSnapshot,
+  qqConversationTaskKey,
+  resolveQqEffectiveTaskLimits,
+} from "../../../shared/contracts/qq-task";
 import type { AgentRuntime } from "../../agent/agent-runtime";
 import type { BuiltInAction } from "../../agent/built-in-actions";
+import { sourceAccess } from "../../agent/context-access";
 import type { ConversationHost } from "../../agent/conversation-host";
 import type { AgentTaskService } from "../../agent/task-service";
 import { observationRelevant } from "../../conversation/observation-relevance";
 import { OutboundDelivery } from "../../conversation/outbound-delivery";
+import { QqTaskScheduler } from "../../conversation/qq-task-scheduler";
 import { WakeScheduler } from "../../conversation/wake-scheduler";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { OutboundIntentRepository, type OutboundTarget } from "../../db/outbound-intent-repository";
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { readQqDispatchSettings } from "../../db/qq-dispatch-repository";
+import { readEffectiveQqScheme } from "../../db/qq-group-config-repository";
 import type { QqSchemeRow } from "../../db/qq-scheme-repository";
+import {
+  effectiveQqTriggers,
+  readQqScheme,
+  schemeReply,
+  schemeTaskLimits,
+} from "../../db/qq-scheme-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
+import {
+  createQqConversationTask,
+  type QqConversationTaskIdentity,
+  type QqConversationTaskSourceGuard,
+} from "../../db/qq-task-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import { WakeRepository } from "../../db/wake-repository";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
+import { attentionTriggerFilter } from "../../services/qq-dispatch";
 import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
 import type { QqMemberReadPort } from "../../services/qq-member-tools";
 import { type QqSendPort, qqStickerFileReference } from "../../services/qq-send-transport";
@@ -159,8 +180,85 @@ export function createOneBotConversationRuntime(options: {
   const compression = new BotCompressionQueue();
   // 本群能力停用集中由 guard 判定；投递与出站授权都按它复核，而不是各自读一遍配置。
   const guard = new QqGroupCapabilityGuard(orm);
+  const taskEvents = (
+    identity: Readonly<
+      Pick<QqConversationTaskIdentity, "conversationId" | "sourceFromSeq" | "sourceThroughSeq">
+    >,
+  ) =>
+    journal
+      .eventsAfter(
+        identity.conversationId,
+        Math.max(0, identity.sourceFromSeq - 1),
+        identity.sourceThroughSeq - identity.sourceFromSeq + 1,
+      )
+      .items.filter(
+        (event) =>
+          event.seq <= identity.sourceThroughSeq &&
+          (event.kind === "inbound" ||
+            event.kind === "outbound" ||
+            event.kind === "media_revision"),
+      );
+  const taskSourceState: QqConversationTaskSourceGuard = (_transaction, identity) => {
+    const conversation = journal.row(identity.conversationId);
+    const binding = conversation ? readQqBinding(orm, conversation.source_id) : null;
+    const scheme = binding ? readQqScheme(orm, binding.schemeId) : null;
+    const agent = binding ? getAgentRow(orm, binding.agentId) : null;
+    const settings = readQqSettings(orm);
+    if (
+      !conversation ||
+      !binding ||
+      !scheme ||
+      !agent ||
+      conversation.closed_at ||
+      conversation.binding_epoch !== identity.bindingEpoch ||
+      conversation.agent_id !== identity.agentId ||
+      binding.agentId !== identity.agentId ||
+      binding.paused ||
+      agent.isActive !== 1 ||
+      settings.enabled !== 1 ||
+      settings.accountId !== binding.accountId ||
+      !effectiveQqTriggers(binding, scheme)[identity.cause]
+    )
+      return "revoked";
+    const events = taskEvents(identity);
+    const focus = events.find((event) => event.seq === identity.sourceThroughSeq);
+    if (!focus) return "revoked";
+    const attention = attentionTriggerFilter(binding);
+    if (
+      identity.taskClass === "mention" &&
+      attention &&
+      (!focus.participant?.id || !attention.includes(focus.participant.id))
+    )
+      return "revoked";
+    const at = new Date().toISOString();
+    const owner = {
+      kind: "conversation",
+      id: conversation.id,
+      userId: DEFAULT_USER_ID,
+      agentId: agent.id,
+    };
+    const bindingOwner = {
+      kind: "qq_binding" as const,
+      id: binding.id,
+      userId: DEFAULT_USER_ID,
+      agentId: agent.id,
+    };
+    for (const event of events) {
+      for (const source of event.sources) {
+        // Event identity is checked through the journal; readable content has its own source guard.
+        if (source.kind === "qq_event") continue;
+        const state =
+          guard.sourceAccess(source, bindingOwner) ??
+          options.resolveSource?.(source, owner, at) ??
+          sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, at);
+        if (state !== "available") return state === "expired" ? "expired" : "revoked";
+      }
+    }
+    return "valid";
+  };
   const host = new OneBotHost({
     ...options,
+    taskSourceState,
     enqueueCompression: (job) => compression.enqueue(job),
     wakes,
     outbox,
@@ -292,7 +390,7 @@ export function createOneBotConversationRuntime(options: {
   // 配置保存成功（CAS 通过）后唤醒投放车道按当前上限复核：调高立即 drain，无定时器轮询。
   // 与模型准入共用同一权限保存通知源；进程级长期订阅，无卸载生命周期。
   options.onPolicyChange?.(() => delivery.notifyPolicyChange());
-  const scheduler = new WakeScheduler({
+  const intakeScheduler = new WakeScheduler({
     repository: wakes,
     telemetry: options.telemetry,
     // 唤醒失败以前只在唤醒记录里留一个码，控制台一声不响。这里补一行原因
@@ -328,12 +426,264 @@ export function createOneBotConversationRuntime(options: {
         (agentId ? getAgentRow(orm, agentId)?.modelName : undefined);
       return options.agentRuntime.admission?.available(judgement ?? undefined) ?? true;
     },
-    async activate(wake, signal) {
-      const result = await host.activate(wake, signal);
-      await delivery.runOnce();
-      return result;
+    async activate(wake) {
+      const conversation = journal.get(wake.conversationId);
+      if (!conversation) throw new Error("BOT_CONVERSATION_REQUIRED");
+      const mentionTask = db
+        .query(`SELECT id FROM qq_conversation_tasks
+        WHERE conversation_id=? AND task_class='mention' AND source_through_seq=? LIMIT 1`)
+        .get(conversation.id, wake.throughSeq);
+      if (mentionTask) {
+        if (!wake.leaseToken) throw new Error("WAKE_LEASE_LOST");
+        wakes.complete(
+          wake.id,
+          wake.leaseToken,
+          "no_output",
+          wake.throughSeq,
+          new Date().toISOString(),
+        );
+        return;
+      }
+      const boundary = wakes.getSourceFromSeq(wake.id) ?? Math.max(0, wake.throughSeq - 1);
+      createQqConversationTask(
+        orm,
+        {
+          taskKey: qqConversationTaskKey.ordinary({
+            conversationId: conversation.id,
+            bindingEpoch: conversation.bindingEpoch,
+            agentId: conversation.agentId,
+            wakeId: wake.id,
+          }),
+          conversationId: conversation.id,
+          bindingEpoch: conversation.bindingEpoch,
+          agentId: conversation.agentId,
+          taskClass: "ordinary",
+          cause: QqConversationTaskCauseSchema.parse(wake.cause),
+          sourceFromSeq: boundary + 1,
+          sourceThroughSeq: wake.throughSeq,
+          originWakeId: wake.id,
+          wakeLeaseToken: wake.leaseToken ?? undefined,
+          sourceExpiresAt:
+            taskEvents({
+              conversationId: conversation.id,
+              sourceFromSeq: boundary + 1,
+              sourceThroughSeq: wake.throughSeq,
+            })
+              .flatMap((event) => event.sources)
+              .map((source) => source.expiresAt)
+              .filter((at): at is string => at !== undefined)
+              .sort()[0] ?? null,
+          at: new Date().toISOString(),
+        },
+        { validateSource: taskSourceState },
+      );
     },
   });
+  const taskScheduler = new QqTaskScheduler({
+    orm,
+    telemetry: options.telemetry,
+    traceParent(task) {
+      const telemetry = options.telemetry;
+      if (!telemetry) return undefined;
+      if (task.originWakeId) {
+        const intake = db
+          .query(`SELECT trace_id,span_id FROM runtime_spans
+            WHERE wake_id=? AND conversation_id=? AND source_seq=?
+              AND name='bot.wake.activate' AND expires_at>?
+            ORDER BY id DESC LIMIT 1`)
+          .get(
+            task.originWakeId,
+            task.conversationId,
+            task.sourceThroughSeq,
+            new Date().toISOString(),
+          ) as { trace_id: string; span_id: string } | null;
+        return intake ? { traceId: intake.trace_id, spanId: intake.span_id } : undefined;
+      }
+      const focus = journal.eventsAfter(task.conversationId, task.sourceThroughSeq - 1, 1).items[0];
+      if (
+        !focus ||
+        focus.seq !== task.sourceThroughSeq ||
+        focus.source.kind !== "qq_event" ||
+        focus.source.id !== task.originEventKey
+      )
+        return undefined;
+      const ingress = db
+        .query(`SELECT trace_id,span_id FROM runtime_spans
+        WHERE conversation_id=? AND source_seq=? AND name='bot.ingress'
+        ORDER BY id DESC LIMIT 1`)
+        .get(task.conversationId, task.sourceThroughSeq) as {
+        trace_id: string;
+        span_id: string;
+      } | null;
+      return ingress ? { traceId: ingress.trace_id, spanId: ingress.span_id } : undefined;
+    },
+    policy: () => {
+      const leaseMs = readQqDispatchSettings(orm).leaseSeconds * 1000;
+      return { leaseMs, renewMs: Math.max(1, Math.floor(leaseMs / 3)) };
+    },
+    sourceState: taskSourceState,
+    resourceGate(task) {
+      if (task.cause !== "chiming_in" || task.judgementDone === 1) return true;
+      const agentId = journal.row(task.conversationId)?.agent_id;
+      const model =
+        readQqSettings(orm).judgementModelName ??
+        (agentId ? getAgentRow(orm, agentId)?.modelName : undefined);
+      return options.agentRuntime.admission?.available(model ?? undefined) ?? true;
+    },
+    limitsFor(identity) {
+      const conversation = journal.row(identity.conversationId);
+      const binding = conversation ? readQqBinding(orm, conversation.source_id) : null;
+      const scheme = binding ? readQqScheme(orm, binding.schemeId) : null;
+      if (!binding || !scheme) throw new Error("BOT_CONFIGURATION_MISSING");
+      return resolveQqEffectiveTaskLimits(schemeTaskLimits(scheme), binding.taskLimits);
+    },
+    freezeAtClaim(_transaction, task, limits): QqTaskExecutionSnapshot {
+      const conversation = journal.row(task.conversationId);
+      const binding = conversation ? readQqBinding(orm, conversation.source_id) : null;
+      const scheme = binding ? readEffectiveQqScheme(orm, binding) : null;
+      const agent = binding ? getAgentRow(orm, binding.agentId) : null;
+      if (!conversation || !binding || !scheme || !agent)
+        throw new Error("BOT_CONFIGURATION_MISSING");
+      const events = taskEvents(task);
+      const focus = events.find((event) => event.seq === task.sourceThroughSeq);
+      const attention = attentionTriggerFilter(binding);
+      const targets =
+        binding.kind === "private"
+          ? [{ targetId: binding.peerId, speakerId: binding.peerId }]
+          : task.cause === "idle_topic" ||
+              (task.cause !== "follow_up" && !schemeReply(scheme).split_by_speaker)
+            ? [{ targetId: binding.peerId, speakerId: null }]
+            : task.cause === "chiming_in"
+              ? [
+                  ...new Set(
+                    events
+                      .filter(
+                        (event) =>
+                          event.kind === "inbound" &&
+                          event.participant?.role === "member" &&
+                          (!attention || attention.includes(event.participant.id)),
+                      )
+                      .flatMap((event) => (event.participant ? [event.participant.id] : [])),
+                  ),
+                ].map((speakerId) => ({ targetId: speakerId, speakerId }))
+              : focus?.participant
+                ? [{ targetId: focus.participant.id, speakerId: focus.participant.id }]
+                : [];
+      return {
+        accountId: binding.accountId,
+        conversationId: conversation.id,
+        bindingId: binding.id,
+        bindingEpoch: conversation.binding_epoch,
+        agentId: agent.id,
+        schemeId: scheme.id,
+        bindingRevision: binding.revision,
+        authorityRevision: binding.authorityRevision,
+        schemeRevision: scheme.revision,
+        agentConfigVersion: agent.configVersion,
+        taskClass: task.taskClass as QqTaskExecutionSnapshot["taskClass"],
+        cause: task.cause as QqTaskExecutionSnapshot["cause"],
+        sourceFromSeq: task.sourceFromSeq,
+        sourceThroughSeq: task.sourceThroughSeq,
+        sourceExpiresAt: task.sourceExpiresAt,
+        taskKey: task.taskKey,
+        authorizedTargets: targets.map((target) => target.targetId),
+        targetParticipants: targets,
+        maxSteps: policy().maxSteps,
+        deliveryTtlSeconds: policy().deliveryTtlSeconds,
+        mentionTaskLimit: limits.mentionTaskLimit,
+        ordinaryTaskLimit: limits.ordinaryTaskLimit,
+      };
+    },
+    async activate(task, snapshot, leaseToken, signal) {
+      const result = await host.activateTask({ task, snapshot, leaseToken }, signal);
+      if (result.status === "deferred") return result;
+      await delivery.runOnce();
+      return result.status === "expired"
+        ? { status: "expired" as const }
+        : result.status === "no_output"
+          ? {
+              status: "no_output" as const,
+              ...("reason" in result ? { reason: result.reason } : {}),
+            }
+          : { status: "completed" as const };
+    },
+    resolveExistingRunAndOutbox(_transaction, task) {
+      const intents = db
+        .query(`SELECT i.status,i.target FROM outbound_intents i
+        JOIN agent_runs r ON r.run_id=i.run_id
+        WHERE i.conversation_id=? AND i.source_through_seq=? AND i.speech_kind=?
+          AND r.conversation_id=i.conversation_id AND r.observed_seq=i.source_through_seq
+          AND (i.run_id=? OR (? IS NOT NULL AND r.wake_id=?))`)
+        .all(
+          task.conversationId,
+          task.sourceThroughSeq,
+          task.cause,
+          task.originRunId,
+          task.originWakeId,
+          task.originWakeId,
+        ) as {
+        status: string;
+        target: string;
+      }[];
+      if (task.cause === "chiming_in" && task.judgementDone === 1 && task.originWakeId) {
+        const judgement = db
+          .query(`SELECT 1 FROM agent_runs r
+          JOIN agent_steps s ON s.run_id=r.run_id JOIN context_snapshots c ON c.step_id=s.step_id
+          WHERE r.wake_id=? AND r.conversation_id=? AND r.observed_seq=?
+            AND r.spec_id='onebot.initiative.evaluate_batch' AND r.status='completed'
+            AND r.owner_kind='qq_binding' AND r.owner_id=? AND r.agent_id=?
+            AND s.status='completed' AND c.status='exact' AND c.output_recorded=1
+            AND c.protected_output IS NOT NULL AND (c.expires_at IS NULL OR c.expires_at>?) LIMIT 1`)
+          .get(
+            task.originWakeId,
+            task.conversationId,
+            task.sourceThroughSeq,
+            journal.get(task.conversationId)?.sourceId ?? null,
+            task.agentId,
+            new Date().toISOString(),
+          );
+        // The host reuses the protected judgement and skips every registered target, including unknown sends.
+        return judgement ? "resume" : "failed";
+      }
+      if (intents.some((intent) => intent.status === "unknown" || intent.status === "sending"))
+        return "failed";
+      if (intents.length > 0) return "completed";
+      if (!task.originRunId) return "resume";
+      const run = db
+        .query("SELECT status FROM agent_runs WHERE run_id=?")
+        .get(task.originRunId) as { status: string } | null;
+      return run?.status === "no_output" ? "no_output" : "failed";
+    },
+    onSettled: options.onWakeSettled,
+    onError: () => console.warn("QQ task failed"),
+  });
+  const scheduler = {
+    get activeCount() {
+      return taskScheduler.activeCount;
+    },
+    nextReadyAt() {
+      const deadlines = [intakeScheduler.nextReadyAt(), taskScheduler.nextReadyAt()].filter(
+        (at): at is string => at !== null,
+      );
+      return deadlines.sort()[0] ?? null;
+    },
+    async dispatchOnce() {
+      const handedOff = await intakeScheduler.runOnce();
+      const claimed = await taskScheduler.dispatchOnce();
+      return handedOff || claimed;
+    },
+    async runOnce() {
+      const handedOff = await intakeScheduler.runOnce();
+      const claimed = await taskScheduler.runOnce();
+      return handedOff || claimed;
+    },
+    waitForIdle: () => taskScheduler.waitForIdle(),
+    cancel: (taskId: string) => taskScheduler.cancel(taskId),
+    stop() {
+      intakeScheduler.stop();
+      taskScheduler.stop();
+    },
+  };
   // 名额变化（有人占用或释放、上限被改写）时复查一次队列：自主接话被闸住的机会因此
   // 在空位出现的那一刻就能被领走，而不是等下一轮轮询。退订随本运行时一起交出，停机时释放。
   const releaseAdmission = options.agentRuntime.admission?.subscribe(() => options.wake?.());

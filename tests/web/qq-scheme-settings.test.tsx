@@ -42,7 +42,6 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
     initiative_batch_target_count: 15,
@@ -85,13 +84,13 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false },
   ...overrides,
 });
 
@@ -311,6 +310,9 @@ describe("Shared scheme studio", () => {
           revision: 1,
           authority_revision: 1,
           attention: { mode: "off", members: [] },
+          // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
+          task_limits: { mention_task_limit: null, ordinary_task_limit: null },
+          input_anti_spam: { enabled: null },
         }),
       ]),
     });
@@ -457,17 +459,18 @@ describe("Shared scheme studio", () => {
     expect(fake.createQqScheme).not.toHaveBeenCalled();
   });
 
-  it("edits media input (mode, stages, max images, specs) on the media tab with null = original", async () => {
+  it("edits media input (mode, stages, max images, still spec) on the media tab with null = original", async () => {
     const { fake } = await renderPage();
     await task("图片理解");
+    // 模式与阶段在高级设置折叠区：默认收起，先展开再操作。
+    await userEvent.click(screen.getByRole("button", { name: "展开高级设置" }));
     // 模式切换。
     fireEvent.change(screen.getByLabelText("图片输入模式"), { target: { value: "description" } });
     // 阶段：关掉评估阶段（另两个保持开）。
     await userEvent.click(screen.getByRole("checkbox", { name: "评估阶段" }));
-    // 图数与规格。
+    // 图数与统一静图规格在基本区（未展开高级设置也可见，这里已展开便于连续操作）。
     fireEvent.change(screen.getByLabelText("每次调用自动图片上限"), { target: { value: "4" } });
-    fireEvent.change(screen.getByLabelText("表情静图长边上限"), { target: { value: "256" } });
-    fireEvent.change(screen.getByLabelText("表情动图采样帧数"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("静图长边上限"), { target: { value: "1024" } });
     const editor = () => store.getState().qqSchemeEditor;
     expect(editor()?.mediaInput.mode).toBe("description");
     expect(editor()?.mediaInput.stages).toEqual({
@@ -476,20 +479,16 @@ describe("Shared scheme studio", () => {
       generation: true,
     });
     expect(editor()?.mediaInput.max_images).toBe(4);
-    expect(editor()?.mediaInput.expression_max_dimension).toBe(256);
-    expect(editor()?.mediaInput.expression_frame_count).toBe(5);
-    // 普通静图：原图（null）与数值双向可切，null 由显式选择写入而不是 0。
-    const choice = screen.getByLabelText("普通静图规格");
-    const ordinary = screen.getByLabelText("普通静图长边上限") as HTMLInputElement;
-    expect((choice as HTMLSelectElement).value).toBe("original");
-    expect(ordinary.disabled).toBe(true);
-    fireEvent.change(choice, { target: { value: "limited" } });
-    expect(editor()?.mediaInput.ordinary_still_max_dimension).toBe(64);
-    fireEvent.change(ordinary, { target: { value: "1024" } });
     expect(editor()?.mediaInput.ordinary_still_max_dimension).toBe(1024);
-    // 切回原图：显式选择写 null（不是 0），数值输入随之禁用。
+    // 普通静图：原图（null）与数值双向可切，null 由显式选择写入而不是 0。
+    const choice = screen.getByLabelText("静图规格");
+    const ordinary = screen.getByLabelText("静图长边上限") as HTMLInputElement;
     fireEvent.change(choice, { target: { value: "original" } });
     expect(editor()?.mediaInput.ordinary_still_max_dimension).toBeNull();
+    expect(ordinary.disabled).toBe(true);
+    // 切回限制长边：显式选择写数值（不是 0），数值输入随之可用。
+    fireEvent.change(choice, { target: { value: "limited" } });
+    expect(editor()?.mediaInput.ordinary_still_max_dimension).toBe(64);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
     expect(fake.updateQqScheme).toHaveBeenCalledWith(
       scheme().id,
@@ -498,16 +497,11 @@ describe("Shared scheme studio", () => {
           mode: "description",
           stages: { decision: true, evaluation: false, generation: true },
           max_images: 4,
-          ordinary_still_max_dimension: null,
-          expression_max_dimension: 256,
-          expression_frame_count: 5,
-          expression_frame_max_dimension: 512,
+          ordinary_still_max_dimension: 64,
         },
       }),
     );
-    // 普通动图只由 rhythm.media_frame_count 这一个真源决定帧数：同名「动图」帧数输入仅一处
-    // （抽帧张数），表情动图帧数是独立规格、各有明确标签。
-    expect(screen.queryByRole("spinbutton", { name: "表情动图采样帧数" })).toBeTruthy();
+    // 普通动图只由 rhythm.media_frame_count 这一个真源决定帧数：同名「动图」帧数输入仅一处。
     expect(screen.getAllByRole("spinbutton", { name: "动图抽帧张数" })).toHaveLength(1);
   });
 
@@ -515,9 +509,9 @@ describe("Shared scheme studio", () => {
     const { fake } = await renderPage();
     await task("图片理解");
     // 从原图切到限制长边，再输入 0（0 不在契约 64–2048 内，也不是「原图」的编码）。
-    const choice = screen.getByLabelText("普通静图规格");
+    const choice = screen.getByLabelText("静图规格");
     fireEvent.change(choice, { target: { value: "limited" } });
-    const ordinary = screen.getByLabelText("普通静图长边上限") as HTMLInputElement;
+    const ordinary = screen.getByLabelText("静图长边上限") as HTMLInputElement;
     fireEvent.change(ordinary, { target: { value: "0" } });
     // 原文保留在输入框、编辑器不写半截值（保持 64 起步值，不变 null 也不变 0）。
     expect(ordinary.value).toBe("0");
@@ -619,5 +613,104 @@ describe("Shared scheme studio", () => {
     fireEvent.change(jitterSeconds, { target: { value: "15" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
     expect(fake.updateQqScheme).toHaveBeenCalled();
+  });
+
+  it("shows the 0059 task caps and anti-spam switch, saving the whole two groups", async () => {
+    const { fake } = await renderPage();
+    await task("回复方式");
+    // 上限输入按当前值呈现：上限是并行任务的完整上限，不是模型并发。
+    const mention = screen.getByLabelText("艾特任务并行上限") as HTMLInputElement;
+    const ordinary = screen.getByLabelText("普通任务并行上限") as HTMLInputElement;
+    expect(mention.value).toBe("4");
+    expect(ordinary.value).toBe("1");
+    // 0059 旧列默认：已保存方案防抖显示为关，新建方案才默认开（夹具代表既有行）。
+    await task("发言时机");
+    const antiSpam = screen.getByRole("checkbox", { name: /启用输入防刷屏/ });
+    expect(antiSpam.getAttribute("aria-checked")).toBe("false");
+    // 编辑后整组保存：camelCase 编辑组落成持久键 task_limits/input_anti_spam，
+    // 未动的普通上限与其余组原样携带，不得被别名或整组替换悄悄丢掉。
+    fireEvent.change(mention, { target: { value: "6" } });
+    await userEvent.click(antiSpam);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        expected_revision: 3,
+        task_limits: { mention_task_limit: 6, ordinary_task_limit: 1 },
+        input_anti_spam: { enabled: true },
+        rhythm: expect.objectContaining({ merge_window_seconds: 30 }),
+      }),
+    );
+  });
+
+  it("keeps out-of-range and blank task cap raw text and blocks every save path", async () => {
+    const { fake } = await renderPage();
+    await task("回复方式");
+    const mention = screen.getByLabelText("艾特任务并行上限") as HTMLInputElement;
+    // 0 / 65 越界、空串清空：原文留在输入里，配置值不动，保存被拦，API 不发。
+    for (const bad of ["0", "65", ""]) {
+      fireEvent.change(mention, { target: { value: bad } });
+      fireEvent.blur(mention);
+      expect(mention.value).toBe(bad);
+      expect(screen.getByRole("alert")).toBeTruthy();
+      expect((screen.getByRole("button", { name: "保存方案" }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      expect(store.getState().qqSchemeEditor?.taskLimits.mention_task_limit).toBe(4);
+    }
+    expect(fake.updateQqScheme).not.toHaveBeenCalled();
+    // 修到合法边界 64：原文清除，保存放行且只带合法值。
+    fireEvent.change(mention, { target: { value: "64" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        task_limits: { mention_task_limit: 64, ordinary_task_limit: 1 },
+      }),
+    );
+  });
+
+  it("keeps dirty task caps across a conflict, refresh advances the baseline, retry passes CAS", async () => {
+    // 服务端已前进：anti 基线翻成 ON（未改字段跟新基线），revision 9。
+    const fresh = scheme({ revision: 9, input_anti_spam: { enabled: true } });
+    const update = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("方案已变化，请重新加载后保存"))
+      .mockImplementation(async (_id: string, body: unknown) =>
+        scheme({ ...(body as object), revision: 10 }),
+      );
+    const { fake } = await renderPage({
+      updateQqScheme: update,
+      listQqSchemes: vi.fn().mockResolvedValueOnce([scheme()]).mockResolvedValue([fresh]),
+    });
+    await task("回复方式");
+    fireEvent.change(screen.getByLabelText("艾特任务并行上限"), { target: { value: "6" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    // 真实冲突：首次 PUT 带旧 revision 3，草稿上限保留。
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        expected_revision: 3,
+        task_limits: { mention_task_limit: 6, ordinary_task_limit: 1 },
+      }),
+    );
+    expect(screen.getByRole("alert").textContent).toContain("方案已变化");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "刷新" })));
+    const editor = store.getState().qqSchemeEditor;
+    expect(editor?.source.revision).toBe(9);
+    // 已改叶子保留草稿；未改的 anti 跟随服务端新基线，不得被本地旧值覆盖。
+    expect(editor?.taskLimits.mention_task_limit).toBe(6);
+    expect(editor?.inputAntiSpam.enabled).toBe(true);
+    // 再提交：CAS 以刷新后的 revision 9 通过。
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenLastCalledWith(
+      scheme().id,
+      expect.objectContaining({
+        expected_revision: 9,
+        task_limits: { mention_task_limit: 6, ordinary_task_limit: 1 },
+        input_anti_spam: { enabled: true },
+      }),
+    );
   });
 });

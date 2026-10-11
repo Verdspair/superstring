@@ -359,7 +359,7 @@ describe("after the consumed link is purged, a NEW mint must not serve the dead-
 });
 
 describe("the cleared result's remaining budget re-opens on a NEW legal carrier; protection unchanged", () => {
-  it("a held source is never purgeable, and after the purge a new carrier re-claims the remaining attempt without reviving the old body", async () => {
+  it("a held source is never purgeable, and after the purge a new carrier only re-runs through a real new explicit request — the old body never revives", async () => {
     const f = setup();
     try {
       // --- Setup: task bound to a short-window link, succeeded (same as case 2). ---
@@ -465,8 +465,11 @@ describe("the cleared result's remaining budget re-opens on a NEW legal carrier;
       });
       expect(Date.parse(cleared.expires_at)).toBeLessThanOrEqual(Date.parse(sweepEarly));
 
-      // A NEW LEGAL CARRIER with a CURRENT live source re-claims the remaining attempt through the
-      // ordinary expired-row reclaim path — no supplement gate, no reset, old body not revived.
+      // A NEW LEGAL CARRIER with a CURRENT live source: the old baseline budget is
+      // fully spent (one bounded attempt, §5.7 — no remaining attempt to reclaim,
+      // the supplement time-unlock is retired). A REAL NEW EXPLICIT REQUEST is the
+      // only fresh-budget path: a host-resolved request identity (detail) re-runs
+      // the purpose on the new carrier without reviving the old body.
       const obs2 = normalizeOneBotMessage(
         {
           time: AT,
@@ -509,39 +512,9 @@ describe("the cleared result's remaining budget re-opens on a NEW legal carrier;
         scope: { accountId: ACCOUNT, conversationKind: "group", peerId: PEER, agentId: AGENT },
         expiresAt: LONG,
       });
-      const reclaimed = await attemptMediaReadTask(f.h.orm, {
-        mediaNoteId: media2.id,
-        purpose: "baseline",
-        modelName: "vision-synthetic",
-        policy: "p1",
-        contentSha256: contentSha,
-        assertCurrent: f.guard,
-      });
-      expect(reclaimed.claimed).toBe(true);
-      expect(reclaimed.attempt).toBe(2);
-      recordMediaReadTaskResult(f.h.orm, {
-        mediaNoteId: media2.id,
-        purpose: "baseline",
-        note: "新载体上的重读描述",
-        modelName: "vision-synthetic",
-        expectedAttempts: reclaimed.attempt,
-        claimToken: reclaimed.claimToken,
-        assertCurrent: f.guard,
-      });
-      const ledger = f.db
-        .query(
-          "SELECT attempts, status, note FROM qq_media_read_tasks WHERE identity_key IS NOT NULL ORDER BY rowid",
-        )
-        .all() as { attempts: number; status: string; note: string | null }[];
-      expect(ledger).toHaveLength(1);
-      expect(ledger[0]).toMatchObject({
-        attempts: 2,
-        status: "succeeded",
-        note: "新载体上的重读描述",
-      });
-      // The budget is fully spent on the SAME ledger row (2/2) — a third claim is refused
-      // (live cache → already_succeeded), never reset.
-      let refused = false;
+      // Same ordinary identity on the new carrier: no second budget, refusal is
+      // the exhausted old ledger (never a reset, never a revive).
+      let refusedExhausted = false;
       try {
         await attemptMediaReadTask(f.h.orm, {
           mediaNoteId: media2.id,
@@ -552,10 +525,61 @@ describe("the cleared result's remaining budget re-opens on a NEW legal carrier;
           assertCurrent: f.guard,
         });
       } catch (error) {
-        refused =
-          error instanceof MediaReadTaskRejectedError && error.reason === "already_succeeded";
+        refusedExhausted =
+          error instanceof MediaReadTaskRejectedError && error.reason === "attempts_exhausted";
       }
-      expect(refused).toBe(true);
+      expect(refusedExhausted).toBe(true);
+      const explicitRequest = await attemptMediaReadTask(f.h.orm, {
+        mediaNoteId: media2.id,
+        purpose: "detail",
+        questionKey: "这张图里写了什么",
+        requestId: "req-lifecycle-20261010-1",
+        modelName: "vision-synthetic",
+        policy: "p1",
+        contentSha256: contentSha,
+        assertCurrent: f.guard,
+      });
+      expect(explicitRequest.claimed).toBe(true);
+      expect(explicitRequest.attempt).toBe(1);
+      recordMediaReadTaskResult(f.h.orm, {
+        mediaNoteId: media2.id,
+        purpose: "detail",
+        questionKey: "这张图里写了什么",
+        requestId: "req-lifecycle-20261010-1",
+        note: "新载体上显式请求的重读描述",
+        modelName: "vision-synthetic",
+        expectedAttempts: explicitRequest.attempt,
+        claimToken: explicitRequest.claimToken,
+        assertCurrent: f.guard,
+      });
+      const ledger = f.db
+        .query(
+          "SELECT attempts, status, note, purpose, request_id FROM qq_media_read_tasks WHERE identity_key IS NOT NULL ORDER BY rowid",
+        )
+        .all() as {
+        attempts: number;
+        status: string;
+        note: string | null;
+        purpose: string;
+        request_id: string | null;
+      }[];
+      expect(ledger).toHaveLength(2);
+      // The old ordinary row keeps its spent budget and stays failed; the new
+      // explicit-request row carries its OWN fresh budget (1) — the old 2-attempt
+      // history is neither reset nor inherited.
+      expect(ledger[0]).toMatchObject({
+        purpose: "baseline",
+        attempts: 1,
+        status: "failed",
+        request_id: null,
+      });
+      expect(ledger[1]).toMatchObject({
+        purpose: "detail",
+        attempts: 1,
+        status: "succeeded",
+        note: "新载体上显式请求的重读描述",
+        request_id: "req-lifecycle-20261010-1",
+      });
     } finally {
       f.h.close();
     }
@@ -859,7 +883,6 @@ describe("reader cache-chain discipline: header mime, guard-tx writes, and the f
         purpose: "baseline",
         policy: "p1",
         modelConfig: { visionModelName: "vision-synthetic", transcriptionModelName: null },
-        addressedToAssistant: true,
         assertCurrent: f.guard,
         owner: {
           kind: "conversation",
@@ -937,7 +960,6 @@ describe("reader cache-chain discipline: header mime, guard-tx writes, and the f
           purpose: "baseline",
           policy: "p1",
           modelConfig: { visionModelName: "vision-synthetic", transcriptionModelName: null },
-          addressedToAssistant: true,
           assertCurrent: f.guard,
           owner: {
             kind: "conversation",

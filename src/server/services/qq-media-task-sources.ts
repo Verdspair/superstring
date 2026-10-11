@@ -281,6 +281,7 @@ interface LedgerProjection {
   attempts: number;
   status: string;
   note: string | null;
+  requestId: string | null;
   taskRevision: number;
   taskExpiresAt: string;
   taskRecordedAt: string;
@@ -295,8 +296,8 @@ function ledgerProjection(
     .query(
       `SELECT t.id AS taskId,t.identity_key AS identityKey,t.purpose AS purpose,
     t.question_key AS questionKey,t.model_name AS modelName,t.policy AS policy,
-    t.attempts AS attempts,t.status AS status,t.note AS note,t.revision AS taskRevision,
-    t.expires_at AS taskExpiresAt,t.recorded_at AS taskRecordedAt
+    t.attempts AS attempts,t.status AS status,t.note AS note,t.request_id AS requestId,
+    t.revision AS taskRevision,t.expires_at AS taskExpiresAt,t.recorded_at AS taskRecordedAt
     FROM qq_media_read_tasks t
     WHERE t.id=? AND t.account_id=? AND t.conversation_kind=? AND t.peer_id=? AND t.agent_id=?`,
     )
@@ -448,6 +449,9 @@ function createCrossCarrierReadTaskRef(
     segmentKind: carrier.segmentKind,
     purpose: ledger.purpose === "detail" ? "detail" : "baseline",
     questionKey: ledger.questionKey,
+    // §5.7 显式请求身份：按账本行自身的 request_id 重推键——显式 8 元组行走第 8 成员，
+    // 普通/legacy 7 元组行 request_id 恒 NULL＝与旧 7 元组逐字节相同。
+    requestId: ledger.requestId,
     contentSha256: carrier.assetSha256,
   });
   if (recomputed !== ledger.identityKey) return null;
@@ -515,6 +519,9 @@ function crossCarrierReadTaskAccess(
     segmentKind: carrier.segmentKind,
     purpose: ledger.purpose === "detail" ? "detail" : "baseline",
     questionKey: ledger.questionKey,
+    // §5.7 显式请求身份：按账本行自身的 request_id 重推键——显式 8 元组行走第 8 成员，
+    // 普通/legacy 7 元组行 request_id 恒 NULL＝与旧 7 元组逐字节相同。
+    requestId: ledger.requestId,
     contentSha256: carrier.assetSha256,
   });
   if (recomputed !== ledger.identityKey) return "revoked";

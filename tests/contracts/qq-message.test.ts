@@ -42,9 +42,6 @@ test("approved defaults and boundaries", () => {
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   });
   expect(
     QqMessageSettingsSchema.safeParse({ ...QQ_MESSAGE_SETTINGS_DEFAULT, reply_depth: 9 }).success,

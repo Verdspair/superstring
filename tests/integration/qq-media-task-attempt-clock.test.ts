@@ -10,8 +10,9 @@
 //    `m.updated_at` as `last_attempt_at`; a zero-attempt media row creates NO
 //    task at all, so no fake clock is invented either
 //  - a real new task is created with attempts=0 and last_attempt_at=NULL; the
-//    FIRST claim stamps the claim time; the second claim (after failure +
-//    host-proven later supplement) re-stamps it with the later claim time
+//    FIRST claim stamps the claim time; a fresh budget's claim (a distinct
+//    host-resolved identity, §5.7/0063) stamps its own later claim time and
+//    never moves the failed identity's clock
 //  - CAS rollback (guard refuses the claim inside the claim transaction)
 //    leaves NO row, no spent attempt and NO timestamp behind — a refused
 //    attempt never writes a clock
@@ -183,7 +184,7 @@ describe("QQ media task attempt clock (0052 last_attempt_at)", () => {
     }
   });
 
-  it("a fresh task has no clock; claims stamp the claim time and the second claim re-stamps it", async () => {
+  it("a fresh task has no clock; claims stamp the claim time and a fresh budget stamps its own", async () => {
     const { h } = taskFixture();
     try {
       const guard = bindingCheckpoint(INITIAL_SOURCE_STATE);
@@ -194,7 +195,6 @@ describe("QQ media task attempt clock (0052 last_attempt_at)", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA("mn-new"),
-        relatedSupplementArrived: false,
         assertCurrent: guard,
         at: "2026-10-02T10:00:00.000000Z",
       });
@@ -254,22 +254,52 @@ describe("QQ media task attempt clock (0052 last_attempt_at)", () => {
       ).toMatchObject({
         lastAttemptAt: "2026-10-02T11:00:00.000000Z",
       });
+      // A second claim must prove a real FRESH budget, not a reset of the
+      // failed identity: the explicit request path (§5.7/0063) on the same
+      // media is a distinct host-resolved identity with its own clock.
+      h.db
+        .query(
+          `INSERT INTO qq_events (event_key, account_id, conversation_kind, peer_id, agent_id,
+            message_id, occurred_at_seconds, speaker_kind, speaker_id, recorded_at)
+           VALUES ('ev-two-b', '10001', 'group', '20002', '${AGENT}', 'm-two-b', ?, 'member', '30001', ?)`,
+        )
+        .run(Math.floor(Date.now() / 1000) - 60, NOW);
+      h.db
+        .query(
+          `INSERT INTO qq_media_notes (id, event_key, segment_index, segment_kind, source_ref,
+            attempts, expires_at, recorded_at, updated_at)
+           VALUES ('mn-two-b', 'ev-two-b', 0, 'image', 'ref-two-b', 0, ?, ?, ?)`,
+        )
+        .run(EXPIRES, NOW, NOW);
       const claim2 = await attemptMediaReadTask(h.orm, {
-        mediaNoteId: "mn-two",
-        purpose: "baseline",
+        mediaNoteId: "mn-two-b",
+        purpose: "detail",
+        questionKey: "同一个问题",
         modelName: "vision-b",
         policy: "p2",
-        contentSha256: SHA("mn-two"),
-        relatedSupplementArrived: true,
-        proveSupplementLaterThan: () => true,
+        requestId: "req-clock-20261002-1",
+        contentSha256: SHA("mn-two-b"),
         assertCurrent: guard,
         at: "2026-10-02T11:30:00.000000Z",
       });
-      expect(claim2).toMatchObject({ claimed: true, attempt: 2 });
+      expect(claim2).toMatchObject({ claimed: true, attempt: 1 });
+      expect(
+        findMediaReadTask(h.orm, {
+          mediaNoteId: "mn-two-b",
+          purpose: "detail",
+          questionKey: "同一个问题",
+          requestId: "req-clock-20261002-1",
+        }),
+      ).toMatchObject({
+        lastAttemptAt: "2026-10-02T11:30:00.000000Z",
+      });
+      // The failed identity's clock is untouched by the fresh budget's claim.
       expect(
         findMediaReadTask(h.orm, { mediaNoteId: "mn-two", purpose: "baseline" }),
       ).toMatchObject({
-        lastAttemptAt: "2026-10-02T11:30:00.000000Z",
+        lastAttemptAt: "2026-10-02T11:00:00.000000Z",
+        attempts: 1,
+        status: "failed",
       });
     } finally {
       h.close();

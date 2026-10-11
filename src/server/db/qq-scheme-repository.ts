@@ -5,13 +5,17 @@ import { asc, eq } from "drizzle-orm";
 import {
   parseQqSchemeOutputReserve,
   QQ_COMPRESSION_DEFAULT,
+  QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT,
   QQ_MEDIA_INPUT_SCHEME_DEFAULT,
   QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
   QQ_MODEL_OUTPUT_RESERVE_DEFAULT,
   QQ_REPLY_DEFAULT,
   QQ_STICKER_DEDUP_DEFAULT,
+  QQ_TASK_LIMITS_SCHEME_DEFAULT,
   type QqSchemeCompression,
   type QqSchemeContext,
+  type QqSchemeInputAntiSpam,
+  QqSchemeInputAntiSpamSchema,
   type QqSchemeMediaInput,
   QqSchemeMediaInputSchema,
   type QqSchemeMessageSettings,
@@ -24,6 +28,8 @@ import {
   QqSchemeResponseSchema,
   type QqSchemeRhythm,
   type QqSchemeStickers,
+  type QqSchemeTaskLimits,
+  QqSchemeTaskLimitsSchema,
   type QqSpeechTriggers,
 } from "../../shared/contracts/qq";
 import { resolveQqInteractionPair } from "../../shared/contracts/qq-group-config";
@@ -108,6 +114,13 @@ export interface QqSchemeInput {
    * 帧数/尺寸不在这组里（rhythm 是唯一真源），故存储时不得复制第二份。
    */
   mediaInput?: QqSchemeMediaInput;
+  /**
+   * 并行任务上限组（0059）。省略＝更新时不动、新建时用默认（与 `qq-task.ts` 同源的 4/1）。
+   * 与其余参数组同规矩：整组来或整组不动。
+   */
+  taskLimits?: QqSchemeTaskLimits;
+  /** 输入防抖组（0059）。省略＝更新时不动、新建时显式落开（旧行列默认是关）。 */
+  inputAntiSpam?: QqSchemeInputAntiSpam;
 }
 
 /**
@@ -169,6 +182,56 @@ function parseQqSchemeMediaInput(input: unknown): QqSchemeMediaInput {
 
 function replyColumns(reply: QqSchemeReply) {
   return { splitReplyBySpeaker: reply.split_by_speaker ? 1 : 0 };
+}
+
+function parseQqSchemeTaskLimits(input: unknown): QqSchemeTaskLimits {
+  const result = QqSchemeTaskLimitsSchema.safeParse(input);
+  if (!result.success) throw new TypeError("Invalid QQ scheme task limits");
+  return Object.freeze(result.data);
+}
+
+function parseQqSchemeInputAntiSpam(input: unknown): QqSchemeInputAntiSpam {
+  const result = QqSchemeInputAntiSpamSchema.safeParse(input);
+  if (!result.success) throw new TypeError("Invalid QQ scheme input anti-spam");
+  return Object.freeze(result.data);
+}
+
+/**
+ * 并行任务上限组（0059）：NOT NULL 列直读，契约把关值域——直接写 SQL 留下的越界行
+ * 在这里抛 TypeError，而不是被当成可用上限。
+ */
+export function schemeTaskLimits(row: QqSchemeRow): QqSchemeTaskLimits {
+  return parseQqSchemeTaskLimits({
+    mention_task_limit: row.mentionTaskLimit,
+    ordinary_task_limit: row.ordinaryTaskLimit,
+  });
+}
+
+/** 输入防抖组（0059）：NOT NULL 列直读。 */
+export function schemeInputAntiSpam(row: QqSchemeRow): QqSchemeInputAntiSpam {
+  return parseQqSchemeInputAntiSpam({ enabled: row.inputAntiSpamEnabled === 1 });
+}
+
+function taskLimitColumns(value: QqSchemeTaskLimits) {
+  return {
+    mentionTaskLimit: value.mention_task_limit,
+    ordinaryTaskLimit: value.ordinary_task_limit,
+  };
+}
+
+function inputAntiSpamColumns(value: QqSchemeInputAntiSpam) {
+  return { inputAntiSpamEnabled: value.enabled ? 1 : 0 };
+}
+
+function sameTaskLimits(left: QqSchemeTaskLimits, right: QqSchemeTaskLimits): boolean {
+  return (
+    left.mention_task_limit === right.mention_task_limit &&
+    left.ordinary_task_limit === right.ordinary_task_limit
+  );
+}
+
+function sameInputAntiSpam(left: QqSchemeInputAntiSpam, right: QqSchemeInputAntiSpam): boolean {
+  return left.enabled === right.enabled;
 }
 
 /**
@@ -254,7 +317,6 @@ export function schemeRhythm(row: QqSchemeRow): QqSchemeRhythm {
     active_hours_end_minutes: row.activeHoursEndMinutes,
     max_recompute_count: row.maxRecomputeCount,
     max_sticker_count: row.maxStickerCount,
-    media_supplement_window_minutes: row.mediaSupplementWindowMinutes,
     media_frame_count: row.mediaFrameCount,
     media_max_dimension: row.mediaMaxDimension,
     initiative_batch_target_count: row.initiativeBatchTargetCount,
@@ -279,7 +341,6 @@ function rhythmColumns(rhythm: QqSchemeRhythm) {
     activeHoursEndMinutes: rhythm.active_hours_end_minutes,
     maxRecomputeCount: rhythm.max_recompute_count,
     maxStickerCount: rhythm.max_sticker_count,
-    mediaSupplementWindowMinutes: rhythm.media_supplement_window_minutes,
     mediaFrameCount: rhythm.media_frame_count,
     mediaMaxDimension: rhythm.media_max_dimension,
     initiativeBatchTargetCount: rhythm.initiative_batch_target_count,
@@ -308,7 +369,6 @@ function sameRhythm(left: QqSchemeRhythm, right: QqSchemeRhythm): boolean {
     left.max_sticker_count === right.max_sticker_count &&
     // Every field of the group belongs here: a missing one makes a save that changes only it look
     // like a no-op, and the page then reports "saved" over a write that never happened (P5o).
-    left.media_supplement_window_minutes === right.media_supplement_window_minutes &&
     left.media_frame_count === right.media_frame_count &&
     left.media_max_dimension === right.media_max_dimension &&
     left.initiative_batch_target_count === right.initiative_batch_target_count &&
@@ -485,10 +545,7 @@ function sameMediaInput(left: QqSchemeMediaInput, right: QqSchemeMediaInput): bo
     left.stages.evaluation === right.stages.evaluation &&
     left.stages.generation === right.stages.generation &&
     left.max_images === right.max_images &&
-    left.ordinary_still_max_dimension === right.ordinary_still_max_dimension &&
-    left.expression_max_dimension === right.expression_max_dimension &&
-    left.expression_frame_count === right.expression_frame_count &&
-    left.expression_frame_max_dimension === right.expression_frame_max_dimension
+    left.ordinary_still_max_dimension === right.ordinary_still_max_dimension
   );
 }
 
@@ -512,6 +569,8 @@ export function schemeResponse(orm: Orm, row: QqSchemeRow): QqSchemeResponse {
     reply: schemeReply(row),
     message_settings: schemeMessageSettings(row),
     media_input: schemeMediaInput(row),
+    task_limits: schemeTaskLimits(row),
+    input_anti_spam: schemeInputAntiSpam(row),
     revision: row.revision,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
@@ -670,6 +729,14 @@ export function createQqScheme(orm: Orm, input: QqSchemeInput): QqSchemeRow {
           // 0052 写入侧补默认（T12）：未提供的两组落完整 JSON，而不是靠读取兜底的 NULL。
           ...messageSettingsColumns(input.messageSettings ?? QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT),
           ...mediaInputColumns(input.mediaInput ?? QQ_MEDIA_INPUT_SCHEME_DEFAULT),
+          // 0059 写入侧补默认：上限 4/1 与防抖开，落显式列值，而不是靠列默认的猜测；
+          // 写入边界先过契约，CHECK 约束只是第二道防线。
+          ...taskLimitColumns(
+            parseQqSchemeTaskLimits(input.taskLimits ?? QQ_TASK_LIMITS_SCHEME_DEFAULT),
+          ),
+          ...inputAntiSpamColumns(
+            parseQqSchemeInputAntiSpam(input.inputAntiSpam ?? QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT),
+          ),
           createdAt: nowIso(),
           updatedAt: nowIso(),
         })
@@ -739,6 +806,15 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
   const currentMediaInput = schemeMediaInput(current);
   const nextMediaInput =
     input.mediaInput === undefined ? currentMediaInput : parseQqSchemeMediaInput(input.mediaInput);
+  // 0059 两组：未提供＝保持现值（NOT NULL 列直读），整组来或整组不动。
+  const currentTaskLimits = schemeTaskLimits(current);
+  const nextTaskLimits =
+    input.taskLimits === undefined ? currentTaskLimits : parseQqSchemeTaskLimits(input.taskLimits);
+  const currentInputAntiSpam = schemeInputAntiSpam(current);
+  const nextInputAntiSpam =
+    input.inputAntiSpam === undefined
+      ? currentInputAntiSpam
+      : parseQqSchemeInputAntiSpam(input.inputAntiSpam);
   const currentCollectionIds = schemeStickerCollectionIds(orm, id);
   const nextCollectionIds =
     input.stickerCollections === undefined
@@ -760,6 +836,8 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
     nextReply.split_by_speaker === currentReply.split_by_speaker &&
     sameMessageSettings(currentMessageSettings, nextMessageSettings) &&
     sameMediaInput(currentMediaInput, nextMediaInput) &&
+    sameTaskLimits(currentTaskLimits, nextTaskLimits) &&
+    sameInputAntiSpam(currentInputAntiSpam, nextInputAntiSpam) &&
     !collectionsChanged
   ) {
     return current;
@@ -781,6 +859,8 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
           ...replyColumns(nextReply),
           ...messageSettingsColumns(nextMessageSettings),
           ...mediaInputColumns(nextMediaInput),
+          ...taskLimitColumns(nextTaskLimits),
+          ...inputAntiSpamColumns(nextInputAntiSpam),
           revision: current.revision + 1,
           updatedAt: nowIso(),
         })

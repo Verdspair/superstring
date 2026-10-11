@@ -59,7 +59,6 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
     initiative_batch_target_count: 15,
@@ -102,13 +101,13 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false },
   ...overrides,
 });
 
@@ -134,6 +133,9 @@ const bindingOf = (
     revision: 1,
     authority_revision: 1,
     attention: { mode: "off", members: [] },
+    // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
+    task_limits: { mention_task_limit: null, ordinary_task_limit: null },
+    input_anti_spam: { enabled: null },
   });
 
 const conversation = (
@@ -1081,4 +1083,108 @@ it("绑定抽屉触发器开启互斥且成对恢复继承", async () => {
       triggers: expect.objectContaining({ follow_up: null, chiming_in: null }),
     }),
   );
+});
+
+describe("本会话并行上限与防刷屏覆盖（0059）", () => {
+  it("群聊绑定：空白跟随方案按 null 携带，显式上限与防刷屏关随 CAS 保存", async () => {
+    const { fake } = await renderBoards({
+      listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
+    });
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    const sheet = screen.getByRole("dialog");
+    const mention = within(sheet).getByLabelText(
+      ui("connections.mentionTaskLimit"),
+    ) as HTMLInputElement;
+    const ordinary = within(sheet).getByLabelText(
+      ui("connections.ordinaryTaskLimit"),
+    ) as HTMLInputElement;
+    // 全 null 行：输入为空、占位符即「跟随方案」；防刷屏三态停在「跟随方案」。
+    expect(mention.value).toBe("");
+    expect(ordinary.value).toBe("");
+    expect(mention.placeholder).toBe(ui("connections.followTheScheme"));
+    const anti = within(sheet).getByRole("combobox", {
+      name: ui("connections.inputAntiSpam"),
+    }) as HTMLSelectElement;
+    expect(anti.value).toBe("inherit");
+    fireEvent.change(mention, { target: { value: "6" } });
+    await userEvent.selectOptions(anti, "off");
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    await act(async () => {});
+    expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_A, {
+      agent_id: AGENT_A,
+      scheme_id: SCHEME_A,
+      task_limits: { mention_task_limit: 6, ordinary_task_limit: null },
+      input_anti_spam: { enabled: false },
+      expected_revision: 1,
+    });
+  });
+
+  it("私聊同一编辑入口：只改的组随 PUT 携带，未改组缺省不携带，刷新基线后 CAS 用新 revision", async () => {
+    // 写回 echo：按提交体落行并推进 revision；目录第二次读取给出已保存的新行。
+    const update = vi.fn(async (_id: string, body: unknown) =>
+      QqBindingResponseSchema.parse({
+        ...bindingOf(SCHEME_A, BINDING_A, "30003", "private"),
+        ...(body as object),
+        revision: (body as { expected_revision: number }).expected_revision + 1,
+      }),
+    );
+    const savedRow = () =>
+      QqBindingResponseSchema.parse({
+        ...bindingOf(SCHEME_A, BINDING_A, "30003", "private"),
+        input_anti_spam: { enabled: true },
+        revision: 2,
+      });
+    const { fake } = await renderBoards({
+      listQqBindings: vi
+        .fn()
+        .mockResolvedValueOnce([bindingOf(SCHEME_A, BINDING_A, "30003", "private")])
+        .mockResolvedValue([savedRow()]),
+      updateQqBinding: update,
+    });
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    let sheet = screen.getByRole("dialog");
+    // 抽屉标题是「私聊 {peer_id}」：按同一文案键的子串核对编辑入口一致。
+    expect(within(sheet).getByText(new RegExp(ui("connections.privateChat")))).toBeTruthy();
+    const anti = () =>
+      within(sheet).getByRole("combobox", {
+        name: ui("connections.inputAntiSpam"),
+      }) as HTMLSelectElement;
+    const ordinary = () =>
+      within(sheet).getByLabelText(ui("connections.ordinaryTaskLimit")) as HTMLInputElement;
+    // 只改防刷屏：PUT 只携带该组；未改的上限组缺省不携带（服务端 omitted=keep）。
+    await userEvent.selectOptions(anti(), "on");
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    await act(async () => {});
+    expect(fake.updateQqBinding).toHaveBeenNthCalledWith(1, BINDING_A, {
+      agent_id: AGENT_A,
+      scheme_id: SCHEME_A,
+      input_anti_spam: { enabled: true },
+      expected_revision: 1,
+    });
+    // 打开的抽屉不静默推进基线：显式「刷新保存基线」取回 revision 2 的行。
+    await userEvent.click(
+      screen.getByRole("button", { name: ui("capabilities.resources.refreshBaseline") }),
+    );
+    await act(async () => {});
+    sheet = await screen.findByRole("dialog");
+    // 普通上限给显式值（task_limits 组变化→携带，mention 仍按 null 跟随），
+    // 防刷屏回到「跟随方案」（与已保存的显式开是真实差异→携带 null）。
+    fireEvent.change(ordinary(), { target: { value: "3" } });
+    await userEvent.selectOptions(anti(), "inherit");
+    await userEvent.click(
+      within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    await act(async () => {});
+    expect(fake.updateQqBinding).toHaveBeenNthCalledWith(2, BINDING_A, {
+      agent_id: AGENT_A,
+      scheme_id: SCHEME_A,
+      task_limits: { mention_task_limit: null, ordinary_task_limit: 3 },
+      input_anti_spam: { enabled: null },
+      expected_revision: 2,
+    });
+  });
 });

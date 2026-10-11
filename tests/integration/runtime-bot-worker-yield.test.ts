@@ -1,12 +1,12 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
-import { WakeScheduler } from "../../src/server/conversation/wake-scheduler";
+import { QqTaskScheduler } from "../../src/server/conversation/qq-task-scheduler";
 import { createRuntime } from "../../src/server/runtime";
 
 afterEach(() => mock.restore());
 
 it("lets timer callbacks run while the production runtime dispatches wakes without awaiting models", async () => {
   let dispatched = 0;
-  spyOn(WakeScheduler.prototype, "dispatchOnce").mockImplementation(async () => {
+  spyOn(QqTaskScheduler.prototype, "dispatchOnce").mockImplementation(async () => {
     dispatched += 1;
     return dispatched <= 3;
   });

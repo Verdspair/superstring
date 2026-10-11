@@ -71,6 +71,8 @@ const tracesPage = (): RuntimeTracesPage => ({
 });
 const runtimeStatus = {
   pendingWakes: 1,
+  pendingTasks: 0,
+  queuedCount: 1,
   activeRuns: 2,
   failedWakes: 0,
   unknownDeliveries: 0,

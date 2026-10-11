@@ -103,7 +103,6 @@ describe("the decided defaults", () => {
       active_hours_end_minutes: 1439,
       max_recompute_count: 1,
       max_sticker_count: 1,
-      media_supplement_window_minutes: 10,
       media_frame_count: 3,
       media_max_dimension: 512,
     });
@@ -124,6 +123,10 @@ describe("the decided defaults", () => {
       parseQqSchemeRhythm({ ...QQ_RHYTHM_DEFAULT, active_hours_start_minutes: 1440 }),
     ).toThrow(TypeError);
     expect(() => parseQqSchemeRhythm({ ...QQ_RHYTHM_DEFAULT, extra: 1 })).toThrow(TypeError);
+    // §5.7: the retired supplement-window key is a strictObject violation now, not a knob.
+    expect(() =>
+      parseQqSchemeRhythm({ ...QQ_RHYTHM_DEFAULT, media_supplement_window_minutes: 10 }),
+    ).toThrow(TypeError);
     expect(() =>
       parseQqSchemeRhythm({
         ...QQ_RHYTHM_DEFAULT,
@@ -494,7 +497,10 @@ describe("the store's side of the contract", () => {
       expect(() =>
         h.db.run("UPDATE qq_schemes SET active_hours_enabled = 2 WHERE id = ?", [scheme.id]),
       ).toThrow();
-      // P5m's supplement window: 0 is legal (do not wait), a day is the ceiling.
+      // §5.7 retired the supplement window from the contract; migration 0062 leaves the
+      // fixed 0026 column (history DDL is immutable) as an inert legacy column. Only the
+      // column's own CHECK still binds writes to it — 0 is legal (no wait), a day is the
+      // ceiling — and no runtime path reads the value any more.
       h.db.run("UPDATE qq_schemes SET media_supplement_window_minutes = 0 WHERE id = ?", [
         scheme.id,
       ]);

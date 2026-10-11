@@ -36,8 +36,9 @@ export type QqSegment =
       file?: string;
       url?: string;
       name?: string;
-      /** 规格 §7.2：market face 三键（emoji_id+emoji_package_id+summary 同现且非空 string）
-       * 是平台可靠表情证据；其余 wire 键（sub_type/subType/key/URL 模式等）不判分类。
+      /** 规格 §7.2：market face 三键同现是平台可靠表情证据（emoji_id/summary 非空 string；
+       * emoji_package_id 非空 string 或有限整数 number，NapCat 把它声明为 number 零转换直传）；
+       * 其余 wire 键（sub_type/subType/key/URL 模式等）不判分类。
        * 固定枚举值，不携带原始 wire 键。 */
       categoryEvidence?: "expression";
     }
@@ -167,14 +168,17 @@ function normalizeSegment(value: z.infer<typeof WireSegment>): QqSegment | null 
         }
       }
       // 规格 §7.2 平台分类允许清单：NapCat market face 形态（emoji_id+emoji_package_id+
-      // summary 三键同现且均为非空 string，报告 prime-platform-image-hint-plan.md §2/§4）。
-      // 缺一不猜；sub_type/subType 数值跨实现语义不同源，不映射；其余未知键维持丢弃。
+      // summary 三键同现，报告 prime-platform-image-hint-plan.md §2/§4）。缺一不猜：
+      // emoji_id/summary 非空 string，emoji_package_id 非空 string 或有限整数 number；
+      // sub_type/subType 数值跨实现语义不同源，不映射；其余未知键维持丢弃。
       if (
         value.type === "image" &&
         typeof data.emoji_id === "string" &&
         data.emoji_id.trim() !== "" &&
-        typeof data.emoji_package_id === "string" &&
-        data.emoji_package_id.trim() !== "" &&
+        // 非空 string，或有限整数 number（Number.isInteger 已排除 NaN/Infinity/小数）——
+        // NapCat 把 emoji_package_id 声明为 number 且零转换直传。
+        ((typeof data.emoji_package_id === "string" && data.emoji_package_id.trim() !== "") ||
+          (typeof data.emoji_package_id === "number" && Number.isInteger(data.emoji_package_id))) &&
         typeof data.summary === "string" &&
         data.summary.trim() !== ""
       ) {

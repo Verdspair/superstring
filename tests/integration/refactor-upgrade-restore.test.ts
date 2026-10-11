@@ -90,23 +90,13 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
     const bindingId = crypto.randomUUID();
     const now = nowIso();
     const seconds = Math.floor(Date.now() / 1000);
-    handle.orm
-      .insert(schema.qqBindings)
-      .values({
-        id: bindingId,
-        accountId: "10001",
-        conversationKind: "private",
-        peerId: "20002",
-        agentId: DEFAULT_AGENT_ID,
-        schemeId: scheme.id,
-        paused: 0,
-        shareWebMemory: 0,
-        revision: 1,
-        authorityRevision: 1,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    // 绑定行同样用裸 SQL 写：现在的 ORM 绑定模型带 0059 的三个限额列，而这是 v38 的库。
+    // 只写 v38 就存在的 12 列，其余列留给它们当时的 DDL 默认值（真实旧库行形状）。
+    oldDb
+      .query(
+        "INSERT INTO qq_bindings (id,account_id,conversation_kind,peer_id,agent_id,scheme_id,paused,share_web_memory,revision,authority_revision,created_at,updated_at) VALUES (?,?,?,?,?,?,0,0,1,1,?,?)",
+      )
+      .run(bindingId, "10001", "private", "20002", DEFAULT_AGENT_ID, scheme.id, now, now);
     handle.orm
       .insert(schema.qqEvents)
       .values({

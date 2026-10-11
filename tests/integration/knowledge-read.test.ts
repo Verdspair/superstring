@@ -358,6 +358,12 @@ describe("S3 known migration", () => {
     "0055_qq_initiative_time_window.sql",
     "0056_outbound_stale_reason.sql",
     "0057_history_output_identity_indexes.sql",
+    "0058_qq_conversation_tasks.sql",
+    "0059_qq_task_limits_antispam.sql",
+    "0060_qq_task_execution_snapshot.sql",
+    "0061_qq_task_ready_at.sql",
+    "0062_qq_media_spec_unification.sql",
+    "0063_qq_media_request_identity.sql",
   ].map((f) => readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
   it("v2 upgrade seeds existing assistants and preserves all v2 data", () => {
     const db = new Database(":memory:");
@@ -378,7 +384,7 @@ describe("S3 known migration", () => {
         document_ids: "[]",
         revision: 1,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
       ensureBusinessSchema(db);
       expect(db.query("SELECT count(*) AS n FROM agent_knowledge_read_settings").get()).toEqual({
         n: 1,
@@ -455,8 +461,14 @@ describe("S3 known migration", () => {
           sql[54] ?? "",
           sql[55] ?? "",
           sql[56] ?? "",
+          sql[57] ?? "",
+          sql[58] ?? "",
+          sql[59] ?? "",
+          sql[60] ?? "",
+          sql[61] ?? "",
+          sql[62] ?? "",
         ]),
-      ).toThrow();
+      ).toThrow("CHECK constraint failed");
       expect(db.query("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     } finally {

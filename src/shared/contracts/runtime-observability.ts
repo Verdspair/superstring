@@ -93,6 +93,8 @@ export const RuntimeSpanFiltersSchema = z
   });
 export const ConversationRuntimeStatusSchema = z.strictObject({
   pendingWakes: z.number(),
+  pendingTasks: z.number(),
+  queuedCount: z.number(),
   activeRuns: z.number(),
   failedWakes: z.number(),
   unknownDeliveries: z.number(),

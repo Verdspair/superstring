@@ -73,6 +73,12 @@ export const responseFields = [
   ],
 ] as const;
 
+/** 0059 并行任务上限组字段：属于回复方式分组。 */
+export const taskLimitsFields = [
+  ["mention_task_limit", "connections.mentionTaskLimit", "connections.mentionTaskLimitHint"],
+  ["ordinary_task_limit", "connections.ordinaryTaskLimit", "connections.ordinaryTaskLimitHint"],
+] as const;
+
 export const stickerFields = [
   ["rhythm", "max_sticker_count", "connections.stickersPerReply"],
   ["stickers", "sticker_min_repeat_minutes", "connections.shortestRepeatIntervalPerStickerMinutes"],
@@ -80,11 +86,6 @@ export const stickerFields = [
 ] as const;
 
 export const imageFields = [
-  [
-    "rhythm",
-    "media_supplement_window_minutes",
-    "connections.waitAfterMediaFailsOnADirectMentionMinutes",
-  ],
   ["rhythm", "media_frame_count", "connections.animationFramesToSample"],
   ["rhythm", "media_max_dimension", "connections.sampledFrameLongEdgePx"],
 ] as const;
@@ -140,9 +141,10 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   "media_input.stages.generation": "schemes.studio.stageGeneration",
   "media_input.max_images": "connections.maxAutoImages",
   "media_input.ordinary_still_max_dimension": "connections.ordinaryStillMaxDimension",
-  "media_input.expression_max_dimension": "connections.expressionStillMaxDimension",
-  "media_input.expression_frame_count": "connections.expressionFrameCount",
-  "media_input.expression_frame_max_dimension": "connections.expressionFrameMaxDimension",
+  // 0059 两组。
+  "task_limits.mention_task_limit": "connections.mentionTaskLimit",
+  "task_limits.ordinary_task_limit": "connections.ordinaryTaskLimit",
+  "input_anti_spam.enabled": "connections.inputAntiSpamEnabled",
 };
 
 /**
@@ -197,6 +199,8 @@ const groupAliases: Readonly<Record<string, string>> = {
   outputReserve: "output_reserve",
   messageSettings: "message_settings",
   mediaInput: "media_input",
+  taskLimits: "task_limits",
+  inputAntiSpam: "input_anti_spam",
 };
 
 /**
@@ -216,6 +220,8 @@ export function qqSchemeFieldSection(field: string): QqSchemeSection {
   if (group === "reply") return "response";
   if (group === "prompts") return promptSectionBySlot[name as keyof QqSchemePrompts] ?? "response";
   if (group === "media_input") return "image_understanding";
+  if (group === "task_limits") return "response";
+  if (group === "input_anti_spam") return "participation";
   return "participation";
 }
 

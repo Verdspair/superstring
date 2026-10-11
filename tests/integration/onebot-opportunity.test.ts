@@ -85,6 +85,30 @@ function setup(
       ),
       { accountId: "10001", ...(ingress ? { conversationIngress: adapter } : {}) },
     );
+  const receiveImage = (id: string, speaker = 20002) => {
+    // 实际 normalize 的 image wire 载体：走与生产同一条 recordInbound 入库路径，
+    // 产生真实 qq_events/qq_media_notes/qq_message_facts 行，不合成测试行。
+    const parsed = normalizeOneBotMessage(
+      {
+        post_type: "message",
+        message_type: "group",
+        sub_type: "normal",
+        time: clock.seconds,
+        self_id: 10001,
+        user_id: speaker,
+        group_id: 30003,
+        message_id: id,
+        message: [{ type: "image", data: { file: `synthetic-${id}.png` } }],
+        sender: { nickname: String(speaker) },
+      },
+      "10001",
+    );
+    if (parsed.kind !== "message") throw new Error(`image wire not normalizable: ${id}`);
+    return recordInbound(h.orm, parsed, {
+      accountId: "10001",
+      conversationIngress: adapter,
+    });
+  };
   const receiveMention = (id: string, speaker = 20002) =>
     recordInbound(
       h.orm,
@@ -127,6 +151,7 @@ function setup(
     wakes,
     adapter,
     receive,
+    receiveImage,
     receiveMention,
     now,
     rows,
@@ -871,6 +896,46 @@ describe("chiming batch gating (production X15/Y5)", () => {
     expect(gatedPending).toHaveLength(1);
     expect(gatedPending[0]!.attempts).toBe(0);
   });
+  it("antispam ON: plain text eligibility matches the OFF threshold and direct-off identity exactly", () => {
+    // ON 与 OFF 在纯文本窗口（无任何 image/face 事实部件）必须同数：快路径只允许跳过
+    // 派生，不允许改变资格真值。同一 fixture 直关 direct：被指名行计入自主批，同 OFF。
+    const on = setup(false, { rhythm: { initiative_time_window_enabled: false } });
+    receiveBatch(on, 9);
+    expect(on.rows().filter((r) => r.cause === "chiming_in")).toEqual([]);
+    receiveBatch(on, 1, 10);
+    expect(on.rows().filter((r) => r.cause === "chiming_in")).toHaveLength(1);
+    expect(on.rows().filter((r) => r.cause === "direct_reply")).toEqual([]);
+    const onDirectOff = setup(false, { rhythm: { initiative_time_window_enabled: false } });
+    onDirectOff.db.exec(
+      `UPDATE qq_bindings SET trigger_direct_reply=0 WHERE id='${onDirectOff.bindingId}'`,
+    );
+    receiveBatch(onDirectOff, 9);
+    onDirectOff.receiveMention("99", 20008);
+    expect(onDirectOff.rows().filter((r) => r.cause === "chiming_in")).toHaveLength(1);
+  });
+
+  it("antispam ON: any image/face fact part in the window takes the original derivation path", () => {
+    // 窗口内有 image 事实部件：回到完整 journal→facts→纯派生，资格真值与既有派生断言
+    // 同族——单个纯图片载体不是合格普通输入（burst 需严格大于 2），文本行仍逐条计。
+    const h = setup(false, { rhythm: { initiative_time_window_enabled: false } });
+    receiveBatch(h, 9);
+    h.receiveImage("901", 20016);
+    // 事实面确有 image 部件：窗口走完整派生。单图片载体不是 burst（需严格大于 2），
+    // 但它是 ONE 条普通资格输入（无正文行，快路径的 cheap TTL EXISTS 面按 media_notes
+    // 计入；派生面同样计 1）→ 9 文本 + 1 图片 = 10 条合格输入 → 恰达下界形成一条机会。
+    const imgFact = h.db
+      .query(
+        `SELECT f.parts FROM qq_message_facts f JOIN qq_events e ON e.event_key=f.event_key
+         WHERE e.message_id='901'`,
+      )
+      .get() as { parts: string } | null;
+    expect(imgFact).not.toBeNull();
+    const factParts = JSON.parse(imgFact!.parts) as { kind: string }[];
+    expect(factParts.some((part) => part.kind === "image")).toBe(true);
+    const rows = h.rows().filter((r) => r.cause === "chiming_in");
+    expect(rows).toHaveLength(1);
+  });
+
   it("a direct reply's consumed cursor does not swallow another member's pending continuous source", () => {
     const h = setup(true);
     h.receive("1", 20002);

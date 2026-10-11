@@ -329,10 +329,11 @@ const runErrorOf = async (run: () => Promise<unknown>): Promise<{ code?: unknown
 // ---- [DU_1] 正例 + 选择边界 -----------------------------------------------------------------
 
 it("[DU_1] a question-anchored media.read supplies only the selected ordinary image in the same activation", async () => {
-  // 平台表情 1024x512（真实 IHDR）自动按表情规格 512x256 准备；tool-first：media.list →
-  // media.read{id, questionMessageId="-2502"} → 后续相只收被选中图的 ordinary 1024x512；
-  // 直连原图（普通图）不补不升级；category 仍 expression；asset sha 不变、variant sha 真核；
-  // 首问正文/事实同材料不重复追加；source 字节每图一次，detail 走缓存零新增。
+  // 平台表情 1024x512（真实 IHDR）按统一规格准备：§5.5 类别无关统一后 canonical null=原图，
+  // 自动准备就是 1024x512 原图本身；tool-first：media.list → media.read{id,
+  // questionMessageId="-2502"} → 后续相只收被选中图的原规格图；直连原图（普通图）同规格；
+  // category 仍 expression；asset sha 不变、variant sha 真核；首问正文/事实同材料不重复追加；
+  // source 字节每图一次（detail 与自动同规格 → 走缓存零新增）。
   const exprBytes = pngOf(120, 1024, 512);
   const plainBytes = pngOf(80, 800, 400);
   expect(ihdrOf(exprBytes)).toEqual({ width: 1024, height: 512 });
@@ -403,15 +404,18 @@ it("[DU_1] a question-anchored media.read supplies only the selected ordinary im
   ).toBe(false);
   expect(pendingSteps()).toBe(0);
 
-  // 决策相：表情 512x256（自动规格），直连普通图原尺寸；wire part sha 与真实 variant 字节对账。
+  // 决策相：表情统一规格＝原图 1024x512（真实 IHDR），直连普通图原尺寸；wire part sha 与真实
+  // variant 字节对账（原图规格下二者逐字相同），不再有 512x256 的第二档画质。
   const firstImages = captureImages(captures[0] as CapturedCall);
-  const exprFirst = firstImages.find((image) => image.width === 512 && image.height === 256);
-  expect(exprFirst?.sha256).toBe(sha(variantBytesOf(h, 512, 256)));
+  const exprFirst = firstImages.find((image) => image.width === 1024 && image.height === 512);
+  if (!exprFirst) throw new Error("Unified expression image was not supplied in the first request");
+  expect(exprFirst.sha256).toBe(sha(variantBytesOf(h, 1024, 512)));
+  expect(exprFirst.sha256).toBe(sha(exprBytes));
   const plainFirst = firstImages.find((image) => image.width === 800 && image.height === 400);
   if (!plainFirst) throw new Error("Original image was not supplied in the first request");
   expect(plainFirst.sha256).toBe(sha(variantBytesOf(h, 800, 400)));
 
-  // media.read 观察真实 ok：ordinary 规格、category 仍 expression（平台证据未被改写）。
+  // media.read 观察真实 ok：统一规格（原图 1024x512）、category 仍 expression（平台证据未被改写）。
   const observationsById = new Map<string, ObservationEnvelope>();
   for (const call of captures) {
     for (const observation of observationsOf(call, "media.read")) {
@@ -436,7 +440,8 @@ it("[DU_1] a question-anchored media.read supplies only the selected ordinary im
     (readValue?.images ?? []).some((image) => image.width === 1024 && image.height === 512),
   ).toBe(true);
 
-  // 生成相只供被选中图的 ordinary 1024x512；其他图不补送，原缓存变体保持不变。
+  // 生成相只供被选中图的统一规格图（1024x512）；其他图不补送。统一规格下 detail 与自动
+  // 同一 variant：sha 与首相逐字相同，不新建第二档副本。
   const lastCall = captures[captures.length - 1] as CapturedCall;
   const lastImages = captureImages(lastCall);
   const exprLast = lastImages.filter((image) => image.mediaId === exprFirst?.mediaId);
@@ -444,8 +449,7 @@ it("[DU_1] a question-anchored media.read supplies only the selected ordinary im
   expect(exprLast[0]?.width).toBe(1024);
   expect(exprLast[0]?.height).toBe(512);
   expect(exprLast[0]?.sha256).toBe(sha(variantBytesOf(h, 1024, 512)));
-  expect(exprLast[0]?.sha256).not.toBe(exprFirst?.sha256);
-  expect(lastImages.some((image) => image.width === 512 && image.height === 256)).toBe(false);
+  expect(exprLast[0]?.sha256).toBe(exprFirst?.sha256);
   const plainLast = lastImages.find((image) => image.mediaId === plainFirst?.mediaId);
   expect(plainLast).toBeUndefined();
   expect(sha(variantBytesOf(h, 800, 400))).toBe(plainFirst?.sha256);
@@ -475,15 +479,18 @@ it("[DU_1] a question-anchored media.read supplies only the selected ordinary im
   ]);
   expect(questionRows[0]?.parts.filter((part) => part.kind === "image")).toHaveLength(1);
   expect(originalRows[0]?.parts.filter((part) => part.kind === "image")).toHaveLength(1);
-  // 持久面：asset content sha＝受控源字节（两张都在）；variant 恰三行（无重复副本）；分类零改写。
+  // 持久面：asset content sha＝受控源字节（两张都在）；统一规格下不再有 512x256 旧档画质；
+  // variant 三行：同一表情资产下「自动准备（detail=false）」与「明确细问（detail=true）」是两个
+  // 独立的准备身份（§5.5 preparation identity/variant policy 仍区分），加普通图一行；分类零改写。
   expect(new Set(assetShas(h))).toEqual(new Set([sha(exprBytes), sha(plainBytes)]));
   const widths = variantRows(h).map((row) => row.width);
-  expect(widths.filter((width) => width === 1024)).toHaveLength(1);
-  expect(widths.filter((width) => width === 512)).toHaveLength(1);
+  expect(variantRows(h)).toHaveLength(3);
+  expect(widths.filter((width) => width === 1024)).toHaveLength(2);
+  expect(widths.filter((width) => width === 512)).toHaveLength(0);
   expect(widths.filter((width) => width === 800)).toHaveLength(1);
   expect(classificationCount(h)).toBe(0);
 
-  // source 字节每图恰一次（auto 准备两图），detail 走缓存零新增 fetch。
+  // source 字节每图恰一次：auto 准备两图，detail 与自动同一规格（同一 variant 缓存）零新增 fetch。
   expect(fetches.count).toBe(2);
   noBytesOnWire(captures);
   writeDuTrace("DU_1", { captures, sent: h.sent, variants: variantRows(h) });
@@ -492,8 +499,8 @@ it("[DU_1] a question-anchored media.read supplies only the selected ordinary im
 // ---- [DU_2] inline 消费次序 + none 零额外调用 ------------------------------------------------
 
 it("[DU_2] an inline answer is decided only after the same run supplied the consumed ordinary image; none adds no calls", async () => {
-  // inline 分支：media.read 消费 ordinary 之后，**下一条决策请求**里已经带着 1024x512 原图，
-  // inline 正文才允许发出——理解声明不先于真实消费。none 分支：零额外调用、零 detail 副本。
+  // inline 分支：media.read 消费统一规格图之后，**下一条决策请求**里已经带着 1024x512 原图，
+  // inline 正文才允许发出——理解声明不先于真实消费。none 分支：零额外调用、零 detail 消费。
   const exprBytes = pngOf(120, 1024, 512);
   const fetches = { count: 0 };
   const { port, captures, pendingSteps } = createCapturePort([
@@ -539,15 +546,15 @@ it("[DU_2] an inline answer is decided only after the same run supplied the cons
   await h.deliver();
   expect(h.sent).toHaveLength(1);
 
-  // 发出 inline 正文的那次决策请求已含 ordinary 1024x512（sha＝真实 variant 字节），512x256
-  // 不在。消费次序的证明是捕获到的请求内容（wire part 元数据），不是 DB variant 存在性。
+  // 发出 inline 正文的那次决策请求已含统一规格原图 1024x512（sha＝真实 variant 字节）。
+  // 消费次序的证明是捕获到的请求内容（wire part 元数据），不是 DB variant 存在性。
   expect(captures[captures.length - 1]?.kind).toBe("decision");
   expect(pendingSteps()).toBe(0);
   const inlineCall = captures[captures.length - 1] as CapturedCall;
   const inlineImages = captureImages(inlineCall);
   const detail = inlineImages.find((image) => image.width === 1024 && image.height === 512);
   expect(detail?.sha256).toBe(sha(variantBytesOf(h, 1024, 512)));
-  expect(inlineImages.some((image) => image.width === 512 && image.height === 256)).toBe(false);
+  expect(detail?.sha256).toBe(sha(exprBytes));
   expect(fetches.count).toBe(1);
   expect(classificationCount(h)).toBe(0);
   noBytesOnWire(captures);
@@ -589,7 +596,12 @@ it("[DU_2] an inline answer is decided only after the same run supplied the cons
   expect(nonePort.captures.some((call) => observationsOf(call, "media.read").length > 0)).toBe(
     false,
   );
-  expect(variantRows(hNone).some((row) => row.width === 1024 && row.height === 512)).toBe(false);
+  // none 决策零 detail 消费：任务账本里没有 detail 行（自动 baseline 一行是正常准备面，
+  // 不是 detail-purpose 证据）。
+  const noneDetailRows = hNone.db.query(
+    "SELECT COUNT(*) AS n FROM qq_media_read_tasks WHERE purpose='detail'",
+  );
+  expect(noneDetailRows.get()).toEqual({ n: 0 });
   expect(fetchesNone.count).toBe(1);
 });
 
@@ -966,9 +978,12 @@ it("[DU_6] generation stage off sends no raw image after a successful detail dec
   await h.activate("direct_reply");
   await h.deliver();
   const decisions = captures.filter((call) => call.kind === "decision");
-  expect(captureImages(decisions[0] as CapturedCall).some((image) => image.width === 512)).toBe(
-    true,
-  );
+  // 决策相：统一规格＝原图 1024x512（不存在 512x256 旧档；生成相 stage off 下决策相照常供图）。
+  expect(
+    captureImages(decisions[0] as CapturedCall).some(
+      (image) => image.width === 1024 && image.height === 512,
+    ),
+  ).toBe(true);
   expect(
     captureImages(decisions[decisions.length - 1] as CapturedCall).some(
       (image) => image.width === 1024 && image.height === 512,

@@ -273,7 +273,6 @@ function open() {
         visionModelName: "vision-local",
         transcriptionModelName: null,
       },
-      supplementWindowMinutes: 30,
       policyRevision: "test-policy",
       assertCurrent: () => {},
       fit: input.fit ?? (async () => () => true),
@@ -585,7 +584,7 @@ describe("run-scoped QQ media tools", () => {
     }
   });
 
-  // 旧契约（优化前实测，见批次 ROOT-CONFIRMED-LEGACY-DRIFT）：typed 任务仍成功、正文与
+  // The typed result remains readable after the legacy association has drifted.
   // 模型仍在、只是资产来源到期签不出结果引用时，note.read 必须按 segment_changed 拒绝。
   // 共享分页读取把这条落空合并进了 undescribed，等于把"来源失效"说成"从未描述"。
   it("refuses a served note as source-expired instead of reporting it undescribed", async () => {
@@ -879,7 +878,7 @@ describe("run-scoped QQ media tools", () => {
     }
   });
 
-  it("burns at most two attempts and only for a later, in-window supplement newer than the last one", async () => {
+  it("baseline reads once: the failed result is reused across runs and later messages never auto-retry it", async () => {
     const f = open();
     try {
       const img = f.image("img-1", { at: f.baseSeconds - 120 });
@@ -894,60 +893,40 @@ describe("run-scoped QQ media tools", () => {
         status: "failed",
         described: false,
         attempt: 1,
-        awaitSupplement: true,
+        giveUp: true,
       };
       expect((await tool.execute("media.describe", { id: img.id }, run1.ctx)).value).toEqual(first);
       expect(tool.stats.calls).toBe(1);
-      // 同 run 重复 describe 不烧第二次，即使这一轮已具备重试资格。
+      // 同 run 重复 describe 不烧第二次。
       expect((await tool.execute("media.describe", { id: img.id }, run1.ctx)).value).toEqual(first);
       expect(tool.stats.calls).toBe(1);
 
-      // 更晚、在窗口内，但早于"上一次尝试"的补充不是新事实。
-      f.message("stale-supp", { at: f.baseSeconds - 60, reasons: ["mention"] });
-      const run2 = f.context("run-2");
-      await tool.execute("media.list", {}, run2.ctx);
-      expect((await tool.execute("media.describe", { id: img.id }, run2.ctx)).value).toEqual({
-        status: "unavailable",
-        code: "awaiting_supplement",
-      });
-      expect(tool.stats.calls).toBe(1);
-
-      // 有效补充：晚于原图、在窗口内、晚于上一次尝试、群成员的 @。
-      f.message("fresh-supp", { at: f.baseSeconds + 90, reasons: ["mention"] });
+      // 更晚的真实 @ 消息不是自动重试授权（补充时间窗已退役）：失败行不再尝试，
+      // 权威重读按预算拒绝，不花第二次视觉。
+      f.message("fresh-mention", { at: f.baseSeconds + 90, reasons: ["mention"] });
       const run3 = f.context("run-3");
       await tool.execute("media.list", {}, run3.ctx);
       expect((await tool.execute("media.describe", { id: img.id }, run3.ctx)).value).toEqual({
-        status: "failed",
-        described: false,
-        attempt: 2,
-        awaitSupplement: false,
-      });
-      expect(tool.stats.calls).toBe(2);
-
-      // 两次用尽之后，再有补充也不再尝试，且模型无从传递授权。
-      f.message("late-supp", { at: f.baseSeconds + 150, reasons: ["mention"] });
-      const run4 = f.context("run-4");
-      await tool.execute("media.list", {}, run4.ctx);
-      expect((await tool.execute("media.describe", { id: img.id }, run4.ctx)).value).toEqual({
         status: "unavailable",
         code: "attempts_exhausted",
       });
-      expect(tool.stats.calls).toBe(2);
-      // 两次尝试记在 typed 任务账本上；legacy 行旧账保持 0（typed 不回写）。
+      expect(tool.stats.calls).toBe(1);
+
+      // 尝试记在 typed 任务账本上；legacy 行旧账保持 0（typed 不回写）。
       expect(mediaNoteRow(f.h.orm, "img-1", 0)).toMatchObject({ attempts: 0, note: null });
       const task = f.h.db
         .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
         .get(img.id) as { attempts: number; status: string };
-      expect(task).toMatchObject({ attempts: 2, status: "failed" });
+      expect(task).toMatchObject({ attempts: 1, status: "failed" });
     } finally {
       f.h.close();
     }
   });
 
-  it("unlocks a second attempt on an unaddressed image only through a genuinely later supplement", async () => {
+  it("reads an unaddressed image once under the same one-attempt baseline rule", async () => {
     const f = open();
     try {
-      // 原图未被 @（journal reasons 为空但已披露）：第一次尝试走既有主动读。
+      // 原图未被 @（journal reasons 为空但已披露）：baseline 读取与 @ 无关。
       const img = f.image("img-plain", { at: f.baseSeconds - 120, reasons: [] });
       const tool = f.mount({
         read: async () => {
@@ -960,37 +939,25 @@ describe("run-scoped QQ media tools", () => {
         status: "failed",
         described: false,
         attempt: 1,
-        awaitSupplement: false,
+        giveUp: true,
       });
       expect(tool.stats.calls).toBe(1);
 
-      // 不晚于上次尝试的补充不是新事实：仍未被 @ 的原图不重读。
-      f.message("stale-supp", { at: f.baseSeconds - 60, reasons: ["mention"] });
-      const run2 = f.context("run-2");
-      await tool.execute("media.list", {}, run2.ctx);
-      expect((await tool.execute("media.describe", { id: img.id }, run2.ctx)).value).toEqual({
-        status: "unavailable",
-        code: "not_addressed",
-      });
-      expect(tool.stats.calls).toBe(1);
-
-      // 更晚、在窗口内、晚于上次尝试的真实 @ 补充解锁第二次尝试。
-      f.message("fresh-supp", { at: f.baseSeconds + 90, reasons: ["mention"] });
+      // 更晚的真实 @ 消息不是该图的自动重试授权：无新显式请求，失败行按预算拒绝。
+      f.message("fresh-mention", { at: f.baseSeconds + 90, reasons: ["mention"] });
       const run3 = f.context("run-3");
       await tool.execute("media.list", {}, run3.ctx);
       expect((await tool.execute("media.describe", { id: img.id }, run3.ctx)).value).toEqual({
-        status: "failed",
-        described: false,
-        attempt: 2,
-        awaitSupplement: false,
+        status: "unavailable",
+        code: "attempts_exhausted",
       });
-      expect(tool.stats.calls).toBe(2);
-      // 两次尝试记在 typed 任务账本上；媒体行旧账保持 0（typed 不回写）。
+      expect(tool.stats.calls).toBe(1);
+      // 尝试记在 typed 任务账本上；媒体行旧账保持 0（typed 不回写）。
       expect(mediaNoteRow(f.h.orm, "img-plain", 0)).toMatchObject({ attempts: 0, note: null });
       const task2 = f.h.db
         .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
         .get(img.id) as { attempts: number; status: string };
-      expect(task2).toMatchObject({ attempts: 2, status: "failed" });
+      expect(task2).toMatchObject({ attempts: 1, status: "failed" });
     } finally {
       f.h.close();
     }

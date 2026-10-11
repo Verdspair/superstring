@@ -462,13 +462,23 @@ describe("execution configuration", () => {
     const port = createModelPort({
       gateway: {
         async complete(request) {
-          const key = serviceOf(request.model);
-          total += 1;
-          totalPeak = Math.max(totalPeak, total);
-          bump(key, 1);
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          bump(key, -1);
-          total -= 1;
+          // 新端口协议：整机/服务帽的获准发生在真实发送边界，由 gateway 调
+          // acquireSendPermit；fake 必须照做，否则帽不生效（peak 2 假象）。
+          const actualModel = request.model ?? "mockdefault";
+          const key = serviceOf(actualModel);
+          const release = request.acquireSendPermit
+            ? await request.acquireSendPermit(actualModel, request.signal)
+            : undefined;
+          try {
+            total += 1;
+            totalPeak = Math.max(totalPeak, total);
+            bump(key, 1);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          } finally {
+            bump(key, -1);
+            total -= 1;
+            release?.();
+          }
           return "ok";
         },
       } as TextModelGateway,
@@ -512,5 +522,71 @@ describe("execution configuration", () => {
     a();
     b();
     expect(admission.available()).toBe(true);
+  });
+
+  it("widens model and provider request caps to 256 while keeping defaults and old loop bounds", async () => {
+    // 缺省 4/2 与下界 1 不变；256 合法，257 与 0 拒绝。
+    expect(ExecutionPolicySchema.parse({}).loop).toMatchObject({
+      concurrency: 4,
+      modelConcurrency: 4,
+      providerConcurrency: 2,
+      readBatch: 3,
+    });
+    for (const value of [1, 16, 256]) {
+      expect(
+        ExecutionPolicySchema.parse({ loop: { modelConcurrency: value } }).loop.modelConcurrency,
+      ).toBe(value);
+      expect(
+        ExecutionPolicySchema.parse({ loop: { providerConcurrency: value } }).loop
+          .providerConcurrency,
+      ).toBe(value);
+    }
+    for (const invalid of [
+      { loop: { modelConcurrency: 257 } },
+      { loop: { modelConcurrency: 0 } },
+      { loop: { providerConcurrency: 257 } },
+      { loop: { providerConcurrency: 0 } },
+    ])
+      expect(ExecutionPolicySchema.safeParse(invalid).success).toBe(false);
+    // 上限放宽不借用给相邻的 loop 字段：跨会话唤醒并发仍 max 16，只读并行仍 max 3。
+    expect(ExecutionPolicySchema.parse({ loop: { concurrency: 16 } }).loop.concurrency).toBe(16);
+    expect(ExecutionPolicySchema.safeParse({ loop: { concurrency: 17 } }).success).toBe(false);
+    expect(ExecutionPolicySchema.safeParse({ loop: { readBatch: 4 } }).success).toBe(false);
+    // 放宽后的值经 GET/PUT 保存，CAS revision 照常推进。
+    const dir = mkdtempSync(path.join(tmpdir(), "exec-config-"));
+    dirs.push(dir);
+    const service = new PermissionService(
+      new FilePermissionStore(path.join(dir, "permissions.json")),
+    );
+    const app = new Hono();
+    app.onError(handleError);
+    app.route(
+      "/v2/permissions",
+      permissionRoutes(service, () => []),
+    );
+    const initial = await (await app.request("/v2/permissions")).json();
+    const saved = await app.request("/v2/permissions", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedRevision: initial.revision,
+        policy: {
+          version: 1,
+          grants: [],
+          execution: { code: true, loop: { modelConcurrency: 256, providerConcurrency: 256 } },
+        },
+      }),
+    });
+    expect(saved.status).toBe(200);
+    const body = await saved.json();
+    expect(body.policy.execution.loop).toMatchObject({
+      modelConcurrency: 256,
+      providerConcurrency: 256,
+      concurrency: 4,
+      readBatch: 3,
+    });
+    const reread = await (await app.request("/v2/permissions")).json();
+    expect(reread.policy.execution.loop.modelConcurrency).toBe(256);
+    expect(reread.policy.execution.loop.providerConcurrency).toBe(256);
   });
 });

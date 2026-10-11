@@ -214,7 +214,6 @@ function open() {
         }),
       },
       modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
-      supplementWindowMinutes: 30,
       policyRevision: "test-policy",
       assertCurrent: () => {},
       fit: async () => () => true,

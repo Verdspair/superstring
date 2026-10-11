@@ -2,9 +2,10 @@
 //
 // 两块宿主整链证据：
 //   * [S26_2] 真实 market-face 三键 wire → 事实侧 category=expression → 真 HTTP body 上看得见
-//     512 长边的表情副本；条件式表情规则段**无条件**进 system（native 轮无 mediaNotes/无
-//     mediaUnread 时也在）；不新增任何分类相关模型调用；模型输入里不出现数值 attention 字段
-//     （只是"无该字段"的传输面证据，不承诺任何模型行为质量）。
+//     统一规格的静图副本（§5.5 类别无关统一后静图全类别共用 ordinary 长边；当前 canonical
+//     null=原图，1024x768 原样上 wire）；条件式表情规则段**无条件**进 system（native 轮无
+//     mediaNotes/无 mediaUnread 时也在）；不新增任何分类相关模型调用；模型输入里不出现数值
+//     attention 字段（只是"无该字段"的传输面证据，不承诺任何模型行为质量）。
 //   * [S33_2] 同一条 focus 消息里一个**真正不可读**的动画（真 APNG 字节）＋一张合法静图：动画只
 //     落 qq_media_unreadable（data_only、逐字带 mediaId/messageId/reason），零 variant、零 image
 //     part、零首帧字节上 wire；合法静图照常按普通规格（原图）上 wire；两段 image part 的消息关系
@@ -15,7 +16,7 @@
 //      owned loopback（127.0.0.1、port 0、await listening 后取端口、finally close）。不手建
 //      ModelPort、不 stringify(request) 假 wire、不用 web 端口或 17861、不接真实模型服务。
 //   2. 真实字节：动画是带真 acTL 块（IHDR 之后、首个 IDAT 之前）的 APNG，容器识别走产品 isApng；
-//      静图是 encodeQqFramePng 编出的真 PNG——**禁止** TextEncoder 文字冒图。512 规格不靠元数据
+//      静图是 encodeQqFramePng 编出的真 PNG——**禁止** TextEncoder 文字冒图。规格不靠元数据
 //      断言，而是把 wire 上 data URL 的字节解回 PNG 头逐字核对。
 //   3. 真实入站：多段 wire 走 `normalizeOneBotMessage` → `recordInbound` 的公开路径（本文件内自建
 //      helper，不改 harness、不改 adapter、不手写 DB fact category、不做 seed proof）。
@@ -623,12 +624,13 @@ function createHostHarness(
   });
 }
 
-// ---- [S26_2] 表情规则：三键 wire → 512 规格 + 条件式规则无条件进 system -------------------
+// ---- [S26_2] 表情规则：三键 wire → 统一原图规格 + 条件式规则无条件进 system -------------------
 
-it("[S26_2] a real market-face wire segment gets the 512 spec and the expression rule reaches system", async () => {
+it("[S26_2] a real market-face wire segment gets the unified original-size spec and the expression rule reaches system", async () => {
   // 一张 1024x768 的**真** PNG 带 platform market face 三键：协议层判 expression → 事实侧
-  // category=expression（来源 platform，不是 unknown、不是模型补判）→ 表情静图按 §7.4 表长边 512
-  // （1024x768 → 512x384）。512 规格不靠元数据断言，而是解 wire 上 data URL 的真实字节。
+  // category=expression（来源 platform，不是 unknown、不是模型补判）。§5.5 规格统一后类别不再
+  // 决定画质：静图全类别共用 ordinary 长边，canonical 默认 null=原图 → 1024x768 原样上 wire。
+  // 规格不靠元数据断言，而是解 wire 上 data URL 的真实字节。
   const bytes = pngOf(96, 1024, 768);
   const stub = await startProvider();
   const diagnostics: Diagnostic[] = [];
@@ -663,16 +665,16 @@ it("[S26_2] a real market-face wire segment gets the 512 spec and the expression
     expect(runError).toBeNull();
     expect(h.sent).toHaveLength(1);
 
-    // ---- 强正二：真 HTTP body 上是 512 长边的表情副本（原图 1024x768 不该原样上 wire） ----
+    // ---- 强正二：真 HTTP body 上是统一规格的静图副本（canonical null=原图，1024x768 原样） ----
     const withImages = stub.wire.filter((entry) => entry.dataUrls.length > 0);
     expect(withImages.length).toBeGreaterThanOrEqual(2);
     for (const entry of withImages)
       for (const url of entry.dataUrls) {
         const size = pngSizeOfDataUrl(url);
-        expect(size.width).toBe(512);
-        expect(size.height).toBe(384);
-        // 缩放重编后 sha 不再等于原图（原图 sha 只落在 asset 上，两层各自可核）。
-        expect(size.sha256).not.toBe(sha(bytes));
+        expect(size.width).toBe(1024);
+        expect(size.height).toBe(768);
+        // 原图直上 wire：data URL 字节 sha 逐字等于受控源字节。
+        expect(size.sha256).toBe(sha(bytes));
       }
     expect(assetRows(h).some((row) => row.content_sha256 === sha(bytes))).toBe(true);
 

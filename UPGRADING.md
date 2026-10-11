@@ -51,6 +51,14 @@
 
 遇到未知结构或降级尝试时，程序会拒绝启动以保护数据安全。如需回退，必须先完全退出程序，恢复升级前备份的 53 版数据与匹配密钥，再启动 v0.4.0-alpha-1 程序。
 
+#### 当前 main 源码更新
+
+本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **63**，新增迁移 0055–0063。
+
+源码新增独立 QQ 回复任务、方案与会话的任务上限和输入防刷屏设置，并统一静图、动图规格，取消旧补充时间窗。新建方案开启防刷屏，已有方案保持关闭；会话覆盖留空时跟随方案。已有记录与其它配置保留，退役媒体设置不再使用。
+
+更新源码前请完全退出程序，自行完整备份数据目录与匹配密钥。启动新源码会执行新增迁移。不要用旧程序直接打开已升级的数据库；回退必须恢复升级前备份及匹配程序。
+
 ### 建议检查的配置
 
 - **QQ 方案自主接话**：在方案设置中复查自主接话配置。若群聊消息频繁，可根据活跃度调整触发消息数与扰动量，确认忙时排队是否符合预期。
@@ -107,6 +115,14 @@ Known v0.4.0-alpha-1 databases run on schema **53**; this release runs on schema
 - The migration is additive, adding initiative setting fields while preserving existing chat records and configuration; backing up beforehand is still recommended.
 
 Unknown schemas or downgrade attempts are rejected to protect data safety. Rolling back requires fully exiting the application, restoring your matching pre-upgrade schema 53 data and key backup, and launching the v0.4.0-alpha-1 executable.
+
+#### Current source updates on main
+
+This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **63**, with migrations 0055–0063.
+
+Source updates add independent QQ reply tasks, scheme and conversation task limits, and input anti-spam settings. Still images and animations use unified settings, and the old supplement time window is removed. Anti-spam is enabled for new schemes and kept off for existing schemes. Empty conversation overrides follow the scheme. Existing records and other settings are retained; retired media settings are no longer used.
+
+Before updating source, fully exit the application and make a complete backup of your data directory and matching keys. Starting the new source applies the added migrations. Do not open an upgraded database with an older executable. Rollback requires the pre-upgrade backup and matching application.
 
 ### Configuration Checklist
 

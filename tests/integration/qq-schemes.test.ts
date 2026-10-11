@@ -29,11 +29,13 @@ import {
   readQqScheme,
   readQqSchemes,
   schemeContext,
+  schemeInputAntiSpam,
   schemeMediaInput,
   schemeMessageSettings,
   schemeReply,
   schemeRhythm,
   schemeStickers,
+  schemeTaskLimits,
   updateQqScheme,
 } from "../../src/server/db/qq-scheme-repository";
 import { createSession, ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
@@ -199,6 +201,10 @@ describe("scheme identity", () => {
         "initiative_time_window_enabled",
         "initiative_time_target_seconds",
         "initiative_time_jitter_seconds",
+        // 0059 的三列（并行任务上限两值 + 输入防抖开关）同样只能追加，排在表尾。
+        "mention_task_limit",
+        "ordinary_task_limit",
+        "input_anti_spam_enabled",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -306,7 +312,6 @@ describe("scheme identity", () => {
         active_hours_end_minutes: 1439,
         max_recompute_count: 1,
         max_sticker_count: 1,
-        media_supplement_window_minutes: 10,
         media_frame_count: 3,
         media_max_dimension: 512,
         initiative_batch_target_count: 15,
@@ -419,29 +424,39 @@ describe("scheme identity", () => {
     }
   });
 
-  it("counts a change to the media wait window as a change", () => {
+  it("counts a change to the reply cooldown as a change, and the same value as a no-op", () => {
     const h = setup();
     try {
       // P5o's browser check found this the hard way: the field was accepted, rendered and sent,
       // and then silently dropped because the no-op comparison did not know it existed — the page
       // reported "saved" over a write that never happened. So the group's equality now has a test
-      // that fails if a future field is added to the contract but forgotten here.
+      // that fails if a future field is added to the contract but forgotten here. The retired
+      // supplement window (§5.7) used to anchor this test; the retained reply_cooldown_seconds
+      // keeps the same whole-group CAS guarantee.
       const created = createQqScheme(h.orm, { name: "默认方案" });
-      expect(schemeRhythm(created).media_supplement_window_minutes).toBe(10);
+      expect(schemeRhythm(created).reply_cooldown_seconds).toBe(10);
       const changed = updateQqScheme(h.orm, created.id, {
         name: "默认方案",
-        rhythm: { ...schemeRhythm(created), media_supplement_window_minutes: 25 },
+        rhythm: { ...schemeRhythm(created), reply_cooldown_seconds: 25 },
         expectedRevision: created.revision,
       });
       expect(changed.revision).toBe(2);
-      expect(schemeRhythm(changed).media_supplement_window_minutes).toBe(25);
+      expect(schemeRhythm(changed).reply_cooldown_seconds).toBe(25);
       // And the same value again is still a no-op.
       const noop = updateQqScheme(h.orm, created.id, {
         name: "默认方案",
-        rhythm: { ...schemeRhythm(changed), media_supplement_window_minutes: 25 },
+        rhythm: { ...schemeRhythm(changed), reply_cooldown_seconds: 25 },
         expectedRevision: changed.revision,
       });
       expect(noop.revision).toBe(2);
+      // The retired key itself is refused at the save boundary instead of being merged.
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: "默认方案",
+          rhythm: { ...schemeRhythm(changed), media_supplement_window_minutes: 25 } as never,
+          expectedRevision: noop.revision,
+        }),
+      ).toThrow(TypeError);
     } finally {
       h.business.close();
     }
@@ -680,9 +695,6 @@ describe("message settings and media input groups (0052/T12)", () => {
         stages: { decision: true, evaluation: true, generation: true },
         max_images: 8,
         ordinary_still_max_dimension: null,
-        expression_max_dimension: 512,
-        expression_frame_count: 3,
-        expression_frame_max_dimension: 512,
       });
       expect(schemeMediaInput(created)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
       // 写入侧补默认：列上必须是完整 JSON，而不是靠读取兜底的 NULL。
@@ -716,9 +728,6 @@ describe("message settings and media input groups (0052/T12)", () => {
           max_images: 2,
           // null 是一个真实的设置值（＝原图），不是「跟随」。
           ordinary_still_max_dimension: null,
-          expression_max_dimension: 1024,
-          expression_frame_count: 6,
-          expression_frame_max_dimension: 256,
         },
       });
       expect(schemeMessageSettings(created)).toEqual({
@@ -732,9 +741,6 @@ describe("message settings and media input groups (0052/T12)", () => {
         stages: { decision: false, evaluation: true, generation: false },
         max_images: 2,
         ordinary_still_max_dimension: null,
-        expression_max_dimension: 1024,
-        expression_frame_count: 6,
-        expression_frame_max_dimension: 256,
       });
       expect(created.revision).toBe(1);
 
@@ -838,6 +844,15 @@ describe("message settings and media input groups (0052/T12)", () => {
       expect(schemeMessageSettings(row)).toEqual(QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT);
       expect(schemeMediaInput(row)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
       expect(schemeMediaInput(row).mode).toBe("native");
+      // §5.5/§5.7：经 0062 退役改写后的存储形状（表情三键与补充时间窗入口已清）重新入库，
+      // 仍按统一后的 canonical 组读出——迁移产物本身可被契约原样加载。
+      const migrated = JSON.stringify(schemeMediaInput(row));
+      db.exec(
+        `UPDATE qq_schemes SET media_input = '${migrated.replace(/'/g, "''")}' WHERE id = 'old'`,
+      );
+      expect(schemeMediaInput(readQqScheme(orm, "old") ?? row)).toEqual(
+        QQ_MEDIA_INPUT_SCHEME_DEFAULT,
+      );
     } finally {
       db.close();
     }
@@ -909,6 +924,112 @@ describe("模式互斥：方案自身的显式触发器写入", () => {
       expect(legal.triggerFollowUp).toBe(1);
     } finally {
       h.business.close();
+    }
+  });
+});
+
+// ---- 0059：并行任务上限与输入防抖（方案侧） ----
+//
+// 与其余参数组同规矩：省略＝新建落默认（上限 4/1 与 qq-task.ts 同源、防抖显式落开）、
+// 更新不动；整组来或整组不动；无变化不 bump revision。旧方案行由 0059 的 DDL 兜底为
+// 上限 4/1、防抖关，没有数据回填语句。
+
+describe("0059 scheme task limits and input anti-spam", () => {
+  it("create fills the defaults explicitly; an explicit group travels whole", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      expect(schemeTaskLimits(created)).toEqual({ mention_task_limit: 4, ordinary_task_limit: 1 });
+      expect(schemeInputAntiSpam(created)).toEqual({ enabled: true });
+
+      const explicit = createQqScheme(h.orm, {
+        name: "自定方案",
+        taskLimits: { mention_task_limit: 10, ordinary_task_limit: 2 },
+        inputAntiSpam: { enabled: false },
+      });
+      expect(schemeTaskLimits(explicit)).toEqual({
+        mention_task_limit: 10,
+        ordinary_task_limit: 2,
+      });
+      expect(schemeInputAntiSpam(explicit)).toEqual({ enabled: false });
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("update: omitted keeps, a real change bumps the revision once, the same values are a no-op", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      const changed = updateQqScheme(h.orm, created.id, {
+        name: "默认方案",
+        taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
+        expectedRevision: created.revision,
+      });
+      expect(schemeTaskLimits(changed)).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
+      // 防抖未随本次保存提供：保持现值。
+      expect(schemeInputAntiSpam(changed)).toEqual({ enabled: true });
+      expect(changed.revision).toBe(created.revision + 1);
+
+      const noop = updateQqScheme(h.orm, changed.id, {
+        name: "默认方案",
+        taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
+        expectedRevision: changed.revision,
+      });
+      expect(noop.revision).toBe(changed.revision);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("a stale expected revision is a conflict, and out-of-range caps are refused by the contract", () => {
+    const h = setup();
+    try {
+      const created = createQqScheme(h.orm, { name: "默认方案" });
+      expect(() =>
+        updateQqScheme(h.orm, created.id, {
+          name: "默认方案",
+          taskLimits: { mention_task_limit: 6, ordinary_task_limit: 1 },
+          expectedRevision: created.revision + 5,
+        }),
+      ).toThrow("方案已变化");
+      for (const bad of [
+        { mention_task_limit: 0, ordinary_task_limit: 1 },
+        { mention_task_limit: 4, ordinary_task_limit: 65 },
+      ]) {
+        expect(() => createQqScheme(h.orm, { name: "越界方案", taskLimits: bad })).toThrow(
+          TypeError,
+        );
+      }
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("0059 backs old rows with 4/1/off via the DDL default and no data backfill", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const file of BUSINESS_MIGRATION_FILES.slice(0, 58))
+        db.exec(
+          readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
+        );
+      db.exec("PRAGMA user_version = 58");
+      db.exec(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at) VALUES ('old','旧方案',3,'then','then')",
+      );
+      ensureBusinessSchema(db);
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
+      expect(
+        db
+          .query(
+            "SELECT mention_task_limit AS m, ordinary_task_limit AS o, input_anti_spam_enabled AS a FROM qq_schemes",
+          )
+          .get(),
+      ).toEqual({ m: 4, o: 1, a: 0 });
+    } finally {
+      db.close();
     }
   });
 });

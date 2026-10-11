@@ -494,8 +494,6 @@ function fixture(kind: "image" | "record" | "video" = "image", segments = 1) {
 
 const cycleInput = {
   eventKey: "media-1",
-  addressedToAssistant: true,
-  relatedSupplementArrived: false,
   modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
 };
 

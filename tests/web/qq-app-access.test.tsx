@@ -37,6 +37,9 @@ const binding: QqBindingResponse = {
   pending_observations: 0,
   revision: 1,
   authority_revision: 1,
+  // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
+  task_limits: { mention_task_limit: null, ordinary_task_limit: null },
+  input_anti_spam: { enabled: null },
 };
 
 const scheme = {

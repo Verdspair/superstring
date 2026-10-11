@@ -240,6 +240,30 @@ const v57 = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0057_history_output_identity_indexes.sql"),
   "utf8",
 );
+const v58 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0058_qq_conversation_tasks.sql"),
+  "utf8",
+);
+const v59 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0059_qq_task_limits_antispam.sql"),
+  "utf8",
+);
+const v60 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0060_qq_task_execution_snapshot.sql"),
+  "utf8",
+);
+const v61 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0061_qq_task_ready_at.sql"),
+  "utf8",
+);
+const v62 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0062_qq_media_spec_unification.sql"),
+  "utf8",
+);
+const v63 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
+  "utf8",
+);
 const ddl = (db: Database) =>
   db
     .query(
@@ -345,6 +369,12 @@ describe("frozen schema defaults and product initialization", () => {
     v55,
     v56,
     v57,
+    v58,
+    v59,
+    v60,
+    v61,
+    v62,
+    v63,
   ] as const;
   // Independent snapshots: v1 matches published v0.2.0-alpha; v2-v4 are the
   // accepted pre-ADR0016 development schemas; v5 onwards are the additive QQ
@@ -452,6 +482,17 @@ describe("frozen schema defaults and product initialization", () => {
     "25ca1420b12c7a3c4b864fc12d226eda02b23b9e778e023c502fd9de5d40ca7c",
     // 0057：历史输出身份查找的两条非唯一部分索引，index-only schema57；v1—v56 逐字节重现后量取。
     "5f2096221b3e0908b30ad4c177b011321f307420bdfbf3ea4d3ef62f026f99d0",
+    "1c5dcac3171dcfa4a6979ef607236e35514e41231a78857e7f8f8e087c514386",
+    "681da02389d2aa7df14ea7f8727d547cc83544ae8f6e3067e1667ab0e2a456d9",
+    // 0060：任务领取时的不可变执行快照与领取时刻（nullable，表尾追加）。
+    "4aaa1f1be279e0ecf8b1c4c4a0ac637a655334ebbe44161f295444fefa7f443f",
+    // 0061：任务冷却延期（ready_at nullable TEXT，表尾追加）；v1—v60 逐字节重现原值之后量取。
+    "afebc301114bcba4262d58c577c78a0bc59ef3d7b5d4f535aad26bd6e77ff0c0",
+    // 0062：纯 JSON 键退役（规格 §5.5/§5.7），无任何 DDL，SQLite 结构指纹与 v61 相同；实测值。
+    "afebc301114bcba4262d58c577c78a0bc59ef3d7b5d4f535aad26bd6e77ff0c0",
+    // 0063：请求身份列 + 收窄后的普通 detail partial unique（旧名重建，谓词加
+    // request_id IS NULL）；v1—v62 逐字节重现原值之后量取。
+    "a5f5742618dab6d6c2785ec5d4475fc54d09f1f5f88e943d9cb68eb1b1b98179",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
@@ -476,7 +517,7 @@ describe("frozen schema defaults and product initialization", () => {
           target_chars: 300,
         });
         ensureBusinessSchema(db);
-        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
         expect(db.query("SELECT target_chars FROM memory_policies").get()).toEqual({
           target_chars: 300,
         });
@@ -509,7 +550,7 @@ describe("knowledge schema v2 migration", () => {
         old.query(`SELECT * FROM ${table}`).all(),
       );
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
       expect(ddl(old)).toEqual(ddl(fresh.db));
       expect(
         BUSINESS_TABLE_NAMES.slice(0, 16).map((table) => old.query(`SELECT * FROM ${table}`).all()),
@@ -599,13 +640,19 @@ describe("knowledge schema v2 migration", () => {
           v55,
           v56,
           v57,
+          v58,
+          v59,
+          v60,
+          v61,
+          v62,
+          v63,
         ]),
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
       expect(db.query("SELECT body FROM memory_entries").get()).toEqual({ body: "旧记忆" });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
     } finally {
       db.close();
     }

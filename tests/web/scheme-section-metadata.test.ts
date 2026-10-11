@@ -72,10 +72,6 @@ const EXPECTED_SECTION: Readonly<Record<string, string>> = {
   "media_input.stages.generation": "image_understanding",
   "media_input.max_images": "image_understanding",
   "media_input.ordinary_still_max_dimension": "image_understanding",
-  "media_input.expression_max_dimension": "image_understanding",
-  "media_input.expression_frame_count": "image_understanding",
-  "media_input.expression_frame_max_dimension": "image_understanding",
-  "rhythm.media_supplement_window_minutes": "image_understanding",
   "rhythm.media_frame_count": "image_understanding",
   "rhythm.media_max_dimension": "image_understanding",
   "prompts.media": "image_understanding",
@@ -107,6 +103,18 @@ describe("scheme sections metadata", () => {
     // 覆盖真实可编辑面：每个映射键都在字段文案映射里有 label，防止挪组时丢 label。
     for (const field of Object.keys(EXPECTED_SECTION)) {
       expect(QQ_SCHEME_FIELD_LABELS[field], field).toBeTruthy();
+    }
+  });
+
+  it("retired media fields are not editable labels (no leftover copy)", () => {
+    // 0052 收紧：四个退役字段已从可编辑面移除，文案映射不得留旧键；查询未知字段仍回落参与组。
+    for (const field of [
+      "media_input.expression_max_dimension",
+      "media_input.expression_frame_count",
+      "media_input.expression_frame_max_dimension",
+      "rhythm.media_supplement_window_minutes",
+    ]) {
+      expect(QQ_SCHEME_FIELD_LABELS[field], field).toBeUndefined();
     }
   });
 

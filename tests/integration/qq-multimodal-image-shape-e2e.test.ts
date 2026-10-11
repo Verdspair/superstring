@@ -16,12 +16,12 @@
 //           决策 schema/tools 声明形状、持久面无 raw bytes
 //   [S25_3] 非法来源强负（独立成例，不与合法路径共用 if/else）：无 resolver/runId/owner、
 //           句柄未登记 → 真实 CONTEXT_SOURCE_INVALID，不是自造 code，也不是合法供应失败
-//   [S26_1] 平台 market face 三键 → expression 证据 → 512 规格 + 表情只用文本角色无数值 attention
+//   [S26_1] 平台 market face 三键 → expression 证据（统一规格上 wire）+ 表情只用文本角色无数值 attention
 //           + 未知提示（仅 summary）不能猜表情
-//   [S28_1] 明确细问表情升普通规格（按需服务 prepareByMediaId + detail 问题锚，**辅助**块）。
+//   [S28_1] 明确细问按统一规格准备（按需服务 prepareByMediaId + detail 问题锚，**辅助**块）。
 //   [S28_2] 真实 host 工具链：
 //           media.list → media.read(questionMessageId=focus 平台 ID) → native detail 按
-//           ordinary 规格准备 → 模型下一步看到 ordinary 规格元数据；分类不改变。
+//           统一规格准备 → 模型下一步看到统一规格元数据；分类不改变。
 //   [S28_3] 拒绝对照：questionMessageId 指向无关消息（非 focus、非 focus 直接引用目标）→
 //           宿主锚解析拒绝，真实 CONTEXT_INVALID_SELECTION，零 detail 副本。
 //   [S29_1] face 平台 ID/名称原位、不走 vision（用真实 wire 直测 intake + 投影排除点）
@@ -605,9 +605,10 @@ function loopbackReply(parsed: {
   return "合成回复正文";
 }
 
-it("[S26_1] a real market-face wire segment is the platform expression evidence and gets the 512 spec", async () => {
+it("[S26_1] a real market-face wire segment is the platform expression evidence at the unified spec", async () => {
   // 三键同现且均为非空 string → 协议层判 expression；facts 里 category 必须是 expression，
-  // 且 categorySource 是 platform（不是 unknown、不是模型补判）。
+  // 且 categorySource 是 platform（不是 unknown、不是模型补判）。规格统一后（§5.5）表情
+  // 与普通共用同一静图规格——分类只剩防刷屏/事实用途，不再决定画质。
   const bytes = pngOf(96, 1024, 768);
   const h = createOneBotHarness({
     accountId: "90001",
@@ -646,14 +647,15 @@ it("[S26_1] a real market-face wire segment is the platform expression evidence 
   expect(factCategories(facts)).toContain("expression");
   expect(factCategories(facts)).not.toContain("unknown");
 
-  // 表情静图按 §7.4 表：长边 512，不放大小图 —— 1024x768 变 512x384。
+  // 规格统一（§5.5）：所有类别共用静图规格（ordinary null＝原图优先）——表情 1024x768
+  // 保持原图字节上 wire，不再按旧表情 512 档缩放。
   const images = wireImages(h, 0);
   expect(images.length).toBe(1);
-  expect(images[0]?.width).toBe(512);
-  expect(images[0]?.height).toBe(384);
+  expect(images[0]?.width).toBe(1024);
+  expect(images[0]?.height).toBe(768);
   expect(images[0]?.mimeType).toBe("image/png");
-  // 缩放重编后 sha 不再等于原图（原图 sha 只落在 asset 上，两层各自可核）。
-  expect(images[0]?.sha256).not.toBe(sha(bytes));
+  // 原图直传：wire sha 等于原图（asset 层同一 sha 各自可核）。
+  expect(images[0]?.sha256).toBe(sha(bytes));
   expect(assetShaFor(h, sha(bytes))).toBeDefined();
   noBytesOnWire(h);
 
@@ -1595,9 +1597,6 @@ function openScopeFixture(): ScopeFixture {
     ordinary_still_max_dimension: null,
     ordinary_frame_count: 3,
     ordinary_frame_max_dimension: 512,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   };
   return {
     store: handle,
@@ -1620,14 +1619,14 @@ function openScopeFixture(): ScopeFixture {
   };
 }
 
-it("[S28_1] (auxiliary) a detail question prepares the expression image at the ordinary spec but never reclassifies it", async () => {
+it("[S28_1] (auxiliary) a detail question prepares at the unified spec but never reclassifies", async () => {
   // 辅助块：走按需服务 `prepareByMediaId` + detail 问题锚（宿主 media.read 背后的同一实现）。
   // 两跳缺口如实登记：① 自动投影链的 detailMediaIds 在宿主没有生产 caller；② 真实 host 工具
   // media.read(questionMessageId) 的锚解析当前必然拒绝（bot-host resolveQuestion 的 focusKey
   // 是事件键，而 loadQqMessageFact 按平台消息 ID 查找，二者不可同时成立；探针
   // logs/probe-question-anchor.ts 实证 CONTEXT_INVALID_SELECTION）——缺口在 T11 范围内处理，
-  // 本文件不改产品。规格 §7.4：明确细问的表情本次按普通图片规格，但不改图片原分类
-  // （分类仍是 expression，来源仍是 platform）。
+  // 本文件不改产品。规格 §5.5 统一后类别不再决定画质：是否 detail 不改变规格，
+  // 只改准备身份（不同 variant 键）；分类仍是 expression，来源仍是 platform。
   const bytes = pngOf(120, 1024, 512);
   const scope = openScopeFixture();
   try {
@@ -1665,18 +1664,20 @@ it("[S28_1] (auxiliary) a detail question prepares the expression image at the o
       classificationPolicy: "policy-native-v1",
     };
 
-    // 无 detail 锚：按表情规格 512 缩放（1024x512 → 512x256）。
+    // 无 detail 锚：统一规格（ordinary null＝原图优先），1024x512 原图不缩放。
     const plain = await service.prepareByMediaId(input);
     expect(plain.detail).toBe(false);
     expect(plain.category).toBe("expression");
     expect(plain.categorySource).toBe("platform");
     expect(plain.images).toHaveLength(1);
-    expect(plain.images[0]?.width).toBe(512);
-    expect(plain.images[0]?.height).toBe(256);
-    const expressionVariantPolicy = plain.images[0]?.variantPolicy;
-    expect(expressionVariantPolicy).toBeDefined();
+    expect(plain.images[0]?.width).toBe(1024);
+    expect(plain.images[0]?.height).toBe(512);
+    expect(plain.images[0]?.sha256).toBe(sha(bytes));
+    const plainVariantPolicy = plain.images[0]?.variantPolicy;
+    expect(plainVariantPolicy).toBeDefined();
 
-    // 带 detail 锚：同一张图按**普通规格**准备（普通静图 null 长边＝原图优先）。
+    // 带 detail 锚：同一张图同一统一规格再准备——detail 不升档（§5.5 类别不再决定画质），
+    // 但 detail 是独立的准备身份（variant 键含 detail 维度，§8.2）。
     const detail = await service.prepareByMediaId({
       ...input,
       detail: {
@@ -1690,13 +1691,13 @@ it("[S28_1] (auxiliary) a detail question prepares the expression image at the o
     // 分类没变：仍然是表情，证据来源仍然是平台（明确细问不改原分类）。
     expect(detail.category).toBe("expression");
     expect(detail.categorySource).toBe("platform");
-    // 规格升到 ordinary：1024x512 原图，不缩到 512。
+    // 规格同档：1024x512 原图，不缩放。
     expect(detail.images).toHaveLength(1);
     expect(detail.images[0]?.width).toBe(1024);
     expect(detail.images[0]?.height).toBe(512);
     expect(detail.images[0]?.sha256).toBe(sha(bytes));
-    // 两套规格是**不同的准备副本**，不共用（规格变了不复用旧副本，§8.2）。
-    expect(detail.images[0]?.variantPolicy).not.toBe(expressionVariantPolicy);
+    // 两个准备身份是**不同的准备副本**，不共用（§8.2）。
+    expect(detail.images[0]?.variantPolicy).not.toBe(plainVariantPolicy);
     // 分类证据没被这次 detail 改写（没有写任何分类行）。
     expect(scope.classificationRows()).toHaveLength(0);
   } finally {
@@ -1704,11 +1705,11 @@ it("[S28_1] (auxiliary) a detail question prepares the expression image at the o
   }
 });
 
-it("[S28_2] a real host media.read with questionMessageId prepares the native detail at the ordinary spec", async () => {
+it("[S28_2] a real host media.read with questionMessageId prepares the native detail at the unified spec", async () => {
   // 真实 host 工具链（题锚 internal/platform 域比对修复后补块）：
   // 模型走 media.list → media.read（questionMessageId 指回本轮 focus 消息的平台 ID）→
   // 宿主 resolveQuestion 锚解析（internal eventKey ↔ platform ID 正确域比对）→ media 服务
-  // 真实 detail 准备（ordinary 规格）→ 模型下一步的 action_observation 里就是 ordinary 规格元数据。
+  // 真实 detail 准备（统一规格）→ 模型下一步的 action_observation 里就是统一规格元数据。
   // 分类不改写：category 仍是 expression（platform），分类表零新行。
   const bytes = pngOf(120, 1024, 512);
   const fetches = fetchCounter();
@@ -1750,24 +1751,28 @@ it("[S28_2] a real host media.read with questionMessageId prepares the native de
   await h.deliver();
   expect(h.sent).toHaveLength(1);
 
-  // media.read 的 action_observation 真进了模型上下文：ordinary 规格的原图元数据。
+  // media.read 的 action_observation 真进了模型上下文：统一规格的原图元数据。
   const readText = (h.model?.calls ?? []).map((call) => call.text).join("\n");
   expect(readText).toContain('"name":"media.read"');
   expect(readText).toContain('"status":"ok"');
   expect(readText).toContain('"category":"expression"');
-  // ordinary 规格（原图 1024x512），不是表情 512x256。
+  // 统一规格（原图 1024x512）；不存在旧表情 512x256 档。
   expect(readText).toContain('"width":1024');
   expect(readText).toContain('"height":512');
   expect(readText).not.toContain('"width":512,"height":256');
 
-  // detail 准备副本真实落库：expression 512x256 之外，多一条 ordinary 1024x512 的 variant。
+  // detail 准备副本真实落库：统一规格只有一档尺寸——自动副本 + detail 副本两条 variant
+  // 都是 1024x512，policy 键按准备身份（detail 维度）区分，不共用。
   const variants = h.db.query("SELECT policy, width, height FROM qq_media_variants").all() as {
     policy: string;
     width: number;
     height: number;
   }[];
-  expect(variants.some((row) => row.width === 512 && row.height === 256)).toBe(true);
-  expect(variants.some((row) => row.width === 1024 && row.height === 512)).toBe(true);
+  expect(variants).toHaveLength(2);
+  expect(new Set(variants.map((row) => `${row.width}x${row.height}`))).toEqual(
+    new Set(["1024x512"]),
+  );
+  expect(new Set(variants.map((row) => row.policy))).toHaveLength(2);
 
   // 明确细问不改分类：分类表零新行（分类证据始终是 platform intake 的事实，不是 model 补判）。
   expect(
@@ -1856,13 +1861,14 @@ it("[S28_3] a questionMessageId outside the focus scope is refused by the host a
   expect(h.sent).toHaveLength(0);
   expect(assetRows(h)).toHaveLength(1);
   expect(rowsOf(h, "SELECT id FROM qq_media_read_tasks")).toHaveLength(0);
-  // 零 detail 副本：只有决策相自动准备的 expression 512x256（ordinary 1024x512 不得出现）。
+  // 零 detail 副本：只有决策相自动准备的那一份统一规格（1024x512 原图）variant。
   const variants = h.db.query("SELECT width, height FROM qq_media_variants").all() as {
     width: number;
     height: number;
   }[];
-  expect(variants.some((row) => row.width === 1024 && row.height === 512)).toBe(false);
-  expect(variants.some((row) => row.width === 512 && row.height === 256)).toBe(true);
+  expect(variants).toHaveLength(1);
+  expect(variants[0]?.width).toBe(1024);
+  expect(variants[0]?.height).toBe(512);
   // 零额外取字节：只有决策相自动准备那一次 fetch。
   expect(fetches.count).toBe(1);
 });
@@ -2005,10 +2011,10 @@ const writeS28RawCapture = (
   );
 };
 
-it("[S28_4] a legal focus question reads the directly-referenced original image at the ordinary spec", async () => {
+it("[S28_4] a legal focus question reads the directly-referenced original image at the unified spec", async () => {
   // 正对照（规格 §7.1/§7.4 语义）：focus 问题消息 replyTo 一条带图消息 → 该原图属于 focus 的
   // direct 范围，media.read(questionMessageId=focus 平台 ID) 对它的 detail 读取**必须成功**并按
-  // ordinary 规格准备；分类不改变（expression/platform）。
+  // 统一规格准备；分类不改变（expression/platform）。
   // 已知上游（T11 producer 侧静态 Important）：当前 assertQuestionCurrent 复验只在 question fact
   // 自己的 parts 里找 image —— direct 原图场景会被误拒。本块按**规格语义**写正 expected，
   // 不迁就现实现改 expected 为拒。2026-10-04 joint2 首轮真实运行：读取面已按规格语义走通，
@@ -2096,18 +2102,22 @@ it("[S28_4] a legal focus question reads the directly-referenced original image 
   const readValue = readEnvelope.value.value as MediaReadObservationValue;
   expect(readValue.status).toBe("ok");
   expect(readValue.category).toBe("expression");
-  // ordinary 规格（原图 1024x512），不是表情 512x256——按解析后的字段断言，可真实失败。
+  // 统一规格（原图 1024x512）——按解析后的字段断言，可真实失败。
   expect(readValue.images.some((image) => image.width === 1024 && image.height === 512)).toBe(true);
   expect(readValue.images.some((image) => image.width === 512 && image.height === 256)).toBe(false);
 
-  // detail 副本真实落库：expression 512x256 之外，多一条 ordinary 1024x512 variant。
+  // detail 读取与自动准备同规格（统一后只有一档）：两条 1024x512 variant，
+  // policy 键按准备身份（detail 维度）区分，不共用。
   const variants = h.db.query("SELECT policy, width, height FROM qq_media_variants").all() as {
     policy: string;
     width: number;
     height: number;
   }[];
-  expect(variants.some((row) => row.width === 512 && row.height === 256)).toBe(true);
-  expect(variants.some((row) => row.width === 1024 && row.height === 512)).toBe(true);
+  expect(variants).toHaveLength(2);
+  expect(new Set(variants.map((row) => `${row.width}x${row.height}`))).toEqual(
+    new Set(["1024x512"]),
+  );
+  expect(new Set(variants.map((row) => row.policy))).toHaveLength(2);
 
   // 分类不改写：分类表零新行。
   expect(
@@ -2198,15 +2208,16 @@ it("[S28_5] a legal focus question cannot read an out-of-scope image from the sa
   expect(h.sent).toHaveLength(0);
   expect(rowsOf(h, "SELECT id FROM qq_media_read_tasks")).toHaveLength(0);
 
-  // 零 detail 副本：没有 ordinary 1024x512（focus 图的 detail），也没有范围外旧图的任何准备副本。
+  // 零 detail 副本：也没有范围外旧图的任何准备副本。
   const variants = h.db.query("SELECT width, height FROM qq_media_variants").all() as {
     width: number;
     height: number;
   }[];
-  expect(variants.some((row) => row.width === 1024 && row.height === 512)).toBe(false);
   expect(variants.some((row) => row.width === 8 && row.height === 8)).toBe(false);
-  // 只有 focus 表情图的自动准备副本。
-  expect(variants.some((row) => row.width === 512 && row.height === 256)).toBe(true);
+  // 只有 focus 图的自动准备副本（统一规格：1024x512 原图）。
+  expect(variants).toHaveLength(1);
+  expect(variants[0]?.width).toBe(1024);
+  expect(variants[0]?.height).toBe(512);
   // 只有一次 asset（focus 图那次自动准备）；范围外图从未准备。
   expect(assetRows(h)).toHaveLength(1);
   // 零额外取字节：只有决策相自动准备那一次 fetch。

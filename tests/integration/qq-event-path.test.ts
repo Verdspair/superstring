@@ -168,7 +168,7 @@ function mediaCycleAdapter(vision: VisionClient & { calls: string[] }): QqMediaR
   };
 }
 
-/** One failed first read: the row is left with a spent attempt and no note, waiting for a supplement. */
+/** One failed first read: the row is left with a spent attempt and no note. */
 async function seedFailedRead(
   orm: Orm,
   eventKey: string,
@@ -176,8 +176,6 @@ async function seedFailedRead(
 ) {
   return readQqAddressedMediaOnce(orm, mediaCycleAdapter(vision), {
     eventKey,
-    addressedToAssistant: true,
-    relatedSupplementArrived: false,
     modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
   });
 }
@@ -317,7 +315,7 @@ describe("a waiting read is not woken by a supplement", () => {
       const first = await seedFailedRead(s.h.orm, "evt-7", vision);
       expect(first).toMatchObject({
         kind: "read",
-        result: { kind: "failed", awaitSupplement: true },
+        result: { kind: "failed", giveUp: true },
       });
       expect(vision.calls).toHaveLength(1);
       expect(mediaNoteRow(s.h.orm, "evt-7", 0)).toMatchObject({ attempts: 1, note: null });

@@ -41,6 +41,8 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 - 分别配置判断和回复窗口。超出回复窗口的消息进入缓冲队列，达到阈值后在后台任务队列压缩为上下文包；判断阶段不读取这些包。
 - QQ 群名称与用户自定义备注名解耦独立保存。设置自定义备注时优先显示备注，未设置时显示 QQ 原群名，均无则显示群号；支持群名预加载，更换绑定或助手不会丢失备注名。
 - 支持在会话卡片和群会话顶部随时启用或停用群发言。停用后群消息照常接收保存，Agent 不发言且不产生新模型任务。
+- **独立回复任务**：有效艾特和引用助手消息的请求分别执行，不再因同一会话中的慢回复等待整批结束。每会话的艾特任务与普通任务上限默认 4／1，可设 1–64；会话覆盖值留空时跟随方案。模型请求另设全局总上限和每服务上限，默认 4／2，可设 1–256，两项同时生效。艾特任务优先取得下一个可用名额，不中断正在执行的任务。
+- **输入防刷屏**：新方案默认开，已有方案保持关，可按会话覆盖。同一成员在首条起 3 秒内连发至少 3 条纯图片消息，按一个逻辑候选处理；他人插话不打断，自身文字、其它媒体或直接请求结束分组。命中组与纯表情不自动供图，仍可经工具按需读取；直接艾特和合法引用照常处理，原记录不删除。
 
 **本群配置**已整合至方案与群目录中，为特定群提供独立的个性化设置与覆盖项。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。
 
@@ -64,6 +66,7 @@ QQ 接入前置步骤与运行要求：
 - **表情素材管理**：导入表情素材，编辑说明与标签，经检查启用后授权给方案；支持文字、表情或图文混合回复。
 - **输出预留上限**：方案判断与回复输出预留上限最高可设为 32768，适应长输出调用；默认值保持 512 与 2048 不变。
 - **QQ 数据保留期限**：支持配置 QQ 数据保留期限（1–3650 天，默认 14 天），覆盖消息正文、媒体阅读记录、助手发言、发送记录与昵称。到期内容不可读；物理清理需在存储面板中手动预览确认。运行追踪的保留天数在「系统能力 → 执行限制」中独立配置，两者互不影响。
+- **统一图片规格**：各类别的静图共用长边设置或保留原图，动图共用帧数与帧长边。取消单独的表情画质设置和补充时间窗。基本区提供自动／按需选择，高级区保留模式、三阶段开关与自定义配置。真实明确关联原图的新请求有独立的有界读取预算，同请求失败不自动重试；成功内容可在权限和有效期内复用。
 
 ### 统一 Agent 内核、扩展与工具
 
@@ -114,7 +117,7 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口后，Superstring 自行启动的服务与相关进程一起退出。再次双击启动器即可重新启动。
 
-升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。业务数据库结构版本为 54。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 63（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -168,6 +171,8 @@ Incoming messages in bound conversations appear automatically. When loading chat
 - Configure separate judgement and reply windows. Messages outside the reply window enter a buffer queue and are compressed into context packages in a background task queue; judgement does not consume these packages.
 - Decouple original QQ group names from custom aliases. Custom aliases take precedence with fallback to group names; rebinding does not overwrite aliases, and group names support preloading.
 - Enable or disable group participation directly from conversation cards or conversation headers. Disabled groups continue to receive and store messages while the Agent stays silent without starting model tasks.
+- **Independent reply tasks**: Valid mentions and replies to the assistant run as separate tasks instead of waiting for all replies in a conversation to finish. Per-conversation mention and ordinary task limits default to 4 and 1, with a range of 1–64. Empty conversation overrides follow the scheme. Model requests have separate global and per-service limits, defaulting to 4 and 2 with a range of 1–256; both limits apply. Mention tasks take the next available slot without interrupting running work.
+- **Input anti-spam**: Enabled for new schemes and kept off for existing schemes, with conversation overrides. At least three image-only messages from one sender within three seconds of the first message form one logical candidate. Other senders do not break the group; the sender's own text, other media, or direct request does. Grouped images and pure expressions are excluded from automatic image input but remain readable through tools. Direct mentions and valid replies are still handled, and original records are not deleted.
 
 **Group settings** are integrated into scheme and group workflows, providing dedicated configurations and overrides for specific groups. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. System capabilities can be disabled per group with immediate effect.
 
@@ -191,6 +196,7 @@ Operational details:
 - **Sticker management**: Import sticker collections, manage tags and descriptions, and authorize collections for chat schemes; supports text, sticker, or combined responses.
 - **Output reserve caps**: Scheme judgement and reply output reserve limits can be set up to 32768 to accommodate long outputs from thinking models; defaults remain 512 and 2048.
 - **QQ data retention**: Configurable retention period (1–3650 days, default 14 days) covering message text, media reading records, assistant speech, delivery logs, and nicknames. Expired content becomes unreadable; physical deletion requires manual user preview and confirmation in the storage panel. Telemetry trace retention is configured independently under System capabilities → Execution limits.
+- **Unified image settings**: All still-image categories share a long-edge setting or retain the original image; animations share frame counts and frame dimensions. Separate expression quality settings and supplement time windows have been removed. Basic settings offer automatic or on-demand input, while advanced settings retain modes, per-stage switches, and custom configurations. A new explicit request linked to a source image has its own bounded read budget. Failed reads do not retry automatically within the same request; successful results can be reused while permissions and expiry checks remain valid.
 
 ### Unified Agent core, extensions, and tools
 
@@ -241,7 +247,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window exits background services and processes started by Superstring. Double-click the launcher again to restart.
 
-Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The application database schema version is 54. See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 63 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
 ### Run from source
 

@@ -116,7 +116,6 @@ describe("QQ scheme routes", () => {
         active_hours_end_minutes: 1439,
         max_recompute_count: 1,
         max_sticker_count: 1,
-        media_supplement_window_minutes: 10,
         media_frame_count: 3,
         media_max_dimension: 512,
         initiative_batch_target_count: 15,
@@ -168,16 +167,18 @@ describe("QQ scheme routes", () => {
         stages: { decision: true, evaluation: true, generation: true },
         max_images: 8,
         ordinary_still_max_dimension: null,
-        expression_max_dimension: 512,
-        expression_frame_count: 3,
-        expression_frame_max_dimension: 512,
       });
+      // 0059：并行任务上限与输入防抖两组同样完整上线。新方案默认上限 mention 4 / ordinary 1、
+      // 输入防抖开——写入侧在 create 边界落默认，响应没有迁移间隙。
+      expect(created.task_limits).toEqual({ mention_task_limit: 4, ordinary_task_limit: 1 });
+      expect(created.input_anti_spam).toEqual({ enabled: true });
       expect(Object.keys(created).sort()).toEqual([
         "compression",
         "context",
         "created_at",
         "description",
         "id",
+        "input_anti_spam",
         "media_input",
         "message_settings",
         "name",
@@ -188,6 +189,7 @@ describe("QQ scheme routes", () => {
         "rhythm",
         "sticker_collections",
         "stickers",
+        "task_limits",
         "triggers",
         "updated_at",
       ]);
@@ -469,9 +471,6 @@ describe("QQ scheme routes", () => {
           stages: { decision: true, evaluation: false, generation: true },
           max_images: 4,
           ordinary_still_max_dimension: 1024,
-          expression_max_dimension: 256,
-          expression_frame_count: 5,
-          expression_frame_max_dimension: 2048,
         },
         expected_revision: created.revision,
       });
@@ -486,9 +485,6 @@ describe("QQ scheme routes", () => {
         stages: { decision: true, evaluation: false, generation: true },
         max_images: 4,
         ordinary_still_max_dimension: 1024,
-        expression_max_dimension: 256,
-        expression_frame_count: 5,
-        expression_frame_max_dimension: 2048,
       });
       expect(updated.revision).toBe(2);
 
@@ -524,6 +520,80 @@ describe("QQ scheme routes", () => {
             ...updated.media_input,
             stages: { decision: false, generation: false },
           },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "往返方案二",
+          // §5.5 退役的表情规格键：严格 schema 拒绝，不静默丢弃。
+          media_input: { ...updated.media_input, expression_max_dimension: 256 },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "往返方案二",
+          media_input: { ...updated.media_input, expression_frame_count: 5 },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "往返方案二",
+          media_input: { ...updated.media_input, expression_frame_max_dimension: 2048 },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "往返方案二",
+          // §5.7 退役的补充时间窗键：rhythm 严格组同样拒绝。
+          rhythm: { ...renamed.rhythm, media_supplement_window_minutes: 25 },
+          expected_revision: renamed.revision,
+        },
+      ];
+      for (const payload of badRequests) {
+        const response = await json(h.app, "PUT", `/qq/schemes/${created.id}`, payload);
+        expect(response.status).toBe(422);
+      }
+      const after = await h.app.request(`/qq/schemes/${created.id}`);
+      expect(await body<QqSchemeResponse>(after)).toEqual(renamed);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  // 0059：两组新设置的路由透传——显式整组往返、省略＝保持、越界上限/未知字段拒绝。
+  it("round-trips the task limits and input anti-spam groups and refuses out-of-range caps", async () => {
+    const h = setup();
+    try {
+      const created = await createScheme(h.app, { name: "并行方案" });
+      const updated = await updateScheme(h.app, created.id, {
+        name: "并行方案",
+        task_limits: { mention_task_limit: 8, ordinary_task_limit: 2 },
+        input_anti_spam: { enabled: false },
+        expected_revision: created.revision,
+      });
+      expect(updated.task_limits).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
+      expect(updated.input_anti_spam).toEqual({ enabled: false });
+      expect(updated.revision).toBe(2);
+
+      // update 未提供两组 → 保持现值。
+      const renamed = await updateScheme(h.app, created.id, {
+        name: "并行方案二",
+        expected_revision: updated.revision,
+      });
+      expect(renamed.task_limits).toEqual(updated.task_limits);
+      expect(renamed.input_anti_spam).toEqual(updated.input_anti_spam);
+
+      // shape 严格：越界上限、未知字段、半截假开关整体拒绝，422，且未落库。
+      const badRequests: unknown[] = [
+        {
+          name: "并行方案二",
+          task_limits: { mention_task_limit: 65, ordinary_task_limit: 1 },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "并行方案二",
+          task_limits: { ...renamed.task_limits, extra: true },
+          expected_revision: renamed.revision,
+        },
+        {
+          name: "并行方案二",
+          input_anti_spam: { enabled: false, strict: true },
           expected_revision: renamed.revision,
         },
       ];

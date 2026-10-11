@@ -23,11 +23,11 @@ import {
   failMediaReadTask,
   findMediaReadTask,
   findMediaReadTaskByIdentity,
+  findSucceededMediaReadTaskForContent,
   MediaReadTaskRejectedError,
   type MediaTaskSourceGuard,
   type QqMediaReadPurpose,
   recordMediaReadTaskResult,
-  type SupplementEvidence,
 } from "../db/qq-media-task-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
 import { DEFAULT_USER_ID, getAgentRow, nowIso, type Orm } from "../db/repositories";
@@ -39,7 +39,12 @@ import {
 } from "../db/schema";
 import { AppError, fail } from "../errors";
 import { QQ_STICKER_CONTENT_TYPES, type QqImageHeader, readQqImageHeader } from "./qq-image-header";
-import { checkQqMediaRetry, qqMediaFailureOutcome, qqMediaModelFor } from "./qq-media-contract";
+import {
+  checkQqMediaRetry,
+  QQ_MEDIA_MAX_ATTEMPTS,
+  qqMediaFailureOutcome,
+  qqMediaModelFor,
+} from "./qq-media-contract";
 
 // Prevent two reads of the same segment in one process from overlapping. The database
 // CAS below remains necessary for other processes; this is not a persistent lease.
@@ -48,8 +53,6 @@ const activeReads = new WeakMap<Orm, Set<string>>();
 const Input = z.strictObject({
   eventKey: z.string().min(1),
   segmentIndex: z.number().int().nonnegative(),
-  addressedToAssistant: z.boolean(),
-  relatedSupplementArrived: z.boolean(),
   modelConfig: z.strictObject({
     visionModelName: z.string().nullable(),
     transcriptionModelName: z.string().nullable(),
@@ -96,7 +99,8 @@ export type QqMediaReadResult =
       readonly kind: "failed";
       readonly attempt: number;
       readonly announceInConversation: false;
-      readonly awaitSupplement: boolean;
+      /** 一次有界尝试已用尽（§5.7）：失败结果复用，同身份不再自动重试。 */
+      readonly giveUp: boolean;
     };
 
 /** One attempt; never replays a read or announces a failure to the conversation. */
@@ -188,8 +192,6 @@ export async function readQqMediaOnce(
   const retry = checkQqMediaRetry({
     kind: row.segmentKind,
     attempts: row.attempts,
-    addressedToAssistant: value.addressedToAssistant,
-    relatedSupplementArrived: value.relatedSupplementArrived,
   });
   if (retry.kind !== "allowed") return { kind: "unreadable", reason: retry.reason };
   // 取消在认领尝试之前生效：一次被取消的调用不该烧掉这张图的读取次数。
@@ -204,12 +206,18 @@ export async function readQqMediaOnce(
       validateBeforeClaim: authorized,
     });
   } catch {
-    // A competing first read or authorization change is not proof that both attempts
-    // were spent. Preserve the previously visible exhausted result only if it is true.
+    // A competing first read or authorization change is not proof that the
+    // attempt was spent. Preserve the previously visible exhausted result only
+    // if it is true — the budget constant is the SAME contract constant the
+    // claim gate uses, never a local literal (the 2→1 unification must not
+    // leave a stale 2 here mislabeling a race as attempts_exhausted).
     const current = mediaNoteRow(orm, value.eventKey, value.segmentIndex);
     return {
       kind: "unreadable",
-      reason: current && current.attempts >= 2 ? "attempts_exhausted" : "claim_changed",
+      reason:
+        current && current.attempts >= QQ_MEDIA_MAX_ATTEMPTS
+          ? "attempts_exhausted"
+          : "claim_changed",
     };
   }
   active.add(activeKey);
@@ -261,8 +269,8 @@ export async function readQqMediaOnce(
   } catch {
     // 取消不是失败：先让取消穿透，绝不把它吞成 failed 之后再把描述/状态写进缓存。
     signal?.throwIfAborted();
-    // A transport/model failure after pause, account switch, or source expiry is not
-    // permission to keep a waiting task alive for a later supplement.
+    // A transport/model failure after pause, account switch, or source expiry is
+    // published as the identity's recorded failure (no later supplement wakes it).
     const current = mediaNoteRow(orm, value.eventKey, value.segmentIndex);
     if (
       !current ||
@@ -277,13 +285,12 @@ export async function readQqMediaOnce(
     const failure = qqMediaFailureOutcome({
       kind: row.segmentKind,
       attempts: claimed.attempts,
-      addressedToAssistant: value.addressedToAssistant,
     });
     return {
       kind: "failed",
       attempt: claimed.attempts,
       announceInConversation: false,
-      awaitSupplement: failure.awaitSupplement,
+      giveUp: failure.giveUp,
     };
   } finally {
     active.delete(activeKey);
@@ -303,6 +310,12 @@ export interface QqMediaTaskReadBaselineInput {
 export interface QqMediaTaskReadDetailInput {
   readonly purpose: "detail";
   readonly questionKey: string;
+  /**
+   * 宿主 trusted 请求身份（§5.7）：真实显式请求由宿主从 platform message/run 解析并绑定
+   * scope/epoch/carrier/current request；缺席＝非显式 detail，仍按原内容身份入账。
+   * 模型措辞/参数从不参与，也绝无 legacy 字符串兜底。
+   */
+  readonly requestId?: string;
   readonly assertQuestionCurrent: MediaTaskSourceGuard;
 }
 
@@ -330,7 +343,8 @@ export type QqMediaTaskReadResult =
       readonly purpose: QqMediaReadPurpose;
       readonly attempt: number;
       readonly announceInConversation: false;
-      readonly awaitSupplement: boolean;
+      /** 一次有界尝试已用尽（§5.7）：失败结果复用，同身份不再自动重试。 */
+      readonly giveUp: boolean;
     };
 
 /** Typed input: everything is host-supplied, nothing is model-choosable. */
@@ -342,7 +356,6 @@ export type QqMediaTaskReadInput = QqMediaTaskReadPurposeInput & {
     readonly visionModelName: string | null;
     readonly transcriptionModelName: string | null;
   };
-  readonly addressedToAssistant: boolean;
   /**
    * The controlled bytes' sha256 when the host already knows it (live asset or
    * an earlier controlled fetch). Omitted = the reader resolves it through the
@@ -350,8 +363,6 @@ export type QqMediaTaskReadInput = QqMediaTaskReadPurposeInput & {
    * silent row-level fallback, §8.1).
    */
   readonly contentSha256?: string;
-  readonly relatedSupplementArrived?: boolean;
-  readonly proveSupplementLaterThan?: SupplementEvidence;
   /**
    * 宿主时钟（nowIso 形状）；省略＝真实时钟。任务读取路径的过期判断、资产/来源链打点、
    * claim 与结果/失败发布都用它——同一把刻度，比较与打点不会跨两套时钟各自成立。
@@ -373,20 +384,6 @@ export type QqMediaTaskReadInput = QqMediaTaskReadPurposeInput & {
 };
 
 const TaskPolicy = z.string().trim().min(1);
-
-/** A pending task takes its first attempt regardless of @-addressing; only a resolved failed task faces the not-addressed gate. */
-function claimWillBeSecondAttempt(
-  orm: Orm,
-  taskKey: {
-    mediaNoteId: string;
-    purpose: QqMediaReadPurpose;
-    questionKey?: string | null;
-    contentSha256?: string;
-  },
-): boolean {
-  const task = findMediaReadTask(orm, taskKey);
-  return task !== null && task.status === "failed" && task.attempts >= 1;
-}
 
 /** A migrated database always owns one baseline task per consumed media row; absence means the ledger was changed outside 0052. */
 function hasBaselineTask(orm: Orm, mediaNoteId: string): boolean {
@@ -517,10 +514,12 @@ export async function readQqMediaTaskOnce(
     return { kind: "unreadable", reason: "capability_unavailable" };
   const choice = qqMediaModelFor(kind, input.modelConfig);
   if (choice.kind !== "configured") return { kind: "unreadable", reason: "model_not_configured" };
+  const requestId = input.purpose === "detail" ? input.requestId : undefined;
   const taskKey = {
     mediaNoteId: row.id,
     purpose,
     ...(questionKey === null ? {} : { questionKey }),
+    ...(requestId === undefined ? {} : { requestId }),
   };
   // 同载体已成功结果先服务（零 fetch，现语义不变）：legacy 迁移任务与普通任务都按
   // 原窗口规则命中即回。
@@ -592,10 +591,11 @@ export async function readQqMediaTaskOnce(
     });
     consumedAssetSourceId = recorded;
   }
-  // The identity ledger first (cross-carrier cache + budget); the carrier row
-  // (incl. legacy migrations, identity NULL) fills the same-shaped slot when
-  // the identity ledger has nothing — the per-carrier lookup below is what
-  // serves the legacy policy='legacy' cache semantics unchanged.
+  // The identity ledger first, by the EXACT task identity: a real explicit
+  // request looks up ITS 8-tuple row (requestId in the hash), an ordinary
+  // read the unchanged 7-tuple row — the two budgets never mix (§5.7/0063).
+  // The request part of the lookup is the BUDGET dimension only; the
+  // success-content cache below is a separate read-only path.
   let identityLedger = findMediaReadTaskByIdentity(orm, {
     accountId: event.accountId,
     conversationKind: event.conversationKind,
@@ -604,26 +604,30 @@ export async function readQqMediaTaskOnce(
     segmentKind: kind,
     purpose,
     questionKey: questionKey,
+    ...(requestId === undefined ? {} : { requestId }),
     contentSha256,
   });
   if (identityLedger === null) {
-    // Controlled bytes just confirmed an identity that has no ledger row yet:
-    // associate same-source legacy history (saturating min(2, Σ)) in its OWN
-    // transaction — the association is a bytes-proven fact and must survive a
-    // refused claim, or an exhausted legacy row would let a new carrier regain
-    // budget. No legacy row matched = a genuinely fresh budget.
-    identityLedger = associateLegacyMediaReadTask(orm, {
-      mediaNoteId: row.id,
-      mediaSegmentKind: kind,
-      mediaSourceRef: row.sourceRef,
-      accountId: event.accountId,
-      conversationKind: event.conversationKind,
-      peerId: event.peerId,
-      agentId: event.agentId,
-      purpose,
-      questionKey: questionKey,
-      contentSha256,
-    });
+    if (requestId === undefined) {
+      // Ordinary identity with no ledger row yet: associate same-source legacy
+      // history (saturating min(2, Σ)) in its OWN transaction — the association
+      // is a bytes-proven fact and must survive a refused claim, or an
+      // exhausted legacy row would let a new carrier regain budget. No legacy
+      // row matched = a genuinely fresh budget. Legacy association is
+      // ORDINARY-only: an explicit fresh request never merges old history.
+      identityLedger = associateLegacyMediaReadTask(orm, {
+        mediaNoteId: row.id,
+        mediaSegmentKind: kind,
+        mediaSourceRef: row.sourceRef,
+        accountId: event.accountId,
+        conversationKind: event.conversationKind,
+        peerId: event.peerId,
+        agentId: event.agentId,
+        purpose,
+        questionKey: questionKey,
+        contentSha256,
+      });
+    }
   }
   const domainGuard: MediaTaskSourceGuard = (tx) => {
     const conversation = tx
@@ -660,7 +664,33 @@ export async function readQqMediaTaskOnce(
       signal?.throwIfAborted();
     }
   };
-  const cached = identityLedger ?? carrierCached;
+  // 成功内容缓存与预算行分两路（§5.7/0063）：预算行只决定 claim/去重，绝不把旧
+  // failed/running 行冒充成缓存答案；成功复用单独按"内容身份（不含 requestId）+
+  // model/policy 精确 + 未过期"跨请求只读查询，行仍要过下面的 sourceguard，
+  // 不签 ref、不绕 body/来源归属。
+  // 普通路径（无 explicit）保持原语义逐字不变：identityLedger ?? carrierCached。
+  // 只有真实 explicit 请求才多这一路内容成功复用查询——它按内容身份（不含 requestId）
+  // 跨请求取已成功行，预算行与它互不冒充。
+  const contentSuccess =
+    requestId === undefined
+      ? null
+      : findSucceededMediaReadTaskForContent(orm, {
+          accountId: event.accountId,
+          conversationKind: event.conversationKind,
+          peerId: event.peerId,
+          agentId: event.agentId,
+          segmentKind: kind,
+          purpose,
+          questionKey: questionKey,
+          contentSha256,
+          modelName: choice.model,
+          policy: policy.data,
+          now: now(),
+        });
+  const cached =
+    requestId === undefined
+      ? (identityLedger ?? carrierCached)
+      : (contentSuccess ?? identityLedger ?? carrierCached);
   const legacyTask =
     purpose === "baseline" &&
     cached !== null &&
@@ -713,9 +743,6 @@ export async function readQqMediaTaskOnce(
   if (row.attempts > 0 && !hasBaselineTask(orm, row.id)) {
     return { kind: "unreadable", reason: "legacy_task_missing" };
   }
-  if (claimWillBeSecondAttempt(orm, taskKey) && !input.addressedToAssistant) {
-    return { kind: "unreadable", reason: "not_addressed" };
-  }
   let claim: Awaited<ReturnType<typeof attemptMediaReadTask>>;
   try {
     claim = await attemptMediaReadTask(orm, {
@@ -724,10 +751,6 @@ export async function readQqMediaTaskOnce(
       modelName: choice.model,
       policy: policy.data,
       ...(consumedAssetSourceId !== undefined ? { consumedAssetSourceId } : {}),
-      relatedSupplementArrived:
-        input.relatedSupplementArrived === true && input.addressedToAssistant,
-      proveSupplementLaterThan:
-        input.addressedToAssistant === false ? undefined : input.proveSupplementLaterThan,
       at: now(),
       assertCurrent: checkedGuard,
     });
@@ -782,6 +805,7 @@ export async function readQqMediaTaskOnce(
       segmentKind: kind,
       purpose,
       questionKey,
+      ...(requestId === undefined ? {} : { requestId }),
       contentSha256,
     });
     return {
@@ -819,14 +843,13 @@ export async function readQqMediaTaskOnce(
       const failure = qqMediaFailureOutcome({
         kind,
         attempts: claim.attempt,
-        addressedToAssistant: input.addressedToAssistant,
       });
       return {
         kind: "failed",
         purpose,
         attempt: claim.attempt,
         announceInConversation: false,
-        awaitSupplement: failure.awaitSupplement,
+        giveUp: failure.giveUp,
       };
     }
     throw error;

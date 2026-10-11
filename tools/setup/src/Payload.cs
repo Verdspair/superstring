@@ -115,6 +115,12 @@ namespace Superstring.Setup
         "app/resources/migrations/versions/0055_qq_initiative_time_window.sql",
         "app/resources/migrations/versions/0056_outbound_stale_reason.sql",
         "app/resources/migrations/versions/0057_history_output_identity_indexes.sql",
+        "app/resources/migrations/versions/0058_qq_conversation_tasks.sql",
+        "app/resources/migrations/versions/0059_qq_task_limits_antispam.sql",
+        "app/resources/migrations/versions/0060_qq_task_execution_snapshot.sql",
+        "app/resources/migrations/versions/0061_qq_task_ready_at.sql",
+        "app/resources/migrations/versions/0062_qq_media_spec_unification.sql",
+        "app/resources/migrations/versions/0063_qq_media_request_identity.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

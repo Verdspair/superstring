@@ -1789,3 +1789,129 @@ describe("terminal reply action", () => {
     ).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
   });
 });
+
+describe("trusted workClass propagation", () => {
+  const generateDecision =
+    '{"kind":"final","outputs":[{"kind":"generate","targetId":"web","instructions":"reply"}]}';
+
+  it("sends the trusted workClass on the decision complete request", async () => {
+    const seen: ModelRequest[] = [];
+    const { runtime } = setup({
+      async complete(request) {
+        seen.push(request);
+        return generateDecision;
+      },
+    });
+    await runtime.run(spec, { ...direct, workClass: "mention" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].workClass).toBe("mention");
+  });
+
+  it("sends the trusted workClass on the generation stream request", async () => {
+    const streamed: ModelRequest[] = [];
+    const { runtime } = setup({
+      async complete() {
+        return generateDecision;
+      },
+      async *streamText(request) {
+        streamed.push(request);
+        yield "answer";
+      },
+    });
+    await runtime.run(spec, { ...direct, workClass: "mention" });
+    expect(streamed).toHaveLength(1);
+    expect(streamed[0].workClass).toBe("mention");
+  });
+
+  it("sends the trusted workClass on the structured generation complete request", async () => {
+    const seen: ModelRequest[] = [];
+    const { runtime } = setup({
+      async complete(request) {
+        seen.push(request);
+        return seen.length === 1 ? generateDecision : '{"text":"hello"}';
+      },
+    });
+    await runtime.run(spec, {
+      ...direct,
+      authorizedTargets: ["web"],
+      outputMode: "buffered",
+      workClass: "mention",
+      prepareGeneration: async () => ({
+        responseEnvelope: {
+          responseSchema: { type: "object", properties: { text: { type: "string" } } },
+          parse: (raw) => ({ text: String(JSON.parse(raw).text) }),
+        },
+      }),
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[1].responseSchema).toEqual({
+      type: "object",
+      properties: { text: { type: "string" } },
+    });
+    expect(seen[1].workClass).toBe("mention");
+  });
+
+  it("sends the trusted workClass on leaf and vision requests", async () => {
+    const seen: ModelRequest[] = [];
+    const multimodal: unknown[] = [];
+    const { runtime } = setup({
+      async complete(request) {
+        seen.push(request);
+        return '{"ok":true}';
+      },
+      async completeMultimodal(request) {
+        multimodal.push(request);
+        return "vision";
+      },
+    });
+    await runtime.completeLeaf({ id: "leaf" }, { owner, messages: [], workClass: "mention" });
+    await runtime.completeVisionLeaf(
+      { id: "vision" },
+      { owner, model: "vision-model", prompt: "describe", images: [], workClass: "mention" },
+    );
+    expect(seen[0].workClass).toBe("mention");
+    expect(multimodal[0]).toMatchObject({ workClass: "mention", model: "vision-model" });
+  });
+
+  it("inherits the owning task class in nested leaves inside runTaskGroup", async () => {
+    const seen: ModelRequest[] = [];
+    const { runtime } = setup({
+      async complete(request) {
+        seen.push(request);
+        return '{"ok":true}';
+      },
+    });
+    const value = await runtime.runTaskGroup(
+      { id: "group" },
+      { owner, workClass: "mention" },
+      async () =>
+        runtime.completeMessageLeaf(
+          { id: "child" },
+          { owner, messages: [textMessage("user", "hi")] },
+        ),
+    );
+    expect(value).toBe('{"ok":true}');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].workClass).toBe("mention");
+  });
+
+  it("keeps omitted workClass absent so ModelPort stays ordinary", async () => {
+    const seen: ModelRequest[] = [];
+    const streamed: ModelRequest[] = [];
+    const { runtime } = setup({
+      async complete(request) {
+        seen.push(request);
+        return seen.length === 1 ? generateDecision : '{"text":"hello"}';
+      },
+      async *streamText(request) {
+        streamed.push(request);
+        yield "answer";
+      },
+    });
+    await runtime.run(spec, { ...direct });
+    expect(seen[0]).not.toHaveProperty("workClass");
+    expect(streamed[0]).not.toHaveProperty("workClass");
+    await runtime.completeLeaf({ id: "leaf" }, { owner, messages: [] });
+    expect(seen[1]).not.toHaveProperty("workClass");
+  });
+});

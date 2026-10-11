@@ -1075,14 +1075,13 @@ describe("本群覆盖 0052 的两组设置（T12）", () => {
     const effective = readEffectiveQqScheme(orm, required(readQqBinding(orm, binding.id)));
     if (effective === null) throw new Error("effective scheme missing");
     expect(effective.mediaInput).not.toBeNull();
+    // §5.5 规格统一后表情三键（expression_max_dimension/expression_frame_count/
+    // expression_frame_max_dimension）已退役，生效组只剩 canonical 四键。
     expect(JSON.parse(String(effective.mediaInput))).toEqual({
       mode: "native",
       stages: { decision: true, evaluation: false, generation: true },
       max_images: 2,
       ordinary_still_max_dimension: null,
-      expression_max_dimension: 512,
-      expression_frame_count: 3,
-      expression_frame_max_dimension: 512,
     });
     expect(JSON.parse(String(effective.messageSettings))).toEqual({
       reply_mode: "configured_depth",

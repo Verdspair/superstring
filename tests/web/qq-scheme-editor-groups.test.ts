@@ -31,7 +31,6 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
     initiative_batch_target_count: 15,
@@ -73,13 +72,13 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false },
   ...overrides,
 });
 
@@ -138,13 +137,14 @@ describe("0052 两组进方案编辑器（T13）", () => {
     ]);
   });
 
-  it("media_input 标量逐叶子比较：max_images / expression 规格", () => {
+  it("media_input 标量逐叶子比较：max_images 与 rhythm 动图帧数（canonical 真源）", () => {
     const editor = qqSchemeEditorFrom(scheme());
     editor.mediaInput.max_images = 4;
-    editor.mediaInput.expression_frame_count = 5;
+    // 普通动图帧数不在 media_input 里重复持久化：它的真源是 rhythm.media_frame_count。
+    editor.rhythm.media_frame_count = 5;
     const fields = qqSchemeChanges(editor).map((change) => change.field);
     expect(fields).toContain("media_input.max_images");
-    expect(fields).toContain("media_input.expression_frame_count");
+    expect(fields).toContain("rhythm.media_frame_count");
     expect(fields).not.toContain("media_input.stages");
   });
 });
@@ -215,9 +215,6 @@ describe("0052 两组的真实保存链路（T13）", () => {
       stages: { decision: true, evaluation: false, generation: true },
       max_images: 4,
       ordinary_still_max_dimension: null,
-      expression_max_dimension: 512,
-      expression_frame_count: 3,
-      expression_frame_max_dimension: 512,
     });
   });
 
@@ -258,9 +255,6 @@ describe("0052 两组的真实保存链路（T13）", () => {
         stages: { decision: false, evaluation: true, generation: true },
         max_images: 3,
         ordinary_still_max_dimension: 2048,
-        expression_max_dimension: 256,
-        expression_frame_count: 2,
-        expression_frame_max_dimension: 128,
       },
     });
     resetForScheme();
@@ -296,7 +290,7 @@ describe("0052 两组的真实保存链路（T13）", () => {
     expect(next.messageSettings).toEqual(fresh.message_settings);
     expect(next.mediaInput.mode).toBe("description");
     expect(next.mediaInput.stages.decision).toBe(false);
-    expect(next.mediaInput.expression_frame_count).toBe(2);
+    expect(next.rhythm.media_frame_count).toBe(3);
     expect(next.source.revision).toBe(9);
   });
 
@@ -504,17 +498,19 @@ describe("0052 两组的真实保存链路（T13）", () => {
     expect(invalidSchemeInputs(state)).toEqual([["media_input.ordinary_still_max_dimension", "0"]]);
   });
 
-  it("RED: 小数/空原文保留 raw 且 page/duplicate/unified 全部 0 请求", async () => {
+  it("RED: 非法 max_images 原文（0）保留 raw 且 page/duplicate/unified 全部 0 请求、草稿不被改写", async () => {
     const fake = resetForScheme();
     const editor = editorOf();
     store.setState({
       qqSchemeEditor: editor,
       qqInputs: {
         ...store.getState().qqInputs,
-        schemeTexts: { "media_input.expression_frame_count": "" },
-        schemeInvalid: { "media_input.expression_frame_count": "需要 1–10 之间的整数" },
+        // 0 不是正整数的合法值：原文留在 schemeTexts，编辑器值不动。
+        schemeTexts: { "media_input.max_images": "0" },
+        schemeInvalid: { "media_input.max_images": "需要正整数" },
       },
     });
+    expect(invalidSchemeInputs(store.getState())).toEqual([["media_input.max_images", "0"]]);
     expect((await store.getState().saveQqScheme()) === false).toBe(true);
     expect(fake.updateQqScheme).not.toHaveBeenCalled();
     expect(await store.getState().duplicateQqScheme("副本")).toBe(false);
@@ -522,6 +518,9 @@ describe("0052 两组的真实保存链路（T13）", () => {
     expect(await store.getState().saveQqDrafts()).toBe(false);
     expect(fake.updateQqScheme).not.toHaveBeenCalled();
     expect(fake.createQqScheme).not.toHaveBeenCalled();
+    // 失败路径不得清洗原文或编辑器值。
+    expect(store.getState().qqInputs.schemeTexts["media_input.max_images"]).toBe("0");
+    expect(editorOf().mediaInput.max_images).toBe(8);
   });
 
   it("RED: null 原图载荷原样发出（显式 null，不是 0/undefined）", async () => {

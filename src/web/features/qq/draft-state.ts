@@ -3,7 +3,9 @@ import {
   QQ_ATTENTION_MEMBER_LIMIT,
   type QqBindingResponse,
   type QqConversationListItem,
+  QqSchemeInputAntiSpamSchema,
   QqSchemeRhythmSchema,
+  QqSchemeTaskLimitsSchema,
   type QqSettingsResponse,
   type QqStickerCollectionResponse,
 } from "../../../shared/contracts/qq";
@@ -40,7 +42,20 @@ export interface QqInputs {
   } | null;
   /** 保留设置草稿；数字以原文保存（空/非法原文也要能表示），空闲时 null。 */
   storage: QqStorageSettingsDraft | null;
-  choices: Record<string, { agentId: string; schemeId: string; source?: QqBindingResponse }>;
+  choices: Record<
+    string,
+    {
+      agentId: string;
+      schemeId: string;
+      source?: QqBindingResponse;
+      task_limits?: QqBindingResponse["task_limits"];
+      input_anti_spam?: QqBindingResponse["input_anti_spam"];
+      task_limits_raw?: {
+        mention_task_limit?: string;
+        ordinary_task_limit?: string;
+      };
+    }
+  >;
   attention: Record<
     string,
     { mode: QqBindingResponse["attention"]["mode"]; members: string; source: QqBindingResponse }
@@ -175,9 +190,29 @@ const connectionDirty = (draft: QqInputs["connection"]) =>
   (draft.endpoint.trim() !== (draft.source.transport.endpoint ?? "") ||
     draft.accountId.trim() !== (draft.source.account_id ?? "") ||
     draft.token !== "");
+const taskLimitsDirty = (
+  draft?: QqBindingResponse["task_limits"],
+  source?: QqBindingResponse["task_limits"],
+) => {
+  if (!draft || !source) return false;
+  return (
+    draft.mention_task_limit !== source.mention_task_limit ||
+    draft.ordinary_task_limit !== source.ordinary_task_limit
+  );
+};
+const inputAntiSpamDirty = (
+  draft?: QqBindingResponse["input_anti_spam"],
+  source?: QqBindingResponse["input_anti_spam"],
+) => {
+  if (!draft || !source) return false;
+  return draft.enabled !== source.enabled;
+};
 const choiceDirty = (draft: QqInputs["choices"][string]) =>
   !!draft.source &&
-  (draft.agentId !== draft.source.agent_id || draft.schemeId !== draft.source.scheme_id);
+  (draft.agentId !== draft.source.agent_id ||
+    draft.schemeId !== draft.source.scheme_id ||
+    taskLimitsDirty(draft.task_limits, draft.source.task_limits) ||
+    inputAntiSpamDirty(draft.input_anti_spam, draft.source.input_anti_spam));
 const attentionDirty = (draft: QqInputs["attention"][string]) => {
   if (draft.mode !== draft.source.attention.mode) return true;
   if (draft.mode === "off") return false;
@@ -218,9 +253,9 @@ const SCHEME_RAW_FIELD_KINDS: Record<string, "number" | "string"> = {
   // media_input：数值叶子。
   "media_input.max_images": "number",
   "media_input.ordinary_still_max_dimension": "number",
-  "media_input.expression_max_dimension": "number",
-  "media_input.expression_frame_count": "number",
-  "media_input.expression_frame_max_dimension": "number",
+  // 0059 task_limits
+  "task_limits.mention_task_limit": "number",
+  "task_limits.ordinary_task_limit": "number",
 };
 
 /** 数值原文的最终判定：共享契约 schema 认可才算合法（与时区同法，不依赖「已写入编辑器」）。 */
@@ -229,6 +264,12 @@ const newGroupNumberValid = (group: string, field: string, raw: string): boolean
   if (!trimmed) return false;
   const numeric = Number(trimmed);
   if (!Number.isFinite(numeric)) return false;
+  if (group === "task_limits") {
+    const leaf =
+      QqSchemeTaskLimitsSchema.shape[field as keyof typeof QqSchemeTaskLimitsSchema.shape];
+    if (!leaf) return false;
+    return (leaf as { safeParse: (v: unknown) => { success: boolean } }).safeParse(numeric).success;
+  }
   const shape =
     group === "message_settings" ? QqMessageSettingsSchema.shape : QqMediaInputSettingsSchema.shape;
   const leaf = shape[field as keyof typeof shape];
@@ -272,6 +313,12 @@ const invalidSchemeEditorGroups = (
     "media_input",
     editor.mediaInput,
     QqMediaInputSettingsSchema.safeParse(editor.mediaInput),
+  );
+  collect("task_limits", editor.taskLimits, QqSchemeTaskLimitsSchema.safeParse(editor.taskLimits));
+  collect(
+    "input_anti_spam",
+    editor.inputAntiSpam,
+    QqSchemeInputAntiSpamSchema.safeParse(editor.inputAntiSpam),
   );
   return rows;
 };
@@ -526,16 +573,40 @@ export function qqDraftChanges(
       ],
     });
   for (const [id, draft] of Object.entries(inputs.choices))
-    if (draft.source && choiceDirty(draft))
+    if (draft.source && choiceDirty(draft)) {
+      const changes: string[] = [];
+      if (draft.agentId !== draft.source.agent_id)
+        changes.push(`Agent: ${draft.source.agent_id} → ${draft.agentId}`);
+      if (draft.schemeId !== draft.source.scheme_id)
+        changes.push(`${msg("方案")}: ${draft.source.scheme_id} → ${draft.schemeId}`);
+      if (taskLimitsDirty(draft.task_limits, draft.source.task_limits) && draft.task_limits) {
+        if (draft.task_limits.mention_task_limit !== draft.source.task_limits.mention_task_limit) {
+          changes.push(
+            `mention_task_limit: ${String(draft.source.task_limits.mention_task_limit)} → ${String(draft.task_limits.mention_task_limit)}`,
+          );
+        }
+        if (
+          draft.task_limits.ordinary_task_limit !== draft.source.task_limits.ordinary_task_limit
+        ) {
+          changes.push(
+            `ordinary_task_limit: ${String(draft.source.task_limits.ordinary_task_limit)} → ${String(draft.task_limits.ordinary_task_limit)}`,
+          );
+        }
+      }
+      if (
+        inputAntiSpamDirty(draft.input_anti_spam, draft.source.input_anti_spam) &&
+        draft.input_anti_spam
+      ) {
+        changes.push(
+          `input_anti_spam: ${String(draft.source.input_anti_spam.enabled)} → ${String(draft.input_anti_spam.enabled)}`,
+        );
+      }
       rows.push({
         id: `binding:${id}`,
         resource: `${msg("保存改绑")} · ${draft.source.peer_id}`,
-        changes: [
-          `Agent: ${draft.source.agent_id} → ${draft.agentId}`,
-          `${msg("方案")}: ${draft.source.scheme_id} → ${draft.schemeId}`,
-          id,
-        ],
+        changes,
       });
+    }
   for (const draft of Object.values(inputs.attention))
     if (attentionDirty(draft))
       rows.push({
@@ -655,13 +726,25 @@ export function createQqDraftActions(
       }
       for (const [id, draft] of Object.entries(get().qqInputs.choices)) {
         if (!choiceDirty(draft) || !draft.source) continue;
+        const patch: {
+          agent_id: string;
+          scheme_id: string;
+          task_limits?: QqBindingResponse["task_limits"];
+          input_anti_spam?: QqBindingResponse["input_anti_spam"];
+        } = {
+          agent_id: draft.agentId,
+          scheme_id: draft.schemeId,
+        };
+        if (taskLimitsDirty(draft.task_limits, draft.source.task_limits) && draft.task_limits) {
+          patch.task_limits = draft.task_limits;
+        }
         if (
-          !(await get().updateQqBindingRow(draft.source, {
-            agent_id: draft.agentId,
-            scheme_id: draft.schemeId,
-          }))
-        )
-          return false;
+          inputAntiSpamDirty(draft.input_anti_spam, draft.source.input_anti_spam) &&
+          draft.input_anti_spam
+        ) {
+          patch.input_anti_spam = draft.input_anti_spam;
+        }
+        if (!(await get().updateQqBindingRow(draft.source, patch))) return false;
         const { [id]: _saved, ...choices } = get().qqInputs.choices;
         const binding = get().qqBindings.find((item) => item.id === id);
         const attention = get().qqInputs.attention;

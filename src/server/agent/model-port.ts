@@ -36,9 +36,13 @@ export interface ModelResolvedPrepareOutput {
   readonly metadata?: Record<string, unknown>;
 }
 
+export type ModelWorkClass = "mention" | "ordinary";
+
 export interface ModelRequest {
   messages: readonly ModelMessage[];
   model?: string;
+  /** Trusted Runtime task class used only for next-free send admission ordering. */
+  workClass?: ModelWorkClass;
   temperature?: number;
   maxTokens?: number;
   responseSchema?: Record<string, unknown>;
@@ -71,6 +75,7 @@ export interface ModelRequest {
 }
 export interface MultimodalRequest {
   systemPrompt?: string;
+  workClass?: ModelWorkClass;
   temperature?: number;
   maxTokens?: number;
   model: string;
@@ -139,7 +144,11 @@ export interface ModelAdmission {
 
 export interface ManagedModelAdmission extends ModelAdmission {
   /** 两个名额同时可用才 resolve 释放函数；等待中取消按 signal.reason reject 并摘队。 */
-  acquire(model: string | undefined, signal?: AbortSignal): Promise<() => void>;
+  acquire(
+    model: string | undefined,
+    signal?: AbortSignal,
+    workClass?: ModelWorkClass,
+  ): Promise<() => void>;
   /** 上限被外部改写后重新判定并唤醒等待队列；无定时轮询。 */
   refresh(): void;
 }
@@ -165,8 +174,13 @@ export function createModelAdmission(options: {
   const keyOf = (model: string | undefined) => options.providerKey?.(model) ?? "all";
   let activeTotal = 0;
   const activeByProvider = new Map<string, number>();
-  /** 单一 FIFO：保持到达序；释放时从队首扫描，跳过暂时不可用的服务以推进空闲服务。 */
-  const waiting: { key: string; enter: () => void; abort: () => void }[] = [];
+  /** One queue; mention requests take the next available slot while each class keeps FIFO order. */
+  const waiting: {
+    key: string;
+    workClass: ModelWorkClass;
+    enter: () => void;
+    abort: () => void;
+  }[] = [];
   const listeners = new Set<() => void>();
   // 通知只是"状态已变"的信号：回调异常不改变名额状态（占位/释放已生效），只记一行诊断。
   // 订阅者按 trusted 处理——回调里不做准入决策，只唤醒自己的 worker 再复查。
@@ -181,19 +195,25 @@ export function createModelAdmission(options: {
   };
   const hasRoom = (key: string): boolean =>
     activeTotal < totalOf() && (activeByProvider.get(key) ?? 0) < providerOf();
-  /** 授予后统一再扫一遍队列：一次 release/refresh 可以推进多个等待者，直到无空位。 */
+  /** One release/refresh can fill free slots; scan mention before ordinary, skipping busy providers. */
   const drain = () => {
-    for (let index = 0; index < waiting.length; ) {
-      const entry = waiting[index];
-      if (!hasRoom(entry.key)) {
-        index += 1;
-        continue;
+    for (const workClass of ["mention", "ordinary"] as const) {
+      for (let index = 0; index < waiting.length; ) {
+        const entry = waiting[index];
+        if (entry.workClass !== workClass || !hasRoom(entry.key)) {
+          index += 1;
+          continue;
+        }
+        waiting.splice(index, 1);
+        entry.enter();
       }
-      waiting.splice(index, 1);
-      entry.enter();
     }
   };
-  const acquire = (model: string | undefined, signal?: AbortSignal): Promise<() => void> => {
+  const acquire = (
+    model: string | undefined,
+    signal?: AbortSignal,
+    workClass: ModelWorkClass = "ordinary",
+  ): Promise<() => void> => {
     signal?.throwIfAborted();
     const key = keyOf(model);
     if (hasRoom(key)) {
@@ -211,7 +231,7 @@ export function createModelAdmission(options: {
       });
     }
     return new Promise<() => void>((resolve, reject) => {
-      const entry = { key, abort: () => {}, enter: () => {} };
+      const entry = { key, workClass, abort: () => {}, enter: () => {} };
       entry.enter = () => {
         signal?.removeEventListener("abort", entry.abort);
         activeTotal += 1;
@@ -282,94 +302,86 @@ export function createModelPort(options: {
   options.onPolicyChange?.(() => admission.refresh());
   const constrained =
     options.modelCallConcurrency !== undefined || options.providerConcurrency !== undefined;
-  const guarded = async <T>(
-    run: () => Promise<T>,
-    model: string | undefined,
-    signal?: AbortSignal,
-  ): Promise<T> => {
-    signal?.throwIfAborted();
-    if (!constrained) return run();
-    const release = await admission.acquire(model, signal);
-    try {
-      signal?.throwIfAborted();
-      return await run();
-    } finally {
-      release();
-    }
-  };
+  const acquireSendPermit = constrained
+    ? (model: string, signal?: AbortSignal, workClass?: ModelWorkClass) =>
+        admission.acquire(model, signal, workClass)
+    : undefined;
   return {
     defaultModel: options.gateway?.config?.model,
     admission,
     async complete(request) {
       const gateway = options.gateway;
       if (!gateway) throw new Error("Text model gateway is not configured");
-      // 准备钩子路径（T10）：原始 ModelMessage[] 走 preparedFrom，钩子输出最终 messages 后
-      // 在网关内完成 wire 转换（used 冻结后）；无钩子路径保持先转换的旧行为逐字不变。
-      // messages 必填：hook 路径显式传 `[]` 占位（仅 port 受控路径合法；
-      // 占位被钩子输出替换，永不落 wire），preparedFrom 携带真实原始 readonly 数组。
+      const permitHook =
+        acquireSendPermit === undefined
+          ? {}
+          : {
+              acquireSendPermit: (
+                model: string,
+                signal?: AbortSignal,
+                workClass?: ModelWorkClass,
+              ) => acquireSendPermit(model, signal, workClass ?? request.workClass),
+            };
       if (request.prepareWithResolved !== undefined) {
-        return guarded(
-          () =>
-            gateway.complete({
-              ...request,
-              messages: [],
-              preparedFrom: {
-                messages: request.messages,
-                ...(request.runId === undefined ? {} : { runId: request.runId }),
-                ...(request.owner === undefined ? {} : { owner: request.owner }),
-                ...(request.imageResolver === undefined
-                  ? {}
-                  : { imageResolver: request.imageResolver }),
-              },
-            }),
-          request.model,
-          request.signal,
-        );
+        return gateway.complete({
+          ...request,
+          ...permitHook,
+          messages: [],
+          preparedFrom: {
+            messages: request.messages,
+            ...(request.runId === undefined ? {} : { runId: request.runId }),
+            ...(request.owner === undefined ? {} : { owner: request.owner }),
+            ...(request.imageResolver === undefined
+              ? {}
+              : { imageResolver: request.imageResolver }),
+          },
+        });
       }
       const messages = await gatewayMessagesAsync(request.messages, request);
-      return guarded(
-        () => gateway.complete({ ...request, messages }),
-        request.model,
-        request.signal,
-      );
+      return gateway.complete({ ...request, ...permitHook, messages });
     },
     async *streamText(request) {
       if (!options.gateway?.streamChat)
         throw new Error("Streaming text model gateway is not configured");
-      // 流式调用整段占名额：否则"并发 1"会在第一条还没读完时放进第二条。
-      const release = constrained ? await admission.acquire(request.model, request.signal) : null;
-      try {
-        request.signal?.throwIfAborted();
-        // 准备钩子路径（T10）：同 complete——原始消息走 preparedFrom，转换在钩子后按最终值完成。
-        // messages 槽传 `[]` 占位（仅 port 受控路径合法），成对契约同 complete。
-        if (request.prepareWithResolved !== undefined) {
-          yield* options.gateway.streamChat({
-            ...request,
-            messages: [],
-            preparedFrom: {
-              messages: request.messages,
-              ...(request.runId === undefined ? {} : { runId: request.runId }),
-              ...(request.owner === undefined ? {} : { owner: request.owner }),
-              ...(request.imageResolver === undefined
-                ? {}
-                : { imageResolver: request.imageResolver }),
-            },
-          });
-          return;
-        }
-        const messages = await gatewayMessagesAsync(request.messages, request);
+      request.signal?.throwIfAborted();
+      const permitHook =
+        acquireSendPermit === undefined
+          ? {}
+          : {
+              acquireSendPermit: (
+                model: string,
+                signal?: AbortSignal,
+                workClass?: ModelWorkClass,
+              ) => acquireSendPermit(model, signal, workClass ?? request.workClass),
+            };
+      if (request.prepareWithResolved !== undefined) {
         yield* options.gateway.streamChat({
           ...request,
-          messages,
+          ...permitHook,
+          messages: [],
+          preparedFrom: {
+            messages: request.messages,
+            ...(request.runId === undefined ? {} : { runId: request.runId }),
+            ...(request.owner === undefined ? {} : { owner: request.owner }),
+            ...(request.imageResolver === undefined
+              ? {}
+              : { imageResolver: request.imageResolver }),
+          },
         });
-      } finally {
-        release?.();
+        return;
       }
+      const messages = await gatewayMessagesAsync(request.messages, request);
+      yield* options.gateway.streamChat({ ...request, ...permitHook, messages });
     },
     async completeMultimodal(request) {
       const vision = options.vision;
       if (!vision) throw new Error("Vision model gateway is not configured");
-      return guarded(() => vision.annotate(request), request.model, request.signal);
+      if (acquireSendPermit === undefined) return vision.annotate(request);
+      return vision.annotate({
+        ...request,
+        acquireSendPermit: (model: string, signal?: AbortSignal) =>
+          acquireSendPermit(model, signal, request.workClass ?? "ordinary"),
+      });
     },
   };
 }

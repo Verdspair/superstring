@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { UuidSchema } from "../../shared/contracts/common";
-import { QQ_ATTENTION_MEMBER_LIMIT } from "../../shared/contracts/qq";
+import {
+  QQ_ATTENTION_MEMBER_LIMIT,
+  QqBindingInputAntiSpamSchema,
+  QqBindingTaskLimitsSchema,
+} from "../../shared/contracts/qq";
 import { isBothTrueInteractionPair } from "../../shared/contracts/qq-group-config";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import { normalizeOneBotAccountId, type QqObservation } from "./onebot-protocol";
@@ -68,8 +72,21 @@ const BindingAttention = z
     attention.mode === "off" ? attention.members.length === 0 : attention.members.length > 0,
   );
 
+/**
+ * 0059 的两组本会话覆盖：并行任务上限与输入防抖。成员 null＝跟随方案，非 null＝本会话覆盖，
+ * 与 triggers 覆盖同一三态语义；整组来或整组不动。
+ */
+const BindingTaskLimits = QqBindingTaskLimitsSchema;
+const BindingInputAntiSpam = QqBindingInputAntiSpamSchema;
+
 /** A fresh conversation has no attention list at all. */
 const NO_ATTENTION: QqBinding["attention"] = Object.freeze({ mode: "off", members: [] });
+/** A fresh conversation follows its scheme for both caps and the anti-spam switch (0059). */
+const NO_TASK_LIMIT_OVERRIDES: QqBinding["taskLimits"] = Object.freeze({
+  mention_task_limit: null,
+  ordinary_task_limit: null,
+});
+const NO_ANTI_SPAM_OVERRIDE: QqBinding["inputAntiSpam"] = Object.freeze({ enabled: null });
 
 function sameAttention(left: QqBinding["attention"], right: QqBinding["attention"]): boolean {
   return (
@@ -77,6 +94,20 @@ function sameAttention(left: QqBinding["attention"], right: QqBinding["attention
     left.members.length === right.members.length &&
     left.members.every((member, index) => member === right.members[index])
   );
+}
+
+/** Field-by-field like the triggers: a member missing here makes a save that changed only it a silent no-op. */
+function sameTaskLimits(left: QqBinding["taskLimits"], right: QqBinding["taskLimits"]): boolean {
+  return (
+    left.mention_task_limit === right.mention_task_limit &&
+    left.ordinary_task_limit === right.ordinary_task_limit
+  );
+}
+function sameInputAntiSpam(
+  left: QqBinding["inputAntiSpam"],
+  right: QqBinding["inputAntiSpam"],
+): boolean {
+  return left.enabled === right.enabled;
 }
 
 const bindingFields = {
@@ -99,6 +130,10 @@ const bindingFields = {
   triggers: BindingTriggers,
   /** 「重要的人」: who this conversation listens to, and how strictly (0031). */
   attention: BindingAttention,
+  /** 0059: per-conversation task-limit overrides; a null member follows the scheme. */
+  taskLimits: BindingTaskLimits,
+  /** 0059: per-conversation input anti-spam override; null follows the scheme. */
+  inputAntiSpam: BindingInputAntiSpam,
 };
 const CreateSchema = z.strictObject({
   ...bindingFields,
@@ -106,6 +141,8 @@ const CreateSchema = z.strictObject({
   memoryBatchSize: bindingFields.memoryBatchSize.default(null),
   triggers: BindingTriggers.optional(),
   attention: BindingAttention.optional(),
+  taskLimits: BindingTaskLimits.optional(),
+  inputAntiSpam: BindingInputAntiSpam.optional(),
 });
 
 /** A fresh conversation follows its scheme for all four modules. */
@@ -139,6 +176,9 @@ const PatchSchema = z.strictObject({
   triggers: BindingTriggers.optional(),
   /** The whole list travels too: absent leaves mode and members alone; `off` clears both. */
   attention: BindingAttention.optional(),
+  /** Whole groups again (0059): absent leaves both alone; a member set to null restores inherit. */
+  taskLimits: BindingTaskLimits.optional(),
+  inputAntiSpam: BindingInputAntiSpam.optional(),
 });
 
 const ScopeSchema = z.discriminatedUnion("kind", [
@@ -328,6 +368,8 @@ export function createQqBinding(
       ...value,
       triggers: value.triggers ?? NO_TRIGGER_OVERRIDES,
       attention: value.attention ?? NO_ATTENTION,
+      taskLimits: value.taskLimits ?? NO_TASK_LIMIT_OVERRIDES,
+      inputAntiSpam: value.inputAntiSpam ?? NO_ANTI_SPAM_OVERRIDE,
       ownerIdentityRevision: value.shareWebMemory && identity ? identity.revision : null,
       revision: 1,
       authorityRevision: 1,
@@ -372,6 +414,10 @@ export function updateQqBinding(
     patch.memoryBatchSize === undefined ? binding.memoryBatchSize : patch.memoryBatchSize;
   const triggers = patch.triggers === undefined ? binding.triggers : patch.triggers;
   const attention = patch.attention === undefined ? binding.attention : patch.attention;
+  // 0059 的两组同规矩：整组来或整组不动；成员 null 是有意义的值（恢复跟随），不塌缩成未提供。
+  const taskLimits = patch.taskLimits === undefined ? binding.taskLimits : patch.taskLimits;
+  const inputAntiSpam =
+    patch.inputAntiSpam === undefined ? binding.inputAntiSpam : patch.inputAntiSpam;
   // The batch size is an ordinary modification, not an authority change: it does not
   // move which assistant owns the memory or who may share it, so changing it must not
   // invalidate a running organisation the way an authority change does.
@@ -381,7 +427,9 @@ export function updateQqBinding(
     paused !== binding.paused ||
     memoryBatchSize !== binding.memoryBatchSize ||
     !sameTriggers(triggers, binding.triggers) ||
-    !sameAttention(attention, binding.attention);
+    !sameAttention(attention, binding.attention) ||
+    !sameTaskLimits(taskLimits, binding.taskLimits) ||
+    !sameInputAntiSpam(inputAntiSpam, binding.inputAntiSpam);
   return {
     kind: "saved",
     binding: Object.freeze({
@@ -392,6 +440,8 @@ export function updateQqBinding(
       memoryBatchSize,
       triggers,
       attention,
+      taskLimits,
+      inputAntiSpam,
       shareWebMemory: shared,
       ownerIdentityRevision: ownerRevision,
       revision: changed ? nextRevision(binding.revision) : binding.revision,

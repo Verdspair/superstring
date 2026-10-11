@@ -6,14 +6,25 @@
 // answer, or a group that switched a module off would still end up speaking.
 
 import { describe, expect, it } from "bun:test";
+import { eq } from "drizzle-orm";
 import { createApp } from "../../src/server/app";
-import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { readQqBinding } from "../../src/server/db/qq-binding-repository";
+import {
+  createQqScheme,
+  readQqScheme,
+  schemeInputAntiSpam,
+  schemeTaskLimits,
+} from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { nextQqImmediateReplyTask } from "../../src/server/services/qq-dispatch";
 import { prepareQqJudgement } from "../../src/server/services/qq-judgement-preparation";
 import type { QqBindingResponse } from "../../src/shared/contracts/qq";
+import {
+  qqEffectiveInputAntiSpamEnabled,
+  resolveQqEffectiveTaskLimits,
+} from "../../src/shared/contracts/qq-task";
 import { cloneBusinessDb } from "../harness/business-db";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
@@ -210,6 +221,97 @@ describe("the switches resolve per conversation, not per scheme", () => {
         })
       ).json()) as QqBindingResponse;
       expect(noop.revision).toBe(patched.revision);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+// ---- 0059：并行任务上限与输入防抖的本会话覆盖 ----
+//
+// 覆盖列与 triggers 覆盖列同一三态语义：null＝跟随方案，非 null＝本会话覆盖。
+// 生效值只从「方案行 + 绑定行」经 qq-task.ts 的纯解析器合成，无第二份存储。
+
+describe("0059 task-limit and anti-spam overrides resolve per conversation", () => {
+  it("a fresh binding inherits the scheme caps; an override wins only for the member it sets", () => {
+    const { h, schemeId } = setup();
+    try {
+      const scheme = readQqScheme(h.orm, schemeId);
+      if (scheme === null) throw Error("expected the fixture's scheme");
+      // 新建方案：上限 4/1（与 qq-task.ts 同源）、防抖显式开。
+      const schemeLimits = schemeTaskLimits(scheme);
+      expect(schemeLimits).toEqual({ mention_task_limit: 4, ordinary_task_limit: 1 });
+      expect(schemeInputAntiSpam(scheme)).toEqual({ enabled: true });
+
+      const fresh = readQqBinding(h.orm, bindingId);
+      if (fresh === null) throw Error("expected the fixture's binding");
+      expect(fresh.taskLimits).toEqual({ mention_task_limit: null, ordinary_task_limit: null });
+      expect(fresh.inputAntiSpam).toEqual({ enabled: null });
+      expect(resolveQqEffectiveTaskLimits(schemeLimits, fresh.taskLimits)).toEqual({
+        mentionTaskLimit: 4,
+        ordinaryTaskLimit: 1,
+      });
+      expect(
+        qqEffectiveInputAntiSpamEnabled(schemeInputAntiSpam(scheme), fresh.inputAntiSpam),
+      ).toBe(true);
+
+      // 只动 mention 与防抖：ordinary 仍跟随方案；防抖被本会话关掉。
+      h.orm
+        .update(schema.qqBindings)
+        .set({ mentionTaskLimit: 6, inputAntiSpamEnabled: 0 })
+        .where(eq(schema.qqBindings.id, bindingId))
+        .run();
+      const overridden = readQqBinding(h.orm, bindingId);
+      if (overridden === null) throw Error("expected the fixture's binding");
+      expect(resolveQqEffectiveTaskLimits(schemeLimits, overridden.taskLimits)).toEqual({
+        mentionTaskLimit: 6,
+        ordinaryTaskLimit: 1,
+      });
+      expect(
+        qqEffectiveInputAntiSpamEnabled(schemeInputAntiSpam(scheme), overridden.inputAntiSpam),
+      ).toBe(false);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("a private binding rides the same columns and inherits the same way", () => {
+    const { h, schemeId } = setup();
+    try {
+      const privateId = "22222222-2222-4222-8222-222222222222";
+      h.orm
+        .insert(schema.qqBindings)
+        .values({
+          id: privateId,
+          accountId: "10001",
+          conversationKind: "private",
+          peerId: "40004",
+          agentId,
+          schemeId,
+          paused: 0,
+          shareWebMemory: 0,
+          memoryBatchSize: null,
+          ownerIdentityRevision: null,
+          mentionTaskLimit: 2,
+          ordinaryTaskLimit: null,
+          inputAntiSpamEnabled: 1,
+          revision: 1,
+          authorityRevision: 1,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        })
+        .run();
+      const scheme = readQqScheme(h.orm, schemeId);
+      if (scheme === null) throw Error("expected the fixture's scheme");
+      const bound = readQqBinding(h.orm, privateId);
+      if (bound === null) throw Error("expected the private binding");
+      expect(resolveQqEffectiveTaskLimits(schemeTaskLimits(scheme), bound.taskLimits)).toEqual({
+        mentionTaskLimit: 2,
+        ordinaryTaskLimit: 1,
+      });
+      expect(
+        qqEffectiveInputAntiSpamEnabled(schemeInputAntiSpam(scheme), bound.inputAntiSpam),
+      ).toBe(true);
     } finally {
       h.close();
     }

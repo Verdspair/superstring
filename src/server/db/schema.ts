@@ -18,6 +18,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  type AnySQLiteColumn,
   blob,
   check,
   index,
@@ -699,6 +700,9 @@ export const qqBindings = sqliteTable(
     authorityRevision: integer("authority_revision").notNull().default(1),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
+    mentionTaskLimit: integer("mention_task_limit"),
+    ordinaryTaskLimit: integer("ordinary_task_limit"),
+    inputAntiSpamEnabled: integer("input_anti_spam_enabled"),
   },
   (t) => [
     check("qq_binding_kind", sql`${t.conversationKind} IN ('group', 'private')`),
@@ -709,6 +713,18 @@ export const qqBindings = sqliteTable(
       sql`${t.ownerIdentityRevision} IS NULL OR ${t.ownerIdentityRevision} >= 1`,
     ),
     check("qq_binding_revision", sql`${t.revision} >= 1`),
+    check(
+      "qq_binding_mention_task_limit",
+      sql`${t.mentionTaskLimit} IS NULL OR (${t.mentionTaskLimit} >= 1 AND ${t.mentionTaskLimit} <= 64)`,
+    ),
+    check(
+      "qq_binding_ordinary_task_limit",
+      sql`${t.ordinaryTaskLimit} IS NULL OR (${t.ordinaryTaskLimit} >= 1 AND ${t.ordinaryTaskLimit} <= 64)`,
+    ),
+    check(
+      "qq_binding_input_anti_spam_enabled",
+      sql`${t.inputAntiSpamEnabled} IS NULL OR ${t.inputAntiSpamEnabled} IN (0, 1)`,
+    ),
     check("qq_binding_batch_size", sql`${t.memoryBatchSize} IS NULL OR ${t.memoryBatchSize} >= 1`),
     check("qq_binding_authority_revision", sql`${t.authorityRevision} >= 1`),
     check(
@@ -1314,6 +1330,9 @@ export const qqSchemes = sqliteTable(
     initiativeTimeWindowEnabled: integer("initiative_time_window_enabled").notNull().default(0),
     initiativeTimeTargetSeconds: integer("initiative_time_target_seconds").notNull().default(60),
     initiativeTimeJitterSeconds: integer("initiative_time_jitter_seconds").notNull().default(20),
+    mentionTaskLimit: integer("mention_task_limit").notNull().default(4),
+    ordinaryTaskLimit: integer("ordinary_task_limit").notNull().default(1),
+    inputAntiSpamEnabled: integer("input_anti_spam_enabled").notNull().default(0),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
@@ -1475,6 +1494,15 @@ export const qqSchemes = sqliteTable(
       "qq_scheme_media_input",
       sql`${t.mediaInput} IS NULL OR (json_valid(${t.mediaInput}) AND json_type(${t.mediaInput}) = 'object')`,
     ),
+    check(
+      "qq_scheme_mention_task_limit",
+      sql`${t.mentionTaskLimit} >= 1 AND ${t.mentionTaskLimit} <= 64`,
+    ),
+    check(
+      "qq_scheme_ordinary_task_limit",
+      sql`${t.ordinaryTaskLimit} >= 1 AND ${t.ordinaryTaskLimit} <= 64`,
+    ),
+    check("qq_scheme_input_anti_spam_enabled", sql`${t.inputAntiSpamEnabled} IN (0, 1)`),
     unique("uq_qq_scheme_name").on(t.name),
   ],
 );
@@ -1751,6 +1779,10 @@ export const wakeSignals = sqliteTable(
     errorCode: text("error_code"),
     createdAt: text("created_at").notNull(),
     completedAt: text("completed_at"),
+    transferredTaskId: text("transferred_task_id").references(
+      (): AnySQLiteColumn => qqConversationTasks.id,
+      { onDelete: "set null" },
+    ),
   },
   (t) => [
     // 0055：下界是非负序号，NULL 表示还没有冻结。
@@ -2367,6 +2399,8 @@ export const qqMediaReadTasks = sqliteTable(
     // updated_at，不伪造迁移时钟。
     lastAttemptAt: text("last_attempt_at"),
     note: text("note"),
+    // 0063：宿主 trusted 请求身份（§5.7，仅 detail）；普通/legacy 行恒 NULL，不回填。
+    requestId: text("request_id"),
     revision: integer("revision").notNull(),
     expiresAt: text("expires_at").notNull(),
     recordedAt: text("recorded_at").notNull(),
@@ -2376,6 +2410,10 @@ export const qqMediaReadTasks = sqliteTable(
     check(
       "qq_media_read_tasks_question_key",
       sql`(${t.purpose} = 'detail') = (${t.questionKey} IS NOT NULL)`,
+    ),
+    check(
+      "qq_media_read_tasks_request_id",
+      sql`${t.requestId} IS NULL OR (${t.purpose} = 'detail' AND length(trim(${t.requestId})) > 0)`,
     ),
     check(
       "qq_media_read_tasks_model_name",
@@ -2399,7 +2437,7 @@ export const qqMediaReadTasks = sqliteTable(
       .where(sql`question_key IS NULL`),
     uniqueIndex("uq_qq_media_read_task_detail")
       .on(t.mediaNoteId, t.questionKey)
-      .where(sql`question_key IS NOT NULL`),
+      .where(sql`question_key IS NOT NULL AND request_id IS NULL`),
     // 内容身份唯一槽：同 scope 同字节同问题的账本只许一行（并发下也防重）。NULL 不进索引。
     uniqueIndex("uq_qq_media_read_task_identity")
       .on(t.identityKey)
@@ -2407,7 +2445,86 @@ export const qqMediaReadTasks = sqliteTable(
   ],
 );
 
+export const qqConversationTasks = sqliteTable(
+  "qq_conversation_tasks",
+  {
+    id: text("id").primaryKey().notNull(),
+    taskKey: text("task_key").notNull(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    bindingEpoch: integer("binding_epoch").notNull(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    taskClass: text("task_class").notNull(),
+    cause: text("cause").notNull(),
+    sourceFromSeq: integer("source_from_seq").notNull(),
+    sourceThroughSeq: integer("source_through_seq").notNull(),
+    sourceExpiresAt: text("source_expires_at"),
+    originWakeId: text("origin_wake_id").references((): AnySQLiteColumn => wakeSignals.id, {
+      onDelete: "set null",
+    }),
+    originEventKey: text("origin_event_key").references(() => qqEvents.eventKey, {
+      onDelete: "set null",
+    }),
+    platformMessageId: text("platform_message_id"),
+    originRunId: text("origin_run_id").references(() => agentRuns.runId, { onDelete: "set null" }),
+    status: text("status").notNull(),
+    judgementDone: integer("judgement_done").notNull().default(0),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: text("lease_expires_at"),
+    cancellationRequested: integer("cancellation_requested").notNull().default(0),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    finishedAt: text("finished_at"),
+    errorCode: text("error_code"),
+    executionSnapshot: text("execution_snapshot"),
+    claimedAt: text("claimed_at"),
+    readyAt: text("ready_at"),
+  },
+  (t) => [
+    uniqueIndex("uq_qq_conversation_tasks_key").on(t.taskKey),
+    index("ix_qq_conversation_tasks_claim").on(t.status, t.createdAt, t.id),
+    index("ix_qq_conversation_tasks_conversation").on(t.conversationId, t.taskClass, t.status),
+    index("ix_qq_conversation_tasks_source_expiry").on(t.sourceExpiresAt),
+    check("qq_conversation_tasks_epoch", sql`${t.bindingEpoch}>0`),
+    check("qq_conversation_tasks_class", sql`${t.taskClass} IN ('mention','ordinary')`),
+    check(
+      "qq_conversation_tasks_cause",
+      sql`${t.cause} IN ('direct_reply','follow_up','chiming_in','idle_topic')`,
+    ),
+    check(
+      "qq_conversation_tasks_range",
+      sql`${t.sourceFromSeq}>=0 AND ${t.sourceThroughSeq}>=${t.sourceFromSeq}`,
+    ),
+    check(
+      "qq_conversation_tasks_status",
+      sql`${t.status} IN ('pending','running','completed','no_output','failed','cancelled','expired')`,
+    ),
+    check("qq_conversation_tasks_judgement", sql`${t.judgementDone} IN (0,1)`),
+    check("qq_conversation_tasks_cancel", sql`${t.cancellationRequested} IN (0,1)`),
+    check(
+      "qq_conversation_tasks_execution_snapshot",
+      sql`${t.executionSnapshot} IS NULL OR (json_valid(${t.executionSnapshot}) AND json_type(${t.executionSnapshot}) = 'object')`,
+    ),
+    check(
+      "qq_conversation_tasks_chime_phase",
+      sql`${t.cause}='chiming_in' OR ${t.judgementDone}=0`,
+    ),
+    check(
+      "qq_conversation_tasks_owner_shape",
+      sql`(${t.taskClass}='mention' AND ${t.cause}='direct_reply' AND ${t.originWakeId} IS NULL AND ${t.platformMessageId} IS NOT NULL) OR (${t.taskClass}='ordinary' AND ${t.originEventKey} IS NULL AND ${t.platformMessageId} IS NULL)`,
+    ),
+    check(
+      "qq_conversation_tasks_lease",
+      sql`(${t.status}='running')=(${t.leaseToken} IS NOT NULL AND ${t.leaseExpiresAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
 export const businessTables = {
+  qqConversationTasks,
   agentTasks,
   agentTaskCalls,
   qqConversationSummaries,

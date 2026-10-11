@@ -1,12 +1,12 @@
 // One reading turn for a message that carried media (ADR0018 P4/P5, §7.1).
 //
-// The reader (`readQqMediaOnce`) reads ONE segment and owns every guard around it. Something has to
+// The segment reader (`./qq-media-reader`) reads ONE segment and owns every guard around it. Something has to
 // pick which segment, and that is all this module does: it walks the message's media rows in order
 // and hands the first one that has no description yet to the reader.
 //
 // Three §7.1 rules are visible here rather than buried in a loop:
 //
-//   * ONE segment per turn. A failure means "stay silent and wait for a related supplement", not
+//   * ONE segment per turn. A failure means the failure result is recorded and reused, not
 //     "try the next one" — so the cycle never burns through a message's media in one call.
 //   * Described segments are skipped without an attempt: asking again would spend a budget the
 //     plan gave to retries, not to repetition.
@@ -19,7 +19,7 @@ import type { Orm } from "../db/repositories";
 import {
   type QqMediaReadAdapter,
   type QqMediaReadResult,
-  readQqMediaOnce,
+  readQqMediaOnce as readSegmentOnce,
 } from "./qq-media-reader";
 
 export type QqMediaCycleResult =
@@ -35,8 +35,6 @@ export type QqMediaCycleResult =
 
 const Input = z.strictObject({
   eventKey: z.string().min(1),
-  addressedToAssistant: z.boolean(),
-  relatedSupplementArrived: z.boolean(),
   modelConfig: z.strictObject({
     visionModelName: z.string().nullable(),
     transcriptionModelName: z.string().nullable(),
@@ -47,9 +45,8 @@ const Input = z.strictObject({
  * Read at most one of a message's media segments.
  *
  * The `modelConfig` arrives from the caller (the shared settings row's two purposes at the time of
- * the turn), and `addressedToAssistant`/`relatedSupplementArrived` describe why this turn is
- * happening at all: §7.1 lets a read happen when the assistant was addressed, or once more when a
- * related supplement arrived after a failure.
+ * the turn). §7.1 lets a read happen when the assistant was addressed; whether that holds is the
+ * caller's decision, and this module only picks the segment.
  */
 export async function readQqAddressedMediaOnce(
   orm: Orm,
@@ -70,11 +67,9 @@ export async function readQqAddressedMediaOnce(
       kind: "idle",
       reason: segments.some(canRead) ? "all_described" : "unsupported_kind",
     };
-  const result = await readQqMediaOnce(orm, adapter, {
+  const result = await readSegmentOnce(orm, adapter, {
     eventKey: target.eventKey,
     segmentIndex: target.segmentIndex,
-    addressedToAssistant: value.addressedToAssistant,
-    relatedSupplementArrived: value.relatedSupplementArrived,
     modelConfig: value.modelConfig,
   });
   return Object.freeze({ kind: "read", segmentIndex: target.segmentIndex, result });

@@ -3,10 +3,10 @@
 // Coverage:
 //  - a task's stable identity is scope + media identity + purpose + question_key;
 //    baseline is unique per media row, detail is unique per question key
-//  - two attempts per task, claimed by CAS; a different model or policy does
-//    NOT reset the consumed attempts (换模型不重置)
-//  - a failed first attempt blocks a second until a related supplement
-//    arrives; the second attempt exhausts the task
+//  - one bounded attempt per task (§5.7 maxAttempts=1), claimed by CAS; a
+//    different model or policy does NOT reset the consumed attempt (换模型不重置)
+//  - a failed first attempt exhausts the identity budget: no automatic second
+//    attempt, no supplement time-unlock (retired)
 //  - a detail question the model merely paraphrases lands on the same key —
 //    punctuation/wording changes and restarts cannot fork new tasks
 //  - a succeeded task blocks a duplicate baseline read; a separate detail
@@ -92,8 +92,7 @@ function taskFixture() {
       capability_revisions, revision, created_at, updated_at)
      VALUES ('gac-1', '${BINDING_ID}', '${AGENT}', '{}', '[]', '{}', 1, '${NOW}', '${NOW}')`,
   );
-  // The supplement lateness check compares real event times against the task's
-  // creation clock, so fixtures use plausible epoch seconds, not constants.
+  // Fixtures use plausible epoch seconds for the event clock, not constants.
   const baseSeconds = Math.floor(Date.now() / 1000) - 60;
   const seedNote = (
     id: string,
@@ -289,7 +288,7 @@ describe("typed QQ media read tasks", () => {
     }
   });
 
-  it("spends attempts by CAS and never resets them on a model or policy change", async () => {
+  it("spends the one bounded attempt by CAS and never resets it on a model or policy change", async () => {
     const { h } = taskFixture();
     try {
       const guard = bindingCheckpoint(INITIAL_SOURCE_STATE);
@@ -307,7 +306,6 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       expect(first).toMatchObject({ claimed: true, attempt: 1 });
@@ -322,9 +320,7 @@ describe("typed QQ media read tasks", () => {
           assertCurrent: guard,
         }),
       ).rejects.toBeInstanceOf(MediaReadTaskRejectedError);
-      // A first failure waits for a related supplement — not for a new model.
-      // The consumed attempt must first resolve (here: failed), and the host
-      // proves the supplement genuinely postdates the claim.
+      // 一次有界预算（§5.7）：失败即耗尽——换模型/换策略既不重置也不解锁第二轮。
       failMediaReadTask(h.orm, {
         mediaNoteId: "mn-1",
         purpose: "baseline",
@@ -344,20 +340,8 @@ describe("typed QQ media read tasks", () => {
             assertCurrent: guard,
           }),
         ),
-      ).toBe("awaiting_supplement");
-      await expect(
-        attemptMediaReadTask(h.orm, {
-          mediaNoteId: "mn-1",
-          purpose: "baseline",
-          modelName: "vision-b",
-          policy: "p9",
-          contentSha256: SHA,
-          relatedSupplementArrived: true,
-          proveSupplementLaterThan: () => true,
-          assertCurrent: guard,
-        }),
-      ).resolves.toMatchObject({ claimed: true, attempt: 2 });
-      // Two attempts are the whole budget — for every model and policy.
+      ).toBe("attempts_exhausted");
+      // The whole budget is one attempt — for every model and policy.
       expect(
         await rejectsReason(
           attemptMediaReadTask(h.orm, {
@@ -366,11 +350,14 @@ describe("typed QQ media read tasks", () => {
             modelName: "vision-c",
             policy: "p10",
             contentSha256: SHA,
-            relatedSupplementArrived: true,
             assertCurrent: guard,
           }),
         ),
       ).toBe("attempts_exhausted");
+      expect(findMediaReadTask(h.orm, { mediaNoteId: "mn-1", purpose: "baseline" })).toMatchObject({
+        attempts: 1,
+        status: "failed",
+      });
     } finally {
       h.close();
     }
@@ -386,12 +373,11 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       // The row is now `running` at attempt 1: a second claim on the SAME
-      // in-flight task must fail closed even if a supplement is claimed — the
-      // first attempt has not resolved yet, so no second budget exists to take.
+      // in-flight task must fail closed — the first attempt has not resolved
+      // yet, and the one bounded budget is already consumed (§5.7).
       expect(
         await rejectsReason(
           attemptMediaReadTask(h.orm, {
@@ -400,26 +386,10 @@ describe("typed QQ media read tasks", () => {
             modelName: "vision-b",
             policy: "p2",
             contentSha256: SHA,
-            relatedSupplementArrived: true,
             assertCurrent: guard,
           }),
         ),
-      ).toBe("awaiting_supplement");
-      // The input boolean alone is not host evidence either way; the claimant
-      // must prove the supplement through the callback the store exposes.
-      expect(
-        await rejectsReason(
-          attemptMediaReadTask(h.orm, {
-            mediaNoteId: "mn-1",
-            purpose: "baseline",
-            modelName: "vision-b",
-            policy: "p2",
-            contentSha256: SHA,
-            relatedSupplementArrived: false,
-            assertCurrent: guard,
-          }),
-        ),
-      ).toBe("awaiting_supplement");
+      ).toBe("attempts_exhausted");
       // A failure callback with a wrong token cannot resolve the attempt.
       expect(() =>
         failMediaReadTask(h.orm, {
@@ -434,9 +404,10 @@ describe("typed QQ media read tasks", () => {
       expect(findMediaReadTask(h.orm, { mediaNoteId: "mn-1", purpose: "baseline" })).toMatchObject({
         status: "running",
       });
-      // The real claim resolves the attempt as failed; a genuinely later
-      // related supplement (callback confirms it postdates the first attempt)
-      // then opens attempt 2 — the only path to a second claim.
+      // The real claim resolves the attempt as failed — that is the whole
+      // budget: a later claim on the same identity stays exhausted, whatever
+      // a caller claims about a "related supplement" (the time-unlock flow is
+      // retired, §5.7).
       failMediaReadTask(h.orm, {
         mediaNoteId: "mn-1",
         purpose: "baseline",
@@ -453,26 +424,10 @@ describe("typed QQ media read tasks", () => {
             modelName: "vision-b",
             policy: "p2",
             contentSha256: SHA,
-            relatedSupplementArrived: true,
-            // The supplement message predates the first attempt's claim: not a
-            // NEW related supplement — host evidence callback rejects it.
-            proveSupplementLaterThan: () => false,
             assertCurrent: guard,
           }),
         ),
-      ).toBe("awaiting_supplement");
-      await expect(
-        attemptMediaReadTask(h.orm, {
-          mediaNoteId: "mn-1",
-          purpose: "baseline",
-          modelName: "vision-b",
-          policy: "p2",
-          contentSha256: SHA,
-          relatedSupplementArrived: true,
-          proveSupplementLaterThan: () => true,
-          assertCurrent: guard,
-        }),
-      ).resolves.toMatchObject({ claimed: true, attempt: 2 });
+      ).toBe("attempts_exhausted");
     } finally {
       h.close();
     }
@@ -488,7 +443,6 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       // A result carrying no expected attempt is a best-effort publish: refuse.
@@ -563,7 +517,6 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       // A failure naming the wrong attempt number must not touch the row.
@@ -617,7 +570,6 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       recordMediaReadTaskResult(h.orm, {
@@ -777,7 +729,6 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       // The source state moved while the model was reading: agent rebound,
@@ -875,7 +826,6 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       recordMediaReadTaskResult(h.orm, {
@@ -955,7 +905,6 @@ describe("typed QQ media read tasks", () => {
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        relatedSupplementArrived: false,
         assertCurrent: guard,
       });
       recordMediaReadTaskResult(h.orm, {
@@ -1088,54 +1037,40 @@ describe("typed QQ media read tasks", () => {
     }
   });
 
-  it("a claim whose task revision moves between the task read and the CAS is refused at the same-tx boundary", async () => {
+  it("a refused second claim writes nothing: revision, attempts and clock all stay put", async () => {
     const { h } = taskFixture();
     try {
-      // Interleave a revision bump through the documented post-read callback
-      // (proveSupplementLaterThan) after the claim reads the row but before its
-      // CAS: the revision guard must refuse; deleting it would let this claim
-      // really take attempt 2.
-      const claimPromise = attemptMediaReadTask(h.orm, {
+      const guard = bindingCheckpoint(INITIAL_SOURCE_STATE);
+      const first = await attemptMediaReadTask(h.orm, {
         mediaNoteId: "mn-1",
         purpose: "baseline",
         modelName: "vision-a",
         policy: "p1",
         contentSha256: SHA,
-        assertCurrent: bindingCheckpoint(INITIAL_SOURCE_STATE),
-      }).then((first) => {
-        // Consume attempt 1, fail it: attempt 2 requires the callback, the only
-        // real-time hook between the claim's read and its CAS.
-        failMediaReadTask(h.orm, {
-          mediaNoteId: "mn-1",
-          purpose: "baseline",
-          expectedAttempt: first.attempt,
-          revisionAtClaim: first.task.revision,
-          claimToken: first.claimToken,
-          assertCurrent: bindingCheckpoint(INITIAL_SOURCE_STATE),
-        });
-        return attemptMediaReadTask(h.orm, {
-          mediaNoteId: "mn-1",
-          purpose: "baseline",
-          modelName: "vision-a",
-          policy: "p1",
-          contentSha256: SHA,
-          proveSupplementLaterThan: () => {
-            h.orm
-              .update(qqMediaReadTasks)
-              .set({ revision: sql`${qqMediaReadTasks.revision} + 1` })
-              .where(eq(qqMediaReadTasks.id, first.task.id))
-              .run();
-            return true;
-          },
-          assertCurrent: bindingCheckpoint(INITIAL_SOURCE_STATE),
-        });
+        assertCurrent: guard,
       });
-      await expect(claimPromise).rejects.toMatchObject({ reason: "attempts_exhausted" });
-      // Attempt 2 was NOT taken; the refusal also rolls back the interleaved
-      // bump, so the row keeps the revision (3) the failure wrote.
-      const task = findMediaReadTask(h.orm, { mediaNoteId: "mn-1", purpose: "baseline" });
-      expect(task).toMatchObject({ status: "failed", attempts: 1 });
-      expect(task?.revision).toBe(3);
+      const before = findMediaReadTask(h.orm, { mediaNoteId: "mn-1", purpose: "baseline" });
+      // The CAS refusal for an in-flight second claim must leave the row exactly
+      // as the first claim wrote it — no revision move, no attempt, no clock.
+      expect(
+        await rejectsReason(
+          attemptMediaReadTask(h.orm, {
+            mediaNoteId: "mn-1",
+            purpose: "baseline",
+            modelName: "vision-a",
+            policy: "p1",
+            contentSha256: SHA,
+            assertCurrent: guard,
+          }),
+        ),
+      ).toBe("attempts_exhausted");
+      expect(findMediaReadTask(h.orm, { mediaNoteId: "mn-1", purpose: "baseline" })).toMatchObject({
+        status: before?.status ?? "",
+        attempts: before?.attempts ?? -1,
+        revision: before?.revision ?? -1,
+        lastAttemptAt: before?.lastAttemptAt ?? "",
+      });
+      expect(first.attempt).toBe(1);
     } finally {
       h.close();
     }

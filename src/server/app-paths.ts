@@ -343,6 +343,42 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0057_history_output_identity_indexes.sql",
     ),
+    qqConversationTasksMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0058_qq_conversation_tasks.sql",
+    ),
+    qqTaskLimitsAntispamMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0059_qq_task_limits_antispam.sql",
+    ),
+    qqTaskExecutionSnapshotMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0060_qq_task_execution_snapshot.sql",
+    ),
+    qqTaskReadyAtMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0061_qq_task_ready_at.sql",
+    ),
+    qqMediaSpecUnificationMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0062_qq_media_spec_unification.sql",
+    ),
+    qqMediaRequestIdentityMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0063_qq_media_request_identity.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

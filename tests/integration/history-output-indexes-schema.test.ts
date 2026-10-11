@@ -22,8 +22,12 @@ const versionsDir = path.join(import.meta.dir, "../../migrations/versions");
 const migrationSql = BUSINESS_MIGRATION_FILES.map((name) =>
   readFileSync(path.join(versionsDir, name), "utf8"),
 );
-const V57_SQL = migrationSql[migrationSql.length - 1];
-const V56_CHAIN = migrationSql.slice(0, -1);
+// 0057 is pinned by its own file name in the frozen inventory: approved later steps
+// (0058-0060) append after it, so "last migration" would mislabel 0060 as the 57 step.
+const V57_NAME = "0057_history_output_identity_indexes.sql";
+const V57_INDEX = BUSINESS_MIGRATION_FILES.indexOf(V57_NAME);
+const V57_SQL = readFileSync(path.join(versionsDir, V57_NAME), "utf8");
+const V56_CHAIN = migrationSql.slice(0, V57_INDEX);
 
 const LEGACY_INDEX = "ix_outbound_legacy_send_conversation";
 const SPEECH_INDEX = "ix_conversation_send_speech_source";
@@ -63,6 +67,24 @@ const allRows = (db: Database) =>
     table,
     rows: db.query(`SELECT * FROM ${table}`).all(),
   }));
+const quoted = (name: string) => `"${name.replaceAll('"', '""')}"`;
+/** Rows read over each table's exact current column list (additive columns break SELECT *). */
+const pinnedRows = (db: Database) =>
+  ROW_TABLES.map((table) => {
+    const columns = (db.query(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+      (c) => c.name,
+    );
+    const sql = `SELECT ${columns.map(quoted).join(",")} FROM ${quoted(table)}`;
+    return {
+      table,
+      sql,
+      rows: db
+        .query(sql)
+        .all()
+        .map((row) => JSON.stringify(row))
+        .sort(),
+    };
+  });
 const touchedTableDdl = (db: Database) =>
   db
     .query(
@@ -118,7 +140,7 @@ function seedHistoryOutputRows(db: Database) {
 function seededV57Db(): Database {
   const db = new Database(":memory:");
   db.exec([...V56_CHAIN, V57_SQL].join("\n"));
-  db.exec(`PRAGMA user_version = ${BUSINESS_SCHEMA_VERSION};`);
+  db.exec("PRAGMA user_version = 57;");
   seedHistoryOutputRows(db);
   return db;
 }
@@ -126,6 +148,7 @@ function seededV57Db(): Database {
 describe("0057 history output identity indexes (index-only, 56 to 57)", () => {
   it("keeps the migration inventory and the gate version in step", () => {
     expect(BUSINESS_MIGRATION_FILES).toHaveLength(BUSINESS_SCHEMA_VERSION);
+    expect(V57_INDEX).toBe(56);
     expect(migrationSql).toHaveLength(BUSINESS_SCHEMA_VERSION);
     expect(statements(V57_SQL)).toEqual(EXPECTED_0057_STATEMENTS);
   });
@@ -175,7 +198,7 @@ describe("0057 history output identity indexes (index-only, 56 to 57)", () => {
     }
   });
 
-  it("upgrades a real historical-56 file database to 57 with every business row byte-identical", () => {
+  it("applies the historical 0057 step alone on a v56 file database: rows byte-identical, only the two partial indexes added", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "ss-0057-"));
     const file = path.join(dir, "business.sqlite");
     try {
@@ -188,19 +211,89 @@ describe("0057 history output identity indexes (index-only, 56 to 57)", () => {
       const touchedBefore = touchedTableDdl(old);
       old.close();
 
+      const stepped = new Database(file);
+      try {
+        stepped.exec("BEGIN");
+        stepped.exec(V57_SQL);
+        stepped.exec("PRAGMA user_version = 57;");
+        stepped.exec("COMMIT");
+        expect(stepped.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+        expect(allRows(stepped)).toEqual(rowsBefore);
+        // Additive: the only schema delta is the two pinned index rows; the historical
+        // byte-56 DDL of both touched tables survives verbatim.
+        const ddlAfter = ddl(stepped);
+        const added = ddlAfter.filter((obj) => !ddlBefore.some((b) => b.name === obj.name));
+        expect(added.map((obj) => obj.sql).sort()).toEqual([...EXPECTED_0057_STATEMENTS].sort());
+        expect(ddlAfter.filter((obj) => !added.includes(obj))).toEqual(ddlBefore);
+        expect(touchedTableDdl(stepped)).toEqual(touchedBefore);
+        for (const [table, name] of [
+          ["outbound_intents", LEGACY_INDEX],
+          ["conversation_events", SPEECH_INDEX],
+        ] as const) {
+          const entry = stepped
+            .query(`PRAGMA index_list(${table})`)
+            .all()
+            .map((row) => row as { name: string; unique: number; partial: number })
+            .find((row) => row.name === name);
+          expect(entry).toBeDefined();
+          expect(entry?.unique).toBe(0);
+          expect(entry?.partial).toBe(1);
+        }
+        expect(stepped.query("PRAGMA foreign_key_check").all()).toEqual([]);
+        expect(stepped.query("PRAGMA integrity_check").get()).toEqual({
+          integrity_check: "ok",
+        });
+      } finally {
+        stepped.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the current gate upgrades the same historical-56 file database to the current version and keeps every business row byte-identical", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ss-0057-gate-"));
+    const file = path.join(dir, "business.sqlite");
+    try {
+      const old = new Database(file);
+      old.exec(V56_CHAIN.join("\n"));
+      old.exec(`PRAGMA user_version = 56;`);
+      seedHistoryOutputRows(old);
+      const rowsBefore = pinnedRows(old);
+      const touchedBefore = touchedTableDdl(old);
+      old.close();
+
       const reopened = openBusinessDb({ path: file });
       try {
         expect(reopened.db.query("PRAGMA user_version").get()).toEqual({
           user_version: BUSINESS_SCHEMA_VERSION,
         });
-        expect(allRows(reopened.db)).toEqual(rowsBefore);
-        // Additive: the only schema delta is the two pinned index rows; the historical
-        // byte-56 DDL of both touched tables survives verbatim.
-        const ddlAfter = ddl(reopened.db);
-        const added = ddlAfter.filter((obj) => !ddlBefore.some((b) => b.name === obj.name));
-        expect(added.map((obj) => obj.sql).sort()).toEqual([...EXPECTED_0057_STATEMENTS].sort());
-        expect(ddlAfter.filter((obj) => !added.includes(obj))).toEqual(ddlBefore);
+        // Later approved steps append columns (e.g. 0058 on wake_signals), so the old
+        // rows are compared over the exact v56 column set, not SELECT *.
+        for (const before of rowsBefore)
+          expect({
+            table: before.table,
+            rows: reopened.db
+              .query(before.sql)
+              .all()
+              .map((row) => JSON.stringify(row))
+              .sort(),
+          }).toEqual({ table: before.table, rows: before.rows });
         expect(touchedTableDdl(reopened.db)).toEqual(touchedBefore);
+        // The two 0057 partial indexes must still be present and untouched in shape.
+        for (const [table, name] of [
+          ["outbound_intents", LEGACY_INDEX],
+          ["conversation_events", SPEECH_INDEX],
+        ] as const) {
+          const entry = reopened.db
+            .query(`PRAGMA index_list(${table})`)
+            .all()
+            .map((row) => row as { name: string; unique: number; partial: number })
+            .find((row) => row.name === name);
+          expect(entry).toBeDefined();
+          expect(entry?.unique).toBe(0);
+          expect(entry?.partial).toBe(1);
+        }
         expect(reopened.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
         expect(reopened.db.query("PRAGMA integrity_check").get()).toEqual({
           integrity_check: "ok",

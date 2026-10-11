@@ -282,8 +282,6 @@ async function seedFailedRead(
 ) {
   return readQqAddressedMediaOnce(orm, mediaCycleAdapter(vision), {
     eventKey,
-    addressedToAssistant: true,
-    relatedSupplementArrived: false,
     modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
   });
 }

@@ -469,3 +469,102 @@ describe("模式互斥：绑定合同的显式 triggers 写入", () => {
     expect(savedPatch.paused).toBe(true);
   });
 });
+
+// ---- 0059：并行任务上限与输入防抖的本会话覆盖 ----
+//
+// 两组与 triggers 覆盖同一三态语义：null＝跟随方案，非 null＝本会话覆盖；整组来或整组不动。
+// 修订口径与既有普通修改一致：真的变了才 +1 revision，authorityRevision 不动——飞行中任务的
+// 判据仍是 plain revision/authorityRevision 数值，不因新组扩成第二套权限修订。
+
+const ALL_INHERIT_TASK_LIMITS = { mention_task_limit: null, ordinary_task_limit: null };
+const ALL_INHERIT_ANTI_SPAM = { enabled: null };
+
+describe("0059 binding override groups: task limits and input anti-spam", () => {
+  it("a fresh group or private binding follows its scheme for both groups", () => {
+    for (const kind of ["group", "private"] as const) {
+      const value = binding({ kind });
+      expect(value.taskLimits).toEqual(ALL_INHERIT_TASK_LIMITS);
+      expect(value.inputAntiSpam).toEqual(ALL_INHERIT_ANTI_SPAM);
+    }
+  });
+
+  it("create travels explicit groups whole, group and private on the same binding path", () => {
+    for (const kind of ["group", "private"] as const) {
+      const value = binding({
+        kind,
+        taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
+        inputAntiSpam: { enabled: false },
+      });
+      expect(value.taskLimits).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
+      expect(value.inputAntiSpam).toEqual({ enabled: false });
+    }
+  });
+
+  it("an omitted patch keeps the stored groups; an explicit null restores inherit", () => {
+    const value = binding({
+      taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
+      inputAntiSpam: { enabled: false },
+    });
+    const kept = update(value, { paused: true });
+    expect(kept.taskLimits).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
+    expect(kept.inputAntiSpam).toEqual({ enabled: false });
+    const restored = update(kept, {
+      taskLimits: ALL_INHERIT_TASK_LIMITS,
+      inputAntiSpam: ALL_INHERIT_ANTI_SPAM,
+    });
+    expect(restored.taskLimits).toEqual(ALL_INHERIT_TASK_LIMITS);
+    expect(restored.inputAntiSpam).toEqual(ALL_INHERIT_ANTI_SPAM);
+  });
+
+  it("a real change bumps the revision once and never the authority revision", () => {
+    const value = binding();
+    const changed = update(value, {
+      taskLimits: { mention_task_limit: 6, ordinary_task_limit: 1 },
+    });
+    expect(changed.revision).toBe(value.revision + 1);
+    expect(changed.authorityRevision).toBe(value.authorityRevision);
+    // 同值重存是不变化：不改 revision，也不落库（repository 的 no-op 纪律在行写入侧复核）。
+    const same = update(changed, { taskLimits: { mention_task_limit: 6, ordinary_task_limit: 1 } });
+    expect(same.revision).toBe(changed.revision);
+  });
+
+  it("a stale expected revision is a conflict, not an overwrite", () => {
+    const value = binding();
+    // 存量 revision=1；调用方拿着别人推进到的 revision=2 保存 → 冲突，不是覆盖。
+    const moved = update(value, { paused: true });
+    const result = updateQqBinding(
+      value,
+      { taskLimits: { mention_task_limit: 6, ordinary_task_limit: 1 } },
+      moved.revision,
+    );
+    expect(result.kind).toBe("conflict");
+  });
+
+  it("rejects out-of-range caps and extra fields in both groups", () => {
+    for (const bad of [
+      { taskLimits: { mention_task_limit: 0, ordinary_task_limit: 1 } },
+      { taskLimits: { mention_task_limit: 65, ordinary_task_limit: 1 } },
+      { taskLimits: { mention_task_limit: 4, ordinary_task_limit: 1.5 } },
+      { taskLimits: { mention_task_limit: 4, extra: 1 } },
+      { inputAntiSpam: { enabled: "yes" } },
+      { inputAntiSpam: { enabled: null, extra: 1 } },
+    ]) {
+      expect(() => createQqBinding(input(bad))).toThrow();
+      expect(() => update(binding(), bad)).toThrow();
+    }
+  });
+
+  it("flight checks stay on plain revisions: new groups ride the existing snapshot, not a second framework", () => {
+    const value = binding();
+    const before = snapshot(value);
+    const changed = update(value, { inputAntiSpam: { enabled: false } });
+    // 普通修改推进 revision：start 阶段的旧快照按既有 binding_changed 拒绝。
+    expect(checkQqTask(before, changed, "start")).toEqual({
+      kind: "blocked",
+      reason: "binding_changed",
+    });
+    // organization 的 publish 阶段按既有规则不因 revision 变化失效，authority 数值未动。
+    const org = snapshot(value, "organization");
+    expect(checkQqTask(org, changed, "publish")).toEqual({ kind: "allowed" });
+  });
+});

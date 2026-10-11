@@ -333,6 +333,9 @@ describe("QQ binding routes", () => {
         triggers: { direct_reply: null, follow_up: null, chiming_in: null, idle_topic: null },
         // And it has no attention list until the user names somebody (0031).
         attention: { mode: "off", members: [] },
+        // 0059：新绑定对两组新设置不带任何覆盖，NULL＝跟随方案（上限与防抖都由方案决定）。
+        task_limits: { mention_task_limit: null, ordinary_task_limit: null },
+        input_anti_spam: { enabled: null },
         share_web_memory: false,
         memory_batch_size: null,
         // Nothing has been observed with text yet, so no batch is waiting (2026-09-25).

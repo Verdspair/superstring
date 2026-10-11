@@ -375,4 +375,39 @@ describe("execution settings layout and usability", () => {
       screen.getByText("当前单服务并发设为 1，同服务内部调用串行；不同服务在整机上限内仍可并行"),
     ).toBeTruthy();
   });
+
+  it("accepts model and provider concurrency up to 256 and refuses 257 or 0 without saving", async () => {
+    const save = vi.fn(async ({ policy }: Parameters<typeof api.savePermissions>[0]) => ({
+      revision: "pr-2",
+      policy,
+    }));
+    await renderSettings({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      savePermissions: save,
+    });
+    const model = screen.getByLabelText("模型调用上限（整机）") as HTMLInputElement;
+    const provider = screen.getByLabelText("每个服务并发上限") as HTMLInputElement;
+    // 256 在放宽后的上界内：两端输入都能随 CAS 保存。
+    fireEvent.change(model, { target: { value: "256" } });
+    fireEvent.change(provider, { target: { value: "256" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await act(async () => {});
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0].expectedRevision).toBe("pr-1");
+    expect(save.mock.calls[0][0].policy.execution?.loop).toMatchObject({
+      modelConcurrency: 256,
+      providerConcurrency: 256,
+    });
+    // 上界之外（257）拒绝且不发起保存，焦点提示留在该字段。
+    fireEvent.change(model, { target: { value: "257" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(model.getAttribute("aria-invalid")).toBe("true");
+    // 下界之外（0）同样拒绝。
+    fireEvent.change(model, { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
+    expect(save).toHaveBeenCalledTimes(1);
+  });
 });

@@ -1044,6 +1044,8 @@ describe("conversation arrival instant update", () => {
   it("ConversationRuntimeSummary triggers instant status read on matching event and ignores unrelated", async () => {
     const statusSpy = vi.fn().mockResolvedValue({
       pendingWakes: 0,
+      pendingTasks: 0,
+      queuedCount: 0,
       failedWakes: 0,
       nextReadyAt: null,
       activeRuns: 0,

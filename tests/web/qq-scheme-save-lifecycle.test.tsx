@@ -31,7 +31,6 @@ const createFixtureScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchem
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
     initiative_batch_target_count: 15,
@@ -73,13 +72,13 @@ const createFixtureScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchem
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false },
   ...overrides,
 });
 

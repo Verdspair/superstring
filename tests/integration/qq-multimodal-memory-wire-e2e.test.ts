@@ -187,7 +187,6 @@ async function readImageOnce(h: OneBotHarness, bytes: Uint8Array, note: string):
       purpose: "baseline",
       policy: "baseline/v1/e2e",
       modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-      addressedToAssistant: true,
       assertCurrent: () => {},
       owner: {
         kind: "conversation" as const,

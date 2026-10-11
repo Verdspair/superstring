@@ -1,5 +1,14 @@
-import { Copy, Crosshair, FileDiff, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  ChevronDown,
+  Copy,
+  Crosshair,
+  FileDiff,
+  Plus,
+  RefreshCw,
+  Save,
+  Trash2,
+} from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -12,6 +21,11 @@ import { Field } from "../../components/form-field";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "../../components/ui/collapsible";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -22,6 +36,7 @@ import {
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { NativeSelect } from "../../components/ui/native-select";
+import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import { ScrollArea } from "../../components/ui/scroll-area";
 import {
   Table,
@@ -75,6 +90,8 @@ const schemeBooleanFields: ReadonlySet<string> = new Set([
   "media_input.stages.decision",
   "media_input.stages.evaluation",
   "media_input.stages.generation",
+  // 0059 输入防刷屏
+  "input_anti_spam.enabled",
 ]);
 
 /** 文案键唯一来源在 features/qq/scheme-field-metadata（含触发器与 0052 两组）；这里只补方案名/描述两项页面专属键。 */
@@ -325,6 +342,100 @@ function StageSwitch({ phase }: { phase: "decision" | "evaluation" | "generation
         </span>
       </span>
     </Label>
+  );
+}
+
+/**
+ * 图片输入方式：由三阶段布尔派生（全 true=自动附图、全 false=仅按需查看、混合=自定义保留）。
+ * 切换自动/按需时原子设置三个阶段布尔，自定义保留由高级区逐阶段开关调整。
+ */
+function ImageInputMethodRadio() {
+  const { t } = useTranslation();
+  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
+  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
+  const patchQqScheme = useSuperstringStore((s) => s.patchQqScheme);
+  const radioId = useId();
+
+  if (!editor) return null;
+
+  const stages = editor.mediaInput.stages;
+  const isAllTrue = stages.decision && stages.evaluation && stages.generation;
+  const isAllFalse = !stages.decision && !stages.evaluation && !stages.generation;
+  const derivedMode = isAllTrue ? "auto" : isAllFalse ? "ondemand" : "custom";
+
+  const handleModeChange = (mode: string) => {
+    if (mode === "auto") {
+      patchQqScheme({
+        mediaInput: {
+          ...editor.mediaInput,
+          stages: { decision: true, evaluation: true, generation: true },
+        },
+      });
+    } else if (mode === "ondemand") {
+      patchQqScheme({
+        mediaInput: {
+          ...editor.mediaInput,
+          stages: { decision: false, evaluation: false, generation: false },
+        },
+      });
+    }
+  };
+
+  return (
+    <div className="space-y-2 sm:col-span-2">
+      <div className="text-sm font-medium">{t("schemes.studio.imageInputMethod")}</div>
+      <RadioGroup
+        value={derivedMode}
+        onValueChange={handleModeChange}
+        disabled={saving}
+        className="grid gap-3 sm:grid-cols-2"
+      >
+        <Label
+          htmlFor={`${radioId}-auto`}
+          className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+        >
+          <RadioGroupItem value="auto" id={`${radioId}-auto`} className="mt-0.5" />
+          <div className="space-y-1">
+            <span className="block font-medium leading-none">
+              {t("schemes.studio.imageInputMethodAuto")}
+            </span>
+            <span className="block text-xs font-normal leading-normal text-muted-foreground">
+              {t("schemes.studio.imageInputMethodAutoHint")}
+            </span>
+          </div>
+        </Label>
+        <Label
+          htmlFor={`${radioId}-ondemand`}
+          className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+        >
+          <RadioGroupItem value="ondemand" id={`${radioId}-ondemand`} className="mt-0.5" />
+          <div className="space-y-1">
+            <span className="block font-medium leading-none">
+              {t("schemes.studio.imageInputMethodOnDemand")}
+            </span>
+            <span className="block text-xs font-normal leading-normal text-muted-foreground">
+              {t("schemes.studio.imageInputMethodOnDemandHint")}
+            </span>
+          </div>
+        </Label>
+        {derivedMode === "custom" && (
+          <Label
+            htmlFor={`${radioId}-custom`}
+            className="flex cursor-pointer items-start gap-3 rounded-lg border border-primary bg-muted/40 p-3.5 sm:col-span-2"
+          >
+            <RadioGroupItem value="custom" id={`${radioId}-custom`} className="mt-0.5" />
+            <div className="space-y-1">
+              <span className="block font-medium leading-none">
+                {t("schemes.studio.imageInputMethodCustom")}
+              </span>
+              <span className="block text-xs font-normal leading-normal text-muted-foreground">
+                {t("schemes.studio.imageInputMethodCustomHint")}
+              </span>
+            </div>
+          </Label>
+        )}
+      </RadioGroup>
+    </div>
   );
 }
 
@@ -635,6 +746,7 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
   const { loadQqSchemes, loadQqStickers, qqSchemeEditor: editor, qqSchemeSaving: saving } = state;
   const [task, setTask] = useState<SchemeTask>("participation");
   const [visitedTasks, setVisitedTasks] = useState<SchemeTask[]>(["participation"]);
+  const [advancedImageOpen, setAdvancedImageOpen] = useState(false);
   const taskScrollRoot = useRef<HTMLDivElement>(null);
   const taskScrollPositions = useRef(new Map<SchemeTask, number>());
   const previousTask = useRef(task);
@@ -1018,6 +1130,28 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                     </p>
                   </SchemeFieldCard>
                   <SchemeFieldCard
+                    title={t("connections.inputAntiSpam")}
+                    description="schemes.studio.inputAntiSpamHint"
+                  >
+                    <Label className="flex items-start gap-3 rounded-lg border p-4">
+                      <Checkbox
+                        disabled={saving}
+                        checked={editor.inputAntiSpam.enabled}
+                        onCheckedChange={(checked) =>
+                          state.patchQqSchemeGroup("inputAntiSpam", {
+                            enabled: checked === true,
+                          })
+                        }
+                      />
+                      <span className="space-y-1">
+                        <span className="block">{t("connections.enableInputAntiSpam")}</span>
+                        <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                          {t("connections.inputAntiSpamDesc")}
+                        </span>
+                      </span>
+                    </Label>
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
                     title={t("schemes.studio.judgePrompt")}
                     description="connections.decideWhetherToSpeak"
                   >
@@ -1092,6 +1226,25 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                       ))}
                     </div>
                     <PromptEditor slot="review" titleKey="connections.reviewTask" />
+                  </SchemeFieldCard>
+                  <SchemeFieldCard
+                    title={t("connections.taskLimitsTitle")}
+                    description="schemes.studio.taskLimitsHint"
+                  >
+                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                      <SchemeNumber
+                        group="taskLimits"
+                        name="mention_task_limit"
+                        label="connections.mentionTaskLimit"
+                        info="connections.mentionTaskLimitHint"
+                      />
+                      <SchemeNumber
+                        group="taskLimits"
+                        name="ordinary_task_limit"
+                        label="connections.ordinaryTaskLimit"
+                        info="connections.ordinaryTaskLimitHint"
+                      />
+                    </div>
                   </SchemeFieldCard>
                 </TabsContent>
               )}
@@ -1249,70 +1402,98 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                   forceMount
                   className="m-0 space-y-6 data-[state=inactive]:hidden"
                 >
-                  {/* 0052 图片输入：模式/阶段/图数/规格；普通动图沿用下方既有 rhythm 真源不重复存储。 */}
+                  {/* 图片输入基本区：输入方式单选（自动/按需/自定义派生）、图数、统一静图规格 */}
                   <SchemeFieldCard
                     title={t("schemes.studio.imageInput")}
                     description="schemes.studio.imageInputHint"
                   >
                     <div className="grid gap-5 sm:grid-cols-2">
-                      <SchemeEnum
-                        group="mediaInput"
-                        name="mode"
-                        label="connections.imageInputMode"
-                        info={
-                          editor.mediaInput.mode === "description"
-                            ? "connections.imageMode.descriptionHint"
-                            : "connections.imageMode.nativeHint"
-                        }
-                      />
+                      <ImageInputMethodRadio />
                       <SchemeNumber
                         group="mediaInput"
                         name="max_images"
                         label="connections.maxAutoImages"
                       />
-                      <SchemeNumber
-                        group="mediaInput"
-                        name="expression_max_dimension"
-                        label="connections.expressionStillMaxDimension"
-                      />
                       <OrdinaryStillSpec />
-                      <SchemeNumber
-                        group="mediaInput"
-                        name="expression_frame_count"
-                        label="connections.expressionFrameCount"
-                      />
-                      <SchemeNumber
-                        group="mediaInput"
-                        name="expression_frame_max_dimension"
-                        label="connections.expressionFrameMaxDimension"
-                      />
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-3">
-                      <StageSwitch phase="decision" />
-                      <StageSwitch phase="evaluation" />
-                      <StageSwitch phase="generation" />
                     </div>
                   </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("schemes.studio.imageParams")}
-                    description="schemes.studio.imageParamsHint"
+
+                  {/* 高级区：本地折叠（ephemeral Disclosure），含动图规格、mode、逐阶段独立开关、媒体提示词 */}
+                  <Collapsible
+                    open={advancedImageOpen}
+                    onOpenChange={setAdvancedImageOpen}
+                    className="space-y-6"
                   >
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      {imageFields.map(([group, name, label]) => (
-                        <SchemeNumber key={name} group={group} name={name} label={label} />
-                      ))}
+                    <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-4">
+                      <div className="space-y-0.5">
+                        <div className="text-sm font-medium">
+                          {t("schemes.studio.advancedImageSettings")}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("schemes.studio.advancedImageSettingsHint")}
+                        </div>
+                      </div>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="outline" size="sm" className="gap-2">
+                          <ChevronDown
+                            className={`size-4 transition-transform ${advancedImageOpen ? "rotate-180" : ""}`}
+                          />
+                          <span>
+                            {advancedImageOpen
+                              ? t("schemes.studio.collapseAdvanced")
+                              : t("schemes.studio.expandAdvanced")}
+                          </span>
+                        </Button>
+                      </CollapsibleTrigger>
                     </div>
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("connections.mediaNoteTask")}
-                    description="connections.describeWhatThePictureOrVoiceActuallyContains"
-                  >
-                    <PromptEditor
-                      slot="media"
-                      titleKey="connections.mediaNoteTask"
-                      hint="connections.describeWhatThePictureOrVoiceActuallyContains"
-                    />
-                  </SchemeFieldCard>
+
+                    <CollapsibleContent forceMount className="space-y-6 data-[state=closed]:hidden">
+                      <SchemeFieldCard
+                        title={t("schemes.studio.imageParams")}
+                        description="schemes.studio.imageParamsHint"
+                      >
+                        <div className="grid gap-5 sm:grid-cols-2">
+                          {imageFields.map(([group, name, label]) => (
+                            <SchemeNumber key={name} group={group} name={name} label={label} />
+                          ))}
+                        </div>
+                      </SchemeFieldCard>
+
+                      <SchemeFieldCard
+                        title={t("schemes.studio.imageModeAndStages")}
+                        description="schemes.studio.imageModeAndStagesHint"
+                      >
+                        <div className="grid gap-5 sm:grid-cols-2">
+                          <SchemeEnum
+                            group="mediaInput"
+                            name="mode"
+                            label="connections.imageInputMode"
+                            info={
+                              editor.mediaInput.mode === "description"
+                                ? "connections.imageMode.descriptionHint"
+                                : "connections.imageMode.nativeHint"
+                            }
+                          />
+                        </div>
+                        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                          <StageSwitch phase="decision" />
+                          <StageSwitch phase="evaluation" />
+                          <StageSwitch phase="generation" />
+                        </div>
+                      </SchemeFieldCard>
+
+                      <SchemeFieldCard
+                        title={t("connections.mediaNoteTask")}
+                        description="connections.describeWhatThePictureOrVoiceActuallyContains"
+                      >
+                        <PromptEditor
+                          slot="media"
+                          titleKey="connections.mediaNoteTask"
+                          hint="connections.describeWhatThePictureOrVoiceActuallyContains"
+                        />
+                      </SchemeFieldCard>
+                    </CollapsibleContent>
+                  </Collapsible>
                 </TabsContent>
               )}
               {(effectiveTab === "sticker_sending" || visitedTasks.includes("sticker_sending")) && (

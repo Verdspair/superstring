@@ -77,9 +77,10 @@ export const QQ_RHYTHM_DEFAULT: QqSchemeRhythm = Object.freeze({
   active_hours_end_minutes: 1439,
   max_recompute_count: 1,
   max_sticker_count: 1,
-  /** P5m (user decision 2026-09-24): the same-speaker window that wakes a failed media read once. */
-  media_supplement_window_minutes: 10,
-  /** P5t: §7.1's 可改 sampling, defaulting to the fixed behaviour it replaces (3 frames / 512). */
+  /**
+   * P5t: §7.1's 可改 sampling, defaulting to the fixed behaviour it replaces (3 frames / 512).
+   * After the media spec unification these are the only animation values for every category.
+   */
   media_frame_count: 3,
   media_max_dimension: 512,
 });

@@ -9,20 +9,14 @@
 //    decideInvoke 真实驱动；视觉调用用 h.visionCalls 真计数。
 //  * [S43]/[S44-tool 级]/[S45]/[S46]/[S47] 生产组件集成（辅助）= 生产 createQqMediaTools
 //    mount 在 harness 同一业务库上（qq-media-typed-tools 同形态，不建第二库/第二模型链）。
-//    补充时间语义（equal/earlier 拒、严格更晚解锁）由宿主 freshSupplementLaterThan 真查
-//    journal（受控 occurredAt 的真实 journal 事件），不用 boolean shim。
 //  * [S44] 两个取消子面：tool 级 = 测试自持 AbortController 在生产 adapter.read 挂起期间
 //    abort（生产 reader cleanup 路径，已消耗尝试结清 failed）+ 过期 claim token 的 CAS 拒；
 //    run 级 = h.activate("direct_reply", { signal }) 真实宿主 run，caller 在 run 在飞时
-//    abort（生产工具边界拒绝 claim，不烧尝试）。proveSupplementLaterThan 的 () => true 只
-//    用于隔离 claim-token CAS 子面，不作为补充证据语义的通过证据。
-//  * [S41] detail attempt-2 补充闸**已接线**（当前实物：producer `qq-media-tools.ts` sha256
-//    536c9620…／reader `qq-media-reader.ts` a5cfaad5…）：detail 分支有自己的
-//    `proveDetailSupplementLaterThan`——按 purpose=detail + questionKey 取那条预算行、基准
-//    取该行 claim CAS 打点的 lastAttemptAt，再真查 journal（严格更晚／窗口内／同 scope／
-//    member 的 mention|reply_to_agent|legacy_addressed／排除原图自身）。baseline 分支同规则、
-//    同基准来源。旧注释「detail 未接线／恒 fail closed」随该接线作废；正例与强负例见下方
-//    [S41] 与 [S41-neg]。
+//    abort（生产工具边界拒绝 claim，不烧尝试）。
+//  * [S41] 尝试语义（§5.7）：baseline 与 detail 各自一次有界尝试；失败结果复用，同身份
+//    重复 invoke 零视觉不重开，"更晚补充解锁 attempt 2"的旧时间流已退役；真实新显式
+//    请求由宿主 trusted requestId 走新的独立身份行（源侧接线在制品），旧普通 7 元组
+//    身份语义不变。正例与强负例见下方 [S41] 与 [S41-neg]。
 //
 // 红线：不 import artifacts；不触真实数据/网络/服务；结果撤销走真实清理入口
 // purgeExpiredMediaNotes（不手工改任务行状态）；mint/复验用生产 createQqMediaSourceRef +
@@ -50,6 +44,7 @@ import {
 } from "../../src/server/db/qq-media-repository";
 import {
   attemptMediaReadTask,
+  normalizeQuestionKey,
   recordMediaReadTaskResult,
 } from "../../src/server/db/qq-media-task-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
@@ -85,7 +80,7 @@ type DescribeValue =
       offset: number;
       nextOffset: number | null;
     }
-  | { status: "failed"; described: false; attempt: number; awaitSupplement: boolean }
+  | { status: "failed"; described: false; attempt: number; giveUp: boolean }
   | { status: "unavailable"; code: string };
 
 interface TaskRow {
@@ -398,6 +393,9 @@ function mountTools(
     agentId?: string;
     bindingId?: string;
     now?: () => string;
+    /** 宿主 questionMessageId 锚解析（生产同形）：只有宿主能决定指针是否合法、是否带
+     *  真实显式请求身份；模型措辞零参与。 */
+    resolveQuestion?: QqMediaToolsOptions["resolveQuestion"];
   } = {},
 ): ToolMount {
   const peerId = input.peerId ?? PEER;
@@ -436,9 +434,9 @@ function mountTools(
     binding,
     adapter,
     modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-    supplementWindowMinutes: 10,
     policyRevision: POLICY,
     ...(input.now !== undefined ? { now: input.now } : {}),
+    ...(input.resolveQuestion === undefined ? {} : { resolveQuestion: input.resolveQuestion }),
     assertCurrent: () => {
       const current = readBindingByConversation(h.orm, {
         accountId: ACCOUNT,
@@ -488,13 +486,13 @@ function nonNull<T>(value: T | null | undefined, label: string): T {
 }
 
 describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
-  it("[S41][整链] baseline 与 detail 各自独立预算；detail 第二次尝试由真实更晚补充解锁", async () => {
+  it("[S41][整链] baseline 与 detail 各自独立预算、各自一次有界尝试；同身份重复读取复用失败结果（§5.7）", async () => {
     const h = createOneBotHarness({
       accountId: ACCOUNT,
       mediaEnabled: true,
-      // 单一顺序游标：用完重复最后一项。run1 的 baseline 与 detail 各吃一次真实失败，
-      // run3 的 detail 第二次吃这一条真实成功描述——正例必须来自合成出来的成功答复，
-      // 不能靠把成功期望改成 failed 叫绿。
+      // 单一顺序游标：用完重复最后一项。run1 的 baseline 与 detail 各吃一次真实失败；
+      // SUPPLEMENT_DESCRIPTION 保留为"成功描述必须来自真实合成答复"的范例常量（当前
+      // 用例语义下不会有第三次视觉调用消费它）。
       vision: ["fail", "fail", SUPPLEMENT_DESCRIPTION],
       imageBytes: { b1: bytes() },
       model: [],
@@ -558,15 +556,15 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     // 本 run 真实发出两次 describe（baseline + detail），所以收件箱里就是**两条**观察。
     expect(run1.visionDelta).toHaveLength(2);
     expect(run1.detailValues).toHaveLength(2);
-    // 两条观察按真实契约逐项断：都被 @ 叫到，两次都是第一次尝试、都真失败，且都还等补充
-    // （attempts 1 < 上限 2 → awaitSupplement 真为 true）。少断一项就会放过「其实没烧到
-    // 第二次预算」或「失败被吞成 unavailable」这两种假绿。
+    // 两条观察按真实契约逐项断：两次都是第一次尝试、都真失败、都已达一次有界尝试的上限
+    // （giveUp 真为 true：失败结果复用，不再有"等补充解锁第二次"的旧时间流）。少断一项
+    // 就会放过「其实没烧到预算」或「失败被吞成 unavailable」这两种假绿。
     for (const value of run1.detailValues) {
       expect(value).toEqual({
         status: "failed",
         described: false,
         attempt: 1,
-        awaitSupplement: true,
+        giveUp: true,
       });
     }
     // 账本恰好两条、各一条：多一条新预算行会被 uniqueLedgerRow 直接判失败。
@@ -617,7 +615,10 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     // 脚本队列原样：本轮没有预置、也没有消耗任何步骤，run3 的脚本队列不被污染。
     expect(nonNull(h.model, "h.model").remaining()).toBe(scriptBeforeRun2);
     // Run3（focus 回复引用 -411 → 宿主 resolver 以 replyTo 直接目标放行问题锚）：
-    // 严格更晚的 addressed 消息构成真实补充证据，detail 花 attempt 2 并成功描述。
+    // 宿主证实这是引用原图的真实新显式请求 → trusted explicitRequest 进身份键（第 8 元组）
+    // → 新的独立有界预算行（§5.7），与 run1 的普通 detail 行互不共享；run1 的旧行原样保留
+    // （失败不重置、不再有"同 7 元组行上解锁 attempt 2"的旧时间流）。新行第一次读取即
+    // 真实成功描述（正例正文来自合成成功答复，不是把成功期望改成 failed 叫绿）。
     h.advance(1);
     h.model?.push([decideInvoke("media.list", {})]);
     queue = ["detail"];
@@ -630,7 +631,7 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     });
     const run3 = await runTrace(
       h,
-      "run3-later-supplement-unlocks-attempt2",
+      "run3-new-explicit-request-fresh-budget",
       issued,
       capture,
       "S41",
@@ -639,12 +640,12 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
       },
     );
     traces.push(run3);
-    // spec：detail 独立预算第二次尝试由真实更晚补充解锁，产出真实描述。
+    // spec：显式请求行的读取产出真实描述（其身份第一次成功，attempt 1）。
     expect(run3.detailValues).toEqual([
       {
         status: "described",
         described: true,
-        attempt: 2,
+        attempt: 1,
         id: mediaId,
         model: "vision-stub",
         text: SUPPLEMENT_DESCRIPTION,
@@ -653,17 +654,27 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
       },
     ]);
     expect(run3.visionDelta).toHaveLength(1);
-    expect(pairingOf(run3)).toEqual(["detail"]);
-    const detailRow3 = uniqueLedgerRow(run3.ledgerAfter, "detail");
-    expect(detailRow3).toMatchObject({
-      attempts: 2,
+    // pairingOf 按 purpose 的 attempts 增量配对，无法表达"新预算行 0→1"；新行的存在与
+    // attempts/status 由下面的 ledger 逐项断言直接证明。
+    // 新的显式请求行：新 id、带同一 questionKey、独立预算（attempts 1 且成功）。
+    const explicitRow3 = run3.ledgerAfter.filter((row) => row.purpose === "detail");
+    expect(explicitRow3).toHaveLength(2);
+    const newRow3 = explicitRow3.find((row) => row.id !== detailRow1.id);
+    expect(nonNull(newRow3, "newRow3")).toMatchObject({
+      attempts: 1,
       status: "succeeded",
       note: SUPPLEMENT_DESCRIPTION,
     });
-    // 第二次尝试落在**同一条 detail 预算行**上：questionKey 与 task id 都与 run1 相同——
-    // 不是新开一条 detail 预算，也不是换了一个问题身份。
-    expect(detailRow3.id).toBe(detailRow1.id);
-    expect(detailRow3.questionKey).toBe(detailRow1.questionKey);
+    expect(nonNull(newRow3, "newRow3").questionKey).toBe(detailRow1.questionKey);
+    // 旧普通 detail 行原样：失败不重置、不被新请求改写。
+    const oldRow3 = explicitRow3.find((row) => row.id === detailRow1.id);
+    if (!oldRow3) throw new Error("fixture old row missing: run1 普通 detail 行在 run3 后消失");
+    expect(oldRow3).toMatchObject({
+      attempts: 1,
+      status: "failed",
+      note: null,
+    });
+    expect(oldRow3.identityKey).toBe(detailRow1.identityKey);
     // baseline 预算不被借：仍停在 attempt 1，连 claim 打点时刻都没被 run3 移动。
     const baselineRow3 = uniqueLedgerRow(run3.ledgerAfter, "baseline");
     expect(baselineRow3).toMatchObject({ attempts: 1, status: "failed", note: null });
@@ -679,11 +690,11 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     });
   });
 
-  it("[S41-neg][整链] detail 第二次真失败：failed/attempt 2/不再等补充；第三次耗尽零视觉不重开", async () => {
+  it("[S41-neg][整链] detail 一次有界尝试真失败；真实新显式请求走新的独立预算行、旧行不重置不共享", async () => {
     const h = createOneBotHarness({
       accountId: ACCOUNT,
       mediaEnabled: true,
-      // 三条视觉 outcome 全是真失败；游标用完重复最后一项，所以即便闸再打开也没有成功。
+      // 视觉 outcome 全是真失败；重复 invoke 不再发视觉，所以游标只消费两条。
       vision: ["fail", "fail", "fail"],
       imageBytes: { n1: bytes() },
       model: [],
@@ -747,7 +758,7 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
         status: "failed",
         described: false,
         attempt: 1,
-        awaitSupplement: true,
+        giveUp: true,
       });
     }
     expect(neg1.ledgerAfter.map((row) => row.purpose)).toEqual(["baseline", "detail"]);
@@ -758,7 +769,9 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     const negDetailRow1 = uniqueLedgerRow(neg1.ledgerAfter, "detail");
     const negBaselineRow1 = uniqueLedgerRow(neg1.ledgerAfter, "baseline");
     expect(negDetailRow1.id).not.toBe(negBaselineRow1.id);
-    // 第二次：真实更晚的 addressed 补充解锁 attempt 2，但视觉本身再失败一次。
+    // 第二次：真实新显式请求（-432 引用原图）→ 宿主 trusted explicitRequest 进身份键 →
+    // 新的独立有界预算行（§5.7），各自预算；视觉真失败 → failed attempt 1 giveUp true。
+    // run1 的普通 detail 行原样保留：失败不重置、不共享预算、没有"解锁 attempt 2"的旧时间流。
     h.advance(1);
     h.model?.push([decideInvoke("media.list", {})]);
     queue = ["detail"];
@@ -771,7 +784,7 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     });
     const neg2 = await runTrace(
       h,
-      "neg-run2-attempt2-fails",
+      "neg-run2-new-explicit-request-fails-attempt1",
       issued,
       capture,
       "S41-neg",
@@ -781,60 +794,33 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     );
     traces.push(neg2);
     expect(neg2.detailValues).toEqual([
-      { status: "failed", described: false, attempt: 2, awaitSupplement: false },
+      { status: "failed", described: false, attempt: 1, giveUp: true },
     ]);
     expect(neg2.visionDelta).toHaveLength(1);
-    // 第二次尝试仍落在 run1 的**同一条 detail 行**：attempts 由 1 变 2（真实 +1），
-    // 所以本轮配对恰为一条 detail；questionKey 与 task id 不变，不是新预算。
-    expect(pairingOf(neg2)).toEqual(["detail"]);
-    const negDetailRow2 = uniqueLedgerRow(neg2.ledgerAfter, "detail");
-    expect(negDetailRow2).toMatchObject({
-      attempts: 2,
+    // 本轮恰一次真实尝试，落在新的显式请求行上：旧普通 detail 行不被碰。
+    // （pairingOf 按 purpose 的 attempts 增量配对，无法表达"新预算行 0→1"：
+    // 新行的存在与 attempts/status 由下面的 ledger 逐项断言直接证明。）
+    const negDetailRows2 = neg2.ledgerAfter.filter((row) => row.purpose === "detail");
+    expect(negDetailRows2).toHaveLength(2);
+    const negNewRow2 = negDetailRows2.find((row) => row.id !== negDetailRow1.id);
+    expect(nonNull(negNewRow2, "negNewRow2")).toMatchObject({
+      attempts: 1,
       status: "failed",
       note: null,
     });
-    expect(negDetailRow2.id).toBe(negDetailRow1.id);
-    expect(negDetailRow2.questionKey).toBe(negDetailRow1.questionKey);
+    expect(nonNull(negNewRow2, "negNewRow2").questionKey).toBe(negDetailRow1.questionKey);
+    // 旧普通 detail 行原样：失败不重置、不被新请求改写。
+    const negOldRow2 = negDetailRows2.find((row) => row.id === negDetailRow1.id);
+    if (!negOldRow2)
+      throw new Error("fixture old row missing: neg-run1 普通 detail 行在 neg2 后消失");
+    expect(negOldRow2).toMatchObject({
+      attempts: 1,
+      status: "failed",
+      note: null,
+    });
+    expect(negOldRow2.identityKey).toBe(negDetailRow1.identityKey);
     // baseline 在本轮完全没被碰。
     expect(uniqueLedgerRow(neg2.ledgerAfter, "baseline")).toMatchObject({ attempts: 1 });
-    expect(neg2.ledgerAfter.map((row) => row.purpose)).toEqual(["baseline", "detail"]);
-    // 第三次：又一条真实更晚补充到了，但预算已耗尽——不再发视觉、不重开、不借 baseline。
-    h.advance(1);
-    h.model?.push([decideInvoke("media.list", {})]);
-    queue = ["detail"];
-    h.receive({
-      id: "-433",
-      speaker: "20002",
-      addressed: true,
-      replyTo: "-431",
-      text: "再问最后一次",
-    });
-    const neg3 = await runTrace(
-      h,
-      "neg-run3-attempts-exhausted",
-      issued,
-      capture,
-      "S41-neg",
-      async () => {
-        await h.activate("direct_reply");
-      },
-    );
-    traces.push(neg3);
-    expect(neg3.detailValues).toEqual([{ status: "unavailable", code: "attempts_exhausted" }]);
-    expect(neg3.visionDelta).toHaveLength(0);
-    // 预算已耗尽：本轮没有任何 attempts 增量，所以**配对为空**——不为「跑过 describe」
-    // 编一条配对出来。整份账本与 neg2 之后逐字相同：不重开、不新增行、不动 baseline。
-    expect(pairingOf(neg3)).toEqual([]);
-    expect(neg3.ledgerAfter).toEqual(neg2.ledgerAfter);
-    const negDetailRow3 = uniqueLedgerRow(neg3.ledgerAfter, "detail");
-    expect(negDetailRow3).toMatchObject({
-      attempts: 2,
-      status: "failed",
-      note: null,
-    });
-    expect(negDetailRow3.id).toBe(negDetailRow1.id);
-    expect(uniqueLedgerRow(neg3.ledgerAfter, "baseline")).toMatchObject({ attempts: 1 });
-    expect(neg3.ledgerAfter.map((row) => row.purpose)).toEqual(["baseline", "detail"]);
     expect(h.visionCalls).toHaveLength(3);
     writeS41Trace({
       case: "S41-neg",
@@ -970,28 +956,19 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
       mediaNoteId: null,
     });
     expect(nonNull(rows[0], "rows[0]").revision).toBeGreaterThan(revisionBeforePurge);
-    // 撤销后的剩余尝试按 revoke 设计走 expired-row reclaim（不需要补充证据闸）：
-    // fresh carrier B 合法再读花掉 attempt 2，产出新结果（不是借旧正文）。
+    // 撤销结果不重置、也不追加预算：一次有界尝试已在 ctxA 花掉，fresh carrier B 也
+    // 不能重获（§5.7）——describe 给 attempts_exhausted，零额外视觉，账本仍是那一条。
     const ctxC = mount.context("run-45c").ctx;
     await mount.execute("media.list", {}, ctxC);
     expect(
       (await mount.execute("media.describe", { id: segB.id }, ctxC)).value as DescribeValue,
-    ).toEqual({
-      status: "described",
-      described: true,
-      attempt: 2,
-      id: segB.id,
-      model: "vision-stub",
-      text: "首次描述",
-      offset: 0,
-      nextOffset: null,
-    });
-    expect(mount.stats.calls).toBe(2);
+    ).toEqual({ status: "unavailable", code: "attempts_exhausted" });
+    expect(mount.stats.calls).toBe(1);
     expect(taskRows(h)).toHaveLength(1);
-    expect(taskRows(h)[0]).toMatchObject({ attempts: 2, status: "succeeded" });
+    expect(taskRows(h)[0]).toMatchObject({ attempts: 1, status: "failed", note: null });
   });
 
-  it("[S43][生产组件集成] 补充时间语义：equal/earlier 拒，严格更晚解锁精确 attempt 2", async () => {
+  it("[S43][生产组件集成] 失败结果复用：重复 describe 同身份零视觉、attempts 不再移动（补充时间闸已退役）", async () => {
     const h = createOneBotHarness({ accountId: ACCOUNT, model: [] });
     const seg = seedMediaEvent(h, { eventKey: "-431", at: Math.floor(Date.now() / 1000) - 60 });
     seedAsset(h, seg.id, bytes());
@@ -1007,9 +984,10 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     });
     const ctx1 = mount.context("run-43a").ctx;
     await mount.execute("media.list", {}, ctx1);
+    // 第一次 describe：真实烧掉唯一一次有界尝试（§5.7）。
     expect(
       (await mount.execute("media.describe", { id: seg.id }, ctx1)).value as DescribeValue,
-    ).toEqual({ status: "failed", described: false, attempt: 1, awaitSupplement: true });
+    ).toEqual({ status: "failed", described: false, attempt: 1, giveUp: true });
     const claimedAt = (
       h.db
         .query("SELECT last_attempt_at FROM qq_media_read_tasks WHERE media_note_id=?")
@@ -1018,6 +996,8 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
       }
     ).last_attempt_at;
     const benchmarkSeconds = Math.floor(Date.parse(claimedAt) / 1000);
+    // 之后即使会话里真的到了更晚的新消息（earlier/equal/fresh 三个时点都种进 journal），
+    // 同一身份的重复 describe 都走失败结果复用：零视觉、attempts 与打点时刻原样。
     const supplement = (eventKey: string, at: number) => {
       seedMediaEvent(h, { eventKey, at, sourceRef: `ref-${eventKey}` });
     };
@@ -1026,36 +1006,29 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mount.execute("media.list", {}, ctx2);
     expect(
       (await mount.execute("media.describe", { id: seg.id }, ctx2)).value as DescribeValue,
-    ).toEqual({ status: "unavailable", code: "awaiting_supplement" });
+    ).toEqual({ status: "unavailable", code: "attempts_exhausted" });
     expect(mount.stats.calls).toBe(1);
     supplement("supp-equal", benchmarkSeconds);
     const ctx3 = mount.context("run-43c").ctx;
     await mount.execute("media.list", {}, ctx3);
     expect(
       (await mount.execute("media.describe", { id: seg.id }, ctx3)).value as DescribeValue,
-    ).toEqual({ status: "unavailable", code: "awaiting_supplement" });
+    ).toEqual({ status: "unavailable", code: "attempts_exhausted" });
     expect(mount.stats.calls).toBe(1);
-    expect(
-      (
-        h.db
-          .query("SELECT attempts FROM qq_media_read_tasks WHERE media_note_id=?")
-          .get(seg.id) as { attempts: number }
-      ).attempts,
-    ).toBe(1);
     supplement("supp-fresh", benchmarkSeconds + 5);
     const ctx4 = mount.context("run-43d").ctx;
     await mount.execute("media.list", {}, ctx4);
     expect(
       (await mount.execute("media.describe", { id: seg.id }, ctx4)).value as DescribeValue,
-    ).toEqual({ status: "failed", described: false, attempt: 2, awaitSupplement: false });
-    expect(mount.stats.calls).toBe(2);
+    ).toEqual({ status: "unavailable", code: "attempts_exhausted" });
+    expect(mount.stats.calls).toBe(1);
     const task = h.db
       .query(
         "SELECT attempts,status,last_attempt_at FROM qq_media_read_tasks WHERE media_note_id=?",
       )
       .get(seg.id) as { attempts: number; status: string; last_attempt_at: string };
-    expect(task).toMatchObject({ attempts: 2, status: "failed" });
-    expect(Date.parse(task.last_attempt_at)).toBeGreaterThan(Date.parse(claimedAt));
+    expect(task).toMatchObject({ attempts: 1, status: "failed" });
+    expect(Date.parse(task.last_attempt_at)).toBe(Date.parse(claimedAt));
   });
 
   it("[S44][生产组件集成] tool 级真取消与过期 claim token CAS 拒", async () => {
@@ -1103,21 +1076,31 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
         .query("SELECT attempts,status,note FROM qq_media_read_tasks WHERE media_note_id=?")
         .get(seg.id),
     ).toMatchObject({ attempts: 1, status: "failed", note: null });
-    const claim = await attemptMediaReadTask(h.orm, {
-      mediaNoteId: seg.id,
-      purpose: "baseline",
-      modelName: "vision-stub",
-      policy: POLICY,
-      contentSha256: (
-        h.db.query("SELECT content_sha256 AS sha FROM qq_media_assets LIMIT 1").get() as {
-          sha: string;
-        }
-      ).sha,
-      proveSupplementLaterThan: () => true,
-      assertCurrent: () => {},
-    });
-    expect(claim.attempt).toBe(2);
+    // 已消耗的 baseline 尝试不被任何回调"复活"：再次 claim 被任务 CAS 拒
+    // （attempts_exhausted，§5.7 一次有界尝试）。
+    let recl = false;
+    let reclaimCode = "";
+    try {
+      await attemptMediaReadTask(h.orm, {
+        mediaNoteId: seg.id,
+        purpose: "baseline",
+        modelName: "vision-stub",
+        policy: POLICY,
+        contentSha256: (
+          h.db.query("SELECT content_sha256 AS sha FROM qq_media_assets LIMIT 1").get() as {
+            sha: string;
+          }
+        ).sha,
+        assertCurrent: () => {},
+      });
+    } catch (error) {
+      recl = true;
+      reclaimCode = (error as { reason?: string }).reason ?? "NO_REASON";
+    }
+    expect(recl).toBe(true);
+    expect(reclaimCode).toBe("attempts_exhausted");
     expect(calls.n).toBe(1);
+    // 过期 claim token 的 CAS 拒照旧：任务行停在已结清的 failed/attempts=1。
     let refused = false;
     let code = "";
     try {
@@ -1140,19 +1123,92 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
       h.db
         .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
         .get(seg.id),
-    ).toMatchObject({ attempts: 2, status: "running" });
-    recordMediaReadTaskResult(h.orm, {
+    ).toMatchObject({ attempts: 1, status: "failed" });
+  });
+
+  it("[S44-explicit][生产组件集成] 宿主 trusted 显式请求：requestId 进身份键成新预算行；同 requestId 去重；旧普通行与 7 元组 hash 不动", async () => {
+    const h = createOneBotHarness({ accountId: ACCOUNT, model: [] });
+    const seg = seedMediaEvent(h, { eventKey: "-443" });
+    seedAsset(h, seg.id, bytes());
+    const mount = mountTools(h, {
+      adapter: {
+        capabilities: ["image"] as const,
+        fetchBytes: async () => ({ bytes: bytes() }),
+        read: async () => {
+          mount.stats.calls += 1;
+          return "显式请求描述";
+        },
+      },
+    });
+    const detailInput = (requestId: string) => ({
       mediaNoteId: seg.id,
-      purpose: "baseline",
-      note: "当前 token 的描述",
+      purpose: "detail" as const,
+      questionKey: normalizeQuestionKey("细问这张图"),
+      requestId,
       modelName: "vision-stub",
-      expectedAttempts: claim.attempt,
-      claimToken: claim.claimToken,
+      policy: POLICY,
+      contentSha256: (
+        h.db.query("SELECT content_sha256 AS sha FROM qq_media_assets LIMIT 1").get() as {
+          sha: string;
+        }
+      ).sha,
       assertCurrent: () => {},
     });
+    // 宿主 trusted requestId → 身份键追加第 8 元组：真实新请求是新的独立有界预算行。
+    const first = await attemptMediaReadTask(h.orm, detailInput("req-A"));
+    expect(first.attempt).toBe(1);
+    await recordMediaReadTaskResult(h.orm, {
+      ...detailInput("req-A"),
+      note: "显式请求描述",
+      modelName: "vision-stub",
+      expectedAttempts: first.attempt,
+      claimToken: first.claimToken,
+      assertCurrent: () => {},
+    });
+    // 同一 requestId 的重复 invoke/replay：命中同一账本行（去重），不新开预算。
+    const ledger = taskRows(h);
+    const explicitRows = ledger.filter((row) => row.purpose === "detail");
+    expect(explicitRows).toHaveLength(1);
+    // 宿主给同一个普通（无显式请求）detail 行记账：与显式请求行互不干扰，
+    // 普通 7 元组身份 hash 与旧行为逐字相同（requestId 缺席＝第 8 元组不追加）。
+    const second = await attemptMediaReadTask(h.orm, {
+      mediaNoteId: seg.id,
+      purpose: "detail",
+      questionKey: normalizeQuestionKey("细问这张图"),
+      modelName: "vision-stub",
+      policy: POLICY,
+      contentSha256: (
+        h.db.query("SELECT content_sha256 AS sha FROM qq_media_assets LIMIT 1").get() as {
+          sha: string;
+        }
+      ).sha,
+      assertCurrent: () => {},
+    });
+    expect(second.attempt).toBe(1);
+    // 不同的真实新请求 → 新的独立预算行、各自预算；旧请求失败不重置。
+    const third = await attemptMediaReadTask(h.orm, detailInput("req-B"));
+    expect(third.attempt).toBe(1);
+    const rowsAfter = taskRows(h).filter((row) => row.purpose === "detail");
+    expect(rowsAfter).toHaveLength(3);
+    // 旧请求（req-A 已成功）再 claim 被拒：成功结果复用，预算不重开。
+    let refused = false;
+    let reason = "";
+    try {
+      await attemptMediaReadTask(h.orm, detailInput("req-A"));
+    } catch (error) {
+      refused = true;
+      reason = (error as { reason?: string }).reason ?? "NO_REASON";
+    }
+    expect(refused).toBe(true);
+    expect(reason).toBe("already_succeeded");
+    // 普通 7 元组与显式 8 元组身份键互不相同（KeyFn 契约的账面证明）。
+    const keys = new Set(rowsAfter.map((row) => row.identityKey));
+    expect(keys.size).toBe(3);
     expect(
-      h.db.query("SELECT status,note FROM qq_media_read_tasks WHERE media_note_id=?").get(seg.id),
-    ).toMatchObject({ status: "succeeded", note: "当前 token 的描述" });
+      h.db
+        .query("SELECT COUNT(*) AS n FROM qq_media_read_tasks WHERE request_id IS NOT NULL")
+        .get() as { n: number },
+    ).toMatchObject({ n: 2 });
   });
 
   it("[S44b][整链] 真 run 级取消：activate({signal}) 在飞 abort，工具边界拒绝不烧尝试", async () => {
@@ -1377,7 +1433,7 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     ).toBe("revoked");
   });
 
-  it("[S47][生产组件集成] 过期拒读拒 mint；真实 purge 撤结果不撤预算；fresh carrier 合法再读花剩余尝试产出新 ref；2 耗尽不重获", async () => {
+  it("[S47][生产组件集成] 过期拒读拒 mint；真实 purge 撤结果不撤预算；fresh carrier 不重获一次有界尝试的预算", async () => {
     const h = createOneBotHarness({ accountId: ACCOUNT, model: [] });
     const shared = bytes();
     const segA = seedMediaEvent(h, { eventKey: "-471", sourceRef: "x1" });
@@ -1466,8 +1522,7 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
       mediaNoteId: null,
     });
     expect(nonNull(afterPurge[0], "afterPurge[0]").revision).toBeGreaterThanOrEqual(2);
-    // 撤销后的剩余尝试按 revoke 设计走 expired-row reclaim：fresh carrier B 合法再读
-    // 直接花 attempt 2（失败）——attempts 烧满且不产生新可服务正文。
+    // 撤销结果不重置预算：一次有界尝试已在 run-47a 花掉，fresh carrier B 也不能重获。
     const segB = seedMediaEvent(h, { eventKey: "-472", sourceRef: "x2" });
     seedAsset(h, segB.id, shared);
     const refB1 = createQqMediaSourceRef({ db: h.db, orm: h.orm }, scope, segB.id, h.now());
@@ -1476,17 +1531,14 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     await mount.execute("media.list", {}, ctx3);
     expect(
       (await mount.execute("media.describe", { id: segB.id }, ctx3)).value as DescribeValue,
-    ).toEqual({ status: "failed", described: false, attempt: 2, awaitSupplement: false });
-    expect(mount.stats.calls).toBe(2);
+    ).toEqual({ status: "unavailable", code: "attempts_exhausted" });
+    expect(mount.stats.calls).toBe(1);
     const rows = taskRows(h);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ attempts: 2, status: "failed", mediaNoteId: segB.id });
+    expect(rows[0]).toMatchObject({ attempts: 1, status: "failed", mediaNoteId: null });
+    // 载体换了也不改身份账本：旧 ref 仍按自己的窗口复算（新载体行不"复活"已花掉的尝试）。
     const refB2 = createQqMediaSourceRef({ db: h.db, orm: h.orm }, scope, segB.id, h.now());
     expect(refB2).not.toBeNull();
-    expect(nonNull(refB2, "refB2").revision).not.toBe(nonNull(refA, "refA").revision);
-    expect(sourceAccess(h.db, nonNull(refB2, "refB2"), owner, principal, h.now())).toBe(
-      "available",
-    );
     // 尝试耗尽后：fresh carrier C 也不能重获预算。
     const segC = seedMediaEvent(h, { eventKey: "-473", sourceRef: "x3" });
     seedAsset(h, segC.id, shared);
@@ -1495,6 +1547,6 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     expect(
       (await mount.execute("media.describe", { id: segC.id }, ctx5)).value as DescribeValue,
     ).toEqual({ status: "unavailable", code: "attempts_exhausted" });
-    expect(mount.stats.calls).toBe(2);
+    expect(mount.stats.calls).toBe(1);
   });
 });

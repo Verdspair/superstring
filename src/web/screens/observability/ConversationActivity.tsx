@@ -142,7 +142,7 @@ export function ConversationRuntimeSummary({
             <span className="text-sm">
               {t("observability.valueActiveValueQueued", {
                 "0": data.activeRuns,
-                "1": data.pendingWakes,
+                "1": data.queuedCount,
               })}
             </span>
             {data.nextReadyAt && (

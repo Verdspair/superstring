@@ -46,6 +46,7 @@ import {
 import { type QqReplyTarget, qqReplyTargets } from "./qq-reply-targets";
 import { checkQqInitiativeRhythm, qqBatchVerdict } from "./qq-rhythm-contract";
 import {
+  checkQqSpeechSend,
   checkQqSpeechTrigger,
   disabledKindsFromTriggers,
   isInitiativeSpeech,
@@ -84,6 +85,15 @@ export type QqPreparationBlock =
   | "media_read_failed"
   /** 她上次开口之后没有人再说过话：这一轮没有可回的人（0037）。 */
   | "nothing_to_answer";
+/**
+ * 同任务恢复（P3 partial recovery）的冻结目标形状：来自宿主验证的执行快照 targetParticipants
+ * （获准的 target 范围，不是新一轮猜测）。结构化类型，宿主按形状传入；绝不来自模型或 bare flag。
+ */
+export type QqJudgementResumeTargets = {
+  readonly targetId: string;
+  readonly speakerId: string | null;
+}[];
+
 export type QqJudgementPreparation =
   | {
       readonly kind: "blocked";
@@ -190,6 +200,14 @@ export function prepareQqJudgement(
     /** Host-owned mature, unhandled participant opportunities; never supplied by a model. */
     pendingTargets?: readonly QqReplyTarget[];
     /**
+     * 同任务恢复（P3 partial recovery）：宿主已验证受保护判断 ctx（exact/未到期/来源当前）
+     * 后才能传入；携带冻结快照的全部获准目标。存在时该轮是**已判定任务**的恢复，不再重入
+     * 新起始的 no-reply/合并窗口/节奏闸（判断早已结算，`awaiting_reply` 是新机会的规则）；
+     * 配置闸改按发送口径（checkQqSpeechSend 同层输入），目标用冻结集合原样——本选项绝不
+     * 由模型或 bare judgementDone 布尔提供。
+     */
+    resumedInitiative?: { targets: QqJudgementResumeTargets };
+    /**
      * T11 host proof (qqNativeReadProof, runId pre-bound in the host closure): which of the blocked
      * media rows were ACTUALLY READ this run — a successful model call really consumed the image
      * part in THIS activation (prepared inventory, HTTP-unsupported failures, fetch-without-send,
@@ -260,21 +278,35 @@ export function prepareQqJudgement(
   // 判断用的可选资料（记忆与资料），由下面的主动性分支填充；直接回应/连续交谈不跑判断，不读它们。
   let material: readonly QqPromptMaterial[] = [];
   const newest = newestMemberMessageSeconds(orm, scope);
-  const gate = checkQqSpeechTrigger({
-    kind: path,
-    featureEnabled: settings.enabled === 1,
-    conversationPaused: binding.paused,
-    disabledKinds: disabledKindsFromTriggers(effectiveQqTriggers(binding, scheme)),
-    lastInitiativeSeconds:
-      path === "chiming_in" &&
-      schemeReply(scheme).split_by_speaker &&
-      options?.pendingTargets?.length
-        ? lastInitiativeForTargets(orm, scope, options.pendingTargets)
-        : lastQqInitiativeSeconds(orm, scope),
-    newestMemberMessageSeconds: newest,
-  });
-  if (gate.kind === "blocked") return { kind: "blocked", reason: gate.reason };
-  if (newest === null) return { kind: "blocked", reason: "no_member_message" };
+  // 同任务恢复（P3 partial recovery）：配置闸按发送口径（开关/暂停/触发器），不重入新起始的
+  // no-reply 闸（判断已结算，`awaiting_reply` 是新机会的规则）；来源/材料/媒体闸全部照旧。
+  const resumeTargets = options?.resumedInitiative?.targets;
+  if (resumeTargets !== undefined) {
+    if (path !== "chiming_in") return { kind: "blocked", reason: "trigger_off" };
+    const sendGate = checkQqSpeechSend({
+      kind: path,
+      featureEnabled: settings.enabled === 1,
+      conversationPaused: binding.paused,
+      disabledKinds: disabledKindsFromTriggers(effectiveQqTriggers(binding, scheme)),
+    });
+    if (sendGate.kind === "blocked") return { kind: "blocked", reason: sendGate.reason };
+  } else {
+    const gate = checkQqSpeechTrigger({
+      kind: path,
+      featureEnabled: settings.enabled === 1,
+      conversationPaused: binding.paused,
+      disabledKinds: disabledKindsFromTriggers(effectiveQqTriggers(binding, scheme)),
+      lastInitiativeSeconds:
+        path === "chiming_in" &&
+        schemeReply(scheme).split_by_speaker &&
+        options?.pendingTargets?.length
+          ? lastInitiativeForTargets(orm, scope, options.pendingTargets)
+          : lastQqInitiativeSeconds(orm, scope),
+      newestMemberMessageSeconds: newest,
+    });
+    if (gate.kind === "blocked") return { kind: "blocked", reason: gate.reason };
+    if (newest === null) return { kind: "blocked", reason: "no_member_message" };
+  }
   // The context window is what the judgement and the media gate below both work from, so it is
   // read once here rather than twice later.
   const limits = qqContextLimits(schemeContext(scheme), "judgement");
@@ -308,7 +340,15 @@ export function prepareQqJudgement(
   if (isInitiativeSpeech(path)) {
     const rhythm = schemeRhythm(scheme);
     const lastSpeechSeconds = lastQqSpeech(orm, scope)?.spokeAtSeconds ?? null;
-    if (path === "chiming_in") {
+    if (resumeTargets !== undefined) {
+      // 恢复轮（P3 partial recovery）：目标＝冻结快照的全部获准成员，原样（不重选、不按合并
+      // 窗口/节奏重算——判断早已结算）；其余闸（媒体失败闸、材料读取、提示词组装）照常走。
+      targets = resumeTargets.map((entry) => ({
+        speakerId: entry.speakerId,
+        newestSeconds: 0,
+        messageCount: 1,
+      }));
+    } else if (path === "chiming_in") {
       if (options?.pendingTargets !== undefined) {
         // The durable queue has already measured each person's window. Keep only
         // recipients whose input remains in the configured readable context window.
@@ -351,22 +391,26 @@ export function prepareQqJudgement(
           readyAtSeconds: batch.readyAtSeconds,
         };
     }
-    const cadence = checkQqInitiativeRhythm({
-      kind: path,
-      rhythm,
-      nowSeconds,
-      lastSpeechSeconds,
-      speechesThisHour: qqInitiativeSpeechesInWindow(orm, scope, { nowSeconds }),
-      newestMemberMessageSeconds: newest,
-    });
-    if (cadence.kind === "blocked")
-      return cadence.readyAtSeconds === null
-        ? { kind: "blocked", reason: cadence.reason }
-        : {
-            kind: "blocked",
-            reason: cadence.reason,
-            readyAtSeconds: cadence.readyAtSeconds,
-          };
+    // 恢复轮跳过发起节奏闸（合并窗口/冷却/小时帽都是**新机会**的许可条件；本轮的判断已经
+    // 结算并冻结）。配置闸与来源/媒体/材料闸不受影响。
+    if (resumeTargets === undefined) {
+      const cadence = checkQqInitiativeRhythm({
+        kind: path,
+        rhythm,
+        nowSeconds,
+        lastSpeechSeconds,
+        speechesThisHour: qqInitiativeSpeechesInWindow(orm, scope, { nowSeconds }),
+        newestMemberMessageSeconds: newest,
+      });
+      if (cadence.kind === "blocked")
+        return cadence.readyAtSeconds === null
+          ? { kind: "blocked", reason: cadence.reason }
+          : {
+              kind: "blocked",
+              reason: cadence.reason,
+              readyAtSeconds: cadence.readyAtSeconds,
+            };
+    }
     // 读过了却没读出（在途或失败）就不要主动开口——没读懂那张图就没有资格
     // 自主接话，§7.1 也不允许假装知道。被叫到或被回复时必须应答，那是别人的问题，不是她的主动性。
     // 此检查放在合并窗口与节奏之后，是为了给在途的读取留出这段时间。

@@ -43,6 +43,8 @@ interface Fixture {
     sameContentAs?: string;
     purpose?: "baseline" | "detail";
     question?: string | null;
+    /** Host-resolved trusted request identity (§5.7): explicit detail only. */
+    requestId?: string;
     note?: string;
     model?: string;
     /** No task, carrier row only (default: creates a real succeeded task). */
@@ -143,6 +145,7 @@ function setup(): Fixture {
       mediaNoteId: media.id,
       purpose,
       questionKey,
+      requestId: input.requestId,
       modelName: input.model ?? "vision-synthetic",
       policy: "p1",
       contentSha256,
@@ -152,6 +155,7 @@ function setup(): Fixture {
       mediaNoteId: media.id,
       purpose,
       questionKey,
+      requestId: input.requestId,
       note: input.note ?? "橘猫在沙发上睡觉",
       modelName: input.model ?? "vision-synthetic",
       expectedAttempts: claimed.attempt,
@@ -598,6 +602,71 @@ describe("cross-carrier read-only task consumption (identity-proven)", () => {
       expect(qqMediaReadTaskSourceAccess(f.db, ref, ownerOf(f), principal, nowIso())).toBe(
         "available",
       );
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("an explicit detail row (real requestId) mints/verifies across carriers; an ordinary row is its own key and a tampered request_id never re-keys", async () => {
+    const f = setup();
+    try {
+      // A REAL explicit detail task: attempt → publish with a host requestId.
+      const first = await f.carrier({
+        purpose: "detail",
+        question: "这只猫在做什么",
+        requestId: "req-explicit-1",
+        note: "它在睡觉",
+      });
+      if (!first) throw new Error("fixture missing");
+      const explicitRow = f.db
+        .query("SELECT request_id,identity_key FROM qq_media_read_tasks WHERE id=?")
+        .get(first.taskId) as { request_id: string | null; identity_key: string | null };
+      // The service persisted the trusted request id on its own row (0063).
+      expect(explicitRow.request_id).toBe("req-explicit-1");
+      expect(explicitRow.identity_key).not.toBeNull();
+      // A second REAL row: same scope/content/question but NO requestId. Its row
+      // is the ordinary 7-tuple identity — a DIFFERENT key from the explicit
+      // row's 8-tuple one, so the explicit request owns its own budget row.
+      const plain = await f.carrier({
+        sameContentAs: first.tag,
+        purpose: "detail",
+        question: "这只猫在做什么",
+      });
+      if (!plain) throw new Error("fixture missing");
+      const plainRow = f.db
+        .query("SELECT request_id,identity_key FROM qq_media_read_tasks WHERE id=?")
+        .get(plain.taskId) as { request_id: string | null; identity_key: string | null };
+      expect(plainRow.request_id).toBeNull();
+      expect(plainRow.identity_key).not.toBe(explicitRow.identity_key);
+      // Same controlled bytes on a NEW carrier, no task of its own.
+      const second = await f.carrier({ sameContentAs: first.tag, noTask: true });
+      if (!second) throw new Error("fixture missing");
+      const ref = createQqMediaReadTaskSourceRef(f.h, f.scope, first.taskId, nowIso(), {
+        carrierMediaNoteId: second.mediaNoteId,
+      });
+      expect(ref).not.toBeNull();
+      if (!ref) return;
+      expect(ref.id).toBe(first.taskId);
+      expect(qqMediaReadTaskSourceAccess(f.db, ref, ownerOf(f), principal, nowIso())).toBe(
+        "available",
+      );
+      expect(sourceAccess(f.db, ref, ownerOf(f), principal, nowIso())).toBe("available");
+      // Negative: the ledger row's request_id is tampered to another real value.
+      // The stored identity_key is immutable with the row, so the re-keyed
+      // 8-tuple no longer matches it: access fails closed revoked and mint
+      // refuses — the row's own id is never re-derived to force a match.
+      f.db
+        .query("UPDATE qq_media_read_tasks SET request_id='req-tampered' WHERE id=?")
+        .run(first.taskId);
+      expect(qqMediaReadTaskSourceAccess(f.db, ref, ownerOf(f), principal, nowIso())).toBe(
+        "revoked",
+      );
+      expect(sourceAccess(f.db, ref, ownerOf(f), principal, nowIso())).toBe("revoked");
+      expect(
+        createQqMediaReadTaskSourceRef(f.h, f.scope, first.taskId, nowIso(), {
+          carrierMediaNoteId: second.mediaNoteId,
+        }),
+      ).toBeNull();
     } finally {
       f.h.close();
     }

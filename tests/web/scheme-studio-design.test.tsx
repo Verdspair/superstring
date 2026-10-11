@@ -47,7 +47,6 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
     initiative_batch_target_count: 15,
@@ -90,13 +89,13 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false },
   ...overrides,
 });
 
@@ -182,6 +181,9 @@ const bindingOf = (schemeId: string) =>
     revision: 1,
     authority_revision: 1,
     attention: { mode: "off", members: [] },
+    // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
+    task_limits: { mention_task_limit: null, ordinary_task_limit: null },
+    input_anti_spam: { enabled: null },
   });
 
 const agentOf = (name: string) =>
@@ -292,10 +294,8 @@ describe("Scheme studio layout and grouping", () => {
         "scheme-field-context.judgement_window_minutes",
         "scheme-field-context.reply_token_budget",
         "scheme-field-context.reply_window_minutes",
-        // 0052 两组：层数/图数/表情规格与普通静图（其数值输入挂在「限制长边」选择之下）。
-        "scheme-field-mediaInput.expression_frame_count",
-        "scheme-field-mediaInput.expression_frame_max_dimension",
-        "scheme-field-mediaInput.expression_max_dimension",
+        // 0052 图片输入：图数与普通静图（其数值输入挂在「限制长边」选择之下）；动图规格
+        // 走 rhythm 既有真源（media_frame_count / media_max_dimension），不在 media_input 重复。
         "scheme-field-mediaInput.max_images",
         "scheme-field-media_input.ordinary_still_max_dimension",
         "scheme-field-messageSettings.reply_depth",
@@ -312,13 +312,29 @@ describe("Scheme studio layout and grouping", () => {
         "scheme-field-rhythm.max_sticker_count",
         "scheme-field-rhythm.media_frame_count",
         "scheme-field-rhythm.media_max_dimension",
-        "scheme-field-rhythm.media_supplement_window_minutes",
         "scheme-field-rhythm.merge_window_seconds",
         "scheme-field-rhythm.reply_cooldown_seconds",
         "scheme-field-stickers.sticker_min_repeat_minutes",
+        // 0059 并行任务上限组：两个数字输入随「回复方式」页可见（范围契约 1..64）。
+        "scheme-field-taskLimits.mention_task_limit",
+        "scheme-field-taskLimits.ordinary_task_limit",
         "scheme-field-stickers.sticker_recent_avoid_count",
       ].sort(),
     );
+    // 高级图片设置是本页的本地折叠（forceMount）：收起时输入仍已渲染在 DOM 里，
+    // 上面的 querySelectorAll 因此能枚举到它们（rhythm.media_frame_count / media_max_dimension），
+    // 无需先展开；getAllByRole 等只按可见可访问面查询的写法才需要先展开高级设置。
+    expect(document.getElementById("scheme-field-rhythm.media_frame_count")).toBeTruthy();
+    expect(document.getElementById("scheme-field-mediaInput.mode")).toBeTruthy();
+    // 退役的按类别规格三件套与媒体补充窗口不再有任何输入入口。
+    expect(document.getElementById("scheme-field-mediaInput.expression_frame_count")).toBeNull();
+    expect(
+      document.getElementById("scheme-field-mediaInput.expression_frame_max_dimension"),
+    ).toBeNull();
+    expect(document.getElementById("scheme-field-mediaInput.expression_max_dimension")).toBeNull();
+    expect(
+      document.getElementById("scheme-field-rhythm.media_supplement_window_minutes"),
+    ).toBeNull();
     // 退役控制不可新增编辑入口。
     expect(ids.has("scheme-field-rhythm.judgement_interval_turns")).toBe(false);
     expect(ids.has("scheme-field-context.reply_message_limit")).toBe(false);
@@ -327,6 +343,27 @@ describe("Scheme studio layout and grouping", () => {
     expect(
       screen.queryByRole("spinbutton", { name: translate("connections.replyRecentMessages") }),
     ).toBeNull();
+    // 0059 新组控件的归属：两个上限输入在「回复方式」页（并行任务的完整上限，不是模型并发），
+    // 防刷屏开关在「发言时机」页；输入范围照契约 1..64。
+    await tab("schemes.sections.response");
+    const mentionCap = screen.getByLabelText(
+      translate("connections.mentionTaskLimit"),
+    ) as HTMLInputElement;
+    const ordinaryCap = screen.getByLabelText(
+      translate("connections.ordinaryTaskLimit"),
+    ) as HTMLInputElement;
+    expect(mentionCap.id).toBe("scheme-field-taskLimits.mention_task_limit");
+    expect(ordinaryCap.id).toBe("scheme-field-taskLimits.ordinary_task_limit");
+    expect(mentionCap.min).toBe("1");
+    expect(mentionCap.max).toBe("64");
+    expect(ordinaryCap.min).toBe("1");
+    expect(ordinaryCap.max).toBe("64");
+    await tab("schemes.sections.participation");
+    expect(
+      screen.getByRole("checkbox", {
+        name: new RegExp(translate("connections.enableInputAntiSpam")),
+      }),
+    ).toBeTruthy();
   });
 
   it("renders derived vs custom reply task status badge and bound turns read-only copy", async () => {

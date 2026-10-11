@@ -15,8 +15,8 @@
 //   * a failed read is never announced in the conversation — only recorded on the admin
 //     side (§7.2), and that is expressed as a literal type so it cannot be "helpfully"
 //     changed by a caller;
-//   * a non-@ failure is never retried, and an @ failure gets exactly one more attempt
-//     after a related supplement arrives, then silence;
+//   * baseline reads once — a failure is recorded and reused, never retried or re-scheduled
+//     (§5.7: the supplement time-window/time-unlock flow is retired);
 //   * a media's retry count is its own counter and is never reset or shared with the
 //     reply-regeneration budget (§7.2: the two must not be able to loop each other);
 //   * until a description exists, only the caption, the quote and the topic may be used —
@@ -29,11 +29,11 @@ const MediaKindSchema = z.enum(["image", "record", "video", "file"]);
 export type QqMediaKind = z.output<typeof MediaKindSchema>;
 
 /**
- * A second read is the last one (§7.2: after the second failure the wait ends and there
- * is no loop). Not configurable, because the plan fixes this count, unlike the windows
- * and budgets that are still open.
+ * 每个真实请求自己的尝试预算（§5.7）：一次有界尝试，失败结果复用，不自动第二次、
+ * 不等补充、不循环。同一请求的 invoke/replay 走任务 CAS 去重；真实新消息＝新的请求身份
+ * （新的账本行），各自预算——旧的失败不是永久门禁。
  */
-export const QQ_MEDIA_MAX_ATTEMPTS = 2;
+export const QQ_MEDIA_MAX_ATTEMPTS = 1;
 
 function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
   const result = schema.safeParse(input);
@@ -43,46 +43,33 @@ function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
 
 const RetryInputSchema = z.strictObject({
   kind: MediaKindSchema,
-  /** How many read attempts this media has already had. */
+  /** How many read attempts this task identity has already had. */
   attempts: z.number().int().min(0),
-  /** Was the message that carried it addressed to the assistant? */
-  addressedToAssistant: z.boolean(),
-  /** Has a related supplement arrived (an explanation, a follow-up question, a reply)? */
-  relatedSupplementArrived: z.boolean(),
 });
 
 export type QqMediaRetryVerdict =
   | { readonly kind: "allowed"; readonly attempt: number }
   | {
       readonly kind: "blocked";
-      readonly reason: "not_addressed" | "awaiting_supplement" | "attempts_exhausted";
+      readonly reason: "attempts_exhausted";
     };
 
 /**
- * May this media be read again?
+ * May this task identity take a read attempt?
  *
- * The asymmetry between @ and non-@ is deliberate (§7.2): a picture nobody asked about
- * that fails is left alone, while one that was addressed to the assistant is retried
- * once — and only once — when something related arrives. An unrelated message must not
- * wake it, which is why the caller reports "a related supplement arrived" rather than
- * "a message arrived".
+ * 语义已按 §5.7 简化：不再有 @/非 @ 的不对称，也不再有"等补充"；每个身份一次有界尝试，
+ * 用尽即 blocked（失败结果复用），真实新请求是新的身份行、各自预算。
  */
 export function checkQqMediaRetry(input: unknown): QqMediaRetryVerdict {
   const value = parse(RetryInputSchema, input);
   if (value.attempts >= QQ_MEDIA_MAX_ATTEMPTS)
     return Object.freeze({ kind: "blocked", reason: "attempts_exhausted" });
-  if (value.attempts === 0) return Object.freeze({ kind: "allowed", attempt: 1 });
-  if (!value.addressedToAssistant)
-    return Object.freeze({ kind: "blocked", reason: "not_addressed" });
-  if (!value.relatedSupplementArrived)
-    return Object.freeze({ kind: "blocked", reason: "awaiting_supplement" });
   return Object.freeze({ kind: "allowed", attempt: value.attempts + 1 });
 }
 
 const FailureInputSchema = z.strictObject({
   kind: MediaKindSchema,
   attempts: z.number().int().min(0),
-  addressedToAssistant: z.boolean(),
 });
 
 /**
@@ -93,20 +80,16 @@ const FailureInputSchema = z.strictObject({
 export interface QqMediaFailureOutcome {
   readonly announceInConversation: false;
   readonly recordInAdminLog: true;
-  /** @ addressing keeps the door open for one related supplement. */
-  readonly awaitSupplement: boolean;
-  /** Nothing more will be tried; the wait is over rather than pending forever. */
+  /** Nothing more will be tried for this identity; the failure is recorded and reused. */
   readonly giveUp: boolean;
 }
 
 export function qqMediaFailureOutcome(input: unknown): QqMediaFailureOutcome {
   const value = parse(FailureInputSchema, input);
-  const exhausted = value.attempts >= QQ_MEDIA_MAX_ATTEMPTS;
   return Object.freeze({
     announceInConversation: false,
     recordInAdminLog: true,
-    awaitSupplement: value.addressedToAssistant && !exhausted,
-    giveUp: exhausted,
+    giveUp: value.attempts >= QQ_MEDIA_MAX_ATTEMPTS,
   });
 }
 
@@ -228,16 +211,29 @@ export function qqMediaModelFor(kind: unknown, config: unknown): QqMediaModelCho
 
 /**
  * 生效媒体输入形状的稳定修订串——分类缓存槽与 typed 结果缓存共用的唯一策略键真源。
- * 键序固定 prompt→frames→maxDimension：键序变了缓存键就变，既有分类缓存全部失效。
+ *
+ * v2（统一规格断版，§5.6）：静图长边（所有类别共用，null=原图）与动图帧数/边长
+ * （所有类别共用 rhythm 真源）一起进修订组成；形状标识同时从 media/v1 升到 media/v2，
+ * 所以旧表情规格产出的成功描述不可能在"规格字面恰好相同"时被静默复用——这一版是
+ * 无条件断版，不依赖两份规格碰巧取值不同。旧调用方仍传 v1 的三个字段会缺 stillMaxDimension，
+ * 由宿主（Root 单写者）按最终 API 同步。
+ *
+ * 键序固定 shape→prompt→still→frames→maxDimension：键序变了缓存键就变。
  */
+export const QQ_MEDIA_POLICY_SHAPE = "media/v2";
+
 export function qqMediaPolicyRevision(input: {
   readonly prompt: string;
+  /** 所有类别共用的静图长边；null＝原图。 */
+  readonly stillMaxDimension: number | null;
   readonly frames: number;
   readonly maxDimension: number;
 }): string {
   return bodyRevision(
     JSON.stringify({
+      shape: QQ_MEDIA_POLICY_SHAPE,
       prompt: input.prompt,
+      stillMaxDimension: input.stillMaxDimension,
       frames: input.frames,
       maxDimension: input.maxDimension,
     }),

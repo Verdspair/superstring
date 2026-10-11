@@ -62,6 +62,15 @@ export function toContractQqBinding(row: QqBindingRow): QqBinding {
     // 0031: NULL mode and NULL members are the stored form of "no list at all"; the column CHECK
     // only guarantees valid JSON, so the contract is what refuses a half-written pair.
     attention: attentionFromColumns(row),
+    // 0059: the two override groups are three-state columns again — NULL follows the scheme,
+    // a value overrides it. The contract schema is what refuses an out-of-range cap.
+    taskLimits: {
+      mention_task_limit: row.mentionTaskLimit,
+      ordinary_task_limit: row.ordinaryTaskLimit,
+    },
+    inputAntiSpam: {
+      enabled: row.inputAntiSpamEnabled === null ? null : row.inputAntiSpamEnabled === 1,
+    },
   });
 }
 
@@ -83,6 +92,21 @@ function attentionColumns(attention: QqBinding["attention"]) {
   return {
     attentionMode: attention.mode === "off" ? null : attention.mode,
     attentionMembers: attention.mode === "off" ? null : JSON.stringify([...attention.members]),
+  };
+}
+
+/** The two nullable limit columns, from the contract's override group (0059). */
+function taskLimitColumns(taskLimits: QqBinding["taskLimits"]) {
+  return {
+    mentionTaskLimit: taskLimits.mention_task_limit,
+    ordinaryTaskLimit: taskLimits.ordinary_task_limit,
+  };
+}
+
+/** The nullable anti-spam column; NULL follows the scheme (0059). */
+function antiSpamColumn(inputAntiSpam: QqBinding["inputAntiSpam"]) {
+  return {
+    inputAntiSpamEnabled: inputAntiSpam.enabled === null ? null : inputAntiSpam.enabled ? 1 : 0,
   };
 }
 
@@ -116,6 +140,8 @@ export function bindingResponse(orm: Orm, binding: QqBinding): QqBindingResponse
     pending_observations: pendingObservationCount(orm, qqConversationScope(binding)),
     triggers: binding.triggers,
     attention: binding.attention,
+    task_limits: binding.taskLimits,
+    input_anti_spam: binding.inputAntiSpam,
     revision: binding.revision,
     authority_revision: binding.authorityRevision,
   };
@@ -198,6 +224,8 @@ export function insertQqBinding(orm: Orm, binding: QqBinding): QqBinding {
         paused: binding.paused ? 1 : 0,
         ...triggerColumns(binding.triggers),
         ...attentionColumns(binding.attention),
+        ...taskLimitColumns(binding.taskLimits),
+        ...antiSpamColumn(binding.inputAntiSpam),
         shareWebMemory: binding.shareWebMemory ? 1 : 0,
         memoryBatchSize: binding.memoryBatchSize,
         ownerIdentityRevision: binding.ownerIdentityRevision,
@@ -313,6 +341,9 @@ function writeQqBindingRow(orm: Orm, binding: QqBinding, expectedRevision: numbe
       // The attention list travels the same way (0031): absent in the patch means the contract
       // carried the old value forward, so writing it is a no-op rather than a loss.
       ...attentionColumns(binding.attention),
+      // The 0059 override groups travel the same way: the contract already merged them.
+      ...taskLimitColumns(binding.taskLimits),
+      ...antiSpamColumn(binding.inputAntiSpam),
       shareWebMemory: binding.shareWebMemory ? 1 : 0,
       memoryBatchSize: binding.memoryBatchSize,
       ownerIdentityRevision: binding.ownerIdentityRevision,

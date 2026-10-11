@@ -183,7 +183,6 @@ describe("typed QQ media task reader", () => {
       const result = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(result).toMatchObject({
@@ -224,7 +223,7 @@ describe("typed QQ media task reader", () => {
       const result = await readQqMediaTaskOnce(
         h.orm,
         adapter(calls, "合成的图片描述", seenOwners),
-        { ...base, purpose: "baseline", addressedToAssistant: true, assertCurrent: guardOk, owner },
+        { ...base, purpose: "baseline", assertCurrent: guardOk, owner },
       );
       expect(result.kind).toBe("described");
       expect(calls.count).toBe(1);
@@ -313,7 +312,6 @@ describe("typed QQ media task reader", () => {
           readQqMediaTaskOnce(h.orm, adapter(calls), {
             ...base,
             purpose: "baseline",
-            addressedToAssistant: true,
             assertCurrent: guardOk,
             owner,
           } as never),
@@ -342,7 +340,6 @@ describe("typed QQ media task reader", () => {
       const result = await readQqMediaTaskOnce(h.orm, capturing, {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(result.kind).toBe("described");
@@ -377,7 +374,6 @@ describe("typed QQ media task reader", () => {
       const first = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(first.kind).toBe("described");
@@ -385,7 +381,6 @@ describe("typed QQ media task reader", () => {
       const second = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(second).toMatchObject({ kind: "described", source: "cache", attempt: 1 });
@@ -407,7 +402,6 @@ describe("typed QQ media task reader", () => {
       const first = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(first.kind).toBe("described");
@@ -417,7 +411,6 @@ describe("typed QQ media task reader", () => {
         ...base,
         policy: "test-policy-2",
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(second).toEqual({ kind: "unreadable", reason: "cache_mismatch" });
@@ -437,7 +430,6 @@ describe("typed QQ media task reader", () => {
           ...base,
           purpose: "detail",
           questionKey: normalizeQuestionKey("图里写了什么字？"),
-          addressedToAssistant: true,
           assertCurrent: guardOk,
         } as never),
       ).rejects.toThrow();
@@ -449,7 +441,6 @@ describe("typed QQ media task reader", () => {
         readQqMediaTaskOnce(h.orm, adapter(calls), {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
           assertQuestionCurrent: guardOk,
         } as never),
@@ -473,7 +464,6 @@ describe("typed QQ media task reader", () => {
         purpose: "detail",
         questionKey: normalizeQuestionKey("图里写了什么字？"),
         assertQuestionCurrent: anchorGuard,
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(result).toMatchObject({ kind: "described", purpose: "detail", source: "task" });
@@ -520,7 +510,6 @@ describe("typed QQ media task reader", () => {
         ...base,
         modelConfig: { visionModelName: "vision-old", transcriptionModelName: null },
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       // The legacy task is served as cache when the configured model matches
@@ -543,7 +532,6 @@ describe("typed QQ media task reader", () => {
         ...base,
         modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(second).toEqual({ kind: "unreadable", reason: "cache_mismatch" });
@@ -567,7 +555,6 @@ describe("typed QQ media task reader", () => {
       const result = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(result).toMatchObject({ kind: "described", source: "task", attempt: 1 });
@@ -596,7 +583,6 @@ describe("typed QQ media task reader", () => {
       const result = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(result).toEqual({ kind: "unreadable", reason: "legacy_task_missing" });
@@ -644,16 +630,15 @@ describe("typed QQ media task reader", () => {
         .run();
       // A baseline read on the consumed row with a different configured model:
       // the legacy task IS the baseline identity — its consumed failed attempt
-      // counts (never reset by a model change), so the next claim is attempt 2
-      // and requires host-proven supplement evidence. Zero calls, zero new
-      // tasks, the row's consumed evidence is untouched.
+      // counts (never reset by a model change) and the one bounded budget is
+      // already spent: the read refuses without any model call, zero new
+      // tasks, the row's consumed evidence untouched.
       const mismatched = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
-      expect(mismatched).toEqual({ kind: "unreadable", reason: "awaiting_supplement" });
+      expect(mismatched).toEqual({ kind: "unreadable", reason: "attempts_exhausted" });
       expect(calls.count).toBe(0);
       expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(1);
       const tasks = h.orm.select().from(schema.qqMediaReadTasks).all();
@@ -712,7 +697,6 @@ describe("typed QQ media task reader", () => {
         purpose: "detail",
         questionKey: normalizeQuestionKey("图里写了什么字？"),
         assertQuestionCurrent: anchorGuard,
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(result).toMatchObject({ kind: "described", purpose: "detail", source: "task" });
@@ -746,7 +730,6 @@ describe("typed QQ media task reader", () => {
         purpose: "detail",
         questionKey: normalizeQuestionKey("图里写了什么字？"),
         assertQuestionCurrent: anchorGuard,
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(second).toMatchObject({ kind: "described", source: "cache" });
@@ -763,7 +746,7 @@ describe("typed QQ media task reader", () => {
     }
   });
 
-  it("blocks the second attempt without a host-proven supplement and allows it with one", async () => {
+  it("one bounded attempt through the real reader: the failure result is reused, never retried", async () => {
     const h = setup();
     try {
       const calls = { count: 0 };
@@ -777,76 +760,27 @@ describe("typed QQ media task reader", () => {
       const first = await readQqMediaTaskOnce(h.orm, failing, {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
-      expect(first).toMatchObject({ kind: "failed", attempt: 1, awaitSupplement: true });
-      expect(calls.count).toBe(1);
-      // No supplement proof: blocked before any new claim.
-      const blocked = await readQqMediaTaskOnce(h.orm, failing, {
-        ...base,
-        purpose: "baseline",
-        addressedToAssistant: true,
-        relatedSupplementArrived: true,
-        assertCurrent: guardOk,
+      expect(first).toMatchObject({
+        kind: "failed",
+        attempt: 1,
+        announceInConversation: false,
+        giveUp: true,
       });
-      expect(blocked).toEqual({ kind: "unreadable", reason: "awaiting_supplement" });
       expect(calls.count).toBe(1);
-      // Host evidence callback proves a genuinely later supplement: attempt 2.
+      // 一次有界尝试（§5.7）：失败结果复用——同身份重复读取不发模型、不重置、
+      // 不需要任何"补充证据"输入（时间解锁流已退役）。
       const second = await readQqMediaTaskOnce(h.orm, failing, {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
-        relatedSupplementArrived: true,
-        proveSupplementLaterThan: () => true,
         assertCurrent: guardOk,
       });
-      expect(second).toMatchObject({ kind: "failed", attempt: 2 });
-      expect(calls.count).toBe(2);
-      // Budget exhausted: further calls refuse without touching the model.
-      const exhausted = await readQqMediaTaskOnce(h.orm, failing, {
-        ...base,
-        purpose: "baseline",
-        addressedToAssistant: true,
-        relatedSupplementArrived: true,
-        proveSupplementLaterThan: () => true,
-        assertCurrent: guardOk,
-      });
-      expect(exhausted).toEqual({ kind: "unreadable", reason: "attempts_exhausted" });
-      expect(calls.count).toBe(2);
-    } finally {
-      h.close();
-    }
-  });
-
-  it("refuses a second attempt when addressedToAssistant is false, before any claim", async () => {
-    const h = setup();
-    try {
-      const calls = { count: 0 };
-      const failing = {
-        capabilities: ["image"] as const,
-        read: async () => {
-          calls.count++;
-          throw new Error("transport down");
-        },
-      };
-      const first = await readQqMediaTaskOnce(h.orm, failing, {
-        ...base,
-        purpose: "baseline",
-        addressedToAssistant: false,
-        assertCurrent: guardOk,
-      });
-      expect(first).toMatchObject({ kind: "failed", attempt: 1 });
-      const blocked = await readQqMediaTaskOnce(h.orm, failing, {
-        ...base,
-        purpose: "baseline",
-        addressedToAssistant: false,
-        relatedSupplementArrived: true,
-        proveSupplementLaterThan: () => true,
-        assertCurrent: guardOk,
-      });
-      expect(blocked).toEqual({ kind: "unreadable", reason: "not_addressed" });
+      expect(second).toEqual({ kind: "unreadable", reason: "attempts_exhausted" });
       expect(calls.count).toBe(1);
+      const tasks = h.orm.select().from(schema.qqMediaReadTasks).all();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]).toMatchObject({ attempts: 1, status: "failed" });
     } finally {
       h.close();
     }
@@ -863,7 +797,6 @@ describe("typed QQ media task reader", () => {
         readQqMediaTaskOnce(h.orm, adapter(calls), {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: rejectingGuard,
         }),
       ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
@@ -890,7 +823,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
         },
         controller.signal,
@@ -924,7 +856,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
         },
         controller.signal,
@@ -943,7 +874,6 @@ describe("typed QQ media task reader", () => {
       const first = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(first.kind).toBe("described");
@@ -961,7 +891,6 @@ describe("typed QQ media task reader", () => {
         readQqMediaTaskOnce(h.orm, adapter(calls), {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
           owner: foreignOwner,
         } as never),
@@ -995,7 +924,6 @@ describe("typed QQ media task reader", () => {
           {
             ...base,
             purpose: "baseline",
-            addressedToAssistant: true,
             assertCurrent: abortOnlyGuard,
           },
           controller.signal,
@@ -1016,7 +944,6 @@ describe("typed QQ media task reader", () => {
       const first = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       });
       expect(first.kind).toBe("described");
@@ -1037,7 +964,6 @@ describe("typed QQ media task reader", () => {
           {
             ...base,
             purpose: "baseline",
-            addressedToAssistant: true,
             assertCurrent: abortOnlyGuard,
           },
           controller.signal,
@@ -1074,7 +1000,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: () => {
             guardCalls++;
             if (guardCalls > 1) controller.abort(reason);
@@ -1127,7 +1052,6 @@ describe("typed QQ media task reader", () => {
         readQqMediaTaskOnce(h.orm, adapter(calls), {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
           owner: {
             kind: "conversation" as const,
@@ -1165,7 +1089,6 @@ describe("typed QQ media task reader", () => {
       const first = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
         owner: conversationOwner,
       });
@@ -1176,7 +1099,6 @@ describe("typed QQ media task reader", () => {
       const second = await readQqMediaTaskOnce(h.orm, adapter(calls), {
         ...base,
         purpose: "baseline",
-        addressedToAssistant: true,
         assertCurrent: guardOk,
         owner: conversationOwner,
       });
@@ -1218,7 +1140,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
         },
       );
@@ -1248,7 +1169,6 @@ describe("typed QQ media task reader", () => {
         purpose: "detail" as const,
         questionKey: normalizeQuestionKey("图里写了什么字？"),
         assertQuestionCurrent: anchorGuard,
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       };
       const first = await readQqMediaTaskOnce(h.orm, adapter(calls), input);
@@ -1280,7 +1200,6 @@ describe("typed QQ media task reader", () => {
         purpose: "detail" as const,
         questionKey: normalizeQuestionKey("图里写了什么字？"),
         assertQuestionCurrent: anchorGuard,
-        addressedToAssistant: true,
         assertCurrent: guardOk,
       };
       const first = await readQqMediaTaskOnce(h.orm, adapter(calls), input);
@@ -1309,7 +1228,6 @@ describe("typed QQ media task reader", () => {
           {
             ...base,
             purpose: "baseline",
-            addressedToAssistant: true,
             assertCurrent: guardOk,
           },
           controller.signal,
@@ -1341,7 +1259,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: (tx) => {
             const row = mediaNoteRow(tx, base.eventKey, 0);
             if (!row || row.expiresAt <= new Date().toISOString()) {
@@ -1390,7 +1307,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: (tx) => {
             const row = mediaNoteRow(tx, base.eventKey, 0);
             if (!row || row.id !== originalId) {
@@ -1425,7 +1341,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
         },
       );
@@ -1463,7 +1378,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: () => {
             if (moved) {
               throw Object.assign(new Error("authority moved"), { code: "CONTEXT_SOURCE_INVALID" });
@@ -1501,7 +1415,6 @@ describe("typed QQ media task reader", () => {
         {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: () => {
             if (moved) {
               throw Object.assign(new Error("authority moved"), { code: "CONTEXT_SOURCE_INVALID" });
@@ -1532,7 +1445,6 @@ describe("typed QQ media task reader", () => {
         await readQqMediaTaskOnce(h.orm, adapter(calls), {
           ...base,
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
         }),
       ).toEqual({ kind: "unreadable", reason: "binding_inactive" });
@@ -1542,7 +1454,6 @@ describe("typed QQ media task reader", () => {
           ...base,
           eventKey: "no-such-event",
           purpose: "baseline",
-          addressedToAssistant: true,
           assertCurrent: guardOk,
         }),
       ).toEqual({ kind: "unreadable", reason: "segment_missing" });

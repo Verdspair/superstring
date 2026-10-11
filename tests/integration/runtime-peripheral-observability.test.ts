@@ -126,6 +126,7 @@ function bot(h: ReturnType<typeof setup>, group = false, enabled = true) {
   });
   cleanup.push(async () => {
     app.scheduler.stop();
+    await app.scheduler.waitForIdle();
     app.delivery.stop();
   });
   const receive = () =>
@@ -188,7 +189,13 @@ describe("actual peripheral execution traces", () => {
       "unknown",
     ]);
     expect(new Set(rows.map((r) => r.trace_id))).toEqual(new Set([ingress.trace_id]));
-    expect(rows.find((r) => r.name === "bot.wake.activate")?.wake_id).toBeTruthy();
+    // 短 intake 轨迹与业务轨迹各自独立成立：wake 完成转移，业务 span 挂在真实 wake intake 上。
+    const wakeSpan = rows.find((r) => r.name === "bot.wake.activate")!;
+    expect(wakeSpan.wake_id).toBeTruthy();
+    const taskSpan = rows.find((r) => r.name === "bot.task.activate")!;
+    expect(taskSpan.status).toBe("completed");
+    expect(taskSpan.parent_span_id).toBe(wakeSpan.span_id);
+    expect(taskSpan.wake_id).toBe(wakeSpan.wake_id);
     const part = rows.find((r) => r.name === "bot.delivery.part")!;
     expect(part.parent_span_id).toBe(rows.find((r) => r.name === "bot.delivery")?.span_id ?? null);
     expect(part.output_id).toBeTruthy();
@@ -245,13 +252,19 @@ describe("actual peripheral execution traces", () => {
     app.receive();
     h.db.exec("UPDATE qq_events SET occurred_at_seconds=occurred_at_seconds-601");
     expect(await app.scheduler.runOnce()).toBe(true);
-    const activation = h.rows().find((r) => r.name === "bot.wake.activate")!;
+    const wakeSpan = h.rows().find((r) => r.name === "bot.wake.activate")!;
+    // 两层结算各归各位：短 intake 唤醒已把机会转交任务并完成转移，过期是任务本体的结算。
+    expect(h.db.query("SELECT status FROM wake_signals WHERE id=?").get(wakeSpan.wake_id)).toEqual({
+      status: "completed",
+    });
+    const activation = h.rows().find((r) => r.name === "bot.task.activate")!;
     expect(activation.status).toBe("skipped");
     expect(activation.code).toBe("OPPORTUNITY_EXPIRED");
     expect(activation.finished_at).not.toBeNull();
-    expect(
-      h.db.query("SELECT status FROM wake_signals WHERE id=?").get(activation.wake_id),
-    ).toEqual({ status: "no_output" });
+    expect(activation.parent_span_id).toBe(wakeSpan.span_id);
+    expect(h.db.query("SELECT status FROM qq_conversation_tasks").get()).toEqual({
+      status: "expired",
+    });
     expect(calls).toBe(0);
   });
   it("shows disabled admission and cadence deferral even when no model starts", async () => {
@@ -284,14 +297,38 @@ describe("actual peripheral execution traces", () => {
       text: secret,
     });
     expect(await app.scheduler.runOnce()).toBe(true);
+    const cadenceRows = g.rows();
+    // 冷却延后写进 durable pending（ready_at），wake 只完成转移；不是第二次 wake 延期，也不是机会丢失。
     expect(
-      g
-        .rows()
-        .some(
-          (r) =>
-            r.name === "bot.wake.activate" && r.status === "deferred" && r.code === "COOLING_DOWN",
-        ),
+      cadenceRows.some(
+        (r) =>
+          r.name === "bot.task.activate" && r.status === "deferred" && r.code === "COOLING_DOWN",
+      ),
     ).toBe(true);
+    const deferred = g.db
+      .query(
+        "SELECT status,ready_at,execution_snapshot,claimed_at,judgement_done,finished_at FROM qq_conversation_tasks",
+      )
+      .get() as {
+      status: string;
+      ready_at: string | null;
+      execution_snapshot: string | null;
+      claimed_at: string | null;
+      judgement_done: number;
+      finished_at: string | null;
+    };
+    expect(deferred.status).toBe("pending");
+    expect(deferred.ready_at).not.toBeNull();
+    expect(Date.parse(deferred.ready_at!)).toBeGreaterThan(Date.now());
+    expect(deferred.execution_snapshot).not.toBeNull();
+    expect(deferred.claimed_at).not.toBeNull();
+    expect(deferred.judgement_done).toBe(0);
+    expect(deferred.finished_at).toBeNull();
+    const cadenceWake = cadenceRows.find((r) => r.name === "bot.wake.activate")!;
+    expect(cadenceWake.status).toBe("completed");
+    expect(
+      g.db.query("SELECT status FROM wake_signals WHERE id=?").get(cadenceWake.wake_id),
+    ).toEqual({ status: "completed" });
     expect(calls).toBe(0);
     expect(JSON.stringify([...h.rows(), ...g.rows()])).not.toContain(secret);
   });
@@ -303,9 +340,19 @@ describe("actual peripheral execution traces", () => {
     app.receive();
     expect(await app.scheduler.runOnce()).toBe(true);
     const spans = h.rows(),
-      activation = spans.find((r) => r.name === "bot.wake.activate")!;
+      wakeSpan = spans.find((r) => r.name === "bot.wake.activate")!,
+      activation = spans.find((r) => r.name === "bot.task.activate")!;
     expect(activation.status).toBe("failed");
-    expect(activation.parent_span_id).toBe(spans.find((r) => r.name === "bot.wake.offer")!.span_id);
+    expect(activation.code).toBe("QQ_TASK_FAILED");
+    expect(activation.parent_span_id).toBe(wakeSpan.span_id);
+    expect(activation.wake_id).toBe(wakeSpan.wake_id);
+    expect(h.db.query("SELECT status,error_code FROM qq_conversation_tasks").get()).toEqual({
+      status: "failed",
+      error_code: "QQ_TASK_FAILED",
+    });
+    expect(new Set(spans.map((r) => r.trace_id))).toEqual(
+      new Set([spans.find((r) => r.name === "bot.ingress")!.trace_id]),
+    );
     expect(JSON.stringify(spans)).not.toContain(secret);
   });
   it.each([false, true])(

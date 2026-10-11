@@ -199,6 +199,26 @@ export function conversationRoutes(
       COALESCE(SUM(status='failed'),0) AS failedWakes,MIN(CASE WHEN status='pending' THEN ready_at END) AS nextReadyAt
       FROM wake_signals WHERE conversation_id=?`)
       .get(current.id) as { pendingWakes: number; failedWakes: number; nextReadyAt: string | null };
+    const tasks = db
+      .query(`WITH queued_work AS (
+        SELECT ready_at FROM qq_conversation_tasks WHERE conversation_id=? AND status='pending'
+        UNION ALL
+        SELECT w.ready_at FROM wake_signals w
+        WHERE w.conversation_id=? AND w.status='pending'
+          AND NOT EXISTS (
+            SELECT 1 FROM qq_conversation_tasks t WHERE t.conversation_id=w.conversation_id
+              AND (t.origin_wake_id=w.id OR
+                (t.task_class='mention' AND t.source_through_seq=w.through_seq AND t.cause=w.cause))
+          )
+      )
+      SELECT (SELECT COUNT(*) FROM qq_conversation_tasks
+        WHERE conversation_id=? AND status='pending') AS pendingTasks,
+        COUNT(*) AS queuedCount, MIN(ready_at) AS nextReadyAt FROM queued_work`)
+      .get(current.id, current.id, current.id) as {
+      pendingTasks: number;
+      queuedCount: number;
+      nextReadyAt: string | null;
+    };
     const { activeRuns } = db
       .query(
         "SELECT COUNT(*) AS activeRuns FROM agent_runs WHERE conversation_id=? AND ended_at IS NULL",
@@ -211,6 +231,7 @@ export function conversationRoutes(
       .get(current.id) as { unknownDeliveries: number };
     return c.json({
       ...wakes,
+      ...tasks,
       activeRuns,
       unknownDeliveries,
       lastActivityAt: current.updated_at,

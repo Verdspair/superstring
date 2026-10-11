@@ -13,6 +13,7 @@ import {
   type QqMemoryOrganiseResponse,
   type QqSchemeCompression,
   type QqSchemeContext,
+  type QqSchemeInputAntiSpam,
   type QqSchemeMediaInput,
   type QqSchemeMessageSettings,
   type QqSchemeOutputReserve,
@@ -21,6 +22,7 @@ import {
   type QqSchemeResponse,
   type QqSchemeRhythm,
   type QqSchemeStickers,
+  type QqSchemeTaskLimits,
   type QqSettingsResponse,
   type QqSpeechTriggers,
   type QqStatusResponse,
@@ -185,6 +187,10 @@ export interface QqSchemeEditor {
   messageSettings: QqSchemeMessageSettings;
   /** 0052 图片输入组（模式、阶段、图数、规格）；stages 深复制，API 持久键仍是 media_input。 */
   mediaInput: QqSchemeMediaInput;
+  /** 0059 并行任务上限组（提及上限、普通上限）。 */
+  taskLimits: QqSchemeTaskLimits;
+  /** 0059 输入防抖组（启用开关）。 */
+  inputAntiSpam: QqSchemeInputAntiSpam;
 }
 
 export function qqSchemeEditorFrom(scheme: QqSchemeResponse): QqSchemeEditor {
@@ -207,6 +213,8 @@ export function qqSchemeEditorFrom(scheme: QqSchemeResponse): QqSchemeEditor {
       ...scheme.media_input,
       stages: { ...scheme.media_input.stages },
     },
+    taskLimits: { ...scheme.task_limits },
+    inputAntiSpam: { ...scheme.input_anti_spam },
   };
 }
 
@@ -312,19 +320,19 @@ export function qqSchemeChanges(editor: QqSchemeEditor | null): readonly QqSchem
     editor.mediaInput.ordinary_still_max_dimension,
   );
   compare(
-    "media_input.expression_max_dimension",
-    editor.source.media_input.expression_max_dimension,
-    editor.mediaInput.expression_max_dimension,
+    "task_limits.mention_task_limit",
+    editor.source.task_limits.mention_task_limit,
+    editor.taskLimits.mention_task_limit,
   );
   compare(
-    "media_input.expression_frame_count",
-    editor.source.media_input.expression_frame_count,
-    editor.mediaInput.expression_frame_count,
+    "task_limits.ordinary_task_limit",
+    editor.source.task_limits.ordinary_task_limit,
+    editor.taskLimits.ordinary_task_limit,
   );
   compare(
-    "media_input.expression_frame_max_dimension",
-    editor.source.media_input.expression_frame_max_dimension,
-    editor.mediaInput.expression_frame_max_dimension,
+    "input_anti_spam.enabled",
+    editor.source.input_anti_spam.enabled,
+    editor.inputAntiSpam.enabled,
   );
   return changes;
 }
@@ -341,7 +349,11 @@ export type QqSchemeGroupKey =
   /** 0052：消息设置组（引用模式、层数、时间模式、时区）。 */
   | "messageSettings"
   /** 0052：图片输入组（模式、stages、图数、规格）。 */
-  | "mediaInput";
+  | "mediaInput"
+  /** 0059：并行任务上限组（提及上限、普通上限）。 */
+  | "taskLimits"
+  /** 0059：输入防抖组（启用开关）。 */
+  | "inputAntiSpam";
 /**
  * A patch to one parameter group. Loose on purpose: the grids drive their patches from const
  * tables, so the alternative would be a cast at every field. A key the group does not have is
@@ -604,6 +616,10 @@ export interface QqAccessState {
        * 回到方案基线；缺省＝这不是一次「移动到其他方案」的保存，服务端不做方案切换处理。
        */
       scheme_change?: "keep" | "reset";
+      /** 0059 并行任务上限覆盖：成员 null＝跟随方案。 */
+      task_limits?: QqBindingResponse["task_limits"];
+      /** 0059 输入防抖覆盖：null＝跟随方案。 */
+      input_anti_spam?: QqBindingResponse["input_anti_spam"];
     },
   ) => Promise<boolean>;
   /**
@@ -630,6 +646,11 @@ export const qqAccessInitial = {
 // ---- 本群配置 ------------------------------------------------------------------------------
 // 编辑态、稀疏改写的合并与动作都在 group-config-state.ts（含 initial）；这里转出类型，
 // 供单 store 装配与页面引用同一份契约。
+export type {
+  QqBindingInputAntiSpam,
+  QqBindingTaskLimits,
+} from "../../../shared/contracts/qq";
+
 export type {
   QqGroupConfigChange,
   QqGroupConfigEditor,

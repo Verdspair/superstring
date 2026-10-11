@@ -14,8 +14,6 @@ import { readQqMediaOnce } from "../../src/server/services/qq-media-reader";
 const base = {
   eventKey: "media-1",
   segmentIndex: 0,
-  addressedToAssistant: true,
-  relatedSupplementArrived: false,
   modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
 };
 function setup(kind: "image" | "record" | "video" | "file" = "image") {
@@ -293,10 +291,7 @@ describe("one injected QQ media reading", () => {
       };
       const first = readQqMediaOnce(h.orm, reader, base);
       await running;
-      const second = await readQqMediaOnce(h.orm, reader, {
-        ...base,
-        relatedSupplementArrived: true,
-      });
+      const second = await readQqMediaOnce(h.orm, reader, base);
       expect(second).toEqual({ kind: "unreadable", reason: "read_in_progress" });
       expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(1);
       finish("第一轮读到的内容");
@@ -310,23 +305,27 @@ describe("one injected QQ media reading", () => {
   it("releases the local read guard after a failed attempt", async () => {
     const h = setup();
     try {
+      let calls = 0;
       const reader = {
         capabilities: ["image"] as const,
         read: async () => {
+          calls++;
           throw new Error("synthetic failure");
         },
       };
       expect(await readQqMediaOnce(h.orm, reader, base)).toMatchObject({
         kind: "failed",
         attempt: 1,
+        giveUp: true,
       });
-      expect(
-        await readQqMediaOnce(h.orm, reader, { ...base, relatedSupplementArrived: true }),
-      ).toMatchObject({
-        kind: "failed",
-        attempt: 2,
+      // 一次有界尝试已用尽：本地读取守卫确已释放（不是 read_in_progress），但同一身份
+      // 不再自动第二次——失败结果复用，适配器不被再次调用。
+      expect(await readQqMediaOnce(h.orm, reader, base)).toEqual({
+        kind: "unreadable",
+        reason: "attempts_exhausted",
       });
-      expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(2);
+      expect(calls).toBe(1);
+      expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(1);
     } finally {
       h.close();
     }
@@ -496,7 +495,7 @@ describe("one injected QQ media reading", () => {
     }
   });
 
-  it("fails silently, waits for related supplement, then stops after the second attempt", async () => {
+  it("fails silently and reuses the failed result for the same identity without a second attempt", async () => {
     const h = setup();
     try {
       let calls = 0;
@@ -507,35 +506,25 @@ describe("one injected QQ media reading", () => {
           throw new Error("secret upstream failure");
         },
       };
+      // 一次有界尝试（§5.7）：失败后不再等补充、不自动第二次，失败结果复用。
       expect(await readQqMediaOnce(h.orm, adapter, base)).toEqual({
         kind: "failed",
         attempt: 1,
         announceInConversation: false,
-        awaitSupplement: true,
+        giveUp: true,
       });
       expect(await readQqMediaOnce(h.orm, adapter, base)).toEqual({
         kind: "unreadable",
-        reason: "awaiting_supplement",
+        reason: "attempts_exhausted",
       });
-      expect(
-        await readQqMediaOnce(h.orm, adapter, { ...base, relatedSupplementArrived: true }),
-      ).toEqual({
-        kind: "failed",
-        attempt: 2,
-        announceInConversation: false,
-        awaitSupplement: false,
-      });
-      expect(
-        await readQqMediaOnce(h.orm, adapter, { ...base, relatedSupplementArrived: true }),
-      ).toEqual({ kind: "unreadable", reason: "attempts_exhausted" });
-      expect(calls).toBe(2);
+      expect(calls).toBe(1);
       expect(mediaNoteRow(h.orm, base.eventKey, 0)?.note).toBeNull();
     } finally {
       h.close();
     }
   });
 
-  it("never retries a non-addressed failure, even after a supplement", async () => {
+  it("an empty model answer is a real failure and its result is reused with no retry path", async () => {
     const h = setup();
     try {
       let calls = 0;
@@ -546,14 +535,17 @@ describe("one injected QQ media reading", () => {
           return " ";
         },
       };
-      const nonAddressed = { ...base, addressedToAssistant: false };
-      expect(await readQqMediaOnce(h.orm, adapter, nonAddressed)).toMatchObject({
+      // 空白回答按真实失败结清（§7.2：一次有界尝试），之后失败结果复用——不存在
+      // "未@不读"或"等补充解锁"的旧不对称闸。
+      expect(await readQqMediaOnce(h.orm, adapter, base)).toMatchObject({
         kind: "failed",
-        awaitSupplement: false,
+        attempt: 1,
+        giveUp: true,
       });
-      expect(
-        await readQqMediaOnce(h.orm, adapter, { ...nonAddressed, relatedSupplementArrived: true }),
-      ).toEqual({ kind: "unreadable", reason: "not_addressed" });
+      expect(await readQqMediaOnce(h.orm, adapter, base)).toEqual({
+        kind: "unreadable",
+        reason: "attempts_exhausted",
+      });
       expect(calls).toBe(1);
     } finally {
       h.close();

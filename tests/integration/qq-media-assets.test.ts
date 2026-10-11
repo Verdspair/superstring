@@ -1260,7 +1260,6 @@ function toolsFixture(): ToolsFixture {
       binding,
       adapter: { capabilities: ["image"] as const, read: async () => "unused" },
       modelConfig: { visionModelName: "vision-local", transcriptionModelName: null },
-      supplementWindowMinutes: 30,
       policyRevision: "test-policy",
       assertCurrent: () => {},
       fit: async () => () => true,

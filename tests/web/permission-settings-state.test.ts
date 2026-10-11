@@ -158,4 +158,33 @@ describe("permission settings shared drafts", () => {
     expect(f.save.mock.calls[0][0].policy.grants).toHaveLength(1);
     expect(f.save.mock.calls[0][0].policy.execution?.pausedTools).toEqual(["mcp.demo.read"]);
   });
+
+  it("saves widened concurrency drafts as strings through CAS and keeps them on refresh", async () => {
+    const f = setup();
+    await store.getState().loadPermissionSettings();
+    // 缺省 4/2 在草稿里以字符串呈现。
+    expect(store.getState().permissionEditor?.execution.loopModelConcurrency).toBe("4");
+    expect(store.getState().permissionEditor?.execution.loopProviderConcurrency).toBe("2");
+    store.getState().patchExecutionSettings({
+      loopModelConcurrency: "256",
+      loopProviderConcurrency: "256",
+    });
+    expect(await store.getState().savePermissionSettings("execution")).toBe(true);
+    // 字符串草稿经 CAS（expectedRevision）保存为数值 256。
+    expect(f.save.mock.calls[0][0].expectedRevision).toBe("r1");
+    expect(f.save.mock.calls[0][0].policy.execution?.loop).toMatchObject({
+      modelConcurrency: 256,
+      providerConcurrency: 256,
+    });
+    // 已存的旧显式值 1 在刷新后仍保留为字符串草稿。
+    const next = snapshot();
+    next.revision = "remote";
+    next.policy.execution = ExecutionPolicySchema.parse({
+      loop: { modelConcurrency: 1, providerConcurrency: 1 },
+    });
+    f.replace(next);
+    await store.getState().loadPermissionSettings(true);
+    expect(store.getState().permissionEditor?.execution.loopModelConcurrency).toBe("1");
+    expect(store.getState().permissionEditor?.execution.loopProviderConcurrency).toBe("1");
+  });
 });

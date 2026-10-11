@@ -5,9 +5,9 @@
 // a `file` into a downloadable object, converting audio formats on the way.
 //
 // What is pinned here is the part the plan already decided: a failure stays silent in the
-// conversation, a non-@ failure is never retried, an @ failure gets exactly one more
-// attempt after something related arrives, and nothing may claim to know a picture it
-// could not read.
+// conversation, every read task identity gets exactly one bounded attempt — a failure is
+// recorded and reused, never retried, re-scheduled or waited on — and nothing may claim to
+// know a picture it could not read.
 
 import { describe, expect, it } from "bun:test";
 import {
@@ -30,47 +30,37 @@ import {
   qqMediaReading,
 } from "../../src/server/services/qq-media-contract";
 
-const retry = (
-  attempts: number,
-  addressedToAssistant: boolean,
-  relatedSupplementArrived: boolean,
-  kind = "image",
-) => checkQqMediaRetry({ kind, attempts, addressedToAssistant, relatedSupplementArrived });
+const retry = (attempts: number, kind = "image") => checkQqMediaRetry({ kind, attempts });
 
 describe("read attempts", () => {
   it("allows the first read whether or not the assistant was addressed", () => {
-    expect(retry(0, false, false)).toEqual({ kind: "allowed", attempt: 1 });
-    expect(retry(0, true, false)).toEqual({ kind: "allowed", attempt: 1 });
+    expect(retry(0)).toEqual({ kind: "allowed", attempt: 1 });
   });
 
-  it("never retries a failure nobody asked about", () => {
-    // §7.2: a non-@ failure is not answered and gets no observation retry scheduled. It
-    // stays refused even if something related happens to arrive.
-    expect(retry(1, false, false)).toEqual({ kind: "blocked", reason: "not_addressed" });
-    expect(retry(1, false, true)).toEqual({ kind: "blocked", reason: "not_addressed" });
+  it("never retries a failure: the result is recorded and reused instead", () => {
+    // §5.7: baseline reads once. A failure nobody asked about is not answered, gets no
+    // re-scheduled attempt, and stays refused even if something related arrives later.
+    expect(retry(1)).toEqual({ kind: "blocked", reason: "attempts_exhausted" });
   });
 
-  it("keeps an addressed failure waiting until something related arrives", () => {
-    expect(retry(1, true, false)).toEqual({ kind: "blocked", reason: "awaiting_supplement" });
-    expect(retry(1, true, true)).toEqual({ kind: "allowed", attempt: 2 });
-  });
-
-  it("stops after the second failure, even when addressed and supplemented", () => {
-    // §7.2: the second failure ends the wait; there is no loop.
-    expect(QQ_MEDIA_MAX_ATTEMPTS).toBe(2);
-    expect(retry(2, true, true)).toEqual({ kind: "blocked", reason: "attempts_exhausted" });
-    expect(retry(5, true, true)).toEqual({ kind: "blocked", reason: "attempts_exhausted" });
+  it("every task identity owns exactly one bounded attempt", () => {
+    // §5.7: the supplement time-window/time-unlock flow is retired — no @ asymmetry, no
+    // waiting for a supplement. A real new message is a new request identity with its own
+    // fresh budget; old failures never block it.
+    expect(QQ_MEDIA_MAX_ATTEMPTS).toBe(1);
+    expect(retry(5)).toEqual({ kind: "blocked", reason: "attempts_exhausted" });
   });
 
   it("works for every media kind, since the rule is about the message not the format", () => {
     for (const kind of ["image", "record", "video", "file"]) {
-      expect(retry(1, true, true, kind)).toEqual({ kind: "allowed", attempt: 2 });
+      expect(retry(0, kind)).toEqual({ kind: "allowed", attempt: 1 });
+      expect(retry(1, kind)).toEqual({ kind: "blocked", reason: "attempts_exhausted" });
     }
   });
 
   it("rejects input that does not match the contract", () => {
-    expect(() => retry(-1, true, false)).toThrow(TypeError);
-    expect(() => retry(0.5, true, false)).toThrow(TypeError);
+    expect(() => retry(-1)).toThrow(TypeError);
+    expect(() => retry(0.5)).toThrow(TypeError);
     expect(() =>
       checkQqMediaRetry({
         kind: "sticker",
@@ -80,13 +70,9 @@ describe("read attempts", () => {
       }),
     ).toThrow(TypeError);
     expect(() =>
-      checkQqMediaRetry({ kind: "image", attempts: 0, addressedToAssistant: true }),
-    ).toThrow(TypeError);
-    expect(() =>
       checkQqMediaRetry({
         kind: "image",
         attempts: 0,
-        addressedToAssistant: true,
         relatedSupplementArrived: false,
         extra: 1,
       }),
@@ -96,46 +82,33 @@ describe("read attempts", () => {
 
 describe("failure output", () => {
   it("never explains the failure in the conversation, only in the admin record", () => {
-    const outcome = qqMediaFailureOutcome({
-      kind: "image",
-      attempts: 1,
-      addressedToAssistant: false,
-    });
+    const outcome = qqMediaFailureOutcome({ kind: "image", attempts: 0 });
     // Literal types, so a caller cannot decide to post an error message.
     expect(outcome.announceInConversation).toBe(false);
     expect(outcome.recordInAdminLog).toBe(true);
   });
 
-  it("keeps waiting only when addressed and not yet exhausted", () => {
-    expect(
-      qqMediaFailureOutcome({ kind: "record", attempts: 1, addressedToAssistant: true }),
-    ).toEqual({
+  it("records and reuses the failure instead of waiting for anything", () => {
+    // §5.7: no supplement window — the failure is terminal for this identity and reused,
+    // never kept "waiting".
+    expect(qqMediaFailureOutcome({ kind: "record", attempts: 0 })).toEqual({
       announceInConversation: false,
       recordInAdminLog: true,
-      awaitSupplement: true,
       giveUp: false,
     });
-    expect(
-      qqMediaFailureOutcome({ kind: "record", attempts: 1, addressedToAssistant: false })
-        .awaitSupplement,
-    ).toBe(false);
   });
 
-  it("gives up rather than waiting forever after the last attempt", () => {
-    const outcome = qqMediaFailureOutcome({
-      kind: "image",
-      attempts: 2,
-      addressedToAssistant: true,
-    });
+  it("gives up after the one bounded attempt without waiting forever", () => {
+    const outcome = qqMediaFailureOutcome({ kind: "image", attempts: 1 });
     expect(outcome.giveUp).toBe(true);
-    expect(outcome.awaitSupplement).toBe(false);
+    expect(outcome).not.toHaveProperty("awaitSupplement");
   });
 
   it("rejects input that does not match the contract", () => {
-    expect(() =>
-      qqMediaFailureOutcome({ kind: "image", attempts: -1, addressedToAssistant: true }),
-    ).toThrow(TypeError);
-    expect(() => qqMediaFailureOutcome({ kind: "image", attempts: 1 })).toThrow(TypeError);
+    expect(() => qqMediaFailureOutcome({ kind: "image", attempts: -1 })).toThrow(TypeError);
+    expect(() => qqMediaFailureOutcome({ kind: "image", attempts: 0, extra: 1 })).toThrow(
+      TypeError,
+    );
   });
 });
 
@@ -501,15 +474,17 @@ describe("attachment storage", () => {
     }
   });
 
-  it("claims successive attempts with an atomic conditional database update", () => {
+  it("claims the baseline attempt with an atomic conditional database update, then refuses a second", () => {
     const h = setup();
     try {
       insertEvent(h.orm, "e1");
       addSegment(h.orm, "e1");
       const a = recordMediaAttempt(h.orm, { eventKey: "e1", segmentIndex: 0 });
-      const b = recordMediaAttempt(h.orm, { eventKey: "e1", segmentIndex: 0 });
-      expect([a.attempts, b.attempts]).toEqual([1, 2]);
+      expect(a.attempts).toBe(1);
+      // §5.7: one bounded attempt per identity. The conditional update makes the second
+      // claim impossible — not a retried row, not a capped one.
       expect(() => recordMediaAttempt(h.orm, { eventKey: "e1", segmentIndex: 0 })).toThrow();
+      expect(mediaNoteRow(h.orm, "e1", 0)?.attempts).toBe(1);
     } finally {
       h.business.close();
     }
@@ -534,17 +509,16 @@ describe("attachment storage", () => {
     }
   });
 
-  it("counts attempts up to the plan's limit and refuses a third", () => {
+  it("refuses to spend an attempt once the one-attempt budget is exhausted", () => {
     const h = setup();
     try {
       insertEvent(h.orm, "e1");
       addSegment(h.orm, "e1");
       expect(recordMediaAttempt(h.orm, { eventKey: "e1", segmentIndex: 0 }).attempts).toBe(1);
-      expect(recordMediaAttempt(h.orm, { eventKey: "e1", segmentIndex: 0 }).attempts).toBe(2);
-      // §7.2 allows exactly two reads; the table makes a third impossible rather than
-      // letting a loop start quietly.
+      // §5.7: exactly one read per identity; the claim predicate makes any further attempt
+      // impossible rather than letting a loop start quietly.
       expect(() => recordMediaAttempt(h.orm, { eventKey: "e1", segmentIndex: 0 })).toThrow();
-      expect(mediaNoteRow(h.orm, "e1", 0)?.attempts).toBe(2);
+      expect(mediaNoteRow(h.orm, "e1", 0)?.attempts).toBe(1);
       expect(() => recordMediaAttempt(h.orm, { eventKey: "e1", segmentIndex: 5 })).toThrow();
     } finally {
       h.business.close();

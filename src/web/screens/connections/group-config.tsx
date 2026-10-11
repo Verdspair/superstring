@@ -2151,33 +2151,6 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                     {visible("media_input", "ordinary_still_max_dimension") && (
                       <OrdinaryStillField editor={visibleEditor} base={baseBag("media_input")} />
                     )}
-                    {visible("media_input", "expression_max_dimension") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("media_input")}
-                        group="media_input"
-                        name="expression_max_dimension"
-                        labelKey="connections.expressionStillMaxDimension"
-                      />
-                    )}
-                    {visible("media_input", "expression_frame_count") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("media_input")}
-                        group="media_input"
-                        name="expression_frame_count"
-                        labelKey="connections.expressionFrameCount"
-                      />
-                    )}
-                    {visible("media_input", "expression_frame_max_dimension") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("media_input")}
-                        group="media_input"
-                        name="expression_frame_max_dimension"
-                        labelKey="connections.expressionFrameMaxDimension"
-                      />
-                    )}
                   </div>
                   <div className="grid gap-3 sm:grid-cols-3">
                     {(

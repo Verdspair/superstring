@@ -1,5 +1,6 @@
 // QQ 图片输入契约（T01）：默认 native、三阶段独立 bool（允许全 false）、严格字段、
-// 1–10 帧与 64–2048 尺寸边界（复用现有 rhythm 数值边界）、ordinary null=原图不是「跟随」。
+// 64–2048 尺寸边界、ordinary null=原图不是「跟随」；表情三个规格字段已按媒体规格
+// 统一退役（§5.5），严格 schema 拒绝这些旧键。
 
 import { expect, test } from "bun:test";
 import {
@@ -11,16 +12,28 @@ import {
 } from "../../src/shared/contracts/qq-media-input";
 
 test("approved defaults and boundaries", () => {
-  // 计划 T01 Step1 锚点测试（逐字）。
+  // 计划 T01 Step1 锚点测试（逐字）；表情三个规格字段已按媒体规格统一退役（§5.5），
+  // 画质只剩 ordinary_still_max_dimension 一个设置值，动图帧数/边长由 rhythm 真源独占。
   expect(QQ_MEDIA_INPUT_DEFAULT).toEqual({
     mode: "native",
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   });
+  // 退役键按严格 schema 拒绝（§5.5），不再接受旧表情规格字段。
+  expect(
+    QqMediaInputSettingsSchema.safeParse({
+      ...QQ_MEDIA_INPUT_DEFAULT,
+      expression_max_dimension: 512,
+    }).success,
+  ).toBe(false);
+  expect(
+    QqMediaInputSettingsSchema.safeParse({
+      ...QQ_MEDIA_INPUT_DEFAULT,
+      expression_frame_count: 3,
+      expression_frame_max_dimension: 512,
+    }).success,
+  ).toBe(false);
   expect(
     QqMediaInputSettingsSchema.safeParse({
       ...QQ_MEDIA_INPUT_DEFAULT,
@@ -70,40 +83,39 @@ test("stages 三个 bool 独立，允许全 false（图片开关开但不自动�
   ).toBe(false);
 });
 
-test("尺寸 64–2048、帧数 1–10；ordinary_still_max_dimension null=原图（不是跟随）", () => {
+test("尺寸 64–2048；ordinary_still_max_dimension null=原图（不是跟随）", () => {
+  // 统一后的静图规格边界：64–2048 与 null=原图。动图帧数/边长由 rhythm 真源独占，
+  // 本 schema 不再承载任何帧数字段（§5.5）。
   const dimension = (value: number | null): boolean =>
     QqMediaInputSettingsSchema.safeParse({
       ...QQ_MEDIA_INPUT_DEFAULT,
       ordinary_still_max_dimension: value,
-      expression_max_dimension: value,
-      expression_frame_max_dimension: value,
     }).success;
   expect(dimension(64)).toBe(true);
   expect(dimension(2048)).toBe(true);
   expect(dimension(63)).toBe(false);
   expect(dimension(2049)).toBe(false);
-  // ordinary 单独允许 null=原图；expression 尺寸不允许 null。
-  expect(
-    QqMediaInputSettingsSchema.safeParse({
-      ...QQ_MEDIA_INPUT_DEFAULT,
-      ordinary_still_max_dimension: null,
-    }).success,
-  ).toBe(true);
+  // null=原图（不是「跟随」）。
+  expect(dimension(null)).toBe(true);
+  // 退役的表情规格键（含 null 值形态）一律拒绝。
   expect(
     QqMediaInputSettingsSchema.safeParse({
       ...QQ_MEDIA_INPUT_DEFAULT,
       expression_max_dimension: null,
     }).success,
   ).toBe(false);
-  const frames = (value: number): boolean =>
+  expect(
     QqMediaInputSettingsSchema.safeParse({
       ...QQ_MEDIA_INPUT_DEFAULT,
-      expression_frame_count: value,
-    }).success;
-  expect(frames(1)).toBe(true);
-  expect(frames(10)).toBe(true);
-  expect(frames(0)).toBe(false);
-  expect(frames(11)).toBe(false);
+      expression_frame_count: 0,
+    }).success,
+  ).toBe(false);
+  expect(
+    QqMediaInputSettingsSchema.safeParse({
+      ...QQ_MEDIA_INPUT_DEFAULT,
+      expression_frame_max_dimension: 2048,
+    }).success,
+  ).toBe(false);
 });
 
 test("§2.3 类型逐字沿用：字面量联合与 effective 扩展的编译期钉子", () => {

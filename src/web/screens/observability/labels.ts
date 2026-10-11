@@ -82,6 +82,7 @@ export const operationLabels: Record<string, string> = {
   "bot.ingress.media": "observability.mediaUnderstandingIntake",
   "bot.wake.offer": "observability.wakeOpportunityRegistration",
   "bot.wake.activate": "observability.wakeExecution",
+  "bot.task.activate": "observability.qqConversation",
   "bot.wake.recover": "observability.wakeLeaseRecovery",
   "bot.wake.recovery": "observability.wakeRecordRecovery",
   "bot.host.feedback": "observability.agentReconsiderationFeedback",

@@ -310,14 +310,14 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
     ]);
   });
 
-  it("媒体读失败按住主动接话，被 @ 的补充到来后经真工具重读并收口", async () => {
+  it("媒体基线失败按住主动接话，新消息明确引用原图后以独立请求预算读取并收口", async () => {
     const { status, metric, harness: h } = await mediaReadFailureThenSupplement();
 
     // ① 第一轮自主接话被媒体闸门按住：发布在提交处被挡（整轮以 MEDIA_READ_FAILED 失败），零发送。
     expect(metric.note).toBe("failed:MEDIA_READ_FAILED");
     expect(h.outbox.list({})).toHaveLength(1); // 只有第二轮那条
     expect(h.model?.calls.every((call) => call.phase === "next")).toBe(true);
-    // ② 视觉真的走了宿主：第一次失败、补充到来后第二次成功（重试上限 2 由真实读取器判定）。
+    // ② 两次视觉分别归属失败的 baseline 和新显式 detail 请求，各花一次预算。
     expect(h.visionCalls).toHaveLength(2);
     expect(h.visionCalls.map((call) => call.model)).toEqual(["vision-stub", "vision-stub"]);
     // ③ 第二轮直接回应：list→describe→note.read 的说明进了模型上下文，收口一条 @。

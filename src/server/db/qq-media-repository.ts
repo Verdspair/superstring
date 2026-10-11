@@ -7,7 +7,11 @@
 
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
 import { fail } from "../errors";
-import { parseQqMediaKind, type QqMediaKind } from "../services/qq-media-contract";
+import {
+  parseQqMediaKind,
+  QQ_MEDIA_MAX_ATTEMPTS,
+  type QqMediaKind,
+} from "../services/qq-media-contract";
 import { mediaCacheExpiresAt } from "../services/qq-retention";
 import {
   findMediaReadTasksForContent,
@@ -49,7 +53,7 @@ export function recordMediaSegment(
   input: MediaSegmentRef & {
     sourceRef: string;
     occurredAtSeconds: number;
-    /** Was the carrying message addressed to the assistant? Required: §7.2 retries only these. */
+    /** Was the carrying message addressed to the assistant? Stored as a row fact; it no longer gates any retry (the §7.2 retry flow is retired, §5.7). */
     addressed: boolean;
   },
   retentionDays: number = readQqRetentionDays(orm),
@@ -563,8 +567,10 @@ export function recordMediaNote(
 }
 
 /**
- * Claim one read attempt atomically. The conditional SQL update and the table's CHECK
- * both cap it at 2; competing consumers cannot both claim the same attempt number.
+ * Claim the one baseline read attempt atomically (§5.7): the conditional SQL update admits a
+ * claim only while `attempts < QQ_MEDIA_MAX_ATTEMPTS`, so competing consumers cannot both
+ * claim the same attempt and no second attempt exists. The historical `<= 2` CHECK on the
+ * table is unchanged; old rows already at 2 stay stored facts and are simply never advanced.
  * This counter is the media's own and never the reply-regeneration one.
  */
 export function recordMediaAttempt(
@@ -590,7 +596,7 @@ export function recordMediaAttempt(
           and(
             eq(schema.qqMediaNotes.eventKey, input.eventKey),
             eq(schema.qqMediaNotes.segmentIndex, input.segmentIndex),
-            lt(schema.qqMediaNotes.attempts, 2),
+            lt(schema.qqMediaNotes.attempts, QQ_MEDIA_MAX_ATTEMPTS),
             isNull(schema.qqMediaNotes.note),
             gt(schema.qqMediaNotes.expiresAt, nowIso()),
             ...(input.expectedAttempts === undefined

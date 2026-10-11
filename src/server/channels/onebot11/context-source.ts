@@ -17,6 +17,7 @@ import type {
   QqMessageFocus,
   QqMessageSettings,
 } from "../../../shared/contracts/qq-message";
+import { qqEffectiveInputAntiSpamEnabled } from "../../../shared/contracts/qq-task";
 import type {
   AgentRuntime,
   PreparedGeneration,
@@ -55,6 +56,7 @@ import {
   type QqSchemeRow,
   schemeCompression,
   schemeContext,
+  schemeInputAntiSpam,
   schemeMessageSettings,
   schemeOutputReserve,
   schemePrompts,
@@ -132,6 +134,10 @@ import {
   projectQqMessageFacts,
   qqSpeechCarriedByOutboundFacts,
 } from "./message-projection";
+import {
+  projectQqAntispamSequence,
+  type QqAntispamJournalRow,
+} from "./qq-input-antispam-projection";
 import { expandQqReplies, type QqReplyProjection as QqFullReplyProjection } from "./reply-context";
 
 /** 观测信封里"动作自己的内容"（名字/参数/返回值）的余量；sources 那部分由 envelopeFloor 实量。 */
@@ -278,9 +284,119 @@ function confirmedOutboundPartCandidates(
   return ordered;
 }
 
+// Media-only messages have no text source; their selected carrier key still locates the fact.
+// Fact loading performs scope and expiry checks; these keys do not grant access.
+function selectedCarrierEventKeys(messages: readonly QqContextMessage[]): string[] {
+  return [
+    ...new Set(
+      messages.flatMap((message) =>
+        message.carrierEventKey !== undefined
+          ? [message.carrierEventKey]
+          : (message.sources ?? [])
+              .filter((source) => source.kind === "qq_observation")
+              .map((source) => source.id),
+      ),
+    ),
+  ];
+}
+
 export interface BotContextTarget {
   id: string;
   speakerId: string | null;
+}
+
+/**
+ * 自动供图候选事实的防刷屏排除（§5.2/§5.3，P4 breaker 修正）：派生序列取**有界 journal
+ * 全行**（sourceFromSeq..本相窗口上界），不被窗口裁剪的 seq 空洞骗过——被源预算裁掉或
+ * 已过期的行以 sourceAvailable=false 的空 parts 进序列作真实断组边界（只保留 journal 的
+ * seq/id/participant，不携带任何不可读正文）。命中 burst 组的图与纯表情事件携带的图从
+ * **当前可见**媒体候选事实**副本**里剔除；不删、不改任何记录，正文/引用/披露用的原 facts
+ * 不动；过期/不可读行不产生任何候选部件。direct 链（显式 @ / 合法引用）与按需读取不受
+ * 此限——detail 集合内的图不排除。开关关闭＝原样返回，恢复本模块 own 面既有装配规则。
+ */
+function filterQqAntispamMediaFacts(input: {
+  db: Database;
+  orm: Orm;
+  conversationId: string;
+  binding: QqBinding;
+  scheme: QqSchemeRow;
+  /** caller 冻结窗口下界（chiming sourceFromSeq；缺省 0）。 */
+  sourceFromSeq?: number;
+  facts: readonly QqMessageFact[];
+  /** 本 run 已明确读取的 mediaId（显式读取不被防刷屏排除）。 */
+  detailMediaIds?: ReadonlySet<string>;
+}): QqMessageFact[] {
+  const antispamEnabled = qqEffectiveInputAntiSpamEnabled(
+    schemeInputAntiSpam(input.scheme),
+    input.binding.inputAntiSpam,
+  );
+  if (!antispamEnabled) return [...input.facts];
+  const lower = input.sourceFromSeq ?? 0;
+  const upper = input.facts.reduce((max, fact) => Math.max(max, fact.seq), 0);
+  const factById = new Map(input.facts.map((fact) => [fact.id, fact]));
+  const rows: QqAntispamJournalRow[] = [];
+  if (upper > lower) {
+    // 只读 journal 行直接走 options.db（conversation_id + from..through 有界查询），
+    // 不依赖 journal 仓储实例；行身份用 ce.source_id（真实 stable qq_event id）。
+    const items = input.db
+      .query(
+        `SELECT ce.seq AS seq, ce.source_id AS event_id, ce.occurred_at AS occurred_at,
+          json_extract(ce.participant,'$.id') AS speaker_id,
+          json_array_length(ce.addressing,'$.reasons') AS reasons
+      FROM conversation_events ce
+      WHERE ce.conversation_id=? AND ce.seq>? AND ce.seq<=? AND ce.kind='inbound' AND ce.source_kind='qq_event'
+        AND json_extract(ce.participant,'$.role')='member'
+      ORDER BY ce.seq`,
+      )
+      .all(input.conversationId, lower, upper) as {
+      seq: number;
+      event_id: string;
+      occurred_at: string;
+      speaker_id: string | null;
+      reasons: number;
+    }[];
+    for (const item of items) {
+      rows.push({
+        seq: item.seq,
+        eventId: item.event_id,
+        speakerId: item.speaker_id ?? `seq:${item.seq}`,
+        occurredAtSeconds: Math.floor(Date.parse(item.occurred_at) / 1000),
+        // legal direct 真值来自 journal addressing（显式 @ / 合法引用），不由模型措辞重判。
+        isDirect: item.reasons > 0,
+        fact: factById.get(item.event_id) ?? null,
+      });
+    }
+  }
+  const derivation = projectQqAntispamSequence(rows);
+  const excludedImages = new Set(
+    derivation.burstExcludedImages
+      .filter((entry) => !input.detailMediaIds?.has(entry.mediaId))
+      .map((entry) => `${entry.eventId}\u0000${entry.mediaId}`),
+  );
+  const pureExpressionSeqs = new Set(derivation.pureExpressionExcludedSeqs);
+  const out: QqMessageFact[] = [];
+  for (const fact of input.facts) {
+    const isPureExpression = pureExpressionSeqs.has(fact.seq);
+    const isBurstCarrier = fact.parts.some(
+      (part) => part.kind === "image" && excludedImages.has(`${fact.id}\u0000${part.mediaId}`),
+    );
+    if (!isPureExpression && !isBurstCarrier) {
+      out.push(fact);
+      continue;
+    }
+    // 副本只剔除被排除的 image 部件；其它部件（文本/face/引用元数据）原样保留。
+    const parts = fact.parts.filter(
+      (part) =>
+        !(
+          part.kind === "image" &&
+          !input.detailMediaIds?.has(part.mediaId) &&
+          (isPureExpression || excludedImages.has(`${fact.id}\u0000${part.mediaId}`))
+        ),
+    );
+    if (parts.length === 0) continue;
+    out.push({ ...fact, parts });
+  }
+  return out;
 }
 
 /**
@@ -458,6 +574,54 @@ interface View {
   disclosedMessages: readonly { message: ModelMessage; facts: readonly QqMessageFact[] }[];
   /** 本档实际选中消息的载体键（按发言人分组，run 私有簿记；纯图行无正文 ref 也在此）。 */
   selectedEventKeysBySpeaker: ReadonlyMap<string | null, readonly string[]>;
+}
+
+/**
+ * Bot 上下文来源的**同一份**复验（QQ 群能力 guard + 会话证据本地复验 + 记忆作用域修订），
+ * 供 BotContextSource.assertSources 与宿主在构造 source 之前的早期证明（如任务恢复的受保护
+ * 判断查找）共用——两层不各写一套权限口径，宿主侧也不再拿单一能力 guard 冒充完整来源证明。
+ */
+export function assertBotContextSources(
+  options: Pick<
+    BotContextSourceOptions,
+    "db" | "orm" | "binding" | "snapshot" | "resolveSource" | "guard" | "now"
+  >,
+  owner: RunOwner,
+  sources: readonly SourceRef[],
+): void {
+  const o = options,
+    guard = o.guard ?? new QqGroupCapabilityGuard(o.orm);
+  // 本群作用域的来源（QQ 观察、素材、记忆等）先按 guard 复验：停用/撤权后不能继续暴露正文，
+  // 这一层与下面的通用复验叠加，不是它的替代。
+  guard.assertSources(owner, sources);
+  assertContextSources({
+    db: o.db,
+    sources,
+    owner,
+    now: o.now?.() ?? new Date().toISOString(),
+    // 本群能力引用先按 guard 复验（纪元与停用）；会话证据再本地复验（持久存储），
+    // 外部注入解析器不能把已撤权的引用改判为 available。
+    resolveSource: (source, owner_, at) =>
+      guard.sourceAccess(source, owner_) ??
+      conversationEvidenceSourceAccess(o, source, owner_, at) ??
+      o.resolveSource?.(source, owner_, at),
+    memoryRevisions: (ids) =>
+      new Map(
+        [...new Set(ids)].map((id) => {
+          const item = readMemoryCandidate(
+            o.orm,
+            o.binding.agentId,
+            qqMemoryScopeKeyset(o.snapshot.access).read,
+            id,
+          );
+          return [item.id, item.revision];
+        }),
+      ),
+    messages: {
+      memory: "已选记忆正文或作用域发生变化",
+      other: "上下文来源已变更、过期或撤权",
+    },
+  });
 }
 
 /** One authorized context owner with explicit decision/reply projections for every Bot topology. */
@@ -1494,12 +1658,25 @@ ${intent.trim()}`,
     const detailIds = boundary.mediaInput
       ? boundary.mediaInput.detailMediaIds
       : media.detailMediaIds?.();
+    // 自动供图排除（§5.2/§5.3，单 owner 派生）：同一有界事实投影跑一次防刷屏派生，
+    // 命中 burst 组的图与纯表情事件的图从**自动**候选事实里剔除——只影响媒体候选事实
+    // 副本，正文/引用/披露事实不动；显式读取（media.read 已记账 detail 集合）不被排除。
+    const antispamMediaFacts = filterQqAntispamMediaFacts({
+      db: this.options.db,
+      orm: this.options.orm,
+      conversationId: this.options.conversationId,
+      binding: this.options.binding,
+      scheme: this.options.scheme,
+      sourceFromSeq: this.options.sourceFromSeq,
+      facts,
+      detailMediaIds: detailIds,
+    });
     const baseInput = {
       scope,
       phase,
       // 冻结存在＝完全按冻结值（含"当时无锚"）；无冻结（决策相/单目标）才现取。
       focus: boundary.mediaInput ? boundary.mediaInput.focus : media.focus(),
-      facts,
+      facts: antispamMediaFacts,
       replies,
       settings: media.settings,
       // resolvedModel 覆盖（T10 准备钩子）：钩子闭包用 actualModel 冻结值重备/激活分类；
@@ -1615,39 +1792,8 @@ ${intent.trim()}`,
     };
   }
   assertSources(sources: readonly SourceRef[], hostCheck = true): void {
-    const o = this.options;
-    if (hostCheck) o.assertCurrent();
-    // 本群作用域的来源（QQ 观察、素材、记忆等）先按 guard 复验：停用/撤权后不能继续暴露正文，
-    // 这一层与下面的通用复验叠加，不是它的替代。
-    this.guard.assertSources(this.owner, sources);
-    assertContextSources({
-      db: o.db,
-      sources,
-      owner: this.owner,
-      now: this.now(),
-      // 本群能力引用先按 guard 复验（纪元与停用）；会话证据再本地复验（持久存储），
-      // 外部注入解析器不能把已撤权的引用改判为 available。
-      resolveSource: (source, owner, at) =>
-        this.guard.sourceAccess(source, owner) ??
-        conversationEvidenceSourceAccess(o, source, owner, at) ??
-        o.resolveSource?.(source, owner, at),
-      memoryRevisions: (ids) =>
-        new Map(
-          [...new Set(ids)].map((id) => {
-            const item = readMemoryCandidate(
-              o.orm,
-              o.binding.agentId,
-              qqMemoryScopeKeyset(o.snapshot.access).read,
-              id,
-            );
-            return [item.id, item.revision];
-          }),
-        ),
-      messages: {
-        memory: "已选记忆正文或作用域发生变化",
-        other: "上下文来源已变更、过期或撤权",
-      },
-    });
+    if (hostCheck) this.options.assertCurrent();
+    assertBotContextSources(this.options, this.owner, sources);
   }
   private now(): string {
     return this.options.now?.() ?? new Date().toISOString();
@@ -1926,13 +2072,7 @@ ${intent.trim()}`,
      * 以 facts 形态留在资料段里，成本不随窗口下降，本可装下的装配被打死。
      */
     const projectionFor = (sel: QqContextSelection) => {
-      const factEventKeys = new Set(
-        sel.messages.flatMap((message) =>
-          (message.sources ?? [])
-            .filter((source) => source.kind === "qq_observation")
-            .map((source) => source.id),
-        ),
-      );
+      const factEventKeys = new Set(selectedCarrierEventKeys(sel.messages));
       /**
        * 本档窗口（回复档分钟/条数、共享预算）内**已确认**的助手出站 part 事实（T04 Step3）。
        *
@@ -2150,11 +2290,7 @@ ${intent.trim()}`,
      */
     const factsDetailMessages = (): ModelMessage[] => {
       if (selection.messages.length === 0) return [];
-      const eventKeys = selection.messages.flatMap((message) =>
-        (message.sources ?? [])
-          .filter((source) => source.kind === "qq_observation")
-          .map((source) => source.id),
-      );
+      const eventKeys = selectedCarrierEventKeys(selection.messages);
       if (eventKeys.length === 0) return [];
       const conversation = o.journal.get(o.conversationId);
       if (!conversation) return [];
@@ -2400,9 +2536,7 @@ ${intent.trim()}`,
             bindingEpoch: conversationRowForReply.bindingEpoch,
           })
         : null;
-    const replyEventKeys = (material.sources ?? [])
-      .filter((source) => source.kind === "qq_observation")
-      .map((source) => source.id);
+    const replyEventKeys = selectedCarrierEventKeys(selection.messages);
     // 引用展开的窗口事实：本档窗口的入站事实 + 本档已投影的已确认助手出站 part 事实。
     // 助手 part 必须在窗口里，否则「目标已在窗口」判不出来，展开会改走 load 回落，
     // 同一份正文既在 facts 段又在引用段各出现一次（§4.3「正文只供一次」）。两者是同一

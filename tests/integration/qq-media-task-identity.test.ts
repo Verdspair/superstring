@@ -3,13 +3,14 @@
 //    受控 fetchBytes（同一下载链）；两者皆缺 → 明确拒（identity_unavailable），绝不静默
 //    退回行级身份；NULL identity 只允许历史真正不可识别行。
 //  * 同 scope 同内容（同 sha）不同 URL/载体行：沿同一任务预算，绝不新建/重置；
-//    旧任务 2 次耗尽后新载体行不重获；不同 scope 同 bytes 独立预算。
+//    任务预算一次有界尝试（maxAttempts=1，§5.7 补充时间解锁已退役）——失败即耗尽，
+//    新载体行不重获；不同 scope 同 bytes 独立预算。
 //  * legacy：不回填网络；本次受控获得同 carrier/同 source_ref 字节时同事务关联既有
-//    NULL 任务（attempts 不减）；多历史行合并累计饱和 min(2, sum)；NULL legacy 旧 2
+//    NULL 任务（attempts 不减）；多历史行合并累计饱和 min(1, sum)；NULL legacy 旧 1
 //    耗尽后同 source/同 bytes 新载体不重获。
 //  * 首载体 purge：identity/attempts/status 账本存活（FK SET NULL），预算不丢。
-//  * expired succeeded：不服务旧正文，claim 只花剩余次数（1→2）、revision 推进使旧
-//    ref 失效、过期槽不是 503。窗口按当前授权重新推导（载体帽+宿主帽）。
+//  * expired succeeded：不服务旧正文（预算已耗尽不再 claim）、revision/旧 ref 边界
+//    不变。窗口按当前授权重新推导（载体帽+宿主帽）。
 //  * cross-carrier live-succeeded：服务真实缓存命中（source:"cache"，账本 taskId），
 //    不假成功、不静默拒。
 // 夹具只走合成库；新文件不 import artifacts（发布排除）。
@@ -138,7 +139,6 @@ async function claimAndSucceed(
     purpose: "baseline",
     modelName: "vision-a",
     policy: "p1",
-    relatedSupplementArrived: false,
     assertCurrent: guard,
     contentSha256,
   });
@@ -211,7 +211,6 @@ describe("typed media read task identity: budget semantics", () => {
         purpose: "baseline",
         modelName: "vision-a",
         policy: "p1",
-        relatedSupplementArrived: false,
         assertCurrent: guard,
         contentSha256: SHA_A,
       });
@@ -223,18 +222,18 @@ describe("typed media read task identity: budget semantics", () => {
         claimToken: claim.claimToken,
         assertCurrent: guard,
       });
-      // 同内容不同 URL/载体：账本按 identity 命中同一行——1 次已耗，补充门挡第二轮。
+      // 同内容不同 URL/载体：账本按 identity 命中同一行——1 次有界尝试已耗尽，
+      // 同一身份不再自动重试（§5.7），新载体也不重获预算。
       const second = seed({ sourceRef: "url-b" });
       const outcome = await claimReason(h.orm, {
         mediaNoteId: second,
         purpose: "baseline",
         modelName: "vision-b",
         policy: "p2",
-        relatedSupplementArrived: true,
         assertCurrent: guard,
         contentSha256: SHA_A,
       });
-      expect("reason" in outcome && outcome.reason).toBe("awaiting_supplement");
+      expect("reason" in outcome && outcome.reason).toBe("attempts_exhausted");
       const rows = h.orm.select().from(qqMediaReadTasks).all();
       expect(rows).toHaveLength(1);
       expect(rows[0]?.attempts).toBe(1);
@@ -250,34 +249,30 @@ describe("typed media read task identity: budget semantics", () => {
     const { h, seed } = identityFixture();
     try {
       const first = seed({ sourceRef: "url-a" });
-      for (const attempt of [1, 2]) {
-        const claim = await attemptMediaReadTask(h.orm, {
-          mediaNoteId: first,
-          purpose: "baseline",
-          modelName: "vision-a",
-          policy: "p1",
-          relatedSupplementArrived: attempt === 2,
-          proveSupplementLaterThan: attempt === 2 ? () => true : undefined,
-          assertCurrent: guard,
-          contentSha256: SHA_A,
-        });
-        failMediaReadTask(h.orm, {
-          mediaNoteId: first,
-          purpose: "baseline",
-          expectedAttempt: claim.attempt,
-          revisionAtClaim: claim.task.revision,
-          claimToken: claim.claimToken,
-          assertCurrent: guard,
-        });
-      }
+      // 一次有界尝试（§5.7）：第一次真实消耗并失败；随后的重复 claim（即使带旧
+      // "补充证据"回调形态也已退役）一律被拒绝——同身份无第二次预算。
+      const claim = await attemptMediaReadTask(h.orm, {
+        mediaNoteId: first,
+        purpose: "baseline",
+        modelName: "vision-a",
+        policy: "p1",
+        assertCurrent: guard,
+        contentSha256: SHA_A,
+      });
+      failMediaReadTask(h.orm, {
+        mediaNoteId: first,
+        purpose: "baseline",
+        expectedAttempt: claim.attempt,
+        revisionAtClaim: claim.task.revision,
+        claimToken: claim.claimToken,
+        assertCurrent: guard,
+      });
       const second = seed({ sourceRef: "url-c" });
       const outcome = await claimReason(h.orm, {
         mediaNoteId: second,
         purpose: "baseline",
         modelName: "vision-c",
         policy: "p3",
-        relatedSupplementArrived: true,
-        proveSupplementLaterThan: () => true,
         assertCurrent: guard,
         contentSha256: SHA_A,
       });
@@ -298,7 +293,6 @@ describe("typed media read task identity: budget semantics", () => {
         purpose: "baseline",
         modelName: "vision-a",
         policy: "p1",
-        relatedSupplementArrived: false,
         assertCurrent: guard,
         contentSha256: SHA_A,
       });
@@ -316,7 +310,6 @@ describe("typed media read task identity: budget semantics", () => {
         purpose: "baseline",
         modelName: "vision-a",
         policy: "p1",
-        relatedSupplementArrived: false,
         assertCurrent: guard,
         contentSha256: SHA_A,
       });
@@ -364,23 +357,23 @@ describe("typed media read task identity: budget semantics", () => {
         .run(PAST, noteId);
       h.db.query("UPDATE qq_media_notes SET expires_at=? WHERE id=?").run(PAST, noteId);
       const second = seed({ sourceRef: "url-b" });
-      // 过期槽再 claim：不是 503，花剩余次数 1→2，绝不重置。
-      const reclaimed = await attemptMediaReadTask(h.orm, {
+      // 一次有界预算已在成功上消耗（§5.7）：过期后不再有剩余次数——过期槽的
+      // 重新 claim 明确拒绝（不重置、不重获），旧正文与旧 ref 边界保持不变。
+      const reclaimed = await claimReason(h.orm, {
         mediaNoteId: second,
         purpose: "baseline",
         modelName: "vision-b",
         policy: "p2",
-        relatedSupplementArrived: false,
         assertCurrent: guard,
         contentSha256: SHA_A,
       });
-      expect(reclaimed.attempt).toBe(2);
-      expect(reclaimed.task.revision).toBeGreaterThan(revisionBefore);
-      expect(reclaimed.task.status).toBe("running");
-      // 成功的 re-claim 把账本载体重指到本次真实载体（§8.1：账本跟随被消费的载体）。
-      expect(reclaimed.task.mediaNoteId).toBe(second);
-      // 旧载体行已死窗：账本窗口按当前授权重新推导（载体帽+宿主帽），不回落旧死值。
-      expect(Date.parse(reclaimed.task.expiresAt)).toBeGreaterThan(Date.parse(nowIso()));
+      expect("reason" in reclaimed && reclaimed.reason).toBe("attempts_exhausted");
+      const ledgerAfter = h.orm.select().from(qqMediaReadTasks).all();
+      expect(ledgerAfter).toHaveLength(1);
+      expect(ledgerAfter[0]?.attempts).toBe(1);
+      expect(ledgerAfter[0]?.status).toBe("succeeded");
+      // result publication advanced the revision once after the claim snapshot.
+      expect(ledgerAfter[0]?.revision).toBe(revisionBefore + 1);
     } finally {
       h.close();
     }
@@ -454,7 +447,9 @@ describe("typed media read task identity: legacy association (no network backfil
         contentSha256: SHA_B,
       });
       expect(associated).not.toBeNull();
-      expect(associated?.attempts).toBe(2);
+      // 饱和合并到一次有界预算（§5.7）：历史 2 次消耗记为 1（min(1, Σ)），
+      // 身份账本不重获预算。
+      expect(associated?.attempts).toBe(1);
       expect(associated?.identityKey).not.toBeNull();
       expect(associated?.mediaNoteId).toBe(fresh);
       const outcome = await claimReason(h.orm, {
@@ -462,20 +457,19 @@ describe("typed media read task identity: legacy association (no network backfil
         purpose: "baseline",
         modelName: "vision-a",
         policy: "p1",
-        relatedSupplementArrived: false,
         assertCurrent: guard,
         contentSha256: SHA_B,
       });
       expect("reason" in outcome && outcome.reason).toBe("attempts_exhausted");
       const rows = h.orm.select().from(qqMediaReadTasks).all();
       expect(rows).toHaveLength(1);
-      expect(rows[0]?.attempts).toBe(2);
+      expect(rows[0]?.attempts).toBe(1);
     } finally {
       h.close();
     }
   });
 
-  it("multiple legacy history rows merge saturating min(2, sum of attempts)", async () => {
+  it("multiple legacy history rows merge saturating to the one bounded budget", async () => {
     const { h, seed } = identityFixture();
     try {
       const l1 = seed({ sourceRef: "shared-ref" });
@@ -492,7 +486,8 @@ describe("typed media read task identity: legacy association (no network backfil
       insertLegacy("legacy-2", l2, 1);
       expect(h.orm.select().from(qqMediaReadTasks).all()).toHaveLength(2);
       // 受控字节经同一 source_ref 到达（可证关联的唯一受控身份）：两行历史合并为一条
-      // identity 账本，attempts = min(2, 1+1) = 2，不是 max(1,1)=1（那会吞掉一次历史消耗）。
+      // identity 账本，attempts 饱和到一次有界预算 = min(1, 1+1) = 1（§5.7 maxAttempts=1，
+      // 历史 Σ 不放大当前预算，只保证"已耗尽"不重获）。
       const fresh = seed({ sourceRef: "shared-ref" });
       const associated = associateLegacyMediaReadTask(h.orm, {
         mediaNoteId: fresh,
@@ -506,18 +501,17 @@ describe("typed media read task identity: legacy association (no network backfil
         contentSha256: SHA_B,
       });
       expect(associated).not.toBeNull();
-      expect(associated?.attempts).toBe(2);
+      expect(associated?.attempts).toBe(1);
       const merged = h.orm.select().from(qqMediaReadTasks).all();
       const identityRows = merged.filter((r) => r.identityKey !== null);
       expect(identityRows).toHaveLength(1);
-      expect(identityRows[0]?.attempts).toBe(2);
+      expect(identityRows[0]?.attempts).toBe(1);
       // 合并后的预算真实生效：新 claim 立即 exhausted。
       const outcome = await claimReason(h.orm, {
         mediaNoteId: fresh,
         purpose: "baseline",
         modelName: "vision-a",
         policy: "p1",
-        relatedSupplementArrived: false,
         assertCurrent: guard,
         contentSha256: SHA_B,
       });
@@ -600,8 +594,6 @@ const readerInput = (eventKey: string) =>
       userId: DEFAULT_USER_ID,
       agentId: AGENT,
     },
-    addressedToAssistant: true,
-    relatedSupplementArrived: false,
     assertCurrent: () => {},
   }) satisfies QqMediaTaskReadInput;
 

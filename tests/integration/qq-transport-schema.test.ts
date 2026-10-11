@@ -3,7 +3,13 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { getTableConfig } from "drizzle-orm/sqlite-core";
-import { qqBindings, qqEvents, qqOwnerIdentities, qqSettings } from "../../src/server/db/schema";
+import {
+  qqBindings,
+  qqEvents,
+  qqOwnerIdentities,
+  qqSchemes,
+  qqSettings,
+} from "../../src/server/db/schema";
 import {
   BUSINESS_TABLE_NAMES,
   ensureBusinessSchema,
@@ -69,6 +75,12 @@ const v54 = sql("0054_qq_initiative_batches.sql");
 const v55 = sql("0055_qq_initiative_time_window.sql");
 const v56 = sql("0056_outbound_stale_reason.sql");
 const v57 = sql("0057_history_output_identity_indexes.sql");
+const v58 = sql("0058_qq_conversation_tasks.sql");
+const v59 = sql("0059_qq_task_limits_antispam.sql");
+const v60 = sql("0060_qq_task_execution_snapshot.sql");
+const v61 = sql("0061_qq_task_ready_at.sql");
+const v62 = sql("0062_qq_media_spec_unification.sql");
+const v63 = sql("0063_qq_media_request_identity.sql");
 const QQ_TABLES = ["qq_settings", "qq_owner_identities", "qq_bindings", "qq_events"] as const;
 const NOW = "2026-01-01T00:00:00.000000Z";
 
@@ -321,6 +333,7 @@ describe("0005 QQ transport schema", () => {
           v55,
           v56,
           v57,
+          v58,
         ].join("\n"),
       );
       for (const [table, golden] of Object.entries(GOLDEN)) {
@@ -373,6 +386,12 @@ describe("0005 QQ transport schema", () => {
           v29,
           v30,
           v31,
+          v32,
+          v33,
+          v34,
+          v35,
+          v36,
+          v37,
           // 0038 给 qq_settings 加了一列，所以这次比较需要它；下面三个用例只跑
           // 0038 没有触及的约束。
           v38,
@@ -393,9 +412,18 @@ describe("0005 QQ transport schema", () => {
           v52,
           v53,
           v54,
+          v55,
+          v56,
+          v57,
+          v58,
+          v59,
+          v60,
+          v61,
+          v62,
+          v63,
         ].join("\n"),
       );
-      for (const table of [qqSettings, qqOwnerIdentities, qqBindings, qqEvents]) {
+      for (const table of [qqSettings, qqOwnerIdentities, qqBindings, qqEvents, qqSchemes]) {
         const cfg = getTableConfig(table);
         const composite = new Set<string>();
         for (const pk of cfg.primaryKeys)
@@ -595,7 +623,7 @@ describe("0005 QQ transport schema", () => {
       const legacyTables = legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all());
       const sharedRow = old.query("SELECT model_name, revision FROM organization_settings").get();
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
       expect(legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all())).toEqual(
         legacyTables,
       );
@@ -702,6 +730,12 @@ describe("0005 QQ transport schema", () => {
           v55,
           v56,
           v57,
+          v58,
+          v59,
+          v60,
+          v61,
+          v62,
+          v63,
         ]),
       ).toThrow();
       expect(db.query("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()).toEqual(
@@ -710,7 +744,7 @@ describe("0005 QQ transport schema", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
       expect(db.query("SELECT count(*) AS n FROM agents").get()).toEqual({ n: 1 });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
       expect(db.query("SELECT count(*) AS n FROM qq_settings").get()).toEqual({ n: 1 });
     } finally {
       db.close();
@@ -769,6 +803,70 @@ describe("0005 QQ transport schema", () => {
       expect(db.query("SELECT count(*) AS n FROM qq_events").get()).toEqual({ n: 0 });
     } finally {
       db.close();
+    }
+  });
+
+  it("0059 adds independent scheme defaults and nullable binding overrides with SQL checks", () => {
+    const h = openBusinessDb();
+    try {
+      const schemeId = "limit-scheme";
+      seedScheme(h.db, schemeId, "limit scheme");
+      expect(
+        h.db
+          .query(
+            "SELECT mention_task_limit,ordinary_task_limit,input_anti_spam_enabled FROM qq_schemes WHERE id=?",
+          )
+          .get(schemeId),
+      ).toEqual({
+        mention_task_limit: 4,
+        ordinary_task_limit: 1,
+        input_anti_spam_enabled: 0,
+      });
+
+      seedAgent(h.db);
+      insertBinding(h.db, { scheme_id: schemeId });
+      expect(
+        h.db
+          .query(
+            "SELECT mention_task_limit,ordinary_task_limit,input_anti_spam_enabled FROM qq_bindings WHERE id='b1'",
+          )
+          .get(),
+      ).toEqual({
+        mention_task_limit: null,
+        ordinary_task_limit: null,
+        input_anti_spam_enabled: null,
+      });
+      h.db
+        .query(
+          "UPDATE qq_bindings SET mention_task_limit=64,ordinary_task_limit=1,input_anti_spam_enabled=1 WHERE id='b1'",
+        )
+        .run();
+      expect(
+        h.db
+          .query(
+            "SELECT mention_task_limit,ordinary_task_limit,input_anti_spam_enabled FROM qq_bindings WHERE id='b1'",
+          )
+          .get(),
+      ).toEqual({
+        mention_task_limit: 64,
+        ordinary_task_limit: 1,
+        input_anti_spam_enabled: 1,
+      });
+      for (const [table, column, value] of [
+        ["qq_schemes", "mention_task_limit", 65],
+        ["qq_schemes", "ordinary_task_limit", 0],
+        ["qq_schemes", "input_anti_spam_enabled", 2],
+        ["qq_bindings", "mention_task_limit", 65],
+        ["qq_bindings", "ordinary_task_limit", 0],
+        ["qq_bindings", "input_anti_spam_enabled", 2],
+      ] as const) {
+        const id = table === "qq_schemes" ? schemeId : "b1";
+        expect(() =>
+          h.db.query(`UPDATE ${table} SET ${column}=? WHERE id=?`).run(value, id),
+        ).toThrow();
+      }
+    } finally {
+      h.close();
     }
   });
 });

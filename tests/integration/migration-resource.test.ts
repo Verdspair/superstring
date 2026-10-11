@@ -241,6 +241,30 @@ const historyOutputIdentityIndexesSql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0057_history_output_identity_indexes.sql"),
   "utf8",
 );
+const qqConversationTasksSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0058_qq_conversation_tasks.sql"),
+  "utf8",
+);
+const qqTaskLimitsAntispamSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0059_qq_task_limits_antispam.sql"),
+  "utf8",
+);
+const qqTaskExecutionSnapshotSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0060_qq_task_execution_snapshot.sql"),
+  "utf8",
+);
+const qqTaskReadyAtSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0061_qq_task_ready_at.sql"),
+  "utf8",
+);
+const qqMediaSpecUnificationSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0062_qq_media_spec_unification.sql"),
+  "utf8",
+);
+const qqMediaRequestIdentitySql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
+  "utf8",
+);
 const resources = [
   sql,
   knowledgeSql,
@@ -299,6 +323,12 @@ const resources = [
   qqInitiativeTimeWindowSql,
   outboundStaleReasonSql,
   historyOutputIdentityIndexesSql,
+  qqConversationTasksSql,
+  qqTaskLimitsAntispamSql,
+  qqTaskExecutionSnapshotSql,
+  qqTaskReadyAtSql,
+  qqMediaSpecUnificationSql,
+  qqMediaRequestIdentitySql,
 ] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
@@ -368,6 +398,12 @@ describe("explicit migration resources", () => {
               qqInitiativeTimeWindowSql,
               outboundStaleReasonSql,
               historyOutputIdentityIndexesSql,
+              qqConversationTasksSql,
+              qqTaskLimitsAntispamSql,
+              qqTaskExecutionSnapshotSql,
+              qqTaskReadyAtSql,
+              qqMediaSpecUnificationSql,
+              qqMediaRequestIdentitySql,
             ],
           }),
         ).toThrow();
@@ -443,11 +479,17 @@ describe("explicit migration resources", () => {
             qqInitiativeTimeWindowSql,
             outboundStaleReasonSql,
             historyOutputIdentityIndexesSql,
+            qqConversationTasksSql,
+            qqTaskLimitsAntispamSql,
+            qqTaskExecutionSnapshotSql,
+            qqTaskReadyAtSql,
+            qqMediaSpecUnificationSql,
+            qqMediaRequestIdentitySql,
           ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 57 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 63 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -731,12 +773,36 @@ describe("explicit migration resources", () => {
         ),
         path.join(versions, "0057_history_output_identity_indexes.sql"),
       );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0058_qq_conversation_tasks.sql"),
+        path.join(versions, "0058_qq_conversation_tasks.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0059_qq_task_limits_antispam.sql"),
+        path.join(versions, "0059_qq_task_limits_antispam.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0060_qq_task_execution_snapshot.sql"),
+        path.join(versions, "0060_qq_task_execution_snapshot.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0061_qq_task_ready_at.sql"),
+        path.join(versions, "0061_qq_task_ready_at.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0062_qq_media_spec_unification.sql"),
+        path.join(versions, "0062_qq_media_spec_unification.sql"),
+      );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
+        path.join(versions, "0063_qq_media_request_identity.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(57);
+      expect(layout?.businessMigrationSql.length).toBe(63);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {

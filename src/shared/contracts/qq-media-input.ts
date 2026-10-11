@@ -22,10 +22,9 @@ export type QqImagePhase = z.infer<typeof QqImagePhaseSchema>;
 const positiveInteger = z.number().int().positive();
 /** 尺寸边界复用现有普通动图配置的 64–2048；上限是安全/服务约束，不是产品猜测。 */
 const dimension = z.number().int().min(64).max(2048);
-const frameCount = z.number().int().min(1).max(10);
 
 /**
- * 图片输入设置组（QQ 方案级，本群可稀疏覆盖 stages 与普通静图规格）。
+ * 图片输入设置组（QQ 方案级，本群可稀疏覆盖 stages 与统一静图规格）。
  *
  * 三个阶段布尔互相独立：全 false 是合法状态——图片能力开着但不自动发画面，仅按需读取。
  * `max_images` 的具体上限在执行期由服务/安全约束验证，schema 只要求正整数（规格 §7.1）。
@@ -39,23 +38,20 @@ export const QqMediaInputSettingsSchema = z.strictObject({
     generation: z.boolean(),
   }),
   max_images: positiveInteger,
-  /** null = 原图优先，不默认降画质；设置值时是普通静图的最大长边。 */
+  /**
+   * 所有类别共用的静图长边：null = 原图优先，不默认降画质；设置值时是最大长边。
+   * 类别不再决定画质（expression 的三个规格字段已退役）——分类只剩防刷屏/事实用途。
+   */
   ordinary_still_max_dimension: dimension.nullable(),
-  expression_max_dimension: dimension,
-  expression_frame_count: frameCount,
-  expression_frame_max_dimension: dimension,
 });
 export type QqMediaInputSettings = z.infer<typeof QqMediaInputSettingsSchema>;
 
-/** 已批准默认值（规格 §7.1/§7.4，不随本任务更改）：native、三阶段全开、8 张、原图、表情 512、3 帧。 */
+/** 已批准默认值（规格 §7.1/§7.4）：native、三阶段全开、8 张、原图。 */
 export const QQ_MEDIA_INPUT_DEFAULT: Readonly<QqMediaInputSettings> = Object.freeze({
   mode: "native",
   stages: Object.freeze({ decision: true, evaluation: true, generation: true }),
   max_images: 8,
   ordinary_still_max_dimension: null,
-  expression_max_dimension: 512,
-  expression_frame_count: 3,
-  expression_frame_max_dimension: 512,
 });
 
 /**

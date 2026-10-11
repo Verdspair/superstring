@@ -406,6 +406,9 @@ function createSchemeDirectorySync(set: StoreSet, get: StoreGet) {
     // 0052 两组：已改叶子保留草稿（含 stages 嵌套逐叶子与可空原图），未改叶子跟随新答案。
     carry("message_settings", editor.messageSettings, next.messageSettings);
     carry("media_input", editor.mediaInput, next.mediaInput);
+    // 0059 两组：已改叶子保留草稿，未改叶子跟随新基线。
+    carry("task_limits", editor.taskLimits, next.taskLimits);
+    carry("input_anti_spam", editor.inputAntiSpam, next.inputAntiSpam);
     // 0052 stages 逐叶子 carry：三相位是契约固定布尔，只把已改的相位从草稿编辑器带过来。
     const draftStages = editor.mediaInput.stages;
     const nextStages = { ...next.mediaInput.stages };
@@ -661,6 +664,8 @@ export function createQqSchemeActions(
           reply: editor.reply,
           message_settings: editor.messageSettings,
           media_input: editor.mediaInput,
+          task_limits: editor.taskLimits,
+          input_anti_spam: editor.inputAntiSpam,
           expected_revision: editor.source.revision,
         });
         if (!isCurrentApi(operation)) return false;
@@ -711,6 +716,8 @@ export function createQqSchemeActions(
           // create 通道没有「未提供＝保持现值」：两组不带上会让另存为新方案静默丢自定义。
           message_settings: editor.messageSettings,
           media_input: editor.mediaInput,
+          task_limits: editor.taskLimits,
+          input_anti_spam: editor.inputAntiSpam,
         });
         if (!isCurrentApi(operation)) return false;
         set((state) => ({ qqSchemes: [...state.qqSchemes, created] }));
@@ -1043,9 +1050,28 @@ function mergeExplicitBindingDraft(
   if (!choice?.source && !attention && !batch) return null;
   const choices = { ...state.qqInputs.choices };
   if (choice?.source) {
+    const task_limits = choice.task_limits && {
+      mention_task_limit:
+        choice.task_limits.mention_task_limit !== choice.source.task_limits.mention_task_limit
+          ? choice.task_limits.mention_task_limit
+          : fresh.task_limits.mention_task_limit,
+      ordinary_task_limit:
+        choice.task_limits.ordinary_task_limit !== choice.source.task_limits.ordinary_task_limit
+          ? choice.task_limits.ordinary_task_limit
+          : fresh.task_limits.ordinary_task_limit,
+    };
+    const input_anti_spam = choice.input_anti_spam && {
+      enabled:
+        choice.input_anti_spam.enabled !== choice.source.input_anti_spam.enabled
+          ? choice.input_anti_spam.enabled
+          : fresh.input_anti_spam.enabled,
+    };
     choices[bindingId] = {
       agentId: choice.agentId !== choice.source.agent_id ? choice.agentId : fresh.agent_id,
       schemeId: choice.schemeId !== choice.source.scheme_id ? choice.schemeId : fresh.scheme_id,
+      ...(task_limits ? { task_limits } : {}),
+      ...(input_anti_spam ? { input_anti_spam } : {}),
+      ...(choice.task_limits_raw ? { task_limits_raw: choice.task_limits_raw } : {}),
       source: fresh,
     };
   }

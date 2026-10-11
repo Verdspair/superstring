@@ -29,7 +29,6 @@ const qqSchemeFixture = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeRes
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
     media_frame_count: 3,
     media_max_dimension: 512,
     initiative_batch_target_count: 15,
@@ -72,13 +71,13 @@ const qqSchemeFixture = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeRes
     stages: { decision: true, evaluation: true, generation: true },
     max_images: 8,
     ordinary_still_max_dimension: null,
-    expression_max_dimension: 512,
-    expression_frame_count: 3,
-    expression_frame_max_dimension: 512,
   },
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false },
   ...overrides,
 });
 
@@ -361,4 +360,21 @@ it("a failed transport save stays visible on the connection page and retains the
   expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
   );
+});
+
+it("only-dirty 0059 groups still trigger the navigation guard: cancel keeps the caps, discard clears", async () => {
+  // 只动新组：并行任务上限即成为未保存草稿，守卫必须接管导航。
+  store.getState().patchQqSchemeGroup("taskLimits", { mention_task_limit: 6 });
+  expect(qqSchemeDirty(store.getState().qqSchemeEditor)).toBe(true);
+  store.getState().openSettingsRoute("qq-stickers");
+  expect(store.getState().navigationConfirmOpen).toBe(true);
+  expect(store.getState().settingsRoute).toBe("qq-scheme-config");
+  // 取消离开：上限草稿原地保留。
+  store.getState().cancelPendingNavigation();
+  expect(store.getState().qqSchemeEditor?.taskLimits.mention_task_limit).toBe(6);
+  // 放弃：草稿清空回落基线值。
+  store.getState().openSettingsRoute("qq-stickers");
+  await store.getState().confirmDiscardAndContinue();
+  expect(store.getState().settingsRoute).toBe("qq-stickers");
+  expect(store.getState().qqSchemeEditor?.taskLimits.mention_task_limit).toBe(4);
 });

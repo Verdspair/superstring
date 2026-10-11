@@ -10,6 +10,8 @@ import type { ConversationEvent, WakeSignal } from "../../../shared/contracts/co
 import type { SourceRef } from "../../../shared/contracts/evidence";
 import { qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import type { QqEffectiveMediaPolicy } from "../../../shared/contracts/qq-media-input";
+import type { QqTaskExecutionSnapshot } from "../../../shared/contracts/qq-task";
+import { qqEffectiveInputAntiSpamEnabled } from "../../../shared/contracts/qq-task";
 import type { AgentRuntime, PreparedOutput, TargetHooks } from "../../agent/agent-runtime";
 import type { AgentSpec } from "../../agent/agent-specs";
 import type { BuiltInAction } from "../../agent/built-in-actions";
@@ -47,6 +49,7 @@ import {
   effectiveQqTriggers,
   type QqSchemeRow,
   readQqScheme,
+  schemeInputAntiSpam,
   schemeMediaInput,
   schemeMessageSettings,
   schemeOutputReserve,
@@ -56,6 +59,14 @@ import {
 } from "../../db/qq-scheme-repository";
 import { readQqRetentionDays, readQqSettings } from "../../db/qq-settings-repository";
 import { newestMemberMessageSeconds } from "../../db/qq-speech-repository";
+import type { QqConversationTaskRow } from "../../db/qq-task-repository";
+import {
+  attachQqConversationTaskRun,
+  hasDistinctQqMentionTaskOwnerForEvent,
+  markQqConversationTaskJudgementDone,
+  ownsQqConversationTaskLease,
+  type QqConversationTaskSourceGuard,
+} from "../../db/qq-task-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import type { WakeRepository } from "../../db/wake-repository";
 import { fail } from "../../errors";
@@ -78,6 +89,7 @@ import { prepareQqJudgement } from "../../services/qq-judgement-preparation";
 import { qqMediaPolicyRevision } from "../../services/qq-media-contract";
 import type { QqMediaReadAdapter } from "../../services/qq-media-reader";
 import type {
+  QqMediaExplicitRequest,
   QqMediaQuestionAnchorResolver,
   QqMediaReadImageService,
 } from "../../services/qq-media-tools";
@@ -109,6 +121,7 @@ import { planQqPreparedReply, type QqStickerStage } from "../../services/qq-stic
 import { compileSystemPrompt, runtimeFromAgent } from "../../services/runtime-config";
 import type { BotCompressionJob } from "./background-compression";
 import {
+  assertBotContextSources,
   BotContextSource,
   type BotContextTarget,
   type MediaPhaseState as QqMediaPhaseState,
@@ -125,6 +138,8 @@ import {
   loadQqMessageFactState,
   projectQqMessageFacts,
 } from "./message-projection";
+import { deriveQqInputAntispam } from "./qq-input-antispam";
+import { projectQqAntispamSequence } from "./qq-input-antispam-projection";
 export interface OneBotPolicy {
   maxSteps: number;
   deliveryTtlSeconds: number;
@@ -214,12 +229,19 @@ export interface OneBotHostOptions {
     sourceExpiresAt: () => string;
   };
   tasks?: AgentTaskService;
+  taskSourceState?: QqConversationTaskSourceGuard;
   /** 本群能力 guard：缺省按开发默认构造（测试可注入同一份事实的替身）。 */
   guard?: QqGroupCapabilityGuard;
 }
 /** 运行时 hook 相名 → QQ 相名（映射唯一实现；宿主内多处使用同一份）。非 next 一律 generation。 */
 const qqPhaseOf = (phase: "next" | "generate" | "leaf"): "decision" | "generation" =>
   phase === "next" ? "decision" : "generation";
+
+export interface QqTaskExecutionDescriptor {
+  readonly task: QqConversationTaskRow;
+  readonly snapshot: QqTaskExecutionSnapshot;
+  readonly leaseToken: string;
+}
 
 /** One host for direct and shared conversations; topology changes targets, not the model loop. */
 export class OneBotHost {
@@ -243,6 +265,34 @@ export class OneBotHost {
    * 回复子 run：自有 source/hooks，usage/budget/signal 经 AsyncLocal taskTree 沿父继承。
    */
   async activate(wake: WakeSignal, signal: AbortSignal) {
+    return this.activateWithTask(wake, signal, null);
+  }
+
+  async activateTask(descriptor: QqTaskExecutionDescriptor, signal: AbortSignal) {
+    const task = descriptor.task;
+    const wake: WakeSignal = {
+      id: task.originWakeId ?? `task:${task.id}`,
+      conversationId: task.conversationId,
+      cause: task.cause,
+      dedupeKey: task.taskKey,
+      throughSeq: task.sourceThroughSeq,
+      readyAt: task.createdAt,
+      createdAt: task.createdAt,
+      priority: task.taskClass === "mention" ? 100 : 0,
+      status: "leased",
+      attempts: 1,
+      leaseToken: descriptor.leaseToken,
+      leaseExpiresAt: task.leaseExpiresAt,
+      errorCode: null,
+    };
+    return this.activateWithTask(wake, signal, descriptor);
+  }
+
+  private async activateWithTask(
+    wake: WakeSignal,
+    signal: AbortSignal,
+    execution: QqTaskExecutionDescriptor | null,
+  ) {
     const o = this.options,
       db = (o.orm as Orm & { $client: Database }).$client,
       now = () => o.now?.() ?? new Date().toISOString(),
@@ -276,7 +326,13 @@ export class OneBotHost {
         ...runtimeFromAgent(agent),
         knowledge_read: new KnowledgeReadRepository(db).freeze(agent.id),
       },
-      policy = o.policy();
+      policy = execution
+        ? {
+            ...o.policy(),
+            maxSteps: execution.snapshot.maxSteps,
+            deliveryTtlSeconds: execution.snapshot.deliveryTtlSeconds,
+          }
+        : o.policy();
     const path = wake.cause as QqSpeechKind;
     if (!["direct_reply", "follow_up", "chiming_in", "idle_topic"].includes(path))
       throw new Error("BOT_WAKE_CAUSE_INVALID");
@@ -284,11 +340,150 @@ export class OneBotHost {
       // 连续交谈（follow_up）是"必回且按人回"：即使方案关了按发言人拆分，也要按人各回一条
       // （规格 §3.3）。direct 与主动路径尊重方案开关；存储的 split 设置不改。
       split = path === "follow_up" ? true : schemeReply(scheme).split_by_speaker;
-    const sourceFromSeq = path === "chiming_in" ? o.wakes.getSourceFromSeq(wake.id) : null;
+    const sourceFromSeq = execution
+      ? execution.task.sourceFromSeq - 1
+      : path === "chiming_in"
+        ? o.wakes.getSourceFromSeq(wake.id)
+        : null;
     if (path === "chiming_in" && sourceFromSeq === null)
       throw new Error("CHIMING_SOURCE_BOUNDARY_REQUIRED");
+    const assertTaskLease = () => {
+      if (!execution) {
+        if (!wake.leaseToken || !o.wakes.owns(wake.id, wake.leaseToken, now()))
+          throw new Error("WAKE_LEASE_LOST");
+        return;
+      }
+      const sourceState = o.taskSourceState;
+      if (
+        !sourceState ||
+        !ownsQqConversationTaskLease(o.orm, {
+          taskId: execution.task.id,
+          leaseToken: execution.leaseToken,
+          at: now(),
+          sourceState,
+        })
+      )
+        throw new Error("QQ_TASK_LEASE_LOST");
+      const frozen = execution.snapshot;
+      if (
+        frozen.taskKey !== execution.task.taskKey ||
+        frozen.conversationId !== conversation.id ||
+        frozen.bindingEpoch !== conversation.bindingEpoch ||
+        frozen.bindingId !== binding.id ||
+        frozen.agentId !== agent.id ||
+        frozen.schemeId !== scheme.id ||
+        frozen.bindingRevision !== binding.revision ||
+        frozen.authorityRevision !== binding.authorityRevision ||
+        frozen.schemeRevision !== scheme.revision ||
+        frozen.agentConfigVersion !== agent.configVersion ||
+        frozen.taskClass !== execution.task.taskClass ||
+        frozen.cause !== execution.task.cause ||
+        frozen.sourceFromSeq !== execution.task.sourceFromSeq ||
+        frozen.sourceThroughSeq !== execution.task.sourceThroughSeq ||
+        frozen.sourceExpiresAt !== execution.task.sourceExpiresAt
+      )
+        throw new Error("BOT_CONFIGURATION_CHANGED");
+      if (frozen.sourceExpiresAt && frozen.sourceExpiresAt <= now())
+        throw new Error("SOURCE_EXPIRED");
+    };
     const focus = o.journal.eventsAfter(conversation.id, Math.max(0, wake.throughSeq - 1), 1)
       .items[0];
+    if (execution && (!focus || focus.seq !== execution.task.sourceThroughSeq))
+      throw new Error("QQ_TASK_FOCUS_SOURCE_MISMATCH");
+    if (
+      execution?.task.taskClass === "mention" &&
+      focus?.source.id !== execution.task.originEventKey
+    )
+      throw new Error("QQ_TASK_MENTION_SOURCE_MISMATCH");
+    /**
+     * 受保护判断上下文的一次性查找（规格 §8.2 / P3 partial recovery）：同一冻结机会身份
+     * （wake/会话/observed_seq/绑定所有者/助手）下，completed 评分叶子 + exact/output_recorded
+     * 且未到期的受保护 step 输出。找到时按当前授权一次复验 ctx.sources（撤权/到期原样抛），
+     * raw 文本只在 outputRecorded=1 且 protected_output 为非空字符串时才算存在——找不到不缓存、
+     * 不重判、不 dummy（上层按既有失败合同处理）。initiative 分支的 recoverStage1Raw 与任务
+     * 恢复判定共用这一个 helper，不复制第二份查询、不加第二缓存。
+     */
+    const lookupStoredJudgement = ():
+      | { raw: string; sources: readonly SourceRef[] }
+      | undefined => {
+      const runRow = db
+        .query(
+          "SELECT run_id FROM agent_runs WHERE spec_id='onebot.initiative.evaluate_batch' AND wake_id=? AND conversation_id=? AND observed_seq=? AND owner_kind='qq_binding' AND owner_id=? AND agent_id=? AND status='completed' ORDER BY started_at DESC LIMIT 1",
+        )
+        .get(wake.id, conversation.id, wake.throughSeq, binding.id, agent.id) as {
+        run_id: string;
+      } | null;
+      if (!runRow) return undefined;
+      const stepRow = db
+        .query(
+          "SELECT step_id FROM agent_steps WHERE run_id=? AND status='completed' ORDER BY step_no LIMIT 1",
+        )
+        .get(runRow.run_id) as { step_id: string } | null;
+      if (!stepRow) return undefined;
+      const ctx = new AgentRunRepository(db).getContext({
+        runId: runRow.run_id,
+        stepId: stepRow.step_id,
+      });
+      // 受保护判断只有 exact 且未到期可复用；撤销/到期改走合法重判，不硬拒。
+      if (
+        ctx === null ||
+        ctx.status !== "exact" ||
+        (ctx.expiresAt !== null && ctx.expiresAt <= now())
+      )
+        return undefined;
+      // 受保护输出必须是已真实记录（output_recorded）且非空文本的 exact step；缺失按无证明处理。
+      if (ctx.outputRecorded !== true) return undefined;
+      const out = ctx.output as { text?: unknown } | null | undefined;
+      if (typeof out?.text !== "string" || out.text === "") return undefined;
+      // 旧判断消费过的来源已撤权/过期/修订变化时 raw 不得复用：按**完整**来源口径一次复验
+      // （群能力 guard + 会话证据 + 记忆修订，与 BotContextSource.assertSources 同一实现），
+      // 撤权原样抛，不缩成单一能力面。
+      assertBotContextSources(
+        { db, orm: o.orm, binding, snapshot, resolveSource: o.resolveSource, guard, now },
+        groupOwner,
+        ctx.sources,
+      );
+      return { raw: out.text, sources: ctx.sources };
+    };
+    const linkRun = (runId: string, observedSeq: number, attachTaskOwner = false) => {
+      if (execution && attachTaskOwner) {
+        const current = db
+          .query("SELECT origin_run_id FROM qq_conversation_tasks WHERE id=?")
+          .get(execution.task.id) as { origin_run_id: string | null } | null;
+        if (
+          current?.origin_run_id === null &&
+          !attachQqConversationTaskRun(o.orm, {
+            taskId: execution.task.id,
+            leaseToken: execution.leaseToken,
+            runId,
+            at: now(),
+          })
+        )
+          throw new Error("QQ_TASK_RUN_LINK_LOST");
+      }
+      o.journal.linkRun(
+        runId,
+        conversation.id,
+        observedSeq,
+        execution ? (execution.task.originWakeId ?? undefined) : wake.id,
+      );
+    };
+    const taskOwnsLaterMention = (seq: number): boolean => {
+      if (!execution) return false;
+      const source = o.journal.eventsAfter(conversation.id, seq - 1, 1).items[0];
+      return (
+        source?.source.kind === "qq_event" &&
+        hasDistinctQqMentionTaskOwnerForEvent(o.orm, {
+          conversationId: conversation.id,
+          sourceThroughSeq: execution.task.sourceThroughSeq,
+          eventSeq: seq,
+          eventSourceId: source.source.id,
+          bindingEpoch: execution.task.bindingEpoch,
+          agentId: execution.task.agentId,
+          owner: { kind: "task", id: execution.task.id },
+        })
+      );
+    };
     const focusKey =
       focus?.source.kind === "qq_event"
         ? focus.source.id
@@ -299,22 +494,22 @@ export class OneBotHost {
               } | null
             )?.event_key
           : undefined;
-    const settleOpportunity = (readyAtSeconds?: number) =>
-      db
-        .transaction(() => {
-          if (readyAtSeconds !== undefined)
-            o.wakes.defer(
-              wake.id,
-              wake.leaseToken!,
-              new Date(readyAtSeconds * 1000).toISOString(),
-              now(),
-            );
-          else {
-            o.wakes.complete(wake.id, wake.leaseToken!, "no_output", wake.throughSeq, now());
-            o.journal.acknowledge(conversation.id, wake.throughSeq);
-          }
-        })
-        .immediate();
+    const settleOpportunity = (readyAtSeconds?: number) => {
+      if (execution) return;
+      db.transaction(() => {
+        if (readyAtSeconds !== undefined)
+          o.wakes.defer(
+            wake.id,
+            wake.leaseToken!,
+            new Date(readyAtSeconds * 1000).toISOString(),
+            now(),
+          );
+        else {
+          o.wakes.complete(wake.id, wake.leaseToken!, "no_output", wake.throughSeq, now());
+          o.journal.acknowledge(conversation.id, wake.throughSeq);
+        }
+      }).immediate();
+    };
     const focusOccurredAt = focusKey
       ? (
           db.query("SELECT occurred_at_seconds FROM qq_events WHERE event_key=?").get(focusKey) as {
@@ -463,25 +658,93 @@ export class OneBotHost {
       const boundary = o.wakes.getSourceFromSeq(wake.id) ?? 0;
       const attention = attentionTriggerFilter(binding);
       const items = o.journal.eventsAfter(conversation.id, boundary, Number.MAX_SAFE_INTEGER).items;
-      // 1. 先按成员收集窗口内最新合格入站事件（纯收集，无覆盖查询）。
+      // 1. 有界冻结范围内的**完整**成员入站行（不被资格过滤抹行）：self 的 direct/过期行
+      //    是真实断组边界，其它发送者的过期行不打断健康组；attention 只是资格面，不删行。
+      const memberRows = items.filter(
+        (event) =>
+          event.seq <= wake.throughSeq &&
+          event.kind === "inbound" &&
+          event.participant?.role === "member" &&
+          event.source.kind === "qq_event",
+      );
+      // 2. 防刷屏派生（§5.4 单 owner，同一有界范围一次投影）：可读行投影真实 fact；过期/
+      //    不可投影行 fact=null（空 parts，硬边界，不虚构内容）。开关关闭＝空派生，恢复既有语义。
+      const antispamEnabled = qqEffectiveInputAntiSpamEnabled(
+        schemeInputAntiSpam(scheme),
+        binding.inputAntiSpam,
+      );
+      // 可读性一次投影：可读行带真实 fact；过期/不可投影行 fact=null（空 parts，硬边界）。
+      const factById = new Map(
+        projectQqMessageFacts(
+          { db, orm: o.orm },
+          qqConversationScopeOfBinding({
+            conversationId: conversation.id,
+            binding,
+            bindingEpoch: conversation.bindingEpoch,
+          }),
+          memberRows.map((event) => (event.source.kind === "qq_event" ? event.source.id : "")),
+          now(),
+        ).map((fact) => [fact.id, fact]),
+      );
+      const antispam = antispamEnabled
+        ? projectQqAntispamSequence(
+            memberRows.map((event) => ({
+              seq: event.seq,
+              eventId: event.source.kind === "qq_event" ? event.source.id : "",
+              speakerId: event.participant?.id ?? `seq:${event.seq}`,
+              occurredAtSeconds: Math.floor(Date.parse(event.occurredAt) / 1000),
+              // legal direct 真值来自 journal addressing（显式 @ / 合法引用），不由模型措辞重判。
+              isDirect: event.addressing.reasons.length > 0,
+              fact:
+                event.source.kind === "qq_event" ? (factById.get(event.source.id) ?? null) : null,
+            })),
+          )
+        : deriveQqInputAntispam({ enabled: false, events: [] });
+      const excluded = new Set([
+        ...antispam.pureExpressionExcludedSeqs,
+        ...antispam.burstExcludedSeqs,
+      ]);
+      // 资格 Set 在派生之后：direct 行恒作序列断组边界；是否计入普通候选随原 contract——
+      // direct 回应路径开启时被指名行由直接回应独占（不计），关闭时仍可进普通候选。
+      // 纯表情/burst 排除不计、过期/不可投影（fact 缺失）只作断组边界不计、attention 资格外不计。
+      const eligibleRows = memberRows.filter((event) => {
+        if (
+          effectiveQqTriggers(binding, scheme).direct_reply &&
+          event.addressing.reasons.length > 0
+        )
+          return false;
+        if (event.source.kind !== "qq_event") return false;
+        if (!factById.has(event.source.id)) return false;
+        if (attention && !attention.includes(event.participant?.id ?? "")) return false;
+        return true;
+      });
+      // 3. 每成员一个候选锚：非排除合格行按 occurredAt 最大；命中组成员整体换成组的代表候选。
       const latestBySpeaker = new Map<string, { seq: number; occurredAt: string }>();
-      for (const event of items) {
-        if (event.seq > wake.throughSeq) break;
-        if (event.kind !== "inbound") continue;
-        const speaker = event.participant?.id;
-        if (!speaker) continue;
-        if (attention && !attention.includes(speaker)) continue;
-        // 候选锚＝occurredAt 最大的那条事件（与原实现同口径）：seq 顺序只是遍历序，
-        // 后到旧时戳的事件不改变候选时间锚。
+      const consider = (speaker: string, anchor: { seq: number; occurredAt: string }) => {
         const existing = latestBySpeaker.get(speaker);
         if (
           !existing ||
-          event.occurredAt > existing.occurredAt ||
-          (event.occurredAt === existing.occurredAt && event.seq > existing.seq)
+          anchor.occurredAt > existing.occurredAt ||
+          (anchor.occurredAt === existing.occurredAt && anchor.seq > existing.seq)
         )
-          latestBySpeaker.set(speaker, { seq: event.seq, occurredAt: event.occurredAt });
+          latestBySpeaker.set(speaker, anchor);
+      };
+      for (const event of eligibleRows) {
+        if (excluded.has(event.seq)) continue;
+        const speaker = event.participant?.id;
+        if (!speaker) continue;
+        consider(speaker, { seq: event.seq, occurredAt: event.occurredAt });
       }
-      // 2. 每成员恰两次覆盖判定：confirmed 保持原批上界口径（原 newtopic 批语义，E<=S<T
+      for (const group of antispam.burstGroups) {
+        const latestSeq = Math.max(...group.carriers.map((carrier) => carrier.seq));
+        const representative = eligibleRows.find((event) => event.seq === latestSeq);
+        if (!representative) continue;
+        // 候选键必须与其它候选同域（journal participant.id），不直接用投影 speakerId。
+        const speaker = representative.participant?.id;
+        if (!speaker) continue;
+        consider(speaker, { seq: representative.seq, occurredAt: representative.occurredAt });
+      }
+      // 4. 每成员恰两次覆盖判定：confirmed 保持原批上界口径（原 newtopic 批语义，E<=S<T
       //    不剔除候选）；pending 按最新合格事件判（已 covered input 不复活候选）。本机会
       //    stable key（同 frozen wake 恢复复用判断，规格 §8.2）在两种状态下都排除。
       const bySpeaker = new Map<
@@ -495,6 +758,7 @@ export class OneBotHost {
       }
       return [...bySpeaker.values()];
     };
+
     const preparation = (initial = false, src?: BotContextSource) => {
       // 自主批次候选来自冻结范围（见 chimingOpportunities）；其余路径没有逐人机会集合。
       opportunities = path === "chiming_in" ? chimingOpportunities() : [];
@@ -526,6 +790,7 @@ export class OneBotHost {
         {
           eligibilityOnly: true,
           ...(path === "chiming_in" ? { pendingTargets } : {}),
+          ...(path === "chiming_in" && resumedInitiative ? { resumedInitiative } : {}),
           // T08 gate 桥（§8.1）：仅当本 run 一次成功模型调用真实消费了该图（MODEL_IMAGE_
           // UNSUPPORTED 等失败不记账）且当前授权仍有效才返回 model_consumed proof——
           // 解除 legacy 旧失败误挡；未消费/已撤源/跨 run 一律 null，闸保持关闭。
@@ -736,6 +1001,7 @@ export class OneBotHost {
     // 同值同源，不在消费/回读两侧各自组合。
     const mediaPolicyRevision = qqMediaPolicyRevision({
       prompt: schemePrompts(scheme).media,
+      stillMaxDimension: schemeMediaInput(scheme).ordinary_still_max_dimension,
       frames: schemeRhythm(scheme).media_frame_count,
       maxDimension: schemeRhythm(scheme).media_max_dimension,
     });
@@ -747,16 +1013,51 @@ export class OneBotHost {
         binding,
         bindingEpoch: conversation.bindingEpoch,
       });
+    // 同任务恢复判定（P3 partial recovery）：仅 durable 任务（cause=chiming_in）的
+    // judgementDone=1 且受保护判断 ctx 真实可复用（exact/未到期/来源当前）才进入恢复层；
+    // 新机会与 legacy 车道不经过这里。proof 只来自 lookupStoredJudgement（宿主验证的受保护
+    // 输出），不是 bare judgementDone 布尔；无 proof 的已判定任务按既有失败合同处理，不
+    // dummy、不重判扩预算。
+    const judgedInitiativeTask =
+      execution !== null &&
+      execution.task.cause === "chiming_in" &&
+      execution.task.judgementDone === 1;
+    const resumeProof = judgedInitiativeTask ? lookupStoredJudgement() : undefined;
+    // 已判定任务的受保护判断不可用（被撤权/过期/missing/未记录）＝无真实恢复证明：按既有
+    // resolver failed 合同明确失败，绝不降级为 fresh 重判（那会扩大模型预算、重写已判锚）。
+    if (judgedInitiativeTask && resumeProof === undefined)
+      throw new Error("QQ_TASK_JUDGEMENT_UNAVAILABLE");
+    const resumedInitiative =
+      resumeProof !== undefined
+        ? {
+            targets: execution!.snapshot.targetParticipants.map((entry) => ({
+              targetId: entry.targetId,
+              speakerId: entry.speakerId,
+            })),
+          }
+        : undefined;
     let prepared = preparation(true);
     if (prepared.kind !== "prepared") {
+      // 任务分支：冻结预算下的这一轮只是「还没到点」，交还 readyAt 让任务回到 pending
+      // 按原冻结预算重取；不改走 legacy wake.defer（那是旧机会模型）。
+      if (execution && prepared.readyAtSeconds !== undefined)
+        return {
+          status: "deferred" as const,
+          readyAt: new Date(prepared.readyAtSeconds * 1000).toISOString(),
+          reason: prepared.reason,
+        };
       settleOpportunity(prepared.readyAtSeconds);
       return { status: "no_output" as const, reason: prepared.reason };
     }
     const targets: BotContextTarget[] = [];
     const authorizedTargets: string[] = [];
     const setTargets = () => {
-      const next =
-        prepared.kind !== "prepared"
+      const next = execution
+        ? execution.snapshot.targetParticipants.map((target) => ({
+            id: target.targetId,
+            speakerId: target.speakerId,
+          }))
+        : prepared.kind !== "prepared"
           ? []
           : binding.kind === "private"
             ? [{ id: binding.peerId, speakerId: binding.peerId }]
@@ -768,16 +1069,18 @@ export class OneBotHost {
                 }));
       if (binding.kind === "group" && split && path === "direct_reply") {
         const attention = attentionTriggerFilter(binding);
-        const addressed = o.journal
-          .eventsAfter(conversation.id, conversation.consumedSeq, Number.MAX_SAFE_INTEGER)
-          .items.filter(
-            (e) =>
-              e.kind === "inbound" &&
-              e.addressing.reasons.some((r) => r === "mention" || r === "reply_to_agent") &&
-              seconds() - Math.floor(Date.parse(e.occurredAt) / 1000) <=
-                QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS &&
-              (!attention || (!!e.participant?.id && attention.includes(e.participant.id))),
-          );
+        const addressed = execution
+          ? [focus].filter((event): event is ConversationEvent => event !== undefined)
+          : o.journal
+              .eventsAfter(conversation.id, conversation.consumedSeq, Number.MAX_SAFE_INTEGER)
+              .items.filter(
+                (e) =>
+                  e.kind === "inbound" &&
+                  e.addressing.reasons.some((r) => r === "mention" || r === "reply_to_agent") &&
+                  seconds() - Math.floor(Date.parse(e.occurredAt) / 1000) <=
+                    QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS &&
+                  (!attention || (!!e.participant?.id && attention.includes(e.participant.id))),
+              );
         const byId = new Map(next.map((t) => [t.id, t]));
         for (const event of addressed) {
           const speaker = event.participant?.id ?? null;
@@ -799,6 +1102,21 @@ export class OneBotHost {
         getAgentRow(o.orm, agent.id)?.configVersion !== agent.configVersion
       )
         throw new Error("BOT_CONFIGURATION_CHANGED");
+      if (execution) {
+        const authorized = new Set(execution.snapshot.authorizedTargets);
+        if (targets.some((target) => !authorized.has(target.id)))
+          throw new Error("QQ_TASK_TARGET_SCOPE_CHANGED");
+        if (
+          targets.length !== execution.snapshot.targetParticipants.length ||
+          execution.snapshot.targetParticipants.some(
+            (frozen) =>
+              !targets.some(
+                (target) => target.id === frozen.targetId && target.speakerId === frozen.speakerId,
+              ),
+          )
+        )
+          throw new Error("QQ_TASK_TARGET_SCOPE_CHANGED");
+      }
       // §8.1/§13.3：群 media 能力纪元检查——off→on/rev++ 后旧 fetch/asset/variant 写不得通过。
       if (readQqGroupCapabilityRevision(o.orm, binding, "media") !== frozenMediaCapRev)
         throw new Error("MEDIA_CAPABILITY_EPOCH_CHANGED");
@@ -816,8 +1134,7 @@ export class OneBotHost {
     };
     const assertAuthority = () => {
       signal.throwIfAborted();
-      if (!wake.leaseToken || !o.wakes.owns(wake.id, wake.leaseToken, now()))
-        throw new Error("WAKE_LEASE_LOST");
+      assertTaskLease();
       assertConfiguration();
       // T-spec detail 同次升规格锚复验（零额外模型调用/额外 read）：放在 assertAuthority 末段
       // 而非 assertConfiguration 内——问题锚回调自己只复验事实/来源/正文修订（其起点是
@@ -1010,7 +1327,7 @@ export class OneBotHost {
       const runBase = runSpec.instructions ?? "";
       const onRead = (seq: number) => {
         spec.instructions = epochText(runBase, seq);
-        if (ref.current) o.journal.linkRun(ref.current, conversation.id, seq, wake.id);
+        if (ref.current) linkRun(ref.current, seq);
       };
       // 媒体相位边界：决策相与每个并行生成目标各一份（缺省＝共享边界）。所有相读取都带边界，
       // 兄弟目标不会读到/覆写彼此的投影（规格 §3.2）。
@@ -1465,6 +1782,34 @@ export class OneBotHost {
         const asset = stickerCatalog().assets.find((entry) => entry.id === id);
         return asset && asset.updatedAt === revision ? asset : undefined;
       };
+      /** 显式请求身份的键域标记：键域变更即全体旧 requestId 断版（§5.7 单 owner）。 */
+      const qqMediaExplicitRequestShape = "qq_media_explicit_request/v1";
+      /**
+       * 只识别明确要求重读当前图片的短语；其它措辞仍走普通读取。
+       * 有限、无歧义的中英直接表达。匹配按子串出现在当前请求正文里；识别不了的一律保守
+       * 按普通 detail 处理（不新预算）。这不是全问句/全@语义猜测，也不建语言规则框架。
+       */
+      const qqMediaRelookPhrases: readonly string[] = Object.freeze([
+        "再看这张图",
+        "再看一下这张图",
+        "再看下这张图",
+        "再看看这张图",
+        "再看一眼这张图",
+        "重新看这张图",
+        "重新看一下这张图",
+        "重看这张图",
+        "再看这张图片",
+        "再看一下这张图片",
+        "重新看这张图片",
+        "look at this image again",
+        "look at this picture again",
+        "see this image again",
+        "see this picture again",
+        "re-read this image",
+        "re-read this picture",
+        "reread this image",
+        "reread this picture",
+      ]);
       /**
        * media.describe/read 的 questionMessageId 锚解析（宿主唯一真源）：被指消息必须是本会话
        * 内、当前 Agent 有权、未过期的真实消息，且属于 focus 消息本身或它的直接引用目标
@@ -1591,11 +1936,56 @@ export class OneBotHost {
         const questionSource = validated.questionFact.sources[0];
         if (!questionSource) fail("CONTEXT_SOURCE_INVALID", "问题来源缺失");
         const revision = bodyRevision(body);
+        // 显式请求身份由宿主根据当前问题与图片的真实关联派生。
+        // 任何"合法指针"不再等于新请求预算。只有两种宿主证实的真实用户请求形态才冻结
+        // trusted explicitRequest：
+        //   A. 当前请求（focus）真实引用了这张被指图所在的消息（focusFact.replyTo 平台消息
+        //      ID === matchingFact 的平台消息 ID），且当前请求事件 ≠ 载体事件；
+        //   B. 当前请求正文用少量明确、无歧义的"再看这张图"式短语直接要求重读本图
+        //      （有限中英清单，不做全问句/全@语义猜测，不建语言规则框架）。
+        // 授权校验（buildAndValidate 的 scope/body/epoch/来源/载体成员资格）仍是必要条件，
+        // 但不是意图证据。识别不了的措辞一律按普通 detail 旧 7 元组生命周期保守处理——
+        // 模型措辞/参数不能自造预算，不新增分类器/role/框架。
+        const focusBody = validated.focusFact.parts
+          .flatMap((part) => (part.kind === "text" ? [part.text] : []))
+          .join("");
+        const focusRepliesToCarrier =
+          validated.focusFact.replyTo !== null &&
+          validated.matchingFact.platformMessageId !== null &&
+          validated.focusFact.replyTo.platformMessageId ===
+            validated.matchingFact.platformMessageId &&
+          validated.focusFact.id !== validated.matchingFact.id;
+        const focusAsksRelookThisImage = qqMediaRelookPhrases.some((phrase) =>
+          focusBody.includes(phrase),
+        );
+        const isExplicitMediaRequest = focusRepliesToCarrier || focusAsksRelookThisImage;
+        const requestEventKey = validated.focusFact.id;
+        const requestPlatformMessageId = validated.focusFact.platformMessageId;
+        const explicitRequest: QqMediaExplicitRequest | undefined =
+          !isExplicitMediaRequest || requestPlatformMessageId === null
+            ? undefined
+            : {
+                requestId: JSON.stringify([
+                  qqMediaExplicitRequestShape,
+                  binding.accountId,
+                  conversation.id,
+                  conversation.bindingEpoch,
+                  binding.agentId,
+                  requestEventKey,
+                  requestPlatformMessageId,
+                  input.mediaNoteId,
+                ]),
+                requestEventKey,
+                requestMessageId: requestPlatformMessageId,
+                bindingEpoch: conversation.bindingEpoch,
+              };
+
         return {
           questionKey: normalizeQuestionKey(body),
           eventKey: validated.questionFact.id,
           bodyRevision: revision,
           source: questionSource,
+          ...(explicitRequest === undefined ? {} : { explicitRequest }),
           // 统一复验：重建相同 question+focus+direct fact 集合，严格验证 note event/index/
           // mediaId 与 fact parts 匹配——初验后任何关联变化都必须拒。
           assertQuestionCurrent: () => {
@@ -1699,7 +2089,6 @@ export class OneBotHost {
       const mediaEnabled = mediaCapable;
       const purposes = readOrganizationSettings(o.orm);
       // mediaPolicyRevision 的计算已上移到 mediaSettings 装配处（分类回读/typed 缓存同一真源）。
-      const mediaRhythm = schemeRhythm(scheme);
       const mediaActions =
         mediaEnabled && o.mediaAdapter
           ? createQqMediaTools({
@@ -1712,7 +2101,6 @@ export class OneBotHost {
                 visionModelName: purposes.vision_model_name,
                 transcriptionModelName: purposes.transcription_model_name,
               },
-              supplementWindowMinutes: mediaRhythm.media_supplement_window_minutes,
               policyRevision: mediaPolicyRevision,
               assertCurrent: () => source.assertCurrent(),
               fit: (name, arguments_, actionSignal) =>
@@ -1848,7 +2236,7 @@ export class OneBotHost {
       const evaluateBatch = async (
         input: { targets: readonly BotContextTarget[] },
         signal: AbortSignal,
-        reuseRaw?: string,
+        reusedRaw?: string,
       ): Promise<Map<string, { allowed: boolean; stateDigest: string }>> => {
         // 评分媒体准备先于叶子 bindRun：先把 source 绑到真实父批 run（onRunId 已创建 id），
         // preparePhaseMedia 才有 run 级投影；叶子字节登记仍按叶子 runId 走既有 scoreResolver。
@@ -1882,13 +2270,14 @@ export class OneBotHost {
             },
             {
               messages: evaln.messages,
+              ...(execution ? { workClass: execution.snapshot.taskClass } : {}),
               imageResolver: scoreResolver,
               bindRun: (context) => {
                 if (context.runId === undefined) throw new Error("SCORE_RUN_ID_REQUIRED");
                 scoreRunId = context.runId;
                 // 把阶段一判断 run 显式链到本 wake（conversation/observedSeq/wake_id）：崩溃恢复
                 // 经此精确链接读回该 run 的受保护 step output（不按时间戳猜）。
-                o.journal.linkRun(context.runId, conversation.id, wake.throughSeq, wake.id);
+                linkRun(context.runId, wake.throughSeq);
                 for (const part of registerScoreImages()) {
                   scoreResolver.register({ ...part, runId: context.runId, owner: context.owner });
                 }
@@ -1999,10 +2388,10 @@ export class OneBotHost {
           );
         };
         let raw: string;
-        if (reuseRaw !== undefined) {
+        if (reusedRaw !== undefined) {
           // 崩溃恢复：复用上次成功判断步的 raw（受保护 step output），不再新增模型调用；下面的
           // 覆盖/引用校验仍按**当前** source/authority 复验（不 blind cache 重放）。
-          raw = reuseRaw;
+          raw = reusedRaw;
         } else {
           try {
             raw = await callBatchLeaf(prepared);
@@ -2060,12 +2449,45 @@ export class OneBotHost {
           source.assertCurrent();
           guard.assertSources(groupOwner, prepared.sources);
         };
-        if (path === "chiming_in")
-          db.transaction(() => {
-            assertJudgementCurrent();
-            o.journal.markChimingInJudged(conversation.id, wake.throughSeq, now());
-          }).immediate();
-        else assertJudgementCurrent();
+        if (path === "chiming_in") {
+          if (execution) {
+            // 同任务恢复（P3 partial recovery）：复用受保护 raw 且判定相已完成（judgementDone=1）
+            // 时，已判定锚不得更新/重置——只复验当前授权，跳过原 mark（再 mark 只会 CAS false
+            // 被误读成 lease lost）。新判定的 raw 不走这里，仍按原 mark 语义（judgementDone=0
+            // 才 CAS 成功；对已判定任务的新评分照旧失败，不放宽）。
+            const sourceState = o.taskSourceState;
+            if (reusedRaw !== undefined && execution.task.judgementDone === 1) {
+              assertJudgementCurrent();
+              if (
+                !sourceState ||
+                !ownsQqConversationTaskLease(o.orm, {
+                  taskId: execution.task.id,
+                  leaseToken: execution.leaseToken,
+                  at: now(),
+                  sourceState,
+                })
+              )
+                throw new Error("QQ_TASK_JUDGEMENT_LEASE_LOST");
+            } else if (
+              !sourceState ||
+              !markQqConversationTaskJudgementDone(o.orm, {
+                taskId: execution.task.id,
+                leaseToken: execution.leaseToken,
+                at: now(),
+                sourceState,
+                markJudged: () => {
+                  assertJudgementCurrent();
+                  o.journal.markChimingInJudged(conversation.id, wake.throughSeq, now());
+                },
+              })
+            )
+              throw new Error("QQ_TASK_JUDGEMENT_LEASE_LOST");
+          } else
+            db.transaction(() => {
+              assertJudgementCurrent();
+              o.journal.markChimingInJudged(conversation.id, wake.throughSeq, now());
+            }).immediate();
+        } else assertJudgementCurrent();
         const minScore = schemeRhythm(scheme).initiative_min_score;
         const licensesOut = new Map<string, { allowed: boolean; stateDigest: string }>();
         // 许可按 **targetId** 唯一存放：同一 stateDigest 下不同人的分数/意图各自成项，不互相覆盖。
@@ -2131,7 +2553,8 @@ export class OneBotHost {
           source.observedSeq,
           Number.MAX_SAFE_INTEGER,
         ).items;
-        if (!updates.some(relevant)) return false;
+        if (!updates.some((event) => relevant(event) && !taskOwnsLaterMention(event.seq)))
+          return false;
         rememberPlan("new_observation", drafts, outputs);
         // 主动批次的目标集已由阶段一门槛冻结并推进了观察边界：新到达只重观察上下文，不重算机会集合
         // （重算会读到已推进边界而清空目标）。direct/continuous 仍按原机会重算。
@@ -2354,9 +2777,10 @@ export class OneBotHost {
         try {
           result = await this.host.activate({
             conversation,
-            requestId: wake.id,
+            requestId: execution?.task.taskKey ?? wake.id,
             spec,
             owner,
+            ...(execution ? { workClass: execution.snapshot.taskClass } : {}),
             context: source,
             authorizedTargets,
             actions,
@@ -2382,7 +2806,7 @@ export class OneBotHost {
             onEvent(event) {
               if (event.type === "started") {
                 ref.current = event.runId;
-                o.journal.linkRun(ref.current, conversation.id, source.observedSeq, wake.id);
+                linkRun(ref.current, source.observedSeq, true);
               }
             },
             // T10 准备钩子透传（决策/生成相）：actualModel 冻结后由网关调用一次；
@@ -2691,11 +3115,15 @@ export class OneBotHost {
                   source.assertCurrent();
                   // 机会身份统一用**冻结的 wake.throughSeq**（主动批次）或当轮 observedSeq（direct/continuous）：
                   // 运行中 refresh 会推进 observedSeq，child/重排若取新值即换机会身份，故键与 ack 都用冻结界。
-                  const opportunitySeq = initiative ? wake.throughSeq : source.observedSeq;
+                  const opportunitySeq = execution
+                    ? execution.task.sourceThroughSeq
+                    : initiative
+                      ? wake.throughSeq
+                      : source.observedSeq;
                   if (
                     o.journal
                       .eventsAfter(conversation.id, source.observedSeq, Number.MAX_SAFE_INTEGER)
-                      .items.some(relevant)
+                      .items.some((event) => relevant(event) && !taskOwnsLaterMention(event.seq))
                   )
                     throw new Error("CONVERSATION_CHANGED_AT_COMMIT");
                   for (const [ordinal, output] of outputs.entries()) {
@@ -2769,16 +3197,17 @@ export class OneBotHost {
                       binding.kind === "private" || !split
                         ? binding.peerId
                         : (focus?.participant?.id ?? "anonymous");
-                    o.wakes.complete(
-                      wake.id,
-                      wake.leaseToken!,
-                      terminal.status,
-                      opportunitySeq,
-                      now(),
-                      covered,
-                      failedTargets.get(ownTarget),
-                    );
-                    o.journal.linkRun(currentRunId, conversation.id, opportunitySeq, wake.id);
+                    if (!execution)
+                      o.wakes.complete(
+                        wake.id,
+                        wake.leaseToken!,
+                        terminal.status,
+                        opportunitySeq,
+                        now(),
+                        covered,
+                        failedTargets.get(ownTarget),
+                      );
+                    linkRun(currentRunId, opportunitySeq);
                   }
                   return new AgentRunRepository(db).finishRun(
                     currentRunId,
@@ -2837,12 +3266,20 @@ export class OneBotHost {
     // 子 run；评分/子 run 经 AsyncLocal 继承父 usage/scope/sources，不另起 ledger。父 run id
     // 由 onRunId 捕获（不是第 1 个子 run 的 id）。协议/评分失败原样抛走原失败结算（父 run→failed）。
     if (initiative) {
+      // 同任务恢复（P3 partial recovery）：评分批用冻结快照的**全部**合法目标（含已早提交/
+      // unknown 的成员）——那是获准的 target 范围，不是 prepared 新算的子集；已注册目标由
+      // committedOf 稳定键跳过，只补齐剩余目标。非恢复车道保持原样。
       const memberBatch =
         path === "chiming_in" && binding.kind === "group" && prepared.kind === "prepared"
-          ? prepared.targets.map((entry) => ({
-              id: entry.speakerId ?? "anonymous",
-              speakerId: entry.speakerId,
-            }))
+          ? resumeProof !== undefined && execution
+            ? execution.snapshot.targetParticipants.map((entry) => ({
+                id: entry.targetId,
+                speakerId: entry.speakerId,
+              }))
+            : prepared.targets.map((entry) => ({
+                id: entry.speakerId ?? "anonymous",
+                speakerId: entry.speakerId,
+              }))
           : targets;
       const roomTargets: BotContextTarget[] =
         binding.kind === "private"
@@ -2850,44 +3287,21 @@ export class OneBotHost {
           : [{ id: binding.peerId, speakerId: null }];
       const perTarget = split && path !== "idle_topic";
       // 崩溃恢复（规格 §8.2）：同一 wake 上次成功判断步的 raw（受保护 step output），经 run 的
-      // wake_id 精确链接（不按最近时间戳猜）——存在则复用，不重新 judge。
+      // wake_id 精确链接（不按最近时间戳猜）——存在则复用，不重新 judge。查证复用宿主级
+      // lookupStoredJudgement（同一身份/有效期/来源 guard，无第二份查询）；这里补评分叶 source
+      // 边界的当前复验（parentBatch.source.assertSources），legacy wake 路径语义照旧。
       const recoverStage1Raw = (): string | undefined => {
-        // 恢复只认同一机会身份（wake/会话/冻结 observed_seq/绑定所有者/助手），不按时间戳猜。
-        const runRow = db
-          .query(
-            "SELECT run_id FROM agent_runs WHERE spec_id='onebot.initiative.evaluate_batch' AND wake_id=? AND conversation_id=? AND observed_seq=? AND owner_kind='qq_binding' AND owner_id=? AND agent_id=? AND status='completed' ORDER BY started_at DESC LIMIT 1",
-          )
-          .get(wake.id, conversation.id, wake.throughSeq, binding.id, agent.id) as {
-          run_id: string;
-        } | null;
-        if (!runRow) return undefined;
-        const stepRow = db
-          .query(
-            "SELECT step_id FROM agent_steps WHERE run_id=? AND status='completed' ORDER BY step_no LIMIT 1",
-          )
-          .get(runRow.run_id) as { step_id: string } | null;
-        if (!stepRow) return undefined;
-        const ctx = new AgentRunRepository(db).getContext({
-          runId: runRow.run_id,
-          stepId: stepRow.step_id,
-        });
-        // 受保护判断只有 exact 且未到期可复用；撤销/到期改走合法重判，不硬拒。
-        if (
-          ctx === null ||
-          ctx.status !== "exact" ||
-          (ctx.expiresAt !== null && ctx.expiresAt <= now())
-        )
-          return undefined;
-        // 旧判断消费过的来源已撤权/过期时 raw 不得复用：按当前授权一次复验，撤权原样抛。
-        parentBatch.source.assertSources(ctx.sources);
-        const out = ctx.output as { text?: unknown } | null | undefined;
-        return typeof out?.text === "string" ? out.text : undefined;
+        const stored = resumeProof ?? lookupStoredJudgement();
+        if (stored === undefined) return undefined;
+        parentBatch.source.assertSources(stored.sources);
+        return stored.raw;
       };
       const parentBatch = buildRun(undefined, judgementSpec, memberBatch, [], "judgement", runRef);
       const outcome = await o.agentRuntime.runTaskGroup(
         { id: "onebot.initiative.batch", version: "1" },
         {
           owner,
+          ...(execution ? { workClass: execution.snapshot.taskClass } : {}),
           conversationId: conversation.id,
           signal,
           sources: parentBatch.source.sources,
@@ -2895,7 +3309,7 @@ export class OneBotHost {
           budget,
           onRunId: (runId) => {
             runRef.current = runId;
-            o.journal.linkRun(runId, conversation.id, wake.throughSeq, wake.id);
+            linkRun(runId, wake.throughSeq, true);
           },
         },
         async (groupSignal) => {
@@ -2909,7 +3323,8 @@ export class OneBotHost {
             db.transaction(() => {
               if (path === "chiming_in")
                 o.journal.advanceChimingInObservedSeq(conversation.id, wake.throughSeq);
-              o.wakes.complete(wake.id, wake.leaseToken!, "no_output", wake.throughSeq, now());
+              if (!execution)
+                o.wakes.complete(wake.id, wake.leaseToken!, "no_output", wake.throughSeq, now());
               if (runRef.current)
                 new AgentRunRepository(db).finishRun(
                   runRef.current,
@@ -3040,15 +3455,16 @@ export class OneBotHost {
         // 协议/执行失败在 evaluateBatch 抛出，走原失败结算，不把未判断消息标成已判。
         if (path === "chiming_in")
           o.journal.advanceChimingInObservedSeq(conversation.id, wake.throughSeq);
-        o.wakes.complete(
-          wake.id,
-          wake.leaseToken!,
-          settleStatus,
-          wake.throughSeq,
-          now(),
-          covered,
-          failedTargets.get(ownTarget),
-        );
+        if (!execution)
+          o.wakes.complete(
+            wake.id,
+            wake.leaseToken!,
+            settleStatus,
+            wake.throughSeq,
+            now(),
+            covered,
+            failedTargets.get(ownTarget),
+          );
       }).immediate();
       // 各 target 的事实取自它自己那条子 run（同 target 的 outbox owner）——模型可能对非本 child
       // 授权的目标给出草稿（runtime 标 AGENT_TARGET_UNAUTHORIZED），那不属于本目标事实。

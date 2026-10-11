@@ -38,6 +38,8 @@ export interface VisionRequest {
   readonly images: readonly VisionImage[];
   /** Sent as a strict `json_schema` response format, the same shape the gateway uses. */
   readonly responseSchema?: Record<string, unknown>;
+  /** ModelPort's sole admission state, acquired for the actual model HTTP attempt. */
+  readonly acquireSendPermit?: (model: string, signal?: AbortSignal) => Promise<() => void>;
 }
 
 export interface VisionClient {
@@ -91,8 +93,18 @@ export function createLmStudioVisionClient(
   return {
     async annotate(request: VisionRequest): Promise<string> {
       request.signal?.throwIfAborted();
-      const timeout = AbortSignal.timeout(config.timeoutSeconds * 1000);
-      const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
+      let timeoutSignal: AbortSignal | undefined;
+      let runSignal: AbortSignal | undefined;
+      let admitted = request.acquireSendPermit === undefined;
+      const startRequestTimeout = (): AbortSignal => {
+        timeoutSignal ??= AbortSignal.timeout(config.timeoutSeconds * 1000);
+        runSignal ??=
+          request.signal === undefined
+            ? timeoutSignal
+            : AbortSignal.any([request.signal, timeoutSignal]);
+        return runSignal;
+      };
+      if (admitted) startRequestTimeout();
       const content: unknown[] = [{ type: "text", text: request.prompt }];
       for (const image of request.images) {
         content.push({
@@ -130,53 +142,65 @@ export function createLmStudioVisionClient(
                   },
                 };
         }
-        const startedAt = Date.now();
-        let response: Response;
+        const admissionSignal = admitted ? runSignal : request.signal;
+        let release: (() => void) | undefined;
         try {
-          response = await sendFetch(`${routed.baseUrl}/chat/completions`, {
+          release = request.acquireSendPermit
+            ? await request.acquireSendPermit(request.model, admissionSignal)
+            : undefined;
+        } catch (error) {
+          if (request.signal?.aborted) throw request.signal.reason ?? error;
+          if (runSignal?.aborted) throw mapModelError(runSignal.reason ?? error);
+          throw error;
+        }
+        if (!admitted) {
+          admitted = true;
+          startRequestTimeout();
+        }
+        const signalForAttempt = startRequestTimeout();
+        const startedAt = Date.now();
+        try {
+          if (signalForAttempt.aborted) {
+            if (request.signal?.aborted) throw request.signal.reason ?? signalForAttempt.reason;
+            throw mapModelError(signalForAttempt.reason);
+          }
+          const response = await sendFetch(`${routed.baseUrl}/chat/completions`, {
             method: "POST",
             headers: {
               "content-type": "application/json",
-              // Same fallback as the gateway: an empty token means the LM Studio default one.
               authorization: `Bearer ${(routed.apiKey ?? "").trim() || DEFAULT_LM_STUDIO_API_KEY}`,
             },
             body: JSON.stringify(body),
-            signal,
+            signal: signalForAttempt,
+          }).catch((error: unknown) => {
+            if (request.signal?.aborted) throw request.signal.reason ?? error;
+            console.warn(
+              `[vision] ${request.model} 调用失败（${Date.now() - startedAt}ms）：${describeError(error)}`,
+            );
+            throw mapModelError(error);
           });
-        } catch (error) {
-          // 取消不是模型故障：与网关同一条规则，把调用方的理由原样交回去。
-          if (request.signal?.aborted) throw request.signal.reason ?? error;
-          console.warn(
-            `[vision] ${request.model} 调用失败（${Date.now() - startedAt}ms）：${describeError(error)}`,
-          );
-          throw mapModelError(error);
-        }
-        if (!response.ok) {
-          // 报告：图片读不出来，记录里只有 AGENT_FAILED，查不到为什么——以前这里
-          // 把状态码和响应体一起丢了。现在原因进日志（服务、HTTP 状态、耗时、截断的响应体），
-          // 错误码交给网关那张表，取消/超时/鉴权/网络各自的分类与文本调用完全一致。
-          //
-          // 响应体不进错误消息：它会被 mapModelError 的正则一起读，"4xx 且含 model 字样" 那条
-          // 判据会把普通的形状拒绝误报成"未加载指定模型"。保留 `.status` 是给结构化输出降级用的。
-          const body = await response.text().catch(() => "");
-          console.warn(
-            `[vision] ${request.model} 调用被拒 HTTP ${response.status}（${Date.now() - startedAt}ms）：${summariseBody(body)}`,
-          );
-          const error = new Error(`vision call failed: ${response.status}`);
-          (error as { status?: number }).status = response.status;
-          throw mapModelError(error);
-        }
-        // 200 但正文不是 JSON（中转层回 HTML、或误开了流式）走这里：与上面同一处理——原因进日志、
-        // 码走同一张表。不做这一步的话，运行时的 SyntaxError 分支会把它记成"决策不合法"，
-        // 而视觉调用根本没有决策这回事。
-        const raw = await response.text().catch(() => "");
-        try {
-          return JSON.parse(raw) as { choices?: Array<{ message?: { content?: string | null } }> };
-        } catch {
-          console.warn(
-            `[vision] ${request.model} 响应不是 JSON（${Date.now() - startedAt}ms）：${summariseBody(raw)}`,
-          );
-          throw mapModelError(new SyntaxError("vision response was not JSON"));
+          if (!response.ok) {
+            const text = await response.text().catch(() => "");
+            console.warn(
+              `[vision] ${request.model} 调用被拒 HTTP ${response.status}（${Date.now() - startedAt}ms）：${summariseBody(text)}`,
+            );
+            const error = new Error(`vision call failed: ${response.status}`);
+            (error as { status?: number }).status = response.status;
+            throw mapModelError(error);
+          }
+          const raw = await response.text().catch(() => "");
+          try {
+            return JSON.parse(raw) as {
+              choices?: Array<{ message?: { content?: string | null } }>;
+            };
+          } catch {
+            console.warn(
+              `[vision] ${request.model} 响应不是 JSON（${Date.now() - startedAt}ms）：${summariseBody(raw)}`,
+            );
+            throw mapModelError(new SyntaxError("vision response was not JSON"));
+          }
+        } finally {
+          release?.();
         }
       };
       // 与网关同一条降级链：严格 json_schema → json_object → 不带该字段。

@@ -24,10 +24,7 @@ import { mapBotHostDiagnosticTelemetry } from "../../src/server/channels/onebot1
 import { createQqMediaInputService } from "../../src/server/channels/onebot11/media-input-service";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
-import {
-  bodyRevision,
-  ConversationEventRepository,
-} from "../../src/server/db/conversation-event-repository";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import {
   correctMemory as correctMemoryEntry,
@@ -38,6 +35,7 @@ import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-re
 import {
   createQqScheme,
   type QqSchemeRow,
+  schemeMediaInput,
   schemePrompts,
   schemeRhythm,
 } from "../../src/server/db/qq-scheme-repository";
@@ -66,6 +64,7 @@ import {
   qqMemoryScopeKey,
 } from "../../src/server/services/qq-binding-contract";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import { qqMediaPolicyRevision } from "../../src/server/services/qq-media-contract";
 import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
 import { qqExecutionModuleSourceAccess } from "../../src/server/services/qq-member-roster-sources";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
@@ -567,13 +566,12 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
               ? {
                   mediaInputService: (scheme: QqSchemeRow) => {
                     const prompt = schemePrompts(scheme).media;
-                    const policyRevision = bodyRevision(
-                      JSON.stringify({
-                        prompt,
-                        frames: schemeRhythm(scheme).media_frame_count,
-                        maxDimension: schemeRhythm(scheme).media_max_dimension,
-                      }),
-                    );
+                    const policyRevision = qqMediaPolicyRevision({
+                      prompt,
+                      stillMaxDimension: schemeMediaInput(scheme).ordinary_still_max_dimension,
+                      frames: schemeRhythm(scheme).media_frame_count,
+                      maxDimension: schemeRhythm(scheme).media_max_dimension,
+                    });
                     return createQqMediaInputService({
                       store: { db, orm },
                       fetchSource: async ({ sourceRef }) => {

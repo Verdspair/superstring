@@ -69,10 +69,12 @@ function schemeChangeRows(overrides: QqGroupSchemeOverrides, target: QqSchemeRes
   return rows;
 }
 
-type SchemeChangePatch = { agent_id: string; scheme_id: string } & Pick<
-  UpdateQqBindingRequest,
-  "scheme_change"
->;
+type SchemeChangePatch = {
+  agent_id: string;
+  scheme_id: string;
+  task_limits?: QqBindingResponse["task_limits"];
+  input_anti_spam?: QqBindingResponse["input_anti_spam"];
+} & Pick<UpdateQqBindingRequest, "scheme_change">;
 
 interface SchemeChangePreview {
   row: QqBindingResponse;
@@ -149,7 +151,26 @@ export function BindingEditor({
     agentId: binding?.agent_id ?? state.agents[0]?.id ?? "",
     schemeId: binding?.scheme_id ?? state.qqSchemes[0]?.id ?? "",
     source: binding ?? undefined,
+    task_limits: binding ? { ...binding.task_limits } : undefined,
+    input_anti_spam: binding ? { ...binding.input_anti_spam } : undefined,
   };
+  const effectiveLimits =
+    choice.task_limits ??
+    (binding ? binding.task_limits : { mention_task_limit: null, ordinary_task_limit: null });
+  const effectiveAntiSpam =
+    choice.input_anti_spam ?? (binding ? binding.input_anti_spam : { enabled: null });
+  const rawMention = choice.task_limits_raw?.mention_task_limit;
+  const rawOrdinary = choice.task_limits_raw?.ordinary_task_limit;
+  const hasInvalidLimits = rawMention !== undefined || rawOrdinary !== undefined;
+  const choiceTaskLimitsDirty =
+    !!binding &&
+    choice.task_limits !== undefined &&
+    (choice.task_limits.mention_task_limit !== binding.task_limits.mention_task_limit ||
+      choice.task_limits.ordinary_task_limit !== binding.task_limits.ordinary_task_limit);
+  const choiceInputAntiSpamDirty =
+    !!binding &&
+    choice.input_anti_spam !== undefined &&
+    choice.input_anti_spam.enabled !== binding.input_anti_spam.enabled;
   const saving = state.qqAccessSaving;
   const [preview, setPreview] = useState<SchemeChangePreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -171,6 +192,8 @@ export function BindingEditor({
       agent_id: preview.row.agent_id,
       scheme_id: preview.schemeId,
       scheme_change: schemeChange,
+      ...(choiceTaskLimitsDirty ? { task_limits: choice.task_limits } : {}),
+      ...(choiceInputAntiSpamDirty ? { input_anti_spam: choice.input_anti_spam } : {}),
     });
     setPreview(null);
   };
@@ -209,7 +232,12 @@ export function BindingEditor({
           return;
         }
         if (isEmptyQqGroupOverrides(config.overrides)) {
-          commitBinding(row, { agent_id: row.agent_id, scheme_id: choice.schemeId });
+          commitBinding(row, {
+            agent_id: row.agent_id,
+            scheme_id: choice.schemeId,
+            ...(choiceTaskLimitsDirty ? { task_limits: choice.task_limits } : {}),
+            ...(choiceInputAntiSpamDirty ? { input_anti_spam: choice.input_anti_spam } : {}),
+          });
           return;
         }
         const target = current.qqSchemes.find((item) => item.id === choice.schemeId);
@@ -230,7 +258,12 @@ export function BindingEditor({
       }
       return;
     }
-    commitBinding(row, { agent_id: choice.agentId, scheme_id: choice.schemeId });
+    commitBinding(row, {
+      agent_id: choice.agentId,
+      scheme_id: choice.schemeId,
+      ...(choiceTaskLimitsDirty ? { task_limits: choice.task_limits } : {}),
+      ...(choiceInputAntiSpamDirty ? { input_anti_spam: choice.input_anti_spam } : {}),
+    });
   };
   const attentionValue = binding
     ? (attention[binding.id] ?? {
@@ -325,7 +358,8 @@ export function BindingEditor({
                   state.qqGroupConfigSaving ||
                   previewBusy ||
                   !choice.agentId ||
-                  !choice.schemeId
+                  !choice.schemeId ||
+                  hasInvalidLimits
                 }
                 onClick={() => void save()}
               >
@@ -413,6 +447,153 @@ export function BindingEditor({
                 <p className="mt-3 text-xs text-muted-foreground">
                   {t("connections.triggersMutualExclusionHint")}
                 </p>
+              </SchemeFieldCard>
+              <SchemeFieldCard
+                title={t("connections.taskLimitsTitle")}
+                description="schemes.bindings.taskLimits.hint"
+              >
+                <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                  <Field
+                    label="connections.mentionTaskLimit"
+                    info="connections.mentionTaskLimitBindingHint"
+                  >
+                    <Input
+                      type="number"
+                      min={1}
+                      max={64}
+                      placeholder={t("connections.followTheScheme")}
+                      disabled={saving}
+                      value={
+                        rawMention !== undefined
+                          ? rawMention
+                          : effectiveLimits.mention_task_limit !== null
+                            ? String(effectiveLimits.mention_task_limit)
+                            : ""
+                      }
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const trimmed = raw.trim();
+                        const isInvalid =
+                          trimmed !== "" &&
+                          (!/^\d+$/.test(trimmed) || Number(trimmed) < 1 || Number(trimmed) > 64);
+                        const currentLimits = choice.task_limits ?? { ...binding.task_limits };
+                        const nextRaw = { ...choice.task_limits_raw };
+                        if (isInvalid) {
+                          nextRaw.mention_task_limit = raw;
+                        } else {
+                          delete nextRaw.mention_task_limit;
+                        }
+                        const nextLimits = {
+                          ...currentLimits,
+                          mention_task_limit: isInvalid
+                            ? currentLimits.mention_task_limit
+                            : trimmed === ""
+                              ? null
+                              : Number(trimmed),
+                        };
+                        setChoices((old) => ({
+                          ...old,
+                          [key]: {
+                            ...choice,
+                            task_limits: nextLimits,
+                            task_limits_raw: Object.keys(nextRaw).length ? nextRaw : undefined,
+                          },
+                        }));
+                      }}
+                    />
+                    {rawMention !== undefined && (
+                      <p role="alert" className="mt-1 text-xs text-destructive">
+                        {t("connections.enterAValidIntegerWithinTheAllowedRange")}
+                      </p>
+                    )}
+                  </Field>
+                  <Field
+                    label="connections.ordinaryTaskLimit"
+                    info="connections.ordinaryTaskLimitBindingHint"
+                  >
+                    <Input
+                      type="number"
+                      min={1}
+                      max={64}
+                      placeholder={t("connections.followTheScheme")}
+                      disabled={saving}
+                      value={
+                        rawOrdinary !== undefined
+                          ? rawOrdinary
+                          : effectiveLimits.ordinary_task_limit !== null
+                            ? String(effectiveLimits.ordinary_task_limit)
+                            : ""
+                      }
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const trimmed = raw.trim();
+                        const isInvalid =
+                          trimmed !== "" &&
+                          (!/^\d+$/.test(trimmed) || Number(trimmed) < 1 || Number(trimmed) > 64);
+                        const currentLimits = choice.task_limits ?? { ...binding.task_limits };
+                        const nextRaw = { ...choice.task_limits_raw };
+                        if (isInvalid) {
+                          nextRaw.ordinary_task_limit = raw;
+                        } else {
+                          delete nextRaw.ordinary_task_limit;
+                        }
+                        const nextLimits = {
+                          ...currentLimits,
+                          ordinary_task_limit: isInvalid
+                            ? currentLimits.ordinary_task_limit
+                            : trimmed === ""
+                              ? null
+                              : Number(trimmed),
+                        };
+                        setChoices((old) => ({
+                          ...old,
+                          [key]: {
+                            ...choice,
+                            task_limits: nextLimits,
+                            task_limits_raw: Object.keys(nextRaw).length ? nextRaw : undefined,
+                          },
+                        }));
+                      }}
+                    />
+                    {rawOrdinary !== undefined && (
+                      <p role="alert" className="mt-1 text-xs text-destructive">
+                        {t("connections.enterAValidIntegerWithinTheAllowedRange")}
+                      </p>
+                    )}
+                  </Field>
+                </div>
+              </SchemeFieldCard>
+              <SchemeFieldCard
+                title={t("connections.inputAntiSpam")}
+                description="schemes.bindings.inputAntiSpam.hint"
+              >
+                <Field label="connections.inputAntiSpam">
+                  <NativeSelect
+                    aria-label={t("connections.inputAntiSpam")}
+                    disabled={saving}
+                    value={
+                      effectiveAntiSpam.enabled === null
+                        ? "inherit"
+                        : effectiveAntiSpam.enabled
+                          ? "on"
+                          : "off"
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value === "inherit" ? null : e.target.value === "on";
+                      setChoices((old) => ({
+                        ...old,
+                        [key]: {
+                          ...choice,
+                          input_anti_spam: { enabled: val },
+                        },
+                      }));
+                    }}
+                  >
+                    <option value="inherit">{t("connections.followTheScheme")}</option>
+                    <option value="on">{t("connections.on")}</option>
+                    <option value="off">{t("connections.off")}</option>
+                  </NativeSelect>
+                </Field>
               </SchemeFieldCard>
               <div ref={adminSectionRef} data-section="administrators">
                 <SchemeFieldCard

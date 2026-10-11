@@ -690,12 +690,12 @@ it("[S53] unknown delivery receipt is recorded unknown and never resent", async 
   expect(h.sent).toHaveLength(1);
 });
 
-it("[Biz_41] baseline attempts are bounded at 2 and never reset by new rows for the same media", async () => {
+it("[Biz_41] baseline is one bounded attempt; the failed result is reused and never reset by new rows for the same media", async () => {
   const h = createOneBotHarness({
     accountId: "90001",
     member: "10001",
     mediaEnabled: true,
-    vision: ["fail", "fail"],
+    vision: ["fail"],
     model: [],
   });
   const bindingRow = h.orm
@@ -729,74 +729,27 @@ it("[Biz_41] baseline attempts are bounded at 2 and never reset by new rows for 
         purpose: "baseline",
         policy: "baseline/v1/e2e",
         modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-        addressedToAssistant: true,
         assertCurrent: () => {},
         owner,
       },
     );
-  // 第一次读取：烧 attempt 1，失败。
+  // 第一次读取：烧 baseline 唯一一次有界尝试（§5.7），失败。
   const first = await read();
   expect(first.kind).toBe("failed");
-  if (first.kind === "failed") expect(first.attempt).toBe(1);
-  // 第二次读取：没有更晚补充 → 不烧 attempt 2。
+  if (first.kind === "failed") {
+    expect(first.attempt).toBe(1);
+    expect(first.giveUp).toBe(true);
+  }
+  // 同一 baseline 身份的重复 invoke：失败结果复用（任务 CAS 拒），零视觉、不重开、
+  // 不再有"更晚补充解锁第二次"的旧时间流。
   const blocked = await read();
   expect(blocked.kind).toBe("unreadable");
-  if (blocked.kind === "unreadable") expect(blocked.reason).toBe("awaiting_supplement");
-  // 模拟更晚相关补充：attempt 2 可用且是最后一次。
-  h.db.query("UPDATE qq_media_read_tasks SET status='failed' WHERE media_note_id=?").run(media.id);
-  // 直接改时钟推进：用 proveSupplementLaterThan 注入宿主证据。
-  const second = await readQqMediaTaskOnce(
-    h.orm,
-    {
-      capabilities: ["image"] as const,
-      read: async () => {
-        throw new Error("E2E_VISION_FAIL");
-      },
-      fetchBytes: async () => ({ bytes: png() }),
-    },
-    {
-      eventKey: "l41-event",
-      segmentIndex: 0,
-      purpose: "baseline",
-      policy: "baseline/v1/e2e",
-      modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-      addressedToAssistant: true,
-      proveSupplementLaterThan: () => true,
-      assertCurrent: () => {},
-      owner,
-    },
-  );
-  expect(second.kind).toBe("failed");
-  if (second.kind === "failed") expect(second.attempt).toBe(2);
-  // 第三次：预算耗尽（attempts_exhausted）——旧尝试不归零。
-  const third = await readQqMediaTaskOnce(
-    h.orm,
-    {
-      capabilities: ["image"] as const,
-      read: async () => {
-        throw new Error("E2E_VISION_FAIL");
-      },
-      fetchBytes: async () => ({ bytes: png() }),
-    },
-    {
-      eventKey: "l41-event",
-      segmentIndex: 0,
-      purpose: "baseline",
-      policy: "baseline/v1/e2e",
-      modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-      addressedToAssistant: true,
-      proveSupplementLaterThan: () => true,
-      assertCurrent: () => {},
-      owner,
-    },
-  );
-  expect(third.kind).toBe("unreadable");
-  if (third.kind === "unreadable") expect(third.reason).toBe("attempts_exhausted");
-  // 尝试计数从未归零：任务行 attempts=2。
+  if (blocked.kind === "unreadable") expect(blocked.reason).toBe("attempts_exhausted");
+  // 尝试计数从未归零也从未到 2：任务行 attempts=1、状态 failed。
   const task = h.db
-    .query("SELECT attempts FROM qq_media_read_tasks WHERE media_note_id=?")
-    .get(media.id) as { attempts: number };
-  expect(task.attempts).toBe(2);
+    .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
+    .get(media.id) as { attempts: number; status: string };
+  expect(task).toMatchObject({ attempts: 1, status: "failed" });
 });
 
 it("[Biz_42] a cached hit never spends an attempt: the second visual call count stays zero", async () => {
@@ -840,7 +793,6 @@ it("[Biz_42] a cached hit never spends an attempt: the second visual call count 
         purpose: "baseline",
         policy: "baseline/v1/e2e",
         modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-        addressedToAssistant: true,
         assertCurrent: () => {},
         owner,
       },
@@ -861,7 +813,7 @@ it("[Biz_42] a cached hit never spends an attempt: the second visual call count 
   expect(task.attempts).toBe(1);
 });
 
-it("[Biz_43] equal-or-earlier supplements are refused; only a genuinely later one unlocks attempt 2", async () => {
+it("[Biz_43] the failed baseline result is reused for the same identity; no supplement gate exists to unlock a second attempt", async () => {
   const h = createOneBotHarness({
     accountId: "90001",
     member: "10001",
@@ -883,7 +835,7 @@ it("[Biz_43] equal-or-earlier supplements are refused; only a genuinely later on
     agentId: DEFAULT_AGENT_ID,
   };
   mediaRow(h, "l43-event", { at: Math.floor(Date.parse(h.now()) / 1000) - 300 });
-  const read = (prove?: () => boolean) =>
+  const read = () =>
     readQqMediaTaskOnce(
       h.orm,
       {
@@ -899,15 +851,17 @@ it("[Biz_43] equal-or-earlier supplements are refused; only a genuinely later on
         purpose: "baseline",
         policy: "baseline/v1/e2e",
         modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-        addressedToAssistant: true,
-        ...(prove ? { proveSupplementLaterThan: prove } : {}),
         assertCurrent: () => {},
         owner,
       },
     );
-  // attempt 1 失败。
+  // attempt 1 失败（baseline 一次有界尝试，§5.7）。
   const first = await read();
   expect(first.kind).toBe("failed");
+  if (first.kind === "failed") {
+    expect(first.attempt).toBe(1);
+    expect(first.giveUp).toBe(true);
+  }
   const claimedAt = (
     h.db
       .query("SELECT last_attempt_at FROM qq_media_read_tasks WHERE media_note_id=?")
@@ -915,16 +869,20 @@ it("[Biz_43] equal-or-earlier supplements are refused; only a genuinely later on
       last_attempt_at: string;
     }
   ).last_attempt_at;
-  // 宿主证据回调返回 false（无更晚补充）：attempt 2 不解锁。
-  const noProof = await read(() => false);
-  expect(noProof.kind).toBe("unreadable");
-  if (noProof.kind === "unreadable") expect(noProof.reason).toBe("awaiting_supplement");
-  // 宿主证据回调返回 true（证明更晚相关补充）：解锁精确 attempt 2。
-  const proof = await read(() => true);
-  expect(proof.kind).toBe("failed");
-  if (proof.kind === "failed") expect(proof.attempt).toBe(2);
-  // claimedAt 必须早于/等于当前——证明基准不是 recordedAt 漂移。
+  // 同身份重复 invoke：任务 CAS 拒（失败结果复用），零视觉——补充时间闸已退役，
+  // 没有任何宿主证据回调能解锁第二次尝试。
+  const reused = await read();
+  expect(reused.kind).toBe("unreadable");
+  if (reused.kind === "unreadable") expect(reused.reason).toBe("attempts_exhausted");
+  // claimedAt 必须早于/等于当前，且仍是唯一一次尝试的打点——没有第二次 claim。
   expect(Number.isFinite(Date.parse(claimedAt))).toBe(true);
+  const task = h.db
+    .query("SELECT attempts,status FROM qq_media_read_tasks WHERE media_note_id=?")
+    .get((h.db.query("SELECT id FROM qq_media_notes LIMIT 1").get() as { id: string }).id) as {
+    attempts: number;
+    status: string;
+  };
+  expect(task).toMatchObject({ attempts: 1, status: "failed" });
 });
 
 it("[Biz_45] the same sha from a different URL still re-verifies its current source (sha is not authority)", async () => {
@@ -1100,7 +1058,6 @@ it("[Biz_47] an expired source cannot feed the cache and an expired asset is nev
       purpose: "baseline",
       policy: "baseline/v1/e2e",
       modelConfig: { visionModelName: "vision-stub", transcriptionModelName: null },
-      addressedToAssistant: true,
       assertCurrent: () => {},
       owner,
     },
