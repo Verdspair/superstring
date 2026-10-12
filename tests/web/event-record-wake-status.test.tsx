@@ -146,4 +146,174 @@ describe("EventRecord wake status & error code presentation", () => {
     const destructiveElements = container.querySelectorAll(".text-destructive");
     expect(destructiveElements.length).toBe(0);
   });
+  it("renders linked task failure (QQ_TASK_FAILED) when wake completed, showing task failed and error code instead of completed", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const event = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+        errorCode: null,
+      }),
+      task: {
+        id: "task-101",
+        status: "failed" as const,
+        errorCode: "QQ_TASK_FAILED",
+      },
+    };
+
+    const { container } = render(<EventRecord event={event} conversation={conversation} />);
+
+    // 应该展示任务失败，而不是处理完成
+    expect(screen.getByText("任务处理失败")).toBeDefined();
+    expect(screen.queryByText("处理完成")).toBeNull();
+
+    // 错误码 QQ_TASK_FAILED 应该以 text-destructive 标红展示
+    const destructiveEl = container.querySelector(".text-destructive");
+    expect(destructiveEl).not.toBeNull();
+    expect(destructiveEl?.textContent).toContain("QQ_TASK_FAILED");
+  });
+  it("renders linked task completed as neutral task processing completed label (not wake completed or delivered)", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const event = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+        errorCode: null,
+      }),
+      task: {
+        id: "task-102",
+        status: "completed" as const,
+        errorCode: null,
+      },
+    };
+
+    render(<EventRecord event={event} conversation={conversation} />);
+
+    // 应该展示中性「任务处理完成」，表示模型处理完成而非送达
+    expect(screen.getByText("任务处理完成")).toBeDefined();
+    expect(screen.queryByText("处理完成")).toBeNull();
+  });
+
+  it("renders linked task running and pending states appropriately", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const runningEvent = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+        errorCode: null,
+      }),
+      task: {
+        id: "task-103",
+        status: "running" as const,
+        errorCode: null,
+      },
+    };
+
+    const { unmount } = render(<EventRecord event={runningEvent} conversation={conversation} />);
+    expect(screen.getByText("正在处理")).toBeDefined();
+    unmount();
+
+    const pendingEvent = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+        errorCode: null,
+      }),
+      task: {
+        id: "task-104",
+        status: "pending" as const,
+        errorCode: null,
+      },
+    };
+
+    render(<EventRecord event={pendingEvent} conversation={conversation} />);
+    expect(screen.getByText("等待处理")).toBeDefined();
+  });
+
+  it("renders linked task cancelled, expired, and no_output states", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const cancelledEvent = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+      }),
+      task: {
+        id: "task-105",
+        status: "cancelled" as const,
+        errorCode: null,
+      },
+    };
+    const { unmount: u1 } = render(
+      <EventRecord event={cancelledEvent} conversation={conversation} />,
+    );
+    expect(screen.getByText("已取消")).toBeDefined();
+    u1();
+
+    const expiredEvent = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+      }),
+      task: {
+        id: "task-106",
+        status: "expired" as const,
+        errorCode: null,
+      },
+    };
+    const { unmount: u2 } = render(
+      <EventRecord event={expiredEvent} conversation={conversation} />,
+    );
+    expect(screen.getByText("已到期")).toBeDefined();
+    u2();
+
+    const noOutputEvent = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+      }),
+      task: {
+        id: "task-107",
+        status: "no_output" as const,
+        errorCode: null,
+      },
+    };
+    render(<EventRecord event={noOutputEvent} conversation={conversation} />);
+    expect(screen.getByText("本次未发言")).toBeDefined();
+  });
+
+  it("renders localized English labels for task states", async () => {
+    await i18n.changeLanguage("en");
+    const failedEvent = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+      }),
+      task: {
+        id: "task-108",
+        status: "failed" as const,
+        errorCode: "QQ_TASK_FAILED",
+      },
+    };
+    const { unmount: u1, container } = render(
+      <EventRecord event={failedEvent} conversation={conversation} />,
+    );
+    expect(screen.getByText("Task processing failed")).toBeDefined();
+    const destructiveEl = container.querySelector(".text-destructive");
+    expect(destructiveEl?.textContent).toContain("QQ_TASK_FAILED");
+    u1();
+
+    const completedEvent = {
+      ...wakeEvent({
+        status: "completed",
+        cause: "chiming_in",
+      }),
+      task: {
+        id: "task-109",
+        status: "completed" as const,
+        errorCode: null,
+      },
+    };
+    render(<EventRecord event={completedEvent} conversation={conversation} />);
+    expect(screen.getByText("Task processing completed")).toBeDefined();
+  });
 });

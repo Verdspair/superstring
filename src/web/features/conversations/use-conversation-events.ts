@@ -49,7 +49,7 @@ export function useConversationEvents(
   const tailRead = useRef<AbortController | null>(null);
   const pendingRevalidate = useRef(false);
   const wantedSeq = useRef(0);
-  const authoritativeSettled = useRef(false);
+  const readState = useRef<"unsettled" | "failed" | "loaded">("unsettled");
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   const lastScope = useRef({ id, agentId, bindingEpoch, api });
@@ -77,7 +77,7 @@ export function useConversationEvents(
     first.current = 0;
     current.current = [];
     wantedSeq.current = 0;
-    authoritativeSettled.current = false;
+    readState.current = "unsettled";
     setItems([]);
     setHasMore(false);
     setError("");
@@ -94,7 +94,7 @@ export function useConversationEvents(
         lastScope.current === scope &&
         cached?.length &&
         !current.current.length &&
-        !authoritativeSettled.current
+        readState.current === "unsettled"
       ) {
         current.current = cached;
         setItems(cached);
@@ -141,7 +141,7 @@ export function useConversationEvents(
   );
 
   const append = useCallback(async () => {
-    if (tailRead.current || !authoritativeSettled.current) return;
+    if (tailRead.current || readState.current !== "loaded") return;
     const controller = new AbortController();
     const scope = lastScope.current;
     tailRead.current = controller;
@@ -180,7 +180,7 @@ export function useConversationEvents(
       rangeRead.current = controller;
       setLoading(true);
       setError("");
-      const initial = !authoritativeSettled.current;
+      const initial = readState.current !== "loaded";
       const lower = first.current;
       const upper = current.current.at(-1)?.seq ?? 0;
       wantedSeq.current = 0;
@@ -200,17 +200,25 @@ export function useConversationEvents(
         );
         if (controller.signal.aborted || lastScope.current !== scope) return;
         let records = page.items;
+        const rangeTail: ConversationEventView[] = [];
         if (!initial && !older) {
+          const keepCapturedRange = (rows: ConversationEventView[]) => {
+            const beyondUpper = rows.filter((row) => row.seq > upper);
+            rangeTail.push(...beyondUpper);
+            wantedSeq.current = Math.max(wantedSeq.current, ...beyondUpper.map((row) => row.seq));
+            return rows.filter((row) => row.seq >= lower && row.seq <= upper);
+          };
+          records = keepCapturedRange(records);
           let cursor = page.nextSeq;
-          let more = page.hasMore;
-          while (more) {
+          let more = page.hasMore && cursor > Math.max(0, lower - 1);
+          while (more && cursor < upper) {
             const following = await api.getConversationEvents(
               id,
               { direction: "after", afterSeq: cursor },
               controller.signal,
             );
             if (controller.signal.aborted || lastScope.current !== scope) return;
-            records = [...records, ...following.items];
+            records = [...records, ...keepCapturedRange(following.items)];
             more = following.hasMore && following.nextSeq > cursor;
             cursor = following.nextSeq;
           }
@@ -221,13 +229,19 @@ export function useConversationEvents(
           ? records
           : older
             ? [...records, ...current.current]
-            : [...records, ...current.current.filter((row) => row.seq < lower || row.seq > upper)];
-        authoritativeSettled.current = true;
+            : [
+                ...records,
+                ...rangeTail,
+                ...current.current.filter((row) => row.seq < lower || row.seq > upper),
+              ];
+        readState.current = "loaded";
         publish(initial ? "initial" : older ? "older" : "refresh", next);
         save();
       } catch (reason) {
         if (!controller.signal.aborted && lastScope.current === scope) {
-          authoritativeSettled.current = true;
+          if (readState.current !== "loaded") {
+            readState.current = "failed";
+          }
           fail(reason);
         }
       } finally {
@@ -285,10 +299,10 @@ export function useConversationEvents(
         if (event.event === "conversation_changed")
           wantedSeq.current = Math.max(wantedSeq.current, event.seq);
         if (!enabled || document.visibilityState === "hidden") return;
-        if (event.event === "ready" && rangeRead.current && !authoritativeSettled.current) return;
+        if (event.event === "ready" && rangeRead.current && readState.current !== "loaded") return;
         if (
           event.event === "conversation_changed" &&
-          authoritativeSettled.current &&
+          readState.current === "loaded" &&
           event.seq > (current.current.at(-1)?.seq ?? 0)
         ) {
           void append();

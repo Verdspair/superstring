@@ -86,7 +86,11 @@ const NO_TASK_LIMIT_OVERRIDES: QqBinding["taskLimits"] = Object.freeze({
   mention_task_limit: null,
   ordinary_task_limit: null,
 });
-const NO_ANTI_SPAM_OVERRIDE: QqBinding["inputAntiSpam"] = Object.freeze({ enabled: null });
+const NO_ANTI_SPAM_OVERRIDE: QqBinding["inputAntiSpam"] = Object.freeze({
+  enabled: null,
+  burst_min_messages: null,
+  burst_window_seconds: null,
+});
 
 function sameAttention(left: QqBinding["attention"], right: QqBinding["attention"]): boolean {
   return (
@@ -107,7 +111,11 @@ function sameInputAntiSpam(
   left: QqBinding["inputAntiSpam"],
   right: QqBinding["inputAntiSpam"],
 ): boolean {
-  return left.enabled === right.enabled;
+  return (
+    left.enabled === right.enabled &&
+    left.burst_min_messages === right.burst_min_messages &&
+    left.burst_window_seconds === right.burst_window_seconds
+  );
 }
 
 const bindingFields = {

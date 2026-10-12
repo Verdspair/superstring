@@ -54,6 +54,10 @@ export interface QqInputs {
         mention_task_limit?: string;
         ordinary_task_limit?: string;
       };
+      input_anti_spam_raw?: {
+        burst_min_messages?: string;
+        burst_window_seconds?: string;
+      };
     }
   >;
   attention: Record<
@@ -205,14 +209,19 @@ const inputAntiSpamDirty = (
   source?: QqBindingResponse["input_anti_spam"],
 ) => {
   if (!draft || !source) return false;
-  return draft.enabled !== source.enabled;
+  return (
+    draft.enabled !== source.enabled ||
+    draft.burst_min_messages !== source.burst_min_messages ||
+    draft.burst_window_seconds !== source.burst_window_seconds
+  );
 };
 const choiceDirty = (draft: QqInputs["choices"][string]) =>
   !!draft.source &&
   (draft.agentId !== draft.source.agent_id ||
     draft.schemeId !== draft.source.scheme_id ||
     taskLimitsDirty(draft.task_limits, draft.source.task_limits) ||
-    inputAntiSpamDirty(draft.input_anti_spam, draft.source.input_anti_spam));
+    inputAntiSpamDirty(draft.input_anti_spam, draft.source.input_anti_spam) ||
+    (!!draft.input_anti_spam_raw && Object.keys(draft.input_anti_spam_raw).length > 0));
 const attentionDirty = (draft: QqInputs["attention"][string]) => {
   if (draft.mode !== draft.source.attention.mode) return true;
   if (draft.mode === "off") return false;
@@ -256,22 +265,26 @@ const SCHEME_RAW_FIELD_KINDS: Record<string, "number" | "string"> = {
   // 0059 task_limits
   "task_limits.mention_task_limit": "number",
   "task_limits.ordinary_task_limit": "number",
+  "input_anti_spam.burst_min_messages": "number",
+  "input_anti_spam.burst_window_seconds": "number",
+  "inputAntiSpam.burst_min_messages": "number",
+  "inputAntiSpam.burst_window_seconds": "number",
 };
 
 /** 数值原文的最终判定：共享契约 schema 认可才算合法（与时区同法，不依赖「已写入编辑器」）。 */
 const newGroupNumberValid = (group: string, field: string, raw: string): boolean => {
   const trimmed = raw.trim();
-  if (!trimmed) return false;
+  if (!/^\d+$/.test(trimmed)) return false;
   const numeric = Number(trimmed);
   if (!Number.isFinite(numeric)) return false;
-  if (group === "task_limits") {
-    const leaf =
-      QqSchemeTaskLimitsSchema.shape[field as keyof typeof QqSchemeTaskLimitsSchema.shape];
-    if (!leaf) return false;
-    return (leaf as { safeParse: (v: unknown) => { success: boolean } }).safeParse(numeric).success;
-  }
   const shape =
-    group === "message_settings" ? QqMessageSettingsSchema.shape : QqMediaInputSettingsSchema.shape;
+    group === "task_limits"
+      ? QqSchemeTaskLimitsSchema.shape
+      : group === "input_anti_spam" || group === "inputAntiSpam"
+        ? QqSchemeInputAntiSpamSchema.shape
+        : group === "message_settings"
+          ? QqMessageSettingsSchema.shape
+          : QqMediaInputSettingsSchema.shape;
   const leaf = shape[field as keyof typeof shape];
   if (!leaf) return false;
   return (leaf as { safeParse: (v: unknown) => { success: boolean } }).safeParse(numeric).success;
@@ -597,9 +610,12 @@ export function qqDraftChanges(
         inputAntiSpamDirty(draft.input_anti_spam, draft.source.input_anti_spam) &&
         draft.input_anti_spam
       ) {
-        changes.push(
-          `input_anti_spam: ${String(draft.source.input_anti_spam.enabled)} → ${String(draft.input_anti_spam.enabled)}`,
-        );
+        for (const field of ["enabled", "burst_min_messages", "burst_window_seconds"] as const) {
+          if (draft.input_anti_spam[field] !== draft.source.input_anti_spam[field])
+            changes.push(
+              `input_anti_spam.${field}: ${String(draft.source.input_anti_spam[field])} → ${String(draft.input_anti_spam[field])}`,
+            );
+        }
       }
       rows.push({
         id: `binding:${id}`,
@@ -664,7 +680,15 @@ export function createQqDraftActions(
     set((state) => ({ qqInputs: { ...state.qqInputs, ...patch } }));
   return {
     saveQqDrafts: async () => {
-      if (Object.keys(get().qqInputs.schemeInvalid).length || invalidSchemeInputs(get()).length) {
+      const hasInvalidBindingAntiSpam = Object.values(get().qqInputs.choices).some(
+        (choice) =>
+          choice.input_anti_spam_raw && Object.keys(choice.input_anti_spam_raw).length > 0,
+      );
+      if (
+        Object.keys(get().qqInputs.schemeInvalid).length ||
+        invalidSchemeInputs(get()).length ||
+        hasInvalidBindingAntiSpam
+      ) {
         set({ error: msg("请先修正方案中的无效数字，再保存。") });
         return false;
       }

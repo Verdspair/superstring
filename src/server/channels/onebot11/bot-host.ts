@@ -5,7 +5,6 @@ import {
 } from "../../../shared/contracts/agent-action-descriptions";
 import type { OutputDraft } from "../../../shared/contracts/agent-output";
 import {
-  AGENT_DECISION_JSON_SCHEMA,
   ReplyStickerArgumentsSchema,
   type ReplyStickerOutput,
   ReplyTextArgumentsSchema,
@@ -16,8 +15,11 @@ import type { ConversationEvent, WakeSignal } from "../../../shared/contracts/co
 import type { SourceRef } from "../../../shared/contracts/evidence";
 import { qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import type { QqEffectiveMediaPolicy } from "../../../shared/contracts/qq-media-input";
-import type { QqTaskExecutionSnapshot } from "../../../shared/contracts/qq-task";
-import { qqEffectiveInputAntiSpamEnabled } from "../../../shared/contracts/qq-task";
+import {
+  QQ_ANTISPAM_HISTORICAL_DEFAULTS,
+  type QqTaskExecutionSnapshot,
+  resolveEffectiveInputAntiSpam,
+} from "../../../shared/contracts/qq-task";
 import type { AgentRuntime, PreparedOutput, TargetHooks } from "../../agent/agent-runtime";
 import type { AgentSpec } from "../../agent/agent-specs";
 import type { BuiltInAction } from "../../agent/built-in-actions";
@@ -52,10 +54,12 @@ import { readQqMemberNames } from "../../db/qq-member-repository";
 import { recordQqOutboundMessageFact } from "../../db/qq-message-repository";
 import type { QqConversationScope as QqGateConversationScope } from "../../db/qq-observation-repository";
 import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
+import { confirmedQqReplyCovers } from "../../db/qq-reply-coverage-repository";
 import {
   effectiveQqTriggers,
   type QqSchemeRow,
   readQqScheme,
+  restoreQqSchemeSnapshot,
   schemeInputAntiSpam,
   schemeMediaInput,
   schemeMessageSettings,
@@ -151,6 +155,11 @@ import {
 } from "./message-projection";
 import { deriveQqInputAntispam } from "./qq-input-antispam";
 import { projectQqAntispamSequence } from "./qq-input-antispam-projection";
+import {
+  parseQqDecision,
+  QQ_DECISION_ENVELOPE_SCHEMA,
+  QQ_DECISION_JSON_SCHEMA,
+} from "./qq-reply-decision-contract";
 export interface OneBotPolicy {
   maxSteps: number;
   deliveryTtlSeconds: number;
@@ -159,17 +168,6 @@ export interface OneBotPolicy {
 // 规格 §10：native 同次分类的内部 envelope 响应 schema。本体权威（decision/scoreResult/text）
 // 原样保留各自约束，附属 media 白名单由 model-response-envelope 解析；宿主只在存在待分类
 // unknown 图时把对应 schema 换成 envelope 版本，text-only 决策照走原 schema。
-const QQ_DECISION_ENVELOPE_SCHEMA: Record<string, unknown> = {
-  ...AGENT_DECISION_JSON_SCHEMA,
-  // oneOf 的每个分支都允许附带附属 media 分类（可选键，不进 required）。
-  oneOf: ((AGENT_DECISION_JSON_SCHEMA.oneOf as Record<string, unknown>[]) ?? []).map((branch) => ({
-    ...branch,
-    properties: {
-      ...((branch.properties as Record<string, unknown>) ?? {}),
-      media: { type: "array", items: { type: "object" } },
-    },
-  })),
-};
 const QQ_SCORE_ENVELOPE_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -199,7 +197,11 @@ const QQ_TEXT_ENVELOPE_SCHEMA = {
 
 // 运行时与唤醒结算共用静默拒绝码，避免把未发言记为失败。
 // 媒体读取失败仍由提交前复验抛错。
-const QQ_SILENT_BLOCK_CODES = ["INITIATIVE_NOT_ELIGIBLE", "MEDIA_READ_FAILED"] as const;
+const QQ_SILENT_BLOCK_CODES = [
+  "INITIATIVE_NOT_ELIGIBLE",
+  "MEDIA_READ_FAILED",
+  "QQ_REPLY_ALREADY_COVERED",
+] as const;
 export interface BotHostDiagnostic {
   runId?: string;
   conversationId: string;
@@ -425,9 +427,21 @@ export class OneBotHost {
     const binding = readQqBinding(o.orm, conversation.sourceId);
     if (!binding || binding.agentId !== conversation.agentId) throw new Error("BINDING_CHANGED");
     // 生效方案＝基础方案 + 本群差异（ADR0019 §13.2）：新轮读取当前值，未固定的项跟随基础方案。
-    const scheme = readEffectiveQqScheme(o.orm, binding),
+    const currentScheme = readEffectiveQqScheme(o.orm, binding),
       agent = getAgentRow(o.orm, binding.agentId);
-    if (!scheme || !agent) throw new Error("BOT_CONFIGURATION_MISSING");
+    if (!currentScheme || !agent) throw new Error("BOT_CONFIGURATION_MISSING");
+    const frozenScheme = execution?.snapshot.schemeConfig;
+    if (
+      frozenScheme &&
+      (frozenScheme.id !== execution.snapshot.schemeId ||
+        frozenScheme.revision !== execution.snapshot.schemeRevision)
+    )
+      throw new Error("QQ_TASK_SCHEME_SNAPSHOT_INVALID");
+    const scheme = frozenScheme
+      ? restoreQqSchemeSnapshot(currentScheme, frozenScheme)
+      : currentScheme;
+    if (execution && !frozenScheme && execution.snapshot.schemeRevision !== currentScheme.revision)
+      throw new Error("BOT_CONFIGURATION_CHANGED");
     const guard = this.guard;
     // 本群作用域的所有者：能力停用、群内来源撤权与叶子任务都按绑定 × 当前助手判定。
     const groupOwner: RunOwner = {
@@ -496,7 +510,7 @@ export class OneBotHost {
         frozen.schemeId !== scheme.id ||
         frozen.bindingRevision !== binding.revision ||
         frozen.authorityRevision !== binding.authorityRevision ||
-        frozen.schemeRevision !== scheme.revision ||
+        (!frozen.schemeConfig && frozen.schemeRevision !== currentScheme.revision) ||
         frozen.agentConfigVersion !== agent.configVersion ||
         frozen.taskClass !== execution.task.taskClass ||
         frozen.cause !== execution.task.cause ||
@@ -665,29 +679,15 @@ export class OneBotHost {
       sourceSeq: number,
       participantId: string | null,
       excludeOwnConfirmed: boolean,
-    ): boolean => {
-      const rows = db
-        .query(`SELECT w.through_seq AS origin_through, w.cause AS origin_cause
-          FROM outbound_intents i
-          LEFT JOIN agent_runs ar ON ar.run_id=i.run_id
-          LEFT JOIN wake_signals w ON w.id=ar.wake_id AND w.conversation_id=?
-          WHERE i.conversation_id=? AND i.source_through_seq>=? AND i.status='confirmed'
-            AND (json_extract(i.target,'$.participantId') IS NULL OR json_extract(i.target,'$.participantId')=?)
-            AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
-              AND p.attempted_at IS NOT NULL AND p.status='confirmed')`)
-        .all(conversation.id, conversation.id, sourceSeq, participantId) as {
-        origin_through: number | null;
-        origin_cause: string | null;
-      }[];
-      return rows.some(({ origin_through, origin_cause }) => {
-        if (
-          excludeOwnConfirmed &&
-          coverageOwnOriginal(origin_through, origin_cause, "recover-frozen", "confirmed", 0)
-        )
-          return false;
-        return true;
+    ): boolean =>
+      confirmedQqReplyCovers(db, {
+        conversationId: conversation.id,
+        sourceSeq,
+        participantId,
+        ...(excludeOwnConfirmed
+          ? { excludeOwn: { sourceThroughSeq: wake.throughSeq, cause: wake.cause } }
+          : {}),
       });
-    };
     // A newer addressed reply can cover an older ordinary opportunity for the same
     // recipient. Idle openers are not responses to a particular source.
     if (
@@ -803,10 +803,21 @@ export class OneBotHost {
       );
       // 2. 防刷屏派生（§5.4 单 owner，同一有界范围一次投影）：可读行投影真实 fact；过期/
       //    不可投影行 fact=null（空 parts，硬边界，不虚构内容）。开关关闭＝空派生，恢复既有语义。
-      const antispamEnabled = qqEffectiveInputAntiSpamEnabled(
+      const effectiveAntiSpam = resolveEffectiveInputAntiSpam(
         schemeInputAntiSpam(scheme),
         binding.inputAntiSpam,
       );
+      const antiSpam = execution
+        ? {
+            enabled: effectiveAntiSpam.enabled,
+            burstMinMessages:
+              execution.snapshot.antiSpamBurstMinMessages ??
+              QQ_ANTISPAM_HISTORICAL_DEFAULTS.burstMinMessages,
+            burstWindowSeconds:
+              execution.snapshot.antiSpamBurstWindowSeconds ??
+              QQ_ANTISPAM_HISTORICAL_DEFAULTS.burstWindowSeconds,
+          }
+        : effectiveAntiSpam;
       // 可读性一次投影：可读行带真实 fact；过期/不可投影行 fact=null（空 parts，硬边界）。
       const factById = new Map(
         projectQqMessageFacts(
@@ -820,9 +831,9 @@ export class OneBotHost {
           now(),
         ).map((fact) => [fact.id, fact]),
       );
-      const antispam = antispamEnabled
-        ? projectQqAntispamSequence(
-            memberRows.map((event) => ({
+      const antispam = antiSpam.enabled
+        ? projectQqAntispamSequence({
+            rows: memberRows.map((event) => ({
               seq: event.seq,
               eventId: event.source.kind === "qq_event" ? event.source.id : "",
               speakerId: event.participant?.id ?? `seq:${event.seq}`,
@@ -832,8 +843,15 @@ export class OneBotHost {
               fact:
                 event.source.kind === "qq_event" ? (factById.get(event.source.id) ?? null) : null,
             })),
-          )
-        : deriveQqInputAntispam({ enabled: false, events: [] });
+            burstMinMessages: antiSpam.burstMinMessages,
+            burstWindowSeconds: antiSpam.burstWindowSeconds,
+          })
+        : deriveQqInputAntispam({
+            enabled: false,
+            events: [],
+            burstMinMessages: antiSpam.burstMinMessages,
+            burstWindowSeconds: antiSpam.burstWindowSeconds,
+          });
       const excluded = new Set([
         ...antispam.pureExpressionExcludedSeqs,
         ...antispam.burstExcludedSeqs,
@@ -1231,8 +1249,10 @@ export class OneBotHost {
       const current = readQqBinding(o.orm, binding.id);
       const check = checkQqTask(snapshot, current, "send", readQqOwnerIdentity(o.orm));
       if (check.kind === "blocked") throw new Error(check.reason);
+      const latestScheme = readQqScheme(o.orm, scheme.id);
       if (
-        readQqScheme(o.orm, scheme.id)?.revision !== scheme.revision ||
+        (!execution?.snapshot.schemeConfig && latestScheme?.revision !== scheme.revision) ||
+        latestScheme === null ||
         getAgentRow(o.orm, agent.id)?.configVersion !== agent.configVersion
       )
         throw new Error("BOT_CONFIGURATION_CHANGED");
@@ -1261,7 +1281,7 @@ export class OneBotHost {
         kind: path,
         featureEnabled: settings.enabled === 1,
         conversationPaused: current?.paused ?? true,
-        disabledKinds: disabledKindsFromTriggers(effectiveQqTriggers(current!, scheme)),
+        disabledKinds: disabledKindsFromTriggers(effectiveQqTriggers(current!, currentScheme)),
       });
       if (gate.kind === "blocked") throw new Error(gate.reason);
       if (o.journal.row(conversation.id)?.closed_at) throw new Error("BINDING_EPOCH_CHANGED");
@@ -1684,6 +1704,16 @@ export class OneBotHost {
             binding,
             snapshot,
             scheme,
+            antiSpamThresholds: execution
+              ? {
+                  burstMinMessages:
+                    execution.snapshot.antiSpamBurstMinMessages ??
+                    QQ_ANTISPAM_HISTORICAL_DEFAULTS.burstMinMessages,
+                  burstWindowSeconds:
+                    execution.snapshot.antiSpamBurstWindowSeconds ??
+                    QQ_ANTISPAM_HISTORICAL_DEFAULTS.burstWindowSeconds,
+                }
+              : undefined,
             runtime,
             spec,
             path,
@@ -2800,6 +2830,15 @@ export class OneBotHost {
         if (output.status !== "prepared" || committedTargets.has(output.targetId)) return undefined;
         const pending = staged.get(output.outputId);
         if (!pending) throw new Error("OUTPUT_PREPARATION_MISSING");
+        if (
+          execution &&
+          path === "chiming_in" &&
+          confirmedReplyCoverage(opportunitySeq, pending.targetSpeakerId ?? null, true)
+        ) {
+          output.status = "blocked";
+          output.code = "QQ_REPLY_ALREADY_COVERED";
+          return undefined;
+        }
         // 引用来源提交前复验：重新解析引用并比对保存的 refs 修订（必须相同，不重铸覆盖）；源守卫照常检验。
         const currentStickerCarrierSources = pending.stickerId
           ? (selectedStickerCarrierSources.get(output.outputId) ?? [])
@@ -2865,6 +2904,7 @@ export class OneBotHost {
             ownerIdentityRevision: readQqOwnerIdentity(o.orm)?.revision ?? null,
             schemeId: scheme.id,
             schemeRevision: scheme.revision,
+            ...(execution ? { qqTaskId: execution.task.id } : {}),
             agentConfigVersion: agent.configVersion,
             sources: uniqueSources([...source.commonSources, ...(output.sources ?? [])]),
             attentionMembers: attentionTriggerFilter(binding) ?? undefined,
@@ -3084,34 +3124,27 @@ export class OneBotHost {
             ...(runResolver
               ? {
                   imageResolver: runResolver,
-                  // 决策相（bindRun 在首次 read 前调用恰一次）与生成相（prepareGeneration 后、
-                  // 模型调用前）的字节登记边界：都按当前投影 sources 复验后注册本 run/owner。
                   bindRun: () => registerProjection("decision", undefined, ref.current),
-                  // 规格 §10：每次决策调用前现取当前 decision 投影——存在待分类 unknown 图
-                  // 才走 envelope schema；parse 先白名单收窄分类（未发送/重复/伪造 mediaId
-                  // 直接拒绝）、同次分类消费落库，本体 decision 交还原解析链。
-                  decisionEnvelope: () => {
-                    // 相媒体观测：真实 decision 投影同源（read() 内 preparePhaseMedia 的结果）。
-                    emitMediaMode("decision", { why: null });
-                    if (!hasUnknownImages("decision")) return undefined;
-                    return {
-                      responseSchema: QQ_DECISION_ENVELOPE_SCHEMA,
-                      parse: (raw: string, meta?: { resolvedModel: string }) => {
-                        // 分类消费的模型维度=真实 resolved（onModelResolved 同真源）；
-                        // resolved 不可得时明确不写（unknown 不允许顶替模型维度）。
-                        const resolvedModel = meta?.resolvedModel ?? "";
-                        if (resolvedModel === "") return envelopeOnly(raw);
-                        const envelope = parseModelEnvelope(
-                          JSON.parse(raw) as unknown,
-                          phaseSentIds("decision"),
-                        );
-                        consumeClassifications("decision", envelope.media, resolvedModel, signal);
-                        return envelope.decision;
-                      },
-                    };
-                  },
                 }
               : {}),
+            decisionEnvelope: () => {
+              emitMediaMode("decision", { why: null });
+              if (!runResolver || !hasUnknownImages("decision"))
+                return { responseSchema: QQ_DECISION_JSON_SCHEMA, parse: parseQqDecision };
+              return {
+                responseSchema: QQ_DECISION_ENVELOPE_SCHEMA,
+                parse: (raw: string, meta?: { resolvedModel: string }) => {
+                  const resolvedModel = meta?.resolvedModel ?? "";
+                  if (resolvedModel === "") return envelopeOnly(raw);
+                  const envelope = parseModelEnvelope(
+                    JSON.parse(raw) as unknown,
+                    phaseSentIds("decision"),
+                  );
+                  consumeClassifications("decision", envelope.media, resolvedModel, signal);
+                  return envelope.decision;
+                },
+              };
+            },
             prepareGeneration: async (draft, input) => {
               // 本目标的媒体相位边界与发送闭包；决策相与单目标路径走共享边界。
               const boundary = source.targetScope();
@@ -3329,13 +3362,14 @@ export class OneBotHost {
                 // 已早提交的目标不再复核/重开（不被 reconsider 再次提交或抹除）。
                 if (committedTargets.has(output.targetId)) continue;
                 if (output.status !== "prepared") {
-                  if (output.code === "AGENT_OUTPUT_INVALID")
-                    throw Object.assign(
-                      new Error("QQ stickers must be contributed with reply.sticker"),
-                      {
-                        code: "AGENT_OUTPUT_INVALID",
-                      },
+                  if (output.code === "AGENT_OUTPUT_INVALID") {
+                    rememberPlan(
+                      "final.outputs.stickerIds is unsupported on QQ; use reply.text and reply.sticker contributions",
+                      [],
+                      outputs,
                     );
+                    return true;
+                  }
                   if (isStickerOnlyDisabledOutput(output)) disabledStickerOnly = true;
                   else if (
                     output.code === "STICKER_COUNT_EXCEEDED" ||
@@ -3633,7 +3667,27 @@ export class OneBotHost {
           // 生成前按 stable key 预查：同一机会（冻结 throughSeq）的 target 若已有 outbox 行
           //（committed/attempted/unknown），不重生成、不重发；恢复靠原行，不靠下次空 range 当 no_output。
           const pendingTargets = qualified.filter((entry) => committedOf(entry) === null);
-          if (pendingTargets.length === 0) return settleInitiative("already_committed");
+          // 对冻结受众逐人复用同一 confirmed-fact 查询；只跳过已由更新 direct 回复覆盖的 child。
+          // 任务本身与全部授权/评分仍保持原快照，部分覆盖不得取消父任务。
+          const isCoveredTarget = (entry: (typeof pendingTargets)[number]): boolean =>
+            confirmedQqReplyCovers(db, {
+              conversationId: conversation.id,
+              sourceSeq: wake.throughSeq,
+              participantId: entry.speakerId ?? null,
+              roomOnly: entry.speakerId == null,
+              scope: {
+                accountId: binding.accountId,
+                bindingId: binding.id,
+                bindingEpoch: conversation.bindingEpoch,
+                agentId: binding.agentId,
+              },
+              excludeOwn: { sourceThroughSeq: wake.throughSeq, cause: wake.cause },
+            });
+          const remainingTargets = pendingTargets.filter((entry) => !isCoveredTarget(entry));
+          if (remainingTargets.length === 0)
+            return settleInitiative(
+              pendingTargets.length === 0 ? "already_committed" : "no_output",
+            );
           // 阶段二：每个达标 target 一个**独立 source 的回复子 run**（`childReplySession` 只共享
           // 不可变材料/视图快照；run 级状态——spec/targets/views/observations/预留/媒体边界/runId
           // ——各自独立，互不覆写，规格 §3.2）。intent 只作 data_only 材料，每 child 只带本人的。
@@ -3641,9 +3695,11 @@ export class OneBotHost {
           // （避免 N 个子 run 并发重建同一档视图产生重复压缩竞态）。
           parentBatch.source.setRun(buildReplySpec(), "reply");
           await parentBatch.source.read({ signal: groupSignal, observations: [] });
+          const replyTargets = remainingTargets.filter((entry) => !isCoveredTarget(entry));
+          if (replyTargets.length === 0) return settleInitiative("no_output");
           const replyTasks = (
             perTarget
-              ? pendingTargets.map((target) => ({
+              ? replyTargets.map((target) => ({
                   targets: [target as BotContextTarget],
                   intents: [
                     {
@@ -3655,7 +3711,7 @@ export class OneBotHost {
               : [
                   {
                     targets: roomTargets,
-                    intents: pendingTargets.map((entry) => ({
+                    intents: replyTargets.map((entry) => ({
                       targetId: entry.id,
                       intent: parentBatch.licenses.get(entry.id)?.intent ?? "",
                     })),

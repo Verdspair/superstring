@@ -209,7 +209,11 @@ export function schemeTaskLimits(row: QqSchemeRow): QqSchemeTaskLimits {
 
 /** 输入防抖组（0059）：NOT NULL 列直读。 */
 export function schemeInputAntiSpam(row: QqSchemeRow): QqSchemeInputAntiSpam {
-  return parseQqSchemeInputAntiSpam({ enabled: row.inputAntiSpamEnabled === 1 });
+  return parseQqSchemeInputAntiSpam({
+    enabled: row.inputAntiSpamEnabled === 1,
+    burst_min_messages: row.burstMinMessages,
+    burst_window_seconds: row.burstWindowSeconds,
+  });
 }
 
 function taskLimitColumns(value: QqSchemeTaskLimits) {
@@ -220,7 +224,11 @@ function taskLimitColumns(value: QqSchemeTaskLimits) {
 }
 
 function inputAntiSpamColumns(value: QqSchemeInputAntiSpam) {
-  return { inputAntiSpamEnabled: value.enabled ? 1 : 0 };
+  return {
+    inputAntiSpamEnabled: value.enabled ? 1 : 0,
+    burstMinMessages: value.burst_min_messages,
+    burstWindowSeconds: value.burst_window_seconds,
+  };
 }
 
 function sameTaskLimits(left: QqSchemeTaskLimits, right: QqSchemeTaskLimits): boolean {
@@ -231,7 +239,11 @@ function sameTaskLimits(left: QqSchemeTaskLimits, right: QqSchemeTaskLimits): bo
 }
 
 function sameInputAntiSpam(left: QqSchemeInputAntiSpam, right: QqSchemeInputAntiSpam): boolean {
-  return left.enabled === right.enabled;
+  return (
+    left.enabled === right.enabled &&
+    left.burst_min_messages === right.burst_min_messages &&
+    left.burst_window_seconds === right.burst_window_seconds
+  );
 }
 
 /**
@@ -683,6 +695,36 @@ export function readQqSchemes(orm: Orm): QqSchemeRow[] {
 
 export function readQqScheme(orm: Orm, id: string): QqSchemeRow | null {
   return orm.select().from(schema.qqSchemes).where(eq(schema.qqSchemes.id, id)).get() ?? null;
+}
+
+/** Restore frozen task behavior from its validated response while retaining current row identity. */
+export function restoreQqSchemeSnapshot(
+  current: QqSchemeRow,
+  frozen: QqSchemeResponse,
+): QqSchemeRow {
+  if (current.id !== frozen.id) throw new TypeError("QQ task scheme snapshot identity mismatch");
+  return {
+    ...current,
+    name: frozen.name,
+    description: frozen.description,
+    revision: frozen.revision,
+    createdAt: frozen.created_at,
+    updatedAt: frozen.updated_at,
+    ...schemeColumnsFromGroups({
+      triggers: frozen.triggers,
+      rhythm: frozen.rhythm,
+      context: frozen.context,
+      compression: frozen.compression,
+      outputReserve: frozen.output_reserve,
+      stickers: frozen.stickers,
+      prompts: frozen.prompts,
+      reply: frozen.reply,
+      messageSettings: frozen.message_settings,
+      mediaInput: frozen.media_input,
+    }),
+    ...taskLimitColumns(frozen.task_limits),
+    ...inputAntiSpamColumns(frozen.input_anti_spam),
+  };
 }
 
 /**

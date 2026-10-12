@@ -87,7 +87,7 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
   updated_at: NOW,
   // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
   task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
-  input_anti_spam: { enabled: false },
+  input_anti_spam: { enabled: false, burst_min_messages: 3, burst_window_seconds: 3 },
   ...overrides,
 });
 
@@ -115,7 +115,11 @@ const bindingFixture = QqBindingResponseSchema.parse({
   attention: { mode: "off", members: [] },
   // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
   task_limits: { mention_task_limit: null, ordinary_task_limit: null },
-  input_anti_spam: { enabled: null },
+  input_anti_spam: {
+    enabled: null,
+    burst_min_messages: null,
+    burst_window_seconds: null,
+  },
 });
 const bindingFixtureTwo = QqBindingResponseSchema.parse({
   ...bindingFixture,

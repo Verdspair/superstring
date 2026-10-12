@@ -1,6 +1,7 @@
 import {
   QqSchemeCompressionSchema,
   QqSchemeContextSchema,
+  QqSchemeInputAntiSpamSchema,
   QqSchemeMediaInputSchema,
   QqSchemeMessageSettingsSchema,
   QqSchemeOutputReserveSchema,
@@ -27,6 +28,7 @@ export const numberEditorGroups = {
   messageSettings: QqSchemeMessageSettingsSchema,
   mediaInput: QqSchemeMediaInputSchema,
   taskLimits: QqSchemeTaskLimitsSchema,
+  inputAntiSpam: QqSchemeInputAntiSpamSchema,
 } as const;
 /** 0052 数字栏所在的编辑器组（与 numericGroups 同一用法；可空长边字段由页面特判 null 原图）。 */
 export type NumberEditorGroup = keyof typeof numberEditorGroups;

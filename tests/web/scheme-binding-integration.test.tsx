@@ -107,7 +107,7 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
   updated_at: NOW,
   // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
   task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
-  input_anti_spam: { enabled: false },
+  input_anti_spam: { enabled: false, burst_min_messages: 3, burst_window_seconds: 3 },
   ...overrides,
 });
 
@@ -135,7 +135,11 @@ const bindingOf = (
     attention: { mode: "off", members: [] },
     // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
     task_limits: { mention_task_limit: null, ordinary_task_limit: null },
-    input_anti_spam: { enabled: null },
+    input_anti_spam: {
+      enabled: null,
+      burst_min_messages: null,
+      burst_window_seconds: null,
+    },
   });
 
 const conversation = (
@@ -1116,7 +1120,11 @@ describe("本会话并行上限与防刷屏覆盖（0059）", () => {
       agent_id: AGENT_A,
       scheme_id: SCHEME_A,
       task_limits: { mention_task_limit: 6, ordinary_task_limit: null },
-      input_anti_spam: { enabled: false },
+      input_anti_spam: {
+        enabled: false,
+        burst_min_messages: null,
+        burst_window_seconds: null,
+      },
       expected_revision: 1,
     });
   });
@@ -1133,7 +1141,7 @@ describe("本会话并行上限与防刷屏覆盖（0059）", () => {
     const savedRow = () =>
       QqBindingResponseSchema.parse({
         ...bindingOf(SCHEME_A, BINDING_A, "30003", "private"),
-        input_anti_spam: { enabled: true },
+        input_anti_spam: { enabled: true, burst_min_messages: null, burst_window_seconds: null },
         revision: 2,
       });
     const { fake } = await renderBoards({
@@ -1162,7 +1170,11 @@ describe("本会话并行上限与防刷屏覆盖（0059）", () => {
     expect(fake.updateQqBinding).toHaveBeenNthCalledWith(1, BINDING_A, {
       agent_id: AGENT_A,
       scheme_id: SCHEME_A,
-      input_anti_spam: { enabled: true },
+      input_anti_spam: {
+        enabled: true,
+        burst_min_messages: null,
+        burst_window_seconds: null,
+      },
       expected_revision: 1,
     });
     // 打开的抽屉不静默推进基线：显式「刷新保存基线」取回 revision 2 的行。
@@ -1183,7 +1195,11 @@ describe("本会话并行上限与防刷屏覆盖（0059）", () => {
       agent_id: AGENT_A,
       scheme_id: SCHEME_A,
       task_limits: { mention_task_limit: null, ordinary_task_limit: 3 },
-      input_anti_spam: { enabled: null },
+      input_anti_spam: {
+        enabled: null,
+        burst_min_messages: null,
+        burst_window_seconds: null,
+      },
       expected_revision: 2,
     });
   });

@@ -92,12 +92,14 @@ describe("0052 message facts and media persistence", () => {
         "initiative_time_jitter_seconds",
       ]);
       // 0059 appends the task-cap columns after the frozen block; 0064 appends the
-      // independent sticker-frequency setting without changing any earlier columns.
+      // independent sticker-frequency setting; 0065 appends antispam burst thresholds.
       expect(schemeColumns.slice(settingsStart + 8)).toEqual([
         "mention_task_limit",
         "ordinary_task_limit",
         "input_anti_spam_enabled",
         "sticker_frequency",
+        "burst_min_messages",
+        "burst_window_seconds",
       ]);
       expect(columns("qq_message_facts")).toEqual([
         "event_key",

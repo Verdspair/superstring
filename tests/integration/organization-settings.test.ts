@@ -159,7 +159,7 @@ describe("schema4 additive migration", () => {
         vision_model_name: null,
         transcription_model_name: null,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
     } finally {
       db.close();
     }

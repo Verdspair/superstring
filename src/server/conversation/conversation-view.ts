@@ -31,15 +31,41 @@ export function projectConversationEvent(
       error_code: string | null;
     } | null;
     if (!wake) return { ...base, contentState: "revoked" };
-    const run = db
+    const task = db
       .query(
-        "SELECT run_id FROM agent_runs WHERE wake_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT 1",
+        `SELECT t.id,t.status,t.error_code,r.run_id AS origin_run_id
+        FROM wake_signals w JOIN qq_conversation_tasks t
+          ON t.id=w.transferred_task_id AND t.origin_wake_id=w.id AND t.conversation_id=w.conversation_id
+        LEFT JOIN agent_runs r ON r.run_id=t.origin_run_id AND r.wake_id=w.id
+          AND r.conversation_id=w.conversation_id AND r.owner_kind='conversation' AND r.owner_id=w.conversation_id
+        WHERE w.id=? AND w.conversation_id=?`,
       )
-      .get(wake.id, event.conversationId) as { run_id: string } | null;
+      .get(wake.id, event.conversationId) as {
+      id: string;
+      status: NonNullable<ConversationEventView["task"]>["status"];
+      error_code: string | null;
+      origin_run_id: string | null;
+    } | null;
+    const run = task
+      ? null
+      : (db
+          .query(
+            "SELECT run_id FROM agent_runs WHERE wake_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT 1",
+          )
+          .get(wake.id, event.conversationId) as { run_id: string } | null);
     return {
       ...base,
       contentState: "active",
-      runId: run?.run_id ?? null,
+      runId: task?.origin_run_id ?? run?.run_id ?? null,
+      ...(task
+        ? {
+            task: {
+              id: task.id,
+              status: task.status,
+              errorCode: task.error_code,
+            },
+          }
+        : {}),
       wake: {
         id: wake.id,
         cause: wake.cause,

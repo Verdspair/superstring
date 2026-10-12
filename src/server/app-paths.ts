@@ -385,6 +385,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0064_qq_scheme_sticker_frequency.sql",
     ),
+    qqAntispamThresholdsMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0065_qq_antispam_thresholds.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

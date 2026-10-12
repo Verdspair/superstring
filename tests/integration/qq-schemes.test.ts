@@ -23,6 +23,11 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import { toOrmHandle } from "../../src/server/db/connection";
 import {
+  insertQqBinding,
+  readQqBinding,
+  saveQqBinding,
+} from "../../src/server/db/qq-binding-repository";
+import {
   createQqScheme,
   deleteQqScheme,
   qqSchemeUsage,
@@ -46,7 +51,7 @@ import {
   ensureBusinessSchema,
   openBusinessDb,
 } from "../../src/server/db/schema-gate";
-import { createQqBinding } from "../../src/server/services/qq-binding-contract";
+import { createQqBinding, updateQqBinding } from "../../src/server/services/qq-binding-contract";
 import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import {
@@ -206,6 +211,8 @@ describe("scheme identity", () => {
         "ordinary_task_limit",
         "input_anti_spam_enabled",
         "sticker_frequency",
+        "burst_min_messages",
+        "burst_window_seconds",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -969,18 +976,26 @@ describe("0059 scheme task limits and input anti-spam", () => {
     try {
       const created = createQqScheme(h.orm, { name: "默认方案" });
       expect(schemeTaskLimits(created)).toEqual({ mention_task_limit: 4, ordinary_task_limit: 1 });
-      expect(schemeInputAntiSpam(created)).toEqual({ enabled: true });
+      expect(schemeInputAntiSpam(created)).toEqual({
+        enabled: true,
+        burst_min_messages: 3,
+        burst_window_seconds: 3,
+      });
 
       const explicit = createQqScheme(h.orm, {
         name: "自定方案",
         taskLimits: { mention_task_limit: 10, ordinary_task_limit: 2 },
-        inputAntiSpam: { enabled: false },
+        inputAntiSpam: { enabled: false, burst_min_messages: 2, burst_window_seconds: 9 },
       });
       expect(schemeTaskLimits(explicit)).toEqual({
         mention_task_limit: 10,
         ordinary_task_limit: 2,
       });
-      expect(schemeInputAntiSpam(explicit)).toEqual({ enabled: false });
+      expect(schemeInputAntiSpam(explicit)).toEqual({
+        enabled: false,
+        burst_min_messages: 2,
+        burst_window_seconds: 9,
+      });
     } finally {
       h.business.close();
     }
@@ -997,15 +1012,32 @@ describe("0059 scheme task limits and input anti-spam", () => {
       });
       expect(schemeTaskLimits(changed)).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
       // 防抖未随本次保存提供：保持现值。
-      expect(schemeInputAntiSpam(changed)).toEqual({ enabled: true });
+      expect(schemeInputAntiSpam(changed)).toEqual({
+        enabled: true,
+        burst_min_messages: 3,
+        burst_window_seconds: 3,
+      });
       expect(changed.revision).toBe(created.revision + 1);
 
-      const noop = updateQqScheme(h.orm, changed.id, {
+      const thresholdOnly = updateQqScheme(h.orm, changed.id, {
         name: "默认方案",
-        taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
+        inputAntiSpam: { enabled: true, burst_min_messages: 5, burst_window_seconds: 6 },
         expectedRevision: changed.revision,
       });
-      expect(noop.revision).toBe(changed.revision);
+      expect(schemeInputAntiSpam(thresholdOnly)).toEqual({
+        enabled: true,
+        burst_min_messages: 5,
+        burst_window_seconds: 6,
+      });
+      expect(thresholdOnly.revision).toBe(changed.revision + 1);
+
+      const noop = updateQqScheme(h.orm, thresholdOnly.id, {
+        name: "默认方案",
+        taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
+        inputAntiSpam: { enabled: true, burst_min_messages: 5, burst_window_seconds: 6 },
+        expectedRevision: thresholdOnly.revision,
+      });
+      expect(noop.revision).toBe(thresholdOnly.revision);
     } finally {
       h.business.close();
     }
@@ -1057,6 +1089,164 @@ describe("0059 scheme task limits and input anti-spam", () => {
           )
           .get(),
       ).toEqual({ m: 4, o: 1, a: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("0065 adds nullable binding overrides and preserves the historical 3/3 scheme default", () => {
+    const db = new Database(":memory:");
+    try {
+      for (const file of BUSINESS_MIGRATION_FILES.slice(0, 64))
+        db.exec(
+          readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"),
+        );
+      db.exec("PRAGMA user_version = 64");
+      db.exec(
+        "INSERT INTO qq_schemes (id,name,revision,created_at,updated_at,input_anti_spam_enabled) VALUES ('00000000-0000-4000-8000-000000000002','旧方案',3,'then','then',0)",
+      );
+      ensureBusinessSchema(db);
+      const migratedOrm = toOrmHandle(db).orm;
+      const bindingInput = {
+        id: "11111111-1111-4111-8111-111111111111",
+        accountId: "10001",
+        kind: "group" as const,
+        peerId: "20001",
+        agentId: AGENT_ID,
+        schemeId: "00000000-0000-4000-8000-000000000002",
+        paused: false,
+        shareWebMemory: false,
+      };
+      const createdBinding = createQqBinding(bindingInput);
+      if (createdBinding.kind !== "saved") throw new Error("expected binding contract to save");
+      const insertedBinding = insertQqBinding(migratedOrm, createdBinding.binding);
+      const override = updateQqBinding(
+        insertedBinding,
+        { inputAntiSpam: { enabled: null, burst_min_messages: 2, burst_window_seconds: 30 } },
+        insertedBinding.revision,
+      );
+      if (override.kind !== "saved") throw new Error("expected threshold override to save");
+      const persistedBinding = saveQqBinding(migratedOrm, {
+        binding: override.binding,
+        expectedRevision: insertedBinding.revision,
+      });
+      expect(persistedBinding.inputAntiSpam).toEqual({
+        enabled: null,
+        burst_min_messages: 2,
+        burst_window_seconds: 30,
+      });
+      expect(persistedBinding.revision).toBe(insertedBinding.revision + 1);
+      expect(readQqBinding(migratedOrm, insertedBinding.id)?.inputAntiSpam).toEqual(
+        persistedBinding.inputAntiSpam,
+      );
+      const beforeNoop = persistedBinding.revision;
+      const noop = updateQqBinding(
+        persistedBinding,
+        { inputAntiSpam: { enabled: null, burst_min_messages: 2, burst_window_seconds: 30 } },
+        beforeNoop,
+      );
+      if (noop.kind !== "saved") throw new Error("expected binding no-op to save");
+      expect(noop.binding.revision).toBe(beforeNoop);
+      saveQqBinding(migratedOrm, { binding: noop.binding, expectedRevision: beforeNoop });
+      db.exec(
+        "UPDATE qq_bindings SET burst_min_messages=NULL,burst_window_seconds=NULL WHERE id='11111111-1111-4111-8111-111111111111'",
+      );
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
+      expect(
+        db
+          .query("PRAGMA table_info(qq_bindings)")
+          .all()
+          .map((row) => (row as { name: string }).name)
+          .slice(-2),
+      ).toEqual(["burst_min_messages", "burst_window_seconds"]);
+
+      expect(
+        db
+          .query(
+            "SELECT input_anti_spam_enabled AS enabled,burst_min_messages AS messages,burst_window_seconds AS seconds FROM qq_schemes WHERE id='00000000-0000-4000-8000-000000000002'",
+          )
+          .get(),
+      ).toEqual({ enabled: 0, messages: 3, seconds: 3 });
+      expect(
+        db
+          .query(
+            "SELECT burst_min_messages,burst_window_seconds FROM qq_bindings WHERE id='11111111-1111-4111-8111-111111111111'",
+          )
+          .get(),
+      ).toEqual({ burst_min_messages: null, burst_window_seconds: null });
+
+      for (const value of [2, 20]) {
+        db.query(
+          "UPDATE qq_schemes SET burst_min_messages=? WHERE id='00000000-0000-4000-8000-000000000002'",
+        ).run(value);
+        db.query(
+          "UPDATE qq_bindings SET burst_min_messages=? WHERE id='11111111-1111-4111-8111-111111111111'",
+        ).run(value);
+      }
+      for (const value of [1, 30]) {
+        db.query(
+          "UPDATE qq_schemes SET burst_window_seconds=? WHERE id='00000000-0000-4000-8000-000000000002'",
+        ).run(value);
+        db.query(
+          "UPDATE qq_bindings SET burst_window_seconds=? WHERE id='11111111-1111-4111-8111-111111111111'",
+        ).run(value);
+      }
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_schemes SET burst_min_messages=1 WHERE id='00000000-0000-4000-8000-000000000002'",
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_schemes SET burst_min_messages=21 WHERE id='00000000-0000-4000-8000-000000000002'",
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_schemes SET burst_window_seconds=0 WHERE id='00000000-0000-4000-8000-000000000002'",
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_schemes SET burst_window_seconds=31 WHERE id='00000000-0000-4000-8000-000000000002'",
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_bindings SET burst_min_messages=1 WHERE id='11111111-1111-4111-8111-111111111111'",
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_bindings SET burst_min_messages=21 WHERE id='11111111-1111-4111-8111-111111111111'",
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_bindings SET burst_window_seconds=0 WHERE id='11111111-1111-4111-8111-111111111111'",
+          )
+          .run(),
+      ).toThrow();
+      expect(() =>
+        db
+          .query(
+            "UPDATE qq_bindings SET burst_window_seconds=31 WHERE id='11111111-1111-4111-8111-111111111111'",
+          )
+          .run(),
+      ).toThrow();
     } finally {
       db.close();
     }

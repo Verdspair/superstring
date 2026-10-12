@@ -15,7 +15,11 @@ afterEach(() => {
   for (const handle of handles.splice(0)) handle.close();
 });
 
-function setup(enabled: boolean, direct = false) {
+function setup(
+  enabled: boolean,
+  direct = false,
+  thresholds = { burst_min_messages: 3, burst_window_seconds: 3 },
+) {
   const h = cloneBusinessDb();
   handles.push(h);
   ensureDefaults(h.orm, "synthetic");
@@ -24,7 +28,7 @@ function setup(enabled: boolean, direct = false) {
   const scheme = createQqScheme(h.orm, {
     name: `antispam-${crypto.randomUUID()}`,
     triggers: { direct_reply: direct, follow_up: false, chiming_in: true, idle_topic: false },
-    inputAntiSpam: { enabled },
+    inputAntiSpam: { enabled, ...thresholds },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
       initiative_batch_target_count: 2,
@@ -164,6 +168,16 @@ describe("input anti-spam production opportunity projection", () => {
       expect(h.pending()).toHaveLength(sameSender ? 1 : 0);
       expect(h.db.query("SELECT COUNT(*) AS n FROM qq_events").get()).toEqual({ n: 4 });
     }
+  });
+
+  it("uses a two-message one-second scheme threshold for opportunity eligibility", () => {
+    const h = setup(true, false, { burst_min_messages: 2, burst_window_seconds: 1 });
+    h.receive(h.image());
+    h.clock.seconds++;
+    h.resetOrdinary();
+    h.receive(h.image());
+    expect(h.pending()).toHaveLength(0);
+    expect(h.db.query("SELECT COUNT(*) AS n FROM qq_events").get()).toEqual({ n: 2 });
   });
 
   it("pure platform expressions do not count as ordinary input but an explicit mention is not swallowed", () => {

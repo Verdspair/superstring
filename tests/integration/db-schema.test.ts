@@ -231,6 +231,10 @@ const V64_SQL = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0064_qq_scheme_sticker_frequency.sql"),
   "utf8",
 );
+const V65_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0065_qq_antispam_thresholds.sql"),
+  "utf8",
+);
 
 const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
 ${QQ_DISPATCH_SQL}
@@ -274,7 +278,8 @@ ${V60_SQL}
 ${V61_SQL}
 ${V62_SQL}
 ${V63_SQL}
-${V64_SQL}`;
+${V64_SQL}
+${V65_SQL}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };
@@ -1177,6 +1182,10 @@ describe("foreign key enforcement", () => {
 
 // 6. schema / version gate
 describe("business schema gate", () => {
+  it("uses schema 65 for the appended QQ anti-spam thresholds migration", () => {
+    expect(BUSINESS_SCHEMA_VERSION).toBe(65);
+  });
+
   it("initialises a fresh db and stamps user_version", () => {
     const h = openBusinessDb();
     const v = h.db.query("PRAGMA user_version").get() as { user_version: number };

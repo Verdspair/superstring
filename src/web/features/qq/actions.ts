@@ -1065,6 +1065,16 @@ function mergeExplicitBindingDraft(
         choice.input_anti_spam.enabled !== choice.source.input_anti_spam.enabled
           ? choice.input_anti_spam.enabled
           : fresh.input_anti_spam.enabled,
+      burst_min_messages:
+        choice.input_anti_spam.burst_min_messages !==
+        choice.source.input_anti_spam.burst_min_messages
+          ? choice.input_anti_spam.burst_min_messages
+          : fresh.input_anti_spam.burst_min_messages,
+      burst_window_seconds:
+        choice.input_anti_spam.burst_window_seconds !==
+        choice.source.input_anti_spam.burst_window_seconds
+          ? choice.input_anti_spam.burst_window_seconds
+          : fresh.input_anti_spam.burst_window_seconds,
     };
     choices[bindingId] = {
       agentId: choice.agentId !== choice.source.agent_id ? choice.agentId : fresh.agent_id,
@@ -1072,6 +1082,7 @@ function mergeExplicitBindingDraft(
       ...(task_limits ? { task_limits } : {}),
       ...(input_anti_spam ? { input_anti_spam } : {}),
       ...(choice.task_limits_raw ? { task_limits_raw: choice.task_limits_raw } : {}),
+      ...(choice.input_anti_spam_raw ? { input_anti_spam_raw: choice.input_anti_spam_raw } : {}),
       source: fresh,
     };
   }

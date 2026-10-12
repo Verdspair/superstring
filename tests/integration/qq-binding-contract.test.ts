@@ -477,7 +477,11 @@ describe("模式互斥：绑定合同的显式 triggers 写入", () => {
 // 判据仍是 plain revision/authorityRevision 数值，不因新组扩成第二套权限修订。
 
 const ALL_INHERIT_TASK_LIMITS = { mention_task_limit: null, ordinary_task_limit: null };
-const ALL_INHERIT_ANTI_SPAM = { enabled: null };
+const ALL_INHERIT_ANTI_SPAM = {
+  enabled: null,
+  burst_min_messages: null,
+  burst_window_seconds: null,
+};
 
 describe("0059 binding override groups: task limits and input anti-spam", () => {
   it("a fresh group or private binding follows its scheme for both groups", () => {
@@ -493,21 +497,37 @@ describe("0059 binding override groups: task limits and input anti-spam", () => 
       const value = binding({
         kind,
         taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
-        inputAntiSpam: { enabled: false },
+        inputAntiSpam: {
+          enabled: false,
+          burst_min_messages: null,
+          burst_window_seconds: null,
+        },
       });
       expect(value.taskLimits).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
-      expect(value.inputAntiSpam).toEqual({ enabled: false });
+      expect(value.inputAntiSpam).toEqual({
+        enabled: false,
+        burst_min_messages: null,
+        burst_window_seconds: null,
+      });
     }
   });
 
   it("an omitted patch keeps the stored groups; an explicit null restores inherit", () => {
     const value = binding({
       taskLimits: { mention_task_limit: 8, ordinary_task_limit: 2 },
-      inputAntiSpam: { enabled: false },
+      inputAntiSpam: {
+        enabled: false,
+        burst_min_messages: null,
+        burst_window_seconds: null,
+      },
     });
     const kept = update(value, { paused: true });
     expect(kept.taskLimits).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
-    expect(kept.inputAntiSpam).toEqual({ enabled: false });
+    expect(kept.inputAntiSpam).toEqual({
+      enabled: false,
+      burst_min_messages: null,
+      burst_window_seconds: null,
+    });
     const restored = update(kept, {
       taskLimits: ALL_INHERIT_TASK_LIMITS,
       inputAntiSpam: ALL_INHERIT_ANTI_SPAM,
@@ -557,7 +577,13 @@ describe("0059 binding override groups: task limits and input anti-spam", () => 
   it("flight checks stay on plain revisions: new groups ride the existing snapshot, not a second framework", () => {
     const value = binding();
     const before = snapshot(value);
-    const changed = update(value, { inputAntiSpam: { enabled: false } });
+    const changed = update(value, {
+      inputAntiSpam: {
+        enabled: false,
+        burst_min_messages: null,
+        burst_window_seconds: null,
+      },
+    });
     // 普通修改推进 revision：start 阶段的旧快照按既有 binding_changed 拒绝。
     expect(checkQqTask(before, changed, "start")).toEqual({
       kind: "blocked",

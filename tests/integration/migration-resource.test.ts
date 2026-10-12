@@ -269,6 +269,10 @@ const qqSchemeStickerFrequencySql = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0064_qq_scheme_sticker_frequency.sql"),
   "utf8",
 );
+const qqAntispamThresholdsSql = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0065_qq_antispam_thresholds.sql"),
+  "utf8",
+);
 const resources = [
   sql,
   knowledgeSql,
@@ -334,6 +338,7 @@ const resources = [
   qqMediaSpecUnificationSql,
   qqMediaRequestIdentitySql,
   qqSchemeStickerFrequencySql,
+  qqAntispamThresholdsSql,
 ] as const;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
@@ -410,6 +415,7 @@ describe("explicit migration resources", () => {
               qqMediaSpecUnificationSql,
               qqMediaRequestIdentitySql,
               qqSchemeStickerFrequencySql,
+              qqAntispamThresholdsSql,
             ],
           }),
         ).toThrow();
@@ -492,11 +498,12 @@ describe("explicit migration resources", () => {
             qqMediaSpecUnificationSql,
             qqMediaRequestIdentitySql,
             qqSchemeStickerFrequencySql,
+            qqAntispamThresholdsSql,
           ],
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -811,12 +818,16 @@ describe("explicit migration resources", () => {
         ),
         path.join(versions, "0064_qq_scheme_sticker_frequency.sql"),
       );
+      copyFileSync(
+        path.join(import.meta.dir, "../../migrations/versions/0065_qq_antispam_thresholds.sql"),
+        path.join(versions, "0065_qq_antispam_thresholds.sql"),
+      );
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(64);
+      expect(layout?.businessMigrationSql.length).toBe(65);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {

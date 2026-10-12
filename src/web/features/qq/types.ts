@@ -334,6 +334,16 @@ export function qqSchemeChanges(editor: QqSchemeEditor | null): readonly QqSchem
     editor.source.input_anti_spam.enabled,
     editor.inputAntiSpam.enabled,
   );
+  compare(
+    "input_anti_spam.burst_min_messages",
+    editor.source.input_anti_spam.burst_min_messages,
+    editor.inputAntiSpam.burst_min_messages,
+  );
+  compare(
+    "input_anti_spam.burst_window_seconds",
+    editor.source.input_anti_spam.burst_window_seconds,
+    editor.inputAntiSpam.burst_window_seconds,
+  );
   return changes;
 }
 

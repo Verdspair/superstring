@@ -335,7 +335,11 @@ describe("QQ binding routes", () => {
         attention: { mode: "off", members: [] },
         // 0059：新绑定对两组新设置不带任何覆盖，NULL＝跟随方案（上限与防抖都由方案决定）。
         task_limits: { mention_task_limit: null, ordinary_task_limit: null },
-        input_anti_spam: { enabled: null },
+        input_anti_spam: {
+          enabled: null,
+          burst_min_messages: null,
+          burst_window_seconds: null,
+        },
         share_web_memory: false,
         memory_batch_size: null,
         // Nothing has been observed with text yet, so no batch is waiting (2026-09-25).

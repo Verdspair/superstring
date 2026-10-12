@@ -72,6 +72,8 @@ function projectFact(
 
 export interface QqAntispamProjectionInput {
   readonly facts: readonly QqMessageFact[];
+  readonly burstMinMessages: number;
+  readonly burstWindowSeconds: number;
   /** caller 对该事件来源 TTL/完整性的投影布尔；false＝硬边界（结算该发送者当前组）。 */
   readonly sourceAvailable: (fact: QqMessageFact) => boolean;
   /** caller 已裁定的合法 direct（显式 @ / 合法引用）；direct 事件不入组、不进排除。 */
@@ -87,7 +89,12 @@ export function projectQqAntispamDerivation(
     const event = projectFact(fact, input);
     if (event !== null) events.push(event);
   }
-  return deriveQqInputAntispam({ enabled: true, events });
+  return deriveQqInputAntispam({
+    enabled: true,
+    events,
+    burstMinMessages: input.burstMinMessages,
+    burstWindowSeconds: input.burstWindowSeconds,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -113,9 +120,12 @@ export interface QqAntispamJournalRow {
   readonly fact: QqMessageFact | null;
 }
 
-export function projectQqAntispamSequence(
-  rows: readonly QqAntispamJournalRow[],
-): QqAntispamDerivation {
+export function projectQqAntispamSequence(input: {
+  readonly rows: readonly QqAntispamJournalRow[];
+  readonly burstMinMessages: number;
+  readonly burstWindowSeconds: number;
+}): QqAntispamDerivation {
+  const { rows } = input;
   const events: QqAntispamEvent[] = rows.map((row) => {
     const fact = row.fact;
     if (fact === null) {
@@ -144,5 +154,10 @@ export function projectQqAntispamSequence(
       parts,
     };
   });
-  return deriveQqInputAntispam({ enabled: true, events });
+  return deriveQqInputAntispam({
+    enabled: true,
+    events,
+    burstMinMessages: input.burstMinMessages,
+    burstWindowSeconds: input.burstWindowSeconds,
+  });
 }

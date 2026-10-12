@@ -86,6 +86,7 @@ export class OutboundDelivery {
        * 共享这个名额，所以并发多次 runOnce 也不会突破它；下调后排队者不会再按旧值被放行。
        */
       deliveryConcurrency?: number | (() => number);
+      onConfirmed?: (delivery: Delivery) => void;
     },
   ) {}
   /** 车道数每次准入现读：动态下调后，排队者不会再按旧值被放行。 */
@@ -408,6 +409,16 @@ export class OutboundDelivery {
           this.projectLegacy(id);
           this.revision(id);
         })();
+        if (result.kind === "confirmed") {
+          const confirmed = repository.get(id);
+          if (confirmed?.status === "confirmed") {
+            try {
+              this.options.onConfirmed?.(confirmed);
+            } catch (observerError) {
+              console.warn("[qq-delivery] confirmed delivery observer failed", observerError);
+            }
+          }
+        }
         partSpan?.end(
           result.kind === "confirmed"
             ? "completed"

@@ -3,6 +3,7 @@ import {
   QqConversationTaskCauseSchema,
   type QqTaskExecutionSnapshot,
   qqConversationTaskKey,
+  resolveEffectiveInputAntiSpam,
   resolveQqEffectiveTaskLimits,
 } from "../../../shared/contracts/qq-task";
 import type { AgentRuntime } from "../../agent/agent-runtime";
@@ -19,11 +20,18 @@ import { OutboundIntentRepository, type OutboundTarget } from "../../db/outbound
 import { readQqBinding } from "../../db/qq-binding-repository";
 import { readQqDispatchSettings } from "../../db/qq-dispatch-repository";
 import { readEffectiveQqScheme } from "../../db/qq-group-config-repository";
+import {
+  confirmedQqReplyCovers,
+  readConfirmedQqDirectReply,
+  readRunningQqChimingTasksSupersededBy,
+} from "../../db/qq-reply-coverage-repository";
 import type { QqSchemeRow } from "../../db/qq-scheme-repository";
 import {
   effectiveQqTriggers,
   readQqScheme,
+  schemeInputAntiSpam,
   schemeReply,
+  schemeResponse,
   schemeStickers,
   schemeTaskLimits,
 } from "../../db/qq-scheme-repository";
@@ -282,6 +290,26 @@ export function createOneBotConversationRuntime(options: {
     port: options.port,
     // 发送车道＝既有 QQ wake 并发资源（不是模型帽）：每次准入现读 policy()，调低后不再按旧值放行。
     deliveryConcurrency: () => policy().globalConcurrency,
+    onConfirmed(delivery) {
+      if (delivery.status !== "confirmed") return;
+      const reply = readConfirmedQqDirectReply(db, delivery.id);
+      if (!reply) return;
+      for (const task of readRunningQqChimingTasksSupersededBy(db, reply)) {
+        if (
+          task.snapshot.targetParticipants.length > 0 &&
+          task.snapshot.targetParticipants.every((target) =>
+            confirmedQqReplyCovers(db, {
+              conversationId: reply.conversationId,
+              sourceSeq: task.sourceThroughSeq,
+              participantId: target.speakerId,
+              roomOnly: target.speakerId === null,
+              scope: reply.scope,
+            }),
+          )
+        )
+          taskScheduler.cancel(task.id);
+      }
+    },
     stickerFile: qqStickerFileReference(orm, options.store),
     stickerAvailable(stickerId, target, at, stickerSources) {
       if (options.stickersEnabled?.() === false) return false;
@@ -562,6 +590,10 @@ export function createOneBotConversationRuntime(options: {
       const agent = binding ? getAgentRow(orm, binding.agentId) : null;
       if (!conversation || !binding || !scheme || !agent)
         throw new Error("BOT_CONFIGURATION_MISSING");
+      const antiSpam = resolveEffectiveInputAntiSpam(
+        schemeInputAntiSpam(scheme),
+        binding.inputAntiSpam,
+      );
       const events = taskEvents(task);
       const focus = events.find((event) => event.seq === task.sourceThroughSeq);
       const attention = attentionTriggerFilter(binding);
@@ -597,10 +629,13 @@ export function createOneBotConversationRuntime(options: {
         bindingRevision: binding.revision,
         authorityRevision: binding.authorityRevision,
         schemeRevision: scheme.revision,
+        schemeConfig: schemeResponse(orm, scheme),
         agentConfigVersion: agent.configVersion,
         taskClass: task.taskClass as QqTaskExecutionSnapshot["taskClass"],
         cause: task.cause as QqTaskExecutionSnapshot["cause"],
         stickerFrequency: schemeStickers(scheme).frequency,
+        antiSpamBurstMinMessages: antiSpam.burstMinMessages,
+        antiSpamBurstWindowSeconds: antiSpam.burstWindowSeconds,
         sourceFromSeq: task.sourceFromSeq,
         sourceThroughSeq: task.sourceThroughSeq,
         sourceExpiresAt: task.sourceExpiresAt,

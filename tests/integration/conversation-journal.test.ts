@@ -16,6 +16,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import {
   ConversationEventsSchema,
+  ConversationEventViewSchema,
   ConversationListSchema,
   DeliverySchema,
 } from "../../src/shared/contracts/conversation";
@@ -212,6 +213,136 @@ describe("durable wake and outbound transitions", () => {
     expect(h.wake.get(w.id)!.status).toBe("pending");
     expect(h.journal.get(c.id)!.consumedSeq).toBe(0);
     expect(h.wake.claim({ at, leaseMs: 1000 })).toBeNull();
+  });
+  it("projects the transferred task and its parent run instead of a newer completed child", () => {
+    const h = setup();
+    const c = bot(h);
+    const queued = h.wake.enqueue({
+      conversationId: c.id,
+      cause: "idle_topic",
+      throughSeq: 0,
+      dedupeKey: "root-task-projection",
+      readyAt: at,
+      priority: 10,
+    });
+    const leased = h.wake.claim({ at, leaseMs: 1000 })!;
+    const parentRunId = "root-task-parent-run";
+    const childRunId = "root-task-evaluation-child";
+    for (const [runId, specId] of [
+      [parentRunId, "onebot.initiative.batch"],
+      [childRunId, "onebot.initiative.evaluate_batch"],
+    ]) {
+      h.runs.createRun({
+        runId,
+        specId,
+        specVersion: "1",
+        owner: { kind: "conversation", id: c.id },
+        at,
+      });
+      h.db
+        .query("UPDATE agent_runs SET wake_id=?,conversation_id=? WHERE run_id=?")
+        .run(leased.id, c.id, runId);
+    }
+    h.runs.setStatus(parentRunId, "failed", at, "AGENT_FAILED");
+    h.runs.setStatus(childRunId, "completed", at);
+    h.wake.complete(leased.id, leased.leaseToken!, "completed", 0, at);
+    const taskId = "root-task-linked-failure";
+    h.db
+      .query(`INSERT INTO qq_conversation_tasks(
+        id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,
+        source_from_seq,source_through_seq,origin_wake_id,origin_run_id,status,
+        judgement_done,cancellation_requested,created_at,updated_at,error_code
+      ) VALUES(?,?,?,?,?,'ordinary','idle_topic',0,0,?,?,'failed',0,0,?,?,?)`)
+      .run(
+        taskId,
+        "root-task-projection",
+        c.id,
+        c.bindingEpoch,
+        DEFAULT_AGENT_ID,
+        leased.id,
+        parentRunId,
+        at,
+        at,
+        "QQ_TASK_FAILED",
+      );
+    h.db.query("UPDATE wake_signals SET transferred_task_id=? WHERE id=?").run(taskId, leased.id);
+
+    const event = h.journal.eventsAfter(c.id).items[0]!;
+    const view = projectConversationEvent(h.db, event, at);
+    expect(h.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(ConversationEventViewSchema.safeParse(view).success).toBe(true);
+    expect(queued.status).toBe("pending");
+    expect(h.wake.get(leased.id)!.status).toBe("completed");
+    expect(view.runId).toBe(parentRunId);
+    expect(view.task).toEqual({ id: taskId, status: "failed", errorCode: "QQ_TASK_FAILED" });
+    expect(view.wake?.status).toBe("completed");
+  });
+  it("rejects a transferred task from another wake and conversation while retaining the legacy run", () => {
+    const h = setup();
+    const conversation = bot(h);
+    h.db.query("UPDATE qq_bindings SET peer_id='201' WHERE id='binding'").run();
+    const otherConversation = bot(h, "other-binding");
+    const firstWake = h.wake.enqueue({
+      conversationId: conversation.id,
+      cause: "idle_topic",
+      throughSeq: 0,
+      dedupeKey: "first-conversation-wake",
+      readyAt: at,
+      priority: 10,
+    });
+    const firstLease = h.wake.claim({ at, leaseMs: 1000, wakeId: firstWake.id })!;
+    const legacyRunId = "first-conversation-legacy-run";
+    h.runs.createRun({
+      runId: legacyRunId,
+      specId: "onebot.initiative.batch",
+      specVersion: "1",
+      owner: { kind: "conversation", id: conversation.id },
+      at,
+    });
+    h.db
+      .query("UPDATE agent_runs SET wake_id=?,conversation_id=? WHERE run_id=?")
+      .run(firstLease.id, conversation.id, legacyRunId);
+    h.runs.setStatus(legacyRunId, "failed", at, "AGENT_FAILED");
+    h.wake.complete(firstLease.id, firstLease.leaseToken!, "completed", 0, at);
+
+    const otherWake = h.wake.enqueue({
+      conversationId: otherConversation.id,
+      cause: "idle_topic",
+      throughSeq: 0,
+      dedupeKey: "other-conversation-wake",
+      readyAt: at,
+      priority: 10,
+    });
+    const otherLease = h.wake.claim({ at, leaseMs: 1000, wakeId: otherWake.id })!;
+    h.wake.complete(otherLease.id, otherLease.leaseToken!, "completed", 0, at);
+    const foreignTaskId = "foreign-conversation-task";
+    h.db
+      .query(`INSERT INTO qq_conversation_tasks(
+        id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,
+        source_from_seq,source_through_seq,origin_wake_id,status,judgement_done,
+        cancellation_requested,created_at,updated_at,error_code
+      ) VALUES(?,?,?,?,?,'ordinary','idle_topic',0,0,?,'failed',0,0,?,?,?)`)
+      .run(
+        foreignTaskId,
+        "foreign-task-key",
+        otherConversation.id,
+        otherConversation.bindingEpoch,
+        DEFAULT_AGENT_ID,
+        otherLease.id,
+        at,
+        at,
+        "QQ_TASK_FAILED",
+      );
+    h.db
+      .query("UPDATE wake_signals SET transferred_task_id=? WHERE id=?")
+      .run(foreignTaskId, firstLease.id);
+
+    const event = h.journal.eventsAfter(conversation.id).items[0]!;
+    const view = projectConversationEvent(h.db, event, at);
+    expect(h.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(view.task).toBeUndefined();
+    expect(view.runId).toBe(legacyRunId);
+    expect(view.wake?.status).toBe("completed");
   });
   it("persists before effect, fences simultaneous claims, and interrupted sending stays unknown", () => {
     const h = setup();

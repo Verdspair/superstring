@@ -172,7 +172,11 @@ describe("QQ scheme routes", () => {
       // 0059：并行任务上限与输入防抖两组同样完整上线。新方案默认上限 mention 4 / ordinary 1、
       // 输入防抖开——写入侧在 create 边界落默认，响应没有迁移间隙。
       expect(created.task_limits).toEqual({ mention_task_limit: 4, ordinary_task_limit: 1 });
-      expect(created.input_anti_spam).toEqual({ enabled: true });
+      expect(created.input_anti_spam).toEqual({
+        enabled: true,
+        burst_min_messages: 3,
+        burst_window_seconds: 3,
+      });
       expect(Object.keys(created).sort()).toEqual([
         "compression",
         "context",
@@ -565,11 +569,19 @@ describe("QQ scheme routes", () => {
       const updated = await updateScheme(h.app, created.id, {
         name: "并行方案",
         task_limits: { mention_task_limit: 8, ordinary_task_limit: 2 },
-        input_anti_spam: { enabled: false },
+        input_anti_spam: {
+          enabled: false,
+          burst_min_messages: 5,
+          burst_window_seconds: 4,
+        },
         expected_revision: created.revision,
       });
       expect(updated.task_limits).toEqual({ mention_task_limit: 8, ordinary_task_limit: 2 });
-      expect(updated.input_anti_spam).toEqual({ enabled: false });
+      expect(updated.input_anti_spam).toEqual({
+        enabled: false,
+        burst_min_messages: 5,
+        burst_window_seconds: 4,
+      });
       expect(updated.revision).toBe(2);
 
       // update 未提供两组 → 保持现值。

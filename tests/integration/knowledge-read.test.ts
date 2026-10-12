@@ -365,6 +365,7 @@ describe("S3 known migration", () => {
     "0062_qq_media_spec_unification.sql",
     "0063_qq_media_request_identity.sql",
     "0064_qq_scheme_sticker_frequency.sql",
+    "0065_qq_antispam_thresholds.sql",
   ].map((f) => readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
   it("v2 upgrade seeds existing assistants and preserves all v2 data", () => {
     const db = new Database(":memory:");
@@ -385,7 +386,7 @@ describe("S3 known migration", () => {
         document_ids: "[]",
         revision: 1,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
       ensureBusinessSchema(db);
       expect(db.query("SELECT count(*) AS n FROM agent_knowledge_read_settings").get()).toEqual({
         n: 1,
@@ -469,6 +470,7 @@ describe("S3 known migration", () => {
           sql[61] ?? "",
           sql[62] ?? "",
           sql[63] ?? "",
+          sql[64] ?? "",
         ]),
       ).toThrow("CHECK constraint failed");
       expect(db.query("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);

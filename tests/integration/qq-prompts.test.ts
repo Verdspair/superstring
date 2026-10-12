@@ -219,7 +219,9 @@ describe("editable QQ prompt storage and HTTP", () => {
         { id: "custom", frequency: "medium", sticker: `${oldPrompt} `, maxCount: 2 },
         { id: "exact", frequency: "medium", sticker: nextPrompt, maxCount: 3 },
       ]);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 64 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({
+        user_version: BUSINESS_SCHEMA_VERSION,
+      });
     } finally {
       db.close();
     }

@@ -656,7 +656,7 @@ describe("explicit sticker tools without an auto selector", () => {
     expect(calls).toBe(12);
     expect(h.outbox.list({})).toEqual([]);
   });
-  it("rejects sticker IDs from a plain QQ final decision before preparation", async () => {
+  it("keeps plain QQ final sticker IDs unsent while correction remains within the step budget", async () => {
     const h = setup(
       {
         complete: async () =>
@@ -666,7 +666,7 @@ describe("explicit sticker tools without an auto selector", () => {
     );
     addSticker(h);
     h.receive("1");
-    await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_OUTPUT_INVALID" });
+    await expect(activate(h)).rejects.toMatchObject({ code: "AGENT_STEP_LIMIT" });
     expect(h.outbox.list({})).toEqual([]);
   });
   it("supports a sticker-only reply through the trusted contribution tool", async () => {

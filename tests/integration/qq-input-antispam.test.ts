@@ -57,7 +57,11 @@ function imageCarrier(
   });
 }
 
-const ENABLED = { enabled: true } as const;
+const ENABLED = {
+  enabled: true,
+  burstMinMessages: 3,
+  burstWindowSeconds: 3,
+} as const;
 
 // ---- pure expression (§5.2) ----------------------------------------------------------
 
@@ -171,6 +175,69 @@ describe("unmarked pure-image burst grouping", () => {
       events: [imageCarrier(1, "A", 100), imageCarrier(2, "A", 101)],
     });
     expect(result.burstGroups).toEqual([]);
+  });
+
+  test("minimum 2 and maximum 20 carriers apply at their inclusive boundaries", () => {
+    const minTwo = deriveQqInputAntispam({
+      ...ENABLED,
+      events: [imageCarrier(1, "A", 100), imageCarrier(2, "A", 101)],
+      burstMinMessages: 2,
+      burstWindowSeconds: 1,
+    });
+    expect(minTwo.burstExcludedSeqs).toEqual([1, 2]);
+    expect(minTwo.burstGroups[0]?.spanSeconds).toBe(1);
+
+    const minTwenty = deriveQqInputAntispam({
+      ...ENABLED,
+      events: Array.from({ length: 20 }, (_, index) => imageCarrier(index + 1, "A", 200 + index)),
+      burstMinMessages: 20,
+      burstWindowSeconds: 30,
+    });
+    expect(minTwenty.burstExcludedSeqs).toEqual(
+      Array.from({ length: 20 }, (_, index) => index + 1),
+    );
+
+    const belowMaximum = deriveQqInputAntispam({
+      ...ENABLED,
+      events: Array.from({ length: 19 }, (_, index) => imageCarrier(index + 1, "A", 200 + index)),
+      burstMinMessages: 20,
+      burstWindowSeconds: 30,
+    });
+    expect(belowMaximum.burstGroups).toEqual([]);
+  });
+
+  test("one-second and thirty-second windows are inclusive and close beyond the bound", () => {
+    const atOneSecond = deriveQqInputAntispam({
+      ...ENABLED,
+      events: [imageCarrier(1, "A", 100), imageCarrier(2, "A", 101)],
+      burstMinMessages: 2,
+      burstWindowSeconds: 1,
+    });
+    expect(atOneSecond.burstExcludedSeqs).toEqual([1, 2]);
+
+    const beyondOneSecond = deriveQqInputAntispam({
+      ...ENABLED,
+      events: [imageCarrier(1, "A", 100), imageCarrier(2, "A", 102)],
+      burstMinMessages: 2,
+      burstWindowSeconds: 1,
+    });
+    expect(beyondOneSecond.burstGroups).toEqual([]);
+
+    const atThirtySeconds = deriveQqInputAntispam({
+      ...ENABLED,
+      events: [imageCarrier(1, "A", 100), imageCarrier(2, "A", 115), imageCarrier(3, "A", 130)],
+      burstMinMessages: 3,
+      burstWindowSeconds: 30,
+    });
+    expect(atThirtySeconds.burstExcludedSeqs).toEqual([1, 2, 3]);
+
+    const beyondThirtySeconds = deriveQqInputAntispam({
+      ...ENABLED,
+      events: [imageCarrier(1, "A", 100), imageCarrier(2, "A", 131)],
+      burstMinMessages: 2,
+      burstWindowSeconds: 30,
+    });
+    expect(beyondThirtySeconds.burstGroups).toEqual([]);
   });
 
   test("span strictly above 3 seconds never hits", () => {
@@ -338,7 +405,7 @@ describe("module switch and source boundaries", () => {
       imageCarrier(3, "A", 12),
       imageCarrier(4, "A", 13),
     ];
-    const result = deriveQqInputAntispam({ enabled: false, events });
+    const result = deriveQqInputAntispam({ ...ENABLED, enabled: false, events });
     expect(result.pureExpressionExcludedSeqs).toEqual([]);
     expect(result.burstGroups).toEqual([]);
     expect(result.burstExcludedImages).toEqual([]);

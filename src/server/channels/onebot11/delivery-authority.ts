@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { Delivery } from "../../../shared/contracts/conversation";
+import { QqTaskExecutionSnapshotSchema } from "../../../shared/contracts/qq-task";
 import { sourceAccess } from "../../agent/context-access";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import type { OutboundIntentRepository, OutboundTarget } from "../../db/outbound-intent-repository";
@@ -36,6 +37,110 @@ export function qqDeliveryAuthorize(deps: DeliveryAuthorityDeps) {
     const agent = getAgentRow(orm, target.agentId);
     const row = outbox.row(intent.id);
     if (!binding || !conversation || !scheme || !agent || !row) return false;
+    const frozenTask = target.qqTaskId
+      ? (db
+          .query(`SELECT id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,
+              source_from_seq,source_through_seq,source_expires_at,origin_wake_id,origin_run_id,status,execution_snapshot
+            FROM qq_conversation_tasks WHERE id=?`)
+          .get(target.qqTaskId) as {
+          id: string;
+          task_key: string;
+          conversation_id: string;
+          binding_epoch: number;
+          agent_id: string;
+          task_class: string;
+          cause: string;
+          source_from_seq: number;
+          source_through_seq: number;
+          source_expires_at: string | null;
+          origin_wake_id: string | null;
+          origin_run_id: string | null;
+          status: string;
+          execution_snapshot: string | null;
+        } | null)
+      : null;
+    let frozenTaskConfigValid = false;
+    let frozenTaskHasSchemeConfig = false;
+    if (
+      target.qqTaskId &&
+      frozenTask &&
+      frozenTask.id === target.qqTaskId &&
+      frozenTask.conversation_id === intent.conversationId &&
+      frozenTask.binding_epoch === target.bindingEpoch &&
+      frozenTask.agent_id === target.agentId &&
+      frozenTask.source_through_seq === row.source_through_seq &&
+      frozenTask.cause === row.speech_kind &&
+      frozenTask.execution_snapshot
+    ) {
+      try {
+        const taskSnapshot = QqTaskExecutionSnapshotSchema.parse(
+          JSON.parse(frozenTask.execution_snapshot),
+        );
+        const runIdentity = `SELECT conversation_id,observed_seq,wake_id,owner_kind,
+          owner_id,user_id,agent_id FROM agent_runs WHERE run_id=?`;
+        const taskRun = db.query(runIdentity).get(intent.runId) as {
+          conversation_id: string | null;
+          observed_seq: number | null;
+          wake_id: string | null;
+          owner_kind: string;
+          owner_id: string;
+          user_id: string | null;
+          agent_id: string | null;
+        } | null;
+        const taskOwnerRun = frozenTask.origin_run_id
+          ? (db.query(runIdentity).get(frozenTask.origin_run_id) as typeof taskRun)
+          : null;
+        const destination = target.participantId ?? target.peerId;
+        const expectedSpeakerId =
+          target.conversationKind === "private" ? target.peerId : (target.participantId ?? null);
+        frozenTaskHasSchemeConfig = taskSnapshot.schemeConfig !== undefined;
+        frozenTaskConfigValid =
+          taskSnapshot.taskKey === frozenTask.task_key &&
+          taskSnapshot.conversationId === frozenTask.conversation_id &&
+          taskSnapshot.bindingEpoch === frozenTask.binding_epoch &&
+          taskSnapshot.agentId === frozenTask.agent_id &&
+          taskSnapshot.taskClass === frozenTask.task_class &&
+          taskSnapshot.cause === frozenTask.cause &&
+          taskSnapshot.sourceFromSeq === frozenTask.source_from_seq &&
+          taskSnapshot.sourceThroughSeq === frozenTask.source_through_seq &&
+          taskSnapshot.sourceExpiresAt === frozenTask.source_expires_at &&
+          taskSnapshot.accountId === target.accountId &&
+          taskSnapshot.bindingId === target.bindingId &&
+          taskSnapshot.bindingRevision === target.bindingRevision &&
+          taskSnapshot.authorityRevision === target.authorityRevision &&
+          taskSnapshot.schemeId === target.schemeId &&
+          taskSnapshot.schemeRevision === target.schemeRevision &&
+          taskSnapshot.agentConfigVersion === target.agentConfigVersion &&
+          taskSnapshot.authorizedTargets.includes(destination) &&
+          taskSnapshot.targetParticipants.some(
+            (participant) =>
+              participant.targetId === destination && participant.speakerId === expectedSpeakerId,
+          ) &&
+          taskRun?.conversation_id === frozenTask.conversation_id &&
+          taskRun.observed_seq === frozenTask.source_through_seq &&
+          taskRun.wake_id === frozenTask.origin_wake_id &&
+          taskRun.owner_kind === "conversation" &&
+          taskRun.owner_id === frozenTask.conversation_id &&
+          taskRun.user_id === DEFAULT_USER_ID &&
+          taskRun.agent_id === frozenTask.agent_id &&
+          (frozenTask.origin_run_id === intent.runId ||
+            ((frozenTask.cause === "chiming_in" || frozenTask.cause === "idle_topic") &&
+              taskOwnerRun !== null &&
+              taskOwnerRun.conversation_id === frozenTask.conversation_id &&
+              taskOwnerRun.observed_seq === frozenTask.source_through_seq &&
+              taskOwnerRun.wake_id === frozenTask.origin_wake_id &&
+              taskOwnerRun.owner_kind === "conversation" &&
+              taskOwnerRun.owner_id === frozenTask.conversation_id &&
+              taskOwnerRun.user_id === DEFAULT_USER_ID &&
+              taskOwnerRun.agent_id === frozenTask.agent_id &&
+              intent.runId !== frozenTask.origin_run_id)) &&
+          (!taskSnapshot.schemeConfig ||
+            (taskSnapshot.schemeConfig.id === target.schemeId &&
+              taskSnapshot.schemeConfig.revision === target.schemeRevision));
+      } catch {
+        frozenTaskConfigValid = false;
+      }
+    }
     if (
       settings.enabled !== 1 ||
       settings.accountId !== target.accountId ||
@@ -49,7 +154,10 @@ export function qqDeliveryAuthorize(deps: DeliveryAuthorityDeps) {
       binding.revision !== target.bindingRevision ||
       binding.authorityRevision !== target.authorityRevision ||
       binding.schemeId !== target.schemeId ||
-      scheme.revision !== target.schemeRevision ||
+      (target.qqTaskId
+        ? !frozenTaskConfigValid ||
+          (!frozenTaskHasSchemeConfig && scheme.revision !== target.schemeRevision)
+        : scheme.revision !== target.schemeRevision) ||
       agent.isActive !== 1 ||
       agent.configVersion !== target.agentConfigVersion ||
       (readQqOwnerIdentity(orm)?.revision ?? null) !== (target.ownerIdentityRevision ?? null) ||

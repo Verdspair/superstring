@@ -703,6 +703,8 @@ export const qqBindings = sqliteTable(
     mentionTaskLimit: integer("mention_task_limit"),
     ordinaryTaskLimit: integer("ordinary_task_limit"),
     inputAntiSpamEnabled: integer("input_anti_spam_enabled"),
+    burstMinMessages: integer("burst_min_messages"),
+    burstWindowSeconds: integer("burst_window_seconds"),
   },
   (t) => [
     check("qq_binding_kind", sql`${t.conversationKind} IN ('group', 'private')`),
@@ -724,6 +726,14 @@ export const qqBindings = sqliteTable(
     check(
       "qq_binding_input_anti_spam_enabled",
       sql`${t.inputAntiSpamEnabled} IS NULL OR ${t.inputAntiSpamEnabled} IN (0, 1)`,
+    ),
+    check(
+      "qq_binding_burst_min_messages",
+      sql`${t.burstMinMessages} IS NULL OR (${t.burstMinMessages} >= 2 AND ${t.burstMinMessages} <= 20)`,
+    ),
+    check(
+      "qq_binding_burst_window_seconds",
+      sql`${t.burstWindowSeconds} IS NULL OR (${t.burstWindowSeconds} >= 1 AND ${t.burstWindowSeconds} <= 30)`,
     ),
     check("qq_binding_batch_size", sql`${t.memoryBatchSize} IS NULL OR ${t.memoryBatchSize} >= 1`),
     check("qq_binding_authority_revision", sql`${t.authorityRevision} >= 1`),
@@ -1336,6 +1346,8 @@ export const qqSchemes = sqliteTable(
     mentionTaskLimit: integer("mention_task_limit").notNull().default(4),
     ordinaryTaskLimit: integer("ordinary_task_limit").notNull().default(1),
     inputAntiSpamEnabled: integer("input_anti_spam_enabled").notNull().default(0),
+    burstMinMessages: integer("burst_min_messages").notNull().default(3),
+    burstWindowSeconds: integer("burst_window_seconds").notNull().default(3),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
@@ -1507,6 +1519,14 @@ export const qqSchemes = sqliteTable(
       sql`${t.ordinaryTaskLimit} >= 1 AND ${t.ordinaryTaskLimit} <= 64`,
     ),
     check("qq_scheme_input_anti_spam_enabled", sql`${t.inputAntiSpamEnabled} IN (0, 1)`),
+    check(
+      "qq_scheme_burst_min_messages",
+      sql`${t.burstMinMessages} >= 2 AND ${t.burstMinMessages} <= 20`,
+    ),
+    check(
+      "qq_scheme_burst_window_seconds",
+      sql`${t.burstWindowSeconds} >= 1 AND ${t.burstWindowSeconds} <= 30`,
+    ),
     unique("uq_qq_scheme_name").on(t.name),
   ],
 );

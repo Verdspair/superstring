@@ -70,6 +70,8 @@ export function toContractQqBinding(row: QqBindingRow): QqBinding {
     },
     inputAntiSpam: {
       enabled: row.inputAntiSpamEnabled === null ? null : row.inputAntiSpamEnabled === 1,
+      burst_min_messages: row.burstMinMessages,
+      burst_window_seconds: row.burstWindowSeconds,
     },
   });
 }
@@ -103,10 +105,12 @@ function taskLimitColumns(taskLimits: QqBinding["taskLimits"]) {
   };
 }
 
-/** The nullable anti-spam column; NULL follows the scheme (0059). */
+/** The sparse anti-spam overrides; NULL follows the scheme (0059/0065). */
 function antiSpamColumn(inputAntiSpam: QqBinding["inputAntiSpam"]) {
   return {
     inputAntiSpamEnabled: inputAntiSpam.enabled === null ? null : inputAntiSpam.enabled ? 1 : 0,
+    burstMinMessages: inputAntiSpam.burst_min_messages,
+    burstWindowSeconds: inputAntiSpam.burst_window_seconds,
   };
 }
 

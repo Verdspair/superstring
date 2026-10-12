@@ -44,7 +44,11 @@
 - QQ 艾特与合法引用助手消息的请求可独立执行；每会话艾特／普通任务上限默认 4／1（1–64）。全局／每服务模型请求上限另行配置，默认 4／2（1–256），同时生效。
 - 输入防刷屏默认对新方案开启、对已有方案关闭。同成员首条起 3 秒内至少 3 条纯图片消息按一个候选处理，他人插话不打断；自动排除的图片仍可按需读取，直接请求不受分组等待影响。
 - 所有图片类别共用静图与动图规格，取消单独表情画质和补充时间窗；图片设置收敛为基本／高级，保留自定义阶段。
-- 当前源码数据库结构为 64；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
+- 保存普通 QQ 方案设置时不再误中断正在执行的回应任务；进行中的任务保留原有配置，后续新任务采用新设置；会话暂停与权限停用仍立即生效。
+- 较新回复确认后，已被完整覆盖的旧自主回复提前停止；多成员任务只跳过已覆盖成员，不同艾特任务保持独立。
+- 聊天记录加载失败后重试拉取最新页，不从最早记录重新开始。
+- 修正 QQ 表情回复的输出规则冲突；错误的表情写法不会发送，并可在现有步骤限制内纠正后继续回复。
+- 当前源码数据库结构为 65；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
 
 ---
 
@@ -90,7 +94,11 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 - QQ mentions and valid replies to assistant messages run as independent tasks. Per-conversation mention and ordinary task limits default to 4 and 1 (range 1–64). Global and per-service model request limits are configured separately, default to 4 and 2 (range 1–256), and both apply.
 - Input anti-spam is enabled for new schemes and kept off for existing schemes. At least three image-only messages from one sender within three seconds of the first form one candidate; other senders do not break it. Excluded images remain readable on demand, and direct requests do not wait for grouping.
 - All image categories share still-image and animation settings. Separate expression quality settings and supplement time windows are removed. Basic and advanced image settings retain custom stage choices.
-- Current source uses schema 64; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
+- Saving standard QQ scheme settings no longer mistakenly interrupts an in-flight reply task; running tasks retain their original configuration and new tasks apply updated values. Conversation pauses and permission changes still take effect immediately.
+- After a newer reply is confirmed, fully covered autonomous replies stop early. Multi-member tasks skip only covered members, and separate mention tasks remain independent.
+- Chat history load failures retry from the newest page instead of restarting from the earliest records.
+- Fixed conflicting output rules for QQ sticker replies. Invalid sticker output is not sent and can be corrected within the existing step limit before the reply continues.
+- Current source uses schema 65; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
 
 ---
 

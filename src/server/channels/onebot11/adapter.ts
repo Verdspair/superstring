@@ -2,7 +2,7 @@ import type { ConversationAddressing } from "../../../shared/contracts/conversat
 
 import {
   qqConversationTaskKey,
-  qqEffectiveInputAntiSpamEnabled,
+  resolveEffectiveInputAntiSpam,
 } from "../../../shared/contracts/qq-task";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { readQqBinding, readQqBindings } from "../../db/qq-binding-repository";
@@ -233,11 +233,11 @@ export class OneBot11Adapter implements ConversationIngress {
       // 配置缺失＝无资格计数（既有 fail closed 面），不猜窗口。
       return { count: 0, firstEligibleSeconds: null };
     }
-    const antispamEnabled = qqEffectiveInputAntiSpamEnabled(
+    const antiSpam = resolveEffectiveInputAntiSpam(
       schemeInputAntiSpam(scheme),
       binding.inputAntiSpam,
     );
-    if (!antispamEnabled) {
+    if (!antiSpam.enabled) {
       // 开关关闭＝原 cheap SQL 资格计数（0054 逐字语义，唯一实现见 cheapEligibilityCount）。
       return cheapEligibilityCount();
     }
@@ -315,8 +315,8 @@ export class OneBot11Adapter implements ConversationIngress {
         at,
       ).map((fact) => [fact.id, fact]),
     );
-    const derivation = projectQqAntispamSequence(
-      rows.map((row) => ({
+    const derivation = projectQqAntispamSequence({
+      rows: rows.map((row) => ({
         seq: row.seq,
         eventId: row.event_id,
         speakerId: row.speaker_id ?? `seq:${row.seq}`,
@@ -324,7 +324,9 @@ export class OneBot11Adapter implements ConversationIngress {
         isDirect: row.reasons > 0,
         fact: factById.get(row.event_id) ?? null,
       })),
-    );
+      burstMinMessages: antiSpam.burstMinMessages,
+      burstWindowSeconds: antiSpam.burstWindowSeconds,
+    });
     const excludedSeqs = new Set([
       ...derivation.pureExpressionExcludedSeqs,
       ...derivation.burstExcludedSeqs,

@@ -90,7 +90,7 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
   updated_at: NOW,
   // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
   task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
-  input_anti_spam: { enabled: false },
+  input_anti_spam: { enabled: false, burst_min_messages: 3, burst_window_seconds: 3 },
   ...overrides,
 });
 
@@ -312,7 +312,11 @@ describe("Shared scheme studio", () => {
           attention: { mode: "off", members: [] },
           // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
           task_limits: { mention_task_limit: null, ordinary_task_limit: null },
-          input_anti_spam: { enabled: null },
+          input_anti_spam: {
+            enabled: null,
+            burst_min_messages: null,
+            burst_window_seconds: null,
+          },
         }),
       ]),
     });
@@ -637,7 +641,11 @@ describe("Shared scheme studio", () => {
       expect.objectContaining({
         expected_revision: 3,
         task_limits: { mention_task_limit: 6, ordinary_task_limit: 1 },
-        input_anti_spam: { enabled: true },
+        input_anti_spam: {
+          enabled: true,
+          burst_min_messages: 3,
+          burst_window_seconds: 3,
+        },
         rhythm: expect.objectContaining({ merge_window_seconds: 30 }),
       }),
     );
@@ -673,7 +681,10 @@ describe("Shared scheme studio", () => {
 
   it("keeps dirty task caps across a conflict, refresh advances the baseline, retry passes CAS", async () => {
     // 服务端已前进：anti 基线翻成 ON（未改字段跟新基线），revision 9。
-    const fresh = scheme({ revision: 9, input_anti_spam: { enabled: true } });
+    const fresh = scheme({
+      revision: 9,
+      input_anti_spam: { enabled: true, burst_min_messages: 3, burst_window_seconds: 3 },
+    });
     const update = vi
       .fn()
       .mockRejectedValueOnce(new Error("方案已变化，请重新加载后保存"))
@@ -709,7 +720,11 @@ describe("Shared scheme studio", () => {
       expect.objectContaining({
         expected_revision: 9,
         task_limits: { mention_task_limit: 6, ordinary_task_limit: 1 },
-        input_anti_spam: { enabled: true },
+        input_anti_spam: {
+          enabled: true,
+          burst_min_messages: 3,
+          burst_window_seconds: 3,
+        },
       }),
     );
   });

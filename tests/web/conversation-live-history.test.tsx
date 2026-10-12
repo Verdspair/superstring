@@ -419,4 +419,222 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
     expect(read.mock.calls[1]?.[1]).toMatchObject({ afterSeq: 0 });
     expect(result.current.error).toBe("");
   });
+
+  it("revalidates the captured range while a growing history tail loads independently", async () => {
+    const known = Array.from({ length: 100 }, (_, index) => sampleEvent(index + 1));
+    let resolveRange!: (
+      value: Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>,
+    ) => void;
+    const rangeResult = new Promise<Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>>(
+      (resolve) => {
+        resolveRange = resolve;
+      },
+    );
+    let tailReadDone = false;
+    let resolveFollowing!: (
+      value: Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>,
+    ) => void;
+    const followingResult = new Promise<
+      Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>
+    >((resolve) => {
+      resolveFollowing = resolve;
+    });
+    let rangeFollowups = 0;
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockImplementation(async (_id, params) => {
+        if (typeof params === "number" || params === undefined)
+          return { items: [], nextSeq: 0, hasMore: false };
+        if (params.direction === "latest") {
+          return { items: known, nextSeq: 100, hasMore: true };
+        }
+        if (params?.direction === "after" && params.afterSeq === 0 && params.limit !== undefined) {
+          return rangeResult;
+        }
+        if (params?.direction === "after" && params.afterSeq === 100 && !tailReadDone) {
+          tailReadDone = true;
+          return { items: [sampleEvent(101)], nextSeq: 101, hasMore: false };
+        }
+        if (params?.direction === "after" && params.afterSeq === 100) {
+          rangeFollowups += 1;
+          return followingResult;
+        }
+        if (params?.direction === "after" && params.afterSeq === 200) {
+          rangeFollowups += 1;
+          return {
+            items: Array.from({ length: 50 }, (_, index) => sampleEvent(201 + index)),
+            nextSeq: 250,
+            hasMore: false,
+          };
+        }
+        return { items: [], nextSeq: 0, hasMore: false };
+      });
+    setupApi({ getConversationEvents: read });
+
+    const { result } = renderHook(() =>
+      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
+    );
+    await act(async () => {});
+    expect(result.current.items).toHaveLength(100);
+
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = result.current.refresh();
+    });
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 101,
+        bindingEpoch: 1,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.items.at(-1)?.seq).toBe(101);
+
+    try {
+      await act(async () => {
+        resolveRange({
+          items: known.map((row) => ({ ...row, text: `updated-${row.seq}` })),
+          nextSeq: 100,
+          hasMore: true,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // The captured range ends at 100. A later tail page must not hold its result or spinner.
+      expect(result.current.items[0]?.text).toBe("updated-1");
+      expect(result.current.loading).toBe(false);
+      expect(result.current.items.at(-1)?.seq).toBe(101);
+      expect(rangeFollowups).toBe(0);
+    } finally {
+      await act(async () => {
+        resolveFollowing({ items: [sampleEvent(102)], nextSeq: 102, hasMore: false });
+        await refresh;
+      });
+    }
+  });
+
+  it("revalidates sparse multi-page history only through its captured upper bound", async () => {
+    const known = [sampleEvent(1), sampleEvent(50), sampleEvent(100)];
+    let resolveRange!: (
+      value: Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>,
+    ) => void;
+    const rangeResult = new Promise<Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>>(
+      (resolve) => {
+        resolveRange = resolve;
+      },
+    );
+    let tailReadDone = false;
+    let rangeFollowups = 0;
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockImplementation(async (_id, params) => {
+        if (typeof params === "number" || params === undefined)
+          return { items: [], nextSeq: 0, hasMore: false };
+        if (params.direction === "latest") {
+          return { items: known, nextSeq: 100, hasMore: true };
+        }
+        if (params?.direction === "after" && params.afterSeq === 0 && params.limit !== undefined) {
+          return rangeResult;
+        }
+        if (params?.direction === "after" && params.afterSeq === 50 && params.limit === undefined) {
+          rangeFollowups += 1;
+          return {
+            items: [sampleEvent(100, "updated-100"), sampleEvent(101, "range-tail")],
+            nextSeq: 101,
+            hasMore: false,
+          };
+        }
+        if (params?.direction === "after" && params.afterSeq === 100 && !tailReadDone) {
+          tailReadDone = true;
+          return { items: [sampleEvent(101, "live-tail")], nextSeq: 101, hasMore: false };
+        }
+        return { items: [], nextSeq: params?.afterSeq ?? 0, hasMore: false };
+      });
+    setupApi({ getConversationEvents: read });
+
+    const { result } = renderHook(() =>
+      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
+    );
+    await act(async () => {});
+    expect(result.current.items.map((item) => item.seq)).toEqual([1, 50, 100]);
+
+    act(() => {
+      void result.current.refresh();
+    });
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 101,
+        bindingEpoch: 1,
+      });
+    });
+    expect(result.current.items.at(-1)?.text).toBe("live-tail");
+
+    await act(async () => {
+      resolveRange({
+        items: [sampleEvent(1, "updated-1"), sampleEvent(50, "updated-50")],
+        nextSeq: 50,
+        hasMore: true,
+      });
+    });
+
+    expect(result.current.items.map((item) => item.seq)).toEqual([1, 50, 100, 101]);
+    expect(result.current.items.map((item) => item.text)).toEqual([
+      "updated-1",
+      "updated-50",
+      "updated-100",
+      "live-tail",
+    ]);
+    expect(result.current.loading).toBe(false);
+    expect(rangeFollowups).toBe(1);
+    expect(
+      read.mock.calls
+        .filter(
+          ([, params]) =>
+            params !== undefined &&
+            typeof params !== "number" &&
+            params.direction === "after" &&
+            params.limit === undefined,
+        )
+        .map(([, params]) => (params && typeof params !== "number" ? params.afterSeq : undefined)),
+    ).toEqual([50]);
+  });
+
+  it("publishes a new tail row already returned by range refresh without another read", async () => {
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockResolvedValueOnce({
+        items: [sampleEvent(1), sampleEvent(2)],
+        nextSeq: 2,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({
+        items: [sampleEvent(1, "updated-1"), sampleEvent(3, "refresh-tail")],
+        nextSeq: 3,
+        hasMore: false,
+      });
+    setupApi({ getConversationEvents: read });
+    const { result } = renderHook(() =>
+      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
+    );
+    await act(async () => {});
+    expect(result.current.items.map((item) => item.seq)).toEqual([1, 2]);
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.items.map((item) => [item.seq, item.text])).toEqual([
+      [1, "updated-1"],
+      [3, "refresh-tail"],
+    ]);
+    expect(result.current.loading).toBe(false);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
 });

@@ -27,6 +27,15 @@ const wakeLabels = {
   no_output: "workspace.no_response_this_time",
   failed: "workspace.processing_failed",
 };
+const taskLabels: Record<string, string> = {
+  pending: "workspace.waiting",
+  running: "workspace.processing",
+  completed: "workspace.task_completed",
+  no_output: "workspace.no_response_this_time",
+  failed: "workspace.task_processing_failed",
+  cancelled: "connections.tasks.status.cancelled",
+  expired: "connections.execution.runtimeStorage.statusExpired",
+};
 const causes: Record<string, string> = {
   direct_reply: "workspace.direct_replies",
   follow_up: "workspace.ongoing_conversation",
@@ -233,7 +242,13 @@ function EventRecordComponent({
         )}
         {event.wake && (
           <div className="my-3 space-y-1 text-xs">
-            <strong>{t(wakeLabels[event.wake.status])}</strong>
+            <strong>
+              {t(
+                event.task
+                  ? (taskLabels[event.task.status] ?? event.task.status)
+                  : wakeLabels[event.wake.status],
+              )}
+            </strong>
             <p>
               {t("workspace.wake_reason_value", {
                 "0": t(causes[event.wake.cause] ?? event.wake.cause),
@@ -247,14 +262,16 @@ function EventRecordComponent({
                 </time>
               </p>
             )}
-            {event.wake.errorCode &&
-              (neutralWakeReasonLabels[event.wake.errorCode] ? (
-                <p className="text-muted-foreground">
-                  {t(neutralWakeReasonLabels[event.wake.errorCode])}
-                </p>
-              ) : (
-                <p className="text-destructive">{event.wake.errorCode}</p>
-              ))}
+            {event.task
+              ? event.task.errorCode && <p className="text-destructive">{event.task.errorCode}</p>
+              : event.wake.errorCode &&
+                (neutralWakeReasonLabels[event.wake.errorCode] ? (
+                  <p className="text-muted-foreground">
+                    {t(neutralWakeReasonLabels[event.wake.errorCode])}
+                  </p>
+                ) : (
+                  <p className="text-destructive">{event.wake.errorCode}</p>
+                ))}
           </div>
         )}
         {event.kind !== "wake" &&

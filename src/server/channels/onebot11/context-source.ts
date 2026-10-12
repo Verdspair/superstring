@@ -17,7 +17,7 @@ import type {
   QqMessageFocus,
   QqMessageSettings,
 } from "../../../shared/contracts/qq-message";
-import { qqEffectiveInputAntiSpamEnabled } from "../../../shared/contracts/qq-task";
+import { resolveEffectiveInputAntiSpam } from "../../../shared/contracts/qq-task";
 import type {
   AgentRuntime,
   PreparedGeneration,
@@ -320,17 +320,23 @@ function filterQqAntispamMediaFacts(input: {
   conversationId: string;
   binding: QqBinding;
   scheme: QqSchemeRow;
+  thresholds: { readonly burstMinMessages: number; readonly burstWindowSeconds: number };
   /** caller 冻结窗口下界（chiming sourceFromSeq；缺省 0）。 */
   sourceFromSeq?: number;
   facts: readonly QqMessageFact[];
   /** 本 run 已明确读取的 mediaId（显式读取不被防刷屏排除）。 */
   detailMediaIds?: ReadonlySet<string>;
 }): QqMessageFact[] {
-  const antispamEnabled = qqEffectiveInputAntiSpamEnabled(
+  const effective = resolveEffectiveInputAntiSpam(
     schemeInputAntiSpam(input.scheme),
     input.binding.inputAntiSpam,
   );
-  if (!antispamEnabled) return [...input.facts];
+  const antiSpam = {
+    enabled: effective.enabled,
+    burstMinMessages: input.thresholds.burstMinMessages,
+    burstWindowSeconds: input.thresholds.burstWindowSeconds,
+  };
+  if (!antiSpam.enabled) return [...input.facts];
   const lower = input.sourceFromSeq ?? 0;
   const upper = input.facts.reduce((max, fact) => Math.max(max, fact.seq), 0);
   const factById = new Map(input.facts.map((fact) => [fact.id, fact]));
@@ -367,7 +373,11 @@ function filterQqAntispamMediaFacts(input: {
       });
     }
   }
-  const derivation = projectQqAntispamSequence(rows);
+  const derivation = projectQqAntispamSequence({
+    rows,
+    burstMinMessages: antiSpam.burstMinMessages,
+    burstWindowSeconds: antiSpam.burstWindowSeconds,
+  });
   const excludedImages = new Set(
     derivation.burstExcludedImages
       .filter((entry) => !input.detailMediaIds?.has(entry.mediaId))
@@ -446,6 +456,8 @@ export interface BotContextSourceOptions {
   binding: QqBinding;
   snapshot: QqTaskSnapshot;
   scheme: QqSchemeRow;
+  /** Claimed-task anti-spam parameters; legacy snapshots resolve strictly to historical 3/3. */
+  antiSpamThresholds?: { readonly burstMinMessages: number; readonly burstWindowSeconds: number };
   runtime: RuntimeConfig;
   spec: AgentSpec;
   path: QqSpeechKind;
@@ -1698,6 +1710,18 @@ ${intent.trim()}`,
       conversationId: this.options.conversationId,
       binding: this.options.binding,
       scheme: this.options.scheme,
+      thresholds:
+        this.options.antiSpamThresholds ??
+        (() => {
+          const effective = resolveEffectiveInputAntiSpam(
+            schemeInputAntiSpam(this.options.scheme),
+            this.options.binding.inputAntiSpam,
+          );
+          return {
+            burstMinMessages: effective.burstMinMessages,
+            burstWindowSeconds: effective.burstWindowSeconds,
+          };
+        })(),
       sourceFromSeq: this.options.sourceFromSeq,
       facts,
       detailMediaIds: detailIds,

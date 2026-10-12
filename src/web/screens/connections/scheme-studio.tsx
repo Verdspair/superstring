@@ -1219,6 +1219,22 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                         </span>
                       </span>
                     </Label>
+                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                      <SchemeNumber
+                        group="inputAntiSpam"
+                        name="burst_min_messages"
+                        label={t("connections.inputAntiSpamBurstMinMessages")}
+                        info="connections.inputAntiSpamBurstMinMessagesHint"
+                        disabled={!editor.inputAntiSpam.enabled}
+                      />
+                      <SchemeNumber
+                        group="inputAntiSpam"
+                        name="burst_window_seconds"
+                        label={t("connections.inputAntiSpamBurstWindowSeconds")}
+                        info="connections.inputAntiSpamBurstWindowSecondsHint"
+                        disabled={!editor.inputAntiSpam.enabled}
+                      />
+                    </div>
                   </SchemeFieldCard>
                   <SchemeFieldCard
                     title={t("schemes.studio.judgePrompt")}

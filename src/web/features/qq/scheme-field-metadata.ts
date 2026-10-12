@@ -145,6 +145,8 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   "task_limits.mention_task_limit": "connections.mentionTaskLimit",
   "task_limits.ordinary_task_limit": "connections.ordinaryTaskLimit",
   "input_anti_spam.enabled": "connections.inputAntiSpamEnabled",
+  "input_anti_spam.burst_min_messages": "connections.inputAntiSpamBurstMinMessages",
+  "input_anti_spam.burst_window_seconds": "connections.inputAntiSpamBurstWindowSeconds",
 };
 
 /**

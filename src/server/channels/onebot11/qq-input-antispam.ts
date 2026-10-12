@@ -62,10 +62,6 @@ export interface QqAntispamDerivation {
   burstExcludedSeqs: readonly number[];
 }
 
-// 固定数值：X=2 指纯图片消息条数、严格大于；Y=3 是组锚到最远载体的固定窗界（秒）。
-const BURST_CARRIERS_STRICTLY_ABOVE = 2;
-const BURST_MAX_SPAN_SECONDS = 3;
-
 interface PartFacts {
   meaningfulText: boolean;
   expressionEvidenceCount: number;
@@ -132,6 +128,8 @@ interface OpenGroup {
 export function deriveQqInputAntispam(input: {
   enabled: boolean;
   events: readonly QqAntispamEvent[];
+  burstMinMessages: number;
+  burstWindowSeconds: number;
 }): QqAntispamDerivation {
   if (!input.enabled) {
     return {
@@ -150,8 +148,8 @@ export function deriveQqInputAntispam(input: {
     const group = openGroups.get(speakerId);
     if (!group) return;
     openGroups.delete(speakerId);
-    // 入组时的锚检查已保证组内首尾跨度落在 [0, Y] 内，这里只需按载体条数判定。
-    if (group.carriers.length <= BURST_CARRIERS_STRICTLY_ABOVE) return;
+    // 入组时的锚检查已保证组内首尾跨度落在配置的闭区间内。
+    if (group.carriers.length < input.burstMinMessages) return;
     const first = group.carriers[0].occurredAtSeconds;
     const last = group.carriers[group.carriers.length - 1].occurredAtSeconds;
     burstGroups.push({
@@ -203,7 +201,7 @@ export function deriveQqInputAntispam(input: {
       if (
         group &&
         (event.occurredAtSeconds < group.carriers[0].occurredAtSeconds ||
-          event.occurredAtSeconds - group.carriers[0].occurredAtSeconds > BURST_MAX_SPAN_SECONDS)
+          event.occurredAtSeconds - group.carriers[0].occurredAtSeconds > input.burstWindowSeconds)
       ) {
         closeGroup(event.speakerId);
         group = undefined;

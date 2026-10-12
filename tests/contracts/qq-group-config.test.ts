@@ -48,7 +48,7 @@ function baseScheme(): QqSchemeResponse {
     media_input: { ...QQ_MEDIA_INPUT_DEFAULT },
     // 0059 两组响应必填：上限用批准默认 4/1；防抖按既有列默认显式关（新建才默认开）。
     task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
-    input_anti_spam: { enabled: false },
+    input_anti_spam: { enabled: false, burst_min_messages: 3, burst_window_seconds: 3 },
     revision: 1,
     created_at: "2026-01-01T00:00:00.000000Z",
     updated_at: "2026-01-01T00:00:00.000000Z",

@@ -168,19 +168,50 @@ function setup(options: { model: ModelPort }) {
       taskLimits?: { mention_task_limit: number; ordinary_task_limit: number };
       stickerFrequency?: "low" | "medium" | "high";
       followUp?: boolean;
+      chimingIn?: boolean;
+      initiativeBatchTargetCount?: number;
       mergeWindowSeconds?: number;
+      antiSpamThresholds?: { burst_min_messages: number; burst_window_seconds: number };
     } = { schemeName: "task-execution-e2e" },
   ) => {
     const scheme = createQqScheme(h.orm, {
       name: binding.schemeName,
       triggers: binding.followUp
         ? { direct_reply: true, follow_up: true, chiming_in: false, idle_topic: false }
-        : { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: false },
+        : {
+            direct_reply: true,
+            follow_up: false,
+            chiming_in: binding.chimingIn ?? false,
+            idle_topic: false,
+          },
       reply: { split_by_speaker: true },
-      ...(binding.mergeWindowSeconds === undefined
+      ...(binding.mergeWindowSeconds === undefined &&
+      binding.initiativeBatchTargetCount === undefined
         ? {}
-        : { rhythm: { ...QQ_RHYTHM_DEFAULT, merge_window_seconds: binding.mergeWindowSeconds } }),
+        : {
+            rhythm: {
+              ...QQ_RHYTHM_DEFAULT,
+              ...(binding.mergeWindowSeconds === undefined
+                ? {}
+                : { merge_window_seconds: binding.mergeWindowSeconds }),
+              ...(binding.initiativeBatchTargetCount === undefined
+                ? {}
+                : {
+                    initiative_batch_target_count: binding.initiativeBatchTargetCount,
+                    initiative_batch_jitter_count: 0,
+                    initiative_time_window_enabled: false,
+                  }),
+            },
+          }),
       ...(binding.taskLimits ? { taskLimits: binding.taskLimits } : {}),
+      ...(binding.antiSpamThresholds
+        ? {
+            inputAntiSpam: {
+              enabled: true,
+              ...binding.antiSpamThresholds,
+            },
+          }
+        : {}),
       ...(binding.stickerFrequency
         ? {
             stickers: {
@@ -380,7 +411,153 @@ function decisionStub(
 }
 
 describe("qq task execution end to end (production composition)", () => {
-  it("freezes effective sticker frequency on first claim, preserves it through same-task lease recovery, and captures a later override for a new task", async () => {
+  it("first-claim chiming-in scores a valid batch and completes one ordinary reply", async () => {
+    const scores: { request: ModelRequest; targetIds: string[]; sourceSeqs: number[] }[] = [];
+    const model: ModelPort = {
+      complete: async (request) => {
+        const schema = request.responseSchema as
+          | {
+              properties?: Record<string, { type?: string }>;
+            }
+          | undefined;
+        if (schema?.properties?.evaluations?.type === "array") {
+          const batch = request.messages.flatMap((message) =>
+            message.content.flatMap((part) => {
+              if (part.kind !== "text") return [];
+              try {
+                const value = JSON.parse(part.text) as {
+                  kind?: string;
+                  sourceSeqs?: number[];
+                  targets?: { targetId: string }[];
+                };
+                return value.kind === "qq_batch_targets" ? [value] : [];
+              } catch {
+                return [];
+              }
+            }),
+          );
+          if (batch.length !== 1) throw new Error("BATCH_TARGETS_PAYLOAD_NOT_UNIQUE");
+          const payload = batch[0]!;
+          if (payload.targets?.length !== 1) throw new Error("BATCH_TARGET_COUNT_INVALID");
+          scores.push({
+            request,
+            targetIds: payload.targets.map((target) => target.targetId),
+            sourceSeqs: [...(payload.sourceSeqs ?? [])],
+          });
+          return JSON.stringify({
+            evaluations: payload.targets.map((target) => ({
+              targetId: target.targetId,
+              score: 9,
+              intent: "respond to the current member message",
+              sourceSeqs: payload.sourceSeqs ?? [],
+            })),
+          });
+        }
+        return inlineFinal(authorizedTargetOf(request), "first-claim autonomous reply");
+      },
+      async *streamText() {
+        yield "";
+      },
+      completeMultimodal: async () => "",
+    };
+    const f = setup({ model });
+    const bindingId = f.makeBinding(30003, {
+      schemeName: "task-execution-first-claim-chiming",
+      chimingIn: true,
+      initiativeBatchTargetCount: 1,
+      mergeWindowSeconds: 0,
+    });
+    const { bot, sends } = f.compose();
+
+    // A non-addressed member message must register the real chiming wake; the scheduler first
+    // hands that wake to the durable task, then atomically claims the generated ordinary task.
+    f.receive(30003, "92501", "20002", "Please reply to this group message", false);
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    const inbound = f.db
+      .query(
+        "SELECT seq FROM conversation_events WHERE conversation_id=? AND kind='inbound' AND source_kind='qq_event' ORDER BY seq",
+      )
+      .all(conversation.id) as { seq: number }[];
+    expect(inbound).toHaveLength(1);
+    expect(taskRows(f.db)).toEqual([]);
+    expect(f.db.query("SELECT cause,status FROM wake_signals ORDER BY rowid").all()).toEqual([
+      { cause: "chiming_in", status: "pending" },
+    ]);
+
+    // This production scheduler call performs the wake -> ordinary task handoff, first claim,
+    // autonomous batch judgement, markQqConversationTaskJudgementDone, reply, and delivery.
+    expect(await bot.scheduler.runOnce()).toBe(true);
+    await bot.scheduler.waitForIdle();
+
+    const [task] = taskRows(f.db);
+    expect(task).toMatchObject({
+      status: "completed",
+      error_code: null,
+      source_from_seq: inbound[0]!.seq,
+      source_through_seq: inbound[0]!.seq,
+    });
+    expect(
+      f.db.query("SELECT judgement_done FROM qq_conversation_tasks WHERE id=?").get(task!.id),
+    ).toEqual({ judgement_done: 1 });
+    expect(task?.claimed_at).toBeTruthy();
+    expect(task?.origin_run_id).toBeTruthy();
+    expect(scores).toHaveLength(1);
+    expect(scores[0]?.targetIds).toEqual(["20002"]);
+    expect(scores[0]?.sourceSeqs).toEqual([inbound[0]!.seq]);
+    expect(f.journal.chimingInObservedSeq(conversation.id)).toBe(inbound[0]!.seq);
+    expect(f.journal.chimingInJudgedAt(conversation.id)).toBeTruthy();
+
+    const runs = f.db
+      .query(
+        "SELECT spec_id,status,observed_seq FROM agent_runs WHERE conversation_id=? ORDER BY started_at,rowid",
+      )
+      .all(conversation.id) as { spec_id: string; status: string; observed_seq: number | null }[];
+    expect(runs).toContainEqual({
+      spec_id: "onebot.initiative.batch",
+      status: "completed",
+      observed_seq: inbound[0]!.seq,
+    });
+    expect(runs).toContainEqual({
+      spec_id: "onebot.initiative.evaluate_batch",
+      status: "completed",
+      observed_seq: inbound[0]!.seq,
+    });
+    expect(runs).toContainEqual({
+      spec_id: "onebot.main",
+      status: "completed",
+      observed_seq: inbound[0]!.seq,
+    });
+
+    const intents = f.db
+      .query(
+        "SELECT speech_kind,status,source_through_seq FROM outbound_intents WHERE conversation_id=?",
+      )
+      .all(conversation.id) as {
+      speech_kind: string;
+      status: string;
+      source_through_seq: number;
+    }[];
+    expect(intents).toEqual([
+      { speech_kind: "chiming_in", status: "confirmed", source_through_seq: inbound[0]!.seq },
+    ]);
+    expect(sends).toHaveLength(1);
+    expect(JSON.stringify(sends[0]?.request)).toContain("first-claim autonomous reply");
+    expect(f.db.query("SELECT status FROM wake_signals ORDER BY rowid").all()).toEqual([
+      { status: "completed" },
+    ]);
+    expect(
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM agent_runs WHERE status='failed' OR error_code='AGENT_FAILED'",
+        )
+        .get() as { n: number },
+    ).toEqual({ n: 0 });
+    expect(
+      taskRows(f.db).some((row) => row.status === "failed" || row.error_code === "AGENT_FAILED"),
+    ).toBe(false);
+  });
+
+  it("freezes effective thresholds on first claim, preserves them through same-task lease recovery, and captures changed scheme thresholds for a new task", async () => {
     const routes = new Map<
       number,
       (request: ModelRequest, trigger: ActivationTrigger) => Promise<string> | string
@@ -390,6 +567,7 @@ describe("qq task execution end to end (production composition)", () => {
     const bindingId = f.makeBinding(30003, {
       schemeName: "task-sticker-frequency-e2e",
       stickerFrequency: "medium",
+      antiSpamThresholds: { burst_min_messages: 7, burst_window_seconds: 9 },
     });
     f.setGroupFrequency(bindingId, "low");
     const { bot } = f.compose();
@@ -403,7 +581,11 @@ describe("qq task execution end to end (production composition)", () => {
     expect(claimed.status).toBe("completed");
     const frozenText = claimed.execution_snapshot;
     if (!frozenText) throw new Error("first claim did not persist execution snapshot");
-    expect((JSON.parse(frozenText) as Record<string, unknown>).stickerFrequency).toBe("low");
+    expect(JSON.parse(frozenText) as Record<string, unknown>).toMatchObject({
+      stickerFrequency: "low",
+      antiSpamBurstMinMessages: 7,
+      antiSpamBurstWindowSeconds: 9,
+    });
 
     // Change the group override, then recover an expired lease for this same durable task.
     // The scheduler reclaims the persisted snapshot; it must not mint the current high value.
@@ -427,19 +609,29 @@ describe("qq task execution end to end (production composition)", () => {
     if (!reclaimed) throw new Error("reclaimed task missing");
     expect(reclaimed.status).toBe("no_output");
     expect(reclaimed.execution_snapshot).toBe(frozenText);
-    expect(
-      (JSON.parse(reclaimed.execution_snapshot!) as Record<string, unknown>).stickerFrequency,
-    ).toBe("low");
+    expect(JSON.parse(reclaimed.execution_snapshot!)).toMatchObject({
+      stickerFrequency: "low",
+      antiSpamBurstMinMessages: 7,
+      antiSpamBurstWindowSeconds: 9,
+    });
 
-    // A new task created after the group override changes freezes the new effective value.
+    // A new task created after the persisted scheme thresholds change freezes the current values.
+    const binding = readQqBinding(f.orm, bindingId);
+    if (!binding) throw new Error("binding missing before threshold change");
+    const changedThresholds = f.db
+      .query("UPDATE qq_schemes SET burst_min_messages=8,burst_window_seconds=10 WHERE id=?")
+      .run(binding.schemeId);
+    expect(changedThresholds.changes).toBe(1);
     f.receive(30003, "92002", "20002", "second task");
     expect(await bot.scheduler.runOnce()).toBe(true);
     const second = taskRows(f.db)[1];
     if (!second?.execution_snapshot)
       throw new Error("second claim did not persist execution snapshot");
-    expect(
-      (JSON.parse(second.execution_snapshot) as Record<string, unknown>).stickerFrequency,
-    ).toBe("high");
+    expect(JSON.parse(second.execution_snapshot)).toMatchObject({
+      stickerFrequency: "high",
+      antiSpamBurstMinMessages: 8,
+      antiSpamBurstWindowSeconds: 10,
+    });
     expect(
       (JSON.parse(reclaimed.execution_snapshot!) as Record<string, unknown>).stickerFrequency,
     ).toBe("low");

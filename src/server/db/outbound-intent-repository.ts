@@ -20,6 +20,7 @@ export type OutboundTarget = {
   ownerIdentityRevision?: number | null;
   schemeId?: string;
   schemeRevision?: number;
+  qqTaskId?: string;
   agentConfigVersion?: number;
   sources?: SourceRef[];
 };

@@ -42,7 +42,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 - QQ 群名称与用户自定义备注名解耦独立保存。设置自定义备注时优先显示备注，未设置时显示 QQ 原群名，均无则显示群号；支持群名预加载，更换绑定或助手不会丢失备注名。
 - 支持在会话卡片和群会话顶部随时启用或停用群发言。停用后群消息照常接收保存，Agent 不发言且不产生新模型任务。
 - **独立回复任务**：有效艾特和引用助手消息的请求分别执行，不再因同一会话中的慢回复等待整批结束。每会话的艾特任务与普通任务上限默认 4／1，可设 1–64；会话覆盖值留空时跟随方案。模型请求另设全局总上限和每服务上限，默认 4／2，可设 1–256，两项同时生效。艾特任务优先取得下一个可用名额，不中断正在执行的任务。
-- **输入防刷屏**：新方案默认开，已有方案保持关，可按会话覆盖。同一成员在首条起 3 秒内连发至少 3 条纯图片消息，按一个逻辑候选处理；他人插话不打断，自身文字、其它媒体或直接请求结束分组。命中组与纯表情不自动供图，仍可经工具按需读取；直接艾特和合法引用照常处理，原记录不删除。
+- **输入防刷屏**：新方案默认开，已有方案保持关，可按会话覆盖。默认将同一成员在首条起3秒内的至少3条纯图片消息按一个候选处理；条数可设2–20条，首窗可设1–30秒，方案默认与会话覆盖分别保存。他人插话不打断，自身文字、其它媒体或直接请求结束分组。命中组与纯表情不自动供图，仍可经工具按需读取；直接艾特和合法引用照常处理，原记录不删除。
 
 **本群配置**已整合至方案与群目录中，为特定群提供独立的个性化设置与覆盖项。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。
 
@@ -174,7 +174,7 @@ Incoming messages in bound conversations appear automatically. When loading chat
 - Decouple original QQ group names from custom aliases. Custom aliases take precedence with fallback to group names; rebinding does not overwrite aliases, and group names support preloading.
 - Enable or disable group participation directly from conversation cards or conversation headers. Disabled groups continue to receive and store messages while the Agent stays silent without starting model tasks.
 - **Independent reply tasks**: Valid mentions and replies to the assistant run as separate tasks instead of waiting for all replies in a conversation to finish. Per-conversation mention and ordinary task limits default to 4 and 1, with a range of 1–64. Empty conversation overrides follow the scheme. Model requests have separate global and per-service limits, defaulting to 4 and 2 with a range of 1–256; both limits apply. Mention tasks take the next available slot without interrupting running work.
-- **Input anti-spam**: Enabled for new schemes and kept off for existing schemes, with conversation overrides. At least three image-only messages from one sender within three seconds of the first message form one logical candidate. Other senders do not break the group; the sender's own text, other media, or direct request does. Grouped images and pure expressions are excluded from automatic image input but remain readable through tools. Direct mentions and valid replies are still handled, and original records are not deleted.
+- **Input anti-spam**: Enabled for new schemes and kept off for existing schemes, with conversation overrides. By default, at least three image-only messages from one sender within three seconds of the first form one logical candidate; threshold (2–20 messages) and initial window (1–30 seconds) are configurable, stored separately for scheme defaults and conversation overrides. Other senders do not break the group; the sender's own text, other media, or direct request does. Grouped images and pure expressions are excluded from automatic image input but remain readable through tools. Direct mentions and valid replies are still handled, and original records are not deleted.
 
 **Group settings** are integrated into scheme and group workflows, providing dedicated configurations and overrides for specific groups. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. System capabilities can be disabled per group with immediate effect.
 

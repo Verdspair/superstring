@@ -241,12 +241,20 @@ describe("0059 task-limit and anti-spam overrides resolve per conversation", () 
       // 新建方案：上限 4/1（与 qq-task.ts 同源）、防抖显式开。
       const schemeLimits = schemeTaskLimits(scheme);
       expect(schemeLimits).toEqual({ mention_task_limit: 4, ordinary_task_limit: 1 });
-      expect(schemeInputAntiSpam(scheme)).toEqual({ enabled: true });
+      expect(schemeInputAntiSpam(scheme)).toEqual({
+        enabled: true,
+        burst_min_messages: 3,
+        burst_window_seconds: 3,
+      });
 
       const fresh = readQqBinding(h.orm, bindingId);
       if (fresh === null) throw Error("expected the fixture's binding");
       expect(fresh.taskLimits).toEqual({ mention_task_limit: null, ordinary_task_limit: null });
-      expect(fresh.inputAntiSpam).toEqual({ enabled: null });
+      expect(fresh.inputAntiSpam).toEqual({
+        enabled: null,
+        burst_min_messages: null,
+        burst_window_seconds: null,
+      });
       expect(resolveQqEffectiveTaskLimits(schemeLimits, fresh.taskLimits)).toEqual({
         mentionTaskLimit: 4,
         ordinaryTaskLimit: 1,

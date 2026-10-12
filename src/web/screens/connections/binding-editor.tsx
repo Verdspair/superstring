@@ -158,7 +158,10 @@ export function BindingEditor({
     choice.task_limits ??
     (binding ? binding.task_limits : { mention_task_limit: null, ordinary_task_limit: null });
   const effectiveAntiSpam =
-    choice.input_anti_spam ?? (binding ? binding.input_anti_spam : { enabled: null });
+    choice.input_anti_spam ??
+    (binding
+      ? binding.input_anti_spam
+      : { enabled: null, burst_min_messages: null, burst_window_seconds: null });
   const rawMention = choice.task_limits_raw?.mention_task_limit;
   const rawOrdinary = choice.task_limits_raw?.ordinary_task_limit;
   const hasInvalidLimits = rawMention !== undefined || rawOrdinary !== undefined;
@@ -170,7 +173,12 @@ export function BindingEditor({
   const choiceInputAntiSpamDirty =
     !!binding &&
     choice.input_anti_spam !== undefined &&
-    choice.input_anti_spam.enabled !== binding.input_anti_spam.enabled;
+    (choice.input_anti_spam.enabled !== binding.input_anti_spam.enabled ||
+      choice.input_anti_spam.burst_min_messages !== binding.input_anti_spam.burst_min_messages ||
+      choice.input_anti_spam.burst_window_seconds !== binding.input_anti_spam.burst_window_seconds);
+  const rawMinMessages = choice.input_anti_spam_raw?.burst_min_messages;
+  const rawWindowSeconds = choice.input_anti_spam_raw?.burst_window_seconds;
+  const hasInvalidAntiSpam = rawMinMessages !== undefined || rawWindowSeconds !== undefined;
   const saving = state.qqAccessSaving;
   const [preview, setPreview] = useState<SchemeChangePreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -359,7 +367,8 @@ export function BindingEditor({
                   previewBusy ||
                   !choice.agentId ||
                   !choice.schemeId ||
-                  hasInvalidLimits
+                  hasInvalidLimits ||
+                  hasInvalidAntiSpam
                 }
                 onClick={() => void save()}
               >
@@ -584,7 +593,7 @@ export function BindingEditor({
                         ...old,
                         [key]: {
                           ...choice,
-                          input_anti_spam: { enabled: val },
+                          input_anti_spam: { ...effectiveAntiSpam, enabled: val },
                         },
                       }));
                     }}
@@ -594,6 +603,66 @@ export function BindingEditor({
                     <option value="off">{t("connections.off")}</option>
                   </NativeSelect>
                 </Field>
+                <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                  {(
+                    [
+                      ["burst_min_messages", "inputAntiSpamBurstMinMessages", 2, 20],
+                      ["burst_window_seconds", "inputAntiSpamBurstWindowSeconds", 1, 30],
+                    ] as const
+                  ).map(([field, labelKey, min, max]) => {
+                    const raw = field === "burst_min_messages" ? rawMinMessages : rawWindowSeconds;
+                    const value = effectiveAntiSpam[field];
+                    return (
+                      <Field
+                        key={field}
+                        label={`connections.${labelKey}`}
+                        info={`connections.${labelKey}Hint`}
+                      >
+                        <Input
+                          type="number"
+                          min={min}
+                          max={max}
+                          step={1}
+                          placeholder={t("connections.followTheScheme")}
+                          aria-label={t(`connections.binding.${labelKey}`)}
+                          disabled={saving}
+                          value={raw ?? (value === null ? "" : String(value))}
+                          onChange={(event) => {
+                            const text = event.target.value;
+                            const trimmed = text.trim();
+                            const valid =
+                              /^\d+$/.test(trimmed) &&
+                              Number(trimmed) >= min &&
+                              Number(trimmed) <= max;
+                            const nextRaw = { ...choice.input_anti_spam_raw };
+                            if (valid || trimmed === "") delete nextRaw[field];
+                            else nextRaw[field] = text;
+                            const nextValue = valid
+                              ? Number(trimmed)
+                              : trimmed === ""
+                                ? null
+                                : value;
+                            setChoices((old) => ({
+                              ...old,
+                              [key]: {
+                                ...choice,
+                                input_anti_spam: { ...effectiveAntiSpam, [field]: nextValue },
+                                input_anti_spam_raw: Object.keys(nextRaw).length
+                                  ? nextRaw
+                                  : undefined,
+                              },
+                            }));
+                          }}
+                        />
+                        {raw !== undefined && (
+                          <p role="alert" className="mt-1 text-xs text-destructive">
+                            {t("connections.enterAValidIntegerWithinTheAllowedRange")}
+                          </p>
+                        )}
+                      </Field>
+                    );
+                  })}
+                </div>
               </SchemeFieldCard>
               <div ref={adminSectionRef} data-section="administrators">
                 <SchemeFieldCard

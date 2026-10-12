@@ -13,7 +13,7 @@ import {
   type QqMessageSettings,
   QqMessageSettingsSchema,
 } from "./qq-message";
-import { QQ_CONVERSATION_TASK_LIMIT_DEFAULTS } from "./qq-task";
+import { QQ_CONVERSATION_TASK_LIMIT_DEFAULTS } from "./qq-task-limits";
 
 /**
  * The four independently controllable speech paths, named exactly as the speech contract
@@ -730,11 +730,26 @@ export const QQ_TASK_LIMITS_SCHEME_DEFAULT: QqSchemeTaskLimits = Object.freeze({
  * 输入防抖组（0059）：方案层只有一个开关。旧方案行的列默认是关（迁移 0059 的 DDL 兜底），
  * 新建时写入侧显式落开——两条路都不靠读取侧的猜测。
  */
-export const QqSchemeInputAntiSpamSchema = z.strictObject({ enabled: z.boolean() });
+export const QQ_ANTISPAM_LIMITS = Object.freeze({
+  minMessagesMin: 2,
+  minMessagesMax: 20,
+  minMessagesDefault: 3,
+  windowSecondsMin: 1,
+  windowSecondsMax: 30,
+  windowSecondsDefault: 3,
+});
+
+export const QqSchemeInputAntiSpamSchema = z.strictObject({
+  enabled: z.boolean(),
+  burst_min_messages: z.number().int().min(2).max(20),
+  burst_window_seconds: z.number().int().min(1).max(30),
+});
 export type QqSchemeInputAntiSpam = z.infer<typeof QqSchemeInputAntiSpamSchema>;
-/** 新方案的输入防抖初值。 */
+/** 新方案的输入防抖初值；旧方案行保留迁移后的 3/3 及原开关值。 */
 export const QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT: QqSchemeInputAntiSpam = Object.freeze({
   enabled: true,
+  burst_min_messages: QQ_ANTISPAM_LIMITS.minMessagesDefault,
+  burst_window_seconds: QQ_ANTISPAM_LIMITS.windowSecondsDefault,
 });
 
 /**
@@ -748,6 +763,8 @@ export const QqBindingTaskLimitsSchema = z.strictObject({
 export type QqBindingTaskLimits = z.infer<typeof QqBindingTaskLimitsSchema>;
 export const QqBindingInputAntiSpamSchema = z.strictObject({
   enabled: z.boolean().nullable(),
+  burst_min_messages: z.number().int().min(2).max(20).nullable(),
+  burst_window_seconds: z.number().int().min(1).max(30).nullable(),
 });
 export type QqBindingInputAntiSpam = z.infer<typeof QqBindingInputAntiSpamSchema>;
 

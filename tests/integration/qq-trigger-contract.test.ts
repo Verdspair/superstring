@@ -107,12 +107,20 @@ describe("0059 override groups ride the same binding save path for group and pri
           schemeId: scheme.id,
           paused: false,
           taskLimits: { mention_task_limit: 5, ordinary_task_limit: 2 },
-          inputAntiSpam: { enabled: false },
+          inputAntiSpam: {
+            enabled: false,
+            burst_min_messages: null,
+            burst_window_seconds: null,
+          },
         });
         if (created.kind !== "saved") throw Error(`Unexpected result: ${created.kind}`);
         const stored = insertQqBinding(h.orm, created.binding);
         expect(stored.taskLimits).toEqual({ mention_task_limit: 5, ordinary_task_limit: 2 });
-        expect(stored.inputAntiSpam).toEqual({ enabled: false });
+        expect(stored.inputAntiSpam).toEqual({
+          enabled: false,
+          burst_min_messages: null,
+          burst_window_seconds: null,
+        });
 
         // 合同补丁：显式 null 恢复跟随方案；读回行与合同一致。
         const patched = updateQqBinding(
@@ -128,11 +136,19 @@ describe("0059 override groups ride the same binding save path for group and pri
         const reread = readQqBinding(h.orm, persisted.id);
         if (reread === null) throw Error("expected the stored binding");
         expect(reread.taskLimits).toEqual({ mention_task_limit: null, ordinary_task_limit: null });
-        expect(reread.inputAntiSpam).toEqual({ enabled: false });
+        expect(reread.inputAntiSpam).toEqual({
+          enabled: false,
+          burst_min_messages: null,
+          burst_window_seconds: null,
+        });
 
         const wire = bindingResponse(h.orm, reread);
         expect(wire.task_limits).toEqual({ mention_task_limit: null, ordinary_task_limit: null });
-        expect(wire.input_anti_spam).toEqual({ enabled: false });
+        expect(wire.input_anti_spam).toEqual({
+          enabled: false,
+          burst_min_messages: null,
+          burst_window_seconds: null,
+        });
       } finally {
         h.close();
       }

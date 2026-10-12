@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { QqSchemeResponseSchema } from "./qq";
+import { QQ_CONVERSATION_TASK_LIMIT_DEFAULTS } from "./qq-task-limits";
+
+export { QQ_CONVERSATION_TASK_LIMIT_DEFAULTS } from "./qq-task-limits";
 
 export const QQ_CONVERSATION_TASK_CLASS = ["mention", "ordinary"] as const;
 export const QQ_CONVERSATION_TASK_CAUSE = [
@@ -21,11 +25,9 @@ export type QqConversationTaskClass = (typeof QQ_CONVERSATION_TASK_CLASS)[number
 export type QqConversationTaskCause = (typeof QQ_CONVERSATION_TASK_CAUSE)[number];
 export type QqConversationTaskStatus = (typeof QQ_CONVERSATION_TASK_STATUS)[number];
 
-export const QQ_CONVERSATION_TASK_LIMIT_DEFAULTS = Object.freeze({
-  mentionTaskLimit: 4,
-  ordinaryTaskLimit: 1,
-  min: 1,
-  max: 64,
+export const QQ_ANTISPAM_HISTORICAL_DEFAULTS = Object.freeze({
+  burstMinMessages: 3,
+  burstWindowSeconds: 3,
 });
 
 export const QqTaskExecutionSnapshotSchema = z
@@ -39,10 +41,13 @@ export const QqTaskExecutionSnapshotSchema = z
     bindingRevision: z.number().int().positive(),
     authorityRevision: z.number().int().positive(),
     schemeRevision: z.number().int().positive(),
+    schemeConfig: z.lazy(() => QqSchemeResponseSchema).optional(),
     agentConfigVersion: z.number().int().positive(),
     taskClass: z.enum(QQ_CONVERSATION_TASK_CLASS),
     cause: z.enum(QQ_CONVERSATION_TASK_CAUSE),
     stickerFrequency: z.enum(["low", "medium", "high"]).optional(),
+    antiSpamBurstMinMessages: z.number().int().min(2).max(20).optional(),
+    antiSpamBurstWindowSeconds: z.number().int().min(1).max(30).optional(),
     sourceFromSeq: z.number().int().nonnegative(),
     sourceThroughSeq: z.number().int().nonnegative(),
     sourceExpiresAt: z.string().datetime().nullable(),
@@ -62,6 +67,19 @@ export const QqTaskExecutionSnapshotSchema = z
   .refine(
     (value) => value.sourceFromSeq <= value.sourceThroughSeq,
     "Invalid QQ task snapshot source range",
+  )
+  .refine(
+    (value) =>
+      (value.antiSpamBurstMinMessages === undefined) ===
+      (value.antiSpamBurstWindowSeconds === undefined),
+    "QQ task snapshot anti-spam thresholds must be present as a pair",
+  )
+  .refine(
+    (value) =>
+      value.schemeConfig === undefined ||
+      (value.schemeConfig.id === value.schemeId &&
+        value.schemeConfig.revision === value.schemeRevision),
+    "QQ task snapshot scheme identity must match its frozen configuration",
   );
 export type QqTaskExecutionSnapshot = z.infer<typeof QqTaskExecutionSnapshotSchema>;
 
@@ -128,12 +146,39 @@ export function resolveQqEffectiveTaskLimits(
   });
 }
 
-/** 输入防抖的生效解析（0059）：同一 null＝跟随语义。 */
+/** 输入防刷屏的生效参数（0059/0065）：绑定字段 null＝跟随方案字段。 */
+export interface QqInputAntiSpamSchemeValues {
+  readonly enabled: boolean;
+  readonly burst_min_messages: number;
+  readonly burst_window_seconds: number;
+}
+export interface QqInputAntiSpamBindingValues {
+  readonly enabled: boolean | null;
+  readonly burst_min_messages: number | null;
+  readonly burst_window_seconds: number | null;
+}
+export interface QqEffectiveInputAntiSpam {
+  readonly enabled: boolean;
+  readonly burstMinMessages: number;
+  readonly burstWindowSeconds: number;
+}
+
+export function resolveEffectiveInputAntiSpam(
+  scheme: QqInputAntiSpamSchemeValues,
+  binding: QqInputAntiSpamBindingValues | null,
+): QqEffectiveInputAntiSpam {
+  return {
+    enabled: binding?.enabled ?? scheme.enabled,
+    burstMinMessages: binding?.burst_min_messages ?? scheme.burst_min_messages,
+    burstWindowSeconds: binding?.burst_window_seconds ?? scheme.burst_window_seconds,
+  };
+}
+
 export function qqEffectiveInputAntiSpamEnabled(
-  scheme: { enabled: boolean },
-  binding: { enabled: boolean | null } | null,
+  scheme: QqInputAntiSpamSchemeValues,
+  binding: QqInputAntiSpamBindingValues | null,
 ): boolean {
-  return binding?.enabled ?? scheme.enabled;
+  return resolveEffectiveInputAntiSpam(scheme, binding).enabled;
 }
 
 const identityKey = (parts: readonly string[]) => `qq-task:${JSON.stringify(parts)}`;
