@@ -184,6 +184,7 @@ export function InspectedEvidence({ value }: { value: InspectedContext }) {
                     ? "observability.theModelReturnedNoPreservableText"
                     : "observability.noModelOutputWasRetainedForThisStep"
                 : "observability.originalModelOutput";
+  const canShowMetadata = readable && result.status !== "expired" && result.status !== "revoked";
   return (
     <Tabs defaultValue="input" className="min-w-0 gap-4">
       <TabsList
@@ -276,6 +277,74 @@ export function InspectedEvidence({ value }: { value: InspectedContext }) {
           typeof result.text === "string" && (
             <ContentReader label={t("observability.modelOutput")} text={result.text} />
           )}
+        {canShowMetadata && (
+          <section
+            className="min-w-0 space-y-2 border-t pt-3"
+            aria-label={t("observability.finishReason")}
+          >
+            <h4 className="text-xs font-semibold text-muted-foreground">
+              {t("observability.finishReason")}
+            </h4>
+            {result.responses && result.responses.length > 0 ? (
+              <ol className="space-y-1.5 text-xs font-mono">
+                {result.responses.map((attempt, index) => {
+                  const reasons = Array.isArray(attempt.finishReasons) ? attempt.finishReasons : [];
+                  return (
+                    <li
+                      // biome-ignore lint/suspicious/noArrayIndexKey: Attempts are strictly ordered immutable records of each HTTP request.
+                      key={index}
+                      className="flex flex-wrap items-center gap-1.5 text-muted-foreground"
+                    >
+                      <span className="font-semibold text-foreground">#{index + 1}</span>
+                      <span>·</span>
+                      <span>{attempt.transport}</span>
+                      <span>·</span>
+                      {attempt.httpStatus !== undefined ? (
+                        <span>HTTP {attempt.httpStatus}</span>
+                      ) : (
+                        <span>{t("observability.noHttpResponse")}</span>
+                      )}
+                      {reasons.length > 0 && (
+                        <>
+                          <span>·</span>
+                          <span className="inline-flex flex-wrap items-center gap-1">
+                            <span>{t("observability.finishReason")}:</span>
+                            {reasons.map((reason, rIdx) => (
+                              // biome-ignore lint/suspicious/noArrayIndexKey: Finish reasons retain their exact arrival order within an attempt.
+                              <span key={rIdx}>
+                                {rIdx > 0 && ", "}
+                                <code>{reason === null ? "null" : JSON.stringify(reason)}</code>
+                              </span>
+                            ))}
+                          </span>
+                        </>
+                      )}
+                      {reasons.length === 0 && attempt.httpStatus !== undefined && (
+                        <>
+                          <span>·</span>
+                          <span className="inline-flex flex-wrap items-center gap-1">
+                            <span>{t("observability.finishReason")}:</span>
+                            <span>{t("observability.finishReasonProviderDidNotReport")}</span>
+                          </span>
+                        </>
+                      )}
+                      {attempt.doneMarker && (
+                        <>
+                          <span>·</span>
+                          <span className="font-semibold text-foreground">[DONE]</span>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {t("observability.finishReasonNotRecorded")}
+              </p>
+            )}
+          </section>
+        )}
       </TabsContent>
       <TabsContent value="sources">
         <Table>

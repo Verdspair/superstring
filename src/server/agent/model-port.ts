@@ -1,4 +1,8 @@
-import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
+import type {
+  ModelMessage,
+  ModelResponseMetadata,
+  RunOwner,
+} from "../../shared/contracts/agent-run";
 import { toGatewayMessages } from "../llm/chat-content";
 import type {
   ChatContentResolver,
@@ -73,6 +77,7 @@ export interface ModelRequest {
   onModelResolved?: (model: string) => void;
   /** Retains returned text even when a completion terminates with a protocol error. */
   onResponseText?: (text: string, complete: boolean) => void;
+  onModelResponse?: (metadata: ModelResponseMetadata) => void;
   /**
    * 受信任宿主的同次准备钩子（T10）：actualModel 冻结后、HTTP body 组装前调用一次。
    * 输出的 messages/resolver 决定本 call 最终发送内容；抛错=请求不发出（fail closed）。
@@ -103,6 +108,7 @@ export interface ModelRequest {
   contextInputLimit?: number;
 }
 export interface MultimodalRequest {
+  onModelResponse?: (metadata: ModelResponseMetadata) => void;
   systemPrompt?: string;
   workClass?: ModelWorkClass;
   temperature?: number;

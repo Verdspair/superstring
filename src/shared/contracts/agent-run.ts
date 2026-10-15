@@ -134,10 +134,20 @@ export const ContextLayoutSchema = z.array(
     units: z.number().int().nonnegative(),
   }),
 );
+export const ModelResponseMetadataSchema = z.strictObject({
+  transport: z.enum(["complete", "stream", "vision"]),
+  httpStatus: z.number().int().min(100).max(599).optional(),
+  finishReasons: z.array(z.string().nullable()),
+  doneMarker: z.boolean().optional(),
+});
+export type ModelResponseMetadata = z.infer<typeof ModelResponseMetadataSchema>;
+
 export const ProtectedModelOutputSchema = z.strictObject({
   text: z.string(),
   format: z.enum(["text", "json"]),
   complete: z.boolean(),
+  hasText: z.boolean().optional(),
+  responses: z.array(ModelResponseMetadataSchema).optional(),
 });
 export type ProtectedModelOutput = z.infer<typeof ProtectedModelOutputSchema>;
 export const InspectedModelResultSchema = z.strictObject({
@@ -145,6 +155,7 @@ export const InspectedModelResultSchema = z.strictObject({
   text: z.string().optional(),
   format: z.enum(["text", "json"]).optional(),
   reason: z.enum(["not_recorded", "pending", "no_response"]).optional(),
+  responses: z.array(ModelResponseMetadataSchema).optional(),
 });
 export type InspectedModelResult = z.infer<typeof InspectedModelResultSchema>;
 export const InspectedContextSchema = z.strictObject({

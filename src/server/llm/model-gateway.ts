@@ -28,7 +28,11 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
 import { INVOKE_BATCH_LIMIT } from "../../shared/contracts/agent-output";
-import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
+import type {
+  ModelMessage,
+  ModelResponseMetadata,
+  RunOwner,
+} from "../../shared/contracts/agent-run";
 import { measureContextTokens } from "../agent/context-engine";
 import type {
   ModelContextBudget,
@@ -37,6 +41,12 @@ import type {
 } from "../agent/model-port";
 import { AppError, ModelUnavailableError } from "../errors";
 import { type ChatContentResolver, type ChatMessage, toGatewayMessages } from "./chat-content";
+import {
+  attemptMetadata,
+  finishReasonsFromPayload,
+  observeStreamFinishReason,
+  reportModelResponse,
+} from "./model-response";
 import {
   markImageContentRejection,
   type StructuredOutputLevel,
@@ -127,6 +137,14 @@ export interface ModelGateway {
     onModelResolved?: (model: string) => void;
     onResponseText?: (text: string, complete: boolean) => void;
     /**
+     * 每次真实模型 HTTP 发送的尝试级观察（可选）：一次 HTTP 尝试落定时报一次——含 4xx、网络
+     * 失败、JSON 解析失败、未支持 finish 与响应后取消；schema/tools 受控重试各报各的，按发送
+     * 顺序。目录/容量探测与发送前的准入/预检不产生回调。元数据只含传输、HTTP 状态（未见响应
+     * 则缺席）、原样 finish_reason 与 [DONE] 标记，不含任何正文；观察者抛错只记一行固定警告，
+     * 绝不改变结果。
+     */
+    onModelResponse?: (metadata: ModelResponseMetadata) => void;
+    /**
      * 受信任宿主的同次准备钩子（T10 基础）：actualModel 冻结后、HTTP body 组装前调用一次。
      * 输入是原始 ModelMessage[]（未转换、只读）；输出的 messages/resolver 决定本 call 最终
      * 发送内容（在网关内完成 wire 转换，resolver 每次 resolve 仍复验 source guard）。
@@ -167,6 +185,8 @@ export interface ModelGateway {
     /** Propagated to the underlying fetch so a caller cancellation aborts the stream. */
     signal?: AbortSignal;
     onModelResolved?: (model: string) => void;
+    /** 同 complete 的 `onModelResponse`：transport 为 "stream"，doneMarker 只记观察到的 [DONE]。 */
+    onModelResponse?: (metadata: ModelResponseMetadata) => void;
     /** 同 complete：actualModel 冻结后、组 body 前的一次受信准备钩子（原始 ModelMessage[]）。 */
     prepareWithResolved?: (input: ModelResolvedPrepareInput) => Promise<ModelResolvedPrepareOutput>;
     /** 同 complete 的 `preparedFrom`：钩子路径的原始请求载荷。 */
@@ -593,6 +613,7 @@ async function request(
   path: string,
   init: RequestInit,
   lifetime: ReturnType<typeof requestLifetime>,
+  onResponseStatus?: (status: number) => void,
 ): Promise<Response> {
   try {
     const response = await localhostFetch(`${cfg.baseUrl}${path}`, {
@@ -604,6 +625,8 @@ async function request(
         ...(init.headers ?? {}),
       },
     });
+    // 状态码在 4xx 抛错之前交给调用方捕获：尝试级元数据要能带上失败响应的真实 HTTP 状态。
+    onResponseStatus?.(response.status);
     if (!response.ok) {
       const err = new Error(`LM Studio ${response.status}: ${await response.text()}`);
       (err as { status?: number }).status = response.status;
@@ -639,9 +662,10 @@ async function requestJsonWithLifetime(
   path: string,
   init: RequestInit,
   lifetime: ReturnType<typeof requestLifetime>,
+  onResponseStatus?: (status: number) => void,
 ): Promise<unknown> {
   try {
-    const response = await request(cfg, path, init, lifetime);
+    const response = await request(cfg, path, init, lifetime, onResponseStatus);
     return await response.json();
   } catch (error) {
     lifetime.rethrow(error);
@@ -1160,6 +1184,7 @@ export function createLmStudioClient(
           ? await options.acquireSendPermit(used, options.signal)
           : undefined;
         let lifetime: ReturnType<typeof requestLifetime> | null = null;
+        let httpStatus: number | undefined;
         try {
           options.signal?.throwIfAborted();
           options.assertPreparedCurrent?.({ model: used });
@@ -1183,17 +1208,36 @@ export function createLmStudioClient(
               );
             },
           );
-          return (await requestJsonWithLifetime(
+          const payload = (await requestJsonWithLifetime(
             cfg,
             "/chat/completions",
             { method: "POST", body: JSON.stringify(body) },
             lifetime,
+            (status) => {
+              httpStatus = status;
+            },
           )) as {
             choices?: Array<{
               finish_reason?: string | null;
               message?: { content?: string | null; tool_calls?: unknown };
             }>;
           };
+          // 尝试落定（成功路径）：原样 finish_reason，字段缺席 = []。
+          reportModelResponse(
+            options.onModelResponse,
+            attemptMetadata("complete", httpStatus, finishReasonsFromPayload(payload)),
+          );
+          return payload;
+        } catch (error) {
+          // 尝试落定（失败路径）：lifetime 建立之后的一切失败都算一次真实发送尝试（4xx、网络、
+          // 解析、响应后取消）；发送前的守卫在 lifetime 之前抛出，不算尝试、不产生回调。
+          if (lifetime !== null) {
+            reportModelResponse(
+              options.onModelResponse,
+              attemptMetadata("complete", httpStatus, []),
+            );
+          }
+          throw error;
         } finally {
           lifetime?.close();
           release?.();
@@ -1367,12 +1411,20 @@ export function createLmStudioClient(
           },
         );
         const startedAt = Date.now();
+        // 尝试级观察面：httpStatus 在 4xx 抛错前捕获；finishReasons 按到达顺序收原样值
+        // （显式 null 保留，缺席 chunk 忽略）；doneMarker 只记真实观察到的 [DONE]。
+        let httpStatus: number | undefined;
+        const finishReasons: (string | null)[] = [];
+        let doneMarker: boolean | undefined;
         try {
           const response = await request(
             cfg,
             "/chat/completions",
             { method: "POST", body: JSON.stringify(body) },
             lifetime,
+            (status) => {
+              httpStatus = status;
+            },
           );
           if (!response.body) {
             throw new ModelUnavailableError(
@@ -1389,6 +1441,7 @@ export function createLmStudioClient(
             const payload = line.startsWith("data:") ? line.slice(5).trim() : line;
             if (payload === "[DONE]") {
               finished = true;
+              doneMarker = true;
               continue;
             }
             let chunk: {
@@ -1404,6 +1457,8 @@ export function createLmStudioClient(
             }
             const choice = chunk.choices?.[0];
             if (!choice) continue;
+            // 观察面：原样值按到达顺序去重收集，不影响下面的既有判定。
+            observeStreamFinishReason(finishReasons, choice.finish_reason);
             if (choice.finish_reason != null) {
               finished = true;
               outputLimited = outputLimited || choice.finish_reason === "length";
@@ -1436,6 +1491,10 @@ export function createLmStudioClient(
           if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
           lifetime.rethrow(error);
         } finally {
+          reportModelResponse(
+            options.onModelResponse,
+            attemptMetadata("stream", httpStatus, finishReasons, doneMarker),
+          );
           lifetime.close();
         }
       } finally {

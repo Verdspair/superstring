@@ -579,24 +579,32 @@ export function inspectContext(
     layout: stored.layout,
     sourceVersions: stored.sources.map(({ id, revision }) => ({ id, revision })),
   };
+  // Metadata-only responses must not appear as a successfully generated empty body.
   const result: InspectedModelResult =
     status !== "exact"
       ? { status }
-      : stored.output
+      : stored.output && stored.output.hasText === false
         ? {
-            status: stored.output.complete ? "exact" : "partial",
-            text: stored.output.text,
-            format: stored.output.format,
-          }
-        : {
             status: "unavailable",
-            reason:
-              run.steps.find((step) => step.stepId === handle.stepId)?.status === "running"
-                ? "pending"
-                : stored.outputRecorded
-                  ? "no_response"
-                  : "not_recorded",
-          };
+            reason: "no_response",
+            ...(stored.output.responses ? { responses: stored.output.responses } : {}),
+          }
+        : stored.output
+          ? {
+              status: stored.output.complete ? "exact" : "partial",
+              text: stored.output.text,
+              format: stored.output.format,
+              ...(stored.output.responses ? { responses: stored.output.responses } : {}),
+            }
+          : {
+              status: "unavailable",
+              reason:
+                run.steps.find((step) => step.stepId === handle.stepId)?.status === "running"
+                  ? "pending"
+                  : stored.outputRecorded
+                    ? "no_response"
+                    : "not_recorded",
+            };
   if (status !== "exact" || !stored.messages) return { ...metadata, status, result };
   const unavailableMedia = stored.messages.flatMap((message) =>
     message.content.flatMap((part) =>

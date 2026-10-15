@@ -10,12 +10,14 @@
 // always sent (LM Studio rejects unauthenticated calls once it requires a token), the timeout is
 // the config's whole-turn budget, and a non-2xx answer is an error rather than an empty string.
 
+import type { ModelResponseMetadata } from "../../shared/contracts/agent-run";
 import {
   DEFAULT_LM_STUDIO_API_KEY,
   type LmStudioConfig,
   localhostFetch,
   mapModelError,
 } from "./model-gateway";
+import { attemptMetadata, finishReasonsFromPayload, reportModelResponse } from "./model-response";
 import {
   type StructuredOutputLevel,
   strictSchemaAccepted,
@@ -40,6 +42,12 @@ export interface VisionRequest {
   readonly responseSchema?: Record<string, unknown>;
   /** ModelPort's sole admission state, acquired for the actual model HTTP attempt. */
   readonly acquireSendPermit?: (model: string, signal?: AbortSignal) => Promise<() => void>;
+  /**
+   * 每次真实 HTTP 发送的尝试级观察（vision 传输）：一次尝试落定（含 4xx、网络失败、JSON 解析
+   * 失败）时报一次；schema 降级重试各报各的，按发送顺序。只观察，不改变任何结果——vision 对
+   * finish 的既有接受语义原样保留。
+   */
+  readonly onModelResponse?: (metadata: ModelResponseMetadata) => void;
 }
 
 export interface VisionClient {
@@ -159,11 +167,14 @@ export function createLmStudioVisionClient(
         }
         const signalForAttempt = startRequestTimeout();
         const startedAt = Date.now();
+        let httpStatus: number | undefined;
+        let attempted = false;
         try {
           if (signalForAttempt.aborted) {
             if (request.signal?.aborted) throw request.signal.reason ?? signalForAttempt.reason;
             throw mapModelError(signalForAttempt.reason);
           }
+          attempted = true;
           const response = await sendFetch(`${routed.baseUrl}/chat/completions`, {
             method: "POST",
             headers: {
@@ -179,6 +190,8 @@ export function createLmStudioVisionClient(
             );
             throw mapModelError(error);
           });
+          // 状态码在 4xx 抛错之前捕获：尝试级元数据要能带上失败响应的真实 HTTP 状态。
+          httpStatus = response.status;
           if (!response.ok) {
             const text = await response.text().catch(() => "");
             console.warn(
@@ -190,15 +203,27 @@ export function createLmStudioVisionClient(
           }
           const raw = await response.text().catch(() => "");
           try {
-            return JSON.parse(raw) as {
+            const payload = JSON.parse(raw) as {
               choices?: Array<{ message?: { content?: string | null } }>;
             };
+            // 尝试落定（成功路径）：原样 finish_reason，缺席 = []；只观察——vision 对 finish
+            // 的既有接受语义原样保留，不因此新增拒绝。
+            reportModelResponse(
+              request.onModelResponse,
+              attemptMetadata("vision", httpStatus, finishReasonsFromPayload(payload)),
+            );
+            return payload;
           } catch {
             console.warn(
               `[vision] ${request.model} 响应不是 JSON（${Date.now() - startedAt}ms）：${summariseBody(raw)}`,
             );
             throw mapModelError(new SyntaxError("vision response was not JSON"));
           }
+        } catch (error) {
+          // 尝试落定（失败路径）：网络失败、4xx、JSON 解析失败都算一次真实发送尝试。
+          if (attempted)
+            reportModelResponse(request.onModelResponse, attemptMetadata("vision", httpStatus, []));
+          throw error;
         } finally {
           release?.();
         }

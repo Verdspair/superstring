@@ -10,6 +10,7 @@ import {
 import type {
   AgentStepSnapshot,
   ModelMessage,
+  ModelResponseMetadata,
   OutputSummary,
   ProtectedModelOutput,
   RunEvent,
@@ -476,7 +477,7 @@ export class AgentRuntime {
       ];
       return {
         messages,
-        invoke: async (capture, onModelResolved) => {
+        invoke: async (capture, onModelResolved, onModelResponse) => {
           const raw = await this.options.model.complete({
             messages,
             model: spec.model,
@@ -491,6 +492,7 @@ export class AgentRuntime {
             signal: active.signal,
             onModelResolved,
             onResponseText: capture,
+            onModelResponse,
           });
           capture(raw, true);
           await input.validate?.(raw, { resolvedModel: active.resolvedModel ?? "" });
@@ -517,7 +519,7 @@ export class AgentRuntime {
           });
           return {
             messages,
-            invoke: async (capture, onModelResolved) => {
+            invoke: async (capture, onModelResolved, onModelResponse) => {
               const raw = await this.options.model.complete({
                 messages,
                 model: spec.model,
@@ -546,6 +548,7 @@ export class AgentRuntime {
                 signal: active.signal,
                 onModelResolved,
                 onResponseText: capture,
+                onModelResponse,
               });
               capture(raw, true);
               await input.validate?.(raw, { resolvedModel: active.resolvedModel ?? "" });
@@ -590,7 +593,7 @@ export class AgentRuntime {
       ];
       return {
         messages,
-        invoke: async (capture) => {
+        invoke: async (capture, _onModelResolved, onModelResponse) => {
           const raw = await this.options.model.completeMultimodal({
             systemPrompt: spec.instructions,
             temperature: spec.temperature,
@@ -601,6 +604,7 @@ export class AgentRuntime {
             responseSchema: spec.responseSchema,
             ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
             signal: active.signal,
+            onModelResponse,
           });
           capture(raw, true);
           await input.validate?.(raw);
@@ -624,6 +628,7 @@ export class AgentRuntime {
       invoke: (
         capture: (text: string, complete?: boolean) => void,
         onModelResolved: (model: string) => void,
+        onModelResponse: (metadata: ModelResponseMetadata) => void,
       ) => Promise<string>;
     },
   ): Promise<string> {
@@ -637,8 +642,9 @@ export class AgentRuntime {
       const guarded = async (
         capture: (text: string, complete?: boolean) => void,
         onModelResolved: (model: string) => void,
+        onModelResponse: (metadata: ModelResponseMetadata) => void,
       ) => {
-        const value = await invoke(capture, onModelResolved);
+        const value = await invoke(capture, onModelResolved, onModelResponse);
         this.options.assertLeaf?.(input.owner, active.spec.id);
         if (typeof checkpoint === "function") checkpoint();
         return value;
@@ -974,7 +980,7 @@ export class AgentRuntime {
             "next",
             context.messages,
             context.sources,
-            async (capture, onModelResolved) => {
+            async (capture, onModelResolved, onModelResponse) => {
               let resolved =
                 decisionBudget?.model ?? spec.model ?? this.options.model.defaultModel ?? "?";
               // T10/§9 决策相发送（真实 HTTP 服务首拒 unsupported → 宿主标 fallback 重备后
@@ -1025,6 +1031,7 @@ export class AgentRuntime {
                   onModelResolved(model);
                 },
                 onResponseText: capture,
+                onModelResponse,
               });
               let raw: string;
               try {
@@ -1686,7 +1693,7 @@ export class AgentRuntime {
       "generate",
       messages,
       generationContext.sources,
-      async (capture, onModelResolved) => {
+      async (capture, onModelResolved, onModelResponse) => {
         if (structured) {
           // T10/§9 生成相发送（structured complete）：真实 HTTP 服务首拒
           // MODEL_IMAGE_UNSUPPORTED → 宿主标 fallback 重备后同相同 complete 重试
@@ -1722,6 +1729,7 @@ export class AgentRuntime {
             signal: active.signal,
             onModelResolved,
             onResponseText: capture,
+            onModelResponse,
           });
           let raw: string;
           try {
@@ -1787,6 +1795,7 @@ export class AgentRuntime {
             : { assertPreparedCurrent: assertPreparedCurrent }),
           signal: active.signal,
           onModelResolved,
+          onModelResponse,
         });
         let unsupportedRetry = onPhaseMediaUnsupported !== undefined;
         try {
@@ -1958,6 +1967,7 @@ export class AgentRuntime {
     execute: (
       capture: (text: string, complete?: boolean) => void,
       onModelResolved: (model: string) => void,
+      onModelResponse: (metadata: ModelResponseMetadata) => void,
     ) => Promise<T>,
     stepSpec: LeafAgentSpec = active.spec,
     outputId?: string,
@@ -2081,9 +2091,31 @@ export class AgentRuntime {
       sources,
     });
     let output: ProtectedModelOutput | undefined;
-    const capture = (text: string, complete = false) => {
-      output = { text, complete, format: phase === "next" ? "json" : "text" };
+    const responses: ModelResponseMetadata[] = [];
+    const onModelResponse = (metadata: ModelResponseMetadata): void => {
+      responses.push({ ...metadata, finishReasons: [...metadata.finishReasons] });
     };
+    const capture = (text: string, complete = false) => {
+      output = {
+        text,
+        complete,
+        format: phase === "next" ? "json" : "text",
+        ...(responses.length ? { responses } : {}),
+      };
+    };
+    // A stream can report its response after the last text delta, including on failure.
+    const persistedOutput = (): ProtectedModelOutput | undefined =>
+      output
+        ? { ...output, ...(responses.length ? { responses } : {}) }
+        : responses.length
+          ? {
+              text: "",
+              format: phase === "next" ? "json" : "text",
+              complete: false,
+              hasText: false,
+              responses,
+            }
+          : undefined;
     // T14 观测（已批 V4）：与 render 同一 visionCostOf 真源的三标量投影；unknown 不是 0、
     // 不折算 token、不进预算——pixels 是准备尺寸的安全边界值，不是计费事实。
     const visionCost = visionCostOf(messages);
@@ -2124,13 +2156,17 @@ export class AgentRuntime {
             stepId,
             context: { runId: active.runId, stepId },
           });
-          const result = await execute(capture, (model) => {
-            // resolved 真源单点：先写本步的 resolved 目标（并行步写各自的 sink），再落库。
-            if (resolvedSink) resolvedSink.resolvedModel = model;
-            else active.resolvedModel = model;
-            this.repository.resolveStepModel(stepId, model);
-            scope?.update({ model, details: { modelResolved: true } });
-          });
+          const result = await execute(
+            capture,
+            (model) => {
+              // resolved 真源单点：先写本步的 resolved 目标（并行步写各自的 sink），再落库。
+              if (resolvedSink) resolvedSink.resolvedModel = model;
+              else active.resolvedModel = model;
+              this.repository.resolveStepModel(stepId, model);
+              scope?.update({ model, details: { modelResolved: true } });
+            },
+            onModelResponse,
+          );
           active.signal.throwIfAborted();
           if (phase === "next") {
             const decision = AgentDecisionSchema.parse(result);
@@ -2149,7 +2185,7 @@ export class AgentRuntime {
             });
           this.repository.finishStep(stepId, "completed", this.now(), {
             decision: phase === "next" ? decisionMetadata(result) : undefined,
-            output,
+            output: persistedOutput(),
           });
           return result;
         } catch (error) {
@@ -2159,7 +2195,7 @@ export class AgentRuntime {
             stepId,
             active.callerSignal?.aborted ? "cancelled" : "failed",
             this.now(),
-            { errorCode: code, output },
+            { errorCode: code, output: persistedOutput() },
           );
           // 无码失败是一条死胡同（记录里只有 AGENT_FAILED）。留一行：阶段、模型、错误名与消息，
           // 以及模型这次实际回了什么（截断，不含正文以外的内容）——要求可定位。
