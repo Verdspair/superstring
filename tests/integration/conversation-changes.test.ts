@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import { conversationRoutes } from "../../src/server/api/conversations";
 import { handleError } from "../../src/server/api/error-handler";
-import { parseSseFrames } from "../../src/server/api/sse";
 import {
   type ConversationChange,
   subscribeConversationChanges,
@@ -12,6 +11,7 @@ import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { createSession, DEFAULT_AGENT_ID, nowIso } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { parseSseFrames } from "../harness/sse";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {

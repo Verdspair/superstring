@@ -18,7 +18,7 @@ import { normalizeOneBotMessage } from "../../src/server/services/onebot-protoco
 import { ConversationEventsSchema } from "../../src/shared/contracts/conversation";
 import type { QqMessageFact } from "../../src/shared/contracts/qq-message";
 
-const at = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
+const at = Math.floor(Date.now() / 1000) - 120;
 const atIso = new Date(at * 1000).toISOString();
 
 function setup() {

@@ -1,10 +1,11 @@
 // Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
-import { cleanup } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KnowledgeDocumentDetail } from "../../src/shared/contracts/knowledge";
-import { api } from "../../src/web/api";
+import { ApiError, api } from "../../src/web/api";
 
 import { selectLocale } from "../../src/web/i18n";
+import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const id = "22222222-2222-4222-8222-222222222222";
@@ -64,6 +65,7 @@ beforeEach(() => {
       .fn()
       .mockResolvedValue({ items: [document], next_cursor: null, total: 1 }),
     getKnowledgeSettings: vi.fn().mockResolvedValue(settings),
+    saveKnowledgeSettings: vi.fn().mockResolvedValue(settings),
     getKnowledgeDocument: vi.fn().mockResolvedValue(document),
     updateKnowledgeDocument: vi.fn().mockResolvedValue(document),
     deleteKnowledgeDocument: vi.fn().mockResolvedValue(undefined),
@@ -231,4 +233,95 @@ describe("knowledge editing and authorization", () => {
     );
     expect(store.getState().apiClient.importKnowledgeText).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      kind: "document" as const,
+      name: "document",
+      open: () => store.getState().openKnowledgeEditor({ kind: "document", id }),
+      changeDraft: (sheet: HTMLElement) => {
+        const input = within(sheet).getByDisplayValue(document.name);
+        fireEvent.change(input, { target: { value: "修改名称" } });
+      },
+      mockReject: () => {
+        vi.mocked(store.getState().apiClient.updateKnowledgeDocument).mockRejectedValueOnce(
+          new ApiError(409, "KNOWLEDGE_REVISION_CONFLICT", "文档版本冲突"),
+        );
+      },
+      assertApiCall: () => {
+        expect(store.getState().apiClient.updateKnowledgeDocument).toHaveBeenCalledTimes(1);
+        expect(store.getState().apiClient.updateKnowledgeDocument).toHaveBeenCalledWith(id, {
+          expected_revision: 3,
+          name: "修改名称",
+          category_id: "default",
+          original_text: original,
+          content_mode: "draft",
+        });
+      },
+      assertDraft: (sheet: HTMLElement) => {
+        expect(within(sheet).getByDisplayValue("修改名称")).not.toBeNull();
+        expect(store.getState().knowledgeEditor).toMatchObject({
+          kind: "document",
+          name: "修改名称",
+        });
+        expect(store.getState().knowledgeDirty).toBe(true);
+      },
+    },
+    {
+      kind: "settings" as const,
+      name: "settings",
+      open: () => store.getState().openKnowledgeEditor({ kind: "settings" }),
+      changeDraft: (sheet: HTMLElement) => {
+        const checkbox = within(sheet).getByRole("checkbox");
+        fireEvent.click(checkbox);
+      },
+      mockReject: () => {
+        vi.mocked(store.getState().apiClient.saveKnowledgeSettings).mockRejectedValueOnce(
+          new ApiError(409, "KNOWLEDGE_SETTINGS_CONFLICT", "设置版本冲突"),
+        );
+      },
+      assertApiCall: () => {
+        expect(store.getState().apiClient.saveKnowledgeSettings).toHaveBeenCalledTimes(1);
+        expect(store.getState().apiClient.saveKnowledgeSettings).toHaveBeenCalledWith({
+          expected_revision: 1,
+          auto_enabled: false,
+          model_name: null,
+          context_budget: 2048,
+        });
+      },
+      assertDraft: (sheet: HTMLElement) => {
+        const checkbox = within(sheet).getByRole("checkbox");
+        expect(checkbox).not.toBeNull();
+        expect(checkbox.getAttribute("aria-checked")).toBe("false");
+        expect(store.getState().knowledgeEditor).toMatchObject({
+          kind: "settings",
+          auto_enabled: false,
+        });
+        expect(store.getState().knowledgeDirty).toBe(true);
+      },
+    },
+  ])(
+    "surfaces conflict alert inside active sheet and preserves $name draft on save failure",
+    async ({ open, changeDraft, mockReject, assertApiCall, assertDraft }) => {
+      mockReject();
+      await act(async () => {
+        render(<KnowledgeLibrary />);
+      });
+      await act(async () => {
+        await open();
+      });
+      const sheet = globalThis.document.querySelector('[data-slot="sheet-content"]');
+      if (!(sheet instanceof HTMLElement)) throw new Error("Missing active sheet");
+      await act(async () => {
+        changeDraft(sheet);
+      });
+      const saveButton = within(sheet).getByRole("button", { name: /保存|save/i });
+      await act(async () => {
+        fireEvent.click(saveButton);
+      });
+      assertApiCall();
+      expect(within(sheet).getByRole("alert")).not.toBeNull();
+      assertDraft(sheet);
+    },
+  );
 });

@@ -15,8 +15,8 @@ import {
   saveFailedAssistantMessage,
 } from "../../src/server/db/repositories";
 import { ensureBusinessSchema, openBusinessDb } from "../../src/server/db/schema-gate";
+import { KnowledgeContext } from "../../src/server/modules/knowledge-module";
 import { createAgent } from "../../src/server/services/agent-service";
-import { KnowledgeContext } from "../../src/server/services/knowledge-context";
 import {
   AgentKnowledgeReadConfigSchema,
   AgentKnowledgeReadSettingsSchema,
@@ -366,6 +366,7 @@ describe("S3 known migration", () => {
     "0063_qq_media_request_identity.sql",
     "0064_qq_scheme_sticker_frequency.sql",
     "0065_qq_antispam_thresholds.sql",
+    "0066_jsonb_context_source_matchers.sql",
   ].map((f) => readFileSync(path.join(import.meta.dir, "../../migrations/versions", f), "utf8"));
   it("v2 upgrade seeds existing assistants and preserves all v2 data", () => {
     const db = new Database(":memory:");
@@ -386,7 +387,7 @@ describe("S3 known migration", () => {
         document_ids: "[]",
         revision: 1,
       });
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
       ensureBusinessSchema(db);
       expect(db.query("SELECT count(*) AS n FROM agent_knowledge_read_settings").get()).toEqual({
         n: 1,
@@ -471,6 +472,7 @@ describe("S3 known migration", () => {
           sql[62] ?? "",
           sql[63] ?? "",
           sql[64] ?? "",
+          sql[65] ?? "",
         ]),
       ).toThrow("CHECK constraint failed");
       expect(db.query("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);

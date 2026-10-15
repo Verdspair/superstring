@@ -483,4 +483,58 @@ describe("后台短车道（dispatchOnce）与停机排水", () => {
     expect(h.a.get(wake.id)).toMatchObject({ status: "no_output", errorCode: null });
     scheduler.stop();
   });
+
+  it("records one captured maturity fact with queue and actual activation times", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "activation-facts");
+    const spans: {
+      metadata: Record<string, unknown>;
+      update: (next: Record<string, unknown>) => void;
+    }[] = [];
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      telemetry: {
+        parentFor: () => null,
+        record: () => {},
+        start: (_name: string, metadata: Record<string, unknown>) => {
+          const span = {
+            metadata,
+            update(next: Record<string, unknown>) {
+              Object.assign(span.metadata, next, {
+                details: {
+                  ...((span.metadata.details as object) ?? {}),
+                  ...((next.details as object) ?? {}),
+                },
+              });
+            },
+            end() {},
+            within: (work: () => unknown) => work(),
+          };
+          spans.push(span);
+          return span;
+        },
+      } as never,
+      resourceGate: () => ({
+        eligibleCount: 7,
+        maturityCondition: "time",
+        triggerFunction: "qqChimingBatchWindow",
+      }),
+      activate: async (w) => {
+        h.a.complete(w.id, w.leaseToken!, "no_output", w.throughSeq, at);
+      },
+    });
+
+    expect(await scheduler.runOnce()).toBe(true);
+    const details = spans[0]!.metadata.details as Record<string, unknown>;
+    expect(details).toMatchObject({
+      lastMergedAt: wake.createdAt,
+      activationAt: at,
+      eligibleCount: 7,
+      maturityCondition: "time",
+      triggerFunction: "qqChimingBatchWindow",
+    });
+    scheduler.stop();
+  });
 });

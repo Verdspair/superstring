@@ -12,6 +12,7 @@ import {
   EntriesListSchema,
   ErrorEnvelopeSchema,
   LocalModelCatalogResponseSchema,
+  LocalModelEncodingsResponseSchema,
   type MemoryContentResponse,
   MemoryContentResponseSchema,
   type MemoryCorrection,
@@ -38,6 +39,7 @@ import {
   SessionResponseSchema,
   type TurnsList,
   TurnsListSchema,
+  type UpdateLocalModelEncodings,
   type UpdateModelProviderRequest,
 } from "../shared/contracts";
 import {
@@ -544,6 +546,19 @@ export const api = {
       ...json("POST", {}),
       signal,
     });
+  },
+  getLocalModelEncodings(signal?: AbortSignal) {
+    return requestJson("/models/local/encodings", LocalModelEncodingsResponseSchema, {
+      signal,
+      cache: "no-store",
+    });
+  },
+  saveLocalModelEncodings(body: UpdateLocalModelEncodings) {
+    return requestJson(
+      "/models/local/encodings",
+      LocalModelEncodingsResponseSchema,
+      json("PUT", body),
+    );
   },
   getModelCapacity(model: string): Promise<ModelCapacityResponse> {
     return requestJson(

@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowUpRight, Copy, Maximize2, Minimize2, RefreshCw } from "lucide-react";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -20,19 +20,23 @@ import {
   milliseconds,
   ReadError,
   StatusMark,
+  spanTitle,
   traceCause,
   traceTask,
+  wakeCauseSummary,
 } from "./presentation";
 import { TraceTimeline } from "./TraceTimeline";
 export function InvestigationCanvas({
   traceId,
   filters,
   paused = false,
+  initialView = "timeline",
   onBack,
 }: {
   traceId: string;
   filters: RuntimeSpanFilters;
   paused?: boolean;
+  initialView?: "timeline" | "models";
   onBack(): void;
 }) {
   const { t, i18n } = useTranslation(),
@@ -40,7 +44,9 @@ export function InvestigationCanvas({
     { data, loading, error, refresh } = useRuntimeWaterfall(traceId, filters, paused);
   const [selectedId, setSelectedId] = useState<string | null>(null),
     [expanded, setExpanded] = useState(false),
-    [copied, setCopied] = useState(false);
+    [copied, setCopied] = useState(false),
+    [activeView, setActiveView] = useState<string>(initialView);
+  useEffect(() => setActiveView(initialView), [initialView]);
   const heading = useRef<HTMLHeadingElement>(null),
     evidenceHeading = useRef<HTMLHeadingElement>(null),
     moveFocus = useRef(false);
@@ -80,6 +86,7 @@ export function InvestigationCanvas({
       ) ?? [],
     ),
   ];
+  const wakeSummaries = data ? wakeCauseSummary(data.items, t) : [];
   return (
     <section
       aria-label={t("observability.traceDetails")}
@@ -119,6 +126,17 @@ export function InvestigationCanvas({
                   timeStyle: "medium",
                 })}
               </time>
+              {initialView === "models" && (
+                <span>
+                  {t("observability.recordedModelCallsTotalUnknown", {
+                    "0": new Set(
+                      data.items
+                        .filter((item) => item.stage === "model")
+                        .map((item) => item.spanId),
+                    ).size,
+                  })}
+                </span>
+              )}
               <span>{milliseconds(data.trace.durationMs)}</span>
               <span>
                 {t("observability.valueSteps", {
@@ -170,6 +188,29 @@ export function InvestigationCanvas({
           ))}
         </div>
       )}
+      {wakeSummaries.length > 0 && (
+        <section aria-label={t("observability.wakeReasons")} className="space-y-2">
+          <h3 className="text-sm font-medium">{t("observability.wakeReasons")}</h3>
+          <dl className="space-y-2 text-sm">
+            {wakeSummaries.map((summary) => (
+              <div
+                key={summary.wakeId}
+                className="space-y-1 rounded-lg border bg-card p-3 text-card-foreground"
+              >
+                <dt className="font-mono text-xs text-muted-foreground">{summary.wakeId}</dt>
+                <dd className="space-x-2">
+                  <span>{summary.cause}</span>
+                  {summary.condition && <span>{summary.condition}</span>}
+                  {summary.count !== null && (
+                    <span>{t("observability.wakeEligibleMessages", { "0": summary.count })}</span>
+                  )}
+                  {summary.addressing && <span>{summary.addressing}</span>}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
       <ReadError error={error} />
       {loading && !data && <p role="status">{t("observability.loadingRuns")}</p>}
       {data && (
@@ -178,6 +219,42 @@ export function InvestigationCanvas({
             <p className="text-sm text-muted-foreground">
               {t("observability.thisChainNoLongerMatchesTheFiltersTheFullChain")}
             </p>
+          )}
+          {initialView === "models" && (
+            <ol className="space-y-2 text-sm" aria-label={t("observability.triggerAndFlow")}>
+              {data.items
+                .filter((item) => item.stage === "wake")
+                .map((item) => (
+                  <li key={item.spanId} className="flex flex-wrap items-center gap-2">
+                    <span>{spanTitle(item, t)}</span>
+                    <StatusMark status={item.status} />
+                    {typeof item.details.activationAt === "string" && (
+                      <span>
+                        {t("observability.actualActivationAt", {
+                          "0": formatDate(item.details.activationAt, i18n.language, {
+                            timeStyle: "medium",
+                          }),
+                        })}
+                      </span>
+                    )}
+                    {typeof item.details.lastMergedAt === "string" && (
+                      <span>
+                        {t("observability.opportunityLastMergedAt", {
+                          "0": formatDate(item.details.lastMergedAt, i18n.language, {
+                            timeStyle: "medium",
+                          }),
+                        })}
+                      </span>
+                    )}
+                    {typeof item.details.triggerFunction === "string" && (
+                      <code className="text-xs">{item.details.triggerFunction}</code>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      {item.durationMs === null ? "—" : milliseconds(item.durationMs)}
+                    </span>
+                  </li>
+                ))}
+            </ol>
           )}
           <fieldset
             className="flex flex-wrap items-center gap-2"
@@ -212,7 +289,11 @@ export function InvestigationCanvas({
               {!expanded && (
                 <>
                   <ResizablePanel id={`${id}-timeline`} defaultSize="48%" minSize="20%">
-                    <Tabs defaultValue="timeline" className="flex h-full min-h-0 flex-col gap-0">
+                    <Tabs
+                      value={activeView}
+                      onValueChange={setActiveView}
+                      className="flex h-full min-h-0 flex-col gap-0"
+                    >
                       <TabsList
                         variant="line"
                         className="mx-3 h-11 shrink-0"

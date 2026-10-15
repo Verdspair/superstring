@@ -130,9 +130,10 @@ export class ActionExecutor {
     check();
     // 引用按动作开始时的纪元签发：飞行期间 off→on，未提交的旧结果也不得按新纪元复活。
     const capSources = this.guard?.actionSources(action, context.owner) ?? [];
+    const executeContext = { ...context, assertAuthority: check };
     let result: Awaited<ReturnType<BuiltInAction["execute"]>>;
     try {
-      result = await action.execute(arguments_, { ...context, assertAuthority: check });
+      result = await action.execute(arguments_, executeContext);
     } catch (error) {
       check();
       throw options.mapToolError ? options.mapToolError(error) : error;
@@ -140,13 +141,17 @@ export class ActionExecutor {
     check();
     // 捕获纪元的引用失效是执行边界：硬失败，不随工具错误映射。
     this.guard?.assertSources(context.owner, capSources);
-    return {
-      ...result,
-      sources: uniqueSources([
-        ...result.sources,
-        ...(action.permission ? [this.permissions.source(action.permission)] : []),
-        ...capSources,
-      ]),
-    };
+    const sources = uniqueSources([
+      ...result.sources,
+      ...(action.permission ? [this.permissions.source(action.permission)] : []),
+      ...capSources,
+    ]);
+    if (action.description.effect === "read" && action.fitResult) {
+      const value = await action.fitResult(result.value, sources, arguments_, executeContext);
+      check();
+      this.guard?.assertSources(context.owner, capSources);
+      return { ...result, value, sources };
+    }
+    return { ...result, sources };
   }
 }

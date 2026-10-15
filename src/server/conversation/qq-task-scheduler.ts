@@ -20,7 +20,25 @@ import {
   settleQqConversationTask,
 } from "../db/qq-task-repository";
 import type { Orm } from "../db/repositories";
+
+/** Scheduler-internal abort reasons; message-only attribution mirrors wake-scheduler. */
+const internalFailureCodes = new Set([
+  "QQ_TASK_CANCELLED",
+  "QQ_TASK_LEASE_LOST",
+  "QQ_TASK_RENEWAL_FAILED",
+  "BOT_STOPPED",
+]);
+
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
+
+export type QqTaskAuthorityTimings = {
+  authorityLeaseChecks?: number;
+  authorityLeaseMs?: number;
+  authorityConfigurationChecks?: number;
+  authorityConfigurationMs?: number;
+  authorityDetailChecks?: number;
+  authorityDetailMs?: number;
+};
 
 export interface QqTaskSchedulerPolicy {
   leaseMs: number;
@@ -66,6 +84,7 @@ export class QqTaskScheduler {
         snapshot: QqTaskExecutionSnapshot,
         leaseToken: string,
         signal: AbortSignal,
+        onAuthorityTimings?: (timings: QqTaskAuthorityTimings) => void,
       ) => Promise<QqTaskActivationResult>;
       resolveExistingRunAndOutbox: (
         transaction: Orm,
@@ -209,24 +228,58 @@ export class QqTaskScheduler {
       agentId: task.agentId,
       sourceSeq: task.sourceThroughSeq,
       parent: this.options.traceParent?.(task) ?? undefined,
-      details: { cause: task.cause, taskClass: task.taskClass, taskId: task.id },
+      details: {
+        cause: task.cause,
+        taskClass: task.taskClass,
+        taskId: task.id,
+        leaseRenewals: 0,
+        leaseRenewalAttempts: 0,
+        lastReason: null,
+        lastDurationMs: null,
+      },
     });
     let renewals = 0;
+    let renewalAttempts = 0;
     // 续租回调与结算/中止同生命周期：异常只中止本任务，不再向上逃逸成未处理 rejection。
     const renewal = setInterval(() => {
       if (controller.signal.aborted) return;
+      span?.update({ details: { leaseRenewalAttempts: ++renewalAttempts } });
+      const startedAt = performance.now();
       try {
         const at = this.now();
-        const renewed = renewQqConversationTaskLease(this.options.orm, {
+        const result = renewQqConversationTaskLease(this.options.orm, {
           taskId: task.id,
           leaseToken,
           at,
           leaseExpiresAt: new Date(Date.parse(at) + this.options.policy().leaseMs).toISOString(),
           sourceState: this.options.sourceState,
         });
-        if (!renewed) controller.abort(new Error("QQ_TASK_LEASE_LOST"));
-        else span?.update({ details: { leaseRenewals: ++renewals } });
+        const durationMs = performance.now() - startedAt;
+        const lastReason = result.status === "renewed" ? "renewed" : result.reason;
+        if (result.status === "renewed") ++renewals;
+        span?.update({
+          details: {
+            leaseRenewals: renewals,
+            leaseRenewalAttempts: renewalAttempts,
+            lastReason,
+            lastDurationMs: durationMs,
+          },
+        });
+        if (result.status === "lost")
+          controller.abort(
+            Object.assign(new Error("QQ_TASK_LEASE_LOST"), {
+              code: "QQ_TASK_LEASE_LOST",
+              details: { reason: result.reason },
+            }),
+          );
       } catch (cause) {
+        span?.update({
+          details: {
+            leaseRenewalAttempts: renewalAttempts,
+            lastReason: "renewal_failed",
+            lastDurationMs: performance.now() - startedAt,
+          },
+        });
         controller.abort(
           Object.assign(new Error("QQ_TASK_RENEWAL_FAILED", { cause }), {
             code: "QQ_TASK_RENEWAL_FAILED",
@@ -288,9 +341,31 @@ export class QqTaskScheduler {
     };
     try {
       controller.signal.throwIfAborted();
-      const result = await (span
-        ? span.within(() => this.options.activate(task, snapshot, leaseToken, controller.signal))
-        : this.options.activate(task, snapshot, leaseToken, controller.signal));
+      const authorityTimings: QqTaskAuthorityTimings = {};
+      const onAuthorityTimings = (timings: QqTaskAuthorityTimings) =>
+        Object.assign(authorityTimings, timings);
+      let result: QqTaskActivationResult;
+      try {
+        result = await (span
+          ? span.within(() =>
+              this.options.activate(
+                task,
+                snapshot,
+                leaseToken,
+                controller.signal,
+                onAuthorityTimings,
+              ),
+            )
+          : this.options.activate(
+              task,
+              snapshot,
+              leaseToken,
+              controller.signal,
+              onAuthorityTimings,
+            ));
+      } finally {
+        span?.update({ details: authorityTimings });
+      }
       if (result.status === "deferred") {
         // 「还没到点」不是终态：按宿主给的 readyAt 回 pending 等重取。CAS 是唯一真源，
         // false（源过期/被取消/租约已丢）按实际行状态收尾，不假写 pending/deferred。
@@ -334,8 +409,18 @@ export class QqTaskScheduler {
           ? "OPPORTUNITY_EXPIRED"
           : (result.reason?.toUpperCase() ?? settled.toUpperCase()),
       );
-    } catch {
-      fail("QQ_TASK_FAILED");
+    } catch (error) {
+      // A generic AbortError loses the scheduler's abort reason; wake-scheduler
+      // precedent: attribute from the cancellation reason first.
+      const failure = controller.signal.aborted ? controller.signal.reason : error;
+      const code = failure instanceof Error && "code" in failure ? failure.code : undefined;
+      const errorCode =
+        typeof code === "string" && internalFailureCodes.has(code)
+          ? code
+          : failure instanceof Error && internalFailureCodes.has(failure.message)
+            ? failure.message
+            : "QQ_TASK_FAILED";
+      fail(errorCode);
     } finally {
       clearInterval(renewal);
     }

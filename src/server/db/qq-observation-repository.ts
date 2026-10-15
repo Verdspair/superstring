@@ -174,9 +174,9 @@ export function conversationMessagesForBackfill(
   const db = (orm as Orm & { $client: Database }).$client;
   const own = db
     .query(`SELECT MIN(j.seq) AS seq, s.id, s.spoke_at_seconds AS seconds, t.body, t.expires_at AS expiresAt
-    FROM conversation_events j, json_each(j.sources) refs
-    JOIN qq_speech_log s ON json_extract(refs.value,'$.kind')='qq_speech' AND json_extract(refs.value,'$.id')=s.id
-    JOIN qq_speech_text t ON t.speech_id=s.id
+    FROM conversation_events j CROSS JOIN json_each(j.sources) refs
+    CROSS JOIN qq_speech_log s ON json_extract(refs.value,'$.kind')='qq_speech' AND json_extract(refs.value,'$.id')=s.id
+    CROSS JOIN qq_speech_text t ON t.speech_id=s.id
     WHERE j.conversation_id=? AND j.kind='outbound' AND j.seq>? AND j.seq<? AND t.expires_at>?
       AND s.account_id=? AND s.conversation_kind=? AND s.peer_id=? AND s.agent_id=?
     GROUP BY s.id ORDER BY seq LIMIT ?`)
@@ -522,8 +522,8 @@ export function pendingObservationCount(
   now: string = nowIso(),
 ): number {
   const row = orm
-    .select({ total: count() })
-    .from(schema.qqEvents)
+    .select({ total: sql<number>`count(*)`.mapWith(Number) })
+    .from(sql`${schema.qqEvents} INDEXED BY ix_qq_event_conversation`)
     .innerJoin(
       schema.qqObservationText,
       eq(schema.qqObservationText.eventKey, schema.qqEvents.eventKey),

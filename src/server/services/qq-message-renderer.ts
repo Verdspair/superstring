@@ -45,7 +45,7 @@ export function resolveQqDisplayName(identity: QqIdentity): string {
  */
 function wallClock(
   seconds: number,
-  timezone: string,
+  formatter: Intl.DateTimeFormat,
 ): {
   year: number;
   month: string;
@@ -54,16 +54,7 @@ function wallClock(
   minute: string;
   second: string;
 } {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(new Date(seconds * 1000));
+  const parts = formatter.formatToParts(new Date(seconds * 1000));
   const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? "";
   // hour12:false 在部分 ICU 里 0 点写成 "24"；归一成 "00"。
   const hour = get("hour") === "24" ? "00" : get("hour");
@@ -94,6 +85,40 @@ function relativeLabel(deltaSeconds: number): string {
  * 一条消息的时间字符串。`display`/`timezone`/`nowSeconds` 来自冻结输入；`full` 由调用方
  * （renderQqMessageFacts 的 hybrid full 集合）决定。full_relative 恒为完整＋相对。
  */
+export function createQqTimeFormatter(input: {
+  nowSeconds: number;
+  timezone: string;
+  display: QqMessageSettings["time_display"];
+}) {
+  let formatter: Intl.DateTimeFormat | undefined;
+  const clock = (seconds: number) => {
+    formatter ??= new Intl.DateTimeFormat("en-US", {
+      timeZone: input.timezone,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    return wallClock(seconds, formatter);
+  };
+  return {
+    wallClock: clock,
+    format(seconds: number, fullMessage: boolean): string {
+      const value = clock(seconds);
+      const full = `${value.year}-${value.month}-${value.day} ${value.hour}:${value.minute}:${value.second}`;
+      const wantFull = input.display === "full" || input.display === "full_relative" || fullMessage;
+      if (!wantFull) return relativeLabel(input.nowSeconds - seconds);
+      if (input.display === "full_relative") {
+        return `${full}（${relativeLabel(input.nowSeconds - seconds)}）`;
+      }
+      return full;
+    },
+  };
+}
+
 export function formatQqTime(
   seconds: number,
   input: {
@@ -103,14 +128,7 @@ export function formatQqTime(
     full: boolean;
   },
 ): string {
-  const clock = wallClock(seconds, input.timezone);
-  const full = `${clock.year}-${clock.month}-${clock.day} ${clock.hour}:${clock.minute}:${clock.second}`;
-  const wantFull = input.display === "full" || input.display === "full_relative" || input.full;
-  if (!wantFull) return relativeLabel(input.nowSeconds - seconds);
-  if (input.display === "full_relative") {
-    return `${full}（${relativeLabel(input.nowSeconds - seconds)}）`;
-  }
-  return full;
+  return createQqTimeFormatter(input).format(seconds, input.full);
 }
 
 // ---- 消息区（规格 §4.1/§4.2） --------------------------------------------------------------
@@ -215,7 +233,12 @@ export function renderQqMessageFacts(input: {
   };
 
   const lines: string[] = [];
-  const nowClock = wallClock(nowSeconds, settings.timezone);
+  const time = createQqTimeFormatter({
+    nowSeconds,
+    timezone: settings.timezone,
+    display: settings.time_display,
+  });
+  const nowClock = time.wallClock(nowSeconds);
   lines.push(
     `QQ消息事实（now=${nowClock.year}-${nowClock.month}-${nowClock.day} ` +
       `${nowClock.hour}:${nowClock.minute}:${nowClock.second}，timezone=${settings.timezone}）：` +
@@ -233,12 +256,7 @@ export function renderQqMessageFacts(input: {
       platformMessageId: message.platformMessageId,
       seq: message.seq,
       occurredAtSeconds: message.occurredAtSeconds,
-      time: formatQqTime(message.occurredAtSeconds, {
-        nowSeconds,
-        timezone: settings.timezone,
-        display: settings.time_display,
-        full: fullIds.has(message.id),
-      }),
+      time: time.format(message.occurredAtSeconds, fullIds.has(message.id)),
       speaker,
       parts: message.parts.map((part) => renderPart(part, (qq) => identityOf(message, qq))),
       mentions,

@@ -1,4 +1,5 @@
 import { Activity, ArrowUpRight, Image, MessageCircle } from "lucide-react";
+import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   ConversationEventView,
@@ -11,6 +12,7 @@ import { cn } from "../../lib/utils";
 import { neutralWakeReasonLabels } from "../observability/labels";
 import { DeliveryDetails, staleReasonLabelKey } from "../runs/DeliveryEvidence";
 import { RunLink } from "../runs/RunEntry";
+import type { ConversationTimelineRow } from "./timeline-projection";
 
 const deliveryLabels = {
   planned: "workspace.waiting_to_send",
@@ -154,21 +156,69 @@ function QqEventFactDetails({
   );
 }
 
-import { memo } from "react";
-
 function EventRecordComponent({
   event,
   quoted,
   conversation,
 }: {
-  event: ConversationEventView;
+  event: ConversationTimelineRow;
   quoted?: ConversationEventView;
   conversation: ConversationSummary;
 }) {
   const { t, i18n } = useTranslation();
+
+  // Deduplicate nested deliveries from activityEvents by outputId
+  const nestedDeliveriesRaw = (event.activityEvents ?? []).filter(
+    (e) =>
+      e.kind === "delivery" ||
+      e.kind === "outbound" ||
+      Boolean(e.outputId) ||
+      Boolean(e.deliveryStatus),
+  );
+  const nestedDeliveryMap = new Map<string, ConversationEventView>();
+  const nestedDeliveriesWithoutOutput: ConversationEventView[] = [];
+  for (const d of nestedDeliveriesRaw) {
+    if (d.outputId) {
+      nestedDeliveryMap.set(d.outputId, d);
+    } else {
+      nestedDeliveriesWithoutOutput.push(d);
+    }
+  }
+  const nestedDeliveryItems = [...nestedDeliveryMap.values(), ...nestedDeliveriesWithoutOutput];
+
+  const hasConfirmedDelivery =
+    event.deliveryStatus === "confirmed" ||
+    nestedDeliveryItems.some((d) => d.deliveryStatus === "confirmed");
+
+  const task = event.task ?? null;
+  const wake = event.wake ?? null;
+  const runId = event.runId ?? null;
+  const showsStatus =
+    Boolean(task || wake) &&
+    !(
+      hasConfirmedDelivery &&
+      wake?.status === "no_output" &&
+      (!task || task.status === "no_output")
+    );
+  const standaloneRunId =
+    !showsStatus && runId && !nestedDeliveryItems.some((delivery) => delivery.runId === runId)
+      ? runId
+      : null;
+  const statusLabel = (label: string) =>
+    runId ? (
+      <RunLink runId={runId}>
+        <strong>{label}</strong>
+      </RunLink>
+    ) : (
+      <strong>{label}</strong>
+    );
+
   const message =
-    event.kind === "inbound" || (event.kind === "outbound" && event.deliveryStatus === "confirmed");
+    event.kind === "inbound" ||
+    (event.kind === "outbound" && event.deliveryStatus === "confirmed") ||
+    hasConfirmedDelivery;
   const source = event.addressing.replyTo;
+
   return (
     <li
       data-timeline-key={timelineKey(event)}
@@ -240,40 +290,7 @@ function EventRecordComponent({
             )}
           </div>
         )}
-        {event.wake && (
-          <div className="my-3 space-y-1 text-xs">
-            <strong>
-              {t(
-                event.task
-                  ? (taskLabels[event.task.status] ?? event.task.status)
-                  : wakeLabels[event.wake.status],
-              )}
-            </strong>
-            <p>
-              {t("workspace.wake_reason_value", {
-                "0": t(causes[event.wake.cause] ?? event.wake.cause),
-              })}
-            </p>
-            {event.wake.status === "pending" && (
-              <p>
-                {t("workspace.scheduled_processing_time")}:{" "}
-                <time dateTime={event.wake.readyAt}>
-                  {new Date(event.wake.readyAt).toLocaleString(i18n.resolvedLanguage)}
-                </time>
-              </p>
-            )}
-            {event.task
-              ? event.task.errorCode && <p className="text-destructive">{event.task.errorCode}</p>
-              : event.wake.errorCode &&
-                (neutralWakeReasonLabels[event.wake.errorCode] ? (
-                  <p className="text-muted-foreground">
-                    {t(neutralWakeReasonLabels[event.wake.errorCode])}
-                  </p>
-                ) : (
-                  <p className="text-destructive">{event.wake.errorCode}</p>
-                ))}
-          </div>
-        )}
+        {/* User body: preserved on inbound, never overwritten by assistant reply */}
         {event.kind !== "wake" &&
           (event.contentState !== "active" ? (
             <p className="text-xs text-muted-foreground">{t(unavailable[event.contentState])}</p>
@@ -328,19 +345,151 @@ function EventRecordComponent({
             {t("workspace.generation_cancelled")}
           </p>
         )}
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          {event.deliveryStatus && (
-            <Badge
-              variant="outline"
-              className={event.deliveryStatus === "failed" ? "text-destructive" : undefined}
-            >
-              {event.deliveryStatus === "stale"
-                ? t(staleReasonLabelKey(event.deliveryStaleReason))
-                : t(deliveryLabels[event.deliveryStatus])}
-            </Badge>
-          )}
-          {event.runId && <RunLink runId={event.runId} />}
-        </div>
+        {/* Task / Wake section: shows authoritative task status without false '本次未发言' if delivered */}
+        {wake && (
+          <div className="my-3 space-y-1 text-xs">
+            {(() => {
+              if (
+                hasConfirmedDelivery &&
+                wake.status === "no_output" &&
+                (!task || task.status === "completed" || task.status === "no_output")
+              ) {
+                if (task && task.status !== "no_output") {
+                  return statusLabel(t(taskLabels[task.status] ?? task.status));
+                }
+                return null;
+              }
+              const labelKey = task
+                ? (taskLabels[task.status] ?? task.status)
+                : wakeLabels[wake.status];
+              return statusLabel(t(labelKey));
+            })()}
+            <p>
+              {t("workspace.wake_reason_value", {
+                "0": t(causes[wake.cause] ?? wake.cause),
+              })}
+            </p>
+            {wake.status === "pending" && (
+              <p>
+                {t("workspace.scheduled_processing_time")}:{" "}
+                <time dateTime={wake.readyAt}>
+                  {new Date(wake.readyAt).toLocaleString(i18n.resolvedLanguage)}
+                </time>
+              </p>
+            )}
+            {task
+              ? task.errorCode && <p className="text-destructive">{task.errorCode}</p>
+              : wake.errorCode &&
+                (neutralWakeReasonLabels[wake.errorCode] ? (
+                  <p className="text-muted-foreground">
+                    {t(neutralWakeReasonLabels[wake.errorCode])}
+                  </p>
+                ) : (
+                  <p className="text-destructive">{wake.errorCode}</p>
+                ))}
+          </div>
+        )}
+        {!wake && task && (
+          <div className="my-3 space-y-1 text-xs">
+            {statusLabel(t(taskLabels[task.status] ?? task.status))}
+            {task.errorCode && <p className="text-destructive">{task.errorCode}</p>}
+          </div>
+        )}
+        {/* Delivered reply sections from other events in the activity chain */}
+        {nestedDeliveryItems.map((deliv, index) => (
+          <div
+            key={deliv.outputId ?? `reply-${deliv.seq}-${index}`}
+            className="mt-3 space-y-2 border-t pt-3"
+          >
+            {deliv.participant &&
+              (conversation.topology === "shared" || nestedDeliveryItems.length > 1) && (
+                <p className="text-xs font-medium text-foreground">
+                  {deliv.participant.label}
+                  {deliv.participant.id && (
+                    <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
+                      {deliv.participant.id}
+                    </span>
+                  )}
+                </p>
+              )}
+            {deliv.contentState !== "active" ? (
+              <p className="text-xs text-muted-foreground">{t(unavailable[deliv.contentState])}</p>
+            ) : (
+              deliv.text && (
+                <p className="whitespace-pre-wrap break-words text-sm leading-7 text-foreground">
+                  {deliv.text}
+                </p>
+              )
+            )}
+            {deliv.media && deliv.media.length > 0 && (
+              <ul className="mt-2 space-y-2">
+                {deliv.media.map((media) => (
+                  <li key={media.id} className="rounded-lg bg-muted/40 p-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Image className="size-3.5" />
+                      <strong>
+                        {t(
+                          media.kind === "sticker"
+                            ? "workspace.sticker"
+                            : media.kind === "image"
+                              ? "workspace.image"
+                              : "workspace.media",
+                        )}
+                      </strong>
+                      <code className="truncate text-muted-foreground">{media.id}</code>
+                    </div>
+                    <p className="mt-2 leading-relaxed">
+                      {media.description ??
+                        t(
+                          media.availability === "expired"
+                            ? "workspace.media_has_expired"
+                            : "workspace.no_media_description_available",
+                        )}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex flex-wrap items-center gap-3">
+              {deliv.deliveryStatus && (
+                <Badge
+                  variant="outline"
+                  className={deliv.deliveryStatus === "failed" ? "text-destructive" : undefined}
+                >
+                  {deliv.deliveryStatus === "stale"
+                    ? t(staleReasonLabelKey(deliv.deliveryStaleReason))
+                    : t(deliveryLabels[deliv.deliveryStatus])}
+                </Badge>
+              )}
+              {deliv.runId && <RunLink runId={deliv.runId} />}
+            </div>
+            {deliv.outputId && (
+              <div className="mt-3">
+                <DeliveryDetails
+                  key={`${deliv.outputId}:${deliv.deliveryStatus}`}
+                  outputId={deliv.outputId}
+                  conversation={conversation}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+        {/* Representative's own delivery status and RunLink */}
+        {(event.deliveryStatus || standaloneRunId) && (
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            {event.deliveryStatus && (
+              <Badge
+                variant="outline"
+                className={event.deliveryStatus === "failed" ? "text-destructive" : undefined}
+              >
+                {event.deliveryStatus === "stale"
+                  ? t(staleReasonLabelKey(event.deliveryStaleReason))
+                  : t(deliveryLabels[event.deliveryStatus])}
+              </Badge>
+            )}
+            {standaloneRunId && <RunLink runId={standaloneRunId} />}
+          </div>
+        )}
         {event.outputId && (
           <div className="mt-3">
             <DeliveryDetails
@@ -350,12 +499,27 @@ function EventRecordComponent({
             />
           </div>
         )}
+        {/* Source record details: underlying IDs preserved */}
         <details className="mt-3 border-t pt-2 text-[10px] text-muted-foreground">
           <summary className="cursor-pointer">{t("workspace.source_record")}</summary>
           <p className="mt-2 break-all font-mono">
             {event.source.kind}:{event.source.id}
           </p>
           <p>{t("workspace.event_revision", { "0": event.seq, "1": event.source.revision })}</p>
+          {event.activityEvents && event.activityEvents.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {event.activityEvents.map((act) => (
+                <p
+                  key={`${act.source.kind}:${act.source.id}:${act.seq}`}
+                  className="break-all font-mono"
+                >
+                  {act.source.kind}:{act.source.id}
+                  {act.wake ? ` (wake:${act.wake.id})` : ""}
+                  {act.outputId ? ` (output:${act.outputId})` : ""}
+                </p>
+              ))}
+            </div>
+          )}
           {event.qqMessageFacts && event.qqMessageFacts.length > 0 && (
             <QqEventFactDetails facts={event.qqMessageFacts} />
           )}

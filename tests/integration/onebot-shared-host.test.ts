@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
+import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
+import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
@@ -33,10 +36,17 @@ import {
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { QqGroupCapabilityGuard } from "../../src/server/permissions/qq-group-capabilities";
+import { PermissionService } from "../../src/server/permissions/service";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { speechExpiresAt } from "../../src/server/services/qq-retention";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
+import {
+  createWebActions,
+  WEB_PERMISSION_RESOURCE,
+  WEB_PERMISSION_REVISION,
+} from "../../src/server/web-access/actions";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
 import {
   QqTaskExecutionSnapshotSchema,
@@ -78,9 +88,18 @@ function setup(
     stickerCollections?: readonly string[];
     stickersEnabled?: () => boolean;
     stickersAvailable?: boolean;
+    researchEnabled?: () => boolean;
+    mediaAdapter?: ConstructorParameters<typeof OneBotHost>[0]["mediaAdapter"];
     onCompression?: (job: unknown) => void;
     onCapacity?: () => void;
     taskSourceState?: ConstructorParameters<typeof OneBotHost>[0]["taskSourceState"];
+    externalActions?: ConstructorParameters<typeof OneBotHost>[0]["externalActions"];
+    resolveSource?: ConstructorParameters<typeof OneBotHost>[0]["resolveSource"];
+    actionExecutor?:
+      | ConstructorParameters<typeof AgentRuntime>[0]["actionExecutor"]
+      | ((
+          orm: ConstructorParameters<typeof OneBotHost>[0]["orm"],
+        ) => NonNullable<ConstructorParameters<typeof AgentRuntime>[0]["actionExecutor"]>);
   } = {},
 ) {
   const h = openBusinessDb();
@@ -135,6 +154,7 @@ function setup(
   const requests: ModelRequest[] = [];
   const runtime = new AgentRuntime({
     repository: runs,
+    researchEnabled: options.researchEnabled,
     now,
     model: {
       complete: async (req) => {
@@ -148,6 +168,14 @@ function setup(
       completeMultimodal: async () => "",
       ...model,
     },
+    ...(options.actionExecutor
+      ? {
+          actionExecutor:
+            typeof options.actionExecutor === "function"
+              ? options.actionExecutor(h.orm)
+              : options.actionExecutor,
+        }
+      : {}),
   });
   const gateway = {
     complete: async () => {
@@ -173,10 +201,13 @@ function setup(
     gateway,
     stickers: { counts: ["confirmed"], isAvailable: () => options.stickersAvailable ?? false },
     stickersEnabled: options.stickersEnabled,
+    ...(options.mediaAdapter ? { mediaAdapter: options.mediaAdapter } : {}),
     policy: () => ({ maxSteps: 20, deliveryTtlSeconds: 600 }),
     now,
     ...(options.taskSourceState ? { taskSourceState: options.taskSourceState } : {}),
     ...(options.onCompression ? { enqueueCompression: options.onCompression } : {}),
+    ...(options.externalActions ? { externalActions: options.externalActions } : {}),
+    ...(options.resolveSource ? { resolveSource: options.resolveSource } : {}),
   });
   const receive = (
     id: string,
@@ -278,9 +309,10 @@ const replyTextForRequest = (request: ModelRequest, textForTarget: (targetId: st
     authorizedTargetIds(request).map((targetId) => ({ targetId, text: textForTarget(targetId) })),
   );
 const stickerFrequencyGuides = {
-  low: "表情发送倾向（low）：少一些主动或装饰性表情；文字与表情同样合适时偏向文字；若表情本身最合适，仍可只发表情。",
-  medium: "表情发送倾向（medium）：按当前语境平衡选择文字、表情或组合，不刻意凑数。",
-  high: "表情发送倾向（high）：更积极考虑相关表情或图文组合；不适合时不强加。",
+  low: "表情发送倾向（low）：以文字为主，也要自然使用贴切的表情；情绪回应、轻松互动时主动用 sticker.search 找候选，有合适的就用 reply.sticker，不必等到表情比文字更好。没有合适的就不用，不硬凑。",
+  medium:
+    "表情发送倾向（medium）：自然、积极地使用表情；情绪回应、玩笑、赞同或安慰时先用 sticker.search 找候选，有合适的就用 reply.sticker，可只发表情或配文字，不必每次都选纯文字。没有合适的就不用，不硬凑。",
+  high: "表情发送倾向（high）：主动且优先使用贴切的表情或图文组合；除非本轮明显不适合表情，先用 sticker.search 查看候选，有合适的就用 reply.sticker；文字与表情同样合适时优先表情或图文。没有合适的就不用，不强加。",
 } as const;
 const systemRequestText = (request: ModelRequest) =>
   request.messages
@@ -1977,10 +2009,9 @@ describe("immediate opportunity coverage", () => {
     });
     expect(h.requests.length).toBe(modelCalls + 1);
   });
-  it("[v3] confirmed coverage keeps the batch upper bound: a member covered below the new batch stays a candidate", async () => {
-    // 覆盖矩阵 E<=S<T：direct confirmed S 覆盖成员旧输入但低于本批上界 T——confirmed 保持
-    // 原批口径（原整批共享话题批准语义），成员仍是本批评分候选；pending 才按最新合格事件判。
-    // 确认发送之后的新成员输入解除 no-reply 等待并抬高批上界（既批准规则）。
+  it("confirmed direct coverage excludes the same member's old input when another member raises the batch boundary", async () => {
+    // An independent member's new message must not revive an already answered input.
+    // History remains shared; a genuinely newer input from this member is tested separately.
     const scored: string[][] = [];
     const h = setup({
       complete: async (req) => {
@@ -2007,7 +2038,7 @@ describe("immediate opportunity coverage", () => {
     h.clock.seconds += 11;
     const chiming = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "chiming_in" })!;
     await h.host.activate(chiming, new AbortController().signal);
-    expect(scored.at(-1)).toEqual(["20002", "20004"]);
+    expect(scored.at(-1)).toEqual(["20004"]);
   });
 
   it("[v3] a member's newer input after a confirmed reply stays a candidate under both checks", async () => {
@@ -3120,5 +3151,1375 @@ describe("Bot tool-first knowledge reading in the shared host", () => {
     expect(JSON.stringify(seen)).not.toContain("CANCELLED_BODY");
     expect(h.outbox.list({})).toEqual([]);
     expect(h.journal.ensureOneBot(bindingId)!.consumedSeq).toBe(0);
+  });
+});
+/**
+ * 联网工具（web.search / web.fetch）在真实 OneBotHost 上的准入与来源回归面。
+ *
+ * 真实宿主把外部动作交给 run：读取结果超容量时，宿主侧 fitResult 钩子把装不下的结果替换为
+ * 显式额度不可用观测（CONTEXT_BUDGET_EXCEEDED），整轮照常收口，不把整轮打死、不产伪造出站。
+ * 无论结果放行还是被拒，观测来源都必须带齐真实授权链：tool_permission "web" 与本群能力
+ * qq_group_capability（同一宿主 guard 同一事实）。
+ *
+ * 全部使用真实实现：createWebActions（离线必应 HTML/页面，动作自身把结果截到 4000 字符）、
+ * PermissionService（web/v1 公开只读授权）、生产同构的 QQ 群能力 guard、宿主默认容量。
+ */
+describe("Bot web actions under the actual shared host (admission contract)", () => {
+  interface WebObservationEnvelope {
+    status: string;
+    code?: string;
+    channel?: string;
+    items: { title: string; url: string; snippet: string }[];
+    url?: string;
+    title?: string;
+    text?: string;
+    sources: [string, string, string | undefined][];
+  }
+  /** 离线必应结果；`padded` 时用接近上限的 CJK 标题/摘要（动作自身把结果截到 4000 字符）。 */
+  function bingHtml(count: number, padded = false) {
+    const title = padded ? "题".repeat(200) : "结果标题",
+      snippet = padded ? "要".repeat(300) : "结果的摘要文字";
+    const rows = Array.from(
+      { length: count },
+      (_value, index) =>
+        `<li class="b_algo"><h2><a href="https://site.example/${index}">${title}${index}</a></h2>` +
+        `<div class="b_caption"><p>${snippet}${index}</p></div></li>`,
+    );
+    return `<html><body><ol>${rows.join("")}</ol></body></html>`;
+  }
+  type FixtureOptions = {
+    actionExecutor: (orm: ConstructorParameters<typeof OneBotHost>[0]["orm"]) => ActionExecutor;
+    resolveSource: ConstructorParameters<typeof OneBotHost>[0]["resolveSource"];
+    externalActions: NonNullable<ConstructorParameters<typeof OneBotHost>[0]["externalActions"]>;
+    calls: string[];
+  };
+  function webFixture(
+    padded: boolean,
+    count: number,
+    overrides: {
+      resolve?: NonNullable<Parameters<typeof createWebActions>[0]>["resolve"];
+      page?: (url: string) => Response | Promise<Response>;
+    } = {},
+  ): FixtureOptions {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return overrides.page
+        ? overrides.page(String(input))
+        : new Response(bingHtml(count, padded), {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          });
+    }) as unknown as typeof fetch;
+    // 真实权限服务：web/v1 的公开只读授权（同一实现、同一决定函数）。
+    const permissions = new PermissionService({
+      read: () => ({
+        revision: "web-grant-test",
+        policy: {
+          version: 1 as const,
+          grants: [{ resource: "web", approved: true, revision: "web/v1", directories: [] }],
+        },
+      }),
+      replace: () => {
+        throw new Error("PERMISSION_POLICY_CONFLICT");
+      },
+    });
+    const resolveSource: ConstructorParameters<typeof OneBotHost>[0]["resolveSource"] = (
+      source,
+      owner,
+    ) => permissions.sourceAccess(source, owner);
+    return {
+      calls,
+      // 生产同构（app.ts 同一装配）：权限服务 + 同一份真相上的群能力 guard。
+      actionExecutor: (orm) =>
+        new ActionExecutor(permissions, undefined, new QqGroupCapabilityGuard(orm)),
+      resolveSource,
+      externalActions: () =>
+        createWebActions({
+          fetchImpl,
+          ...(overrides.resolve ? { resolve: overrides.resolve } : {}),
+        }),
+    };
+  }
+  /** 决策脚本：按给定批次发出唯一查询的 web.search，批次用尽后返回 none。 */
+  function searchThenNone(queries: string[][], seen: ModelRequest[]) {
+    let round = 0;
+    return async (request: ModelRequest): Promise<string> => {
+      seen.push(request);
+      const batch = queries[round++];
+      return batch
+        ? JSON.stringify({
+            kind: "invoke",
+            calls: batch.map((query) => ({ name: "web.search", arguments: { query, limit: 15 } })),
+          })
+        : '{"kind":"none"}';
+    };
+  }
+  /**
+   * 从实际发出的 ModelRequest 里只读提取 web.search/web.fetch 动作观测信封（含来源元组）。
+   * 不打印/不复刻原始正文，只取形状与来源事实。
+   */
+  function webObservations(
+    request: ModelRequest,
+    name: "web.search" | "web.fetch",
+  ): WebObservationEnvelope[] {
+    const found: WebObservationEnvelope[] = [];
+    for (const message of request.messages)
+      for (const part of message.content) {
+        if (part.kind !== "text") continue;
+        try {
+          const data = JSON.parse(part.text) as {
+            kind?: string;
+            value?: {
+              name?: string;
+              value?: Record<string, unknown>;
+              sources?: readonly { kind: string; id: string; revision?: string }[];
+            };
+          };
+          if (data.kind === "action_observation" && data.value?.name === name && data.value.value) {
+            found.push({
+              ...(data.value.value as unknown as Omit<WebObservationEnvelope, "sources">),
+              sources: (data.value.sources ?? []).map(
+                (source) => [source.kind, source.id, source.revision] as const,
+              ),
+            });
+          }
+        } catch {}
+      }
+    return found;
+  }
+  /** 观测来源必须带齐真实授权链：tool_permission "web" + 本群 web 能力引用（同一 guard 事实）。 */
+  function expectAuthorizedWebSources(envelope: WebObservationEnvelope) {
+    const kinds = new Set(envelope.sources.map(([kind]) => kind));
+    expect(kinds.has("tool_permission")).toBe(true);
+    expect(kinds.has("qq_group_capability")).toBe(true);
+    const permission = envelope.sources.find(([kind]) => kind === "tool_permission")!;
+    expect(permission[1]).toBe("web");
+    expect(permission[2]).toMatch(/^[0-9a-f]{64}$/);
+    const capability = envelope.sources.find(([kind]) => kind === "qq_group_capability")!;
+    const parsed = JSON.parse(capability[1]) as unknown;
+    expect(parsed).toEqual([bindingId, DEFAULT_AGENT_ID, "web"]);
+  }
+
+  it("control: one bounded search then none settles no_output with one network request and a real authorized observation", async () => {
+    const web = webFixture(false, 3);
+    const seen: ModelRequest[] = [];
+    const h = setup({ complete: searchThenNone([["控制 查询"]], seen) }, web);
+    h.receive("8801", "20002", true, "search question");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    expect(web.calls).toHaveLength(1);
+    expect(h.outbox.list({})).toEqual([]);
+    const disclosed = webObservations(seen.at(-1)!, "web.search");
+    expect(disclosed).toHaveLength(1);
+    expect(disclosed[0]).toMatchObject({ status: "ok", channel: "bing" });
+    expect(disclosed[0]!.items.length).toBeGreaterThan(0);
+    expectAuthorizedWebSources(disclosed[0]!);
+  });
+
+  it("nine max-CJK bounded searches settle no_output: excess results become explicit CONTEXT_BUDGET_EXCEEDED denial with the same authorized sources", async () => {
+    const web = webFixture(true, 15);
+    const seen: ModelRequest[] = [];
+    const h = setup(
+      {
+        complete: searchThenNone(
+          [["q1"], ["q2"], ["q3", "q4"], ["q5", "q6"], ["q7", "q8", "q9"]],
+          seen,
+        ),
+      },
+      web,
+    );
+    h.receive("8802", "20002", true, "heavy search question");
+    const settled = await h.activate("direct_reply").then(
+      (value) => ({ ok: true as const, status: value.status }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    if (!settled.ok) {
+      // 失败诊断只打数字与码；原始错误原样重抛。
+      const lastSent = seen.at(-1)!;
+      const counts = seen.map((request) => {
+        const observations = webObservations(request, "web.search");
+        return `${observations.filter((o) => o.status === "ok").length}/${
+          observations.filter((o) => o.status === "unavailable").length
+        }`;
+      });
+      console.warn(
+        JSON.stringify({
+          code: (settled.error as { code?: string }).code ?? "UNKNOWN",
+          modelRequests: seen.length,
+          searches: web.calls.length,
+          lastInputUnits: inputUnits(lastSent.messages),
+          lastMessages: lastSent.messages.length,
+          lastSourceParts: lastSent.messages.flatMap((message) => message.content).length,
+          okPerRequest: counts,
+        }),
+      );
+      throw settled.error;
+    }
+    expect(settled.status).toBe("no_output");
+    expect(web.calls).toHaveLength(9);
+    expect(h.outbox.list({})).toEqual([]);
+    // 容量内：正常观测；超出后：显式拒绝信封，且两者来源授权链一致齐全。
+    expect(webObservations(seen[1]!, "web.search").map((o) => o.status)).toEqual(["ok"]);
+    const denied = webObservations(seen.at(-1)!, "web.search").filter(
+      (o) => o.status === "unavailable",
+    );
+    expect(denied.length).toBeGreaterThan(0);
+    for (const o of denied) {
+      expect(o.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+      expectAuthorizedWebSources(o);
+    }
+    for (const o of webObservations(seen[1]!, "web.search")) expectAuthorizedWebSources(o);
+  });
+
+  it("web.fetch with a public resolver reads one offline page then none: no_output, one network call, authorized sources", async () => {
+    const web = webFixture(false, 0, {
+      resolve: async () => ["93.184.216.34"],
+      page: () =>
+        new Response(
+          "<html><head><title>示例文章</title></head><body><article><p>第一段正文内容。</p></article></body></html>",
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+    });
+    const seen: ModelRequest[] = [];
+    let round = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return ++round === 1
+            ? '{"kind":"invoke","name":"web.fetch","arguments":{"url":"https://public.example/page"}}'
+            : '{"kind":"none"}';
+        },
+      },
+      web,
+    );
+    h.receive("8803", "20002", true, "fetch question");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    expect(web.calls).toHaveLength(1);
+    expect(h.outbox.list({})).toEqual([]);
+    const page = webObservations(seen.at(-1)!, "web.fetch");
+    expect(page).toHaveLength(1);
+    expect(page[0]).toMatchObject({
+      status: "ok",
+      url: "https://public.example/page",
+      title: "示例文章",
+    });
+    expect(String(page[0]!.text)).toContain("第一段正文内容");
+    expectAuthorizedWebSources(page[0]!);
+  });
+
+  /** 合成正文填充；根级校准的首个模型请求约 58.5k / 60.3k 输入单位。 */
+  function nearCapacityBody() {
+    return "b".repeat(19_000);
+  }
+  function paddedFetchPage() {
+    return (
+      "<html><head><title>长页</title></head><body><article>" +
+      "文".repeat(4_096) +
+      "</article></body></html>"
+    );
+  }
+
+  it("near-capacity control: same padded input reaches one model request without web feedback", async () => {
+    const web = webFixture(false, 0, {
+      resolve: async () => ["93.184.216.34"],
+      page: (url) =>
+        new Response(
+          url.endsWith("/a")
+            ? paddedFetchPage()
+            : "<html><head><title>长页二</title></head><body><article>" +
+                "文".repeat(4_096) +
+                "</article></body></html>",
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+    });
+    const seen: ModelRequest[] = [];
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return '{"kind":"none"}';
+        },
+      },
+      web,
+    );
+    h.receive("8804", "20002", true, nearCapacityBody());
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    expect(seen).toHaveLength(1);
+    expect(inputUnits(seen[0]!.messages)).toBeGreaterThan(0);
+    expect(web.calls).toHaveLength(0);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("near-capacity single fetch: one max-CJK page yields an authorized observation or typed budget denial", async () => {
+    const web = webFixture(false, 0, {
+      resolve: async () => ["93.184.216.34"],
+      page: (url) =>
+        new Response(
+          url.endsWith("/a")
+            ? paddedFetchPage()
+            : "<html><head><title>长页二</title></head><body><article>" +
+                "文".repeat(4_096) +
+                "</article></body></html>",
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+    });
+    const seen: ModelRequest[] = [];
+    let round = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return ++round === 1
+            ? '{"kind":"invoke","name":"web.fetch","arguments":{"url":"https://public.example/a","limit":4096}}'
+            : '{"kind":"none"}';
+        },
+      },
+      web,
+    );
+    h.receive("8806", "20002", true, nearCapacityBody());
+    const settled = await h.activate("direct_reply").then(
+      (value) => ({ ok: true as const, status: value.status }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    if (!settled.ok) {
+      const error = settled.error as { code?: string; message?: string };
+      console.warn(
+        JSON.stringify({
+          originalError: {
+            code: error.code ?? null,
+            message: error.message ?? String(settled.error),
+          },
+          modelRequests: seen.length,
+          networkRequests: web.calls.length,
+          firstInputUnits: seen[0] ? inputUnits(seen[0].messages) : null,
+        }),
+      );
+      throw settled.error;
+    }
+    expect(settled.status).toBe("no_output");
+    expect(web.calls).toHaveLength(1);
+    expect(h.outbox.list({})).toEqual([]);
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    const firstInputUnits = inputUnits(seen[0]!.messages);
+    console.info(JSON.stringify({ firstInputUnits }));
+    expect(firstInputUnits).toBeGreaterThan(0);
+    const page = webObservations(seen.at(-1)!, "web.fetch");
+    expect(page).toHaveLength(1);
+    expect(["ok", "unavailable"]).toContain(page[0]!.status);
+    if (page[0]!.status === "unavailable") expect(page[0]!.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expectAuthorizedWebSources(page[0]!);
+  });
+
+  it("near-capacity concurrent batch: two max-CJK fetches settle no_output with authorized observations", async () => {
+    const web = webFixture(false, 0, {
+      resolve: async () => ["93.184.216.34"],
+      page: (url) =>
+        new Response(
+          url.endsWith("/a")
+            ? paddedFetchPage()
+            : "<html><head><title>长页二</title></head><body><article>" +
+                "文".repeat(4_096) +
+                "</article></body></html>",
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+    });
+    const seen: ModelRequest[] = [];
+    let round = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return ++round === 1
+            ? JSON.stringify({
+                kind: "invoke",
+                calls: [
+                  {
+                    name: "web.fetch",
+                    arguments: { url: "https://public.example/a", limit: 4096 },
+                  },
+                  {
+                    name: "web.fetch",
+                    arguments: { url: "https://public.example/b", limit: 4096 },
+                  },
+                ],
+              })
+            : '{"kind":"none"}';
+        },
+      },
+      web,
+    );
+    h.receive("8805", "20002", true, nearCapacityBody());
+    // Both read-only fetches must run; each observation may be successful or explicitly budget-denied.
+    const settled = await h.activate("direct_reply").then(
+      (value) => ({ ok: true as const, status: value.status }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    if (!settled.ok) {
+      const lastSent = seen.at(-1);
+      const counts = seen.map((request) => {
+        const observations = webObservations(request, "web.fetch");
+        return `${observations.filter((o) => o.status === "ok").length}/${
+          observations.filter((o) => o.status === "unavailable").length
+        }`;
+      });
+      console.warn(
+        JSON.stringify({
+          code: (settled.error as { code?: string }).code ?? "UNKNOWN",
+          modelRequests: seen.length,
+          fetches: web.calls.length,
+          firstInputUnits: seen[0] ? inputUnits(seen[0].messages) : null,
+          lastInputUnits: lastSent ? inputUnits(lastSent.messages) : null,
+          lastMessages: lastSent ? lastSent.messages.length : null,
+          okPerRequest: counts,
+        }),
+      );
+      throw settled.error;
+    }
+    expect(settled.status).toBe("no_output");
+    expect(web.calls).toHaveLength(2);
+    expect(new Set(web.calls).size).toBe(2);
+    expect(h.outbox.list({})).toEqual([]);
+    const pages = webObservations(seen.at(-1)!, "web.fetch");
+    console.info(
+      JSON.stringify({
+        firstInputUnits: inputUnits(seen[0]!.messages),
+        lastInputUnits: inputUnits(seen.at(-1)!.messages),
+      }),
+    );
+    expect(pages).toHaveLength(2);
+    for (const o of pages) {
+      expect(["ok", "unavailable"]).toContain(o.status);
+      if (o.status === "unavailable") expect(o.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+      expectAuthorizedWebSources(o);
+    }
+  });
+
+  function nearCapacityWebFixture() {
+    return webFixture(false, 0, {
+      resolve: async () => ["93.184.216.34"],
+      page: (url) =>
+        new Response(
+          url.endsWith("/a")
+            ? paddedFetchPage()
+            : "<html><head><title>长页二</title></head><body><article>" +
+                "文".repeat(4_096) +
+                "</article></body></html>",
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+    });
+  }
+
+  it.each(["none", "inline", "generate"] as const)(
+    "after a typed near-capacity web denial, the terminal %s decision settles",
+    async (terminal) => {
+      const web = nearCapacityWebFixture();
+      const seen: ModelRequest[] = [];
+      let round = 0;
+      const h = setup(
+        {
+          complete: async (request) => {
+            seen.push(request);
+            if (++round === 1)
+              return JSON.stringify({
+                kind: "invoke",
+                calls: [
+                  {
+                    name: "web.fetch",
+                    arguments: { url: "https://public.example/a", limit: 4096 },
+                  },
+                  {
+                    name: "web.fetch",
+                    arguments: { url: "https://public.example/b", limit: 4096 },
+                  },
+                ],
+              });
+            if (terminal === "none") return '{"kind":"none"}';
+            if (terminal === "inline") return replyTextForRequest(request, () => "inline reply");
+            return JSON.stringify({
+              kind: "final",
+              outputs: authorizedTargetIds(request).map((targetId) => ({
+                kind: "generate",
+                targetId,
+                instructions: "respond",
+              })),
+            });
+          },
+        },
+        web,
+      );
+      h.receive("8810", "20002", true, nearCapacityBody());
+      const settled = await h.activate("direct_reply").then(
+        (value) => ({ ok: true as const, status: value.status }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      if (!settled.ok) {
+        const error = settled.error as { code?: string; message?: string };
+        console.warn(
+          JSON.stringify({
+            originalCode: error.code ?? null,
+            modelRequests: seen.length,
+            networkRequests: web.calls.length,
+            firstInputUnits: seen[0] ? inputUnits(seen[0].messages) : null,
+          }),
+        );
+        throw settled.error;
+      }
+      expect(settled.status).toBe(terminal === "none" ? "no_output" : "completed");
+      expect(web.calls).toHaveLength(2);
+      expect(new Set(web.calls).size).toBe(2);
+      expect(h.outbox.list({})).toHaveLength(terminal === "none" ? 0 : 1);
+      expect(seen).toHaveLength(2);
+      const nextRequest = seen[1]!;
+      const toolNames = nextRequest.tools?.map((tool) => tool.name) ?? [];
+      expect(toolNames).toContain("reply.text");
+      expect(toolNames.every((name) => ["reply.text", "reply.sticker"].includes(name))).toBe(true);
+      expect(inputUnits(seen[0]!.messages)).toBeGreaterThan(0);
+      const pages = webObservations(nextRequest, "web.fetch");
+      expect(pages).toHaveLength(2);
+      expect(pages.some((page) => page.status === "unavailable")).toBe(true);
+      for (const page of pages) {
+        expect(["ok", "unavailable"]).toContain(page.status);
+        if (page.status === "unavailable") expect(page.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+        expectAuthorizedWebSources(page);
+      }
+    },
+  );
+
+  it("does not execute a further web read after terminal budget feedback", async () => {
+    const web = nearCapacityWebFixture();
+    const seen: ModelRequest[] = [];
+    let round = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return ++round === 1
+            ? JSON.stringify({
+                kind: "invoke",
+                calls: [
+                  {
+                    name: "web.fetch",
+                    arguments: { url: "https://public.example/a", limit: 4096 },
+                  },
+                  {
+                    name: "web.fetch",
+                    arguments: { url: "https://public.example/b", limit: 4096 },
+                  },
+                ],
+              })
+            : '{"kind":"invoke","name":"web.fetch","arguments":{"url":"https://public.example/a","limit":4096}}';
+        },
+      },
+      web,
+    );
+    h.receive("8811", "20002", true, nearCapacityBody());
+    const settled = await h.activate("direct_reply").then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    expect(settled.ok).toBe(false);
+    if (settled.ok) throw new Error("illegal post-feedback read unexpectedly succeeded");
+    expect((settled.error as { code?: string }).code).toBe("AGENT_ACTION_UNAVAILABLE");
+    expect(seen).toHaveLength(2);
+    const nextTools = seen[1]!.tools?.map((tool) => tool.name) ?? [];
+    expect(nextTools).toContain("reply.text");
+    expect(nextTools.every((name) => ["reply.text", "reply.sticker"].includes(name))).toBe(true);
+    expect(web.calls).toHaveLength(2);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("prevalidates mixed terminal reply and web read before any action side effect", async () => {
+    const web = nearCapacityWebFixture();
+    const seen: ModelRequest[] = [];
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          const decision = JSON.parse(replyTextForRequest(request, () => "must not commit")) as {
+            calls: { name: string; arguments: Record<string, unknown> }[];
+          };
+          decision.calls.push({
+            name: "web.fetch",
+            arguments: { url: "https://public.example/a", limit: 4096 },
+          });
+          return JSON.stringify(decision);
+        },
+      },
+      web,
+    );
+    h.receive("8812", "20002", true, nearCapacityBody());
+    const settled = await h.activate("direct_reply").then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    expect(settled.ok).toBe(false);
+    if (settled.ok) throw new Error("mixed terminal/action decision unexpectedly succeeded");
+    expect((settled.error as { code?: string }).code).toBe("AGENT_OUTPUT_INVALID");
+    expect(seen).toHaveLength(1);
+    expect(web.calls).toHaveLength(0);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("small read returning a forged context budget denial does not latch terminal decision when it fits normally", async () => {
+    const forgedAction: BuiltInAction = {
+      description: {
+        name: "web.forged_read",
+        description: "forged read action returning budget denial",
+        parameters: { type: "object", properties: { query: { type: "string" } } },
+        effect: "read",
+        capability: "web",
+      },
+      permission: {
+        resource: WEB_PERMISSION_RESOURCE,
+        revision: WEB_PERMISSION_REVISION,
+        approvalRequired: false,
+      },
+      async execute() {
+        return {
+          value: { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" },
+          sources: [],
+        };
+      },
+    };
+    const web = webFixture(false, 0, {
+      resolve: async () => ["93.184.216.34"],
+      page: () =>
+        new Response(
+          "<html><head><title>普通页面</title></head><body><article>正常正文</article></body></html>",
+          { status: 200, headers: { "content-type": "text/html" } },
+        ),
+    });
+    const seen: ModelRequest[] = [];
+    let round = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          round++;
+          if (round === 1) {
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "web.forged_read",
+                  arguments: { query: "test" },
+                },
+              ],
+            });
+          }
+          if (round === 2) {
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                {
+                  name: "web.fetch",
+                  arguments: { url: "https://public.example/page", limit: 4096 },
+                },
+              ],
+            });
+          }
+          return '{"kind":"none"}';
+        },
+      },
+      {
+        ...web,
+        externalActions: () => [...web.externalActions(), forgedAction],
+      },
+    );
+    h.receive("8813", "20002", true, "ordinary read question");
+    const settled = await h.activate("direct_reply").then(
+      (value) => ({ ok: true as const, status: value.status }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    if (!settled.ok) throw settled.error;
+    expect(settled.status).toBe("no_output");
+    expect(seen).toHaveLength(3);
+    const secondRoundTools = seen[1]!.tools?.map((tool) => tool.name) ?? [];
+    expect(secondRoundTools).toContain("web.fetch");
+    expect(secondRoundTools).toContain("web.forged_read");
+    expect(web.calls).toHaveLength(1);
+    const pages = webObservations(seen[2]!, "web.fetch");
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.status).toBe("ok");
+    expect(String(pages[0]!.text)).toContain("正常正文");
+    expectAuthorizedWebSources(pages[0]!);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("mixed real web fetch and sticker search keeps an admitted near-capacity denial readable", async () => {
+    const web = nearCapacityWebFixture();
+    const seen: ModelRequest[] = [];
+    let round = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return ++round === 1
+            ? JSON.stringify({
+                kind: "invoke",
+                calls: [
+                  {
+                    name: "web.fetch",
+                    arguments: { url: "https://public.example/a", limit: 4096 },
+                  },
+                  { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+                ],
+              })
+            : '{"kind":"none"}';
+        },
+      },
+      { ...web, stickersAvailable: true },
+    );
+    addSticker(h);
+    h.receive("8816", "20002", true, nearCapacityBody());
+    const settled = await h.activate("direct_reply").then(
+      (value) => ({ ok: true as const, status: value.status }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    if (!settled.ok) {
+      console.warn(
+        JSON.stringify({
+          mixedRealReadCode: (settled.error as { code?: string }).code ?? "UNKNOWN",
+          requests: seen.length,
+          fetches: web.calls.length,
+          firstInputUnits: seen[0] ? inputUnits(seen[0].messages) : null,
+        }),
+      );
+      throw settled.error;
+    }
+    expect(settled.status).toBe("no_output");
+    expect(web.calls).toHaveLength(1);
+    expect(seen).toHaveLength(2);
+    const pages = webObservations(seen[1]!, "web.fetch");
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.status).toBe("unavailable");
+    expect(pages[0]!.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+    const stickerObservations = seen[1]!.messages
+      .flatMap((message) => message.content)
+      .filter((part) => part.kind === "text")
+      .map((part) => {
+        try {
+          return JSON.parse(part.text);
+        } catch {
+          return null;
+        }
+      })
+      .filter(
+        (item) => item?.kind === "action_observation" && item.value?.name === "sticker.search",
+      );
+    expect(stickerObservations).toHaveLength(1);
+    expectAuthorizedWebSources(pages[0]!);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it.each([16_000, 16_600, 16_800])(
+    "mixed real media list and host sticker search fits every returned observation at %d",
+    async (length) => {
+      const seen: ModelRequest[] = [];
+      let round = 0;
+      const h = setup(
+        {
+          complete: async (request) => {
+            seen.push(request);
+            return ++round === 1
+              ? JSON.stringify({
+                  kind: "invoke",
+                  calls: [
+                    { name: "media.list", arguments: { limit: 50 } },
+                    { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+                  ],
+                })
+              : '{"kind":"none"}';
+          },
+        },
+        {
+          stickersAvailable: true,
+          mediaAdapter: () => ({
+            capabilities: ["image"],
+            read: async () => {
+              throw new Error("unexpected media read");
+            },
+          }),
+        },
+      );
+      addSticker(h);
+      h.receive("8890", "20002", true, "b".repeat(length));
+      const settled = await h.activate("direct_reply").catch((error) => {
+        console.info(JSON.stringify({ length, requests: seen.length, code: error.code }));
+        throw error;
+      });
+      expect(settled.status).toBe("no_output");
+      expect(seen).toHaveLength(2);
+      const observations = seen[1]!.messages
+        .flatMap((message) => message.content)
+        .filter((part) => part.kind === "text")
+        .map((part) => {
+          try {
+            return JSON.parse(part.text);
+          } catch {
+            return null;
+          }
+        })
+        .filter((item) => item?.kind === "action_observation");
+      expect(observations.map((item) => item.value.name).sort()).toEqual([
+        "media.list",
+        "sticker.search",
+      ]);
+      const media = observations.find((item) => item.value.name === "media.list").value;
+      const sticker = observations.find((item) => item.value.name === "sticker.search").value;
+      expect(media.arguments).toEqual({ limit: 50 });
+      expect(sticker.arguments).toEqual({ query: "wave", limit: 1 });
+      expect(media.sources).toEqual([]);
+      if (media.value.status === "ok")
+        expect(media.value).toEqual({ status: "ok", items: [], nextCursor: null });
+      else expect(media.value).toEqual({ status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" });
+      if (length === 16_000) expect(sticker.value.status).toBe("available");
+      else {
+        expect(sticker.value).toEqual({ status: "budget_exhausted", items: [], nextCursor: null });
+        expect(sticker.sources).toEqual([]);
+      }
+      if (length === 16_800) {
+        const tools = seen[1]!.tools?.map((tool) => tool.name) ?? [];
+        expect(tools.every((name) => ["reply.text", "reply.sticker"].includes(name))).toBe(true);
+      }
+      expect(h.outbox.list({})).toEqual([]);
+    },
+  );
+
+  it("does not allow terminal media recovery in a batch containing a write", async () => {
+    let writes = 0;
+    const write: BuiltInAction = {
+      description: {
+        name: "test.write",
+        capability: "test",
+        description: "write",
+        effect: "write",
+        parameters: { type: "object", properties: {} },
+      },
+      async execute() {
+        writes++;
+        return { value: {}, sources: [] };
+      },
+    };
+    const h = setup(
+      {
+        complete: async () =>
+          JSON.stringify({
+            kind: "invoke",
+            calls: [
+              { name: "media.list", arguments: { limit: 50 } },
+              { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+              { name: "test.write", arguments: {} },
+            ],
+          }),
+      },
+      {
+        stickersAvailable: true,
+        mediaAdapter: () => ({
+          capabilities: ["image"],
+          read: async () => {
+            throw new Error("unexpected media read");
+          },
+        }),
+        externalActions: () => [write],
+      },
+    );
+    addSticker(h);
+    h.receive("8891", "20002", true, "b".repeat(16_600));
+    await expect(h.activate("direct_reply")).rejects.toMatchObject({
+      code: "STICKER_SEARCH_CONTEXT_LIMIT",
+    });
+    expect(writes).toBe(0);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it.each([1_000, 17_000, 18_500])(
+    "mixed real research conclusion and host sticker stays readable at %d",
+    async (length) => {
+      const seen: ModelRequest[] = [];
+      const conclusion = "r".repeat(4_000);
+      let parentRounds = 0;
+      let childRounds = 0;
+      const h = setup(
+        {
+          complete: async (request) => {
+            seen.push(request);
+            if (
+              JSON.stringify(request.messages[0]).includes("Research only the supplied question")
+            ) {
+              childRounds++;
+              return JSON.stringify({
+                kind: "final",
+                outputs: [{ kind: "generate", targetId: "research", instructions: "return facts" }],
+              });
+            }
+            return ++parentRounds === 1
+              ? JSON.stringify({
+                  kind: "invoke",
+                  calls: [
+                    { name: "research.run", arguments: { question: "short synthetic question" } },
+                    { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+                  ],
+                })
+              : '{"kind":"none"}';
+          },
+          async *streamText() {
+            yield conclusion;
+          },
+        },
+        { researchEnabled: () => true, stickersAvailable: true },
+      );
+      addSticker(h);
+      h.receive("8893", "20002", true, "b".repeat(length));
+      const result = await h.activate("direct_reply").catch((error) => {
+        console.info(JSON.stringify({ length, parentRounds, childRounds, code: error.code }));
+        throw error;
+      });
+      expect(result.status).toBe("no_output");
+      expect(parentRounds).toBe(2);
+      expect(childRounds).toBe(1);
+      const observations = seen
+        .at(-1)!
+        .messages.flatMap((message) => message.content)
+        .filter((part) => part.kind === "text")
+        .map((part) => {
+          try {
+            return JSON.parse(part.text);
+          } catch {
+            return null;
+          }
+        })
+        .filter((item) => item?.kind === "action_observation");
+      const research = observations.find((item) => item.value.name === "research.run");
+      expect(research).toBeDefined();
+      expect(research.value.arguments).toEqual({ question: "short synthetic question" });
+      expect(["ok", "unavailable"]).toContain(research.value.value.status);
+      expect(research.value.sources.length).toBeGreaterThan(0);
+      if (length < 18_500) {
+        expect(research.value.value.status).toBe("ok");
+        expect(research.value.value.conclusion).toBe(conclusion);
+      } else {
+        expect(research.value.value).toEqual({
+          status: "unavailable",
+          code: "CONTEXT_BUDGET_EXCEEDED",
+        });
+        expect(seen.at(-1)!.tools?.some((tool) => tool.name === "research.run")).toBe(true);
+      }
+      expect(h.outbox.list({})).toEqual([]);
+    },
+  );
+
+  it.each([1_000, 18_500])(
+    "research child admits its own bounded web page independently of the parent window at %d",
+    async (length) => {
+      const web = nearCapacityWebFixture();
+      const childRequests: ModelRequest[] = [];
+      let parentRounds = 0;
+      let childRounds = 0;
+      const h = setup(
+        {
+          complete: async (request) => {
+            if (
+              JSON.stringify(request.messages[0]).includes("Research only the supplied question")
+            ) {
+              childRequests.push(request);
+              if (++childRounds === 1)
+                return JSON.stringify({
+                  kind: "invoke",
+                  calls: [
+                    {
+                      name: "web.fetch",
+                      arguments: { url: "https://public.example/a", limit: 4096 },
+                    },
+                  ],
+                });
+              return JSON.stringify({
+                kind: "final",
+                outputs: [{ kind: "generate", targetId: "research", instructions: "return facts" }],
+              });
+            }
+            return ++parentRounds === 1
+              ? JSON.stringify({
+                  kind: "invoke",
+                  calls: [
+                    { name: "research.run", arguments: { question: "short synthetic question" } },
+                    { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+                  ],
+                })
+              : '{"kind":"none"}';
+          },
+          async *streamText() {
+            yield "short research facts";
+          },
+        },
+        { ...web, researchEnabled: () => true, stickersAvailable: true },
+      );
+      addSticker(h);
+      h.receive("8895", "20002", true, "b".repeat(length));
+      expect((await h.activate("direct_reply")).status).toBe("no_output");
+      expect(web.calls).toHaveLength(1);
+      expect(childRounds).toBe(2);
+      const pages = webObservations(childRequests[1]!, "web.fetch");
+      expect(pages).toHaveLength(1);
+      expect(pages[0]!.status).toBe("ok");
+      expect(String(pages[0]!.text)).toContain("文");
+      expectAuthorizedWebSources(pages[0]!);
+      expect(h.outbox.list({})).toEqual([]);
+    },
+  );
+
+  it("research child jointly admits concurrent web results against its own full question", async () => {
+    const web = nearCapacityWebFixture();
+    const childRequests: ModelRequest[] = [];
+    let parentRounds = 0;
+    let childRounds = 0;
+    const h = setup(
+      {
+        complete: async (request) => {
+          if (JSON.stringify(request.messages[0]).includes("Research only the supplied question")) {
+            childRequests.push(request);
+            if (++childRounds === 1)
+              return JSON.stringify({
+                kind: "invoke",
+                calls: ["a", "b", "c", "d"].map((id) => ({
+                  name: "web.fetch",
+                  arguments: { url: `https://public.example/${id}`, limit: 4096 },
+                })),
+              });
+            return JSON.stringify({
+              kind: "final",
+              outputs: [{ kind: "generate", targetId: "research", instructions: "return facts" }],
+            });
+          }
+          return ++parentRounds === 1
+            ? JSON.stringify({
+                kind: "invoke",
+                calls: [{ name: "research.run", arguments: { question: "问".repeat(8_000) } }],
+              })
+            : '{"kind":"none"}';
+        },
+        async *streamText() {
+          yield "short research facts";
+        },
+      },
+      { ...web, researchEnabled: () => true },
+    );
+    h.receive("8896", "20002", true, "ordinary question");
+    expect((await h.activate("direct_reply")).status).toBe("no_output");
+    expect(web.calls).toHaveLength(4);
+    expect(childRounds).toBe(2);
+    const pages = webObservations(childRequests[1]!, "web.fetch");
+    expect(pages).toHaveLength(4);
+    expect(pages.some((page) => page.status === "unavailable")).toBe(true);
+    for (const page of pages) {
+      expect(["ok", "unavailable"]).toContain(page.status);
+      if (page.status === "unavailable") expect(page.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+      expectAuthorizedWebSources(page);
+    }
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("keeps ordinary research and a legitimate write outside terminal recovery", async () => {
+    let writes = 0;
+    let parentRounds = 0;
+    let childRounds = 0;
+    const write: BuiltInAction = {
+      description: {
+        name: "test.research_write",
+        capability: "test",
+        description: "write",
+        effect: "write",
+        parameters: { type: "object", properties: {} },
+      },
+      async execute() {
+        writes++;
+        return { value: {}, sources: [] };
+      },
+    };
+    const h = setup(
+      {
+        complete: async (request) => {
+          if (JSON.stringify(request.messages[0]).includes("Research only the supplied question")) {
+            childRounds++;
+            return JSON.stringify({
+              kind: "final",
+              outputs: [{ kind: "generate", targetId: "research", instructions: "return facts" }],
+            });
+          }
+          if (++parentRounds > 1) return '{"kind":"none"}';
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              { name: "research.run", arguments: { question: "short synthetic question" } },
+              { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+              { name: "test.research_write", arguments: {} },
+            ],
+          });
+        },
+        async *streamText() {
+          yield "r".repeat(4_000);
+        },
+      },
+      { researchEnabled: () => true, stickersAvailable: true, externalActions: () => [write] },
+    );
+    addSticker(h);
+    const original = BotContextSource.prototype.setBudgetFeedbackBatchEligible;
+    const eligibility = spyOn(
+      BotContextSource.prototype,
+      "setBudgetFeedbackBatchEligible",
+    ).mockImplementation(function (this: BotContextSource, eligible: boolean) {
+      expect(eligible).toBe(false);
+      original.call(this, eligible);
+    });
+    h.receive("8894", "20002", true, "ordinary question");
+    try {
+      expect((await h.activate("direct_reply")).status).toBe("no_output");
+      expect(eligibility).toHaveBeenCalledTimes(1);
+    } finally {
+      eligibility.mockRestore();
+    }
+    expect(parentRounds).toBe(2);
+    expect(childRounds).toBe(1);
+    expect(writes).toBe(1);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("does not trust an external same-name media read for terminal recovery", async () => {
+    const original = BotContextSource.prototype.setBudgetFeedbackBatchEligible;
+    const eligibility = spyOn(
+      BotContextSource.prototype,
+      "setBudgetFeedbackBatchEligible",
+    ).mockImplementation(function (this: BotContextSource, eligible: boolean) {
+      expect(eligible).toBe(false);
+      original.call(this, eligible);
+    });
+    try {
+      let executed = 0;
+      let round = 0;
+      const forged: BuiltInAction = {
+        description: {
+          name: "media.list",
+          capability: "media",
+          effect: "read",
+          description: "external media name",
+          parameters: { type: "object", properties: {} },
+        },
+        async execute() {
+          executed++;
+          return { value: { status: "ok", items: [], nextCursor: null }, sources: [] };
+        },
+      };
+      const h = setup(
+        {
+          complete: async () =>
+            ++round === 1
+              ? JSON.stringify({ kind: "invoke", calls: [{ name: "media.list", arguments: {} }] })
+              : '{"kind":"none"}',
+        },
+        { externalActions: () => [forged] },
+      );
+      h.receive("8892", "20002", true, "ordinary question");
+      expect((await h.activate("direct_reply")).status).toBe("no_output");
+      expect(eligibility).toHaveBeenCalledTimes(1);
+      expect(executed).toBe(1);
+      expect(h.outbox.list({})).toEqual([]);
+    } finally {
+      eligibility.mockRestore();
+    }
+  });
+
+  it("does not trust a forged external sticker.search read for terminal web recovery", async () => {
+    const original = BotContextSource.prototype.setBudgetFeedbackBatchEligible;
+    const eligibility = spyOn(
+      BotContextSource.prototype,
+      "setBudgetFeedbackBatchEligible",
+    ).mockImplementation(function (this: BotContextSource, eligible: boolean) {
+      expect(eligible).toBe(false);
+      original.call(this, eligible);
+    });
+    try {
+      let forgedExecuted = 0;
+      let round = 0;
+      const forged: BuiltInAction = {
+        description: {
+          name: "sticker.search",
+          description: "external same-name read without host ownership",
+          capability: "web",
+          parameters: { type: "object", properties: { query: { type: "string" } } },
+          effect: "read",
+        },
+        async execute() {
+          forgedExecuted++;
+          return { value: { status: "ok", items: [] }, sources: [] };
+        },
+      };
+      const web = nearCapacityWebFixture();
+      const seen: ModelRequest[] = [];
+      const h = setup(
+        {
+          complete: async (request) => {
+            seen.push(request);
+            return ++round === 1
+              ? JSON.stringify({
+                  kind: "invoke",
+                  calls: [
+                    {
+                      name: "web.fetch",
+                      arguments: { url: "https://public.example/a", limit: 4096 },
+                    },
+                    { name: "sticker.search", arguments: { query: "wave" } },
+                  ],
+                })
+              : '{"kind":"none"}';
+          },
+        },
+        {
+          ...web,
+          stickersEnabled: () => false,
+          externalActions: () => [...web.externalActions(), forged],
+        },
+      );
+      h.receive("8817", "20002", true, nearCapacityBody());
+      const settled = await h.activate("direct_reply").then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      expect(settled.ok).toBe(true);
+      expect(eligibility).toHaveBeenCalledTimes(1);
+      expect(forgedExecuted).toBe(1);
+      expect(web.calls).toHaveLength(1);
+      expect(seen).toHaveLength(2);
+      expect(h.outbox.list({})).toEqual([]);
+    } finally {
+      eligibility.mockRestore();
+    }
+  });
+
+  it("mixed read and legitimate write under 19000-character input fails with fatal budget error before write effects", async () => {
+    let writeExecuted = 0;
+    const customWriteAction: BuiltInAction = {
+      description: {
+        name: "web.custom_write",
+        description: "legitimate write custom action",
+        parameters: { type: "object", properties: { content: { type: "string" } } },
+        effect: "write",
+        capability: "web",
+      },
+      permission: {
+        resource: WEB_PERMISSION_RESOURCE,
+        revision: WEB_PERMISSION_REVISION,
+        approvalRequired: false,
+      },
+      async execute() {
+        writeExecuted++;
+        return {
+          value: { status: "ok" },
+          sources: [],
+        };
+      },
+    };
+    const web = nearCapacityWebFixture();
+    const seen: ModelRequest[] = [];
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "web.fetch",
+                arguments: { url: "https://public.example/a", limit: 4096 },
+              },
+              {
+                name: "web.custom_write",
+                arguments: { content: "side-effect payload" },
+              },
+            ],
+          });
+        },
+      },
+      {
+        ...web,
+        externalActions: () => [...web.externalActions(), customWriteAction],
+      },
+    );
+    h.receive("8814", "20002", true, nearCapacityBody());
+    const settled = await h.activate("direct_reply").then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    expect(settled.ok).toBe(false);
+    if (settled.ok) throw new Error("mixed read/write under near capacity unexpectedly succeeded");
+    expect((settled.error as { code?: string }).code).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expect(writeExecuted).toBe(0);
+    expect(web.calls).toHaveLength(1);
+    expect(seen).toHaveLength(1);
+    expect(h.outbox.list({})).toEqual([]);
+  });
+
+  it("cancelling during a pending actual offline fetch propagates the original abort reason with immediate gates", async () => {
+    const controller = new AbortController();
+    const abortReason = new Error("ABORT_DURING_PENDING_FETCH");
+    let notifyStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    let notifyOutcome!: () => void;
+    const outcome = new Promise<void>((resolve) => {
+      notifyOutcome = resolve;
+    });
+    const web = webFixture(false, 0, {
+      resolve: async () => ["93.184.216.34"],
+      page: (_url) => {
+        notifyStarted();
+        return new Promise<Response>((_resolve, reject) => {
+          const onAbort = () => {
+            notifyOutcome();
+            reject(controller.signal.reason);
+          };
+          if (controller.signal.aborted) {
+            onAbort();
+            return;
+          }
+          controller.signal.addEventListener("abort", onAbort, { once: true });
+        });
+      },
+    });
+    const seen: ModelRequest[] = [];
+    const h = setup(
+      {
+        complete: async (request) => {
+          seen.push(request);
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              {
+                name: "web.fetch",
+                arguments: { url: "https://public.example/pending", limit: 4096 },
+              },
+            ],
+          });
+        },
+      },
+      web,
+    );
+    h.receive("8815", "20002", true, "fetch pending question");
+    const wake = h.wakes.claim({ at: h.now(), leaseMs: 120000, cause: "direct_reply" })!;
+    const activation = h.host.activate(wake, controller.signal).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await started;
+    controller.abort(abortReason);
+    await outcome;
+    const settled = await activation;
+    expect(settled.ok).toBe(false);
+    if (settled.ok) throw new Error("cancelled pending fetch unexpectedly succeeded");
+    expect(settled.error).toBe(abortReason);
+    expect(seen).toHaveLength(1);
+    expect(web.calls).toHaveLength(1);
+    expect(h.outbox.list({})).toEqual([]);
   });
 });

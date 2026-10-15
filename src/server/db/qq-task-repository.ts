@@ -83,6 +83,60 @@ function identityOf(task: QqConversationTaskRow): QqConversationTaskIdentity {
   };
 }
 
+function hasQqConversationTaskSlot(
+  orm: Orm,
+  input: {
+    conversationId: string;
+    taskClass: QqConversationTaskClass;
+    cause: QqConversationTaskCause;
+    judgementDone: number;
+    limits: Readonly<QqConversationTaskLimits>;
+  },
+): boolean {
+  const running = clientOf(orm)
+    .query(`SELECT COUNT(*) AS n FROM qq_conversation_tasks
+      WHERE conversation_id=? AND task_class=? AND status='running'`)
+    .get(input.conversationId, input.taskClass) as { n: number };
+  if (
+    running.n >=
+    input.limits[input.taskClass === "mention" ? "mentionTaskLimit" : "ordinaryTaskLimit"]
+  )
+    return false;
+  if (input.cause === "chiming_in" && input.judgementDone === 0) {
+    const held = clientOf(orm)
+      .query(`SELECT 1 AS yes FROM qq_conversation_tasks
+        WHERE conversation_id=? AND cause='chiming_in' AND task_class='ordinary'
+          AND status='running' AND judgement_done=0 LIMIT 1`)
+      .get(input.conversationId);
+    if (held) return false;
+  }
+  return true;
+}
+
+export function canAcceptQqChimingOpportunity(
+  orm: Orm,
+  conversationId: string,
+  limits: Readonly<QqConversationTaskLimits>,
+): boolean {
+  if (
+    !hasQqConversationTaskSlot(orm, {
+      conversationId,
+      taskClass: "ordinary",
+      cause: "chiming_in",
+      judgementDone: 0,
+      limits,
+    })
+  )
+    return false;
+  return (
+    clientOf(orm)
+      .query(`SELECT 1 AS yes FROM qq_conversation_tasks
+        WHERE conversation_id=? AND task_class='ordinary' AND cause='chiming_in'
+          AND status='pending' AND cancellation_requested=0 AND judgement_done=0 LIMIT 1`)
+      .get(conversationId) === null
+  );
+}
+
 function requireSourceState(
   guard: QqConversationTaskSourceGuard,
   orm: Orm,
@@ -420,23 +474,16 @@ export function claimNextQqConversationTask(
           limits = resolveQqConversationTaskLimits(input.limitsFor(identityOf(candidate)));
           limitsByConversation.set(candidate.conversationId, limits);
         }
-        const running = clientOf(tx)
-          .query(`SELECT COUNT(*) AS n FROM qq_conversation_tasks
-          WHERE conversation_id=? AND task_class=? AND status='running'`)
-          .get(candidate.conversationId, candidate.taskClass) as { n: number };
         if (
-          running.n >=
-          limits[candidate.taskClass === "mention" ? "mentionTaskLimit" : "ordinaryTaskLimit"]
+          !hasQqConversationTaskSlot(tx, {
+            conversationId: candidate.conversationId,
+            taskClass: candidate.taskClass as QqConversationTaskClass,
+            cause: candidate.cause as QqConversationTaskCause,
+            judgementDone: candidate.judgementDone,
+            limits,
+          })
         )
           continue;
-        if (candidate.cause === "chiming_in" && candidate.judgementDone === 0) {
-          const held = clientOf(tx)
-            .query(`SELECT 1 AS yes FROM qq_conversation_tasks
-            WHERE conversation_id=? AND cause='chiming_in' AND task_class='ordinary'
-              AND status='running' AND judgement_done=0 LIMIT 1`)
-            .get(candidate.conversationId);
-          if (held) continue;
-        }
         const frozen = candidate.executionSnapshot
           ? QqTaskExecutionSnapshotSchema.parse(JSON.parse(candidate.executionSnapshot))
           : QqTaskExecutionSnapshotSchema.parse(input.freezeAtClaim(tx, candidate, limits));
@@ -638,6 +685,19 @@ export function ownsQqConversationTaskLease(
   });
 }
 
+export type QqConversationTaskLeaseLossReason =
+  | "task_missing"
+  | "not_running"
+  | "token_mismatch"
+  | "lease_expired"
+  | "cancel_requested"
+  | "source_expired"
+  | "source_revoked";
+
+export type QqConversationTaskLeaseRenewal =
+  | { status: "renewed" }
+  | { status: "lost"; reason: QqConversationTaskLeaseLossReason };
+
 export function renewQqConversationTaskLease(
   orm: Orm,
   input: {
@@ -647,31 +707,36 @@ export function renewQqConversationTaskLease(
     leaseExpiresAt: string;
     sourceState: QqConversationTaskSourceGuard;
   },
-): boolean {
+): QqConversationTaskLeaseRenewal {
   return immediate(orm, (tx) => {
     const task = currentRow(tx, input.taskId);
+    if (!task) return { status: "lost", reason: "task_missing" };
+    if (task.status !== "running") return { status: "lost", reason: "not_running" };
+    if (task.leaseToken !== input.leaseToken) return { status: "lost", reason: "token_mismatch" };
+    if (!task.leaseExpiresAt || task.leaseExpiresAt <= input.at)
+      return { status: "lost", reason: "lease_expired" };
+    if (task.cancellationRequested !== 0) return { status: "lost", reason: "cancel_requested" };
+
+    const source = sourceStateOrTerminalize(tx, task, input.sourceState, input.at);
+    if (source.state === "expired") return { status: "lost", reason: "source_expired" };
+    if (source.state === "revoked") return { status: "lost", reason: "source_revoked" };
+    if (source.task?.status !== "running") return { status: "lost", reason: "not_running" };
     if (
-      task?.status !== "running" ||
-      task.leaseToken !== input.leaseToken ||
-      !task.leaseExpiresAt ||
-      task.leaseExpiresAt <= input.at ||
-      task.cancellationRequested !== 0
-    )
-      return false;
-    const state = sourceStateOrTerminalize(tx, task, input.sourceState, input.at);
-    if (
-      !state.task ||
-      state.state !== "valid" ||
-      Date.parse(input.leaseExpiresAt) <= Date.parse(input.at)
-    )
-      return false;
-    return (
+      source.task.sourceExpiresAt &&
+      Date.parse(source.task.sourceExpiresAt) <= Date.parse(input.at)
+    ) {
+      terminalizeSource(tx, source.task, "expired", input.at);
+      return { status: "lost", reason: "source_expired" };
+    }
+    if (Date.parse(input.leaseExpiresAt) <= Date.parse(input.at))
+      return { status: "lost", reason: "lease_expired" };
+    const renewed =
       tx
         .update(schema.qqConversationTasks)
         .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: input.at })
         .where(
           and(
-            eq(schema.qqConversationTasks.id, task.id),
+            eq(schema.qqConversationTasks.id, source.task.id),
             eq(schema.qqConversationTasks.status, "running"),
             eq(schema.qqConversationTasks.leaseToken, input.leaseToken),
             gt(schema.qqConversationTasks.leaseExpiresAt, input.at),
@@ -679,8 +744,8 @@ export function renewQqConversationTaskLease(
           ),
         )
         .returning()
-        .get() !== undefined
-    );
+        .get() !== undefined;
+    return renewed ? { status: "renewed" } : { status: "lost", reason: "lease_expired" };
   });
 }
 

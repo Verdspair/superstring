@@ -67,6 +67,182 @@ function parent(spans: RuntimeSpan[], child: RuntimeSpan) {
 }
 
 describe("Agent runtime execution traces", () => {
+  it("merges read-call-local measured stage scalars into the same context span", async () => {
+    const f = setup();
+    const order: string[] = [];
+    let measured = 0,
+      hookPresent = false;
+    await f.runtime.run(main, {
+      owner,
+      conversationId: f.conversation.id,
+      authorizedTargets: [],
+      outputMode: "buffered",
+      context: {
+        async read(
+          input: Parameters<Parameters<AgentRuntime["run"]>[1]["context"]["read"]>[0] & {
+            onReadTimings?: (timings: { readPreludeMs?: number }) => void;
+          },
+        ) {
+          order.push("read");
+          const started = performance.now();
+          await Promise.resolve();
+          measured = performance.now() - started;
+          hookPresent = typeof input.onReadTimings === "function";
+          input.onReadTimings?.({ readPreludeMs: measured });
+          return { pending: [textMessage("user", "PRIVATE_READ_TIMING")] };
+        },
+      },
+      onContext() {
+        order.push("host");
+      },
+    });
+    expect(order).toEqual(["read", "host"]);
+    expect(hookPresent).toBe(true);
+    const contexts = f.spans.page({}).items.filter((span) => span.name === "agent.context");
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.details.readPreludeMs).toBe(measured);
+    expect(Number.isFinite(contexts[0]?.details.readPreludeMs)).toBe(true);
+    expect(contexts[0]?.details.readViewMs).toBeUndefined();
+    expect(contexts[0]?.details.onContextPresent).toBe(true);
+    expect(JSON.stringify(contexts)).not.toContain("PRIVATE_");
+  });
+
+  it("records measured context read, render and awaited host callback phases in the existing trace", async () => {
+    const order: string[] = [];
+    let enteredRead!: () => void, releaseRead!: () => void;
+    let enteredCallback!: () => void, releaseCallback!: () => void;
+    const readEntered = new Promise<void>((resolve) => {
+      enteredRead = resolve;
+    });
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const callbackEntered = new Promise<void>((resolve) => {
+      enteredCallback = resolve;
+    });
+    const callbackGate = new Promise<void>((resolve) => {
+      releaseCallback = resolve;
+    });
+    const f = setup({
+      complete: async () => {
+        order.push("model");
+        return '{"kind":"none"}';
+      },
+    });
+    const running = f.runtime.run(main, {
+      owner,
+      conversationId: f.conversation.id,
+      authorizedTargets: [],
+      outputMode: "buffered",
+      context: {
+        async read() {
+          order.push("read-start");
+          enteredRead();
+          await readGate;
+          order.push("read-end");
+          return { pending: [textMessage("user", "PRIVATE_PHASE_INPUT")] };
+        },
+      },
+      async onContext(context, meta) {
+        expect(meta.phase).toBe("next");
+        expect(context.units).toBeGreaterThan(0);
+        order.push("callback-start");
+        enteredCallback();
+        await callbackGate;
+        order.push("callback-end");
+      },
+    });
+    try {
+      await readEntered;
+      expect(order).toEqual(["read-start"]);
+      expect(f.spans.page({}).items.find((span) => span.name === "agent.context")?.status).toBe(
+        "started",
+      );
+      releaseRead();
+      await callbackEntered;
+      expect(order).toEqual(["read-start", "read-end", "callback-start"]);
+      releaseCallback();
+      await running;
+    } finally {
+      releaseRead();
+      releaseCallback();
+      await Promise.allSettled([running]);
+    }
+    expect(order).toEqual(["read-start", "read-end", "callback-start", "callback-end", "model"]);
+    const context = f.spans.page({}).items.find((span) => span.name === "agent.context");
+    expect(context?.status).toBe("completed");
+    expect(context?.details.onContextPresent).toBe(true);
+    for (const key of ["contextReadMs", "contextRenderMs", "onContextMs"]) {
+      const duration = context?.details[key];
+      expect(typeof duration).toBe("number");
+      expect(Number.isFinite(duration)).toBe(true);
+      expect(Number(duration)).toBeGreaterThanOrEqual(0);
+    }
+    expect(JSON.stringify(context)).not.toContain("PRIVATE_");
+  });
+
+  it("keeps a failed context read's measured duration without fabricating later phases or invoking model hooks", async () => {
+    const order: string[] = [];
+    let entered!: () => void, release!: () => void;
+    const enteredRead = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const failure = Object.assign(new Error("PRIVATE_CONTEXT_ERROR"), {
+      code: "CONTEXT_SOURCE_INVALID",
+    });
+    const f = setup({
+      complete: async () => {
+        order.push("model");
+        return '{"kind":"none"}';
+      },
+    });
+    const running = f.runtime.run(main, {
+      owner,
+      conversationId: f.conversation.id,
+      authorizedTargets: [],
+      outputMode: "buffered",
+      context: {
+        async read() {
+          order.push("read-start");
+          entered();
+          await gate;
+          throw failure;
+        },
+      },
+      onContext() {
+        order.push("callback");
+      },
+    });
+    const captured = running.then(
+      () => {
+        throw new Error("Expected context read rejection");
+      },
+      (error: unknown) => error,
+    );
+    try {
+      await enteredRead;
+      release();
+      expect(await captured).toBe(failure);
+    } finally {
+      release();
+      await Promise.allSettled([running]);
+    }
+    expect(order).toEqual(["read-start"]);
+    const context = f.spans.page({}).items.find((span) => span.name === "agent.context");
+    expect(context?.status).toBe("failed");
+    expect(context?.code).toBe("CONTEXT_SOURCE_INVALID");
+    expect(context?.details.onContextPresent).toBe(true);
+    expect(typeof context?.details.contextReadMs).toBe("number");
+    expect(Number.isFinite(context?.details.contextReadMs)).toBe(true);
+    expect(Number(context?.details.contextReadMs)).toBeGreaterThanOrEqual(0);
+    expect(context?.details.contextRenderMs).toBeUndefined();
+    expect(context?.details.onContextMs).toBeUndefined();
+    expect(JSON.stringify(context)).not.toContain("PRIVATE_");
+  });
+
   it("persists live run/model spans and nests context, action, vision and sticker leaves in the hosted Web trace", async () => {
     let enter!: () => void, release!: () => void;
     const entered = new Promise<void>((r) => {

@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import type { ConversationSummaryFacts } from "../agent/conversation-compression";
 import { bodyRevision } from "../db/conversation-event-repository";
 import { memoryRevision } from "../db/memory-content-repository";
-import { readQqConversationSummary } from "../db/qq-summary-repository";
+import { readQqConversationSummary, resolveQqSummaryProvenance } from "../db/qq-summary-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import {
   qqMessageFactConsumableCap,
@@ -244,6 +245,7 @@ export function inTimeline(
   scope: BotEvidenceScope,
   kind: string,
   id: string,
+  now?: string,
 ): boolean {
   const direct = db.query(`SELECT 1 FROM conversation_events e
     WHERE e.conversation_id=? AND e.source_kind=? AND e.source_id=?
@@ -251,7 +253,7 @@ export function inTimeline(
         SELECT 1 FROM qq_send_log l WHERE l.id=e.source_id AND l.outcome='sent')) LIMIT 1`);
   if (direct.get(scope.conversationId, kind, id)) return true;
   if (kind === "qq_observation" && direct.get(scope.conversationId, "qq_event", id)) return true;
-  return !!db
+  const secondary = db
     .query(`SELECT 1 FROM conversation_events e WHERE e.conversation_id=? AND
     e.kind IN ('inbound','outbound') AND (e.source_kind<>'qq_send' OR EXISTS(
       SELECT 1 FROM qq_send_log l WHERE l.id=e.source_id AND l.outcome='sent')) AND
@@ -260,6 +262,149 @@ export function inTimeline(
       THEN e.sources ELSE '[]' END) s WHERE s.type='object'
       AND json_extract(s.value,'$.kind')=? AND json_extract(s.value,'$.id')=?)) LIMIT 1`)
     .get(scope.conversationId, id, kind, kind, kind, id);
+  if (secondary) return true;
+  if (kind !== "qq_speech" || !evidenceScopeExists(db, scope)) return false;
+
+  // A confirmed send and its legacy speech share one exact identity. This path
+  // proves their existing delivery ownership; it does not create journal evidence.
+  const links = db
+    .query(`SELECT i.id AS intentId,i.conversation_id AS conversationId,
+    ${bounded("i.target")} AS target,i.status AS intentStatus,i.expires_at AS intentExpiry,
+    l.outcome,l.account_id AS sendAccount,l.conversation_kind AS sendKind,
+    l.peer_id AS sendPeer,l.agent_id AS sendAgent,l.kind AS sendSpeechKind,l.expires_at AS sendExpiry,
+    s.account_id AS speechAccount,s.conversation_kind AS speechKind,
+    s.peer_id AS speechPeer,s.agent_id AS speechAgent,s.kind AS speechPath,s.expires_at AS speechExpiry,
+    ${bounded("t.body")} AS body,t.expires_at AS bodyExpiry,i.speech_kind AS intentPath
+    FROM outbound_intents i JOIN qq_send_log l ON l.id=i.legacy_send_id
+    JOIN qq_speech_log s ON s.id=l.id JOIN qq_speech_text t ON t.speech_id=s.id
+    WHERE i.legacy_send_id=? LIMIT 2`)
+    .all(id) as {
+    intentId: string;
+    conversationId: string;
+    target: string | null;
+    intentStatus: string;
+    intentExpiry: string;
+    outcome: string;
+    sendAccount: string;
+    sendKind: string;
+    sendPeer: string;
+    sendAgent: string;
+    sendSpeechKind: string;
+    sendExpiry: string;
+    speechAccount: string;
+    speechKind: string;
+    speechPeer: string;
+    speechAgent: string;
+    speechPath: string;
+    speechExpiry: string;
+    body: string | null;
+    bodyExpiry: string;
+    intentPath: string;
+  }[];
+  if (links.length !== 1) return false;
+  const link = links[0];
+  if (
+    !link ||
+    link.conversationId !== scope.conversationId ||
+    link.intentStatus !== "confirmed" ||
+    link.outcome !== "sent" ||
+    !link.body ||
+    link.sendAccount !== scope.accountId ||
+    link.sendKind !== scope.conversationKind ||
+    link.sendPeer !== scope.peerId ||
+    link.sendAgent !== scope.agentId ||
+    link.speechAccount !== scope.accountId ||
+    link.speechKind !== scope.conversationKind ||
+    link.speechPeer !== scope.peerId ||
+    link.speechAgent !== scope.agentId ||
+    link.intentPath !== link.sendSpeechKind ||
+    link.intentPath !== link.speechPath ||
+    !expiry(now ?? new Date().toISOString(), [
+      link.intentExpiry,
+      link.sendExpiry,
+      link.speechExpiry,
+      link.bodyExpiry,
+    ])
+  )
+    return false;
+  const target = parse(link.target) as Record<string, unknown> | null;
+  if (
+    !target ||
+    typeof target !== "object" ||
+    Array.isArray(target) ||
+    [
+      "accountId",
+      "conversationKind",
+      "peerId",
+      "agentId",
+      "bindingId",
+      "bindingEpoch",
+      "authorityRevision",
+    ].some((key) => target[key] !== scope[key as keyof BotEvidenceScope])
+  )
+    return false;
+  const journal = db
+    .query(`SELECT 1 FROM conversation_events
+    WHERE conversation_id=? AND kind='delivery' AND source_kind='outbound_intent' AND source_id=? LIMIT 1`)
+    .get(scope.conversationId, link.intentId);
+  if (!journal) return false;
+  const parts = db
+    .query(`SELECT ordinal,kind,status,platform_message_id AS platformId,
+    attempted_at AS attemptedAt,finished_at AS finishedAt,${bounded("payload")} AS payload
+    FROM outbound_parts WHERE intent_id=? ORDER BY ordinal LIMIT ?`)
+    .all(link.intentId, LINKS + 1) as {
+    ordinal: number;
+    kind: string;
+    status: string;
+    platformId: string | null;
+    attemptedAt: string | null;
+    finishedAt: string | null;
+    payload: string | null;
+  }[];
+  const receipts = db
+    .query(`SELECT part_index AS ordinal,part_kind AS kind,result,
+    platform_message_id AS platformId,sticker_id AS stickerId
+    FROM qq_send_part WHERE send_id=? ORDER BY part_index LIMIT ?`)
+    .all(id, LINKS + 1) as {
+    ordinal: number;
+    kind: string;
+    result: string;
+    platformId: string | null;
+    stickerId: string | null;
+  }[];
+  if (!parts.length || parts.length > LINKS || receipts.length !== parts.length) return false;
+  const texts: string[] = [];
+  const platformIds = new Set<string>();
+  for (const [index, part] of parts.entries()) {
+    const receipt = receipts[index];
+    if (
+      !receipt ||
+      part.ordinal !== index ||
+      receipt.ordinal !== part.ordinal ||
+      receipt.kind !== part.kind ||
+      receipt.result !== "confirmed" ||
+      part.status !== "confirmed" ||
+      !part.platformId ||
+      receipt.platformId !== part.platformId ||
+      platformIds.has(part.platformId) ||
+      part.attemptedAt === null ||
+      part.finishedAt === null ||
+      !Number.isFinite(Date.parse(part.attemptedAt)) ||
+      !Number.isFinite(Date.parse(part.finishedAt))
+    )
+      return false;
+    platformIds.add(part.platformId);
+    const payload = parse(part.payload) as Record<string, unknown> | null;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    if (part.kind === "text") {
+      if (typeof payload.text !== "string" || receipt.stickerId !== null) return false;
+      texts.push(payload.text);
+    } else if (part.kind === "sticker") {
+      if (typeof payload.stickerId !== "string" || payload.stickerId !== receipt.stickerId)
+        return false;
+    } else return false;
+  }
+  return texts.length > 0 && texts.join("\n") === link.body;
 }
 function qqBody(
   db: Database,
@@ -268,7 +413,7 @@ function qqBody(
   id: string,
   now: string,
 ): { text: string; source: SourceRef } | null {
-  if (!inTimeline(db, scope, kind, id)) return null;
+  if (!inTimeline(db, scope, kind, id, now)) return null;
   const args = [id, scope.accountId, scope.conversationKind, scope.peerId, scope.agentId];
   if (kind === "qq_media") {
     const row = db
@@ -425,31 +570,16 @@ function botSummary(
       expiresAt: expiry(now, [source.expiresAt, s.expiresAt ?? source.expiresAt]) ?? undefined,
     });
   }
-  if (
-    item.facts.some(
-      (f) =>
-        !f ||
-        typeof f.text !== "string" ||
-        !Array.isArray(f.source_ids) ||
-        !f.source_ids.length ||
-        f.source_ids.some((id) => {
-          const tuples = typeof id === "string" ? parse(id) : null;
-          return (
-            !Array.isArray(tuples) ||
-            !tuples.length ||
-            tuples.some(
-              (t) =>
-                !Array.isArray(t) ||
-                t.length !== 3 ||
-                !sources.some((s) => s.kind === t[0] && s.id === t[1] && s.revision === t[2]),
-            )
-          );
-        }),
-    )
-  )
-    return null;
+  let facts: ConversationSummaryFacts;
+  try {
+    facts = resolveQqSummaryProvenance(item, sources);
+  } catch (error) {
+    if (error instanceof SyntaxError || (error instanceof Error && error.name === "ZodError"))
+      return null;
+    throw error;
+  }
   return record(
-    JSON.stringify(item.facts),
+    JSON.stringify(facts),
     `QQ summary #${item.fromSeq}–${item.throughSeq}`,
     sources,
     stored,

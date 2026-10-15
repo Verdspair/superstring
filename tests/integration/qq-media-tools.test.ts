@@ -843,11 +843,28 @@ describe("run-scoped QQ media tools", () => {
     const f = open();
     try {
       f.image("img-1");
-      const tool = f.mount({ fit: async () => () => false });
+      const tool = f.mount({
+        fit: async () => (value) => (value as { code?: string }).code === "CONTEXT_BUDGET_EXCEEDED",
+      });
       const { ctx } = f.context();
       const denied = await tool.execute("media.list", {}, ctx);
       expect(denied.value).toEqual({ status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" });
       expect(denied.sources).toEqual([]);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("rejects when even the full budget refusal cannot be admitted", async () => {
+    const f = open();
+    try {
+      f.image("img-no-room");
+      const tool = f.mount({ fit: async () => () => false });
+      const { ctx } = f.context();
+      await expect(tool.execute("media.list", {}, ctx)).rejects.toMatchObject({
+        code: "CONTEXT_BUDGET_EXCEEDED",
+      });
+      expect(tool.stats.calls).toBe(0);
     } finally {
       f.h.close();
     }
@@ -1338,7 +1355,10 @@ describe("run-scoped QQ media tools", () => {
       const img = f.image("img-1");
       let allowed = false;
       const tool = f.mount({
-        fit: async (name) => (name === "media.describe" ? () => allowed : () => true),
+        fit: async (name) =>
+          name === "media.describe"
+            ? (value) => allowed || (value as { code?: string }).code === "CONTEXT_BUDGET_EXCEEDED"
+            : () => true,
       });
       const { ctx } = f.context("run-budget");
       await tool.execute("media.list", {}, ctx);
@@ -1436,6 +1456,491 @@ describe("run-scoped QQ media tools", () => {
       // 表里已有 1 个游标，另有 511 次续页各存 1 个；第 512 个游标起只回安全拒绝值。
       expect(ok).toBe(511);
       expect(refused).toEqual({ status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" });
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("rejects first-batch media.describe without prior media.list with CONTEXT_INVALID_SELECTION, then succeeds after public media.list", async () => {
+    const f = open();
+    try {
+      const img = f.image("first-batch-describe");
+      const tool = f.mount({ read: async () => "测试描述" });
+      const { ctx } = f.context("first-batch-run");
+      const executor = new ActionExecutor();
+      const describeAction = tool.named("media.describe");
+      const listAction = tool.named("media.list");
+
+      await expect(
+        executor.executeBatch([{ action: describeAction, arguments: { id: img.id } }], ctx),
+      ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+      expect(tool.stats.calls).toBe(0);
+      expect(f.h.db.query("SELECT id FROM qq_media_read_tasks").all()).toHaveLength(0);
+
+      const listResult = await executor.executeBatch([{ action: listAction, arguments: {} }], ctx);
+      const page = expectOkPage(listResult[0]?.value);
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]?.id).toBe(img.id);
+      expect(page.nextCursor).toBeNull();
+
+      const describeResult = await executor.executeBatch(
+        [{ action: describeAction, arguments: { id: img.id } }],
+        ctx,
+      );
+      expect(describeResult[0]?.value).toMatchObject({
+        status: "described",
+        described: true,
+        attempt: 1,
+        id: img.id,
+      });
+      expect(describeResult[0]?.sources.length).toBeGreaterThan(0);
+      expect(tool.stats.calls).toBe(1);
+      expect(
+        f.h.db.query("SELECT attempts FROM qq_media_read_tasks WHERE media_note_id=?").all(img.id),
+      ).toEqual([{ attempts: 1 }]);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("recovers through the public list inside one active runtime run: first describe without a pre-list gets the standard feedback, then list, describe, reply", async () => {
+    const f = open();
+    try {
+      const img = f.image("runtime-activation");
+      const media = f.mount({ read: async () => "甲乙丙丁" });
+      const actions = media.actions;
+      const list = media.named("media.list");
+      const described = media.named("media.describe");
+      const repository = new AgentRunRepository(f.h.db);
+      let modelCalls = 0;
+      const bound: ActionContext[] = [];
+      const runtime = new AgentRuntime({
+        repository,
+        actions,
+        model: {
+          async complete(request) {
+            modelCalls++;
+            if (modelCalls === 1) {
+              // 首步决策不得看到任何已披露列表：bindRun 只登记，不做 media.list。
+              expect(
+                request.messages
+                  .flatMap((message) =>
+                    message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+                  )
+                  .join("\n"),
+              ).not.toContain("action_observation");
+              return JSON.stringify({
+                kind: "invoke",
+                name: "media.describe",
+                arguments: { id: img.id },
+              });
+            }
+            const observations = request.messages
+              .flatMap((message) =>
+                message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+              )
+              .map((text) => {
+                try {
+                  return JSON.parse(text) as {
+                    kind?: string;
+                    value?: { name?: string; value?: unknown };
+                  };
+                } catch {
+                  return null;
+                }
+              })
+              .filter(
+                (
+                  item,
+                ): item is {
+                  kind: "action_observation";
+                  value: { name: string; value: unknown };
+                } => item?.kind === "action_observation" && typeof item.value?.name === "string",
+              );
+            if (modelCalls === 2) {
+              expect(observations.map((item) => item.value.name)).toEqual(["media.describe"]);
+              expect(observations[0]?.value.value).toEqual({
+                status: "unavailable",
+                code: "CONTEXT_INVALID_SELECTION",
+                recoverable: true,
+              });
+              return JSON.stringify({
+                kind: "invoke",
+                name: "media.list",
+                arguments: {},
+              });
+            }
+            if (modelCalls === 3) {
+              expect(observations.map((item) => item.value.name)).toEqual([
+                "media.describe",
+                "media.list",
+              ]);
+              const page = observations[1]?.value.value as {
+                status?: string;
+                items?: { id: string }[];
+              };
+              expect(page.status).toBe("ok");
+              expect(page.items?.map((item) => item.id)).toEqual([img.id]);
+              return JSON.stringify({
+                kind: "invoke",
+                name: "media.describe",
+                arguments: { id: page.items?.[0]?.id },
+              });
+            }
+            expect(observations.map((item) => item.value.name)).toEqual([
+              "media.describe",
+              "media.list",
+              "media.describe",
+            ]);
+            expect(observations[2]?.value.value).toMatchObject({
+              status: "described",
+              described: true,
+              attempt: 1,
+              id: img.id,
+              model: "vision-local",
+              text: "甲乙丙丁",
+            });
+            return JSON.stringify({
+              kind: "invoke",
+              name: "speech.reply",
+              arguments: {
+                outputs: [{ kind: "inline", targetId: "peer", text: "已按列表描述图片" }],
+              },
+            });
+          },
+          async *streamText() {},
+          async completeMultimodal() {
+            throw new Error("not used");
+          },
+        },
+      });
+      const actionDescriptions = [
+        list.description,
+        described.description,
+        SPEECH_REPLY_DESCRIPTION,
+      ];
+      const agentSpec: AgentSpec = {
+        id: "qq.runtime-activation.test",
+        version: "1",
+        model: "synthetic-model",
+        instructions: "Describe the image through the public list, then reply.",
+        context: "conversation",
+        availableActions: actionDescriptions,
+        limits: { steps: 6 },
+      };
+      const result = await runtime.run(agentSpec, {
+        owner: {
+          kind: "conversation",
+          id: f.conversation.id,
+          userId: DEFAULT_USER_ID,
+          agentId: AGENT,
+        },
+        conversationId: f.conversation.id,
+        authorizedTargets: ["peer"],
+        outputMode: "buffered",
+        terminalAction: {
+          descriptions: [SPEECH_REPLY_DESCRIPTION],
+          parse: (calls) => {
+            if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+              throw new Error("invalid terminal reply contribution");
+            return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
+          },
+        },
+        actions,
+        context: {
+          bindRun(actionContext) {
+            bound.push(actionContext);
+          },
+          async read() {
+            return { pending: [textMessage("user", "看看这张图")] };
+          },
+          assertCurrent() {},
+        },
+      });
+      expect(result.status).toBe("completed");
+      expect(result.outputs).toMatchObject([{ targetId: "peer", text: "已按列表描述图片" }]);
+      expect(modelCalls).toBe(4);
+      expect(repository.getRun(result.runId)?.steps.map((step) => step.phase)).toEqual([
+        "next",
+        "next",
+        "next",
+        "next",
+      ]);
+      expect(bound).toHaveLength(1);
+      expect(media.stats.calls).toBe(1);
+      expect(
+        f.h.db.query("SELECT attempts FROM qq_media_read_tasks WHERE media_note_id=?").all(img.id),
+      ).toEqual([{ attempts: 1 }]);
+      // 运行结束释放运行态：abort 监听被回收。
+      const boundContext = bound[0];
+      if (!boundContext) throw new Error("runtime did not bind the action context");
+      expect(getEventListeners(boundContext.signal, "abort")).toHaveLength(0);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("binds one run state for an active runtime that uses no actions and releases it with zero effect", async () => {
+    const f = open();
+    try {
+      let fitCalls = 0;
+      const media = f.mount({
+        fit: async () => {
+          fitCalls++;
+          return () => true;
+        },
+      });
+      const repository = new AgentRunRepository(f.h.db);
+      let modelCalls = 0;
+      const bound: ActionContext[] = [];
+      // 只统计媒体 bindRun 钩子窗口内的 h.db.query 方法调用：0 次＝初始化没有执行任何 SQL
+      // （query 都要经 query() 预备，0 次调用即 0 条语句）；运行期其它 SQL 不计入。
+      const queryMethod = f.h.db.query;
+      const runQuery = queryMethod.bind(f.h.db);
+      let bindQueryCalls = 0;
+      const bindListenerCounts: number[] = [];
+      const actions = media.actions.map((action) => {
+        const bind = action.bindRun;
+        if (!bind) return action;
+        return {
+          ...action,
+          bindRun: (context: ActionContext) => {
+            f.h.db.query = (...args: Parameters<typeof queryMethod>) => {
+              bindQueryCalls++;
+              return runQuery(...args);
+            };
+            try {
+              bind(context);
+            } finally {
+              f.h.db.query = queryMethod;
+            }
+            bindListenerCounts.push(getEventListeners(context.signal, "abort").length);
+          },
+        };
+      });
+      const runtime = new AgentRuntime({
+        repository,
+        actions,
+        model: {
+          async complete() {
+            modelCalls++;
+            return JSON.stringify({ kind: "none" });
+          },
+          async *streamText() {},
+          async completeMultimodal() {
+            throw new Error("not used");
+          },
+        },
+      });
+      const result = await runtime.run(
+        {
+          id: "qq.runtime-bind-none.test",
+          version: "1",
+          model: "synthetic-model",
+          instructions: "Decide without touching media.",
+          context: "conversation",
+          availableActions: [
+            media.named("media.list").description,
+            media.named("media.describe").description,
+          ],
+          limits: { steps: 4 },
+        },
+        {
+          owner: {
+            kind: "conversation",
+            id: f.conversation.id,
+            userId: DEFAULT_USER_ID,
+            agentId: AGENT,
+          },
+          conversationId: f.conversation.id,
+          authorizedTargets: ["peer"],
+          outputMode: "buffered",
+          actions,
+          context: {
+            bindRun(actionContext) {
+              bound.push(actionContext);
+            },
+            async read() {
+              return { pending: [textMessage("user", "今天先不用看图")] };
+            },
+            assertCurrent() {},
+          },
+        },
+      );
+      expect(result.status).toBe("no_output");
+      expect(modelCalls).toBe(1);
+      expect(new Set(bound).size).toBe(1);
+      expect(bindQueryCalls).toBe(0);
+      expect(fitCalls).toBe(0);
+      expect(media.stats.calls).toBe(0);
+      expect(media.stats.described).toEqual([]);
+      expect(f.h.db.query("SELECT id FROM qq_media_read_tasks").all()).toHaveLength(0);
+      const boundContext = bound[0];
+      if (!boundContext) throw new Error("runtime did not bind the action context");
+      // 钩子期间信号就是公开 context.bindRun 捕获的那个；重复 bind 幂等：监听恒为 1。
+      expect(bindListenerCounts).not.toHaveLength(0);
+      expect(bindListenerCounts.every((count) => count === 1)).toBe(true);
+      expect(getEventListeners(boundContext.signal, "abort")).toHaveLength(0);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("keeps a premature forged-cursor media.list fatal inside an active runtime and cleans the run state", async () => {
+    const f = open();
+    try {
+      const media = f.mount();
+      const actions = media.actions;
+      const repository = new AgentRunRepository(f.h.db);
+      let modelCalls = 0;
+      const bound: ActionContext[] = [];
+      const runtime = new AgentRuntime({
+        repository,
+        actions,
+        model: {
+          async complete() {
+            modelCalls++;
+            return JSON.stringify({
+              kind: "invoke",
+              name: "media.list",
+              arguments: { cursor: "forged-token" },
+            });
+          },
+          async *streamText() {},
+          async completeMultimodal() {
+            throw new Error("not used");
+          },
+        },
+      });
+      const error = await rejection(
+        runtime.run(
+          {
+            id: "qq.runtime-cursor.test",
+            version: "1",
+            model: "synthetic-model",
+            instructions: "Continue the list.",
+            context: "conversation",
+            availableActions: [
+              media.named("media.list").description,
+              media.named("media.describe").description,
+            ],
+            limits: { steps: 4 },
+          },
+          {
+            owner: {
+              kind: "conversation",
+              id: f.conversation.id,
+              userId: DEFAULT_USER_ID,
+              agentId: AGENT,
+            },
+            conversationId: f.conversation.id,
+            authorizedTargets: ["peer"],
+            outputMode: "buffered",
+            actions,
+            context: {
+              bindRun(actionContext) {
+                bound.push(actionContext);
+              },
+              async read() {
+                return { pending: [textMessage("user", "接着看")] };
+              },
+              assertCurrent() {},
+            },
+          },
+        ),
+      );
+      expect((error as { code?: string }).code).toBe("CONTEXT_INVALID_SELECTION");
+      expect(modelCalls).toBe(1);
+      expect(new Set(bound).size).toBe(1);
+      expect(media.stats.calls).toBe(0);
+      expect(f.h.db.query("SELECT id FROM qq_media_read_tasks").all()).toHaveLength(0);
+      const boundContext = bound[0];
+      if (!boundContext) throw new Error("runtime did not bind the action context");
+      const boundRunId = boundContext.runId;
+      if (boundRunId === undefined || boundRunId.trim().length === 0)
+        throw new Error("runtime bound context has no run id");
+      expect(repository.getRun(boundRunId)?.status).toBe("failed");
+      expect(getEventListeners(boundContext.signal, "abort")).toHaveLength(0);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("settles an already-aborted active runtime as cancelled before any model call and releases the bound state", async () => {
+    const f = open();
+    try {
+      const media = f.mount();
+      const actions = media.actions;
+      const repository = new AgentRunRepository(f.h.db);
+      let modelCalls = 0;
+      const bound: ActionContext[] = [];
+      const controller = new AbortController();
+      controller.abort();
+      const runtime = new AgentRuntime({
+        repository,
+        actions,
+        model: {
+          async complete() {
+            modelCalls++;
+            return JSON.stringify({ kind: "none" });
+          },
+          async *streamText() {},
+          async completeMultimodal() {
+            throw new Error("not used");
+          },
+        },
+      });
+      const error = await rejection(
+        runtime.run(
+          {
+            id: "qq.runtime-pre-cancel.test",
+            version: "1",
+            model: "synthetic-model",
+            instructions: "Never reached.",
+            context: "conversation",
+            availableActions: [
+              media.named("media.list").description,
+              media.named("media.describe").description,
+            ],
+            limits: { steps: 4 },
+          },
+          {
+            owner: {
+              kind: "conversation",
+              id: f.conversation.id,
+              userId: DEFAULT_USER_ID,
+              agentId: AGENT,
+            },
+            conversationId: f.conversation.id,
+            authorizedTargets: ["peer"],
+            outputMode: "buffered",
+            signal: controller.signal,
+            actions,
+            context: {
+              bindRun(actionContext) {
+                bound.push(actionContext);
+              },
+              async read() {
+                return { pending: [textMessage("user", "取消这一轮")] };
+              },
+              assertCurrent() {},
+            },
+          },
+        ),
+      );
+      expect(error).toBeDefined();
+      expect(modelCalls).toBe(0);
+      expect(new Set(bound).size).toBe(1);
+      expect(media.stats.calls).toBe(0);
+      expect(f.h.db.query("SELECT id FROM qq_media_read_tasks").all()).toHaveLength(0);
+      const boundContext = bound[0];
+      if (!boundContext) throw new Error("runtime did not bind the action context");
+      const boundRunId = boundContext.runId;
+      if (boundRunId === undefined || boundRunId.trim().length === 0)
+        throw new Error("runtime bound context has no run id");
+      expect(boundContext.signal.aborted).toBe(true);
+      expect(repository.getRun(boundRunId)?.status).toBe("cancelled");
+      expect(getEventListeners(boundContext.signal, "abort")).toHaveLength(0);
     } finally {
       f.h.close();
     }

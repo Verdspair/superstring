@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import { type ActionObservation, ContextEngine } from "../../src/server/agent/context-engine";
@@ -10,6 +11,7 @@ import {
   type BotContextSourceOptions,
 } from "../../src/server/channels/onebot11/context-source";
 import type { QqMediaInputService } from "../../src/server/channels/onebot11/media-input-service";
+import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
@@ -21,8 +23,13 @@ import {
   recordMediaNote,
   recordMediaSegment,
 } from "../../src/server/db/qq-media-repository";
+import { recordQqOutboundMessageFact } from "../../src/server/db/qq-message-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
+import {
+  readQqConversationSummary,
+  saveQqConversationSummary,
+} from "../../src/server/db/qq-summary-repository";
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_USER_ID,
@@ -33,6 +40,9 @@ import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { fail } from "../../src/server/errors";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { loadTextTokenCounter } from "../../src/server/llm/text-token-counter";
+import { QqGroupCapabilityGuard } from "../../src/server/permissions/qq-group-capabilities";
+import { PermissionService } from "../../src/server/permissions/service";
 import {
   captureQqTask,
   createQqBinding,
@@ -43,8 +53,13 @@ import {
 import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
 import { QQ_MEDIA_RULE } from "../../src/server/services/qq-prompt-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
+import { createWebActions, WEB_PERMISSION_REVISION } from "../../src/server/web-access/actions";
 import type { RuntimeConfig } from "../../src/shared/contracts";
-import { QQ_COMPRESSION_DEFAULT } from "../../src/shared/contracts/qq";
+import type { PermissionPolicy } from "../../src/shared/contracts/permissions";
+import {
+  QQ_COMPRESSION_DEFAULT,
+  QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
+} from "../../src/shared/contracts/qq";
 import { QQ_MEDIA_INPUT_DEFAULT } from "../../src/shared/contracts/qq-media-input";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
@@ -63,6 +78,7 @@ function setup(
     usage?: BotContextSourceOptions["usage"];
     budget?: BotContextSourceOptions["budget"];
     assertBackgroundCurrent?: () => void;
+    configuredQuotes?: boolean;
   } = {},
 ) {
   const h = openBusinessDb();
@@ -73,6 +89,14 @@ function setup(
   updateQqSettings(h.orm, { enabled: true, accountId: "10001", expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
     name: "context",
+    ...(input.configuredQuotes
+      ? {
+          messageSettings: {
+            ...QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
+            reply_mode: "configured_depth" as const,
+          },
+        }
+      : {}),
     ...(input.tokenBudget
       ? { context: { ...QQ_CONTEXT_DEFAULT, reply_token_budget: input.tokenBudget } }
       : {}),
@@ -282,6 +306,7 @@ function setup(
     calls,
     gateway,
     journal,
+    outbox,
     conversation,
     memory,
     seed,
@@ -384,6 +409,615 @@ const compressionRuns = (h: ReturnType<typeof setup>) =>
   h.runs
     .listRuns({ ownerKind: "qq_binding", ownerId: h.binding.id })
     .filter((run) => run.specId === "context.compress.events");
+
+function quoteFixture() {
+  const h = setup({ configuredQuotes: true });
+  h.runtime.p5_config.recent_turns = 1;
+  h.runtime.p5_config.compression_enabled = false;
+  const body = "😀引用正文".repeat(8000);
+  const quoted = h.seed(body, 30000);
+  const current = h.seed("short current question");
+  for (const [eventKey, text, replyToMessageId] of [
+    [quoted, body, null],
+    [current, "short current question", quoted],
+  ] as const) {
+    const observation = h.db
+      .query("SELECT expires_at,recorded_at FROM qq_observation_text WHERE event_key=?")
+      .get(eventKey) as { expires_at: string; recorded_at: string };
+    h.orm
+      .insert(schema.qqMessageFacts)
+      .values({
+        eventKey,
+        groupCard: "合成成员",
+        personalNickname: "成员",
+        nameState: "known",
+        parts: JSON.stringify([{ kind: "text", text }]),
+        replyToMessageId,
+        revision: 1,
+        expiresAt: observation.expires_at,
+        recordedAt: observation.recorded_at,
+      })
+      .run();
+    const event = h.db
+      .query(
+        "SELECT seq FROM conversation_events WHERE conversation_id=? AND kind='inbound' AND source_kind='qq_event' AND source_id=?",
+      )
+      .get(h.conversation.id, eventKey) as { seq: number } | null;
+    if (!event) throw new Error("fixture: quoted journal source missing");
+    const identity = h.db
+      .query("SELECT message_id FROM qq_events WHERE event_key=?")
+      .get(eventKey) as { message_id: string };
+    if (identity.message_id !== eventKey)
+      throw new Error("fixture: platform quote identity mismatch");
+  }
+  const guard = new QqGroupCapabilityGuard(h.orm);
+  const source = h.newSource({
+    guard,
+    gateway: { ...h.gateway, loadedContextCapacity: async () => 32768 },
+  });
+  const action = {
+    owner: {
+      kind: "conversation" as const,
+      id: h.conversation.id,
+      userId: DEFAULT_USER_ID,
+      agentId: h.binding.agentId,
+    },
+    runId: "synthetic-quote-fit",
+    signal: new AbortController().signal,
+  };
+  source.bindRun(action);
+  return { ...h, source, guard, body, quoted, action };
+}
+
+it("validates quoted sources at disclosure boundaries, not every Unicode prefix budget probe", async () => {
+  const h = quoteFixture();
+  const assert = h.guard.assertSources.bind(h.guard);
+  let quotedChecks = 0;
+  h.guard.assertSources = (...args: Parameters<QqGroupCapabilityGuard["assertSources"]>) => {
+    if (args[1].some((source) => source.kind === "qq_message_fact" && source.id === h.quoted))
+      quotedChecks++;
+    return assert(...args);
+  };
+  const reports: Record<string, number>[] = [];
+  const input = {
+    ...readInput(),
+    onReadTimings: (timings: Record<string, number>) => reports.push({ ...timings }),
+  };
+  const material = await h.source.read(input);
+  const view = (
+    h.source as unknown as {
+      views: Map<
+        string,
+        {
+          limit: number;
+          replyExpansion: {
+            roots: {
+              targetMessageId: string;
+              bodyRef: string | null;
+              textPage: { text: string; total: number; complete: boolean } | null;
+            }[];
+          };
+        }
+      >;
+    }
+  ).views.get("reply");
+  const root = view?.replyExpansion.roots.find((entry) => entry.targetMessageId === h.quoted);
+  expect(root).toBeDefined();
+  expect(root?.textPage?.complete).toBe(false);
+  expect(root?.textPage?.text.length).toBeGreaterThan(0);
+  expect(root?.textPage?.total).toBe(Array.from(h.body).length);
+  expect(h.body.startsWith(root?.textPage?.text ?? "")).toBe(true);
+  expect(root?.bodyRef).toBeTruthy();
+  expect(quotedChecks).toBeGreaterThan(0);
+  expect(quotedChecks).toBeLessThanOrEqual(6);
+  const rendered = new ContextEngine().render(h.spec, material, [], ["alice", "bob"]);
+  if (!view) throw new Error("fixture: original reply view missing");
+  expect(rendered.units).toBeLessThanOrEqual(view.limit);
+  const read = h.source.actions.find((action) => action.description.name === "history.read");
+  if (!read || !root?.bodyRef) throw new Error("fixture: quote bodyRef missing");
+  const page = await read.execute({ bodyRef: root.bodyRef, limit: 64 }, h.action);
+  expect(JSON.stringify(page.value)).toContain("😀引用正文");
+  expect(h.calls).toHaveLength(0);
+  expect(reports).toHaveLength(1);
+  for (const key of ["readViewReplyLoadStateCalls", "readViewReplyRegisterCalls"]) {
+    expect(Number.isInteger(reports[0]?.[key])).toBe(true);
+    expect(reports[0]?.[key]).toBeGreaterThan(0);
+  }
+  for (const key of [
+    "readViewReplyLoadStateMs",
+    "readViewReplyRegisterMs",
+    "readViewReplyUnionAssertMs",
+  ]) {
+    expect(typeof reports[0]?.[key]).toBe("number");
+    expect(Number.isFinite(reports[0]?.[key])).toBe(true);
+    expect(reports[0]?.[key]).toBeGreaterThanOrEqual(0);
+  }
+});
+
+it("rejects an invalid quoted source before returning material or publishing a model input", async () => {
+  const h = quoteFixture();
+  const assert = h.guard.assertSources.bind(h.guard);
+  let rejectedQuote = false;
+  h.guard.assertSources = (...args: Parameters<QqGroupCapabilityGuard["assertSources"]>) => {
+    assert(...args);
+    if (args[1].some((source) => source.kind === "qq_message_fact" && source.id === h.quoted)) {
+      rejectedQuote = true;
+      fail("CONTEXT_SOURCE_INVALID", "synthetic quoted source revoked");
+    }
+  };
+  await expect(h.source.read(readInput())).rejects.toMatchObject({
+    code: "CONTEXT_SOURCE_INVALID",
+  });
+  expect(rejectedQuote).toBe(true);
+  expect(h.calls).toHaveLength(0);
+});
+
+it("reports one read-local stage sample with the original capacity await and disabled media branch", async () => {
+  const h = setup();
+  let entered!: () => void, release!: () => void;
+  const enteredCapacity = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const capacityGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const order: string[] = [];
+  const reports: Record<string, number>[] = [];
+  const service: QqMediaInputService = {
+    async prepareQqMediaProjection(input) {
+      order.push("disabled-media");
+      expect(input.settings.stages.decision).toBe(false);
+      return {
+        phase: input.phase,
+        requestedMode: "native",
+        actualMode: "disabled",
+        images: [],
+        notes: [],
+        omissions: [],
+        sources: [],
+      };
+    },
+    async describeAfterUnsupported() {
+      throw new Error("Unexpected fallback");
+    },
+    async prepareByMediaId() {
+      throw new Error("Unexpected media tool");
+    },
+  };
+  const source = h.newSource({
+    gateway: {
+      ...h.gateway,
+      async loadedContextCapacity() {
+        order.push("capacity-start");
+        entered();
+        await capacityGate;
+        order.push("capacity-end");
+        return 65536;
+      },
+    },
+    onRead() {
+      order.push("on-read");
+    },
+    mediaInput: {
+      service,
+      capabilityEnabled: true,
+      settings: {
+        ...QQ_MEDIA_INPUT_DEFAULT,
+        stages: { ...QQ_MEDIA_INPUT_DEFAULT.stages, decision: false },
+        ordinary_frame_count: 3,
+        ordinary_frame_max_dimension: 512,
+      },
+      focus: () => ({
+        triggerMessageIds: [],
+        responseMessageIds: [],
+        responseQqs: [],
+        assistantQq: "10001",
+      }),
+    },
+  });
+  source.bindRun({
+    owner: { kind: "test", id: "read-stage" },
+    runId: "read-stage",
+    signal: readInput().signal,
+  });
+  const input = {
+    ...readInput(),
+    onReadTimings: (timings: Record<string, number>) => reports.push({ ...timings }),
+  };
+  const reading = source.read(input);
+  try {
+    await enteredCapacity;
+    expect(order).toEqual(["capacity-start"]);
+    expect(reports).toHaveLength(0);
+    release();
+    await reading;
+  } finally {
+    release();
+    await Promise.allSettled([reading]);
+  }
+  expect(order).toEqual(["capacity-start", "capacity-end", "on-read", "disabled-media"]);
+  expect(reports).toHaveLength(1);
+  expect(reports[0]?.readCapacityCalls).toBe(1);
+  for (const key of [
+    "readPreludeMs",
+    "readViewMs",
+    "readCapacityMs",
+    "readDecisionMediaMs",
+    "readRemainderMs",
+  ]) {
+    expect(typeof reports[0]?.[key]).toBe("number");
+    expect(Number.isFinite(reports[0]?.[key])).toBe(true);
+    expect(reports[0]?.[key]).toBeGreaterThanOrEqual(0);
+  }
+  expect(reports[0]!.readViewMs).toBeGreaterThanOrEqual(reports[0]!.readCapacityMs);
+  for (const key of ["readViewCostCalls", "readViewEnvelopeCalls"]) {
+    expect(Number.isInteger(reports[0]?.[key])).toBe(true);
+    expect(reports[0]?.[key]).toBeGreaterThan(0);
+  }
+  for (const key of ["readViewCostMs", "readViewEnvelopeMs"]) {
+    expect(typeof reports[0]?.[key]).toBe("number");
+    expect(Number.isFinite(reports[0]?.[key])).toBe(true);
+    expect(reports[0]?.[key]).toBeGreaterThanOrEqual(0);
+  }
+  for (const key of [
+    "readViewDataProjectionMs",
+    "readViewReplyProjectionMs",
+    "readViewFinalizationMs",
+  ]) {
+    expect(typeof reports[0]?.[key]).toBe("number");
+    expect(Number.isFinite(reports[0]?.[key])).toBe(true);
+    expect(reports[0]?.[key]).toBeGreaterThanOrEqual(0);
+  }
+  // This fresh binding has no disabled summary capability; use its real runtime switch.
+  if (h.runtime.p5_config.compression_enabled) {
+    expect(typeof reports[0]?.readViewSummaryMs).toBe("number");
+    expect(Number.isFinite(reports[0]?.readViewSummaryMs)).toBe(true);
+    expect(reports[0]?.readViewSummaryMs).toBeGreaterThanOrEqual(0);
+  } else {
+    expect(reports[0]?.readViewSummaryMs).toBeUndefined();
+  }
+  await source.read(input);
+  expect(reports).toHaveLength(2);
+  expect(reports[1]?.readCapacityMs).toBeUndefined();
+  expect(reports[1]?.readCapacityCalls).toBeUndefined();
+  for (const key of [
+    "readViewCostCalls",
+    "readViewCostMs",
+    "readViewEnvelopeCalls",
+    "readViewEnvelopeMs",
+  ]) {
+    expect(reports[1]?.[key]).toBeUndefined();
+  }
+  for (const key of [
+    "readViewDataProjectionMs",
+    "readViewSummaryMs",
+    "readViewReplyProjectionMs",
+    "readViewFinalizationMs",
+  ]) {
+    expect(reports[1]?.[key]).toBeUndefined();
+  }
+  for (const key of [
+    "readViewReplyLoadStateCalls",
+    "readViewReplyLoadStateMs",
+    "readViewReplyRegisterCalls",
+    "readViewReplyRegisterMs",
+    "readViewReplyUnionAssertMs",
+  ]) {
+    expect(reports[1]?.[key]).toBeUndefined();
+  }
+  expect(order.filter((entry) => entry === "capacity-start")).toHaveLength(1);
+  expect(h.calls).toHaveLength(0);
+});
+
+it("reports reached read stages on capacity failure without inventing later media or remainder durations", async () => {
+  const h = setup();
+  const failure = Object.assign(new Error("Synthetic capacity failure"), {
+    code: "MODEL_CAPACITY_UNAVAILABLE",
+  });
+  const reports: Record<string, number>[] = [];
+  let entered!: () => void, release!: () => void;
+  const enteredCapacity = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const source = h.newSource({
+    gateway: {
+      ...h.gateway,
+      async loadedContextCapacity() {
+        entered();
+        await gate;
+        throw failure;
+      },
+    },
+  });
+  const input = {
+    ...readInput(),
+    onReadTimings: (timings: Record<string, number>) => reports.push({ ...timings }),
+  };
+  const reading = source.read(input);
+  const captured = reading.then(
+    () => {
+      throw new Error("Expected capacity failure");
+    },
+    (error: unknown) => error,
+  );
+  try {
+    await enteredCapacity;
+    release();
+    expect(await captured).toBe(failure);
+  } finally {
+    release();
+    await Promise.allSettled([reading]);
+  }
+  expect(reports).toHaveLength(1);
+  expect(reports[0]?.readCapacityCalls).toBe(1);
+  for (const key of ["readPreludeMs", "readViewMs", "readCapacityMs"]) {
+    expect(typeof reports[0]?.[key]).toBe("number");
+    expect(Number.isFinite(reports[0]?.[key])).toBe(true);
+    expect(reports[0]?.[key]).toBeGreaterThanOrEqual(0);
+  }
+  expect(reports[0]?.readDecisionMediaMs).toBeUndefined();
+  expect(reports[0]?.readRemainderMs).toBeUndefined();
+  expect(typeof reports[0]?.readViewDataProjectionMs).toBe("number");
+  expect(Number.isFinite(reports[0]?.readViewDataProjectionMs)).toBe(true);
+  expect(reports[0]?.readViewDataProjectionMs).toBeGreaterThanOrEqual(0);
+  for (const key of ["readViewSummaryMs", "readViewReplyProjectionMs", "readViewFinalizationMs"]) {
+    expect(reports[0]?.[key]).toBeUndefined();
+  }
+  expect(h.calls).toHaveLength(0);
+});
+
+it("keeps recent confirmed outbound facts inside the selected raw window when only the latest inbound remains", async () => {
+  const h = setup();
+  h.runtime.p5_config.recent_turns = 1;
+  h.runtime.p5_config.compression_enabled = false;
+  const runId = crypto.randomUUID();
+  const at = h.db
+    .query("SELECT created_at FROM conversations WHERE id=?")
+    .get(h.conversation.id) as { created_at: string };
+  const seconds = Math.floor(Date.parse(at.created_at) / 1000);
+  const sentAt = new Date((seconds - 60) * 1000).toISOString();
+  const expiry = new Date((seconds + 3600) * 1000).toISOString();
+  const owner = {
+    kind: "conversation" as const,
+    id: h.conversation.id,
+    userId: DEFAULT_USER_ID,
+    agentId: h.binding.agentId,
+  };
+  h.runs.createRun({
+    runId,
+    specId: "synthetic-outbound-window",
+    specVersion: "1",
+    owner,
+    at: sentAt,
+  });
+  const target = {
+    accountId: h.binding.accountId,
+    conversationKind: h.binding.kind,
+    peerId: h.binding.peerId,
+    agentId: h.binding.agentId,
+    bindingId: h.binding.id,
+    bindingEpoch: h.conversation.bindingEpoch,
+    authorityRevision: h.binding.authorityRevision,
+  };
+  const partIds: string[] = [];
+  for (let index = 0; index < 24; index++) {
+    const intent = h.outbox.commit({
+      id: crypto.randomUUID(),
+      runId,
+      conversationId: h.conversation.id,
+      ordinal: index,
+      target,
+      speechKind: "direct_reply",
+      sourceThroughSeq: 0,
+      deliverBy: expiry,
+      createdAt: sentAt,
+      expiresAt: expiry,
+      parts: [{ kind: "text", text: `UNSELECTED_ASSISTANT_${index}_${"x".repeat(3000)}` }],
+    });
+    h.journal.append({
+      conversationId: h.conversation.id,
+      eventKey: `output:${intent.id}`,
+      kind: "delivery",
+      source: { kind: "outbound_intent", id: intent.id, revision: "planned", expiresAt: expiry },
+      occurredAt: sentAt,
+      runId,
+      outputId: intent.id,
+    });
+    recordQqOutboundMessageFact(h.orm, {
+      intentId: intent.id,
+      accountId: h.binding.accountId,
+      agentId: h.binding.agentId,
+      identity: {
+        qq: h.binding.accountId,
+        groupCard: "合成助手",
+        personalNickname: null,
+        legacyDisplayName: null,
+        nameState: "known",
+      },
+      occurredAtSeconds: seconds - 60,
+    });
+    const delivery = new OutboundDelivery({
+      orm: h.orm,
+      repository: h.outbox,
+      journal: h.journal,
+      stickerFile: () => null,
+      authorize: () => true,
+      now: () => sentAt,
+      port: {
+        async send() {
+          return { kind: "confirmed" as const, messageId: String(-97000 - index) };
+        },
+      },
+    });
+    await delivery.deliver(intent.id);
+    const part = h.outbox.parts(intent.id)[0];
+    if (!part) throw new Error("fixture: confirmed outbound part missing");
+    expect(part.status).toBe("confirmed");
+    expect(part.platform_message_id).toBe(String(-97000 - index));
+    expect(part.finished_at).toBe(sentAt);
+    partIds.push(part.id);
+  }
+  const current = h.seed("LATEST_SELECTED_INBOUND");
+  const observation = h.db
+    .query("SELECT expires_at,recorded_at FROM qq_observation_text WHERE event_key=?")
+    .get(current) as { expires_at: string; recorded_at: string };
+  h.orm
+    .insert(schema.qqMessageFacts)
+    .values({
+      eventKey: current,
+      groupCard: "合成成员",
+      personalNickname: "成员",
+      nameState: "known",
+      parts: JSON.stringify([{ kind: "text", text: "LATEST_SELECTED_INBOUND" }]),
+      replyToMessageId: null,
+      revision: 1,
+      expiresAt: observation.expires_at,
+      recordedAt: observation.recorded_at,
+    })
+    .run();
+  expect(h.outbox.list({ conversationId: h.conversation.id })).toHaveLength(24);
+  const source = h.newSource();
+  source.bindRun({ owner, runId, signal: readInput().signal });
+  // The existing fixture capacity fits the short selected input and unchanged protocol.
+  // Unselected assistant bodies must not defeat count/budget clipping in a second fact carrier.
+  const originalQuery = h.db.query;
+  const query = originalQuery.bind(h.db);
+  let candidateQueries = 0;
+  h.db.query = ((...arguments_: Parameters<typeof h.db.query>) => {
+    const statement = query(...arguments_);
+    return new Proxy(statement, {
+      get(target, property) {
+        if (property === "all")
+          return (...bindings: unknown[]) => {
+            const rows: unknown[] = Reflect.apply(target.all, target, bindings);
+            if (
+              bindings.length === 5 &&
+              bindings[0] === h.conversation.id &&
+              bindings[1] === h.binding.accountId &&
+              bindings[2] === h.binding.agentId &&
+              typeof bindings[3] === "number" &&
+              typeof bindings[4] === "number" &&
+              rows.some((row) => {
+                if (row === null || typeof row !== "object") return false;
+                const candidate = row as Record<string, unknown>;
+                return (
+                  typeof candidate.intentId === "string" &&
+                  typeof candidate.platformMessageId === "string" &&
+                  "finishedAt" in candidate &&
+                  "legacySendId" in candidate
+                );
+              })
+            )
+              candidateQueries++;
+            return rows;
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }) as typeof h.db.query;
+  let material: Awaited<ReturnType<BotContextSource["read"]>>;
+  try {
+    material = await source.read(readInput());
+  } finally {
+    h.db.query = originalQuery;
+  }
+  expect(source.selection?.messages).toHaveLength(1);
+  expect(source.selection?.messages[0]?.sources?.some((ref) => ref.id === current)).toBe(true);
+  const sections = (material.pending ?? []).flatMap((message) =>
+    message.content.flatMap((part) => {
+      if (part.kind !== "text") return [];
+      try {
+        const value = JSON.parse(part.text) as { kind?: string; facts?: string };
+        return value.kind === "qq_message_facts" && typeof value.facts === "string"
+          ? [value.facts]
+          : [];
+      } catch {
+        return [];
+      }
+    }),
+  );
+  const facts = sections.flatMap((section) =>
+    section
+      .split("\n")
+      .filter((line) => line.startsWith("msg="))
+      .map((line) => JSON.parse(line.slice(4)) as { id: string; speaker: { role: string } }),
+  );
+  expect(facts.map((fact) => fact.id)).toContain(current);
+  expect(facts.some((fact) => partIds.includes(fact.id))).toBe(false);
+  expect(facts.some((fact) => fact.speaker.role === "assistant")).toBe(false);
+  expect(JSON.stringify(material.pending)).not.toContain("UNSELECTED_ASSISTANT_");
+  expect(
+    source.selection?.messages[0]?.sources?.some(
+      (ref) => ref.kind === "outbound_intent" || ref.kind === "qq_speech",
+    ),
+  ).toBe(false);
+  expect(h.calls).toHaveLength(0);
+  expect(candidateQueries).toBe(0);
+});
+
+it("reads mixed raw and compact QQ packages reversibly and rejects a corrupt provenance map", () => {
+  const h = setup();
+  const id = h.seed("provenance source");
+  const row = h.db
+    .query("SELECT recorded_at,expires_at FROM qq_observation_text WHERE event_key=?")
+    .get(id) as { recorded_at: string; expires_at: string };
+  const refs = [
+    {
+      kind: "qq_observation",
+      id,
+      revision: createHash("sha256").update("provenance source").digest("hex"),
+      expiresAt: row.expires_at,
+    },
+  ];
+  const raw = JSON.stringify(refs.map((ref) => [ref.kind, ref.id, ref.revision]));
+  const compact = `qq-record:${createHash("sha256").update(raw).digest("base64url")}`;
+  const fact = { kind: "fact" as const, speaker: "20002", text: "fact", source_ids: [raw] };
+  const legacy = {
+    facts: [fact],
+    fromSeq: 1,
+    throughSeq: 1,
+    fromSeconds: 1,
+    throughSeconds: 1,
+    at: row.recorded_at,
+  };
+  const current = {
+    ...legacy,
+    facts: [{ ...fact, source_ids: [compact] }],
+    sources: refs,
+    provenance: { [compact]: raw },
+  };
+  expect(
+    saveQqConversationSummary(h.orm, {
+      conversationId: h.conversation.id,
+      agentId: h.binding.agentId,
+      throughSeq: 1,
+      coveredSeq: 1,
+      packages: [legacy, current],
+      modelName: "reply-model",
+      configSnapshot: h.runtime.p5_config,
+      estimatedTokens: 1,
+      at: row.recorded_at,
+      expected: null,
+      assertCurrent() {},
+    }),
+  ).toBe(true);
+  const read = readQqConversationSummary(h.orm, h.conversation.id, h.binding.agentId);
+  const pkg = read?.packages[1] as typeof current | undefined;
+  expect(read?.packages[0]?.facts[0]?.source_ids).toEqual([raw]);
+  expect(pkg?.facts[0]?.source_ids).toEqual([compact]);
+  expect(pkg?.provenance?.[compact]).toBe(raw);
+  for (const provenance of [{}, { [compact]: raw.replace("qq_observation", "foreign") }]) {
+    h.db
+      .query("UPDATE qq_conversation_summaries SET content=? WHERE conversation_id=?")
+      .run(JSON.stringify({ packages: [legacy, { ...current, provenance }] }), h.conversation.id);
+    expect(() => readQqConversationSummary(h.orm, h.conversation.id, h.binding.agentId)).toThrow();
+  }
+});
+
 describe("shared Bot context source", () => {
   it.each(["off", "conservative", "standard", "broad", "full_catalog", "full_body"] as const)(
     "%s starts with no evidence calls or bodies and keeps queries scoped",
@@ -1239,11 +1873,33 @@ describe("shared Bot context source", () => {
     const old = h.seed("old fact", 30000);
     await h.source.read(readInput());
     await compress(h.source);
+    const stored = h.db
+      .query("SELECT content FROM qq_conversation_summaries WHERE conversation_id=?")
+      .get(h.conversation.id) as { content: string };
+    const content = JSON.parse(stored.content) as {
+      packages: {
+        facts: { source_ids: string[] }[];
+        sources?: unknown;
+        provenance?: Record<string, string>;
+      }[];
+    };
+    const pkg = content.packages[0]!;
+    if (!pkg.provenance) throw new Error("fixture: reversible package provenance missing");
+    const provenance = pkg.provenance;
+    pkg.facts = pkg.facts.map((fact) => ({
+      ...fact,
+      source_ids: fact.source_ids.map((id) => {
+        const raw = provenance[id];
+        if (typeof raw !== "string")
+          throw new Error("fixture: original legacy source group missing");
+        return raw;
+      }),
+    }));
+    delete pkg.sources;
+    delete pkg.provenance;
     h.db
-      .query(
-        "UPDATE qq_conversation_summaries SET content=json_remove(content,'$.packages[0].sources') WHERE conversation_id=?",
-      )
-      .run(h.conversation.id);
+      .query("UPDATE qq_conversation_summaries SET content=? WHERE conversation_id=?")
+      .run(JSON.stringify(content), h.conversation.id);
     expect(JSON.stringify(await h.newSource().read(readInput()))).toContain("old fact");
     h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(old);
     const material = await h.newSource().read(readInput());
@@ -1484,6 +2140,255 @@ describe("shared Bot context source", () => {
     );
     expect(fits({ status: "available", items: [], nextCursor: null }, [])).toBe(true);
   });
+
+  // Actual action arguments share the observation allowance with its result.
+  it("fits a legal long-query empty sticker.search envelope once the removable older window is clipped (fixed-512 reserve gap witness)", async () => {
+    const arguments_ = { query: "y".repeat(1024) };
+    const empty = { status: "available", items: [], nextCursor: null };
+    const seeds = (h: ReturnType<typeof setup>) => {
+      h.gateway.loadedContextCapacity = async () => 12288;
+      const oldIds: string[] = [];
+      for (let index = 0; index < 40; index += 1) oldIds.push(h.seed(`old ${"x".repeat(480)}`, 1));
+      return { newest: h.seed("newest question", 0), oldIds };
+    };
+    const countOld = (value: unknown) =>
+      ((JSON.stringify(value) ?? "").match(/old x/g) ?? []).length;
+    const selectedIds = (source: BotContextSource) =>
+      new Set(
+        (source.selection?.messages ?? [])
+          .flatMap((message) => message.sources ?? [])
+          .map((ref) => ref.id),
+      );
+    // 对照组：独立夹具，同容量同预算；证明协议＋最新一条＋真实空信封本身装得下。
+    const control = setup({ tokenBudget: 16384 });
+    control.runtime.p5_config.recent_turns = 1;
+    seeds(control);
+    const controlInitial = await control.source.read(readInput());
+    expect(countOld(controlInitial.pending)).toBe(0);
+    const controlFit = await control.source.actionResultFitter(
+      "sticker.search",
+      arguments_,
+      new AbortController().signal,
+    );
+    expect(controlFit(empty, [])).toBe(true);
+    // 主组：窗口含 40 条可裁旧消息。旧窗口可合法移除 ⇒ 长 query 空信封必须靠收窄窗口放行，而不是拒绝。
+    const h = setup({ tokenBudget: 16384 });
+    const { newest, oldIds } = seeds(h);
+    const initial = await h.source.read(readInput());
+    expect(h.spec.limits.inputUnits).toBe(9728);
+    const initialIds = selectedIds(h.source);
+    expect(oldIds.filter((id) => initialIds.has(id)).length).toBeGreaterThan(0);
+    expect(initialIds.has(newest)).toBe(true);
+    const fits = await h.source.actionResultFitter(
+      "sticker.search",
+      arguments_,
+      new AbortController().signal,
+    );
+    // fitter 预备阶段收窄窗口：选中旧消息变少，最新一条保留。
+    const afterFitIds = selectedIds(h.source);
+    expect(oldIds.filter((id) => afterFitIds.has(id)).length).toBeLessThan(
+      oldIds.filter((id) => initialIds.has(id)).length,
+    );
+    expect(afterFitIds.has(newest)).toBe(true);
+    expect(fits(empty, [])).toBe(true);
+    // fit 放行 ⇒ 下一步带真实观测（全参数、空来源）的 read 必须可读：旧材料被裁、最新一条保留、渲染贴同一上限。
+    const observation: ActionObservation = {
+      id: "00000000-0000-0000-0000-000000000000",
+      name: "sticker.search",
+      arguments: arguments_,
+      value: empty,
+      sources: [],
+    };
+    const after = await h.source.read({
+      signal: new AbortController().signal,
+      observations: [observation],
+    });
+    expect(countOld(after.pending)).toBeLessThan(countOld(initial.pending));
+    expect(JSON.stringify(after.pending)).toContain("newest question");
+    const rendered = new ContextEngine().render(h.spec, after, [observation], ["alice", "bob"]);
+    expect(rendered.units).toBeLessThanOrEqual(9728);
+  });
+
+  it("hard-denies a huge legal query when only the newest message remains, never a soft fit", async () => {
+    const arguments_ = { query: "z".repeat(65536) };
+    const empty = { status: "available", items: [], nextCursor: null };
+    const h = setup({ tokenBudget: 16384 });
+    h.gateway.loadedContextCapacity = async () => 12288;
+    h.seed("newest question", 0);
+    await h.source.read(readInput());
+    // 窗口只剩最新一条、已无可裁材料：巨大合法查询要么被 async prepare 以明确预算码拒绝，
+    // 要么公开 fitter 返回 false——唯独不能放行一个软结果。
+    let hardDenied = false;
+    try {
+      const fit = await h.source.actionResultFitter(
+        "sticker.search",
+        arguments_,
+        new AbortController().signal,
+      );
+      hardDenied = fit(empty, []) === false;
+    } catch (error) {
+      hardDenied = (error as { code?: string }).code === "CONTEXT_BUDGET_EXCEEDED";
+    }
+    expect(hardDenied).toBe(true);
+  });
+
+  it("rejects an already-aborted async fitter signal with the same abort reason", async () => {
+    const h = setup({ tokenBudget: 16384 });
+    h.gateway.loadedContextCapacity = async () => 12288;
+    h.seed("newest question", 0);
+    await h.source.read(readInput());
+    const reason = new Error("caller cancelled before fit");
+    const controller = new AbortController();
+    controller.abort(reason);
+    await expect(
+      h.source.actionResultFitter("sticker.search", { query: "趴" }, controller.signal),
+    ).rejects.toBe(reason);
+  });
+
+  /**
+   * 拟合通过只检查「投影 ≤ 档上限」；下一步 read 的 window_fit 还要再扣信封余量
+   * （envelopeFloor + ACTION_ENVELOPE_ALLOWANCE）。窗口只剩最新一条时已无材料可裁：
+   * 贴着上限被接受的结果，下一步读必须仍然可读，否则就是「拟合通过但读不出」。
+   * 对照组证明夹具本身健康：小结果拟合通过后下一步照常可读。
+   */
+  it("keeps a fitted result readable by the next read at the same ceiling", async () => {
+    const h = setup({ tokenBudget: 16384 });
+    // 与「reserves room…」同一容量口径（12288）；只播一条最新消息：窗口只剩最新一条，
+    // 回装时没有可再裁的材料，拟合与下一步读取面对同一份材料。
+    h.gateway.loadedContextCapacity = async () => 12288;
+    h.seed("newest question", 0);
+    const name = "sticker.search";
+    const arguments_ = { query: "趴" };
+    const observationOf = (value: unknown) => ({
+      // 与 fitter 自己的合成占位同形：36 字符全零 id、同名、同参数。
+      id: "00000000-0000-0000-0000-000000000000",
+      name,
+      arguments: arguments_,
+      value,
+      sources: [],
+    });
+    // 对照组：小结果照常拟合、下一步照常可读。
+    const control = h.newSource();
+    const controlBaseline = await control.read(readInput());
+    expect(JSON.stringify(controlBaseline.pending)).toContain("newest question");
+    const controlFit = await control.actionResultFitter(
+      name,
+      arguments_,
+      new AbortController().signal,
+    );
+    const small = { status: "available", items: [{ id: "s1", sticker: "y".repeat(16) }] };
+    expect(controlFit(small, [])).toBe(true);
+    await expect(
+      control.read({
+        signal: new AbortController().signal,
+        observations: [observationOf(small)],
+      }),
+    ).resolves.toBeDefined();
+    // 反例：只用公开 fitter 二分出「仍被接受」的最大结果值（无任何私有成本/视图访问）。
+    const source = h.newSource();
+    const baseline = await source.read(readInput());
+    expect(JSON.stringify(baseline.pending)).toContain("newest question");
+    const acceptsResult = await source.actionResultFitter(
+      name,
+      arguments_,
+      new AbortController().signal,
+    );
+    let lo = 0,
+      hi = 1 << 20;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (
+        acceptsResult({ status: "available", items: [{ id: "s1", sticker: "y".repeat(mid) }] }, [])
+      )
+        lo = mid;
+      else hi = mid - 1;
+    }
+    expect(lo).toBeGreaterThan(0);
+    // 二分结束后，最终候选须用 fitter 本身复验为“被接受”（最后一次探针可能被拒）。
+    const largest = { status: "available", items: [{ id: "s1", sticker: "y".repeat(lo) }] };
+    expect(acceptsResult(largest, [])).toBe(true);
+    // 拟合被接受 ⇒ 同容量/同规格/同来源、同观测形状下，下一步读必须仍可读。
+    await expect(
+      source.read({
+        signal: new AbortController().signal,
+        observations: [observationOf(largest)],
+      }),
+    ).resolves.toBeDefined();
+  });
+  it("keeps concurrent long-argument results inside the same shared ceiling", async () => {
+    const h = setup({ tokenBudget: 16384 });
+    h.gateway.loadedContextCapacity = async () => 12288;
+    for (let index = 0; index < 40; index++) h.seed(`old ${"x".repeat(480)}`, 1);
+    h.seed("newest question");
+    await h.source.read(readInput());
+    const signal = readInput().signal;
+    const argumentsA = { query: "a".repeat(768) };
+    const argumentsB = { query: "b".repeat(768) };
+    const [fitA, fitB] = await Promise.all([
+      h.source.actionResultFitter("sticker.search", argumentsA, signal),
+      h.source.actionResultFitter("sticker.search", argumentsB, signal),
+    ]);
+    const empty = { status: "available", items: [], nextCursor: null };
+    const first = fitA(empty, []);
+    const second = fitB(empty, []);
+    expect(first).toBe(true);
+    const observations: ActionObservation[] = [
+      { id: "first", name: "sticker.search", arguments: argumentsA, value: empty, sources: [] },
+      ...(second
+        ? [
+            {
+              id: "second",
+              name: "sticker.search",
+              arguments: argumentsB,
+              value: empty,
+              sources: [],
+            },
+          ]
+        : []),
+    ];
+    const material = await h.source.read({ signal, observations });
+    const rendered = new ContextEngine().render(h.spec, material, observations, ["alice", "bob"]);
+    expect(rendered.units).toBeLessThanOrEqual(9728);
+    expect(JSON.stringify(material.pending)).toContain("newest question");
+  });
+  it("fits long action arguments with the production token counter and keeps the next read within its ceiling", async () => {
+    const counter = await loadTextTokenCounter("o200k_base");
+    let counts = 0;
+    const h = setup({ tokenBudget: 16384 });
+    h.runtime.resolved_model_contexts = {};
+    h.gateway.prepareContextModel = async (model) => ({
+      model,
+      capacity: 12288,
+      tokenizerEncoding: counter.encoding,
+      countText(text) {
+        counts++;
+        return counter.count(text);
+      },
+      assertCurrent() {},
+    });
+    const source = h.newSource();
+    for (let index = 0; index < 40; index++) h.seed(`old ${"x".repeat(480)}`, 1);
+    h.seed("newest question");
+    await source.read(readInput());
+    const arguments_ = { query: "y".repeat(2048) };
+    const value = { status: "available", items: [], nextCursor: null };
+    const fit = await source.actionResultFitter("sticker.search", arguments_, readInput().signal);
+    expect(fit(value, [])).toBe(true);
+    const observation: ActionObservation = {
+      id: "00000000-0000-0000-0000-000000000000",
+      name: "sticker.search",
+      arguments: arguments_,
+      value,
+      sources: [],
+    };
+    const material = await source.read({ ...readInput(), observations: [observation] });
+    const rendered = new ContextEngine().render(h.spec, material, [observation], ["alice", "bob"]);
+    const measured = source.measurePhaseInput("decision", rendered.messages);
+    expect(measured).toBeGreaterThan(0);
+    expect(measured).toBeLessThanOrEqual(9728);
+    expect(counts).toBeGreaterThan(0);
+    expect(JSON.stringify(material.pending)).toContain("newest question");
+  });
   /**
    * 观测是一条条累起来的（模型每调一次动作就多一条），材料却只在新事件到达时重装。累到顶住上限时
    * 必须重装（窗口自动收窄），否则第 N 步的渲染会超上限、运行时只能整轮判失败——群里
@@ -1575,6 +2480,43 @@ describe("shared Bot context source", () => {
     });
   });
 
+  /**
+   * 诊断（非放行）：与「reserves room…」同夹具（16384 预算 / 12288 容量 / 40 条旧消息 +
+   * 最新一条），一条真实形状、合法为空的 sticker.search 观测（available/items[]/nextCursor:
+   * null/sources[]）在下一步 read 里能否合法重装窗口。这是诊断证据，不构成对
+   * actionResultFitter 通过的许可；上面 fits(true) 断言原样保留，未削弱。
+   */
+  it("diagnostic: a valid empty sticker.search observation legally reassembles the reserves-room window", async () => {
+    const h = setup({ tokenBudget: 16384 });
+    h.gateway.loadedContextCapacity = async () => 12288;
+    for (let index = 0; index < 40; index += 1) h.seed(`old ${"x".repeat(480)}`, 1);
+    h.seed("newest question", 0);
+    const countOld = (value: unknown) =>
+      ((JSON.stringify(value) ?? "").match(/old x/g) ?? []).length;
+    const baseline = await h.source.read(readInput());
+    expect(JSON.stringify(baseline.pending)).toContain("newest question");
+    const beforeOld = countOld(baseline.pending);
+    const observation: ActionObservation = {
+      // 与 fitter 合成占位同形的稳定 uuid、同名、同参数；值是合法的空分页结果。
+      id: "00000000-0000-0000-0000-000000000000",
+      name: "sticker.search",
+      arguments: { query: "趴" },
+      value: { status: "available", items: [], nextCursor: null },
+      sources: [],
+    };
+    const material = await h.source.read({
+      signal: new AbortController().signal,
+      observations: [observation],
+    });
+    // 重装证据：旧材料被裁、最新一条必须保留；渲染仍贴 9728 上限。
+    expect(countOld(material.pending)).toBeLessThan(beforeOld);
+    expect(JSON.stringify(material.pending)).toContain("newest question");
+    const rendered = new ContextEngine().render(h.spec, material, [observation], ["alice", "bob"]);
+    const ceiling = h.spec.limits.inputUnits;
+    if (ceiling === undefined) throw new Error("context source did not set its input ceiling");
+    expect(ceiling).toBe(9728);
+    expect(rendered.units).toBeLessThanOrEqual(9728);
+  });
   it("keeps a sibling target's frozen media state when another target falls back", async () => {
     // 生产 BotContextSource：注入 mediaInput 服务；两个生成目标各取一条独立边界。
     const focusShape = (id: string) => ({
@@ -2165,4 +3107,258 @@ it("withholds a stored media note until a validated observation supplies it", as
   ).rejects.toMatchObject({
     code: "CONTEXT_SOURCE_INVALID",
   });
+});
+
+/**
+ * 架构对照（raw 层）：直接把 createWebActions 交给 AgentRuntime 时，联网读取结果**不经**上下文
+ * 准入就累积为观测，因此这在 raw 层是有意的硬上限行为：累计输入一旦超过档上限，本步在
+ * agent.step 处以 AGENT_CONTEXT_LIMIT 硬拒。真实 OneBot 宿主的准入修复在宿主管道层（另一份
+ * 独立回归），不在本文件——这里保留 raw 层的真实失败，并断言失败点与规模，不伪装成完成。
+ */
+it("raw runtime hard-rejects unfitted bounded web reads once the real input exceeds the tier ceiling", async () => {
+  const h = setup();
+  const owner = {
+    kind: "qq_binding" as const,
+    id: h.binding.id,
+    userId: DEFAULT_USER_ID,
+    agentId: DEFAULT_AGENT_ID,
+  };
+  let policy: PermissionPolicy = {
+    version: 1,
+    grants: [
+      { resource: "web", approved: false, revision: WEB_PERMISSION_REVISION, directories: [] },
+    ],
+  };
+  const permissions = new PermissionService({
+    read: () => ({ revision: "web-fixture", policy }),
+    replace: (_revision, next) => {
+      policy = next;
+      return { revision: "web-fixture", policy };
+    },
+  });
+  const webSourceAccess = (
+    ref: Parameters<NonNullable<BotContextSourceOptions["resolveSource"]>>[0],
+  ) =>
+    ref.kind === "tool_permission" && ref.id === "web"
+      ? permissions.sourceAccess(ref, owner)
+      : undefined;
+  const runtime = createAgentRuntime({
+    gateway: h.gateway,
+    repository: h.runs,
+    actionExecutor: new ActionExecutor(permissions, () => 3, new QqGroupCapabilityGuard(h.orm)),
+  });
+  const bingHtml = (query: string, snippet: string, count: number) => {
+    const rows = Array.from(
+      { length: count },
+      (_value, index) =>
+        `<li class="b_algo"><h2><a href="https://site.example/${index}">结果${index}</a></h2>` +
+        `<div class="b_caption"><p>${query}-${index}-${snippet}</p></div></li>`,
+    ).join("");
+    return new Response(`<html><body><ol>${rows}</ol></body></html>`, {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+  };
+  const batch = (names: string[]) =>
+    JSON.stringify({
+      kind: "invoke",
+      calls: names.map((query) => ({ name: "web.search", arguments: { query } })),
+    });
+  const final = JSON.stringify({
+    kind: "final",
+    outputs: [{ kind: "inline", targetId: "alice", text: "ok" }],
+  });
+  const seen: Parameters<ModelGateway["complete"]>[0][] = [];
+  const decideWith = (queue: string[]) => {
+    h.gateway.complete = async (request) => {
+      seen.push(request);
+      const firstContent = request.messages?.[0]?.content;
+      if (
+        typeof firstContent === "string" &&
+        firstContent.includes("Return exactly one JSON decision")
+      )
+        return queue.shift() ?? '{"kind":"none"}';
+      return JSON.stringify({ ids: [] });
+    };
+  };
+  // 对照组：小结果在 raw 层正常完成（未贴上限），网络恰好一次。
+  const controlSearches: string[] = [];
+  const controlActions = createWebActions({
+    fetchImpl: (async (input: string | URL | Request) => {
+      controlSearches.push(String(input));
+      return bingHtml("对照查询", "小结果", 1);
+    }) as unknown as typeof fetch,
+  });
+  const controlSpec: AgentSpec = { ...h.spec, limits: { steps: 16 } };
+  const controlSource = h.newSource({ spec: controlSpec, resolveSource: webSourceAccess });
+  controlSpec.availableActions = [
+    ...controlSource.actions.map((action) => action.description),
+    ...controlActions.map((action) => action.description),
+  ];
+  decideWith([batch(["对照查询"]), final]);
+  const control = await runtime.run(controlSpec, {
+    owner,
+    context: controlSource,
+    actions: [...controlSource.actions, ...controlActions],
+    authorizedTargets: ["alice", "bob"],
+    outputMode: "buffered",
+    signal: new AbortController().signal,
+    requestId: "web-control-small",
+  });
+  expect(control.status).toBe("completed");
+  expect(controlSearches).toHaveLength(1);
+  expect(seen).toHaveLength(2);
+  // 主组：9 个唯一查询排队（1/1/2/2/3）；每批结果 15 项 × 300 CJK 摘要字符（解析器实际上限），
+  // 适配器按 4000 字符界从尾部丢条目。raw 层无准入 → 单条结果 ≈ 10k 单位，累计在第 6 次执行后顶穿上限。
+  const searches: string[] = [];
+  const webActions = createWebActions({
+    fetchImpl: (async (input: string | URL | Request) => {
+      const query = new URL(String(input)).searchParams.get("q") ?? "";
+      searches.push(query);
+      return bingHtml(query, "要".repeat(300), 15);
+    }) as unknown as typeof fetch,
+  });
+  const mainSpec: AgentSpec = { ...h.spec, limits: { steps: 16 } };
+  const source = h.newSource({ spec: mainSpec, resolveSource: webSourceAccess });
+  mainSpec.availableActions = [
+    ...source.actions.map((action) => action.description),
+    ...webActions.map((action) => action.description),
+  ];
+  const queries = Array.from({ length: 9 }, (_value, index) => `唯一查询${index}`);
+  const batches = [1, 1, 2, 2, 3];
+  let cursor = 0;
+  const decisions = [
+    ...batches.map((count) => {
+      const slice = queries.slice(cursor, cursor + count);
+      cursor += count;
+      return batch(slice);
+    }),
+    final,
+  ];
+  decideWith(decisions);
+  // 公开 onContext 只记标量：本步渲染单位、当前上限、消息/来源数、模型/网络调用数。
+  const stepScalars: {
+    units: number;
+    messages: number;
+    sources: number;
+    inputLimit: number;
+    modelCalls: number;
+    fetchCalls: number;
+  }[] = [];
+  await expect(
+    runtime.run(mainSpec, {
+      owner,
+      context: source,
+      actions: [...source.actions, ...webActions],
+      authorizedTargets: ["alice", "bob"],
+      outputMode: "buffered",
+      signal: new AbortController().signal,
+      requestId: "web-batch-bounded",
+      onContext: (rendered) => {
+        stepScalars.push({
+          units: rendered.units,
+          messages: rendered.messages.length,
+          sources: rendered.sources.length,
+          inputLimit: mainSpec.limits?.inputUnits ?? 0,
+          modelCalls: seen.length,
+          fetchCalls: searches.length,
+        });
+      },
+    }),
+  ).rejects.toMatchObject({ code: "AGENT_CONTEXT_LIMIT" });
+  // 失败规模：上限内执行了 6 次真实联网读取（第 3 批 3 个查询未执行），且每个查询至多一次。
+  expect(searches).toHaveLength(6);
+  expect(new Set(searches).size).toBe(6);
+  // 失败前只有 4 次主组决策（含对照共 6 次模型调用）；第 5 步在读上下文后即被拒，未产生模型调用。
+  expect(seen).toHaveLength(6);
+  const last = stepScalars.at(-1);
+  expect(last).toBeDefined();
+  expect(last?.fetchCalls).toBe(6);
+  // 公开 onContext 数字证明：此前每步都在上限内，失败那步实际渲染单位已超过同 spec 的输入上限。
+  for (const step of stepScalars.slice(0, -1))
+    expect(step.units).toBeLessThanOrEqual(step.inputLimit);
+  expect(last?.units).toBeGreaterThan(last?.inputLimit ?? 0);
+});
+
+it("shrinks only the authentic quote message when ordinary text contains the quote marker", async () => {
+  const h = quoteFixture();
+  const ordinary = "qq_reply_roots ordinary-body " + "x".repeat(3000);
+  const row = h.db
+    .query("SELECT event_key FROM qq_observation_text WHERE body=?")
+    .get("short current question") as { event_key: string };
+  h.db
+    .query("UPDATE qq_observation_text SET body=? WHERE event_key=?")
+    .run(ordinary, row.event_key);
+  h.db
+    .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
+    .run(JSON.stringify([{ kind: "text", text: ordinary }]), row.event_key);
+  const initial = await h.source.read(readInput());
+  const quoteMessage = initial.pending?.find((message) =>
+    message.content.some((part) => {
+      if (part.kind !== "text") return false;
+      try {
+        return JSON.parse(part.text).kind === "qq_reply_roots";
+      } catch {
+        return false;
+      }
+    }),
+  );
+  expect(quoteMessage).toBeDefined();
+  expect(JSON.stringify(initial.pending)).toContain(ordinary);
+  const engine = new ContextEngine();
+  const initialUnits = engine.render(h.spec, initial, [], ["alice", "bob"]).units;
+  const length = Math.max(0, (h.spec.limits.inputUnits ?? 0) - initialUnits) + 1000;
+  const fit = await h.source.actionResultFitter(
+    "sticker.search",
+    { query: "hello" },
+    h.action.signal,
+  );
+  expect(fit({ status: "ok", text: "z".repeat(length) }, [])).toBe(true);
+  const after = await h.source.read(readInput());
+  expect(JSON.stringify(after.pending)).toContain(ordinary);
+  expect(after.pending).not.toContain(quoteMessage);
+});
+
+it("keeps every tier unchanged when quote fitting fails on a later tier", async () => {
+  const h = quoteFixture();
+  const source = h.newSource({
+    decisionTier: "judgement",
+    spec: { ...h.spec, model: "judge-model" },
+    guard: h.guard,
+    gateway: {
+      ...h.gateway,
+      loadedContextCapacity: async (model) => (model === "judge-model" ? 32768 : 16384),
+    },
+  });
+  source.bindRun(h.action);
+  const before = await source.read(readInput());
+  const engine = new ContextEngine();
+  await source.prepareGeneration(
+    { kind: "generate", targetId: "alice", instructions: "respond" },
+    {
+      context: engine.render(h.spec, before, [], ["alice", "bob"]),
+      outputId: "atomic-probe",
+      signal: h.action.signal,
+    },
+  );
+  const quoteBefore = before.pending?.find((message) =>
+    message.content.some((part) => {
+      if (part.kind !== "text") return false;
+      try {
+        return JSON.parse(part.text).kind === "qq_reply_roots";
+      } catch {
+        return false;
+      }
+    }),
+  );
+  expect(quoteBefore).toBeDefined();
+  const fits = await source.actionResultFitter(
+    "sticker.search",
+    { query: "hello" },
+    h.action.signal,
+  );
+  expect(fits({ status: "ok", text: "z".repeat(16000) }, [])).toBe(false);
+  const after = await source.read(readInput());
+  expect(after.pending).toContain(quoteBefore);
+  expect(after.pending).toEqual(before.pending);
 });

@@ -29,6 +29,7 @@ import { webAccessRoutes } from "./api/web-access";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
+import type { LocalModelEncodingStore } from "./llm/local-model-encodings";
 import { createLmStudioClient, type ModelGateway } from "./llm/model-gateway";
 import { createLmStudioVisionClient } from "./llm/vision-client";
 import type { McpManagement } from "./mcp/management";
@@ -70,6 +71,7 @@ export interface CreateAppOptions {
   qqTransportKeyPath?: string;
   /** 外部模型 API 密钥的密钥文件（0032）；缺省走服务端默认路径。 */
   modelProviderKeyPath?: string;
+  localModelEncodings?: LocalModelEncodingStore;
   /** 已接好外部路由的视觉客户端（0032 后续）；缺省时由本函数按本地配置新建。 */
   vision?: ReturnType<typeof createLmStudioVisionClient>;
   /**
@@ -148,7 +150,10 @@ export function createApp(opts: CreateAppOptions): Hono {
   if (business) {
     const gateway = opts.gateway ?? createLmStudioClient();
     app.route("/agents", agentRoutes(business.orm, gateway.config.model));
-    app.route("/models", modelRoutes(business.orm, gateway, opts.modelProviderKeyPath));
+    app.route(
+      "/models",
+      modelRoutes(business.orm, gateway, opts.modelProviderKeyPath, opts.localModelEncodings),
+    );
     // The picture call goes through the vision client, which is the one place that knows how an
     // image travels to the model service (U05's decision, 2026-09-24). The sticker annotation is
     // its first caller; the media reader's adapter is the next one.

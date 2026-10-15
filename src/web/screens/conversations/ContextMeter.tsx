@@ -57,7 +57,12 @@ export function ContextMeter() {
   const [owner, setOwner] = useState<string | null>(null);
   const close = useRef<HTMLButtonElement>(null);
   const usage = chat.contextUsage?.session_id === session ? chat.contextUsage : null;
-  const percent = usage ? (usage.input_units / usage.capacity) * 100 : null;
+  const tokens = usage?.model_tokens;
+  const percent = tokens
+    ? (tokens.input_tokens / (usage?.capacity ?? 1)) * 100
+    : usage
+      ? (usage.input_units / usage.capacity) * 100
+      : null;
   const percentage = new Intl.NumberFormat(i18n.resolvedLanguage, {
     style: "percent",
     minimumFractionDigits: 1,
@@ -68,19 +73,40 @@ export function ContextMeter() {
     if (owner !== session) setOpen(false);
   }, [owner, session]);
   const vision = usage?.vision_cost;
-  const isTextOnly = Boolean(vision && vision.images !== 0);
+  const isTextOnly = tokens
+    ? tokens.media_state === "unknown" || Boolean(vision && vision.images !== 0)
+    : Boolean(vision && vision.images !== 0);
   const triggerLabel = isTextOnly
     ? t("workspace.context_usage_text_only")
     : t("workspace.context_usage");
+  const remainingValue = tokens
+    ? Math.max(0, tokens.input_limit - tokens.input_tokens)
+    : (usage?.remaining ?? 0);
   const parts = usage
     ? [
-        ...sections.map(([key, label]) => ({ key, label, value: usage.components[key] })),
-        { key: "output", label: "workspace.reply_reserve", value: usage.output_reserved },
-        { key: "safety", label: "workspace.safety_margin", value: usage.safety_reserved },
+        ...sections.map(([key, label]) => ({
+          key,
+          label,
+          value: usage.components[key],
+          isByteDetail: Boolean(tokens),
+        })),
+        {
+          key: "output",
+          label: "workspace.reply_reserve",
+          value: usage.output_reserved,
+          isByteDetail: false,
+        },
+        {
+          key: "safety",
+          label: "workspace.safety_margin",
+          value: usage.safety_reserved,
+          isByteDetail: false,
+        },
         {
           key: "remaining",
           label: isTextOnly ? "workspace.text_remaining_space" : "workspace.remaining_space",
-          value: usage.remaining,
+          value: remainingValue,
+          isByteDetail: false,
         },
       ]
     : [];
@@ -144,10 +170,20 @@ export function ContextMeter() {
         {usage ? (
           <>
             <p className="text-xs text-muted-foreground">
-              {t(isTextOnly ? "workspace.approx_text_used" : "workspace.approx_used", {
-                "0": usage.input_units.toLocaleString(i18n.resolvedLanguage),
-                "1": usage.capacity.toLocaleString(i18n.resolvedLanguage),
-              })}
+              {tokens
+                ? t(
+                    isTextOnly
+                      ? "workspace.approx_text_tokens_used"
+                      : "workspace.approx_tokens_used",
+                    {
+                      "0": tokens.input_tokens.toLocaleString(i18n.resolvedLanguage),
+                      "1": usage.capacity.toLocaleString(i18n.resolvedLanguage),
+                    },
+                  )
+                : t(isTextOnly ? "workspace.approx_text_used" : "workspace.approx_used", {
+                    "0": usage.input_units.toLocaleString(i18n.resolvedLanguage),
+                    "1": usage.capacity.toLocaleString(i18n.resolvedLanguage),
+                  })}
             </p>
             <Table>
               <TableBody>
@@ -158,7 +194,9 @@ export function ContextMeter() {
                       {part.value.toLocaleString(i18n.resolvedLanguage)}
                     </TableCell>
                     <TableCell className="py-1.5 text-right font-mono text-xs text-muted-foreground">
-                      {percentage.format(part.value / usage.capacity)}
+                      {part.isByteDetail
+                        ? t("workspace.byte_detail")
+                        : percentage.format(part.value / usage.capacity)}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -168,13 +206,20 @@ export function ContextMeter() {
               {t("workspace.reserves_are_not_used_input_percentages_use_total_model_capacity")}
             </p>
             <p className="text-xs text-muted-foreground">
-              {t("workspace.latest_request_model_excludes_its_reply_and_the_unsent_draft", {
-                "0": usage.model,
-              })}
+              {t(
+                tokens
+                  ? "workspace.latest_request_model_tokens_info"
+                  : "workspace.latest_request_model_bytes_info",
+                {
+                  "0": usage.model,
+                  "1": usage.capacity.toLocaleString(i18n.resolvedLanguage),
+                  ...(tokens ? { "2": tokens.encoding } : {}),
+                },
+              )}
             </p>
-            {isTextOnly && vision && (
+            {isTextOnly && (vision || tokens?.media_state === "unknown") && (
               <p className="text-xs text-muted-foreground">
-                {getVisionNoteText(vision, t, i18n.resolvedLanguage)}
+                {getVisionNoteText(vision ?? { state: "unknown" }, t, i18n.resolvedLanguage)}
               </p>
             )}
           </>
@@ -190,7 +235,11 @@ export function ContextMeter() {
           </p>
         )}
         <p className="border-t pt-3 text-[11px] leading-relaxed text-muted-foreground">
-          {t("workspace.estimated_from_utf_8_bytes_and_message_overhead_not_exact_model_tokens")}
+          {t(
+            tokens
+              ? "workspace.estimated_from_model_tokens_not_exact"
+              : "workspace.estimated_from_utf_8_bytes_and_message_overhead_not_exact_model_tokens",
+          )}
         </p>
         {draft > 0 && (
           <p className="text-xs text-muted-foreground">

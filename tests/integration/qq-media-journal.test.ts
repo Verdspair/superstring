@@ -14,8 +14,8 @@ import { createQqMediaSourceRef } from "../../src/server/services/qq-media-sourc
 import type { ConversationEvent } from "../../src/shared/contracts/conversation";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 
-const at = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
-const now = "2026-10-01T16:00:00.000000Z";
+const at = Math.floor(Date.now() / 1000) - 120;
+const now = new Date(at * 1000).toISOString().replace("Z", "000Z");
 
 function setup() {
   const h = openBusinessDb();

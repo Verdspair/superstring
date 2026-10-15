@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { RuntimeConfig } from "../../shared/contracts";
-import type { RunOwner } from "../../shared/contracts/agent-run";
+import { AGENT_DECISION_JSON_SCHEMA } from "../../shared/contracts/agent-output";
+import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
 import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { AgentRuntime } from "../agent/agent-runtime";
@@ -17,12 +18,20 @@ import {
   type ContextMaterial,
   type ConversationContextSource,
   inputUnits,
+  measureContextTokens,
   type RenderedContext,
   textMessage,
 } from "../agent/context-engine";
 import type { ContextBuilder } from "../agent/conversation-context";
+import type { ModelContextBudget } from "../agent/model-port";
 import { ReservationLedger } from "../agent/reservation-ledger";
-import { currentUser, readMemoryCandidate, systemPrompt } from "../db/context-repository";
+import {
+  type ContextMessage,
+  currentUser,
+  readMemoryCandidate,
+  systemPrompt,
+} from "../db/context-repository";
+import { KnowledgeRepository } from "../db/knowledge-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import type { ModelGateway } from "../llm/model-gateway";
 import {
@@ -48,7 +57,10 @@ export class WebContextSource implements ConversationContextSource {
   private observations: readonly ActionObservation[] = [];
   /** 同批在飞动作各自的投影增量（token→相对基线 U(observations) 的 units）。 */
   private readonly reservations = new ReservationLedger();
+
   private usage?: ContextUsage;
+  /** Main-route descriptor for this turn, prepared once and reused; nothing global. */
+  private preparedMain?: ModelContextBudget;
   private readonly engine = new ContextEngine();
   private readonly owner: RunOwner;
   constructor(
@@ -192,19 +204,23 @@ export class WebContextSource implements ConversationContextSource {
           // 同批只读工具并发跑，每个的 fit 只看到"上一轮已提交的 observations"；
           // 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许下一步渲染炸轮。
           const token = Symbol("action-result-fit");
+          // Legacy ceiling in byte units; token mode uses the same field as a token
+          // ceiling, so one limit serves both and neither mixes the two units.
           const limit =
             this.spec.limits.inputUnits ??
             runtime.p5_config.context_window ??
             Number.MAX_SAFE_INTEGER;
           return (value, sources) => {
             // 检查与登记必须在同一同步块内完成，才能消除并发竞态（JS 单线程）。
-            const base = this.engine.render(
+            const baseRender = this.engine.render(
               this.spec,
               this.material ?? {},
               this.observations,
               ["reply"],
               "stream",
-            ).units;
+            );
+            const base = baseRender.units;
+            const baseMessages = baseRender.messages;
             const observations = [
               ...this.observations,
               {
@@ -221,8 +237,12 @@ export class WebContextSource implements ConversationContextSource {
               observations,
               ["reply"],
               "stream",
-            ).units;
-            if (projected + this.reservations.reserved(token) > limit) return false;
+            );
+            // Token mode prices the same candidate whole (render + advertised actions
+            // + decision schema) against the token ceiling; no byte subtraction here.
+            if (this.tokenCounter() !== undefined) {
+              if (!this.fitsDecision(projected.messages, token)) return false;
+            } else if (projected.units + this.reservations.reserved(token) > limit) return false;
             if (name.startsWith("knowledge.")) {
               const nonempty = observations.filter((observation) => {
                 const result = observation.value as { items?: unknown[] } | null;
@@ -242,7 +262,12 @@ export class WebContextSource implements ConversationContextSource {
                 return false;
             }
             // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
-            this.reservations.set(token, projected - base);
+            this.reservations.set(
+              token,
+              this.tokenCounter() === undefined
+                ? projected.units - base
+                : Math.max(0, this.tokensOf(projected.messages) - this.tokensOf(baseMessages)),
+            );
             return true;
           };
         },
@@ -277,6 +302,112 @@ export class WebContextSource implements ConversationContextSource {
   configureActions(actions: AgentSpec["availableActions"]): void {
     this.spec.availableActions = actions;
   }
+
+  /**
+   * Prepares this turn's main-route budget descriptor through the gateway's own hook
+   * and keeps it for the turn. Optional capability: a gateway without the hook, a
+   * turn cancelled before it ran, or a declared capacity of null all leave the
+   * source on the legacy byte unit. Repeated calls return the same descriptor, so the
+   * Runtime bridge hook and this method share one preparation instead of two.
+   */
+  async prepareModelContext(
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<ModelContextBudget | undefined> {
+    if (this.options.runtime.resolved_model_contexts === undefined) return undefined;
+    if (model !== this.options.runtime.model_name) {
+      throw new Error("Web context budget belongs to a different requested model");
+    }
+    signal?.throwIfAborted();
+    if (this.preparedMain !== undefined) {
+      this.preparedMain.assertCurrent();
+      return this.preparedMain;
+    }
+    const prepare = this.options.gateway.prepareContextModel?.bind(this.options.gateway);
+    if (prepare === undefined) return undefined;
+    signal?.throwIfAborted();
+    const budget = await prepare(model, { signal });
+    signal?.throwIfAborted();
+    budget.assertCurrent();
+    // Only a usable descriptor (counter + declared encoding) switches the unit.
+    this.preparedMain = budget;
+    return budget;
+  }
+
+  /** The main descriptor in the descriptor's own unit; undefined = legacy bytes. */
+  private tokenCounter():
+    | {
+        budget: ModelContextBudget;
+        counter: {
+          encoding: NonNullable<ModelContextBudget["tokenizerEncoding"]>;
+          count: (text: string) => number;
+        };
+      }
+    | undefined {
+    const budget = this.preparedMain;
+    const countText = budget?.countText;
+    const encoding = budget?.tokenizerEncoding;
+    if (budget === undefined || countText === undefined || encoding === undefined) {
+      return undefined;
+    }
+    return { budget, counter: { encoding, count: countText } };
+  }
+
+  /**
+   * The decision request this turn will really send, built around the builder's
+   * candidate: the protocol system text, advertised actions and declared schema
+   * come from the engine render; the builder's own instruction system message is
+   * already inside that protocol text, so it is not counted twice.
+   */
+  private decisionRequest(candidate: readonly ContextMessage[]): ModelMessage[] {
+    const rest = candidate.filter((message) => message.role !== "system");
+    const pending = rest.at(-1);
+    const asModel = (message: ContextMessage): ModelMessage =>
+      textMessage(message.role as ModelMessage["role"], message.content);
+    return this.engine.render(
+      this.spec,
+      {
+        history: rest.slice(0, -1).map(asModel),
+        ...(pending === undefined ? {} : { pending: [asModel(pending)] }),
+      },
+      this.observations,
+      ["reply"],
+      "stream",
+    ).messages;
+  }
+
+  /**
+   * Prices one whole rendered decision request in token units — including the
+   * actually advertised actions and the declared decision schema — and subtracts
+   * this batch's in-flight token reservations. Only the descriptor's own counter
+   * runs: no index, no cache, no provider call per fit.
+   */
+  private fitsDecision(
+    messages: readonly ModelMessage[],
+    except?: symbol,
+    explicitLimit?: number,
+  ): boolean {
+    const counter = this.tokenCounter();
+    if (counter === undefined) return true;
+    const limit = explicitLimit ?? this.spec.limits.inputUnits;
+    if (limit === undefined) return true;
+    const measured = measureContextTokens(messages, counter.counter, {
+      responseSchema: AGENT_DECISION_JSON_SCHEMA,
+      tools: this.spec.availableActions,
+    });
+    counter.budget.assertCurrent();
+    return measured.textTokens + this.reservations.reserved(except) <= limit;
+  }
+
+  /** Delta of one rendered request in the descriptor's unit; 0 outside token mode. */
+  private tokensOf(messages: readonly ModelMessage[]): number {
+    const counter = this.tokenCounter();
+    if (counter === undefined) return 0;
+    return measureContextTokens(messages, counter.counter, {
+      responseSchema: AGENT_DECISION_JSON_SCHEMA,
+      tools: this.spec.availableActions,
+    }).textTokens;
+  }
   async read(input: {
     signal: AbortSignal;
     observations: readonly ActionObservation[];
@@ -291,6 +422,11 @@ export class WebContextSource implements ConversationContextSource {
       const legacySystem = systemPrompt(o.runtime).map((m) => textMessage(m.role, m.content));
       const reserve =
         this.engine.render(this.spec, {}, [], ["reply"], "stream").units - inputUnits(legacySystem);
+      // One preparation per turn on the real main route; the Runtime bridge hook may
+      // have done it already, and absence leaves the legacy byte unit untouched.
+      if (this.preparedMain === undefined) {
+        await this.prepareModelContext(o.runtime.model_name, input.signal);
+      }
       let sources: SourceRef[] = [];
       const messages = await o.builder.build({
         sessionId: o.sessionId,
@@ -299,6 +435,20 @@ export class WebContextSource implements ConversationContextSource {
         generationToken: o.generationToken,
         signal: input.signal,
         reservedInputUnits: reserve,
+        ...(this.preparedMain === undefined ? {} : { preparedMain: this.preparedMain }),
+        buildFits: (candidate) =>
+          this.fitsDecision(
+            this.decisionRequest(candidate),
+            undefined,
+            this.preparedMain?.capacity === null || this.preparedMain?.capacity === undefined
+              ? undefined
+              : (o.runtime.p5_config.context_window ?? this.preparedMain.capacity) -
+                  o.runtime.p5_config.max_output_tokens -
+                  Math.ceil(
+                    (o.runtime.p5_config.context_window ?? this.preparedMain.capacity) *
+                      o.runtime.p5_config.safety_margin_ratio,
+                  ),
+          ),
         onUsage: (usage) => {
           this.usage = usage;
         },
@@ -315,7 +465,10 @@ export class WebContextSource implements ConversationContextSource {
         sources: sources.length ? sources : turnSources(o.orm, [o.turnId]),
       };
       if (this.usage) {
-        const limit = this.usage.capacity - this.usage.output_reserved - this.usage.safety_reserved;
+        // Token mode takes the measured token ceiling; legacy mode keeps the byte one.
+        const limit =
+          this.usage.model_tokens?.input_limit ??
+          this.usage.capacity - this.usage.output_reserved - this.usage.safety_reserved;
         this.spec.limits.inputUnits = limit;
         this.spec.generation = { ...this.spec.generation, inputUnits: limit };
       }
@@ -385,11 +538,25 @@ export class WebContextSource implements ConversationContextSource {
       (usage.input_units - usage.components.protocol) -
       memoryUnits -
       knowledgeUnits;
+    // Token mode recomputes the reported token usage from this render, keeping the
+    // in-flight reservations in the same unit; legacy fields stay byte-domain.
+    const requestTokens =
+      context.tokenMeasure?.textTokens ??
+      (this.tokenCounter() === undefined ? undefined : this.tokensOf(context.messages));
     return {
       ...usage,
       input_units: context.units,
       input_limit,
       remaining: Math.max(0, input_limit - context.units),
+      ...(usage.model_tokens === undefined || requestTokens === undefined
+        ? {}
+        : {
+            model_tokens: {
+              ...usage.model_tokens,
+              input_tokens: requestTokens,
+              media_state: context.tokenMeasure?.mediaState ?? usage.model_tokens.media_state,
+            },
+          }),
       // T14 观测接线：本层是唯一同时持有真实渲染上下文的组装点，把 engine 已算出的
       // visionCost 逐字透传（§11：unknown 不是 0，pixels 是准备元数据不是 token）。
       vision_cost: context.visionCost,
@@ -437,9 +604,50 @@ export class WebContextSource implements ConversationContextSource {
         ["reply"],
         "stream",
       ).units;
-    const budget = limit - cost([]) - this.reservations.reserved();
+    // Retrieval keeps its own byte quota: it is a module budget, not token room.
+    // In token mode it stays an upper bound and the per-result fit stays the real
+    // token admission, so a byte room is never priced as tokens.
+    const budget =
+      this.tokenCounter() === undefined
+        ? limit - cost([]) - this.reservations.reserved()
+        : name.startsWith("knowledge.")
+          ? (this.options.runtime.knowledge_read?.budget ??
+            new KnowledgeRepository(this.options.db).settings().context_budget)
+          : this.options.runtime.p5_config.retrieval_presets[
+              ["conservative", "standard", "broad"].includes(
+                this.options.runtime.p5_config.retrieval_mode,
+              )
+                ? (this.options.runtime.p5_config.retrieval_mode as
+                    | "conservative"
+                    | "standard"
+                    | "broad")
+                : "broad"
+            ].max_tokens;
     if (budget < 1) return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
     const result = evidenceQueryPage(await read(budget));
+    this.assertCurrent();
+    // Byte upper bound is not a token admission: recheck the real request.
+    if (
+      this.tokenCounter() !== undefined &&
+      !this.fitsDecision(
+        this.engine.render(
+          this.spec,
+          material,
+          [
+            ...this.observations,
+            {
+              ...empty,
+              value: result.items.map((item) => evidenceCatalogEntry(name.split(".")[0], item)),
+              sources: result.items.flatMap((item) => item.sources),
+            },
+          ],
+          ["reply"],
+          "stream",
+        ).messages,
+      )
+    ) {
+      return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
+    }
     this.assertCurrent();
     return result;
   }

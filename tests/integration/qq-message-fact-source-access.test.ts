@@ -29,8 +29,11 @@ import type { RunOwner } from "../../src/shared/contracts/agent-run";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 import type { QqConversationScope } from "../../src/shared/contracts/qq-message";
 
-const at = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
-const now = "2026-10-01T16:00:00.000000Z";
+const at = Math.floor(Date.now() / 1000);
+// Preserve the six fractional digits used by stored timestamp comparisons.
+const atIso = (offsetSeconds: number): string =>
+  new Date((at + offsetSeconds) * 1000).toISOString().replace("Z", "000Z");
+const now = atIso(0);
 
 function setup() {
   const h = openBusinessDb();
@@ -322,7 +325,7 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
       const ref = factRefOf(fact);
       const principal = { userId: DEFAULT_USER_ID };
       // 正确 owner、窗口外：expired（不是 revoked，也不是 available）。
-      const past = "2026-10-20T00:00:01.000000Z";
+      const past = atIso(1584001);
       expect(
         qqMessageFactSourceAccess(h.db, ref, ownerFor(live, "conversation"), principal, past),
       ).toBe("expired");
@@ -333,7 +336,7 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
           ref,
           ownerFor(live, "conversation"),
           principal,
-          "2026-10-19T00:00:00.000000Z",
+          atIso(1497600),
         ),
       ).toBe("expired");
       // 错误 owner 同一时刻：revoked（不得探得 expired 态）。
@@ -390,16 +393,16 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
       // body 过期（未删除）：qq_observation 通用口径 expired（统一 sourceAccess）；
       // fact ref 的 hash 覆盖 body 修订，到期 body 不再进 hash → 新 mint 的 fact ref
       // 只剩事实窗口（另测）。
-      const later = "2026-10-16T16:00:01.000000Z";
+      const later = atIso(1296001);
       expect(sourceAccess(h.db, bodyRef, owner, principal, later)).toBe("expired");
       // fact 快照到期：expired（正确 owner），且不被永久事件身份或 currentName 复活。
       expect(
         qqMessageFactSourceAccess(
           h.db,
-          { ...ref, expiresAt: "2026-10-20T00:00:00.000000Z" },
+          { ...ref, expiresAt: atIso(1584000) },
           owner,
           principal,
-          "2026-10-20T00:00:01.000000Z",
+          atIso(1584001),
         ),
       ).toBe("expired");
     } finally {
@@ -556,7 +559,7 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
       recordWithJournal(h, journal, "binding", observation);
       const live = liveScope(h, conversation);
       // 正文窗口早于事实窗口：把 qq_observation_text.expires_at 提前（fact 行期不动）。
-      const earlyBodyCap = "2026-10-05T00:00:00.000000Z";
+      const earlyBodyCap = atIso(288000);
       h.db
         .query("UPDATE qq_observation_text SET expires_at=? WHERE event_key=?")
         .run(earlyBodyCap, observation.eventKey);
@@ -578,12 +581,10 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
       const owner = ownerFor(live, "conversation");
       // 帽内 available；帽后 fact ref 已 expired（旧 ref 到期不复活，帽不延长）。
       expect(qqMessageFactSourceAccess(h.db, ref, owner, principal, now)).toBe("available");
-      expect(
-        qqMessageFactSourceAccess(h.db, ref, owner, principal, "2026-10-05T00:00:01.000000Z"),
-      ).toBe("expired");
+      expect(qqMessageFactSourceAccess(h.db, ref, owner, principal, atIso(288001))).toBe("expired");
       // 帽后新投影：正文行已过帽（不可消费）→ 新 mint 的帽回到 fact 自身窗口
       // （实际可消费正文为空，不虚构更晚的 body 帽），parts 降级、正文不复活。
-      const lateMint = loadQqMessageFact(h, live, "-102", "2026-10-05T00:00:02.000000Z");
+      const lateMint = loadQqMessageFact(h, live, "-102", atIso(288002));
       expect(lateMint).not.toBeNull();
       if (lateMint) {
         expect(factRefOf(lateMint).expiresAt).toBe(factExpiresOf(h, observation.eventKey));
@@ -591,7 +592,7 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
         expect(lateMint.completeness).toBe("unavailable");
       }
       // 事实窗口早于正文窗口：fact 行帽提前（body 行期不动）。
-      const earlyFactCap = "2026-10-03T00:00:00.000000Z";
+      const earlyFactCap = atIso(115200);
       h.db
         .query("UPDATE qq_message_facts SET expires_at=? WHERE event_key=?")
         .run(earlyFactCap, observation.eventKey);
@@ -642,7 +643,7 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
       const live = liveScope(h, conversation);
       // 先收紧正文窗口再 mint：投影与 access 读同一 stored/visible/bodyRevision/
       // consistency 状态——同一时刻两侧判定一致。
-      const tightBodyCap = "2026-10-06T00:00:00.000000Z";
+      const tightBodyCap = atIso(374400);
       h.db
         .query("UPDATE qq_observation_text SET expires_at=? WHERE event_key=?")
         .run(tightBodyCap, observation.eventKey);
@@ -655,13 +656,11 @@ describe("qq_message_fact source access (owner-first, unified revision)", () => 
       expect(qqMessageFactSourceAccess(h.db, ref, owner, principal, now)).toBe("available");
       // 冻结 ref：帽已写进 ref。此后即便 fact 行到期被推后（放宽），旧 ref 帽不延长，
       // 帽后仍是 expired（不复活）。
-      const laterFactCap = "2026-11-01T00:00:00.000000Z";
+      const laterFactCap = atIso(2620800);
       h.db
         .query("UPDATE qq_message_facts SET expires_at=? WHERE event_key=?")
         .run(laterFactCap, observation.eventKey);
-      expect(
-        qqMessageFactSourceAccess(h.db, ref, owner, principal, "2026-10-06T00:00:01.000000Z"),
-      ).toBe("expired");
+      expect(qqMessageFactSourceAccess(h.db, ref, owner, principal, atIso(374401))).toBe("expired");
       // 同一 stored 状态下 mint 与 access 一致：正文删除后两侧同时翻 revoked，
       // 投影 parts 降级、access 复算不等。
       h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(observation.eventKey);

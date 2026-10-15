@@ -5,13 +5,18 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, inArray, sql } from "drizzle-orm";
 import type { ContentItem, RuntimeConfig } from "../../shared/contracts";
+import {
+  type ResolvedModelContext,
+  ResolvedModelContextSchema,
+  RuntimeConfigSchema,
+} from "../../shared/contracts/agent";
 import { AppError } from "../errors";
+import { fullCasefold } from "../services/casefold-table";
 import { AGENT_LEVEL_SCOPE_KEY } from "../services/memory-contract";
 import { correctionMetadata, isCorrectionRetired } from "../services/memory-revision";
 import type { MemoryScopeKeys } from "../services/memory-scope";
 import { qqConversationKey, qqMemoryScopeKey } from "../services/qq-binding-contract";
 import { compileSystemPrompt } from "../services/runtime-config";
-import { fullCasefold } from "../services/text";
 import {
   activeCorrections,
   type CorrectionScan,
@@ -183,6 +188,97 @@ export function freezeModelCapacity(
   }
   void current;
   return capacities;
+}
+
+/**
+ * Freeze one observed model-context reading, keyed by the requested model name.
+ * The snapshot records only primitives: the budget descriptor, any credential and
+ * the endpoint stay outside it. Like `freezeModelCapacity` this writes no
+ * transaction of its own — the caller owns the boundary.
+ *
+ * A turn whose snapshot predates this field keeps the field ABSENT, and that
+ * absence is a rejection rather than an invitation: the reading is never
+ * injected into an old snapshot, because the retry would then freeze today's
+ * route as if it were the original one.
+ */
+export function freezeModelContext(
+  orm: Orm,
+  agentId: string,
+  sessionId: string,
+  turnId: string,
+  requestedModel: string,
+  metadata: ResolvedModelContext,
+  generationToken: string | null,
+): Record<string, ResolvedModelContext> {
+  if (generationToken === null) contextFail("上下文冻结缺少本次生成令牌");
+  const parsedMetadata = ResolvedModelContextSchema.safeParse(metadata);
+  if (!parsedMetadata.success) {
+    throw new AppError("CONTEXT_SOURCE_INVALID", "无效的模型上下文元数据", 409);
+  }
+  const reading = parsedMetadata.data;
+  currentUser(orm, agentId, sessionId, turnId, { generationToken });
+  const turn = orm.select().from(schema.turns).where(eq(schema.turns.id, turnId)).get();
+  if (!turn) contextFail("当前生成已取消、过期、失效或不属于本次请求");
+
+  let stored: unknown;
+  try {
+    stored = JSON.parse(turn.runtimeConfigSnapshot);
+  } catch {
+    contextFail("上下文冻结的Agent或模型不属于本轮运行快照");
+  }
+  // Strict parse before any use: a snapshot that no longer satisfies the
+  // contract cannot carry a new reading.
+  if (stored === null || typeof stored !== "object" || Array.isArray(stored)) {
+    contextFail("上下文冻结的Agent或模型不属于本轮运行快照");
+  }
+  const validated = RuntimeConfigSchema.safeParse(stored);
+  if (!validated.success) {
+    contextFail("上下文冻结的Agent或模型不属于本轮运行快照");
+  }
+  const runtime = validated.data;
+  const allowed = new Set([
+    runtime.model_name,
+    runtime.memory_retrieval_model_name,
+    runtime.context_compression_model_name,
+  ]);
+  if (runtime.agent_id !== agentId || !allowed.has(requestedModel)) {
+    contextFail("上下文冻结的Agent或模型不属于本轮运行快照");
+  }
+  const frozen = runtime.resolved_model_contexts;
+  if (frozen === undefined) {
+    contextFail("本轮运行快照早于模型上下文冻结，拒绝改写其语义");
+  }
+  const existing = frozen[requestedModel];
+  const capacities = { ...(runtime.resolved_model_capacities ?? {}) };
+  const frozenCapacity = capacities[requestedModel];
+  if (
+    (existing !== undefined && frozenCapacity === undefined) ||
+    (frozenCapacity !== undefined && frozenCapacity !== reading.capacity)
+  ) {
+    throw new AppError("CONTEXT_CAPACITY_INSUFFICIENT", "本轮模型容量与已冻结的观测不一致", 409);
+  }
+  if (existing !== undefined) {
+    // First snapshot wins; a later observation never replaces it, and a
+    // conflicting one is reported instead of being silently overwritten.
+    if (JSON.stringify(existing) !== JSON.stringify(reading)) {
+      throw new AppError("CONTEXT_CAPACITY_INSUFFICIENT", "本轮模型上下文已被其他观测冻结", 409);
+    }
+    return frozen;
+  }
+  orm
+    .update(schema.turns)
+    .set({
+      // Spread the stored fields, not the validated copy: defaults the contract
+      // supplies for absent fields must not be written back into the snapshot.
+      runtimeConfigSnapshot: JSON.stringify({
+        ...stored,
+        resolved_model_capacities: { ...capacities, [requestedModel]: reading.capacity },
+        resolved_model_contexts: { ...frozen, [requestedModel]: reading },
+      }),
+    })
+    .where(eq(schema.turns.id, turnId))
+    .run();
+  return { ...frozen, [requestedModel]: reading };
 }
 
 function toContextTurn(row: ReturnType<typeof turns>[number]): ContextTurn {

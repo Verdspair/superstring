@@ -18,7 +18,7 @@ import {
   ModelEvidence,
 } from "../../src/web/screens/observability/ModelEvidence";
 import { ExecutionWorkspace } from "../../src/web/screens/observability/ObservabilityWorkspace";
-import { traceTask } from "../../src/web/screens/observability/presentation";
+import { traceTask, wakeCauseSummary } from "../../src/web/screens/observability/presentation";
 import { TraceTimeline } from "../../src/web/screens/observability/TraceTimeline";
 import { useSuperstringStore as store } from "../../src/web/store";
 
@@ -270,7 +270,7 @@ it("changes to the parent run in the workbench without nested dialogs or retaine
   await pointer(screen.getByRole("button", { name: "查看实际输入与输出" }));
   await screen.findByText("Exact protected input");
   await pointer(screen.getByRole("button", { name: "所属运行" }));
-  await screen.findByText("尚未开始模型步骤。");
+  await screen.findByText(i18n.t("observability.noAssociatedSourcesAreRecorded"));
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.queryByText("Exact protected input")).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "返回步骤详情" }));
@@ -321,6 +321,101 @@ it("switches the model list and reader layout without duplicating protected requ
   await pointer(screen.getByRole("button", { name: "恢复布局" }));
   expect(inspect).toHaveBeenCalledOnce();
 });
+
+it("reports only recorded wake conditions, never treating waiting as a duration", () => {
+  const t = (key: string) => i18n.t(key);
+  const offer = (id: number, details: RuntimeSpan["details"]) =>
+    span(id, id, id + 1, { name: "bot.wake.offer", stage: "wake", wakeId: `wake-${id}`, details });
+  for (const [details, condition] of [
+    [{ cause: "chiming_in", waitingForSeconds: true, count: 1 }, "observability.wakeAwaitingTime"],
+    [
+      { cause: "chiming_in", waitingForSeconds: false, count: 3 },
+      "observability.wakeReadyConditionNotRecorded",
+    ],
+    [{ cause: "chiming_in", waitingForSeconds: 29 }, "observability.wakeConditionUnavailable"],
+    [{ cause: "chiming_in", condition: "count" }, "observability.wakeConditionCount"],
+    [{ cause: "chiming_in", condition: "time" }, "observability.wakeConditionTime"],
+    [
+      { cause: "chiming_in", condition: "count_and_time" },
+      "observability.wakeConditionCountAndTime",
+    ],
+  ] as const) {
+    const summary = wakeCauseSummary([offer(10, { ...details })], t);
+    expect(summary[0]?.condition).toBe(t(condition));
+    expect(summary[0]).not.toHaveProperty("waitingForSeconds");
+  }
+  expect(wakeCauseSummary([offer(11, { cause: "unsupported" })], t)[0]?.cause).toBe(
+    t("observability.triggerNotRecorded"),
+  );
+  expect(wakeCauseSummary([offer(12, { cause: "follow_up" })], t)[0]?.cause).toBe(
+    t("observability.ongoingConversation"),
+  );
+});
+it("keeps separate wake offers and uses the latest recorded condition of each wake", () => {
+  const t = (key: string) => i18n.t(key);
+  const first = span(20, 0, 5, {
+    name: "bot.wake.offer",
+    stage: "wake",
+    wakeId: "wake-1",
+    details: { cause: "chiming_in", waitingForSeconds: true, count: 1 },
+  });
+  const reoffer = span(21, 50, 55, {
+    name: "bot.wake.offer",
+    stage: "wake",
+    wakeId: "wake-1",
+    details: { cause: "chiming_in", condition: "count", count: 3 },
+  });
+  const other = span(22, 60, 65, {
+    name: "bot.wake.offer",
+    stage: "wake",
+    wakeId: "wake-2",
+    details: { cause: "direct_reply" },
+  });
+  const model = span(23, 70, 75, { stage: "model", name: "agent.model", model: "actual-model" });
+  expect(wakeCauseSummary([reoffer, model, other, first], t)).toEqual([
+    {
+      wakeId: "wake-1",
+      cause: t("observability.chimingIn"),
+      condition: t("observability.wakeConditionCount"),
+      count: 3,
+      addressing: null,
+    },
+    {
+      wakeId: "wake-2",
+      cause: t("observability.directReplies"),
+      condition: null,
+      count: null,
+      addressing: null,
+    },
+  ]);
+  expect(wakeCauseSummary([model], t)).toEqual([]);
+  expect(
+    wakeCauseSummary([span(24, 80, 85, { name: "bot.wake.offer", stage: "wake" })], t),
+  ).toEqual([]);
+});
+it("uses only each wake's own recorded addressing, never a different ingress", () => {
+  const t = (key: string) => i18n.t(key);
+  const wake = span(30, 0, 5, {
+    name: "bot.wake.offer",
+    stage: "wake",
+    wakeId: "wake-a",
+    details: { cause: "direct_reply" },
+  });
+  const unrelated = span(31, 1, 2, {
+    name: "bot.ingress",
+    stage: "ingress",
+    details: { kind: "private", addressed: true, addressingReasons: "mention" },
+  });
+  expect(wakeCauseSummary([wake, unrelated], t)[0]?.addressing).toBeNull();
+  for (const [reason, label] of [
+    ["mention", "observability.wakeAddressedMention"],
+    ["reply_to_agent", "observability.wakeAddressedReply"],
+    ["private", "observability.wakeAddressedPrivate"],
+  ] as const) {
+    const recorded = { ...wake, details: { cause: "direct_reply", addressingReasons: reason } };
+    expect(wakeCauseSummary([recorded, unrelated], t)[0]?.addressing).toBe(t(label));
+  }
+});
 it("renders the same stable-key interface in English through the official i18next instance", async () => {
   await i18n.changeLanguage("en");
   render(<InspectedEvidence value={exact} />);
@@ -328,4 +423,42 @@ it("renders the same stable-key interface in English through the official i18nex
   await pointer(screen.getByRole("tab", { name: "Model output" }));
   expect(screen.getByText('{"selected":["one"]}')).toBeTruthy();
   expect(screen.queryByText(/observability\./)).toBeNull();
+});
+
+it("uses activation facts of the same wake without showing queued waiting as actual execution", () => {
+  const t = (key: string) => i18n.t(key);
+  const queued = span(40, 0, 1, {
+    name: "bot.wake.offer",
+    stage: "wake",
+    wakeId: "wake-timed",
+    details: { cause: "chiming_in", waitingForSeconds: true, count: 1 },
+  });
+  const activated = span(41, 30, 40, {
+    name: "bot.wake.activate",
+    stage: "wake",
+    wakeId: "wake-timed",
+    details: {
+      cause: "chiming_in",
+      eligibleCount: 2,
+      maturityCondition: "time",
+      triggerFunction: "qqChimingBatchWindow",
+      activationAt: at(30),
+    },
+  });
+  const other = span(42, 31, 41, {
+    name: "bot.wake.activate",
+    stage: "wake",
+    wakeId: "wake-other",
+    details: { cause: "chiming_in", eligibleCount: 15, maturityCondition: "count" },
+  });
+  expect(wakeCauseSummary([queued, other, activated], t)[0]).toMatchObject({
+    wakeId: "wake-timed",
+    condition: t("observability.wakeConditionTime"),
+    count: 2,
+  });
+  expect(wakeCauseSummary([queued, other, activated], t)[1]).toMatchObject({
+    wakeId: "wake-other",
+    condition: t("observability.wakeConditionCount"),
+    count: 15,
+  });
 });

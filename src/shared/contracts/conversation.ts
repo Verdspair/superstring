@@ -78,6 +78,8 @@ export const ConversationEventSchema = z.strictObject({
   outputId: z.string().nullable(),
 });
 export const ConversationEventViewSchema = ConversationEventSchema.extend({
+  /** Canonical logical activity identity (QQ task ID); absent on legacy or unlinked rows. */
+  activityId: z.string().min(1).optional(),
   task: z
     .strictObject({
       id: z.string(),

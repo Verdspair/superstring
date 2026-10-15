@@ -24,13 +24,14 @@ import type { AgentRuntime, PreparedOutput, TargetHooks } from "../../agent/agen
 import type { AgentSpec } from "../../agent/agent-specs";
 import type { BuiltInAction } from "../../agent/built-in-actions";
 import type { ActionObservation } from "../../agent/context-engine";
-import { inputUnits, textMessage, uniqueSources } from "../../agent/context-engine";
+import { textMessage, uniqueSources } from "../../agent/context-engine";
 import { ConversationHost } from "../../agent/conversation-host";
 import { createImageByteResolver } from "../../agent/image-byte-resolver";
 import type { ModelResolvedPrepareOutput } from "../../agent/model-port";
 import { parseModelEnvelope, parseModelTextEnvelope } from "../../agent/model-response-envelope";
 import type { AgentTaskService } from "../../agent/task-service";
 import { observationRelevant } from "../../conversation/observation-relevance";
+import type { QqTaskAuthorityTimings } from "../../conversation/qq-task-scheduler";
 import { AgentRunRepository } from "../../db/agent-run-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { bodyRevision } from "../../db/conversation-event-repository";
@@ -120,6 +121,7 @@ import {
   QQ_MEDIA_RULE,
   QQ_REPLY_ENVELOPE_OUTPUT_RULE,
   qqReplaceOutputRuleInText,
+  qqStickerFrequencyGuide,
 } from "../../services/qq-prompt-contract";
 import { isObservationExpired, speechExpiresAt } from "../../services/qq-retention";
 import {
@@ -134,6 +136,7 @@ import {
 } from "../../services/qq-sticker-capability";
 import { planQqPreparedReply, type QqStickerStage } from "../../services/qq-sticker-runner";
 import { compileSystemPrompt, runtimeFromAgent } from "../../services/runtime-config";
+import { WEB_PERMISSION_RESOURCE, WEB_PERMISSION_REVISION } from "../../web-access/actions";
 import type { BotCompressionJob } from "./background-compression";
 import {
   assertBotContextSources,
@@ -254,6 +257,8 @@ export interface QqTaskExecutionDescriptor {
   readonly task: QqConversationTaskRow;
   readonly snapshot: QqTaskExecutionSnapshot;
   readonly leaseToken: string;
+  readonly authorityTimings?: QqTaskAuthorityTimings;
+  readonly onAuthorityTimings?: (timings: QqTaskAuthorityTimings) => void;
 }
 
 type ReplyContributionCall = {
@@ -409,7 +414,12 @@ export class OneBotHost {
       leaseExpiresAt: task.leaseExpiresAt,
       errorCode: null,
     };
-    return this.activateWithTask(wake, signal, descriptor);
+    const authorityTimings: QqTaskAuthorityTimings = {};
+    try {
+      return await this.activateWithTask(wake, signal, { ...descriptor, authorityTimings });
+    } finally {
+      descriptor.onAuthorityTimings?.(authorityTimings);
+    }
   }
 
   private async activateWithTask(
@@ -540,7 +550,11 @@ export class OneBotHost {
      * 恢复判定共用这一个 helper，不复制第二份查询、不加第二缓存。
      */
     const lookupStoredJudgement = ():
-      | { raw: string; sources: readonly SourceRef[] }
+      | {
+          raw: string;
+          sources: readonly SourceRef[];
+          targets?: readonly { targetId: string; speakerId: string | null }[];
+        }
       | undefined => {
       const runRow = db
         .query(
@@ -579,6 +593,88 @@ export class OneBotHost {
         groupOwner,
         ctx.sources,
       );
+      if (execution?.task.cause === "chiming_in" && execution.task.judgementDone === 1) {
+        // The claim is an allowlist, not the audience of the accepted judgement. Restore
+        // that audience from the host's terminal input envelope, never from output IDs.
+        const messages = ctx.messages;
+        if (!messages) return undefined;
+        let position = messages.length - 1;
+        while (
+          position >= 0 &&
+          messages[position].role === "user" &&
+          messages[position].content.length > 0 &&
+          messages[position].content.every((part) => part.kind === "image")
+        )
+          position--;
+        const message = messages[position];
+        if (message?.role !== "user" || message.content.length !== 1) return undefined;
+        const part = message.content[0];
+        if (part?.kind !== "text") return undefined;
+        let value: unknown;
+        try {
+          value = JSON.parse(part.text);
+        } catch {
+          return undefined;
+        }
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+        const envelope = value as Record<string, unknown>;
+        if (
+          envelope.kind !== "qq_batch_targets" ||
+          envelope.trust !== "data_only" ||
+          Object.keys(envelope).some(
+            (key) => !["kind", "trust", "sourceSeqs", "targets"].includes(key),
+          ) ||
+          !Array.isArray(envelope.sourceSeqs) ||
+          !Array.isArray(envelope.targets) ||
+          envelope.targets.length === 0
+        )
+          return undefined;
+        const sourceSeqs = new Set<number>();
+        for (const seq of envelope.sourceSeqs) {
+          if (
+            typeof seq !== "number" ||
+            !Number.isSafeInteger(seq) ||
+            seq < execution.snapshot.sourceFromSeq ||
+            seq > execution.snapshot.sourceThroughSeq ||
+            sourceSeqs.has(seq)
+          )
+            return undefined;
+          sourceSeqs.add(seq);
+        }
+        const targets: { targetId: string; speakerId: string | null }[] = [];
+        const seen = new Set<string>();
+        for (const item of envelope.targets) {
+          if (item === null || typeof item !== "object" || Array.isArray(item)) return undefined;
+          const target = item as Record<string, unknown>;
+          if (
+            typeof target.targetId !== "string" ||
+            target.targetId.trim() === "" ||
+            (target.speakerId !== null && typeof target.speakerId !== "string") ||
+            Object.keys(target).some(
+              (key) => !["targetId", "speakerId", "sourceSeqs"].includes(key),
+            ) ||
+            seen.has(target.targetId) ||
+            !execution.snapshot.authorizedTargets.includes(target.targetId) ||
+            !execution.snapshot.targetParticipants.some(
+              (frozen) =>
+                frozen.targetId === target.targetId && frozen.speakerId === target.speakerId,
+            )
+          )
+            return undefined;
+          if (target.sourceSeqs !== undefined) {
+            if (!Array.isArray(target.sourceSeqs)) return undefined;
+            const ownSeqs = new Set<number>();
+            for (const seq of target.sourceSeqs) {
+              if (typeof seq !== "number" || !sourceSeqs.has(seq) || ownSeqs.has(seq))
+                return undefined;
+              ownSeqs.add(seq);
+            }
+          }
+          seen.add(target.targetId);
+          targets.push({ targetId: target.targetId, speakerId: target.speakerId });
+        }
+        return { raw: out.text, sources: ctx.sources, targets };
+      }
       return { raw: out.text, sources: ctx.sources };
     };
     const linkRun = (runId: string, observedSeq: number, attachTaskOwner = false) => {
@@ -784,12 +880,14 @@ export class OneBotHost {
       }
     }
     let opportunities: ReturnType<WakeRepository["readyParticipants"]> = [];
+    const activeInputs = new Map<string, NonNullable<BotContextTarget["activeInput"]>>();
     /**
      * 自主批次候选：从 cause 游标 chimingInObservedSeq 到本 wake throughSeq 之间，按发言人
      * 取合格成员入站事件（含注意力过滤与来源有效期），已确认回复的跳过。每个成员一条候选。
      */
     const chimingOpportunities = (): ReturnType<WakeRepository["readyParticipants"]> => {
-      const boundary = o.wakes.getSourceFromSeq(wake.id) ?? 0;
+      activeInputs.clear();
+      const boundary = sourceFromSeq!;
       const attention = attentionTriggerFilter(binding);
       const items = o.journal.eventsAfter(conversation.id, boundary, Number.MAX_SAFE_INTEGER).items;
       // 1. 有界冻结范围内的**完整**成员入站行（不被资格过滤抹行）：self 的 direct/过期行
@@ -871,8 +969,14 @@ export class OneBotHost {
         return true;
       });
       // 3. 每成员一个候选锚：非排除合格行按 occurredAt 最大；命中组成员整体换成组的代表候选。
-      const latestBySpeaker = new Map<string, { seq: number; occurredAt: string }>();
-      const consider = (speaker: string, anchor: { seq: number; occurredAt: string }) => {
+      const latestBySpeaker = new Map<
+        string,
+        { seq: number; occurredAt: string; eventId: string }
+      >();
+      const consider = (
+        speaker: string,
+        anchor: { seq: number; occurredAt: string; eventId: string },
+      ) => {
         const existing = latestBySpeaker.get(speaker);
         if (
           !existing ||
@@ -885,7 +989,11 @@ export class OneBotHost {
         if (excluded.has(event.seq)) continue;
         const speaker = event.participant?.id;
         if (!speaker) continue;
-        consider(speaker, { seq: event.seq, occurredAt: event.occurredAt });
+        consider(speaker, {
+          seq: event.seq,
+          occurredAt: event.occurredAt,
+          eventId: event.source.id,
+        });
       }
       for (const group of antispam.burstGroups) {
         const latestSeq = Math.max(...group.carriers.map((carrier) => carrier.seq));
@@ -894,17 +1002,25 @@ export class OneBotHost {
         // 候选键必须与其它候选同域（journal participant.id），不直接用投影 speakerId。
         const speaker = representative.participant?.id;
         if (!speaker) continue;
-        consider(speaker, { seq: representative.seq, occurredAt: representative.occurredAt });
+        consider(speaker, {
+          seq: representative.seq,
+          occurredAt: representative.occurredAt,
+          eventId: representative.source.id,
+        });
       }
-      // 4. 每成员恰两次覆盖判定：confirmed 保持原批上界口径（原 newtopic 批语义，E<=S<T
-      //    不剔除候选）；pending 按最新合格事件判（已 covered input 不复活候选）。本机会
-      //    stable key（同 frozen wake 恢复复用判断，规格 §8.2）在两种状态下都排除。
+      // Coverage follows this participant's latest eligible input, not another participant's
+      // later batch boundary. The frozen opportunity's own stable key remains excluded for recovery.
       const bySpeaker = new Map<
         string,
         { wake: typeof wake; participantId: string; occurredAt: string }
       >();
       for (const [speaker, latest] of latestBySpeaker) {
-        if (confirmedReplyCoverage(wake.throughSeq, speaker, true)) continue;
+        // Keep input identity even when coverage excludes a frozen recovery recipient.
+        activeInputs.set(speaker, {
+          sourceSeqs: [latest.seq],
+          eventIds: [latest.eventId],
+        });
+        if (confirmedReplyCoverage(latest.seq, speaker, true)) continue;
         if (inFlightCoverage(latest.seq, speaker)) continue;
         bySpeaker.set(speaker, { wake, participantId: speaker, occurredAt: latest.occurredAt });
       }
@@ -1180,14 +1296,7 @@ export class OneBotHost {
     if (judgedInitiativeTask && resumeProof === undefined)
       throw new Error("QQ_TASK_JUDGEMENT_UNAVAILABLE");
     const resumedInitiative =
-      resumeProof !== undefined
-        ? {
-            targets: execution!.snapshot.targetParticipants.map((entry) => ({
-              targetId: entry.targetId,
-              speakerId: entry.speakerId,
-            })),
-          }
-        : undefined;
+      resumeProof !== undefined ? { targets: [...resumeProof.targets!] } : undefined;
     let prepared = preparation(true);
     if (prepared.kind !== "prepared") {
       // 任务分支：冻结预算下的这一轮只是「还没到点」，交还 readyAt 让任务回到 pending
@@ -1204,7 +1313,7 @@ export class OneBotHost {
     const targets: BotContextTarget[] = [];
     const authorizedTargets: string[] = [];
     const setTargets = () => {
-      const next = execution
+      const next: BotContextTarget[] = execution
         ? execution.snapshot.targetParticipants.map((target) => ({
             id: target.targetId,
             speakerId: target.speakerId,
@@ -1239,6 +1348,12 @@ export class OneBotHost {
           byId.set(speaker ?? "anonymous", { id: speaker ?? "anonymous", speakerId: speaker });
         }
         next.splice(0, next.length, ...byId.values());
+      }
+      if (path === "chiming_in") {
+        for (const target of next) {
+          const activeInput = activeInputs.get(target.speakerId ?? "anonymous");
+          if (activeInput) target.activeInput = activeInput;
+        }
       }
       // 原地更新（保持数组身份）：run 工厂用同一数组别名，重算目标后 run 内视图立即生效。
       targets.splice(0, targets.length, ...next);
@@ -1288,13 +1403,42 @@ export class OneBotHost {
     };
     const assertAuthority = () => {
       signal.throwIfAborted();
-      assertTaskLease();
-      assertConfiguration();
+      const timings = execution?.authorityTimings;
+      const leaseStarted = performance.now();
+      if (timings) timings.authorityLeaseChecks = (timings.authorityLeaseChecks ?? 0) + 1;
+      try {
+        assertTaskLease();
+      } finally {
+        if (timings)
+          timings.authorityLeaseMs =
+            (timings.authorityLeaseMs ?? 0) + performance.now() - leaseStarted;
+      }
+      const configurationStarted = performance.now();
+      if (timings)
+        timings.authorityConfigurationChecks = (timings.authorityConfigurationChecks ?? 0) + 1;
+      try {
+        assertConfiguration();
+      } finally {
+        if (timings)
+          timings.authorityConfigurationMs =
+            (timings.authorityConfigurationMs ?? 0) + performance.now() - configurationStarted;
+      }
       // T-spec detail 同次升规格锚复验（零额外模型调用/额外 read）：放在 assertAuthority 末段
       // 而非 assertConfiguration 内——问题锚回调自己只复验事实/来源/正文修订（其起点是
       // assertConfiguration，不是 source.assertCurrent），所以这里逐锚复跑不会回到
       // assertAuthority，形成递归。未登记锚（ordinary read）不动。
-      for (const anchor of detailAnchors.values()) anchor.assertQuestionCurrent(o.orm);
+      const detailStarted = performance.now();
+      if (timings) timings.authorityDetailChecks ??= 0;
+      try {
+        for (const anchor of detailAnchors.values()) {
+          if (timings) timings.authorityDetailChecks! += 1;
+          anchor.assertQuestionCurrent(o.orm);
+        }
+      } finally {
+        if (timings)
+          timings.authorityDetailMs =
+            (timings.authorityDetailMs ?? 0) + performance.now() - detailStarted;
+      }
     };
     /**
      * 已在运行的背景任务（水位压缩）的边界（ADR0019 §13.1 B、§13.3 D/H）：
@@ -1363,14 +1507,7 @@ export class OneBotHost {
     const stickerFrequency = execution
       ? execution.snapshot.stickerFrequency
       : schemeStickers(scheme).frequency;
-    const stickerFrequencyGuide =
-      stickerFrequency === undefined
-        ? ""
-        : {
-            low: "表情发送倾向（low）：少一些主动或装饰性表情；文字与表情同样合适时偏向文字；若表情本身最合适，仍可只发表情。",
-            medium: "表情发送倾向（medium）：按当前语境平衡选择文字、表情或组合，不刻意凑数。",
-            high: "表情发送倾向（high）：更积极考虑相关表情或图文组合；不适合时不强加。",
-          }[stickerFrequency];
+    const stickerFrequencyGuide = qqStickerFrequencyGuide(stickerFrequency);
     // 指令按 tier 组合：scene 两档共用；回复 run 才带"直接回话/自写回复"要求；review 收尾共用。
     // 主动路径不再保留"先写清意图、再评分"的前置层（规格 §2.2/§2.5：评分本身是首次调用）。
     const sceneRules = [
@@ -1390,7 +1527,7 @@ export class OneBotHost {
     ];
     const reviewRule = `后续相关消息到来要重新决定尚未发送的计划。pending_plan 是你之前的草稿/计划与剩余独立 generate 次数，属于资料而非指令。读过新消息后，可以用 inline 原样保留或修改仍然适用的草稿，也可 none 暂不发送；generate 次数耗尽时不能再请求独立生成。复核指导：\n${schemePrompts(scheme).review}`;
     const replyRules = [
-      "有人直接与你交流：直接写你要回的话（首条 call 就用终结回复给出正文），需要先查资料/理解图片时先调用工具，随后再用正文回答。",
+      "写这一轮要发的回复：可用 reply.text 发文字，或先用 sticker.search 查看候选，再用 reply.sticker 发贴切的表情或图文组合。需要先查资料或理解图片时先调用工具，随后再回复；不要求首条 call 就提交纯文字。",
       path === "follow_up"
         ? `本轮是**连续交谈**，必须回话：给每个发言的人各写一条回复；只有确实没有内容时才被程序拒绝，不要返回 none。需要 @ 谁时，把其成员号放进该目标的 mentionIds（可选）。`
         : "",
@@ -1438,7 +1575,6 @@ export class OneBotHost {
     // base 计算。
     const epochText = (base: string, seq: number) =>
       `${base}\n当前观察序列：${String(seq).padStart(20, "0")}。许可由程序按当前相关状态判定：新的相关观察会让它自动失效，不相关的变化不影响它。`;
-    spec.instructions = epochText(spec.instructions ?? "", 0);
     // 本 run 的 id 由 host.activate 的 onEvent 回填；主路径单 run 用它，主动批次下每个达标
     // 目标各有自己的子 run id（作为参数传入各 run 块）。源回调（onRead/diagnose/媒体读取）
     // 按主（父）run id 记账。
@@ -1488,6 +1624,7 @@ export class OneBotHost {
       const runDetailMediaIds = new Set<string>();
       // read 回调按本 run 的 spec/runId 记账（不落到外部/兄弟的 spec 或 run ref）。
       const runBase = runSpec.instructions ?? "";
+      spec.instructions = epochText(runBase, 0);
       const onRead = (seq: number) => {
         spec.instructions = epochText(runBase, seq);
         if (ref.current) linkRun(ref.current, seq);
@@ -1595,6 +1732,19 @@ export class OneBotHost {
       const runResolver = mediaService ? createImageByteResolver() : null;
       // 本 run 的图片字节登记：variant 复验（SQL 比对 asset/policy）→ run 绑定复验 →
       // resolver 登记，一条规则服务三相投影与细问读取；错误码前缀由调用点传入。
+      const loadPreparedImageBytes = (
+        image: QqPreparedMediaImage,
+        errorPrefix: "MEDIA_IMAGE" | "SCORE_IMAGE",
+      ): Uint8Array => {
+        const row = db
+          .query("SELECT asset_id, policy, bytes FROM qq_media_variants WHERE id=?")
+          .get(image.variantId) as
+          | { asset_id: string; policy: string; bytes: Uint8Array }
+          | undefined;
+        if (!row || row.asset_id !== image.assetId || row.policy !== image.variantPolicy)
+          throw new Error(`${errorPrefix}_VARIANT_MISMATCH`);
+        return row.bytes;
+      };
       const verifyAndRegisterImages = (
         images: readonly QqPreparedMediaImage[],
         errorPrefix: "MEDIA_IMAGE" | "SCORE_IMAGE",
@@ -1604,19 +1754,13 @@ export class OneBotHost {
         runId: string | undefined,
       ) => {
         for (const image of images) {
-          const row = db
-            .query("SELECT asset_id, policy, bytes FROM qq_media_variants WHERE id=?")
-            .get(image.variantId) as
-            | { asset_id: string; policy: string; bytes: Uint8Array }
-            | undefined;
-          if (!row || row.asset_id !== image.assetId || row.policy !== image.variantPolicy)
-            throw new Error(`${errorPrefix}_VARIANT_MISMATCH`);
+          const bytes = loadPreparedImageBytes(image, errorPrefix);
           if (runId === undefined) throw new Error(`${errorPrefix}_RUN_MISSING`);
           register({
             runId,
             owner,
             part: image.content,
-            bytes: new Uint8Array(row.bytes),
+            bytes: new Uint8Array(bytes),
             sources: image.sources,
             assertCurrent: () => source.assertCurrent(),
           });
@@ -1682,12 +1826,30 @@ export class OneBotHost {
               },
             }
           : {};
-      const source = reuse
+      const source: BotContextSource = reuse
         ? reuse.parent.childReplySession({
             spec,
             targets,
             decisionTier: tier,
             batchIntents: reuse.intents,
+            modelProtocol: (phase) =>
+              phase === "decision"
+                ? {
+                    responseSchema: hasUnknownImages("decision")
+                      ? QQ_DECISION_ENVELOPE_SCHEMA
+                      : QQ_DECISION_JSON_SCHEMA,
+                    tools: spec.availableActions.map(({ name, description, parameters }) => ({
+                      name,
+                      description,
+                      parameters,
+                    })),
+                  }
+                : hasUnknownImages("generation")
+                  ? {
+                      responseSchema: QQ_TEXT_ENVELOPE_SCHEMA,
+                      outputRule: QQ_REPLY_ENVELOPE_OUTPUT_RULE,
+                    }
+                  : {},
             onRead,
             ...mediaInputOption,
           })
@@ -1728,6 +1890,24 @@ export class OneBotHost {
                 }
               : {}),
             decisionTier: tier,
+            modelProtocol: (phase) =>
+              phase === "decision"
+                ? {
+                    responseSchema: hasUnknownImages("decision")
+                      ? QQ_DECISION_ENVELOPE_SCHEMA
+                      : QQ_DECISION_JSON_SCHEMA,
+                    tools: spec.availableActions.map(({ name, description, parameters }) => ({
+                      name,
+                      description,
+                      parameters,
+                    })),
+                  }
+                : hasUnknownImages("generation")
+                  ? {
+                      responseSchema: QQ_TEXT_ENVELOPE_SCHEMA,
+                      outputRule: QQ_REPLY_ENVELOPE_OUTPUT_RULE,
+                    }
+                  : {},
             targets: () => targets,
             assertCurrent: assertAuthority,
             assertBackgroundCurrent,
@@ -1914,7 +2094,7 @@ export class OneBotHost {
         );
         // 最终 materials 预算复验（当前真源）：超上限＝该次尝试不发出（fail closed）。
         const ceiling = source.phaseUnitsCeiling(qqPhase);
-        const units = inputUnits(messages);
+        const units = source.measurePhaseInput(qqPhase, messages);
         if (ceiling !== undefined && units > ceiling) {
           // 判据就是 ceiling−units（无 envelope512），roomFor 按同一公式实算；capacity 只读
           // source 既有缓存（cachedCapacity），不重复探测；该模型未被探过＝unknown→null。
@@ -2279,7 +2459,7 @@ export class OneBotHost {
               policyRevision: mediaPolicyRevision,
               assertCurrent: () => source.assertCurrent(),
               fit: (name, arguments_, actionSignal) =>
-                source.actionResultFitter(name, arguments_, actionSignal),
+                source.actionResultFitter(name, arguments_, actionSignal, true),
               now,
               // typed 描述来源的签发方：真实任务投影 + journal 时间线复验（T08）。
               evidence: { db, orm: o.orm },
@@ -2334,34 +2514,97 @@ export class OneBotHost {
                   .then((accept) => accept(value, refs)),
             })
           : [];
+      const fitReadResult = (action: BuiltInAction): BuiltInAction => {
+        return {
+          ...action,
+          async fitResult(value, sources, arguments_, context) {
+            const check = () => {
+              context.signal.throwIfAborted();
+              context.assertAuthority?.();
+              source.assertCurrent();
+            };
+            check();
+            if (context.fitReadResult) {
+              const accepted = context.fitReadResult(
+                action.description.name,
+                arguments_,
+                value,
+                sources,
+              );
+              check();
+              return accepted;
+            }
+            const fits = await source.actionResultFitter(
+              action.description.name,
+              arguments_,
+              context.signal,
+              true,
+            );
+            check();
+            if (fits(value, sources)) {
+              check();
+              return value;
+            }
+            const unavailable = { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" };
+            if (!fits(unavailable, sources) && !fits(unavailable, sources, true))
+              fail("CONTEXT_BUDGET_EXCEEDED", "读取结果与拒绝信封超过本轮上下文容量");
+            check();
+            return unavailable;
+          },
+        };
+      };
+      const externalActions = (
+        o.tasks?.conversationActions(conversation.id) ??
+        o.externalActions?.() ??
+        []
+      ).map((action): BuiltInAction => {
+        if (
+          action.description.effect !== "read" ||
+          action.permission?.resource !== WEB_PERMISSION_RESOURCE ||
+          action.permission.revision !== WEB_PERMISSION_REVISION
+        )
+          return action;
+        return fitReadResult(action);
+      });
+      let researchAction: BuiltInAction | undefined;
+      let stickerRequiresNextWindow = false;
+      const stickerSearch = stickersEnabled
+        ? createQqStickerSearch({
+            orm: o.orm,
+            request: stickerRequest,
+            assertCurrent: () => {
+              source.assertCurrent();
+              if (o.stickersEnabled?.() === false) throw new Error("QQ_STICKER_MODULE_DISABLED");
+            },
+            fit: (arguments_, actionSignal) =>
+              source.actionResultFitter(
+                "sticker.search",
+                arguments_,
+                actionSignal,
+                stickerRequiresNextWindow,
+              ),
+            onDisclosed: (context, refs) => {
+              const key = disclosureKey(context.runId, context.owner);
+              const ids = stickerDisclosures.get(key) ?? new Map<string, string>();
+              stickerDisclosures.set(key, ids);
+              for (const ref of refs) if (ref.kind === "qq_sticker") ids.set(ref.id, ref.revision);
+            },
+          })
+        : undefined;
       const actions = [
         ...source.actions,
         ...memberActions,
         ...mediaActions,
-        ...(o.tasks?.conversationActions(conversation.id) ?? o.externalActions?.() ?? []),
-        ...(stickersEnabled
-          ? [
-              createQqStickerSearch({
-                orm: o.orm,
-                request: stickerRequest,
-                assertCurrent: () => {
-                  source.assertCurrent();
-                  if (o.stickersEnabled?.() === false)
-                    throw new Error("QQ_STICKER_MODULE_DISABLED");
-                },
-                fit: (arguments_, actionSignal) =>
-                  source.actionResultFitter("sticker.search", arguments_, actionSignal),
-                onDisclosed: (context, refs) => {
-                  const key = disclosureKey(context.runId, context.owner);
-                  const ids = stickerDisclosures.get(key) ?? new Map<string, string>();
-                  stickerDisclosures.set(key, ids);
-                  for (const ref of refs)
-                    if (ref.kind === "qq_sticker") ids.set(ref.id, ref.revision);
-                },
-              }),
-            ]
-          : []),
+        ...externalActions,
+        ...(stickerSearch ? [stickerSearch] : []),
       ].filter((action) => guard.actionAllowed(action, groupOwner));
+      const isWebRead = (action: BuiltInAction) =>
+        externalActions.includes(action) &&
+        action.description.effect === "read" &&
+        action.permission?.resource === WEB_PERMISSION_RESOURCE &&
+        action.permission.revision === WEB_PERMISSION_REVISION;
+      const isMediaRead = (action: BuiltInAction) =>
+        mediaActions.includes(action) && action.description.effect === "read";
       const replyTerminalDescriptions = stickersEnabled
         ? [REPLY_TEXT_DESCRIPTION, REPLY_STICKER_DESCRIPTION]
         : [REPLY_TEXT_DESCRIPTION];
@@ -2391,18 +2634,10 @@ export class OneBotHost {
         source.assertSources(projection.sources);
         guard.assertSources(groupOwner, projection.sources);
         return projection.images.map((image) => {
-          const row = db
-            .query(
-              "SELECT id, asset_id, policy, bytes, mime_type FROM qq_media_variants WHERE id=?",
-            )
-            .get(image.variantId) as
-            | { id: string; asset_id: string; policy: string; bytes: Uint8Array; mime_type: string }
-            | undefined;
-          if (!row || row.asset_id !== image.assetId || row.policy !== image.variantPolicy)
-            throw new Error("SCORE_IMAGE_VARIANT_MISMATCH");
+          const bytes = loadPreparedImageBytes(image, "SCORE_IMAGE");
           return {
             part: image.content,
-            bytes: new Uint8Array(row.bytes),
+            bytes: new Uint8Array(bytes),
             sources: image.sources,
             assertCurrent: () => source.assertCurrent(),
           };
@@ -2452,6 +2687,12 @@ export class OneBotHost {
             },
             {
               messages: evaln.messages,
+              ...(evaln.contextBudget === undefined
+                ? {}
+                : {
+                    contextBudget: evaln.contextBudget,
+                    contextInputLimit: evaln.contextInputLimit,
+                  }),
               ...(execution ? { workClass: execution.snapshot.taskClass } : {}),
               imageResolver: scoreResolver,
               bindRun: (context) => {
@@ -2510,7 +2751,11 @@ export class OneBotHost {
                         ? replaced
                         : [...replaced, { role: "user" as const, content: remaining }];
                     const messages = withImages.filter((message) => message.content.length > 0);
-                    if (inputUnits(messages) > evaln.limit)
+                    if (
+                      source.measurePhaseInput("batchEvaluation", messages, {
+                        responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
+                      }) > evaln.limit
+                    )
                       fail("CONTEXT_BUDGET_EXCEEDED", "评分相重备材料超过评分叶 inputUnits 上限");
                     return { messages };
                   }
@@ -2546,7 +2791,11 @@ export class OneBotHost {
                   hook.messages,
                   fallbackProjection?.notes ?? [],
                 );
-                if (inputUnits(messages) > evaln.limit)
+                if (
+                  source.measurePhaseInput("batchEvaluation", messages, {
+                    responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
+                  }) > evaln.limit
+                )
                   fail("CONTEXT_BUDGET_EXCEEDED", "评分相 fallback 材料超过评分叶 inputUnits 上限");
                 return { messages };
               },
@@ -2896,6 +3145,7 @@ export class OneBotHost {
             conversationKind: binding.kind,
             peerId: binding.peerId,
             participantId,
+            observedThroughSeq: source.observedSeq,
             agentId: agent.id,
             bindingId: binding.id,
             bindingEpoch: conversation.bindingEpoch,
@@ -3060,6 +3310,29 @@ export class OneBotHost {
             owner,
             ...(execution ? { workClass: execution.snapshot.taskClass } : {}),
             context: source,
+            isTerminalDecision: () => source.isTerminalDecision(),
+            prepareResearchAction: (action) => {
+              researchAction = fitReadResult(action);
+              return researchAction;
+            },
+            beforeActionBatch: (calls) => {
+              stickerRequiresNextWindow = calls.some(
+                ({ action }) => isMediaRead(action) || action === researchAction,
+              );
+              source.setBudgetFeedbackBatchEligible(
+                calls.some(
+                  ({ action }) =>
+                    isWebRead(action) || isMediaRead(action) || action === researchAction,
+                ) &&
+                  calls.every(
+                    ({ action }) =>
+                      isWebRead(action) ||
+                      isMediaRead(action) ||
+                      action === researchAction ||
+                      action === stickerSearch,
+                  ),
+              );
+            },
             authorizedTargets,
             actions,
             usage,
@@ -3078,6 +3351,16 @@ export class OneBotHost {
               parse: (calls, allowedTargets) => aggregateReplyContributions(calls, allowedTargets),
             },
             signal,
+            onDecisionInvalid: async (_code, decisionSignal) => {
+              source.assertCurrent();
+              decisionSignal.throwIfAborted();
+              rememberPlan(
+                "Invalid or empty decision; use advertised invoke/final/none contract",
+                [],
+                pendingOutputs,
+              );
+              return true;
+            },
             onEvent(event) {
               if (event.type === "started") {
                 ref.current = event.runId;
@@ -3213,7 +3496,7 @@ export class OneBotHost {
                     fallbackProjection?.notes ?? [],
                   );
                   const ceiling = source.phaseUnitsCeiling(qqPhase, mediaBoundary);
-                  const units = inputUnits(messages);
+                  const units = source.measurePhaseInput("generation", messages);
                   if (ceiling !== undefined && units > ceiling)
                     fail("CONTEXT_BUDGET_EXCEEDED", "fallback 后的材料超过模型容量");
                   return { messages };
@@ -3508,7 +3791,7 @@ export class OneBotHost {
                         covered,
                         failedTargets.get(ownTarget),
                       );
-                    linkRun(currentRunId, opportunitySeq);
+                    linkRun(currentRunId, source.observedSeq);
                   }
                   return new AgentRunRepository(db).finishRun(
                     currentRunId,
@@ -3576,13 +3859,12 @@ export class OneBotHost {
     // 子 run；评分/子 run 经 AsyncLocal 继承父 usage/scope/sources，不另起 ledger。父 run id
     // 由 onRunId 捕获（不是第 1 个子 run 的 id）。协议/评分失败原样抛走原失败结算（父 run→failed）。
     if (initiative) {
-      // 同任务恢复（P3 partial recovery）：评分批用冻结快照的**全部**合法目标（含已早提交/
-      // unknown 的成员）——那是获准的 target 范围，不是 prepared 新算的子集；已注册目标由
-      // committedOf 稳定键跳过，只补齐剩余目标。非恢复车道保持原样。
-      const memberBatch =
+      // Recovery keeps the accepted judgement's input audience inside the frozen claim.
+      // Registered targets (including unknown sends) retain their stable-key skip below.
+      const memberBatch: BotContextTarget[] = (
         path === "chiming_in" && binding.kind === "group" && prepared.kind === "prepared"
           ? resumeProof !== undefined && execution
-            ? execution.snapshot.targetParticipants.map((entry) => ({
+            ? resumeProof.targets!.map((entry) => ({
                 id: entry.targetId,
                 speakerId: entry.speakerId,
               }))
@@ -3590,7 +3872,11 @@ export class OneBotHost {
                 id: entry.speakerId ?? "anonymous",
                 speakerId: entry.speakerId,
               }))
-          : targets;
+          : targets
+      ).map((target) => {
+        const activeInput = activeInputs.get(target.speakerId ?? "anonymous");
+        return activeInput ? { ...target, activeInput } : target;
+      });
       const roomTargets: BotContextTarget[] =
         binding.kind === "private"
           ? [{ id: binding.peerId, speakerId: binding.peerId }]
@@ -3710,7 +3996,21 @@ export class OneBotHost {
                 }))
               : [
                   {
-                    targets: roomTargets,
+                    targets: roomTargets.map((target) => ({
+                      ...target,
+                      ...(path === "chiming_in"
+                        ? {
+                            activeInput: {
+                              sourceSeqs: replyTargets.flatMap(
+                                (entry) => entry.activeInput?.sourceSeqs ?? [],
+                              ),
+                              eventIds: replyTargets.flatMap(
+                                (entry) => entry.activeInput?.eventIds ?? [],
+                              ),
+                            },
+                          }
+                        : {}),
+                    })),
                     intents: replyTargets.map((entry) => ({
                       targetId: entry.id,
                       intent: parentBatch.licenses.get(entry.id)?.intent ?? "",

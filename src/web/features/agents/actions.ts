@@ -152,6 +152,11 @@ export function createAgentActions(
         set({ error: null, feedback: msg("请先创建 Agent 基础记录") });
         return false;
       }
+      // 捕获本次提交的所有权身份，异步续编完成时据此拒绝覆盖更新的导航或草稿。
+      const ownerApi = get().apiClient;
+      const ownerPage = get().page;
+      const ownerView = get().settingsView;
+      const ownerRoute = get().settingsRoute;
       try {
         if (!creating && section === "C" && draft.p5_config.context_window !== null) {
           const capacity = await get().apiClient.getModelCapacity(draft.model_name);
@@ -211,6 +216,24 @@ export function createAgentActions(
                 : msg("{0} 分区已保存", sectionLetter(section)),
           };
         });
+        if (!creating) return true;
+        // 续编编辑器复用已保存响应与一次人设读取；创建已提交，不重跑完整 editAgent/记忆读取。
+        const committedDraft = get().editorDraft;
+        const ownsCreate = () =>
+          get().apiClient === ownerApi &&
+          get().page === ownerPage &&
+          get().settingsView === ownerView &&
+          get().settingsRoute === ownerRoute &&
+          get().editorAgentId === saved.id &&
+          get().pageEditor === null;
+        try {
+          const savedPersona = await ownerApi.getPersona(saved.id);
+          if (!ownsCreate() || get().editorDraft !== committedDraft) return true;
+          set({ pageEditor: newPageEditor(saved, savedPersona), persona: savedPersona });
+        } catch (error) {
+          if (ownsCreate() && get().editorDraft === committedDraft)
+            set({ error: errorText(error) });
+        }
         return true;
       } catch (error) {
         set({ error: errorText(error) });
@@ -218,8 +241,15 @@ export function createAgentActions(
       }
     },
     savePersona: async (patch) => {
+      const ownerApi = get().apiClient;
+      const ownerPage = get().page;
+      const ownerView = get().settingsView;
+      const ownerRoute = get().settingsRoute;
+      const ownerRequest = editorRequest;
       const id = get().editorAgentId;
       const current = get().persona;
+      const submittedDraft = get().editorDraft;
+      const submittedPageEditor = get().pageEditor;
       if (id === "__new__" || !current) {
         set({
           error: null,
@@ -227,8 +257,17 @@ export function createAgentActions(
         });
         return false;
       }
+      const ownsSubmission = () =>
+        get().apiClient === ownerApi &&
+        editorRequest === ownerRequest &&
+        get().page === ownerPage &&
+        get().settingsView === ownerView &&
+        get().settingsRoute === ownerRoute &&
+        get().editorAgentId === id &&
+        get().editorDraft === submittedDraft &&
+        get().pageEditor === submittedPageEditor;
       try {
-        const saved = await get().apiClient.savePersona(id, {
+        const saved = await ownerApi.savePersona(id, {
           core_identity: patch.core_identity ?? current.core_identity,
           communication_style: patch.communication_style ?? current.communication_style,
           interaction_boundaries: patch.interaction_boundaries ?? current.interaction_boundaries,
@@ -236,25 +275,28 @@ export function createAgentActions(
           advanced_instructions: patch.advanced_instructions ?? current.advanced_instructions,
           persona_intensity: patch.persona_intensity,
         });
+        const savedIntensity = patch.persona_intensity;
+        if (get().apiClient === ownerApi && savedIntensity !== undefined)
+          set((state) => ({
+            agents: state.agents.map((agent) =>
+              agent.id === id ? { ...agent, persona_intensity: savedIntensity } : agent,
+            ),
+          }));
+        if (!ownsSubmission()) return true;
         set((state) => ({
           persona: saved,
           pageEditor: null,
-          agents: state.agents.map((agent) =>
-            agent.id === id ? { ...agent, persona_intensity: patch.persona_intensity } : agent,
-          ),
-          editorDraft: state.editorDraft
-            ? {
-                ...state.editorDraft,
-                persona_intensity: patch.persona_intensity,
-              }
-            : null,
+          editorDraft:
+            state.editorDraft && patch.persona_intensity !== undefined
+              ? { ...state.editorDraft, persona_intensity: patch.persona_intensity }
+              : state.editorDraft,
           dirty: false,
           error: null,
           feedback: msg("人设与性格已保存并立即生效（无版本号）"),
         }));
         return true;
       } catch (error) {
-        set({ error: errorText(error) });
+        if (ownsSubmission()) set({ error: errorText(error) });
         return false;
       }
     },

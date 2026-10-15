@@ -6,6 +6,7 @@ import type {
   Delivery,
 } from "../../src/shared/contracts/conversation";
 import type { SuperstringApi } from "../../src/web/api";
+import { timelineKey } from "../../src/web/features/conversations/use-timeline-scroll";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
 import { timelineRows } from "../../src/web/screens/conversations/timeline-projection";
@@ -606,4 +607,171 @@ it("renders stale delivery causes and legacy neutral, ignores reasons on non-sta
 
   // Reset to zh-CN
   await i18n.changeLanguage("zh-CN");
+});
+
+it("primary input+wake+planned+confirmed project to 1 row and update same key while keeping user text", () => {
+  const inputEvent: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 10,
+    eventKey: "e-input",
+    kind: "inbound",
+    text: "用户输入的问题",
+    activityId: "canonical-task-1",
+  };
+  const wakeEvent: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 11,
+    eventKey: "e-wake",
+    kind: "wake",
+    text: null,
+    participant: null,
+    activityId: "canonical-task-1",
+    wake: {
+      id: "wake-1",
+      cause: "direct_reply",
+      status: "completed",
+      readyAt: now,
+      errorCode: null,
+    },
+    task: {
+      id: "canonical-task-1",
+      status: "running",
+      errorCode: null,
+    },
+  };
+  const plannedEvent: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 12,
+    eventKey: "e-deliv-1",
+    kind: "delivery",
+    outputId: "out-1",
+    deliveryStatus: "planned",
+    text: null,
+    activityId: "canonical-task-1",
+  };
+  const confirmedEvent: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 13,
+    eventKey: "e-deliv-1-conf",
+    kind: "delivery",
+    outputId: "out-1",
+    deliveryStatus: "confirmed",
+    text: "助手的完整回答",
+    activityId: "canonical-task-1",
+    task: {
+      id: "canonical-task-1",
+      status: "completed",
+      errorCode: null,
+    },
+  };
+
+  const rows = timelineRows([inputEvent, wakeEvent, plannedEvent, confirmedEvent]);
+  expect(rows).toHaveLength(1);
+  const row = rows[0];
+  expect(row.activityId).toBe("canonical-task-1");
+  expect(timelineKey(row)).toBe("activity:canonical-task-1");
+  // Representative is the inbound event: preserves user text
+  expect(row.kind).toBe("inbound");
+  expect(row.text).toBe("用户输入的问题");
+  // Server-authoritative latest task status
+  expect(row.task?.status).toBe("completed");
+  // Activity events contain the wake and latest confirmed delivery, not row itself
+  expect(row.activityEvents).toBeDefined();
+  expect(row.activityEvents?.length).toBe(2);
+  expect(row.activityEvents?.some((e) => e === row)).toBe(false);
+  const replyEvent = row.activityEvents?.find((e) => e.outputId === "out-1");
+  expect(replyEvent?.deliveryStatus).toBe("confirmed");
+  expect(replyEvent?.text).toBe("助手的完整回答");
+});
+
+it("preserves separate delivery recipients under the same activity without collapsing into fake confirmation", () => {
+  const inputEvent: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 20,
+    kind: "inbound",
+    text: "群发通知",
+    activityId: "task-broadcast",
+  };
+  const delivA: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 21,
+    kind: "delivery",
+    outputId: "out-user-a",
+    deliveryStatus: "confirmed",
+    participant: { id: "user-a", label: "用户A", role: "member" },
+    activityId: "task-broadcast",
+  };
+  const delivB: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 22,
+    kind: "delivery",
+    outputId: "out-user-b",
+    deliveryStatus: "failed",
+    participant: { id: "user-b", label: "用户B", role: "member" },
+    activityId: "task-broadcast",
+  };
+
+  const rows = timelineRows([inputEvent, delivA, delivB]);
+  expect(rows).toHaveLength(1);
+  const row = rows[0];
+  expect(row.activityEvents).toHaveLength(2);
+  const a = row.activityEvents?.find((e) => e.outputId === "out-user-a");
+  const b = row.activityEvents?.find((e) => e.outputId === "out-user-b");
+  expect(a?.deliveryStatus).toBe("confirmed");
+  expect(b?.deliveryStatus).toBe("failed");
+});
+
+it("keeps different activities and same-sender independent tasks as separate rows", () => {
+  const task1Event: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 30,
+    kind: "inbound",
+    text: "@bot 任务一",
+    activityId: "task-alpha",
+  };
+  const task2Event: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 31,
+    kind: "inbound",
+    text: "@bot 任务二",
+    activityId: "task-beta",
+  };
+
+  const rows = timelineRows([task1Event, task2Event]);
+  expect(rows).toHaveLength(2);
+  expect(rows[0].activityId).toBe("task-alpha");
+  expect(rows[1].activityId).toBe("task-beta");
+});
+
+it("maintains stable key when older history loads parent inbound to join orphan delivery", () => {
+  const orphanDelivery: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 100,
+    kind: "delivery",
+    outputId: "orphan-out",
+    deliveryStatus: "confirmed",
+    activityId: "chain-history",
+  };
+
+  // Page 1: only delivery loaded
+  const initialRows = timelineRows([orphanDelivery]);
+  expect(initialRows).toHaveLength(1);
+  expect(timelineKey(initialRows[0])).toBe("activity:chain-history");
+
+  // Page 2: earlier inbound loaded
+  const loadedInbound: ConversationEventView & { activityId?: string } = {
+    ...observed,
+    seq: 50,
+    kind: "inbound",
+    text: "历史原始输入",
+    activityId: "chain-history",
+  };
+
+  const mergedRows = timelineRows([loadedInbound, orphanDelivery]);
+  expect(mergedRows).toHaveLength(1);
+  // Key remains stable for anchor matching
+  expect(timelineKey(mergedRows[0])).toBe("activity:chain-history");
+  // Representative now smoothly promotes to inbound
+  expect(mergedRows[0].seq).toBe(50);
+  expect(mergedRows[0].text).toBe("历史原始输入");
 });

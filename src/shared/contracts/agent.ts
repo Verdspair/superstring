@@ -219,6 +219,24 @@ export const DeleteAgentsResponseSchema = z.strictObject({
 
 export type DeleteAgentsResponse = z.infer<typeof DeleteAgentsResponseSchema>;
 
+/**
+ * One frozen model context reading, keyed by the REQUESTED model name. Only
+ * primitives are persisted: the budget descriptor itself (`countText`,
+ * `assertCurrent`) and any credential or endpoint stay outside the snapshot.
+ */
+export const ResolvedModelContextSchema = z.strictObject({
+  /** The model this reading actually ran on; may differ from the requested name. */
+  model: nonBlankString(1, 200),
+  /** That model's total context capacity in tokens; the unit is the field name. */
+  capacity: z.number().int().positive(),
+  /** Only set when the route declared an encoding; never guessed from the name. */
+  tokenizer_encoding: z.enum(["cl100k_base", "o200k_base"]).optional(),
+  /** Monotonic route revision the reading came from; absent means untracked. */
+  route_revision: z.number().int().min(0).optional(),
+});
+
+export type ResolvedModelContext = z.infer<typeof ResolvedModelContextSchema>;
+
 /** Session runtime snapshot. */
 export const RuntimeConfigSchema = z.strictObject({
   agent_id: z.string(),
@@ -235,6 +253,9 @@ export const RuntimeConfigSchema = z.strictObject({
   context_compression_model_name: rawString(1, 200),
   p5_config: P5ConfigSchema,
   resolved_model_capacities: z.record(z.string(), z.number().int().positive()).default({}),
+  // Frozen model-context readings. Absence identifies a turn frozen before this
+  // feature; it MUST stay absent, so a retry never injects a current reading.
+  resolved_model_contexts: z.record(z.string(), ResolvedModelContextSchema).optional(),
   // Absence identifies pre-S3 turns; never synthesize today's reading config on retry.
   knowledge_read: FrozenKnowledgeReadSchema.optional(),
   mode: SessionModeSchema.default("chat"),

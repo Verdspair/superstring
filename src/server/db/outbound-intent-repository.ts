@@ -23,6 +23,7 @@ export type OutboundTarget = {
   qqTaskId?: string;
   agentConfigVersion?: number;
   sources?: SourceRef[];
+  observedThroughSeq?: number;
 };
 export type OutboundPartPayload =
   | { text: string; mentions?: readonly string[]; replyToMessageId?: string }

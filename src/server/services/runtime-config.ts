@@ -11,10 +11,10 @@
 // agent.system_prompt", but the guard is kept as a documented invariant.
 
 import { type RuntimeConfig, RuntimeConfigSchema } from "../../shared/contracts";
+import { unicodeStrip } from "../../shared/contracts/code-point-string";
+import { compilePersona, type PersonaSource } from "../../shared/contracts/persona-compile";
 import { AppError } from "../errors";
 import { type AgentConfigRow, readStoredP5 } from "./agent-config-fields";
-import { compilePersona, PERSONA_INTENSITY_DEFAULT, type PersonaSource } from "./persona";
-import { unicodeStrip } from "./text";
 
 /** The subset of an `agents` row that snapshot construction reads. */
 export interface AgentRow extends Omit<AgentConfigRow, "description"> {
@@ -94,6 +94,9 @@ export function runtimeFromAgent(
     ),
     p5_config: parsedP5,
     resolved_model_capacities: {},
+    // A fresh snapshot declares the empty map; only turns frozen before this
+    // feature keep the field absent.
+    resolved_model_contexts: {},
     mode,
     config_version: agent.configVersion,
     persona_intensity: strength,
@@ -116,5 +119,3 @@ export function compileSystemPrompt(runtime: RuntimeConfig): string {
   if (extra) sections.push(`## 基础额外指令\n${extra}`);
   return sections.join("\n\n");
 }
-
-export { PERSONA_INTENSITY_DEFAULT };

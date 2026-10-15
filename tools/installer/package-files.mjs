@@ -98,6 +98,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0063_qq_media_request_identity.sql",
     "versions/0064_qq_scheme_sticker_frequency.sql",
     "versions/0065_qq_antispam_thresholds.sql",
+    "versions/0066_jsonb_context_source_matchers.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

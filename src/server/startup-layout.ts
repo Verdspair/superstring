@@ -16,52 +16,16 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
   });
   if (env.SUPERSTRING_DB_PATH?.trim()) throw new Error("LAYOUT_REJECTS_DATABASE_OVERRIDE");
   // Reject junction/symlink escape through existing path components, including root ancestors.
-  for (const target of [
-    paths.root,
-    paths.resourceRoot,
-    paths.database,
-    paths.browserStateKey,
-    paths.qqTransportKey,
-    paths.appearance,
-    paths.logsDir,
-    paths.backupsDir,
-    paths.maintenanceDir,
-    paths.qqStickersDir,
-    paths.webDir,
-    paths.businessMigration,
-    paths.knowledgeMigration,
-    paths.knowledgeReadMigration,
-    paths.organizationMigration,
-    paths.qqTransportMigration,
-    paths.qqMemorySourcesMigration,
-    paths.qqObservationTextMigration,
-    paths.qqMemoryBatchMigration,
-    paths.qqTransportConfigMigration,
-    paths.qqSchemesMigration,
-    paths.qqSpeechLogMigration,
-    paths.qqMediaNotesMigration,
-    paths.qqSchemeTriggersMigration,
-    paths.qqSendLogMigration,
-    paths.qqSchemeRhythmMigration,
-    paths.qqContextBudgetMigration,
-    paths.qqSchemePromptsMigration,
-    paths.qqMembersMigration,
-    paths.qqOutputReserveMigration,
-    paths.qqStickersMigration,
-    paths.qqConversationTasksMigration,
-    paths.qqTaskLimitsAntispamMigration,
-    paths.qqTaskExecutionSnapshotMigration,
-    paths.qqTaskReadyAtMigration,
-    paths.qqMediaSpecUnificationMigration,
-    paths.qqMediaRequestIdentityMigration,
-    paths.qqSchemeStickerFrequencyMigration,
-    paths.qqAntispamThresholdsMigration,
-  ]) {
+  const checked = new Set<string>();
+  for (const [name, target] of Object.entries(paths)) {
+    if (name === "mode") continue;
     let current = path.parse(target).root;
     for (const component of path.relative(current, target).split(path.sep)) {
       current = path.join(current, component);
+      if (checked.has(current)) continue;
       try {
         if (lstatSync(current).isSymbolicLink()) throw new Error("LAYOUT_REJECTS_LINKED_PATH");
+        checked.add(current);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
         throw error;
@@ -139,6 +103,7 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     readFileSync(paths.qqMediaRequestIdentityMigration, "utf8"),
     readFileSync(paths.qqSchemeStickerFrequencyMigration, "utf8"),
     readFileSync(paths.qqAntispamThresholdsMigration, "utf8"),
+    readFileSync(paths.jsonbContextSourceMatchersMigration, "utf8"),
   ] as const;
   if (businessMigrationSql.some((sql) => !sql.trim())) throw new Error("EMPTY_MIGRATION_RESOURCE");
   if (env.SUPERSTRING_SERVE_WEB === "1") readFileSync(path.join(paths.webDir, "index.html"));

@@ -39,8 +39,7 @@ export const PERSONA_SECTION_TITLES = {
 // The primitives live in `./code-point-string` so the whole contract layer shares ONE
 // implementation: `common.ts` needs the same `unicodeStrip`/`codePointLength` to reproduce
 // the contract's raw-then-strip order, and a second copy would drift.
-// Re-exported here because callers (and the server's `services/persona.ts`)
-// already import them from this module.
+// Re-exported here for callers that compile persona content.
 
 import { codePointLength, codePointSlice, halfEvenRound, unicodeStrip } from "./code-point-string";
 

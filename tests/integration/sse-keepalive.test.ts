@@ -1,11 +1,7 @@
 import { expect, it, spyOn } from "bun:test";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  createSseResponse,
-  parseSseFrames,
-  SSE_KEEPALIVE_INTERVAL_MS,
-} from "../../src/server/api/sse";
+import { createSseResponse, SSE_KEEPALIVE_INTERVAL_MS } from "../../src/server/api/sse";
 import { createApp } from "../../src/server/app";
 import {
   createSession,
@@ -16,6 +12,7 @@ import {
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { ModelUnavailableError } from "../../src/server/errors";
 import { localhostFetch, type ModelGateway } from "../../src/server/llm/model-gateway";
+import { parseSseFrames } from "../harness/sse";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

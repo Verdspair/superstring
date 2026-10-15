@@ -1151,7 +1151,7 @@ describe("0059 scheme task limits and input anti-spam", () => {
       db.exec(
         "UPDATE qq_bindings SET burst_min_messages=NULL,burst_window_seconds=NULL WHERE id='11111111-1111-4111-8111-111111111111'",
       );
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
       expect(
         db
           .query("PRAGMA table_info(qq_bindings)")

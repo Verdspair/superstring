@@ -10,10 +10,13 @@
 // notice cannot even be constructed into a timeline, and unread media is carried as a count
 // so no later stage can quietly treat "a picture arrived" as "we know what it showed".
 
+import type { SQLQueryBindings } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { recordMediaNote, recordMediaSegment } from "../../src/server/db/qq-media-repository";
 import type { QqConversationScope } from "../../src/server/db/qq-observation-repository";
 import {
+  conversationMessagesForBackfill,
   conversationMessagesSince,
   storeObservationText,
 } from "../../src/server/db/qq-observation-repository";
@@ -566,6 +569,148 @@ describe("reading a conversation out of storage", () => {
       expect(ownSpeechSince(h.orm, scope(), { sinceSeconds: 0, limit: 10 })).toEqual([
         { occurredAtSeconds: now, text: "还新鲜" },
       ]);
+    } finally {
+      h.business.close();
+    }
+  });
+});
+
+describe("journal-ordered backfill", () => {
+  it("keeps secondary speech references and scoped sequence semantics with journal-first own lookup", () => {
+    const h = setup();
+    try {
+      const session = h.orm.select().from(schema.sessions).get();
+      if (!session) throw new Error("fixture: session missing");
+      const journal = new ConversationEventRepository(h.db);
+      const conversation = journal.ensureWeb(session.id);
+      if (!conversation) throw new Error("fixture: conversation missing");
+      const append = (
+        kind: "inbound" | "outbound",
+        source: { kind: string; id: string; revision: string },
+        sources = [source],
+      ) =>
+        journal.append({
+          conversationId: conversation.id,
+          eventKey: crypto.randomUUID(),
+          kind,
+          source,
+          sources,
+          occurredAt: at(400),
+        });
+      say(h.orm, "member-first", 300, "first-by-seq");
+      append("inbound", { kind: "qq_event", id: "member-first", revision: "identity" });
+      const own = recordQqSpeech(h.orm, {
+        scope: scope(),
+        kind: "chiming_in",
+        spokeAtSeconds: 100,
+        text: "secondary-own",
+      });
+      const ownRef = { kind: "qq_speech", id: own.id, revision: "identity" };
+      append("outbound", { kind: "unrelated", id: "primary", revision: "identity" }, [
+        { kind: "unrelated", id: "primary", revision: "identity" },
+        ownRef,
+        ownRef,
+      ]);
+      append("outbound", ownRef);
+      say(h.orm, "member-last", 50, "last-by-seq", { speakerKind: "anonymous" });
+      append("inbound", { kind: "qq_event", id: "member-last", revision: "identity" });
+      const foreign = recordQqSpeech(h.orm, {
+        scope: scope({ peerId: "29999" }),
+        kind: "chiming_in",
+        spokeAtSeconds: 200,
+        text: "foreign",
+      });
+      append("outbound", { kind: "qq_speech", id: foreign.id, revision: "identity" });
+      const expired = recordQqSpeech(h.orm, {
+        scope: scope(),
+        kind: "chiming_in",
+        spokeAtSeconds: 200,
+        text: "expired",
+      });
+      h.db
+        .query("UPDATE qq_speech_text SET expires_at=? WHERE speech_id=?")
+        .run(at(400), expired.id);
+      append("outbound", { kind: "qq_speech", id: expired.id, revision: "identity" });
+      const noBody = recordQqSpeech(h.orm, {
+        scope: scope(),
+        kind: "chiming_in",
+        spokeAtSeconds: 200,
+        text: null,
+      });
+      append("outbound", { kind: "qq_speech", id: noBody.id, revision: "identity" });
+      const input = {
+        conversationId: conversation.id,
+        afterSeq: 0,
+        beforeSeq: 8,
+        limit: 10,
+        at: at(400),
+      };
+      const originalQuery = h.db.query;
+      const query = originalQuery.bind(h.db);
+      let ownQuery: { sql: string; bindings: SQLQueryBindings[] } | undefined;
+      h.db.query = ((statementSql: string, ...prepareArguments: unknown[]) => {
+        const statement = Reflect.apply(query, h.db, [statementSql, ...prepareArguments]);
+        return new Proxy(statement, {
+          get(target, property) {
+            if (property === "all")
+              return (...bindings: SQLQueryBindings[]) => {
+                const rows: unknown[] = Reflect.apply(target.all, target, bindings);
+                // Real own-query binding tuple and result shape, not SQL text matching.
+                if (
+                  bindings.length === 9 &&
+                  bindings[0] === conversation.id &&
+                  rows.some(
+                    (row) =>
+                      row !== null &&
+                      typeof row === "object" &&
+                      "seconds" in row &&
+                      "expiresAt" in row,
+                  )
+                )
+                  ownQuery = { sql: statementSql, bindings };
+                return rows;
+              };
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      }) as typeof h.db.query;
+      let rows: ReturnType<typeof conversationMessagesForBackfill>;
+      try {
+        rows = conversationMessagesForBackfill(h.orm, scope(), input);
+      } finally {
+        h.db.query = originalQuery;
+      }
+      expect(rows.map((row) => [row.speaker, row.text, row.occurredAtSeconds])).toEqual([
+        ["member", "first-by-seq", 300],
+        ["assistant", "secondary-own", 100],
+        ["anonymous", "last-by-seq", 50],
+      ]);
+      expect(rows[1]?.sources?.map((ref) => [ref.kind, ref.id])).toEqual([["qq_speech", own.id]]);
+      expect(rows.every((row) => row.mediaNotes.length === 0 && row.mediaUnread === 0)).toBe(true);
+      expect(
+        conversationMessagesForBackfill(h.orm, scope(), { ...input, limit: 2 }).map(
+          (row) => row.text,
+        ),
+      ).toEqual(["first-by-seq", "secondary-own"]);
+      expect(
+        conversationMessagesForBackfill(h.orm, scope(), {
+          ...input,
+          afterSeq: 2,
+          beforeSeq: 4,
+        }).map((row) => row.text),
+      ).toEqual(["secondary-own"]);
+      expect(conversationMessagesForBackfill(h.orm, scope(), { ...input, limit: 0 })).toEqual([]);
+      if (!ownQuery) throw new Error("fixture: original own query not observed");
+      const plan = h.db.query(`EXPLAIN QUERY PLAN ${ownQuery.sql}`).all(...ownQuery.bindings) as {
+        detail: string;
+      }[];
+      const drivers = plan.flatMap((row) => {
+        const match = /^(?:SEARCH|SCAN) (?:TABLE )?(\S+)/.exec(row.detail);
+        return match ? [match[1]] : [];
+      });
+      expect(drivers.length).toBeGreaterThan(0);
+      expect(["j", "conversation_events"]).toContain(drivers[0]);
     } finally {
       h.business.close();
     }

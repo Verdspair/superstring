@@ -288,6 +288,26 @@ describe("observation text retention", () => {
 });
 
 describe("QQ to consolidation caller", () => {
+  it("counts the same pending rows before and after an offer, and honours the exact TTL boundary", () => {
+    const h = setup();
+    try {
+      observe(h, "evt_1", "第一条");
+      observe(h, "evt_2", "第二条", { occurredAtSeconds: NOW_SECONDS - 1 });
+      // A row sitting exactly at the expiry boundary is no longer readable
+      // (expiresAt <= now), so it must not be counted either.
+      const boundarySeconds = NOW_SECONDS - 14 * 24 * 60 * 60;
+      observe(h, "evt_boundary", "踩线消息", { occurredAtSeconds: boundarySeconds });
+      const before = pendingObservationCount(h.orm, GROUP_A, NOW);
+      expect(before).toBe(2);
+
+      markObservationsProcessed(h.orm, ["evt_1"]);
+      const after = pendingObservationCount(h.orm, GROUP_A, NOW);
+      expect(after).toBe(1);
+    } finally {
+      h.business.close();
+    }
+  });
+
   it("lists only this conversation's pending observations, oldest first", () => {
     const h = setup();
     try {

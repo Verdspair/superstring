@@ -25,6 +25,13 @@ export interface ActionContext {
   requestId?: string;
   sources?: readonly SourceRef[];
   assertAuthority?: () => void;
+  /** Executing subtask admission; channel wrappers must not charge the parent window. */
+  fitReadResult?(
+    name: string,
+    arguments_: Record<string, unknown>,
+    value: unknown,
+    sources: readonly SourceRef[],
+  ): unknown;
 }
 export interface BuiltInAction {
   description: ActionDescription;
@@ -35,8 +42,17 @@ export interface BuiltInAction {
   sandboxCallable?: boolean;
   permission?: PermissionRequirement;
   assertAvailable?(): void;
+  /** Initialize run-local state with the runtime's original signal, before context is read. */
+  bindRun?(context: ActionContext): void;
   // Idempotent run cleanup must neither abort caller signals nor allow late results to revive state.
   release?(scope: Pick<ActionContext, "owner" | "runId">): void;
+  /** Optional read-result admission after the executor has added its final source refs. */
+  fitResult?(
+    value: unknown,
+    sources: readonly SourceRef[],
+    arguments_: Record<string, unknown>,
+    context: ActionContext,
+  ): unknown | Promise<unknown>;
   execute(
     arguments_: Record<string, unknown>,
     context: ActionContext,

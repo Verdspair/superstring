@@ -1,16 +1,15 @@
-/**
- * 同批在飞只读动作的预算预留账本：token→投影增量。检查与登记必须落在同一同步块内完成，
- * 才能消除并发竞态（JS 单线程）——两个通道此前各持一份同款实现，行为一致。
- */
+/** Same-batch in-flight result increments. Admission and registration are synchronous. */
 export class ReservationLedger {
-  private readonly units = new Map<symbol, number>();
-  set(token: symbol, value: number): void {
-    this.units.set(token, value);
+  private readonly units = new Map<symbol, Partial<Record<"bytes" | "tokens", number>>>();
+  set(token: symbol, value: number, group: "bytes" | "tokens" = "bytes"): void {
+    const entry = this.units.get(token) ?? {};
+    entry[group] = value;
+    this.units.set(token, entry);
   }
-  /** 在飞预留总和；`except` 用于排除 fitter 自己那笔。 */
-  reserved(except?: symbol): number {
+  /** Excludes the fitter's own last accepted increment in the selected counting mode. */
+  reserved(except?: symbol, group: "bytes" | "tokens" = "bytes"): number {
     let total = 0;
-    for (const [key, units] of this.units) if (key !== except) total += units;
+    for (const [key, units] of this.units) if (key !== except) total += units[group] ?? 0;
     return total;
   }
   clear(): void {

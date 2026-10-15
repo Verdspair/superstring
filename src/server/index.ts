@@ -79,6 +79,9 @@ const runtime = await (async () => {
       permissionConfigPath:
         layout?.paths.permissions ?? path.resolve("local/config/permissions.json"),
       webAccessConfigPath: layout?.paths.webAccess ?? path.resolve("local/config/web-access.json"),
+      localModelEncodingsPath:
+        layout?.paths.localModelEncodings ??
+        path.resolve("local/config/local-model-encodings.json"),
       skillRoot: layout?.paths.skills ?? path.resolve("local/config/skills"),
       businessMigrationSql: layout?.businessMigrationSql,
     });
@@ -205,11 +208,7 @@ const server = await (async () => {
         websocket: desktop ? desktop.websocket : noopWebsocket,
         hostname: DEV_HOST,
         port,
-        // SSE turns go silent while the model is prefilling its prompt; Bun's
-        // 10s default idle timeout closed those sockets mid-stream and the
-        // client saw a bare disconnect instead of an error code (P2 evidence:
-        // outputs/p2-bun-idle-*/idle.json). 120s is well past the observed
-        // 7.6s cold-start and stays under Bun's 255s ceiling.
+        // Allow silent SSE model prefill without Bun's default idle disconnect.
         idleTimeout: 120,
       }),
     );

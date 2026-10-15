@@ -62,10 +62,10 @@ export function resolveAppPaths(options: AppPathOptions) {
     mcpServers: path.join(privateRoot, "config", "mcp-servers.json"),
     permissions: path.join(privateRoot, "config", "permissions.json"),
     webAccess: path.join(privateRoot, "config", "web-access.json"),
+    localModelEncodings: path.join(privateRoot, "config", "local-model-encodings.json"),
     skills: path.join(privateRoot, "config", "skills"),
     // User-imported sticker copies live in their own feature namespace rather than beside the
-    // database: §10 keeps material governance independent of the media cache, and grouping by
-    // feature keeps a future split of the QQ feature to one path.
+    // database: §10 keeps material governance independent of the media cache.
     qqStickersDir: path.join(privateRoot, "qq", "stickers"),
     logsDir: path.join(development ? privateRoot : root, "logs"),
     backupsDir: path.join(development ? privateRoot : root, "backups"),
@@ -390,6 +390,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "migrations",
       "versions",
       "0065_qq_antispam_thresholds.sql",
+    ),
+    jsonbContextSourceMatchersMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0066_jsonb_context_source_matchers.sql",
     ),
     protectedModelResultsMigration: path.join(
       resourceRoot,

@@ -2,12 +2,214 @@ import type { Database } from "bun:sqlite";
 import type { ConversationEvent, ConversationEventView } from "../../shared/contracts/conversation";
 import { bodyRevision } from "../db/conversation-event-repository";
 
+type ProjectedTask = {
+  id: string;
+  status: NonNullable<ConversationEventView["task"]>["status"];
+  error_code: string | null;
+  origin_run_id: string | null;
+  origin_wake_id: string | null;
+  cause: string;
+  source_through_seq: number;
+};
+
+type ProjectedWake = {
+  id: string;
+  cause: string;
+  status: NonNullable<ConversationEventView["wake"]>["status"];
+  ready_at: string;
+  error_code: string | null;
+  through_seq: number;
+};
+
+function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWake | null) {
+  if (
+    !(
+      (event.kind === "wake" && event.source.kind === "wake") ||
+      (event.kind === "inbound" && event.source.kind === "qq_event") ||
+      event.source.kind === "outbound_intent"
+    )
+  )
+    return undefined;
+  const conversation = db
+    .query("SELECT binding_epoch,agent_id,source_id FROM conversations WHERE id=?")
+    .get(event.conversationId) as {
+    binding_epoch: number;
+    agent_id: string;
+    source_id: string;
+  } | null;
+  if (!conversation) return undefined;
+  const columns =
+    "t.id,t.status,t.error_code,t.origin_run_id,t.origin_wake_id,t.cause,t.source_through_seq";
+  const scope = "t.conversation_id=? AND t.binding_epoch=? AND t.agent_id=?";
+  const scopeArgs = [event.conversationId, conversation.binding_epoch, conversation.agent_id];
+  let candidates: ProjectedTask[] = [];
+  if (event.kind === "wake" && event.source.kind === "wake") {
+    candidates = db
+      .query(`SELECT ${columns} FROM wake_signals w JOIN qq_conversation_tasks t
+        ON t.id=w.transferred_task_id AND t.origin_wake_id=w.id
+        WHERE w.id=? AND w.conversation_id=? AND ${scope}`)
+      .all(event.source.id, event.conversationId, ...scopeArgs) as ProjectedTask[];
+    if (candidates.length === 0) {
+      if (wake?.cause === "direct_reply") {
+        candidates = db
+          .query(`SELECT ${columns} FROM qq_conversation_tasks t
+            JOIN conversation_events e ON e.conversation_id=t.conversation_id
+              AND e.seq=t.source_through_seq AND e.source_kind='qq_event'
+              AND e.source_id=t.origin_event_key AND e.kind='inbound'
+            WHERE ${scope} AND t.task_class='mention' AND t.cause='direct_reply'
+              AND t.origin_wake_id IS NULL AND t.source_through_seq=?`)
+          .all(...scopeArgs, wake.through_seq) as ProjectedTask[];
+      }
+    }
+  } else if (event.kind === "inbound" && event.source.kind === "qq_event") {
+    candidates = db
+      .query(`SELECT ${columns} FROM qq_conversation_tasks t WHERE ${scope}
+        AND t.task_class='mention' AND t.cause='direct_reply' AND t.origin_wake_id IS NULL
+        AND t.source_through_seq=? AND t.origin_event_key=?`)
+      .all(...scopeArgs, event.seq, event.source.id) as ProjectedTask[];
+  } else if (event.source.kind === "outbound_intent") {
+    const intent = db
+      .query(
+        "SELECT run_id,source_through_seq,speech_kind,target FROM outbound_intents WHERE id=? AND conversation_id=?",
+      )
+      .get(event.source.id, event.conversationId) as {
+      run_id: string;
+      source_through_seq: number;
+      speech_kind: string;
+      target: string;
+    } | null;
+    if (!intent) return undefined;
+    let target: {
+      qqTaskId?: unknown;
+      bindingId?: unknown;
+      bindingEpoch?: unknown;
+      agentId?: unknown;
+      observedThroughSeq?: unknown;
+    };
+    try {
+      target = JSON.parse(intent.target);
+    } catch {
+      return undefined;
+    }
+    if (
+      !target ||
+      typeof target.qqTaskId !== "string" ||
+      target.bindingId !== conversation.source_id ||
+      target.bindingEpoch !== conversation.binding_epoch ||
+      target.agentId !== conversation.agent_id
+    )
+      return undefined;
+    candidates = db
+      .query(`SELECT ${columns} FROM qq_conversation_tasks t WHERE ${scope}
+      AND t.id=? AND t.source_through_seq=? AND t.cause=?`)
+      .all(
+        ...scopeArgs,
+        target.qqTaskId,
+        intent.source_through_seq,
+        intent.speech_kind,
+      ) as ProjectedTask[];
+    const run = db
+      .query(
+        "SELECT conversation_id,owner_kind,owner_id,agent_id,wake_id,observed_seq FROM agent_runs WHERE run_id=?",
+      )
+      .get(intent.run_id) as {
+      conversation_id: string | null;
+      owner_kind: string;
+      owner_id: string;
+      agent_id: string | null;
+      wake_id: string | null;
+      observed_seq: number | null;
+    } | null;
+    const observed = target.observedThroughSeq ?? intent.source_through_seq;
+    if (
+      !Number.isSafeInteger(observed) ||
+      (observed as number) < intent.source_through_seq ||
+      !run ||
+      run.conversation_id !== event.conversationId ||
+      run.owner_kind !== "conversation" ||
+      run.owner_id !== event.conversationId ||
+      run.agent_id !== conversation.agent_id ||
+      run.observed_seq !== observed
+    )
+      return undefined;
+    const candidate = candidates[0];
+    if (
+      candidates.length !== 1 ||
+      !candidate ||
+      run.wake_id !== candidate.origin_wake_id ||
+      (intent.run_id !== candidate.origin_run_id &&
+        candidate.cause !== "chiming_in" &&
+        candidate.cause !== "idle_topic")
+    )
+      return undefined;
+    return {
+      activityId: candidate.id,
+      task: { id: candidate.id, status: candidate.status, errorCode: candidate.error_code },
+      runId: intent.run_id,
+    };
+  }
+  if (candidates.length !== 1) return undefined;
+  const task = candidates[0];
+  if (!task) return undefined;
+  const run = task.origin_run_id
+    ? (db
+        .query(
+          "SELECT run_id,spec_id,spec_version,agent_id,observed_seq FROM agent_runs WHERE run_id=? AND conversation_id=? AND owner_kind='conversation' AND owner_id=? AND (agent_id=? OR agent_id IS NULL) AND wake_id IS ?",
+        )
+        .get(
+          task.origin_run_id,
+          event.conversationId,
+          event.conversationId,
+          conversation.agent_id,
+          task.origin_wake_id,
+        ) as {
+        run_id: string;
+        spec_id: string;
+        spec_version: string;
+        agent_id: string | null;
+        observed_seq: number | null;
+      } | null)
+    : null;
+  const parentAttempt =
+    run?.spec_id === "onebot.initiative.batch" &&
+    run.agent_id === conversation.agent_id &&
+    run.observed_seq === task.source_through_seq
+      ? (db
+          .query(`SELECT run_id FROM agent_runs
+            WHERE conversation_id=? AND owner_kind='conversation' AND owner_id=?
+              AND agent_id=? AND wake_id IS ? AND spec_id=? AND spec_version=?
+              AND observed_seq=? ORDER BY rowid DESC LIMIT 1`)
+          .get(
+            event.conversationId,
+            event.conversationId,
+            conversation.agent_id,
+            task.origin_wake_id,
+            run.spec_id,
+            run.spec_version,
+            task.source_through_seq,
+          ) as { run_id: string })
+      : run;
+  return {
+    activityId: task.id,
+    task: { id: task.id, status: task.status, errorCode: task.error_code },
+    runId: parentAttempt?.run_id ?? null,
+  };
+}
+
 /** Resolve current source bodies on demand. The journal is never a retention bypass. */
 export function projectConversationEvent(
   db: Database,
   event: ConversationEvent,
   at = new Date().toISOString(),
 ): ConversationEventView {
+  const wake =
+    event.kind === "wake" && event.source.kind === "wake"
+      ? (db
+          .query(
+            "SELECT id,cause,status,ready_at,error_code,through_seq FROM wake_signals WHERE id=? AND conversation_id=?",
+          )
+          .get(event.source.id, event.conversationId) as ProjectedWake | null)
+      : null;
   const base: ConversationEventView = {
     ...event,
     wake: null,
@@ -17,36 +219,11 @@ export function projectConversationEvent(
     media: [],
     deliveryStatus: null,
     deliveryStaleReason: null,
+    ...taskActivity(db, event, wake),
   };
   if (event.kind === "wake" && event.source.kind === "wake") {
-    const wake = db
-      .query(
-        "SELECT id,cause,status,ready_at,error_code FROM wake_signals WHERE id=? AND conversation_id=?",
-      )
-      .get(event.source.id, event.conversationId) as {
-      id: string;
-      cause: string;
-      status: NonNullable<ConversationEventView["wake"]>["status"];
-      ready_at: string;
-      error_code: string | null;
-    } | null;
     if (!wake) return { ...base, contentState: "revoked" };
-    const task = db
-      .query(
-        `SELECT t.id,t.status,t.error_code,r.run_id AS origin_run_id
-        FROM wake_signals w JOIN qq_conversation_tasks t
-          ON t.id=w.transferred_task_id AND t.origin_wake_id=w.id AND t.conversation_id=w.conversation_id
-        LEFT JOIN agent_runs r ON r.run_id=t.origin_run_id AND r.wake_id=w.id
-          AND r.conversation_id=w.conversation_id AND r.owner_kind='conversation' AND r.owner_id=w.conversation_id
-        WHERE w.id=? AND w.conversation_id=?`,
-      )
-      .get(wake.id, event.conversationId) as {
-      id: string;
-      status: NonNullable<ConversationEventView["task"]>["status"];
-      error_code: string | null;
-      origin_run_id: string | null;
-    } | null;
-    const run = task
+    const run = base.task
       ? null
       : (db
           .query(
@@ -56,16 +233,7 @@ export function projectConversationEvent(
     return {
       ...base,
       contentState: "active",
-      runId: task?.origin_run_id ?? run?.run_id ?? null,
-      ...(task
-        ? {
-            task: {
-              id: task.id,
-              status: task.status,
-              errorCode: task.error_code,
-            },
-          }
-        : {}),
+      runId: base.runId ?? run?.run_id ?? null,
       wake: {
         id: wake.id,
         cause: wake.cause,

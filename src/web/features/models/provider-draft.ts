@@ -13,6 +13,7 @@ export interface ProviderEditor {
     key: string;
     name: string;
     window: string;
+    tokenizerEncoding?: ModelProviderModel["tokenizer_encoding"];
     capabilities?: ModelProviderModel["capabilities"];
   }[];
 }
@@ -28,6 +29,9 @@ export function createProviderEditor(source: ModelProviderResponse | null): Prov
         key: model.name,
         name: model.name,
         window: String(model.context_window),
+        ...(model.tokenizer_encoding === undefined
+          ? {}
+          : { tokenizerEncoding: model.tokenizer_encoding }),
         ...(model.capabilities ? { capabilities: { ...model.capabilities } } : {}),
       })) ?? [],
   };
@@ -41,6 +45,9 @@ export function providerPayload(editor: ProviderEditor) {
     models: editor.models.map((model) => ({
       name: model.name.trim(),
       context_window: Number(model.window),
+      ...(model.tokenizerEncoding === undefined
+        ? {}
+        : { tokenizer_encoding: model.tokenizerEncoding }),
       ...(model.capabilities ? { capabilities: { ...model.capabilities } } : {}),
     })),
   });

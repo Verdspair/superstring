@@ -272,6 +272,10 @@ const v65 = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0065_qq_antispam_thresholds.sql"),
   "utf8",
 );
+const v66 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0066_jsonb_context_source_matchers.sql"),
+  "utf8",
+);
 const ddl = (db: Database) =>
   db
     .query(
@@ -385,6 +389,7 @@ describe("frozen schema defaults and product initialization", () => {
     v63,
     v64,
     v65,
+    v66,
   ] as const;
   // Independent snapshots: v1 matches published v0.2.0-alpha; v2-v4 are the
   // accepted pre-ADR0016 development schemas; v5 onwards are the additive QQ
@@ -507,6 +512,7 @@ describe("frozen schema defaults and product initialization", () => {
     // CHECK 三枚举；prompt_sticker 的 UPDATE 是行数据，不进结构指纹）；v1—v63 逐字节重现原值之后量取。
     "c1769ba3cc1e2bc255dfe13e8af13dfebd8ecedf6de7b198f884f16794abb583",
     "48c5fe9b138475452786f277f60af23b78ba7a54b26c7c23d6e8206b021af7ed",
+    "d3e5b85d2ddb159de4036beea501c64e2bbbb4d834b929f33693b0a9dc9e1388",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
@@ -531,7 +537,7 @@ describe("frozen schema defaults and product initialization", () => {
           target_chars: 300,
         });
         ensureBusinessSchema(db);
-        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
+        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
         expect(db.query("SELECT target_chars FROM memory_policies").get()).toEqual({
           target_chars: 300,
         });
@@ -564,7 +570,7 @@ describe("knowledge schema v2 migration", () => {
         old.query(`SELECT * FROM ${table}`).all(),
       );
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
       expect(ddl(old)).toEqual(ddl(fresh.db));
       expect(
         BUSINESS_TABLE_NAMES.slice(0, 16).map((table) => old.query(`SELECT * FROM ${table}`).all()),
@@ -662,13 +668,14 @@ describe("knowledge schema v2 migration", () => {
           v63,
           v64,
           v65,
+          v66,
         ]),
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
       expect(db.query("SELECT body FROM memory_entries").get()).toEqual({ body: "旧记忆" });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
     } finally {
       db.close();
     }

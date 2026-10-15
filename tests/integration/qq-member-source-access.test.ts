@@ -27,8 +27,11 @@ import type {
   QqMessageFact,
 } from "../../src/shared/contracts/qq-message";
 
-const at = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
-const now = "2026-10-01T16:00:00.000000Z";
+const at = Math.floor(Date.now() / 1000);
+// Preserve the six fractional digits used by stored timestamp comparisons.
+const atIso = (offsetSeconds: number): string =>
+  new Date((at + offsetSeconds) * 1000).toISOString().replace("Z", "000Z");
+const now = atIso(0);
 
 function setup() {
   const h = openBusinessDb();
@@ -589,9 +592,7 @@ describe("qq_member_name source access (owner-first, fail closed)", () => {
       const principal = { userId: DEFAULT_USER_ID };
       const owner = ownerFor(live, "conversation");
       h.db
-        .query(
-          "UPDATE qq_members SET expires_at='2026-10-01T12:00:00.000000Z' WHERE user_id='10001'",
-        )
+        .query("UPDATE qq_members SET expires_at='" + atIso(-14400) + "' WHERE user_id='10001'")
         .run();
       expect(qqMemberNameSourceAccess(h.db, minted.source, owner, principal, now)).toBe("expired");
       expect(mintOf(h, live, "10001")).toBeNull();
@@ -599,7 +600,7 @@ describe("qq_member_name source access (owner-first, fail closed)", () => {
       expect(
         qqMemberNameSourceAccess(
           h.db,
-          { ...minted.source, expiresAt: "2026-09-30T00:00:00.000000Z" },
+          { ...minted.source, expiresAt: atIso(-144000) },
           owner,
           principal,
           now,
@@ -806,9 +807,7 @@ describe("pruneQqMemberCurrentNames (typed, source-verified currentName clip)", 
       const owner = ownerFor(live, "conversation");
       // 刻意让正文含同一字符串："阿林" 只允许从 currentName 字段剪掉，正文 parts 不动。
       h.db
-        .query(
-          "UPDATE qq_members SET expires_at='2026-10-01T12:00:00.000000Z' WHERE user_id='10001'",
-        )
+        .query("UPDATE qq_members SET expires_at='" + atIso(-14400) + "' WHERE user_id='10001'")
         .run();
       const before = JSON.stringify(fact);
       const pruned = pruneQqMemberCurrentNames({

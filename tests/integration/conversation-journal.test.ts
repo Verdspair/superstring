@@ -277,6 +277,72 @@ describe("durable wake and outbound transitions", () => {
     expect(view.task).toEqual({ id: taskId, status: "failed", errorCode: "QQ_TASK_FAILED" });
     expect(view.wake?.status).toBe("completed");
   });
+  it("projects only the retry parent for the exact task identity, excluding newer children and foreign attempts", () => {
+    const h = setup();
+    const c = bot(h);
+    const wake = h.wake.enqueue({
+      conversationId: c.id,
+      cause: "idle_topic",
+      throughSeq: 0,
+      dedupeKey: "parent-attempts",
+      readyAt: at,
+      priority: 0,
+    });
+    const leased = h.wake.claim({ at, leaseMs: 1000 })!;
+    h.wake.complete(leased.id, leased.leaseToken!, "completed", 0, at);
+    for (const [runId, specId, version, ownerId, observed] of [
+      ["parent-origin", "onebot.initiative.batch", "1", c.id, 0],
+      ["parent-retry", "onebot.initiative.batch", "1", c.id, 0],
+      ["newer-reply-child", "onebot.main", "1", c.id, 0],
+      ["different-version", "onebot.initiative.batch", "2", c.id, 0],
+      ["different-owner", "onebot.initiative.batch", "1", "foreign-owner", 0],
+      ["different-observation", "onebot.initiative.batch", "1", c.id, 1],
+    ] as const) {
+      h.runs.createRun({
+        runId,
+        specId,
+        specVersion: version,
+        owner: { kind: "conversation", id: ownerId, agentId: DEFAULT_AGENT_ID },
+        at,
+      });
+      h.journal.linkRun(runId, c.id, observed, wake.id);
+    }
+    h.runs.setStatus("parent-origin", "cancelled", at);
+    h.runs.setStatus("parent-retry", "deciding", at);
+    const taskId = "retry-parent-task";
+    h.db
+      .query(`INSERT INTO qq_conversation_tasks(
+      id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,
+      source_from_seq,source_through_seq,origin_wake_id,origin_run_id,status,
+      lease_token,lease_expires_at,created_at,updated_at
+    ) VALUES(?,?,?,?,?,'ordinary','idle_topic',0,0,?,?,'running','task-lease',?,?,?)`)
+      .run(
+        taskId,
+        "retry-parent-task-key",
+        c.id,
+        c.bindingEpoch,
+        DEFAULT_AGENT_ID,
+        wake.id,
+        "parent-origin",
+        later,
+        at,
+        at,
+      );
+    h.db.query("UPDATE wake_signals SET transferred_task_id=? WHERE id=?").run(taskId, wake.id);
+    const event = h.journal.eventsAfter(c.id).items.find((item) => item.source.id === wake.id)!;
+    const view = projectConversationEvent(h.db, event, at);
+    expect(view.runId).toBe("parent-retry");
+    expect(view.task?.status).toBe("running");
+    expect(
+      h.db.query("SELECT origin_run_id FROM qq_conversation_tasks WHERE id=?").get(taskId),
+    ).toEqual({ origin_run_id: "parent-origin" });
+    h.db.query("UPDATE agent_runs SET agent_id=NULL WHERE run_id='parent-origin'").run();
+    expect(projectConversationEvent(h.db, event, at).runId).toBe("parent-origin");
+    h.db
+      .query("UPDATE qq_conversation_tasks SET binding_epoch=? WHERE id=?")
+      .run(c.bindingEpoch + 1, taskId);
+    expect(projectConversationEvent(h.db, event, at).activityId).toBeUndefined();
+  });
   it("rejects a transferred task from another wake and conversation while retaining the legacy run", () => {
     const h = setup();
     const conversation = bot(h);
@@ -384,6 +450,114 @@ describe("durable wake and outbound transitions", () => {
     expect(h.outbox.claimPart(d.id, at)).toBeNull();
     expect(h.outbox.pending()).toEqual([]);
   });
+  it("links an autonomous delivery to its producing run while retaining the task's original run", () => {
+    const h = setup();
+    const c = bot(h);
+    incoming(h, "autonomous-input", 100);
+    const input = h.journal.ingestOneBotEvent("autonomous-input", "binding")!;
+    const wake = h.wake.enqueue({
+      conversationId: c.id,
+      cause: "chiming_in",
+      throughSeq: input.seq,
+      dedupeKey: "autonomous-delivery-run",
+      readyAt: at,
+      priority: 50,
+    });
+    const leased = h.wake.claim({ at, leaseMs: 1000 })!;
+    h.wake.complete(leased.id, leased.leaseToken!, "completed", input.seq, at);
+    const originRunId = "autonomous-original-run";
+    const replyRunId = "autonomous-producing-run";
+    for (const [runId, specId] of [
+      [originRunId, "onebot.initiative.batch"],
+      [replyRunId, "onebot.main"],
+    ]) {
+      h.runs.createRun({
+        runId,
+        specId,
+        specVersion: "1",
+        owner: { kind: "conversation", id: c.id, agentId: DEFAULT_AGENT_ID },
+        at,
+      });
+      h.journal.linkRun(runId, c.id, input.seq, wake.id);
+    }
+    h.runs.setStatus(originRunId, "cancelled", at);
+    h.runs.setStatus(replyRunId, "completed", at);
+    const taskId = "autonomous-delivery-task";
+    h.db
+      .query(`INSERT INTO qq_conversation_tasks(
+      id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,
+      source_from_seq,source_through_seq,origin_wake_id,origin_run_id,status,
+      created_at,updated_at,finished_at
+    ) VALUES(?,?,?,?,?,'ordinary','chiming_in',?,?,?,?, 'completed',?,?,?)`)
+      .run(
+        taskId,
+        "autonomous-delivery-task-key",
+        c.id,
+        c.bindingEpoch,
+        DEFAULT_AGENT_ID,
+        input.seq,
+        input.seq,
+        wake.id,
+        originRunId,
+        at,
+        at,
+        at,
+      );
+    h.db.query("UPDATE wake_signals SET transferred_task_id=? WHERE id=?").run(taskId, wake.id);
+    const intent = h.outbox.commit({
+      id: "autonomous-produced-delivery",
+      runId: replyRunId,
+      conversationId: c.id,
+      ordinal: 0,
+      target: {
+        accountId: "100",
+        conversationKind: "private",
+        peerId: "200",
+        agentId: DEFAULT_AGENT_ID,
+        bindingId: "binding",
+        bindingEpoch: c.bindingEpoch,
+        qqTaskId: taskId,
+        observedThroughSeq: input.seq,
+      },
+      speechKind: "chiming_in",
+      sourceThroughSeq: input.seq,
+      deliverBy: later,
+      createdAt: at,
+      expiresAt: later,
+      parts: [{ kind: "text", text: "autonomous reply" }],
+    });
+    const part = h.outbox.claimPart(intent.id, at)!;
+    h.outbox.settlePart(
+      part.part.id,
+      { status: "confirmed", messageId: "autonomous-platform" },
+      at,
+    );
+    const delivered = h.journal.append({
+      conversationId: c.id,
+      eventKey: "autonomous-delivery-event",
+      kind: "delivery",
+      source: { kind: "outbound_intent", id: intent.id, revision: "confirmed" },
+      occurredAt: at,
+      recordedAt: at,
+      runId: replyRunId,
+      outputId: intent.id,
+    });
+    const view = projectConversationEvent(h.db, delivered, at);
+    expect(view.activityId).toBe(taskId);
+    expect(view.runId).toBe(replyRunId);
+    expect(view.deliveryStatus).toBe("confirmed");
+    const wakeEvent = h.journal
+      .eventsAfter(c.id)
+      .items.find((event) => event.source.id === wake.id)!;
+    expect(projectConversationEvent(h.db, wakeEvent, at).runId).toBe(originRunId);
+    expect(
+      h.db.query("SELECT origin_run_id FROM qq_conversation_tasks WHERE id=?").get(taskId),
+    ).toEqual({ origin_run_id: originRunId });
+    h.db
+      .query("UPDATE qq_conversation_tasks SET binding_epoch=? WHERE id=?")
+      .run(c.bindingEpoch + 1, taskId);
+    expect(projectConversationEvent(h.db, delivered, at).activityId).toBeUndefined();
+  });
   it("terminal transaction rollback retains wake/cursor/planned outputs consistently", () => {
     const h = setup();
     const c = bot(h);
@@ -407,5 +581,114 @@ describe("durable wake and outbound transitions", () => {
     ).toThrow("write failed");
     expect(h.journal.get(c.id)!.consumedSeq).toBe(0);
     expect(h.wake.get(w.id)!.status).toBe("leased");
+  });
+  it("links an independent mention input, intake wake and confirmed delivery through one canonical task", () => {
+    const h = setup();
+    const c = bot(h, "chain-binding");
+    incoming(h, "chain-input", 100);
+    const input = h.journal.ingestOneBotEvent("chain-input", "chain-binding", {
+      reasons: ["mention"],
+      mentionIds: ["100"],
+    })!;
+    const queued = h.wake.enqueue({
+      conversationId: c.id,
+      cause: "direct_reply",
+      throughSeq: input.seq,
+      dedupeKey: "chain-input",
+      readyAt: at,
+      priority: 100,
+    });
+    const leased = h.wake.claim({ at, leaseMs: 1000 })!;
+    h.wake.complete(leased.id, leased.leaseToken!, "no_output", input.seq, at);
+    const runId = "chain-mention-run";
+    h.runs.createRun({
+      runId,
+      specId: "onebot.main",
+      specVersion: "1",
+      owner: { kind: "conversation", id: c.id, userId: DEFAULT_USER_ID, agentId: DEFAULT_AGENT_ID },
+      at,
+    });
+    h.journal.linkRun(runId, c.id, input.seq);
+    h.runs.setStatus(runId, "completed", at);
+    const taskId = "chain-mention-task";
+    h.db
+      .query(`INSERT INTO qq_conversation_tasks(id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,source_from_seq,source_through_seq,origin_event_key,platform_message_id,origin_run_id,status,created_at,updated_at,finished_at)
+      VALUES(?,?,?,?,?,'mention','direct_reply',?,?,?,?,?,'completed',?,?,?)`)
+      .run(
+        taskId,
+        "chain-task-key",
+        c.id,
+        c.bindingEpoch,
+        DEFAULT_AGENT_ID,
+        input.seq,
+        input.seq,
+        "chain-input",
+        "chain-input",
+        runId,
+        at,
+        at,
+        at,
+      );
+    const intent = h.outbox.commit({
+      id: "chain-delivery",
+      runId,
+      conversationId: c.id,
+      ordinal: 0,
+      target: {
+        accountId: "100",
+        conversationKind: "private",
+        peerId: "200",
+        agentId: DEFAULT_AGENT_ID,
+        bindingId: "chain-binding",
+        bindingEpoch: c.bindingEpoch,
+        qqTaskId: taskId,
+        observedThroughSeq: input.seq,
+      },
+      speechKind: "direct_reply",
+      sourceThroughSeq: input.seq,
+      deliverBy: later,
+      createdAt: at,
+      expiresAt: later,
+      parts: [{ kind: "text", text: "confirmed chain reply" }],
+    });
+    const claim = h.outbox.claimPart(intent.id, at)!;
+    h.outbox.settlePart(
+      claim.part.id,
+      { status: "confirmed", messageId: "chain-confirmed-platform" },
+      at,
+    );
+    const delivered = h.journal.append({
+      conversationId: c.id,
+      eventKey: "chain-delivery-event",
+      kind: "delivery",
+      source: { kind: "outbound_intent", id: intent.id, revision: "confirmed" },
+      occurredAt: at,
+      recordedAt: at,
+      runId,
+      outputId: intent.id,
+    });
+    const wakeEvent = h.journal
+      .eventsAfter(c.id)
+      .items.find((event) => event.source.kind === "wake" && event.source.id === queued.id)!;
+    const views = [input, wakeEvent, delivered].map((event) =>
+      projectConversationEvent(h.db, event, at),
+    );
+    expect(views.map((view) => view.activityId)).toEqual([taskId, taskId, taskId]);
+    expect(views.map((view) => view.task)).toEqual(
+      Array(3).fill({ id: taskId, status: "completed", errorCode: null }),
+    );
+    expect(views.map((view) => view.runId)).toEqual([runId, runId, runId]);
+    expect(views[1]!.wake?.status).toBe("no_output");
+    expect(views[2]!.deliveryStatus).toBe("confirmed");
+    expect(views[2]!.text).toBe("confirmed chain reply");
+    expect(views.every((view) => ConversationEventViewSchema.safeParse(view).success)).toBe(true);
+    h.db
+      .query("UPDATE qq_conversation_tasks SET binding_epoch=? WHERE id=?")
+      .run(c.bindingEpoch + 1, taskId);
+    expect(
+      [input, wakeEvent, delivered].map(
+        (event) => projectConversationEvent(h.db, event, at).activityId,
+      ),
+    ).toEqual([undefined, undefined, undefined]);
   });
 });

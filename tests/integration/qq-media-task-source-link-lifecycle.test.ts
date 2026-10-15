@@ -44,7 +44,7 @@ const AGENT = "00000000-0000-0000-0000-000000000001";
 const ACCOUNT = "90003";
 const PEER = "32001";
 const BINDING_ID = "33333333-3333-4333-8333-333333333333";
-const AT = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
+const AT = Math.floor(Date.now() / 1000) - 120;
 const LONG = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
 
 function setup() {

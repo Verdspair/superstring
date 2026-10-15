@@ -5,7 +5,7 @@ import path from "node:path";
 import { Hono } from "hono";
 import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
-import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
+import type { ActionContext, BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { createCodeMode } from "../../src/server/agent/code-mode";
 import { inspectContext } from "../../src/server/agent/context-access";
 import { handleError } from "../../src/server/api/error-handler";
@@ -605,5 +605,223 @@ describe("shared permission policy", () => {
     expect(service.sourceAccess(source, owner)).toBe("available");
     service.replace(service.snapshot().revision, { version: 1, grants: [] });
     expect(service.sourceAccess(source, owner)).toBe("revoked");
+  });
+});
+
+// Optional READ result hook (fitResult) lifecycle controls: value-only replacement taken
+// after the executor's authoritative sources union, against the authority-checked context.
+describe("optional READ result hook controls", () => {
+  it("replaces only the value and preserves the full original sources", async () => {
+    const h = setup();
+    h.replace(allow());
+    const permRef = h.executor.permissions.source(requirement);
+    const execute = async () => ({ value: "large-original", sources: [permRef] });
+    const plain = await h.executor.execute({ ...action(), execute }, { n: 1 }, context);
+    let hookRefs: readonly (typeof plain.sources)[number][] = [];
+    const hooked: BuiltInAction = {
+      ...action(),
+      execute,
+      async fitResult(value, finalSources, args, hookContext) {
+        expect(value).toBe("large-original");
+        expect(finalSources).toEqual(plain.sources);
+        expect(args).toEqual({ n: 1 });
+        expect(hookContext.owner).toEqual(owner);
+        hookRefs = finalSources;
+        return "large-hooked";
+      },
+    };
+    const result = await h.executor.execute(hooked, { n: 1 }, context);
+    expect(result.value).toBe("large-hooked");
+    expect(result.sources).toEqual(plain.sources);
+    expect(hookRefs).toBe(result.sources);
+    expect(result.sources).toHaveLength(1);
+  });
+
+  it("keeps the same final refs when the hook returns the budget-denial value", async () => {
+    const h = setup();
+    h.replace(allow());
+    const permRef = h.executor.permissions.source(requirement);
+    const execute = async () => ({ value: "large-original", sources: [permRef] });
+    const plain = await h.executor.execute({ ...action(), execute }, { n: 2 }, context);
+    let hookRefs: readonly (typeof plain.sources)[number][] = [];
+    const hooked: BuiltInAction = {
+      ...action(),
+      execute,
+      async fitResult(_value, finalSources) {
+        expect(finalSources).toEqual(plain.sources);
+        hookRefs = finalSources;
+        return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" };
+      },
+    };
+    const result = await h.executor.execute(hooked, { n: 2 }, context);
+    expect(result.value).toEqual({ status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" });
+    expect(result.sources).toEqual(plain.sources);
+    expect(hookRefs).toBe(result.sources);
+  });
+
+  it("rejects with PERMISSION_DENIED when policy is revoked while the hook awaits", async () => {
+    const h = setup();
+    h.replace(allow());
+    const permRef = h.executor.permissions.source(requirement);
+    let hookStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      hookStarted = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hooked: BuiltInAction = {
+      ...action(),
+      async execute() {
+        return { value: "late", sources: [permRef] };
+      },
+      async fitResult() {
+        hookStarted();
+        await gate;
+        return "too-late";
+      },
+    };
+    // Collect the execute outcome immediately; the rejects matcher only runs after the
+    // gate has been opened, so the pending call can never block test progress.
+    const pending = h.executor.execute(hooked, {}, context);
+    const outcome = pending.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await started;
+    h.replace({ version: 1, grants: [] });
+    release();
+    const settled = await outcome;
+    expect(settled.ok).toBe(false);
+    if (settled.ok) throw new Error("hooked execute survived permission revocation");
+    expect((settled.error as { code?: string }).code).toBe("PERMISSION_DENIED");
+  });
+
+  it("rejects on abort during the hook await and never maps it as a tool error", async () => {
+    const h = setup();
+    h.replace(allow());
+    const permRef = h.executor.permissions.source(requirement);
+    const controller = new AbortController();
+    const reason = { fatal: "hook-abort" };
+    let mapped = 0;
+    let hookStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      hookStarted = resolve;
+    });
+    const hooked: BuiltInAction = {
+      ...action(),
+      async execute() {
+        return { value: "late", sources: [permRef] };
+      },
+      async fitResult() {
+        hookStarted();
+        await new Promise<void>((_resolve, reject) => {
+          controller.signal.addEventListener("abort", () => reject(controller.signal.reason), {
+            once: true,
+          });
+        });
+        return "never";
+      },
+    };
+    // Collect the outcome before aborting; the reject must surface as a settled failure
+    // without ever reaching the tool-error mapping.
+    const pending = h.executor.execute(
+      hooked,
+      {},
+      { ...context, signal: controller.signal },
+      {
+        mapToolError(error) {
+          mapped += 1;
+          return error;
+        },
+      },
+    );
+    const outcome = pending.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await started;
+    controller.abort(reason);
+    const settled = await outcome;
+    expect(settled.ok).toBe(false);
+    if (settled.ok) throw new Error("hooked execute survived abort");
+    expect(settled.error).toBe(reason);
+    expect(mapped).toBe(0);
+  });
+
+  it("never calls the hook for write-effect or non-opted actions", async () => {
+    const h = setup();
+    h.replace(allow());
+    let hookCalls = 0;
+    const writeAction: BuiltInAction = {
+      permission: requirement,
+      description: {
+        name: "mcp.notes.write",
+        description: "write notes",
+        capability: "mcp.notes",
+        parameters: {},
+        effect: "write",
+      },
+      async execute() {
+        return { value: "written", sources: [] };
+      },
+      async fitResult() {
+        hookCalls += 1;
+        return "hooked";
+      },
+    };
+    const written = await h.executor.execute(writeAction, {}, context);
+    expect(written.value).toBe("written");
+    const plainRead = await h.executor.execute(action(), {}, context);
+    expect(plainRead.value).toBe("data");
+    expect(hookCalls).toBe(0);
+  });
+
+  it("gives two concurrent read calls distinct contexts and per-call args", async () => {
+    const h = setup();
+    h.replace(allow());
+    const permRef = h.executor.permissions.source(requirement);
+    const seen: {
+      args: Record<string, unknown>;
+      refs: readonly unknown[];
+      hookContext: ActionContext;
+      executeContext: ActionContext;
+    }[] = [];
+    const make = (n: number): BuiltInAction => {
+      let executeContext: ActionContext | undefined;
+      return {
+        ...action(),
+        async execute(_args, context) {
+          executeContext = context;
+          return { value: `value-${n}`, sources: [permRef] };
+        },
+        async fitResult(_value, finalSources, args, hookContext) {
+          if (!executeContext) throw new Error("hook ran before its execute");
+          seen.push({ args, refs: finalSources, hookContext, executeContext });
+          return `hooked-${n}`;
+        },
+      };
+    };
+    const results = await h.executor.executeBatch(
+      [
+        { action: make(1), arguments: { n: 1 } },
+        { action: make(2), arguments: { n: 2 } },
+      ],
+      context,
+    );
+    expect(results.map((entry) => entry?.value)).toEqual(["hooked-1", "hooked-2"]);
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.args).toEqual({ n: 1 });
+    expect(seen[1]?.args).toEqual({ n: 2 });
+    for (const entry of seen) {
+      // The hook receives the same checked context object the execute ran with.
+      expect(entry.hookContext).toBe(entry.executeContext);
+      expect(typeof entry.hookContext.assertAuthority).toBe("function");
+      expect(entry.refs).toEqual([permRef]);
+    }
+    // Per-call checked contexts are distinct objects sharing one batch signal.
+    expect(seen[0]?.hookContext).not.toBe(seen[1]?.hookContext);
+    expect(seen[0]?.hookContext.signal).toBe(seen[1]?.hookContext.signal);
   });
 });

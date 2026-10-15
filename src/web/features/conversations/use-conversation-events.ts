@@ -262,6 +262,13 @@ export function useConversationEvents(
     [api, id, append, fail, publish, save],
   );
 
+  const manualRefresh = useCallback(() => {
+    rangeRead.current?.abort();
+    rangeRead.current = null;
+    pendingRevalidate.current = false;
+    return load();
+  }, [load]);
+
   useEffect(() => {
     const pause = () => {
       cancel();
@@ -274,6 +281,9 @@ export function useConversationEvents(
     const refresh = () => {
       if (document.visibilityState !== "hidden") void load();
     };
+    const periodicRefresh = () => {
+      if (document.visibilityState !== "hidden" && !rangeRead.current) void load();
+    };
     let hidden = document.visibilityState === "hidden";
     const visibility = () => {
       const nextHidden = document.visibilityState === "hidden";
@@ -283,7 +293,7 @@ export function useConversationEvents(
       else refresh();
     };
     refresh();
-    const timer = setInterval(refresh, refreshMs);
+    const timer = setInterval(periodicRefresh, refreshMs);
     document.addEventListener("visibilitychange", visibility);
     return () => {
       clearInterval(timer);
@@ -313,5 +323,5 @@ export function useConversationEvents(
     [id, enabled, append, load],
   );
 
-  return { items, hasMore, loading, error, refresh: () => load(), loadMore: () => load(true) };
+  return { items, hasMore, loading, error, refresh: manualRefresh, loadMore: () => load(true) };
 }

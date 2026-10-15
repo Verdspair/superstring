@@ -74,7 +74,8 @@ export function readConfirmedQqDirectReply(
       WHERE i.id=? AND i.status='confirmed' AND i.speech_kind='direct_reply'
         AND r.owner_kind='conversation' AND r.owner_id=i.conversation_id
         AND r.agent_id=json_extract(i.target,'$.agentId')
-        AND r.observed_seq=i.source_through_seq
+        AND r.observed_seq=COALESCE(json_extract(i.target,'$.observedThroughSeq'),i.source_through_seq)
+        AND r.observed_seq>=i.source_through_seq
         AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
           AND p.attempted_at IS NOT NULL AND p.status='confirmed')
         AND NOT EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id AND p.status<>'confirmed')`)

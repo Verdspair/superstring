@@ -45,6 +45,7 @@ function classifyContent(mime: string): PageContentKind | null {
 }
 
 export async function fetchPage(url: string, options: FetchPageOptions = {}): Promise<FetchedPage> {
+  options.signal?.throwIfAborted();
   const fetchImpl = options.fetchImpl ?? fetch;
   const target = deadline(options.signal, options.timeoutMs ?? FETCH_TIMEOUT_MS);
   const maxBytes = options.maxBytes ?? FETCH_MAX_BYTES;

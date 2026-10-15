@@ -1,15 +1,10 @@
 import { z } from "zod";
 
 /**
- * What the desktop host should do when the last interface window closes (§12, U07).
- *
- * The user decided on 2026-09-24 that the answer is REMEMBERED and changeable in settings, and
- * that a "keep the app online in the background" answer must actually keep it online.
- *
- * Only two members exist: the plan's original "ask every time" needs a dialog, and the dialog is
- * the desktop host's (a C# launcher this tree cannot build or verify). A stored value no code path
- * can honour would be a setting that lies, so "ask" arrives together with the dialog, as one more
- * allowed member.
+ * Stored close preferences remain readable for existing installations.
+ * Since 2026-10-08, an owned desktop window always exits its owned process tree;
+ * the host ignores the legacy background preference without rewriting stored settings.
+ * Non-window-owned hosts still use the stored preference.
  */
 export const DesktopCloseActionSchema = z.enum(["background", "exit"]);
 export type DesktopCloseAction = z.infer<typeof DesktopCloseActionSchema>;

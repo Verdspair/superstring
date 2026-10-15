@@ -637,4 +637,189 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
     expect(result.current.loading).toBe(false);
     expect(read).toHaveBeenCalledTimes(2);
   });
+
+  it("slow range read longer than interval settles without triggering immediate re-read loop", async () => {
+    vi.useFakeTimers();
+    let resolveSlowRange!: (value: unknown) => void;
+    const slowRangePromise = new Promise((res) => {
+      resolveSlowRange = res;
+    });
+    let rangeCallCount = 0;
+    const getEvents = vi
+      .fn()
+      .mockImplementation(
+        async (
+          _id: string,
+          params: Exclude<Parameters<SuperstringApi["getConversationEvents"]>[1], number>,
+        ) => {
+          if (params?.direction === "latest") {
+            return {
+              items: [sampleEvent(1), sampleEvent(2)],
+              nextSeq: 3,
+              hasMore: false,
+            };
+          }
+          if (params?.direction === "after") {
+            rangeCallCount++;
+            if (rangeCallCount === 1) {
+              await slowRangePromise;
+              return {
+                items: [sampleEvent(1, "slow-1"), sampleEvent(2, "slow-2")],
+                nextSeq: 3,
+                hasMore: false,
+              };
+            }
+            return {
+              items: [sampleEvent(1, "tick-1"), sampleEvent(2, "tick-2")],
+              nextSeq: 3,
+              hasMore: false,
+            };
+          }
+          return { items: [], nextSeq: 0, hasMore: false };
+        },
+      );
+    setupApi({ getConversationEvents: getEvents });
+    const { result } = renderHook(() =>
+      useConversationEvents("conv-1", undefined, { refreshMs: 5000 }),
+    );
+
+    // Initial load settles with fake timers
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.items.map((i) => i.seq)).toEqual([1, 2]);
+    expect(rangeCallCount).toBe(0);
+
+    // 1st 5s tick: triggers range revalidation (which is slow and pending)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(rangeCallCount).toBe(1);
+    expect(result.current.loading).toBe(true);
+
+    // 2nd 5s tick: fires at 10s while 1st read is STILL pending (> 5s slow range read)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    // Now slow range read resolves
+    await act(async () => {
+      resolveSlowRange(null);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Background tick must NOT have queued an immediate loop re-read on settle
+    expect(rangeCallCount).toBe(1);
+    expect(result.current.loading).toBe(false);
+
+    // Next scheduled tick triggers normal next poll
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(rangeCallCount).toBe(2);
+  });
+
+  it("manual refresh aborts pending transport; late old resolution does not clear in-flight loading or corrupt state", async () => {
+    let oldSignal: AbortSignal | undefined;
+    let resolveOld!: (value: unknown) => void;
+    const oldPromise = new Promise((res) => {
+      resolveOld = res;
+    });
+
+    let newSignal: AbortSignal | undefined;
+    let resolveFresh!: (value: unknown) => void;
+    const freshPromise = new Promise((res) => {
+      resolveFresh = res;
+    });
+
+    let readCount = 0;
+    const getEvents = vi
+      .fn()
+      .mockImplementation(
+        async (
+          _id: string,
+          params: Exclude<Parameters<SuperstringApi["getConversationEvents"]>[1], number>,
+          signal?: AbortSignal,
+        ) => {
+          if (params?.direction === "latest") {
+            return {
+              items: [sampleEvent(1), sampleEvent(2)],
+              nextSeq: 3,
+              hasMore: false,
+            };
+          }
+          if (params?.direction === "after") {
+            readCount++;
+            if (readCount === 1) {
+              oldSignal = signal;
+              await oldPromise;
+              return {
+                items: [sampleEvent(1, "old-late")],
+                nextSeq: 3,
+                hasMore: false,
+              };
+            }
+            if (readCount === 2) {
+              newSignal = signal;
+              await freshPromise;
+              return {
+                items: [sampleEvent(1, "manual-fresh"), sampleEvent(2, "msg-2")],
+                nextSeq: 3,
+                hasMore: false,
+              };
+            }
+          }
+          return { items: [], nextSeq: 0, hasMore: false };
+        },
+      );
+
+    setupApi({ getConversationEvents: getEvents });
+    const { result } = renderHook(() =>
+      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
+    );
+    await act(async () => {});
+    expect(result.current.items.map((i) => i.seq)).toEqual([1, 2]);
+
+    // Initial background or range load starts and hangs on oldPromise
+    act(() => {
+      void result.current.refresh();
+    });
+    expect(readCount).toBe(1);
+    expect(oldSignal).toBeDefined();
+    expect(oldSignal?.aborted).toBe(false);
+
+    // While old read is hanging, user explicitly triggers manual refresh
+    act(() => {
+      void result.current.refresh();
+    });
+
+    // The old readonly transport MUST be explicitly aborted!
+    expect(oldSignal?.aborted).toBe(true);
+    // Fresh read MUST have started immediately (replacement)
+    expect(readCount).toBe(2);
+    expect(newSignal).toBeDefined();
+    expect(newSignal?.aborted).toBe(false);
+    expect(result.current.loading).toBe(true);
+
+    // Now, while fresh read is STILL in-flight, let the old late read resolve!
+    await act(async () => {
+      resolveOld(null);
+      await Promise.resolve();
+    });
+
+    // The late resolution of old read must NOT clear the new read's loading state!
+    expect(result.current.loading).toBe(true);
+    // And it must NOT overwrite the timeline with old late data
+    expect(result.current.items.find((i) => i.seq === 1)?.text).not.toBe("old-late");
+
+    // Finally, resolve the fresh read
+    await act(async () => {
+      resolveFresh(null);
+      await Promise.resolve();
+    });
+
+    // Fresh read completes cleanly: loading is false, items are from fresh read
+    expect(result.current.loading).toBe(false);
+    expect(result.current.items.find((i) => i.seq === 1)?.text).toBe("manual-fresh");
+  });
 });

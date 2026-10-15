@@ -202,6 +202,14 @@ export interface OneBotHarnessOptions {
   readonly telemetry?: boolean;
   /** Host-only member reads for synthetic OneBot runtime integration tests. */
   readonly memberTools?: ConstructorParameters<typeof OneBotHost>[0]["memberTools"];
+  readonly externalActions?: ConstructorParameters<typeof OneBotHost>[0]["externalActions"];
+  readonly actionExecutor?:
+    | ConstructorParameters<typeof AgentRuntime>[0]["actionExecutor"]
+    | ((
+        orm: ConstructorParameters<typeof OneBotHost>[0]["orm"],
+        guard: QqGroupCapabilityGuard,
+      ) => NonNullable<ConstructorParameters<typeof AgentRuntime>[0]["actionExecutor"]>);
+  readonly resolveSource?: ConstructorParameters<typeof OneBotHost>[0]["resolveSource"];
 }
 
 export interface OneBotHarness {
@@ -489,7 +497,10 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
       ...(telemetry ? { telemetry } : {}),
       // 读工具经 ActionExecutor 装配本群 guard——广告面、执行点与返回的
       // 来源引用按同一份停用状态判定；不传权限面与并行上限＝沿用默认，行为不变。
-      actionExecutor: new ActionExecutor(undefined, undefined, guard),
+      actionExecutor:
+        (typeof options.actionExecutor === "function"
+          ? options.actionExecutor(orm, guard)
+          : options.actionExecutor) ?? new ActionExecutor(undefined, undefined, guard),
       model: {
         complete: async () => '{"kind":"none"}',
         async *streamText() {
@@ -541,7 +552,8 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
         return options.onDiagnostic?.(event);
       },
       // 与运行时同一份 guard：本群能力来源引用按当前纪元复验（停用或旧纪元一律不可用）。
-      resolveSource: (source, owner) =>
+      resolveSource: (source, owner, purpose) =>
+        options.resolveSource?.(source, owner, purpose) ??
         (options.memberTools
           ? qqExecutionModuleSourceAccess(
               source,
@@ -549,7 +561,9 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
               options.memberTools.policyRevision(),
               options.memberTools.enabled(),
             )
-          : undefined) ?? guard.sourceAccess(source, owner),
+          : undefined) ??
+        guard.sourceAccess(source, owner),
+      ...(options.externalActions ? { externalActions: options.externalActions } : {}),
       // 与运行时同构：媒体工具按方案取提示词与帧参数；合成适配器只替换视觉模型本身。
       ...(mediaOn
         ? {

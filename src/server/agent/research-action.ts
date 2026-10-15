@@ -80,6 +80,9 @@ export function createResearchAction(options: {
           signal: context.signal,
           actions,
           context: {
+            prepareModelContext: options.input.context.prepareModelContext?.bind(
+              options.input.context,
+            ),
             assertCurrent: check,
             async read() {
               check();

@@ -90,6 +90,12 @@ export function qqDeliveryAuthorize(deps: DeliveryAuthorityDeps) {
         const taskOwnerRun = frozenTask.origin_run_id
           ? (db.query(runIdentity).get(frozenTask.origin_run_id) as typeof taskRun)
           : null;
+        const observedThroughSeq = target.observedThroughSeq ?? row.source_through_seq;
+        if (
+          !Number.isSafeInteger(observedThroughSeq) ||
+          observedThroughSeq < row.source_through_seq
+        )
+          return false;
         const destination = target.participantId ?? target.peerId;
         const expectedSpeakerId =
           target.conversationKind === "private" ? target.peerId : (target.participantId ?? null);
@@ -117,7 +123,7 @@ export function qqDeliveryAuthorize(deps: DeliveryAuthorityDeps) {
               participant.targetId === destination && participant.speakerId === expectedSpeakerId,
           ) &&
           taskRun?.conversation_id === frozenTask.conversation_id &&
-          taskRun.observed_seq === frozenTask.source_through_seq &&
+          taskRun.observed_seq === observedThroughSeq &&
           taskRun.wake_id === frozenTask.origin_wake_id &&
           taskRun.owner_kind === "conversation" &&
           taskRun.owner_id === frozenTask.conversation_id &&
@@ -127,7 +133,9 @@ export function qqDeliveryAuthorize(deps: DeliveryAuthorityDeps) {
             ((frozenTask.cause === "chiming_in" || frozenTask.cause === "idle_topic") &&
               taskOwnerRun !== null &&
               taskOwnerRun.conversation_id === frozenTask.conversation_id &&
-              taskOwnerRun.observed_seq === frozenTask.source_through_seq &&
+              taskOwnerRun.observed_seq !== null &&
+              taskOwnerRun.observed_seq >= frozenTask.source_through_seq &&
+              taskOwnerRun.observed_seq <= observedThroughSeq &&
               taskOwnerRun.wake_id === frozenTask.origin_wake_id &&
               taskOwnerRun.owner_kind === "conversation" &&
               taskOwnerRun.owner_id === frozenTask.conversation_id &&

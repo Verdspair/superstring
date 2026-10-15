@@ -7,6 +7,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler, type ProfilerOnRenderCallback } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
 import {
@@ -1202,5 +1203,115 @@ describe("本会话并行上限与防刷屏覆盖（0059）", () => {
       },
       expected_revision: 2,
     });
+  });
+});
+
+async function renderBoardsWithProfiler(
+  onRender: ProfilerOnRenderCallback,
+  overrides: Partial<typeof api> = {},
+) {
+  const fake = client(overrides);
+  store.getState().resetForTests(fake);
+  store.setState({
+    page: "settings",
+    settingsView: "workspace",
+    settingsRoute: "qq-scheme-config",
+    agents: [agentOf(AGENT_A, "小助手"), agentOf(AGENT_B, "夜班助手")],
+  });
+  render(
+    <Profiler id="scheme-bindings-profiler" onRender={onRender}>
+      <SchemeBindingsView schemeId={SCHEME_A} />
+    </Profiler>,
+  );
+  await act(async () => {});
+  return { fake };
+}
+
+describe("性能阶段补测：渲染优化与窄订阅保持（FE-P2）", () => {
+  it("FE-P2: BindingEditor 打开状态下无关 store 更新不触发重渲染，关联合同字段更新与 CAS 保存正常执行", async () => {
+    const onRender = vi.fn();
+    const update = vi.fn(async (_id: string, body: unknown) =>
+      QqBindingResponseSchema.parse({
+        ...bindingOf(SCHEME_A, BINDING_A, "30003"),
+        ...(body as object),
+        revision: (body as { expected_revision: number }).expected_revision + 1,
+      }),
+    );
+    await renderBoardsWithProfiler(onRender, {
+      listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
+      updateQqBinding: update,
+    });
+
+    // 打开编辑抽屉（BindingEditor 挂载）
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    // 抽屉打开后的基线重置
+    onRender.mockClear();
+
+    // 驱动与本页完全无关的 store 字段更新（如记忆纠错保存状态 / 会话流式推进）
+    await act(async () => {
+      store.setState({ memoryCorrectionSaving: true });
+    });
+    await act(async () => {
+      store.setState({ memoryCorrectionSaving: false });
+    });
+
+    // 预期优化目标（RED）：BindingEditor / Assignment 应窄订阅，无关 store 更新不应触发 commit (0 次)
+    // 现状实际行为（RED 根因）：因 bare useSuperstringStore() 全量订阅，上述 2 次无关更新均触发 commit (2 次)
+    expect(onRender).toHaveBeenCalledTimes(0);
+
+    // 正向合同：关联合同字段（agents）实际更新时必须触发渲染且界面反映最新名称
+    onRender.mockClear();
+    await act(async () => {
+      store.setState({
+        agents: [agentOf(AGENT_A, "小助手-新名"), agentOf(AGENT_B, "夜班助手")],
+      });
+    });
+    expect(onRender).toHaveBeenCalled();
+    const sheet = screen.getByRole("dialog");
+    expect(within(sheet).getByRole("option", { name: "小助手-新名" })).toBeTruthy();
+
+    // Change a binding field before exercising the existing CAS save.
+    await userEvent.selectOptions(
+      within(sheet).getByLabelText(ui("connections.assistant")),
+      AGENT_B,
+    );
+    const saveBtn = within(sheet).getByRole("button", { name: ui("connections.saveBinding") });
+    await userEvent.click(saveBtn);
+    await act(async () => {});
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it("FE-P2: 列表搜索过滤与映射结果保持原语义，且无多余 store 连锁重渲染", async () => {
+    const onRender = vi.fn();
+    await renderBoardsWithProfiler(onRender, {
+      listQqBindings: vi
+        .fn()
+        .mockResolvedValue([
+          bindingOf(SCHEME_A, BINDING_A, "30003"),
+          bindingOf(SCHEME_A, BINDING_B, "30004"),
+        ]),
+    });
+    expect(screen.getByText("30003")).toBeTruthy();
+    expect(screen.getByText("30004")).toBeTruthy();
+
+    // 验证搜索过滤语义：按 peerId 筛选
+    const searchInput = screen.getByLabelText(ui("connections.searchConversationBindings"));
+    await userEvent.type(searchInput, "30004");
+    expect(screen.queryByText("30003")).toBeNull();
+    expect(screen.getByText("30004")).toBeTruthy();
+
+    // 清空搜索恢复全部
+    await userEvent.clear(searchInput);
+    expect(screen.getByText("30003")).toBeTruthy();
+    expect(screen.getByText("30004")).toBeTruthy();
+
+    // 列表静止时无关 store 更新不触发重渲染
+    onRender.mockClear();
+    await act(async () => {
+      store.setState({ memoryCorrectionSaving: true });
+    });
+    expect(onRender).toHaveBeenCalledTimes(0);
   });
 });

@@ -408,6 +408,12 @@ try {
       ) &&
       fs.existsSync(
         path.join(installRoot, "app/resources/migrations/versions/0065_qq_antispam_thresholds.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0066_jsonb_context_source_matchers.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

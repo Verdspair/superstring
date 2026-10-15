@@ -252,6 +252,19 @@ describe("R5 B 区记忆面板状态", () => {
     expect(useSuperstringStore.getState().memoryEntryDetail?.body).toBe("不恢复已经撤销的机制。");
   });
 
+  it("按页请求 100 条并保留未分页总数", async () => {
+    const listMemoryEntries = vi.fn().mockResolvedValue({ total: 205, items: [] });
+    const client = makeClient({ listMemoryEntries });
+    useSuperstringStore.getState().resetForTests(client);
+    useSuperstringStore.setState({ editorAgentId: AGENT_ID });
+
+    await useSuperstringStore.getState().loadMemoryPage(3);
+
+    expect(listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100, undefined);
+    expect(useSuperstringStore.getState().memoryEntryTotal).toBe(205);
+    expect(useSuperstringStore.getState().feedback).toBe("共 205 条记忆，当前第 3 页。");
+  });
+
   it("手动整理提交后轮询，并报告成功结果", async () => {
     const originalTimeout = globalThis.setTimeout;
     globalThis.setTimeout = ((callback: TimerHandler) => {
@@ -273,6 +286,31 @@ describe("R5 B 区记忆面板状态", () => {
       expect.objectContaining({ session_id: SESSION_ID, turn_ids: [TURN_ID] }),
     );
     expect(client.getMemoryJob).toHaveBeenCalledWith(AGENT_ID, JOB_ID);
+    expect(useSuperstringStore.getState().feedback).toBe(
+      "整理完成，已写入长期记忆。可在“记忆列表与治理”中查看。",
+    );
+  });
+
+  it("手动整理终态成功时不显示任务控制台，只报告写入结果", async () => {
+    const consolidate = vi.fn().mockResolvedValue({
+      ...queuedJob,
+      status: "succeeded",
+      result_id: MEMORY_ID,
+      finished_at: NOW,
+    });
+    const client = makeClient({ consolidate });
+    useSuperstringStore.getState().resetForTests(client);
+    useSuperstringStore.setState({ editorAgentId: AGENT_ID });
+
+    await useSuperstringStore.getState().manualConsolidate(SESSION_ID, [TURN_ID]);
+
+    expect(consolidate).toHaveBeenCalledOnce();
+    expect(consolidate.mock.calls[0][0]).toBe(AGENT_ID);
+    expect(consolidate.mock.calls[0][1]).toMatchObject({
+      session_id: SESSION_ID,
+      turn_ids: [TURN_ID],
+    });
+    expect(client.getMemoryJob).not.toHaveBeenCalled();
     expect(useSuperstringStore.getState().feedback).toBe(
       "整理完成，已写入长期记忆。可在“记忆列表与治理”中查看。",
     );
@@ -305,6 +343,7 @@ describe("R5 B 区记忆面板状态", () => {
       target_chars: 300,
     });
 
+    expect(client.getPolicy).toHaveBeenCalledWith(AGENT_ID);
     expect(useSuperstringStore.getState().policy?.version).toBe(2);
     expect(useSuperstringStore.getState().feedback).toBe("保存未成功，已恢复服务器值，请重试。");
   });

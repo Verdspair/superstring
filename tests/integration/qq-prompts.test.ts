@@ -29,6 +29,7 @@ import {
   qqJudgeAllowsSpeech,
   qqJudgeOutcome,
   qqPromptMessages,
+  qqStickerFrequencyGuide,
   renderQqTimeline,
 } from "../../src/server/services/qq-prompt-contract";
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
@@ -731,4 +732,41 @@ describe("the batch judgement contract (one call, one verdict per target)", () =
       expect(parseQqBatchJudgement(raw)).toEqual({ kind: "unreadable" });
     });
   }
+});
+
+// 表情发送倾向指导（2026-10-13 用户决定：三档整体上调，不只是拉开差距）。
+// 只断言倾向关键词与契约形状，不钉整句文案；不从此处的字符串推断模型实际发送频率。
+describe("sticker frequency guide API (all three levels raised)", () => {
+  const levels = ["low", "medium", "high"] as const;
+  // 语义档位：low 偏文字但不再压制合适的使用；medium 自然选择；high 主动考虑且同等合适时优先表情/图文。
+  const inclinationFlags: Record<(typeof levels)[number], RegExp[]> = {
+    low: [/文字/],
+    medium: [/自然|平衡/],
+    high: [/主动|积极/, /优先/],
+  };
+  // 三档共同点：都谈表情，且都保留「没有合适的不硬凑」一类软化否定——是倾向，不是配额。
+  const softNegation = /不硬凑|不强加|没有合适|不适合时不|不勉强|不硬加/;
+  const forbidden = ["概率", "随机", "配额", "强制", "绕过"];
+
+  it.each([...levels])(
+    "%s guide states a raised soft inclination, not suppression or quota",
+    (level) => {
+      const guide = qqStickerFrequencyGuide(level);
+      expect(guide.length).toBeGreaterThan(0);
+      expect(guide).toContain(level);
+      expect(guide).toContain("表情");
+      for (const flag of inclinationFlags[level]) expect(guide).toMatch(flag);
+      expect(guide).toMatch(softNegation);
+      for (const word of forbidden) expect(guide).not.toContain(word);
+      // 指导若提到工具协议，必须保持成对：sticker.search 查看候选 → reply.sticker 选已披露素材 ID。
+      if (guide.includes("sticker.search")) expect(guide).toContain("reply.sticker");
+    },
+  );
+
+  it("is deterministic per level and omits the line when the frequency is undefined", () => {
+    const guides = levels.map((l) => qqStickerFrequencyGuide(l));
+    expect(new Set(guides).size).toBe(3);
+    for (const l of levels) expect(qqStickerFrequencyGuide(l)).toBe(qqStickerFrequencyGuide(l));
+    expect(qqStickerFrequencyGuide(undefined)).toBe("");
+  });
 });

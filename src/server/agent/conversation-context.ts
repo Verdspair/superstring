@@ -5,6 +5,7 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import type { P5Config, RuntimeConfig } from "../../shared/contracts";
+import type { ResolvedModelContext } from "../../shared/contracts/agent";
 import { readJsonBody } from "../../shared/contracts/agent-output";
 import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { SourceRef } from "../../shared/contracts/evidence";
@@ -14,6 +15,7 @@ import {
   type ContextTurn,
   currentUser,
   freezeModelCapacity,
+  freezeModelContext,
   history,
   type SummaryContent,
   type SummaryFact,
@@ -34,6 +36,8 @@ import { requireChat } from "../services/runtime-config";
 import { estimateTokens } from "../services/token-estimate";
 import { createAgentRuntime, type LeafAgentRuntime } from "./agent-runtime";
 import { sourceAccess } from "./context-access";
+import { measureContextTokens } from "./context-engine";
+import { type ModelContextBudget, textMessages } from "./model-port";
 import { SUMMARY_RESULT_JSON_SCHEMA, SummaryResultSchema } from "./summary-contract";
 
 export {
@@ -56,6 +60,8 @@ interface BuildState {
   observed: Record<string, number>;
   /** Caller cancellation (ownership loss / client disconnect) — aborts model calls. */
   signal?: AbortSignal;
+  /** One budget descriptor per model, per build. Build-scoped: no cross-run cache or ledger. */
+  budgets: Record<string, ModelContextBudget>;
 }
 
 export interface ContextDiagnostic {
@@ -84,6 +90,20 @@ export interface ContextBuilderOptions {
 }
 
 export { estimateTokens };
+
+/** A usable descriptor counter: both the encoding and the counter, or nothing. */
+interface MeasuredCounter {
+  encoding: NonNullable<ModelContextBudget["tokenizerEncoding"]>;
+  count: (text: string) => number;
+}
+
+/** One whole request priced in the descriptor's unit, never in bytes. */
+interface PricedRequest {
+  inputTokens: number;
+  mediaState: "none" | "unknown";
+  inputLimit: number;
+  capacity: number;
+}
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
@@ -189,6 +209,126 @@ export class ContextBuilder {
     return capacity - outputTokens - Math.ceil(capacity * cfg.safety_margin_ratio);
   }
 
+  /**
+   * The token unit needs the descriptor's own counter AND encoding: a declared
+   * capacity alone is not a tokenizer, so a descriptor without both is priced in
+   * the legacy byte unit. No encoding is ever guessed from a model name.
+   */
+  private measured(budget: ModelContextBudget | undefined): MeasuredCounter | undefined {
+    const encoding = budget?.tokenizerEncoding;
+    const countText = budget?.countText;
+    if (encoding === undefined || countText === undefined) return undefined;
+    return { encoding, count: countText };
+  }
+
+  /**
+   * One whole request priced in the descriptor's unit. The decision schema is the
+   * declared response format of that step; native tool declarations are priced by
+   * the final gateway recheck on the actual body, not guessed here.
+   */
+  private priced(
+    budget: ModelContextBudget,
+    messages: readonly ContextMessage[],
+    outputTokens: number,
+    cfg: P5Config,
+    responseSchema?: Record<string, unknown>,
+  ): PricedRequest {
+    const counter = this.measured(budget);
+    if (counter === undefined) {
+      throw new AppError("CONTEXT_BUDGET_EXCEEDED", "上下文预算缺少一致的计量配置", 409);
+    }
+    const capacity = budget.capacity;
+    if (capacity === null) {
+      throw new AppError("CONTEXT_CAPACITY_UNKNOWN", "无法确认模型实际容量，已停止本轮", 409);
+    }
+    if (!Number.isSafeInteger(capacity) || capacity < 1) {
+      throw new AppError("CONTEXT_CAPACITY_ERROR", "模型上下文预算返回无效容量", 503);
+    }
+    const measured = measureContextTokens(textMessages(messages), counter, {
+      ...(responseSchema === undefined ? {} : { responseSchema }),
+    });
+    return {
+      inputTokens: measured.textTokens,
+      mediaState: measured.mediaState,
+      inputLimit: this.inputLimit(capacity, outputTokens, cfg),
+      capacity,
+    };
+  }
+
+  /**
+   * Prepares one model's descriptor through the gateway's own hook (auxiliary
+   * models prepare their own) and freezes the reading for THIS turn. Build-scoped
+   * only: no cross-run cache, no extra ledger.
+   */
+  private async prepareFor(
+    state: BuildState,
+    requested: string,
+    cfg: P5Config,
+  ): Promise<ModelContextBudget | undefined> {
+    if (state.runtime.resolved_model_contexts === undefined) return undefined;
+    const prepare = this.gateway.prepareContextModel?.bind(this.gateway);
+    if (prepare === undefined) return undefined;
+    const known = state.budgets[requested];
+    if (known !== undefined) {
+      state.signal?.throwIfAborted();
+      known.assertCurrent();
+      return known;
+    }
+    let budget: ModelContextBudget;
+    try {
+      budget = await withTimeout(
+        (signal) => prepare(requested, { signal }),
+        cfg.auxiliary_timeout_seconds,
+        () => new AppError("CONTEXT_CAPACITY_TIMEOUT", "实际模型容量核查超时", 504),
+        state.signal,
+      );
+    } catch (error) {
+      if (state.signal?.aborted) throw abortReason(state.signal);
+      throw error;
+    }
+    if (state.generationToken === null) {
+      state.generationToken = currentUser(
+        this.orm,
+        state.runtime.agent_id,
+        state.sessionId,
+        state.turnId,
+      ).generationToken;
+    }
+    const capacity = budget.capacity;
+    if (capacity === null) {
+      throw new AppError("CONTEXT_CAPACITY_UNKNOWN", "无法确认模型实际容量，已停止本轮", 409);
+    }
+    if (!Number.isSafeInteger(capacity) || capacity < 1) {
+      throw new AppError("CONTEXT_CAPACITY_ERROR", "模型上下文预算返回无效容量", 503);
+    }
+    // Only primitives are frozen; the descriptor's counter, endpoint and any
+    // credential stay outside the snapshot. An older snapshot without the field
+    // is rejected by freezeModelContext instead of gaining today's profile.
+    const metadata: ResolvedModelContext = {
+      model: budget.model,
+      capacity,
+      ...(budget.tokenizerEncoding === undefined
+        ? {}
+        : { tokenizer_encoding: budget.tokenizerEncoding }),
+      ...(budget.routeRevision === undefined ? {} : { route_revision: budget.routeRevision }),
+    };
+    const contexts = immediate(this.db, () =>
+      freezeModelContext(
+        this.orm,
+        state.runtime.agent_id,
+        state.sessionId,
+        state.turnId,
+        requested,
+        metadata,
+        state.generationToken,
+      ),
+    );
+    state.capacities[requested] = contexts[requested].capacity;
+    state.observed[requested] = capacity;
+    state.budgets[requested] = budget;
+    return budget;
+  }
+
   /** Probe, validate and freeze actual capacity. */
   private async capacity(
     state: BuildState,
@@ -196,6 +336,12 @@ export class ContextBuilder {
     cfg: P5Config,
     options: { main?: boolean; refresh?: boolean } = {},
   ): Promise<number> {
+    const descriptor = state.budgets[model];
+    if (descriptor !== undefined) {
+      descriptor.assertCurrent();
+      if (descriptor.capacity === null) fail("CONTEXT_CAPACITY_UNKNOWN", "无法确认模型实际容量");
+      return options.main && cfg.context_window !== null ? cfg.context_window : descriptor.capacity;
+    }
     let actual: number | undefined = !options.refresh ? state.observed[model] : undefined;
     if (actual === undefined) {
       let probed: number | null;
@@ -275,13 +421,33 @@ export class ContextBuilder {
       },
       { role: "user", content: contextDumps(args.data) },
     ];
-    const capacity = await this.capacity(args.state, args.model, args.cfg);
-    if (
-      args.outputTokens < 1 ||
-      estimateMessages(messages) + estimateTokens(contextDumps(args.responseSchema)) >
-        this.inputLimit(capacity, args.outputTokens, args.cfg)
-    ) {
-      fail("CONTEXT_AUX_BUDGET", "辅助模型输入与输出预留超过容量，不能截断来源");
+    // Auxiliary models keep the legacy byte unit unless their own descriptor declares
+    // an encoding; the model unit is priced whole (messages + declared schema).
+    const budget =
+      args.state.runtime.resolved_model_contexts !== undefined && this.gateway.prepareContextModel
+        ? await this.prepareFor(args.state, args.model, args.cfg)
+        : undefined;
+    const measured = this.measured(budget);
+    if (measured !== undefined && budget) {
+      const priced = this.priced(
+        budget,
+        messages,
+        args.outputTokens,
+        args.cfg,
+        args.responseSchema,
+      );
+      if (args.outputTokens < 1 || priced.inputTokens > priced.inputLimit) {
+        fail("CONTEXT_AUX_BUDGET", "辅助模型输入与输出预留超过容量，不能截断来源");
+      }
+    } else {
+      const capacity = await this.capacity(args.state, args.model, args.cfg);
+      if (
+        args.outputTokens < 1 ||
+        estimateMessages(messages) + estimateTokens(contextDumps(args.responseSchema)) >
+          this.inputLimit(capacity, args.outputTokens, args.cfg)
+      ) {
+        fail("CONTEXT_AUX_BUDGET", "辅助模型输入与输出预留超过容量，不能截断来源");
+      }
     }
     this.assertCurrent(args.state.turnId, args.state.runtime.agent_id);
     try {
@@ -298,6 +464,16 @@ export class ContextBuilder {
             },
             {
               messages,
+              ...(budget === undefined || measured === undefined
+                ? {}
+                : {
+                    contextBudget: budget,
+                    contextInputLimit: this.inputLimit(
+                      budget.capacity as number,
+                      args.outputTokens,
+                      args.cfg,
+                    ),
+                  }),
               signal,
               validate: args.parse,
               owner: {
@@ -486,6 +662,11 @@ export class ContextBuilder {
     let content: SummaryContent = { facts: [] };
     let batch: ContextTurn[] = [];
     if (sourceTurns.length === 0) return { id: "overview", content, turnIds: [] };
+    const auxiliaryBudget =
+      state.runtime.resolved_model_contexts !== undefined && this.gateway.prepareContextModel
+        ? await this.prepareFor(state, runtime.context_compression_model_name, runtime.p5_config)
+        : undefined;
+    const auxiliaryCounter = this.measured(auxiliaryBudget);
     const capacity = await this.capacity(
       state,
       runtime.context_compression_model_name,
@@ -496,10 +677,12 @@ export class ContextBuilder {
       Math.floor(this.inputLimit(capacity, target, runtime.p5_config) / 3),
     );
     for (const turn of sourceTurns) {
-      if (
-        batch.length > 0 &&
-        estimateMessages([...batch, turn].flatMap(turnMessages)) > inputBudget
-      ) {
+      const messages = [...batch, turn].flatMap(turnMessages);
+      const cost =
+        auxiliaryBudget && auxiliaryCounter
+          ? this.priced(auxiliaryBudget, messages, target, runtime.p5_config).inputTokens
+          : estimateMessages(messages);
+      if (batch.length > 0 && cost > inputBudget) {
         content = await this.summaryResult(state, runtime, batch, target, content, question);
         batch = [];
       }
@@ -525,6 +708,10 @@ export class ContextBuilder {
     /** Runtime protocol/action envelope space, accounted before the existing compression policy. */
     reservedInputUnits?: number;
     onSources?: (sources: SourceRef[]) => void;
+    /** Main-route descriptor already prepared and frozen for this turn (optional). */
+    preparedMain?: ModelContextBudget;
+    /** Prices the caller's protocol/action envelope in the same token unit. */
+    buildFits?: (messages: readonly ContextMessage[]) => boolean;
   }): Promise<ContextMessage[]> {
     const state: BuildState = {
       runtime: args.runtime,
@@ -534,6 +721,7 @@ export class ContextBuilder {
       capacities: { ...args.runtime.resolved_model_capacities },
       observed: {},
       signal: args.signal,
+      budgets: {},
     };
     this.checkpoints.delete(args.currentTurnId);
     try {
@@ -563,15 +751,83 @@ export class ContextBuilder {
       onUsage?: (usage: ContextUsage) => void;
       reservedInputUnits?: number;
       onSources?: (sources: SourceRef[]) => void;
+      preparedMain?: ModelContextBudget;
+      buildFits?: (messages: readonly ContextMessage[]) => boolean;
     },
   ): Promise<ContextMessage[]> {
     let runtime = args.runtime;
     requireChat(runtime.mode);
     const originalCfg = runtime.p5_config;
-    const capacity = await this.capacity(state, runtime.model_name, originalCfg, { main: true });
+    // Main route is prepared once per build and frozen for this turn, so the
+    // capacity gate, the usage record and the later sends share one actual model.
+    const main =
+      args.preparedMain ??
+      (state.runtime.resolved_model_contexts !== undefined && this.gateway.prepareContextModel
+        ? await this.prepareFor(state, runtime.model_name, originalCfg)
+        : undefined);
+    if (args.preparedMain !== undefined) {
+      const descriptor = args.preparedMain;
+      descriptor.assertCurrent();
+      if (state.generationToken === null)
+        state.generationToken = currentUser(
+          this.orm,
+          runtime.agent_id,
+          state.sessionId,
+          state.turnId,
+        ).generationToken;
+      if (descriptor.capacity === null) fail("CONTEXT_CAPACITY_UNKNOWN", "无法确认模型实际容量");
+      const contexts = immediate(this.db, () =>
+        freezeModelContext(
+          this.orm,
+          runtime.agent_id,
+          state.sessionId,
+          state.turnId,
+          runtime.model_name,
+          {
+            model: descriptor.model,
+            capacity: descriptor.capacity as number,
+            ...(descriptor.tokenizerEncoding === undefined
+              ? {}
+              : { tokenizer_encoding: descriptor.tokenizerEncoding }),
+            ...(descriptor.routeRevision === undefined
+              ? {}
+              : { route_revision: descriptor.routeRevision }),
+          },
+          state.generationToken,
+        ),
+      );
+      state.capacities[runtime.model_name] = contexts[runtime.model_name].capacity;
+      state.observed[runtime.model_name] = descriptor.capacity as number;
+      state.budgets[runtime.model_name] = descriptor;
+    }
+    const measured = this.measured(main);
+    const capacity =
+      measured !== undefined && main
+        ? (main.capacity ?? null)
+        : await this.capacity(state, runtime.model_name, originalCfg, { main: true });
+    if (capacity === null) {
+      fail(
+        "CONTEXT_CAPACITY_UNKNOWN",
+        "无法确认模型实际加载容量，已停止本轮；请检查LM Studio加载状态",
+      );
+    }
+    // Same capacity gate the probe path applies, read from the frozen descriptor.
+    if (
+      measured !== undefined &&
+      originalCfg.context_window !== null &&
+      capacity < originalCfg.context_window
+    ) {
+      fail("CONTEXT_CAPACITY_INSUFFICIENT", "实际加载容量小于自定义主聊天预算");
+    }
+    // Token mode compares whole requests in the descriptor's unit: the protocol
+    // reserve is charged there by `buildFits`, never subtracted from a byte limit.
+    const mainCapacity =
+      measured !== undefined ? (originalCfg.context_window ?? capacity) : capacity;
     const limit =
-      this.inputLimit(capacity, originalCfg.max_output_tokens, originalCfg) -
-      (args.reservedInputUnits ?? 0);
+      measured !== undefined
+        ? this.inputLimit(mainCapacity, originalCfg.max_output_tokens, originalCfg)
+        : this.inputLimit(capacity, originalCfg.max_output_tokens, originalCfg) -
+          (args.reservedInputUnits ?? 0);
     if (limit <= 0) {
       fail("CONTEXT_CAPACITY_INSUFFICIENT", "模型容量不足以容纳回复预留和安全余量");
     }
@@ -646,7 +902,22 @@ export class ContextBuilder {
     this.checkpoints.set(args.currentTurnId, checkpointFor(historical, historicalCorrections));
     const base = systemPrompt(runtime);
     const question: ContextMessage = { role: "user", content: current.content };
-    if (estimateMessages([...base, question]) > limit) {
+    // Required instructions and the current question are never trimmed; only the
+    // unit differs, so this gate reads the same messages either way.
+    const costOf = (messages: ContextMessage[]): number =>
+      measured !== undefined && main
+        ? this.priced(main, messages, originalCfg.max_output_tokens, originalCfg).inputTokens
+        : estimateMessages(messages);
+    const fits = (messages: ContextMessage[]): boolean => {
+      if (measured === undefined || !main) return estimateMessages(messages) <= limit;
+      main.assertCurrent();
+      if (
+        this.priced(main, messages, originalCfg.max_output_tokens, originalCfg).inputTokens > limit
+      )
+        return false;
+      return args.buildFits === undefined ? true : args.buildFits(messages);
+    };
+    if (!fits([...base, question])) {
       fail("CONTEXT_BUDGET_EXCEEDED", "当前问题、指令与输出预留超过容量；未截断当前问题");
     }
     let segments: SummaryItem[] = [];
@@ -689,11 +960,7 @@ export class ContextBuilder {
     ];
 
     const trigger = Math.trunc(limit * originalCfg.compression_trigger_ratio);
-    if (
-      originalCfg.compression_enabled &&
-      historical.length > 0 &&
-      estimateMessages(assemble()) > trigger
-    ) {
+    if (originalCfg.compression_enabled && historical.length > 0 && costOf(assemble()) > trigger) {
       const saved = summaries(
         this.orm,
         runtime.agent_id,
@@ -713,14 +980,19 @@ export class ContextBuilder {
       }
       while (
         recent.length > 0 &&
-        (estimateMessages(assemble()) > limit ||
-          (recent.length > originalCfg.recent_turns && estimateMessages(assemble()) > trigger))
+        (!fits(assemble()) ||
+          (recent.length > originalCfg.recent_turns && costOf(assemble()) > trigger))
       ) {
         const count = Math.max(
           1,
           Math.min(recent.length - originalCfg.recent_turns, originalCfg.recent_turns || 1),
         );
         let group = recent.slice(0, count);
+        const auxiliaryBudget =
+          state.runtime.resolved_model_contexts !== undefined && this.gateway.prepareContextModel
+            ? await this.prepareFor(state, runtime.context_compression_model_name, originalCfg)
+            : undefined;
+        const auxiliaryCounter = this.measured(auxiliaryBudget);
         const auxiliaryCapacity = await this.capacity(
           state,
           runtime.context_compression_model_name,
@@ -733,8 +1005,17 @@ export class ContextBuilder {
         );
         while (
           group.length > 1 &&
-          estimateMessages(group.flatMap(turnMessages)) >
-            Math.min(Math.floor(limit / 2), Math.floor(auxiliaryLimit / 3))
+          (auxiliaryBudget && auxiliaryCounter
+            ? this.priced(
+                auxiliaryBudget,
+                group.flatMap(turnMessages),
+                originalCfg.summary_target_tokens,
+                originalCfg,
+              ).inputTokens
+            : estimateMessages(group.flatMap(turnMessages))) >
+            (auxiliaryCounter
+              ? Math.floor(auxiliaryLimit / 3)
+              : Math.min(Math.floor(limit / 2), Math.floor(auxiliaryLimit / 3)))
         ) {
           group = group.slice(0, Math.max(1, Math.floor(group.length / 2)));
         }
@@ -752,13 +1033,15 @@ export class ContextBuilder {
         if (estimateMessages(this.summaryMessages(segments)) > originalCfg.summary_max_tokens) {
           const covered = historical.slice(0, historical.length - recent.length);
           const room =
-            limit -
-            estimateMessages([
-              ...base,
-              ...correctionMessages(),
-              ...recent.flatMap(turnMessages),
-              question,
-            ]);
+            measured === undefined
+              ? limit -
+                estimateMessages([
+                  ...base,
+                  ...correctionMessages(),
+                  ...recent.flatMap(turnMessages),
+                  question,
+                ])
+              : originalCfg.summary_max_tokens;
           if (room > 256) {
             segments = [
               await this.overview(
@@ -775,13 +1058,15 @@ export class ContextBuilder {
       if (estimateMessages(this.summaryMessages(segments)) > originalCfg.summary_max_tokens) {
         const covered = historical.slice(0, historical.length - recent.length);
         const room =
-          limit -
-          estimateMessages([
-            ...base,
-            ...correctionMessages(),
-            ...recent.flatMap(turnMessages),
-            question,
-          ]);
+          measured === undefined
+            ? limit -
+              estimateMessages([
+                ...base,
+                ...correctionMessages(),
+                ...recent.flatMap(turnMessages),
+                question,
+              ])
+            : originalCfg.summary_max_tokens;
         segments = [
           await this.overview(
             state,
@@ -805,13 +1090,15 @@ export class ContextBuilder {
       const coveredIds = new Set(segments.flatMap((segment) => segment.turnIds));
       const covered = historical.filter((turn) => coveredIds.has(turn.id));
       const room =
-        limit -
-        estimateMessages([
-          ...base,
-          ...correctionMessages(),
-          ...recent.flatMap(turnMessages),
-          question,
-        ]);
+        measured === undefined
+          ? limit -
+            estimateMessages([
+              ...base,
+              ...correctionMessages(),
+              ...recent.flatMap(turnMessages),
+              question,
+            ])
+          : originalCfg.summary_max_tokens;
       segments = [
         await this.overview(
           state,
@@ -825,17 +1112,24 @@ export class ContextBuilder {
     if (summaryCost() > summaryReadLimit) {
       fail("CONTEXT_SUMMARY_BUDGET", "总览超过当前摘要读取上限");
     }
-    if (estimateMessages(assemble()) > limit) {
+    if (!fits(assemble())) {
       fail("CONTEXT_BUDGET_EXCEEDED", "有效历史在当前压缩和容量配置下放不下");
     }
 
     // Long-term material is only available through tools; corrections constrain retained history.
     const result = assemble();
 
-    await this.capacity(state, runtime.model_name, originalCfg, {
-      main: true,
-      refresh: true,
-    });
+    // Legacy mode re-probes the loaded capacity as before. Token mode instead
+    // re-verifies the frozen descriptor, so a second capacity source cannot
+    // disagree with the capacity this turn already froze.
+    if (measured === undefined) {
+      await this.capacity(state, runtime.model_name, originalCfg, {
+        main: true,
+        refresh: true,
+      });
+    } else {
+      main?.assertCurrent();
+    }
     const freshCurrent = currentUser(
       this.orm,
       runtime.agent_id,
@@ -858,6 +1152,15 @@ export class ContextBuilder {
     args.onSources?.(checkpoint.sources);
     const marginal = (messages: ContextMessage[]) => estimateMessages(messages) - 3;
     const inputUnits = estimateMessages(result);
+    // Token mode reports the measured whole request; legacy fields stay byte-domain
+    // and stay the estimate they were. The final gateway recheck prices the exact body.
+    const modelTokens =
+      measured !== undefined && main
+        ? this.priced(main, result, originalCfg.max_output_tokens, originalCfg)
+        : undefined;
+    if (modelTokens !== undefined && modelTokens.inputTokens > limit) {
+      fail("CONTEXT_BUDGET_EXCEEDED", "实际请求的文本估算超过模型输入预算");
+    }
     args.onUsage?.({
       session_id: args.sessionId,
       turn_id: args.currentTurnId,
@@ -868,7 +1171,22 @@ export class ContextBuilder {
       input_limit: limit,
       output_reserved: originalCfg.max_output_tokens,
       safety_reserved: Math.ceil(capacity * originalCfg.safety_margin_ratio),
-      remaining: limit - inputUnits,
+      // Byte-domain legacy headroom against the byte budget; model_tokens is
+      // authoritative when present and this approximation is not a token count.
+      remaining: Math.max(0, limit - inputUnits),
+      ...(modelTokens === undefined
+        ? {}
+        : {
+            model_tokens: {
+              method: "serialized_chat_token_estimate" as const,
+              encoding: main?.tokenizerEncoding as NonNullable<
+                ModelContextBudget["tokenizerEncoding"]
+              >,
+              input_tokens: modelTokens.inputTokens,
+              input_limit: limit,
+              media_state: modelTokens.mediaState,
+            },
+          }),
       components: {
         instructions: marginal(base),
         recent_history: marginal(recent.flatMap(turnMessages)),

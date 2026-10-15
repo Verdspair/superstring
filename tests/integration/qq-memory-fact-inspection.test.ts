@@ -27,7 +27,7 @@ import { qqMemoryScopeKey } from "../../src/server/services/qq-binding-contract"
 
 const AGENT_ID = DEFAULT_AGENT_ID;
 const MODEL = "qwen/qwen3-4b-2507";
-const at = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
+const at = Math.floor(Date.now() / 1000);
 const BINDING_ID = "11111111-1111-4111-8111-111111111111";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
 const NAME_REF_ID = JSON.stringify(["90001", "group", "30003", "10001"]);

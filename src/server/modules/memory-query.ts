@@ -4,8 +4,8 @@ import { readJsonBody } from "../../shared/contracts/agent-output";
 import type { ContextMessage, MemoryItem } from "../db/context-repository";
 import { contextDumps } from "../db/json-text";
 import { fail } from "../errors";
+import { fullCasefold } from "../services/casefold-table";
 import { contentCandidate } from "../services/content-format";
-import { fullCasefold } from "../services/text";
 import { estimateTokens } from "../services/token-estimate";
 
 const SelectionSchema = z.strictObject({ ids: z.array(z.string()) });

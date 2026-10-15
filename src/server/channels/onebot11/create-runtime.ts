@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   QqConversationTaskCauseSchema,
+  type QqConversationTaskLimits,
   type QqTaskExecutionSnapshot,
   qqConversationTaskKey,
   resolveEffectiveInputAntiSpam,
@@ -37,6 +38,7 @@ import {
 } from "../../db/qq-scheme-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
 import {
+  canAcceptQqChimingOpportunity,
   createQqConversationTask,
   type QqConversationTaskIdentity,
   type QqConversationTaskSourceGuard,
@@ -207,6 +209,13 @@ export function createOneBotConversationRuntime(options: {
             event.kind === "outbound" ||
             event.kind === "media_revision"),
       );
+  const taskLimitsFor = (conversationId: string): QqConversationTaskLimits | null => {
+    const conversation = journal.row(conversationId);
+    const binding = conversation ? readQqBinding(orm, conversation.source_id) : null;
+    const scheme = binding ? readQqScheme(orm, binding.schemeId) : null;
+    if (!binding || !scheme) return null;
+    return resolveQqEffectiveTaskLimits(schemeTaskLimits(scheme), binding.taskLimits);
+  };
   const taskSourceState: QqConversationTaskSourceGuard = (_transaction, identity) => {
     const conversation = journal.row(identity.conversationId);
     const binding = conversation ? readQqBinding(orm, conversation.source_id) : null;
@@ -462,7 +471,7 @@ export function createOneBotConversationRuntime(options: {
     onSettled: options.onWakeSettled,
     // 自主接话要真模型名额才能判：闸在领取前拦下它，被闸的机会保持 pending、不烧 attempts，
     // 名额释放时的通知让 worker 立刻复查，而不是等下一轮轮询。
-    resourceGate: (wake) => {
+    resourceGate: (wake, claimAt) => {
       if (wake.cause !== "chiming_in") return true;
       // 判断模型与自主接话判定用的是同一个真源：设置里指定的判断模型，未指定则跟随该会话
       // 绑定助手的对话模型——与 adapter 判断「有没有名额」时取的是同一个值。
@@ -470,7 +479,19 @@ export function createOneBotConversationRuntime(options: {
       const judgement =
         readQqSettings(orm).judgementModelName ??
         (agentId ? getAgentRow(orm, agentId)?.modelName : undefined);
-      return options.agentRuntime.admission?.available(judgement ?? undefined) ?? true;
+      if (!(options.agentRuntime.admission?.available(judgement ?? undefined) ?? true))
+        return false;
+      const limits = taskLimitsFor(wake.conversationId);
+      // Missing configuration is settled by the existing claimed-wake path.
+      if (limits !== null && !canAcceptQqChimingOpportunity(orm, wake.conversationId, limits))
+        return false;
+      if (wake.attempts > 0) return true;
+      return (
+        adapter.chimingActivationFacts(
+          wake.conversationId,
+          Math.floor(Date.parse(claimAt) / 1000),
+        ) ?? true
+      );
     },
     async activate(wake) {
       const conversation = journal.get(wake.conversationId);
@@ -577,11 +598,9 @@ export function createOneBotConversationRuntime(options: {
       return options.agentRuntime.admission?.available(model ?? undefined) ?? true;
     },
     limitsFor(identity) {
-      const conversation = journal.row(identity.conversationId);
-      const binding = conversation ? readQqBinding(orm, conversation.source_id) : null;
-      const scheme = binding ? readQqScheme(orm, binding.schemeId) : null;
-      if (!binding || !scheme) throw new Error("BOT_CONFIGURATION_MISSING");
-      return resolveQqEffectiveTaskLimits(schemeTaskLimits(scheme), binding.taskLimits);
+      const limits = taskLimitsFor(identity.conversationId);
+      if (!limits) throw new Error("BOT_CONFIGURATION_MISSING");
+      return limits;
     },
     freezeAtClaim(_transaction, task, limits): QqTaskExecutionSnapshot {
       const conversation = journal.row(task.conversationId);
@@ -648,8 +667,11 @@ export function createOneBotConversationRuntime(options: {
         ordinaryTaskLimit: limits.ordinaryTaskLimit,
       };
     },
-    async activate(task, snapshot, leaseToken, signal) {
-      const result = await host.activateTask({ task, snapshot, leaseToken }, signal);
+    async activate(task, snapshot, leaseToken, signal, onAuthorityTimings) {
+      const result = await host.activateTask(
+        { task, snapshot, leaseToken, onAuthorityTimings },
+        signal,
+      );
       if (result.status === "deferred") return result;
       await delivery.runOnce();
       return result.status === "expired"
@@ -666,7 +688,9 @@ export function createOneBotConversationRuntime(options: {
         .query(`SELECT i.status,i.target FROM outbound_intents i
         JOIN agent_runs r ON r.run_id=i.run_id
         WHERE i.conversation_id=? AND i.source_through_seq=? AND i.speech_kind=?
-          AND r.conversation_id=i.conversation_id AND r.observed_seq=i.source_through_seq
+          AND r.conversation_id=i.conversation_id
+          AND r.observed_seq=COALESCE(json_extract(i.target,'$.observedThroughSeq'),i.source_through_seq)
+          AND r.observed_seq>=i.source_through_seq
           AND (i.run_id=? OR (? IS NOT NULL AND r.wake_id=?))`)
         .all(
           task.conversationId,

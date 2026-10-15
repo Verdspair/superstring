@@ -62,7 +62,6 @@ export function ExternalConversation({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                disabled={history.loading}
                 aria-label={t("workspace.refresh_history")}
                 onClick={() => void history.refresh()}
               >

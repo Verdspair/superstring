@@ -465,7 +465,7 @@ export class AgentRunRepository {
     const handles = this.db
       .query(`SELECT s.run_id,s.step_id FROM context_snapshots c
       JOIN agent_steps s ON s.step_id=c.step_id
-      WHERE c.status='exact' AND EXISTS (SELECT 1 FROM json_each(c.source_refs) r
+      WHERE c.status='exact' AND EXISTS (SELECT 1 FROM jsonb_each(c.source_refs) r
         WHERE json_extract(r.value,'$.kind')=? AND json_extract(r.value,'$.id')=?)`)
       .all(kind, id) as { run_id: string; step_id: string }[];
     this.db.transaction(() => {

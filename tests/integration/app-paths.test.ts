@@ -9,12 +9,18 @@ describe("explicit application paths (no disk writes)", () => {
     expect(paths.database).toBe(path.join(root, "local/data/superstring.sqlite"));
     expect(paths.browserStateKey).toBe(path.join(root, "local/state/browser-state.key"));
     expect(paths.logsDir).toBe(path.join(root, "local/logs"));
+    expect(paths.localModelEncodings).toBe(
+      path.join(root, "local/config/local-model-encodings.json"),
+    );
     expect(paths.webDir).toBe(path.join(root, "dist/web"));
   });
   it("keeps installed data under selected root, separate from resources", () => {
     const paths = resolveAppPaths({ mode: "installed", root });
     expect(paths.database).toBe(path.join(root, "userdata/data/superstring.sqlite"));
     expect(paths.appearance).toBe(path.join(root, "userdata/state/desktop-appearance.json"));
+    expect(paths.localModelEncodings).toBe(
+      path.join(root, "userdata/config/local-model-encodings.json"),
+    );
     expect(paths.backupsDir).toBe(path.join(root, "backups"));
     expect(paths.webDir).toBe(path.join(root, "app/resources/web"));
     expect(paths.businessMigration).toBe(
@@ -36,6 +42,7 @@ describe("explicit application paths (no disk writes)", () => {
     expect(paths.database).toBe(path.join(root, "data/superstring.sqlite"));
     expect(paths.browserStateKey).toBe(path.join(root, "state/browser-state.key"));
     expect(paths.qqTransportKey).toBe(path.join(root, "state/qq-transport.key"));
+    expect(paths.localModelEncodings).toBe(path.join(root, "config/local-model-encodings.json"));
     expect(paths.qqStickersDir).toBe(path.join(root, "qq/stickers"));
     expect(paths.logsDir).toBe(path.join(root, "logs"));
     expect(paths.backupsDir).toBe(path.join(root, "backups"));

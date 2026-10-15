@@ -28,6 +28,7 @@ export type QqChimingBatchWindow =
   | {
       readonly kind: "ready";
       readonly count: number;
+      readonly condition: "count" | "time" | "count_and_time";
       /** 纯计数模式没有第二维上界（null）；时间窗开启时由起算锚独立推出。 */
       readonly upperAtSeconds: number | null;
       readonly expired: boolean;
@@ -65,7 +66,8 @@ export function qqChimingBatchWindow(input: QqChimingBatchWindowInput): QqChimin
   const countExpired = count >= countUpper;
   if (!rhythm.initiative_time_window_enabled || firstEligibleSeconds === null) {
     const expired = countExpired;
-    if (countMature) return { kind: "ready", count, upperAtSeconds: null, expired };
+    if (countMature)
+      return { kind: "ready", count, condition: "count", upperAtSeconds: null, expired };
     return { kind: "none", count, expired };
   }
   const anchorSeconds = Math.max(firstEligibleSeconds, judgedAtSeconds ?? 0);
@@ -74,8 +76,15 @@ export function qqChimingBatchWindow(input: QqChimingBatchWindowInput): QqChimin
   const upperAtSeconds =
     anchorSeconds + (rhythm.initiative_time_target_seconds + rhythm.initiative_time_jitter_seconds);
   const expired = countExpired || nowSeconds >= upperAtSeconds;
-  if (countMature || nowSeconds >= readyAtSeconds) {
-    return { kind: "ready", count, upperAtSeconds, expired };
+  const timeMature = nowSeconds >= readyAtSeconds;
+  if (countMature || timeMature) {
+    return {
+      kind: "ready",
+      count,
+      condition: countMature ? (timeMature ? "count_and_time" : "count") : "time",
+      upperAtSeconds,
+      expired,
+    };
   }
   return {
     kind: "waiting",

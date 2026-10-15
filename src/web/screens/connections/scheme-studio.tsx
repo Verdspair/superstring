@@ -65,7 +65,7 @@ import { translateNotice } from "../../i18n";
 import type { SuperstringState } from "../../state/types";
 import { useSuperstringStore } from "../../store";
 import { QqMessagePreview } from "./qq-message-preview";
-import { SchemeFieldCard } from "./scheme-field-shared";
+import { SchemeFieldCard, StickerFrequencyOptions } from "./scheme-field-shared";
 import {
   fieldBounds,
   headroomPercentBounds,
@@ -444,7 +444,6 @@ function StickerFrequencyRadio() {
   const editor = useSuperstringStore((s) => s.qqSchemeEditor);
   const saving = useSuperstringStore((s) => s.qqSchemeSaving);
   const patchQqScheme = useSuperstringStore((s) => s.patchQqScheme);
-  const radioId = useId();
 
   if (!editor) return null;
 
@@ -461,49 +460,14 @@ function StickerFrequencyRadio() {
     }
   };
 
-  const options = [
-    {
-      value: "low",
-      labelKey: "connections.stickerFrequencyLow",
-      hintKey: "connections.stickerFrequencyLowHint",
-    },
-    {
-      value: "medium",
-      labelKey: "connections.stickerFrequencyMedium",
-      hintKey: "connections.stickerFrequencyMediumHint",
-    },
-    {
-      value: "high",
-      labelKey: "connections.stickerFrequencyHigh",
-      hintKey: "connections.stickerFrequencyHighHint",
-    },
-  ] as const;
-
   return (
     <div className="space-y-2 sm:col-span-2">
       <div className="text-sm font-medium">{t("connections.stickerFrequency")}</div>
-      <RadioGroup
+      <StickerFrequencyOptions
         value={currentFrequency}
         onValueChange={handleChange}
         disabled={saving}
-        className="grid gap-3 sm:grid-cols-3"
-      >
-        {options.map((opt) => (
-          <Label
-            key={opt.value}
-            htmlFor={`${radioId}-${opt.value}`}
-            className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
-          >
-            <RadioGroupItem value={opt.value} id={`${radioId}-${opt.value}`} className="mt-0.5" />
-            <div className="space-y-1">
-              <span className="block font-medium leading-none">{t(opt.labelKey)}</span>
-              <span className="block text-xs font-normal leading-normal text-muted-foreground">
-                {t(opt.hintKey)}
-              </span>
-            </div>
-          </Label>
-        ))}
-      </RadioGroup>
+      />
     </div>
   );
 }

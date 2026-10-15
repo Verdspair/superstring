@@ -10,7 +10,7 @@ import { z } from "zod";
 import { codePointLength, isBlank, unicodeStrip } from "../../shared/contracts/code-point-string";
 import { fail } from "../errors";
 import { isAlnum } from "./alnum-table";
-import { fullCasefold } from "./text";
+import { fullCasefold } from "./casefold-table";
 
 /** `Scope` literal. */
 export const SCOPES = [

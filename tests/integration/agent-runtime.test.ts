@@ -1137,6 +1137,87 @@ describe("unified AgentRuntime", () => {
     });
   });
 
+  it("keeps JSONB source matching exact for escaped IDs and preserves malformed-source errors", () => {
+    const { h, repository } = setup();
+    const at = "2026-01-01T00:00:00.000Z";
+    for (const id of ["match", "unrelated", "malformed"]) {
+      repository.createRun({ runId: id, specId: "test", specVersion: "1", owner, at });
+      repository.startStep({
+        runId: id,
+        stepId: id,
+        stepNo: 1,
+        model: "test",
+        phase: "leaf",
+        at,
+        messages: [textMessage("user", "synthetic private input")],
+        sources: [{ kind: "memory", id: id === "match" ? "x" : id, revision: "1" }],
+      });
+      repository.finishStep(id, "completed", at, {
+        decision: { kind: "none" },
+        output: { text: "synthetic private output", format: "text", complete: true },
+      });
+    }
+    h.db
+      .query("UPDATE context_snapshots SET source_refs=? WHERE step_id='match'")
+      .run(
+        '[{"k\\u0069nd":"memory","i\\u0064":"\\u0078","revision":"1"},{"kind":"memory","id":"x","revision":"2"}]',
+      );
+    expect(repository.redactSource("memory", "x")).toBe(1);
+    expect(repository.getContext({ runId: "match", stepId: "match" })).toMatchObject({
+      status: "revoked",
+      messages: null,
+      output: null,
+    });
+    expect(h.db.query("SELECT decision FROM agent_steps WHERE step_id='match'").get()).toEqual({
+      decision: null,
+    });
+    expect(repository.getContext({ runId: "unrelated", stepId: "unrelated" })?.status).toBe(
+      "exact",
+    );
+    repository.finishStep("match", "completed", at, {
+      output: { text: "late output", format: "text", complete: true },
+    });
+    expect(repository.getContext({ runId: "match", stepId: "match" })?.output).toBeNull();
+    h.db
+      .query("UPDATE context_snapshots SET source_refs=? WHERE step_id='malformed'")
+      .run('["plain-scalar"]');
+    expect(() => repository.redactSource("memory", "absent")).toThrow("malformed JSON");
+    expect(repository.getContext({ runId: "unrelated", stepId: "unrelated" })?.status).toBe(
+      "exact",
+    );
+  });
+
+  it("rolls back source revocation and retains typed-ID comparison behavior", () => {
+    const { h, repository } = setup();
+    const at = "2026-01-01T00:00:00.000Z";
+    repository.createRun({ runId: "typed", specId: "test", specVersion: "1", owner, at });
+    repository.startStep({
+      runId: "typed",
+      stepId: "typed",
+      stepNo: 1,
+      model: "test",
+      phase: "leaf",
+      at,
+      messages: [textMessage("user", "synthetic")],
+      sources: [{ kind: "memory", id: "42", revision: "1" }],
+    });
+    h.db
+      .query("UPDATE context_snapshots SET source_refs=? WHERE step_id='typed'")
+      .run('[{"kind":"memory","id":42,"revision":"1"}]');
+    expect(repository.redactSource("memory", "42")).toBe(0);
+    h.db
+      .query("UPDATE context_snapshots SET source_refs=? WHERE step_id='typed'")
+      .run('[{"kind":"memory","id":"42","revision":"1"}]');
+    expect(() =>
+      h.db.transaction(() => {
+        expect(repository.redactSource("memory", "42")).toBe(1);
+        throw new Error("synthetic rollback");
+      })(),
+    ).toThrow("synthetic rollback");
+    expect(repository.getContext({ runId: "typed", stepId: "typed" })?.status).toBe("exact");
+    expect(repository.redactSource("memory", "42")).toBe(1);
+  });
+
   it("counts context units with the existing UTF8/message-overhead estimator", () => {
     const messages = [
       { role: "system" as const, content: "中文 persona" },
@@ -2407,5 +2488,207 @@ describe("trusted workClass propagation", () => {
     expect(streamed[0]).not.toHaveProperty("workClass");
     await runtime.completeLeaf({ id: "leaf" }, { owner, messages: [] });
     expect(seen[1]).not.toHaveProperty("workClass");
+  });
+});
+describe("trusted host terminal gate", () => {
+  it("calls the trusted host beforeActionBatch once with resolved identity and full arguments before any effect", async () => {
+    const reader = boundAction();
+    const writer = boundAction("records.append");
+    writer.description.effect = "write";
+    const executed: string[] = [];
+    reader.execute = async (args) => {
+      executed.push("read");
+      return { value: args, sources: [] };
+    };
+    writer.execute = async (args) => {
+      executed.push("write");
+      return { value: args, sources: [] };
+    };
+    const seen: ModelRequest[] = [];
+    const batches: Array<
+      readonly {
+        readonly action: BuiltInAction;
+        readonly arguments: Record<string, unknown>;
+      }[]
+    > = [];
+    const { runtime, repository } = setup({
+      async complete(request) {
+        seen.push(request);
+        return seen.length === 1
+          ? JSON.stringify({
+              kind: "invoke",
+              calls: [
+                { name: "records.query", arguments: { query: "first" } },
+                { name: "records.append", arguments: { query: "second" } },
+              ],
+            })
+          : '{"kind":"none"}';
+      },
+    });
+    const result = await runtime.run(
+      { ...spec, availableActions: [reader.description, writer.description] },
+      {
+        ...direct,
+        actions: [reader, writer],
+        beforeActionBatch(batch) {
+          expect(executed).toEqual([]);
+          batches.push(batch);
+        },
+      },
+    );
+    expect(batches).toHaveLength(1);
+    expect(batches[0][0].action).toBe(reader);
+    expect(batches[0][0].arguments).toEqual({ query: "first" });
+    expect(batches[0][1].action).toBe(writer);
+    expect(batches[0][1].arguments).toEqual({ query: "second" });
+    expect(executed).toEqual(["read", "write"]);
+    expect(result).toMatchObject({ status: "no_output", outputs: [] });
+    expect(repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0]).toMatchObject({
+      status: "no_output",
+    });
+  });
+
+  it("keeps a legitimate write executing exactly once when the trusted host reports the decision as non-terminal", async () => {
+    const writer = boundAction("records.append");
+    writer.description.effect = "write";
+    let executions = 0;
+    writer.execute = async () => {
+      executions++;
+      return { value: { done: true }, sources: [] };
+    };
+    const seen: ModelRequest[] = [];
+    let terminalCalls = 0;
+    const { runtime, repository } = setup({
+      async complete(request) {
+        seen.push(request);
+        return seen.length === 1
+          ? JSON.stringify({
+              kind: "invoke",
+              calls: [{ name: "records.append", arguments: { query: "deliver" } }],
+            })
+          : '{"kind":"none"}';
+      },
+    });
+    const result = await runtime.run(
+      { ...spec, availableActions: [writer.description] },
+      {
+        ...direct,
+        actions: [writer],
+        isTerminalDecision() {
+          terminalCalls++;
+          return false;
+        },
+      },
+    );
+    expect(terminalCalls).toBe(2);
+    expect(executions).toBe(1);
+    expect(result).toMatchObject({ status: "no_output", outputs: [] });
+    const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
+    expect(run).toMatchObject({ status: "no_output" });
+    expect(
+      repository.listEvents(run.runId).filter((event) => event.type === "action_result"),
+    ).toHaveLength(1);
+  });
+
+  it("rejects an illegal follow-up tool decision after a trusted host declares the terminal flag", async () => {
+    const reader = boundAction();
+    const writer = boundAction("records.append");
+    writer.description.effect = "write";
+    let effects = 0;
+    let terminal = false;
+    reader.execute = async () => {
+      effects++;
+      terminal = true;
+      return { value: { page: 1 }, sources: [] };
+    };
+    writer.execute = async () => {
+      effects++;
+      return { value: { done: true }, sources: [] };
+    };
+    const seen: ModelRequest[] = [];
+    const { runtime, repository } = setup({
+      async complete(request) {
+        seen.push(request);
+        if (seen.length === 1) {
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [{ name: "records.query", arguments: { query: "last read" } }],
+          });
+        }
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [{ name: "records.append", arguments: { query: "must not run" } }],
+        });
+      },
+    });
+    await expect(
+      runtime.run(
+        { ...spec, availableActions: [reader.description, writer.description] },
+        {
+          ...direct,
+          actions: [reader, writer],
+          isTerminalDecision: () => terminal,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "AGENT_ACTION_UNAVAILABLE" });
+    expect(effects).toBe(1);
+    const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
+    expect(run).toMatchObject({ status: "failed", errorCode: "AGENT_ACTION_UNAVAILABLE" });
+    expect(repository.listEvents(run.runId).map((event) => event.type)).toEqual([
+      "started",
+      "step",
+      "action_result",
+      "step",
+      "failed",
+    ]);
+  });
+
+  it("keeps legitimate write execution allowed when tool results mimic budget codes but trusted host reports non-terminal", async () => {
+    const reader = boundAction();
+    const writer = boundAction("records.append");
+    writer.description.effect = "write";
+    const executed: string[] = [];
+    reader.execute = async () => {
+      executed.push("read");
+      return { value: { code: "AGENT_BUDGET_EXHAUSTED", status: "terminal" }, sources: [] };
+    };
+    writer.execute = async () => {
+      executed.push("write");
+      return { value: { done: true }, sources: [] };
+    };
+    const seen: ModelRequest[] = [];
+    const { runtime, repository } = setup({
+      async complete(request) {
+        seen.push(request);
+        if (seen.length === 1) {
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [{ name: "records.query", arguments: { query: "probe" } }],
+          });
+        }
+        if (seen.length === 2) {
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [{ name: "records.append", arguments: { query: "deliver" } }],
+          });
+        }
+        return '{"kind":"none"}';
+      },
+    });
+    const result = await runtime.run(
+      { ...spec, availableActions: [reader.description, writer.description] },
+      {
+        ...direct,
+        actions: [reader, writer],
+        isTerminalDecision: () => false,
+      },
+    );
+    expect(executed).toEqual(["read", "write"]);
+    expect(result).toMatchObject({ status: "no_output", outputs: [] });
+    const run = repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0];
+    expect(run).toMatchObject({ status: "no_output" });
+    expect(
+      repository.listEvents(run.runId).filter((event) => event.type === "action_result"),
+    ).toHaveLength(2);
   });
 });

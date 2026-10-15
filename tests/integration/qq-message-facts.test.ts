@@ -28,9 +28,12 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import type { QqConversationScope } from "../../src/shared/contracts/qq-message";
 
-const at = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
-const now = "2026-10-01T16:00:00.000000Z";
-const later = "2026-10-01T17:00:00.000000Z";
+const at = Math.floor(Date.now() / 1000);
+// Preserve the six fractional digits used by stored timestamp comparisons.
+const atIso = (offsetSeconds: number): string =>
+  new Date((at + offsetSeconds) * 1000).toISOString().replace("Z", "000Z");
+const now = atIso(0);
+const later = atIso(3600);
 
 function setup() {
   const h = openBusinessDb();
@@ -438,7 +441,7 @@ describe("inbound message facts intake", () => {
           nickname: "旧显示",
           firstSeenAtSeconds: at,
           lastSeenAtSeconds: at,
-          expiresAt: "2026-10-20T00:00:00.000000Z",
+          expiresAt: atIso(1584000),
           nameState: "legacy",
           groupCard: null,
           personalNickname: null,
@@ -940,7 +943,7 @@ describe("backfill and revision", () => {
           parts: "[]",
           replyToMessageId: null,
           revision: 1,
-          expiresAt: "2026-10-20T00:00:00.000000Z",
+          expiresAt: atIso(1584000),
           recordedAt: now,
         })
         .run();
@@ -956,7 +959,7 @@ describe("backfill and revision", () => {
         revision: 2,
       });
       // expiry 不被再交付延长。
-      expect(row.expires_at).toBe("2026-10-20T00:00:00.000000Z");
+      expect(row.expires_at).toBe(atIso(1584000));
       const parts = JSON.parse(row.parts as string) as Array<{ kind: string }>;
       expect(parts.map((p) => p.kind)).toEqual(["mention", "text"]);
     } finally {
@@ -1126,7 +1129,7 @@ describe("fact projection (projectQqMessageFacts)", () => {
       journal.ingestOneBotEvent(observation.eventKey, "binding");
       // 到期时刻之后读取：整个事实不可用（fact null）；member 目录即使有当前名字，
       // 也不能经 currentName 复活快照——强断言无任何昵称回填。
-      const expired = "2026-10-20T00:00:00.000000Z";
+      const expired = atIso(1584000);
       const load = loadQqMessageFact(h, liveScope(h, conversation), "-102", expired);
       expect(load).toBeNull();
       expect(loadQqMessageFact(h, liveScope(h, conversation), "-102", now)).not.toBeNull();
@@ -1316,7 +1319,7 @@ describe("expiry cleanup extension", () => {
         },
         occurredAtSeconds: at,
       });
-      const expired = "2026-10-20T00:00:00.000000Z";
+      const expired = atIso(1584000);
       const counts = qqStorageCleanup(h.orm, expired);
       expect(counts.nicknames).toBeGreaterThanOrEqual(1);
       expect(counts.sends).toBeGreaterThanOrEqual(1);

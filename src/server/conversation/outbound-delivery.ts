@@ -256,32 +256,39 @@ export class OutboundDelivery {
       // 群内自主接话后到的新消息进下一批，不作废本批；已用来源的修订仍作废。
       const speechKind = row.speech_kind;
       const sourceIntent = row;
-      const changed = journal
-        .eventsAfter(
-          sourceIntent.conversation_id,
-          sourceIntent.source_through_seq,
-          Number.MAX_SAFE_INTEGER,
-        )
-        .items.some((event) => {
-          const relevant = observationRelevant(event, {
-            topology: target.conversationKind === "private" ? "direct" : "shared",
-            participantIds: [target.participantId ?? null],
-            attentionMembers: target.attentionMembers,
-            purpose: speechKind,
-            usedSources: target.sources,
+      const observedThroughSeq = target.observedThroughSeq;
+      const validObservedBoundary =
+        observedThroughSeq === undefined ||
+        (Number.isSafeInteger(observedThroughSeq) &&
+          observedThroughSeq >= sourceIntent.source_through_seq);
+      const changed =
+        !validObservedBoundary ||
+        journal
+          .eventsAfter(
+            sourceIntent.conversation_id,
+            observedThroughSeq ?? sourceIntent.source_through_seq,
+            Number.MAX_SAFE_INTEGER,
+          )
+          .items.some((event) => {
+            const relevant = observationRelevant(event, {
+              topology: target.conversationKind === "private" ? "direct" : "shared",
+              participantIds: [target.participantId ?? null],
+              attentionMembers: target.attentionMembers,
+              purpose: speechKind,
+              usedSources: target.sources,
+            });
+            if (!relevant || event.kind !== "inbound" || event.source.kind !== "qq_event")
+              return relevant;
+            return !hasDistinctQqMentionTaskOwnerForEvent(orm, {
+              conversationId: sourceIntent.conversation_id,
+              sourceThroughSeq: sourceIntent.source_through_seq,
+              eventSeq: event.seq,
+              eventSourceId: event.source.id,
+              bindingEpoch: target.bindingEpoch,
+              agentId: target.agentId,
+              owner: { kind: "run", id: sourceIntent.run_id },
+            });
           });
-          if (!relevant || event.kind !== "inbound" || event.source.kind !== "qq_event")
-            return relevant;
-          return !hasDistinctQqMentionTaskOwnerForEvent(orm, {
-            conversationId: sourceIntent.conversation_id,
-            sourceThroughSeq: sourceIntent.source_through_seq,
-            eventSeq: event.seq,
-            eventSourceId: event.source.id,
-            bindingEpoch: target.bindingEpoch,
-            agentId: target.agentId,
-            owner: { kind: "run", id: sourceIntent.run_id },
-          });
-        });
       const staleCode =
         this.now() >= row.deliver_by
           ? "DELIVERY_TTL_EXPIRED"

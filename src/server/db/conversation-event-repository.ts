@@ -25,6 +25,10 @@ type ConversationRow = {
   updated_at: string;
   closed_at: string | null;
 };
+export type ConversationActivation = Pick<
+  ConversationRow,
+  "id" | "topology" | "agent_id" | "binding_epoch" | "next_seq" | "consumed_seq"
+>;
 type OneBotBindingSource = {
   id: string;
   account_id: string;
@@ -160,7 +164,7 @@ export class ConversationEventRepository {
       created_at: string;
     } | null;
     if (!s || (userId !== undefined && userId !== s.user_id)) return null;
-    return this.ensure({
+    const row = this.ensure({
       channel: "web",
       topology: "direct",
       sourceId: s.id,
@@ -168,8 +172,26 @@ export class ConversationEventRepository {
       userId: s.user_id,
       at: s.created_at,
     });
+    return this.summary(row);
   }
   ensureOneBot(bindingId: string): ConversationSummary | null {
+    const row = this.ensureOneBotRow(bindingId);
+    return row ? this.summary(row) : null;
+  }
+  ensureOneBotActivation(bindingId: string): ConversationActivation | null {
+    const row = this.ensureOneBotRow(bindingId);
+    return row
+      ? {
+          id: row.id,
+          topology: row.topology,
+          agent_id: row.agent_id,
+          binding_epoch: row.binding_epoch,
+          next_seq: row.next_seq,
+          consumed_seq: row.consumed_seq,
+        }
+      : null;
+  }
+  private ensureOneBotRow(bindingId: string): ConversationRow | null {
     const b = this.db.query("SELECT b.* FROM qq_bindings b WHERE b.id=?").get(bindingId) as {
       id: string;
       conversation_kind: string;
@@ -195,7 +217,7 @@ export class ConversationEventRepository {
     agentId: string;
     userId: string;
     at: string;
-  }): ConversationSummary {
+  }): ConversationRow {
     return this.db.transaction(() => {
       let row = this.db
         .query("SELECT * FROM conversations WHERE channel=? AND source_id=? AND closed_at IS NULL")
@@ -245,13 +267,13 @@ export class ConversationEventRepository {
           const binding = this.db
             .query("SELECT * FROM qq_bindings WHERE id=?")
             .get(input.sourceId) as OneBotBindingSource;
-          this.backfillOneBot(binding, this.summary(row), true);
+          this.backfillOneBot(binding, row, this.agentName(row.agent_id), true);
           row = this.row(id)!;
           this.acknowledge(id, row.next_seq - 1);
           row = this.row(id)!;
         }
       }
-      return this.summary(row);
+      return row;
     })();
   }
   get(id: string, userId?: string): ConversationSummary | null {
@@ -272,7 +294,7 @@ export class ConversationEventRepository {
       }
       if (userId === DEFAULT_USER_ID) {
         for (const binding of this.db.query("SELECT id FROM qq_bindings").all() as { id: string }[])
-          this.ensureOneBot(binding.id);
+          this.ensureOneBotRow(binding.id);
       }
     })();
   }
@@ -358,10 +380,13 @@ export class ConversationEventRepository {
     return this.historyPage(id, before, "before", limit);
   }
 
-  private summary(r: ConversationRow): ConversationSummary {
-    const agent = this.db.query("SELECT name FROM agents WHERE id=?").get(r.agent_id) as {
+  private agentName(agentId: string): string {
+    const agent = this.db.query("SELECT name FROM agents WHERE id=?").get(agentId) as {
       name: string;
     } | null;
+    return agent?.name ?? agentId;
+  }
+  private summary(r: ConversationRow): ConversationSummary {
     let title = "";
     let peerId = r.user_id;
     let qqGroup: ConversationSummary["qqGroup"];
@@ -404,7 +429,7 @@ export class ConversationEventRepository {
       title,
       ...(qqGroup ? { qqGroup } : {}),
       participants: [
-        { id: r.agent_id, label: agent?.name ?? r.agent_id, role: "agent" },
+        { id: r.agent_id, label: this.agentName(r.agent_id), role: "agent" },
         ...(r.topology === "direct" ? [{ id: peerId, label: peerId, role: "user" as const }] : []),
       ],
       updatedAt: r.updated_at,
@@ -642,13 +667,13 @@ export class ConversationEventRepository {
     bindingId: string,
     addressing?: ConversationAddressing,
   ): ConversationEvent | null {
-    const c = this.ensureOneBot(bindingId);
+    const c = this.ensureOneBotRow(bindingId);
     return c ? this.ingestOneBotReference(eventKey, bindingId, c, addressing) : null;
   }
   private ingestOneBotReference(
     eventKey: string,
     bindingId: string,
-    c: ConversationSummary,
+    c: ConversationActivation,
     addressing?: ConversationAddressing,
     historical = false,
   ): ConversationEvent | null {
@@ -670,7 +695,7 @@ export class ConversationEventRepository {
     } | null;
     if (
       !e ||
-      (!historical && c.bindingEpoch > 1 && e.source_rowid <= this.row(c.id)!.source_watermark)
+      (!historical && c.binding_epoch > 1 && e.source_rowid <= this.row(c.id)!.source_watermark)
     )
       return null;
     const media = this.db
@@ -753,13 +778,13 @@ export class ConversationEventRepository {
       .immediate();
   }
   ingestMedia(noteId: string, bindingId: string): ConversationEvent | null {
-    const c = this.ensureOneBot(bindingId);
+    const c = this.ensureOneBotRow(bindingId);
     return c ? this.ingestMediaReference(noteId, bindingId, c) : null;
   }
   private ingestMediaReference(
     noteId: string,
     bindingId: string,
-    c: ConversationSummary,
+    c: ConversationActivation,
     historical = false,
   ): ConversationEvent | null {
     const n = this.db.query("SELECT * FROM qq_media_notes WHERE id=?").get(noteId) as {
@@ -828,14 +853,15 @@ export class ConversationEventRepository {
         peer_id: string;
         agent_id: string;
       }[]) {
-        const c = this.ensureOneBot(b.id)!;
-        if (c.bindingEpoch === 1) this.backfillOneBot(b, c, false);
+        const c = this.ensureOneBotRow(b.id)!;
+        if (c.binding_epoch === 1) this.backfillOneBot(b, c, this.agentName(c.agent_id), false);
       }
     })();
   }
   private backfillOneBot(
     b: OneBotBindingSource,
-    c: ConversationSummary,
+    c: ConversationActivation,
+    agentLabel: string,
     historical: boolean,
   ): void {
     const events = this.db
@@ -1000,9 +1026,7 @@ export class ConversationEventRepository {
                 ]
               : []),
           ],
-          participant: send.confirmed
-            ? { id: c.agentId, label: c.participants[0]!.label, role: "agent" }
-            : null,
+          participant: send.confirmed ? { id: c.agent_id, label: agentLabel, role: "agent" } : null,
           occurredAt: new Date(r.time * 1000).toISOString(),
           recordedAt: r.recorded_at,
           outputId: r.id,
@@ -1021,7 +1045,7 @@ export class ConversationEventRepository {
           revision: String(r.time),
           expiresAt: speech.expires_at,
         },
-        participant: { id: c.agentId, label: c.participants[0]!.label, role: "agent" },
+        participant: { id: c.agent_id, label: agentLabel, role: "agent" },
         occurredAt: new Date(r.time * 1000).toISOString(),
         recordedAt: r.recorded_at,
       });

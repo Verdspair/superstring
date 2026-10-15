@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { Profiler, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialog } from "../../src/web/components/confirmation";
 import { useSuperstringStore } from "../../src/web/store";
@@ -88,6 +88,39 @@ describe("Radix确认弹窗", () => {
       useSuperstringStore.setState({
         confirmSaveAndContinue: old.confirmSaveAndContinue,
         cancelPendingNavigation: old.cancelPendingNavigation,
+      });
+    }
+  });
+  it("关闭状态下非相关状态变更不触发重新渲染", async () => {
+    const old = useSuperstringStore.getState();
+    const oldNavigationConfirmOpen = old.navigationConfirmOpen;
+    const oldFeedback = old.feedback;
+    useSuperstringStore.setState({
+      navigationConfirmOpen: false,
+      feedback: "",
+    });
+    try {
+      const onRender = vi.fn();
+      render(
+        <Profiler id="NavigationConfirm" onRender={onRender}>
+          <NavigationConfirm />
+        </Profiler>,
+      );
+      expect(onRender).toHaveBeenCalledTimes(1);
+      act(() => {
+        useSuperstringStore.setState({ feedback: "feedback-update-1" });
+      });
+      act(() => {
+        useSuperstringStore.setState({ feedback: "feedback-update-2" });
+      });
+      act(() => {
+        useSuperstringStore.setState({ feedback: "feedback-update-3" });
+      });
+      expect(onRender).toHaveBeenCalledTimes(1);
+    } finally {
+      useSuperstringStore.setState({
+        navigationConfirmOpen: oldNavigationConfirmOpen,
+        feedback: oldFeedback,
       });
     }
   });

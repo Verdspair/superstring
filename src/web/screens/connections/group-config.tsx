@@ -38,7 +38,6 @@ import {
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { NativeSelect } from "../../components/ui/native-select";
-import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
 import { permissionResources } from "../../features/access/permission-state";
@@ -67,7 +66,7 @@ import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
 import { BindingEditor } from "./binding-editor";
 import { QqMessagePreview } from "./qq-message-preview";
-import { SchemeFieldCard } from "./scheme-field-shared";
+import { SchemeFieldCard, StickerFrequencyOptions } from "./scheme-field-shared";
 import {
   fieldBounds,
   headroomPercentBounds,
@@ -312,7 +311,6 @@ function StickerFrequencyField({
   const { t } = useTranslation();
   const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
   const patch = useSuperstringStore((s) => s.patchQqGroupOverride);
-  const radioId = useId();
 
   const group = "stickers";
   const name = "frequency";
@@ -325,24 +323,6 @@ function StickerFrequencyField({
 
   const currentValue = custom ? String(value) : (baseValue ?? "");
 
-  const options = [
-    {
-      value: "low",
-      labelKey: "connections.stickerFrequencyLow",
-      hintKey: "connections.stickerFrequencyLowHint",
-    },
-    {
-      value: "medium",
-      labelKey: "connections.stickerFrequencyMedium",
-      hintKey: "connections.stickerFrequencyMediumHint",
-    },
-    {
-      value: "high",
-      labelKey: "connections.stickerFrequencyHigh",
-      hintKey: "connections.stickerFrequencyHighHint",
-    },
-  ] as const;
-
   const handleChange = (val: string) => {
     patch(group, name, val);
   };
@@ -350,30 +330,13 @@ function StickerFrequencyField({
   return (
     <div className="space-y-2 sm:col-span-2">
       <div className="text-sm font-medium">{t("connections.stickerFrequency")}</div>
-      <RadioGroup
+      <StickerFrequencyOptions
         value={currentValue}
         onValueChange={handleChange}
         disabled={saving}
         aria-invalid={hasError || undefined}
         aria-describedby={hasError ? errorId : undefined}
-        className="grid gap-3 sm:grid-cols-3"
-      >
-        {options.map((opt) => (
-          <Label
-            key={opt.value}
-            htmlFor={`${radioId}-${opt.value}`}
-            className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
-          >
-            <RadioGroupItem value={opt.value} id={`${radioId}-${opt.value}`} className="mt-0.5" />
-            <div className="space-y-1">
-              <span className="block font-medium leading-none">{t(opt.labelKey)}</span>
-              <span className="block text-xs font-normal leading-normal text-muted-foreground">
-                {t(opt.hintKey)}
-              </span>
-            </div>
-          </Label>
-        ))}
-      </RadioGroup>
+      />
       <FieldState
         label={t("connections.stickerFrequency")}
         custom={custom}

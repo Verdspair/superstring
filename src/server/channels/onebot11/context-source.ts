@@ -2,7 +2,10 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { RuntimeConfig } from "../../../shared/contracts";
-import type { OutputDraft } from "../../../shared/contracts/agent-output";
+import {
+  AGENT_DECISION_JSON_SCHEMA,
+  type OutputDraft,
+} from "../../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
 import { MODEL_LAYER_ERROR_CODES } from "../../../shared/contracts/errors";
 import type { Evidence, SourceRef } from "../../../shared/contracts/evidence";
@@ -36,12 +39,17 @@ import {
   type ActionObservation,
   ContextEngine,
   type ContextMaterial,
+  type ContextReadTimings,
+  type ContextTokenMeasureOptions,
+  type ConversationContextSource,
   inputUnits,
+  measureContextTokens,
   type RenderedContext,
   textMessage,
   uniqueSources,
 } from "../../agent/context-engine";
 import type { CompressionRecord } from "../../agent/conversation-compression";
+import type { ModelContextBudget } from "../../agent/model-port";
 import { ReservationLedger } from "../../agent/reservation-ledger";
 import { readMemoryCandidate } from "../../db/context-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
@@ -101,10 +109,9 @@ import {
   qqPhaseTier,
   qqSelectContext,
 } from "../../services/qq-context-contract";
-import { qqJudgementQuestion } from "../../services/qq-judgement-material";
 import { ownerScope } from "../../services/qq-media-sources";
 import {
-  formatQqTime,
+  createQqTimeFormatter,
   renderQqMessageFacts,
   resolveQqDisplayName,
 } from "../../services/qq-message-renderer";
@@ -163,6 +170,8 @@ const ACTION_ENVELOPE_ALLOWANCE = 512;
 interface ConfirmedOutboundPartCandidate {
   readonly intentId: string;
   readonly platformMessageId: string;
+  readonly finishedAt: string | null;
+  readonly legacySendId: string | null;
 }
 
 function historyReadDisclosureRefs(
@@ -254,7 +263,8 @@ function confirmedOutboundPartCandidates(
   if (seqWindow.maxSeq < seqWindow.minSeq) return [];
   const rows = db
     .query(
-      `SELECT p.intent_id AS intentId,p.platform_message_id AS platformMessageId
+      `SELECT p.intent_id AS intentId,p.platform_message_id AS platformMessageId,
+        p.finished_at AS finishedAt,i.legacy_send_id AS legacySendId
       FROM outbound_parts p
       JOIN outbound_intents i ON i.id=p.intent_id
       JOIN qq_outbound_message_facts f ON f.intent_id=i.id
@@ -270,6 +280,8 @@ function confirmedOutboundPartCandidates(
     .all(scope.conversationId, scope.accountId, scope.agentId, seqWindow.maxSeq, limit) as {
     intentId: string;
     platformMessageId: string;
+    finishedAt: string | null;
+    legacySendId: string | null;
   }[];
   // 取回是「最新在前」（LIMIT 只截最近的候选），反转回 journal 稳定升序后再去重：
   // 同一平台 ID 只出现一次（loader 仍会自己再判「只被一个 confirmed part 认领」，
@@ -279,7 +291,12 @@ function confirmedOutboundPartCandidates(
   for (const row of rows.reverse()) {
     if (seen.has(row.platformMessageId)) continue;
     seen.add(row.platformMessageId);
-    ordered.push({ intentId: row.intentId, platformMessageId: row.platformMessageId });
+    ordered.push({
+      intentId: row.intentId,
+      platformMessageId: row.platformMessageId,
+      finishedAt: row.finishedAt,
+      legacySendId: row.legacySendId,
+    });
   }
   return ordered;
 }
@@ -303,6 +320,11 @@ function selectedCarrierEventKeys(messages: readonly QqContextMessage[]): string
 export interface BotContextTarget {
   id: string;
   speakerId: string | null;
+  /** Host-derived pending input identity, separate from the authorized audience. */
+  activeInput?: {
+    sourceSeqs: readonly number[];
+    eventIds: readonly string[];
+  };
 }
 
 /**
@@ -446,7 +468,11 @@ function scoreProtocolUnits(options: BotContextSourceOptions): number {
 export interface BotContextSourceOptions {
   db: Database;
   orm: Orm;
-  gateway: Pick<ModelGateway, "loadedContextCapacity">;
+  gateway: Pick<ModelGateway, "loadedContextCapacity"> &
+    Partial<Pick<ModelGateway, "prepareContextModel">>;
+  modelProtocol?: (
+    phase: "decision" | "generation",
+  ) => ContextTokenMeasureOptions & { outputRule?: string };
   agentRuntime: AgentRuntime;
   modules?: ModuleQueryFactory;
   resolveSource?: ModuleSourceResolver;
@@ -579,9 +605,12 @@ interface View {
   material: ContextMaterial;
   selection: QqContextSelection;
   limit: number;
+  contextBudget?: ModelContextBudget;
   /** D2 S4b：本档窗口事实投影与回复展开（一次构建、各相复用，登记只发生一次）。 */
   replyFacts: readonly QqMessageFact[];
   replyExpansion: QqFullReplyProjection;
+  /** The host-created quote message identity; untrusted body text cannot impersonate it. */
+  quoteMessage: ModelMessage | undefined;
   /** Rendered model-message identity gates disclosure; trimmed/removed messages lose it immediately. */
   disclosedMessages: readonly { message: ModelMessage; facts: readonly QqMessageFact[] }[];
   /** 本档实际选中消息的载体键（按发言人分组，run 私有簿记；纯图行无正文 ref 也在此）。 */
@@ -643,6 +672,7 @@ export class BotContextSource {
   readonly registerEvidence: (kind: string, evidence: Evidence, context: ActionContext) => string;
   private readonly views = new Map<QqContextTier, View>();
   private readonly capacities = new Map<string, number>();
+  private readonly modelBudgets = new Map<string, ModelContextBudget>();
   private readonly engine = new ContextEngine();
   private readonly owner: RunOwner;
   private readonly guard: QqGroupCapabilityGuard;
@@ -650,6 +680,8 @@ export class BotContextSource {
   private readonly knowledge: KnowledgeModule;
   private compressionJob?: BotCompressionJob;
   private observations: readonly ActionObservation[] = [];
+  private terminalBudgetFeedback = false;
+  private budgetFeedbackBatchEligible = false;
   /** Successful body pages disclosed by this run; child sessions intentionally start with their own history observations. */
   private historyDisclosureRefs = new Map<string, SourceRef[]>();
   /** 同批在飞动作各自的投影增量（token→相对基线 cost(observations) 的 units；按档取最大值）。 */
@@ -667,6 +699,8 @@ export class BotContextSource {
   private runId?: string;
   constructor(private readonly options: BotContextSourceOptions) {
     const o = options;
+    if (o.runtime.resolved_model_contexts !== undefined && o.gateway.prepareContextModel)
+      this.prepareModelContext = (model, signal) => this.prepareContextModel(model, signal);
     this.owner = {
       kind: "qq_binding",
       id: o.binding.id,
@@ -985,6 +1019,23 @@ export class BotContextSource {
   private withPendingPlan(material: ContextMaterial): ContextMaterial {
     if (!this.pendingPlan && !this.batchIntents && !this.retrievalFailures.length) return material;
     const pending = [...(material.pending ?? [])];
+    if (this.batchIntents && this.options.path === "chiming_in") {
+      for (const target of this.options.targets()) {
+        if (!target.activeInput) continue;
+        pending.push(
+          textMessage(
+            "user",
+            contextDumps({
+              kind: "qq_active_input",
+              trust: "data_only",
+              targetId: target.id,
+              sourceSeqs: target.activeInput.sourceSeqs,
+              eventIds: target.activeInput.eventIds,
+            }),
+          ),
+        );
+      }
+    }
     if (this.pendingPlan)
       pending.push(
         textMessage(
@@ -1031,6 +1082,12 @@ export class BotContextSource {
     this.compressionJob = undefined;
     this.reservations.clear();
   }
+  setBudgetFeedbackBatchEligible(eligible: boolean): void {
+    this.budgetFeedbackBatchEligible = eligible;
+  }
+  isTerminalDecision(): boolean {
+    return this.terminalBudgetFeedback;
+  }
   configureActions(actions: AgentSpec["availableActions"]): void {
     this.options.spec.availableActions = actions;
   }
@@ -1065,6 +1122,7 @@ export class BotContextSource {
     /** 本 run 的媒体钩子（detailMediaIds/classificationGate 等），缺省继承父 options。 */
     mediaInput?: BotContextSourceOptions["mediaInput"];
     onDiagnostic?: BotContextSourceOptions["onDiagnostic"];
+    modelProtocol?: BotContextSourceOptions["modelProtocol"];
   }): BotContextSource {
     const child = new BotContextSource({
       ...this.options,
@@ -1074,6 +1132,7 @@ export class BotContextSource {
       ...(input.onRead === undefined ? {} : { onRead: input.onRead }),
       ...(input.mediaInput === undefined ? {} : { mediaInput: input.mediaInput }),
       ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
+      ...(input.modelProtocol === undefined ? {} : { modelProtocol: input.modelProtocol }),
     });
     // Reply children select their own judgement view if they later request a score.
     for (const [tier, view] of this.views) {
@@ -1091,6 +1150,7 @@ export class BotContextSource {
     // 数组按值复制：子 run 追加失败项不写回父（retrievalFailures 是可变 run 级状态）。
     child.retrievalFailures = [...this.retrievalFailures];
     for (const [key, value] of this.capacities) child.capacities.set(key, value);
+    for (const [key, value] of this.modelBudgets) child.modelBudgets.set(key, value);
     for (const [phase, projection] of this.boundary.media)
       child.boundary.media.set(phase, projection);
     for (const [phase, reason] of this.boundary.fallback)
@@ -1102,57 +1162,94 @@ export class BotContextSource {
     };
     return child;
   }
-  async read(input: {
-    signal: AbortSignal;
-    observations: readonly ActionObservation[];
-  }): Promise<ContextMaterial> {
-    const conversation = this.options.journal.get(this.options.conversationId);
-    this.historyDisclosureRefs = conversation
-      ? historyReadDisclosureRefs(
-          this.options.db,
-          input.observations,
-          qqConversationScopeOfBinding({
-            conversationId: this.options.conversationId,
-            binding: this.options.binding,
-            bindingEpoch: conversation.bindingEpoch,
-          }),
-          this.options.conversationId,
+  async read(input: Parameters<ConversationContextSource["read"]>[0]): Promise<ContextMaterial> {
+    const timings: ContextReadTimings = {};
+    try {
+      const preludeStarted = performance.now();
+      try {
+        const conversation = this.options.journal.get(this.options.conversationId);
+        this.historyDisclosureRefs = conversation
+          ? historyReadDisclosureRefs(
+              this.options.db,
+              input.observations,
+              qqConversationScopeOfBinding({
+                conversationId: this.options.conversationId,
+                binding: this.options.binding,
+                bindingEpoch: conversation.bindingEpoch,
+              }),
+              this.options.conversationId,
+            )
+          : new Map();
+        this.observations = input.observations;
+        // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
+        this.reservations.clear();
+        this.assertCurrent();
+        input.signal.throwIfAborted();
+        // 观测累到"材料 + 现有观测"顶住上限时重装一次（窗口自动收窄，循环继续），
+        // 而不是等第 N 步渲染超上限被判失败；收窗口也救不回来的情形照旧留给运行时。
+        if (
+          !this.terminalBudgetFeedback &&
+          this.views.size &&
+          !this.viewsStillFit() &&
+          this.rebuildCouldFit()
         )
-      : new Map();
-    this.observations = input.observations;
-    // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
-    this.reservations.clear();
-    this.assertCurrent();
-    input.signal.throwIfAborted();
-    // 观测累到"材料 + 现有观测"顶住上限时重装一次（窗口自动收窄，循环继续），
-    // 而不是等第 N 步渲染超上限被判失败；收窗口也救不回来的情形照旧留给运行时。
-    if (this.views.size && !this.viewsStillFit() && this.rebuildCouldFit()) this.views.clear();
-    if (!this.views.size) {
-      const conversation = this.options.journal.get(this.options.conversationId);
-      if (!conversation) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
-      this.sequence = (
-        this.options.db
-          .query(
-            "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation_events WHERE conversation_id=? AND kind IN ('inbound','media_revision','outbound')",
-          )
-          .get(conversation.id) as { seq: number }
-      ).seq;
+          this.views.clear();
+        if (!this.views.size) {
+          const conversation = this.options.journal.get(this.options.conversationId);
+          if (!conversation) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
+          this.sequence = (
+            this.options.db
+              .query(
+                "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation_events WHERE conversation_id=? AND kind IN ('inbound','media_revision','outbound')",
+              )
+              .get(conversation.id) as { seq: number }
+          ).seq;
+        }
+      } finally {
+        timings.readPreludeMs = performance.now() - preludeStarted;
+      }
+      let view: View;
+      const viewStarted = performance.now();
+      try {
+        view = await this.view(this.options.decisionTier, input.signal, undefined, timings);
+      } finally {
+        timings.readViewMs = performance.now() - viewStarted;
+      }
+      const afterViewStarted = performance.now();
+      let remainderMs: number;
+      try {
+        this.options.spec.limits.inputUnits = view.limit;
+        this.options.onRead?.(this.sequence);
+        this.assertCurrent();
+      } finally {
+        remainderMs = performance.now() - afterViewStarted;
+        timings.readRemainderMs = remainderMs;
+      }
+      // 决策相自动图（§7.1）：投影（可能为空/禁用）作为资料消息并入材料；来源并入统一复验。
+      let decisionMedia: Awaited<ReturnType<BotContextSource["preparePhaseMedia"]>>;
+      const mediaStarted = performance.now();
+      try {
+        decisionMedia = await this.preparePhaseMedia("decision", input.signal);
+      } finally {
+        timings.readDecisionMediaMs = performance.now() - mediaStarted;
+      }
+      const assemblyStarted = performance.now();
+      try {
+        if (decisionMedia) {
+          this.assertSources(decisionMedia.sources);
+          return this.withPendingPlan({
+            ...view.material,
+            pending: [...(view.material.pending ?? []), ...decisionMedia.messages],
+            sources: uniqueSources([...(view.material.sources ?? []), ...decisionMedia.sources]),
+          });
+        }
+        return this.withPendingPlan(view.material);
+      } finally {
+        timings.readRemainderMs = remainderMs + performance.now() - assemblyStarted;
+      }
+    } finally {
+      input.onReadTimings?.(timings);
     }
-    const view = await this.view(this.options.decisionTier, input.signal);
-    this.options.spec.limits.inputUnits = view.limit;
-    this.options.onRead?.(this.sequence);
-    this.assertCurrent();
-    // 决策相自动图（§7.1）：投影（可能为空/禁用）作为资料消息并入材料；来源并入统一复验。
-    const decisionMedia = await this.preparePhaseMedia("decision", input.signal);
-    if (decisionMedia) {
-      this.assertSources(decisionMedia.sources);
-      return this.withPendingPlan({
-        ...view.material,
-        pending: [...(view.material.pending ?? []), ...decisionMedia.messages],
-        sources: uniqueSources([...(view.material.sources ?? []), ...decisionMedia.sources]),
-      });
-    }
-    return this.withPendingPlan(view.material);
   }
   async prepareGeneration(
     draft: Extract<OutputDraft, { kind: "generate" }>,
@@ -1267,6 +1364,8 @@ export class BotContextSource {
     messages: ModelMessage[];
     sources: SourceRef[];
     inputUnits: number;
+    contextBudget?: ModelContextBudget;
+    contextInputLimit?: number;
     /** 本批冻结候选 id → 目标；宿主据此校验 evaluations 的一一对应。 */
     targets: readonly BotContextTarget[];
     /** 本批可引用的真实成员事件 seq → 冻结来源引用（引用不授予权限）。 */
@@ -1302,6 +1401,7 @@ export class BotContextSource {
         targets: input.targets.map((target) => ({
           targetId: target.id,
           speakerId: target.speakerId,
+          ...(target.activeInput ? { sourceSeqs: target.activeInput.sourceSeqs } : {}),
         })),
       }),
     );
@@ -1326,8 +1426,11 @@ export class BotContextSource {
       view.selection.messages,
       batchTargets,
     );
-    const units =
-      inputUnits(messages) + estimateTokens(contextDumps(QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA));
+    const units = this.tokenBudget("judgement")
+      ? this.measurePhaseInput("batchEvaluation", messages, {
+          responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
+        })
+      : inputUnits(messages) + estimateTokens(contextDumps(QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA));
     if (units > view.limit) {
       const model = this.options.spec.model ?? this.options.runtime.model_name;
       this.options.onDiagnostic?.({
@@ -1363,10 +1466,14 @@ export class BotContextSource {
       )
       .digest("hex");
     return {
-      model: this.options.spec.model ?? this.options.runtime.model_name,
+      model:
+        this.modelBudgets.get(this.tierModel("judgement"))?.model ?? this.tierModel("judgement"),
       messages,
       sources: rendered.sources,
       inputUnits: units,
+      ...(this.tokenBudget("judgement")
+        ? { contextBudget: this.tokenBudget("judgement"), contextInputLimit: view.limit }
+        : {}),
       targets: input.targets,
       /** 本批冻结窗口的真实成员入站事件 seq → 冻结来源引用（宿主据此校验模型的 sourceSeqs）。 */
       memberSourceSeqs,
@@ -1387,6 +1494,8 @@ export class BotContextSource {
     messages: ModelMessage[];
     sources: SourceRef[];
     inputUnits: number;
+    contextBudget?: ModelContextBudget;
+    contextInputLimit?: number;
     /**
      * **相关状态摘要**（0.4.0 P4 §4.1）：这份评分材料本身（人设、场景、时间线、资料、目标）的哈希，
      * **不含意图**——意图是被判的对象，不是状态。许可绑定它：材料没变＝同一相关状态，材料变了＝
@@ -1422,16 +1531,28 @@ export class BotContextSource {
       this.observations,
       this.targetIds(),
     );
-    const messages = this.evaluationMessages(
+    const baseMessages = this.evaluationMessages(
       evaluationMaterial,
       this.observations,
       input.target ?? undefined,
       view.selection.messages,
       input.intent,
     );
+    const messages = this.tokenBudget("judgement")
+      ? qqReplaceOutputRule(
+          baseMessages,
+          "judgement",
+          this.options.scoreProtocol?.outputRule ?? TIER_OUTPUT_RULES.judgement,
+        )
+      : baseMessages;
     // 计量单源（审查项 2 统一）：与 runtime 步内预算同一 inputUnits 估算器（图片不折算为
     // 文本 token，视觉成本由 visionCost=unknown 如实标出），schema 协议开销照旧单列。
-    const units = inputUnits(messages) + scoreProtocolUnits(this.options);
+    const units = this.tokenBudget("judgement")
+      ? this.measurePhaseInput("evaluation", messages, {
+          responseSchema:
+            this.options.scoreProtocol?.responseSchema ?? QQ_JUDGEMENT_RESPONSE_SCHEMA,
+        })
+      : inputUnits(messages) + scoreProtocolUnits(this.options);
     if (units > view.limit) {
       const model = this.options.spec.model ?? this.options.runtime.model_name;
       if (this.options.onDiagnostic)
@@ -1482,10 +1603,14 @@ export class BotContextSource {
       )
       .digest("hex");
     return {
-      model: this.options.spec.model ?? this.options.runtime.model_name,
+      model:
+        this.modelBudgets.get(this.tierModel("judgement"))?.model ?? this.tierModel("judgement"),
       messages,
       sources: rendered.sources,
       inputUnits: view.limit,
+      ...(this.tokenBudget("judgement")
+        ? { contextBudget: this.tokenBudget("judgement"), contextInputLimit: view.limit }
+        : {}),
       stateDigest,
     };
   }
@@ -1500,7 +1625,7 @@ export class BotContextSource {
         this.evaluationMessages(material, observations, undefined, timeline),
         "judgement",
         "只返回 JSON 对象 evaluations：对本批每个 targetId 返回一项，包含 0–10 整数 score、意图 intent 和来源引用 sourceSeqs。" +
-          "qq_batch_targets.sourceSeqs 是所有候选共享的完整可引用序号列表；每项只引用该列表中的真实来源，也可以返回空 sourceSeqs。不得遗漏、重复或增加候选目标。",
+          "qq_batch_targets.sourceSeqs 是所有候选共享的完整可引用序号列表；targets 中各项的 sourceSeqs 是该目标这次尚待回应的输入，围绕这些输入判断，其他历史只作上下文。每项只引用共享列表中的真实来源，也可以返回空 sourceSeqs。不得遗漏、重复或增加候选目标。",
       ),
       batchTargets,
     ];
@@ -1547,6 +1672,7 @@ ${intent.trim()}`,
   }
   assertCurrent(): void {
     this.options.assertCurrent();
+    for (const budget of this.modelBudgets.values()) budget.assertCurrent();
     assertBotContextSources(this.options, this.owner, this.commonSources);
   }
   /** Recheck a rendered decision projection with material roles still distinct from action observations. */
@@ -1574,7 +1700,11 @@ ${intent.trim()}`,
   private locateHistory?: (platformMessageId: string, context: ActionContext) => Evidence | null;
   /** 运行标识（runConversation 构造后、首次 read 前调用恰一次）：媒体投影与登记按真实 run。 */
   bindRun(context: ActionContext): void {
-    if (context.runId !== undefined) this.runId = context.runId;
+    if (context.runId !== undefined && context.runId !== this.runId) {
+      this.terminalBudgetFeedback = false;
+      this.budgetFeedbackBatchEligible = false;
+      this.runId = context.runId;
+    }
     // P2：capture 真实调用 owner——registry（registerEvidence/history.read）必须以同一
     // (owner, runId) 登记+查询，否则同 run 读 miss。来源域读取（SourceRef 末验）仍按
     // this.owner（qq_binding）——不放宽授权/存储边界，不跨 run。
@@ -1867,12 +1997,158 @@ ${intent.trim()}`,
     if (mode === "off") return 0;
     return presets[mode === "full_catalog" || mode === "full_body" ? "broad" : mode].max_tokens;
   }
-  private async available(tier: QqContextTier, signal: AbortSignal): Promise<number> {
+  readonly prepareModelContext?: (
+    model: string,
+    signal: AbortSignal,
+  ) => Promise<ModelContextBudget | undefined>;
+  private async prepareContextModel(
+    model: string,
+    signal: AbortSignal,
+  ): Promise<ModelContextBudget | undefined> {
+    const o = this.options;
+    if (o.runtime.resolved_model_contexts === undefined || !o.gateway.prepareContextModel)
+      return undefined;
+    signal.throwIfAborted();
+    this.assertCurrent();
+    let budget = this.modelBudgets.get(model);
+    if (!budget) {
+      budget = await o.gateway.prepareContextModel(model, { signal });
+      signal.throwIfAborted();
+      this.assertCurrent();
+      budget.assertCurrent();
+      if (
+        !budget.model ||
+        budget.capacity === null ||
+        !Number.isSafeInteger(budget.capacity) ||
+        budget.capacity < 1
+      )
+        fail("CONTEXT_CAPACITY_UNKNOWN", "无法确认会话模型容量");
+      const frozen = o.runtime.resolved_model_contexts[model];
+      if (
+        frozen &&
+        (frozen.model !== budget.model ||
+          frozen.capacity !== budget.capacity ||
+          frozen.tokenizer_encoding !== budget.tokenizerEncoding ||
+          frozen.route_revision !== budget.routeRevision)
+      )
+        fail("CONTEXT_SOURCE_INVALID", "模型上下文快照发生变化");
+      this.modelBudgets.set(model, budget);
+      this.capacities.set(model, budget.capacity);
+      this.capacities.set(budget.model, budget.capacity);
+    }
+    budget.assertCurrent();
+    this.assertCurrent();
+    return budget;
+  }
+  private tierModel(tier: QqContextTier): string {
+    return tier === "reply"
+      ? this.options.runtime.model_name
+      : (this.options.spec.model ?? this.options.runtime.model_name);
+  }
+  private tokenBudget(tier: QqContextTier): ModelContextBudget | undefined {
+    const budget = this.modelBudgets.get(this.tierModel(tier));
+    return budget?.countText && budget.tokenizerEncoding ? budget : undefined;
+  }
+  private reservationGroup(tier: QqContextTier): "bytes" | "tokens" {
+    return this.tokenBudget(tier) ? "tokens" : "bytes";
+  }
+  measurePhaseInput(
+    phase: "decision" | "generation" | "evaluation" | "batchEvaluation",
+    messages: readonly ModelMessage[],
+    options?: ContextTokenMeasureOptions,
+  ): number {
+    const tier =
+      phase === "decision"
+        ? this.options.decisionTier
+        : phase === "generation"
+          ? "reply"
+          : "judgement";
+    const budget = this.tokenBudget(tier);
+    if (!budget?.countText || !budget.tokenizerEncoding) return inputUnits(messages);
+    this.assertCurrent();
+    budget.assertCurrent();
+    const measured = measureContextTokens(
+      messages,
+      { encoding: budget.tokenizerEncoding, count: budget.countText },
+      options ??
+        (phase === "decision" || phase === "generation"
+          ? (this.options.modelProtocol?.(phase) ??
+            (phase === "decision"
+              ? {
+                  responseSchema: AGENT_DECISION_JSON_SCHEMA,
+                  tools: this.options.spec.availableActions.map(
+                    ({ name, description, parameters }) => ({ name, description, parameters }),
+                  ),
+                }
+              : undefined))
+          : undefined),
+    );
+    budget.assertCurrent();
+    this.assertCurrent();
+    return measured.textTokens;
+  }
+  private withNextObservation(
+    observations: readonly ActionObservation[],
+  ): readonly ActionObservation[] {
+    return [
+      ...observations,
+      {
+        id: "00000000-0000-0000-0000-000000000000",
+        name: "action.result",
+        arguments: {},
+        value: "x".repeat(ACTION_ENVELOPE_ALLOWANCE),
+        sources: [],
+      },
+    ];
+  }
+  private costWithNext(
+    tier: QqContextTier,
+    material: ContextMaterial,
+    observations = this.observations,
+    timeline = this.views.get(tier)?.selection.messages ?? [],
+    batchTargets?: ModelMessage,
+    nextObservation?: ActionObservation,
+  ): number {
+    return this.tokenBudget(tier)
+      ? this.cost(
+          tier,
+          material,
+          nextObservation
+            ? [...observations, nextObservation]
+            : this.withNextObservation(observations),
+          timeline,
+          batchTargets,
+        )
+      : nextObservation
+        ? // 实际参数按完整请求计量；没有参数探针时保持原有预留。
+          this.cost(tier, material, [...observations, nextObservation], timeline, batchTargets)
+        : this.cost(tier, material, observations, timeline, batchTargets) +
+          this.envelopeFloor(material, observations) +
+          ACTION_ENVELOPE_ALLOWANCE;
+  }
+  private async available(
+    tier: QqContextTier,
+    signal: AbortSignal,
+    timings?: ContextReadTimings,
+  ): Promise<number> {
     const o = this.options;
     const model = tier === "reply" ? o.runtime.model_name : (o.spec.model ?? o.runtime.model_name);
+    if (o.runtime.resolved_model_contexts !== undefined && o.gateway.prepareContextModel)
+      await this.prepareModelContext?.(model, signal);
     let capacity = this.capacities.get(model);
+    if (timings) {
+      timings.readCapacityMs = 0;
+      timings.readCapacityCalls = 0;
+    }
     if (capacity === undefined) {
-      const actual = await o.gateway.loadedContextCapacity(model, { signal });
+      let actual: number | null;
+      const capacityStarted = performance.now();
+      if (timings) timings.readCapacityCalls = 1;
+      try {
+        actual = await o.gateway.loadedContextCapacity(model, { signal });
+      } finally {
+        if (timings) timings.readCapacityMs = performance.now() - capacityStarted;
+      }
       if (actual === null || !Number.isSafeInteger(actual) || actual < 1)
         fail("CONTEXT_CAPACITY_UNKNOWN", "无法确认会话模型容量");
       capacity = actual;
@@ -1936,10 +2212,24 @@ ${intent.trim()}`,
     messages: readonly QqContextMessage[],
     target?: BotContextTarget,
   ): string {
-    return qqPromptMessages(buildQqPrompt(this.prompt(messages, target)))
+    const instructions = qqPromptMessages(buildQqPrompt(this.prompt(messages, target)))
       .filter((message) => message.role === "system")
       .map((message) => message.content)
       .join("\n\n");
+    const rule = this.tokenBudget("reply")
+      ? this.options.modelProtocol?.("generation").outputRule
+      : undefined;
+    const actualInstructions =
+      rule === undefined
+        ? instructions
+        : qqReplaceOutputRule([textMessage("system", instructions)], "reply", rule)
+            .map((message) =>
+              message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])).join(""),
+            )
+            .join("\n\n");
+    return this.options.path === "chiming_in" && target?.activeInput
+      ? `${actualInstructions}\n\nqq_active_input 标明本目标这次尚待回应的输入，eventIds 对应消息事实的 id；围绕这些输入回复，其余历史仅作上下文。引用和 @ 仍由你独立选择。`
+      : actualInstructions;
   }
   private cost(
     tier: QqContextTier,
@@ -1954,8 +2244,61 @@ ${intent.trim()}`,
       this.withPendingPlan(material),
       observations,
       this.targetIds(),
+      "buffered",
+      this.tokenBudget(tier) ? o.modelProtocol?.("decision").responseSchema : undefined,
     );
     const targets = o.targets();
+    if (this.tokenBudget(tier)) {
+      const decision =
+        tier === o.decisionTier ? this.measurePhaseInput("decision", rendered.messages) : 0;
+      if (tier === "judgement") {
+        if (batchTargets)
+          return Math.max(
+            decision,
+            this.measurePhaseInput(
+              "batchEvaluation",
+              this.batchEvaluationMessages(material, observations, timeline, batchTargets),
+              { responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA },
+            ),
+          );
+        const schema = o.scoreProtocol?.responseSchema ?? QQ_JUDGEMENT_RESPONSE_SCHEMA;
+        return Math.max(
+          decision,
+          ...[undefined, ...targets].map((target) =>
+            this.measurePhaseInput(
+              "evaluation",
+              qqReplaceOutputRule(
+                this.evaluationMessages(material, observations, target, timeline),
+                "judgement",
+                o.scoreProtocol?.outputRule ?? TIER_OUTPUT_RULES.judgement,
+              ),
+              { responseSchema: schema },
+            ),
+          ),
+        );
+      }
+      return Math.max(
+        decision,
+        ...targets.map((target) =>
+          this.measurePhaseInput(
+            "generation",
+            this.engine.renderOutput(
+              {
+                ...o.spec,
+                generation: {
+                  ...o.spec.generation,
+                  instructions: this.replyInstructions(timeline, target),
+                },
+              },
+              rendered,
+              { kind: "generate", targetId: target.id, instructions: "" },
+              o.modelProtocol?.("generation").responseSchema,
+            ),
+          ),
+        ),
+        0,
+      );
+    }
     if (tier === "judgement") {
       if (batchTargets) {
         return (
@@ -1990,7 +2333,7 @@ ${intent.trim()}`,
     return Math.max(tier === o.decisionTier ? rendered.units : 0, ...generation, 0);
   }
   // 来源归属留在步骤快照，下一条观测只预留自身信封。
-  private envelopeFloor(material: ContextMaterial): number {
+  private envelopeFloor(material: ContextMaterial, observations = this.observations): number {
     const probe: ActionObservation = {
       id: "00000000-0000-0000-0000-000000000000",
       name: "action.result",
@@ -2005,7 +2348,7 @@ ${intent.trim()}`,
         observations,
         this.targetIds(),
       ).units;
-    return units([...this.observations, probe]) - units(this.observations);
+    return units([...observations, probe]) - units(observations);
   }
   /**
    * 材料 + 当前观测（外加下一条观测的余量）是否还放得下。放不下就该重装、让窗口自动收窄——
@@ -2025,857 +2368,1089 @@ ${intent.trim()}`,
     tier: QqContextTier,
     material: ContextMaterial,
     limit: number,
+    observations = this.observations,
   ): boolean {
-    const used = this.cost(tier, material, this.observations);
-    return used + this.envelopeFloor(material) + ACTION_ENVELOPE_ALLOWANCE <= limit;
+    return this.costWithNext(tier, material, observations) <= limit;
   }
   private async view(
     tier: QqContextTier,
     signal: AbortSignal,
     batchTargets?: ModelMessage,
+    timings?: ContextReadTimings,
+    nextObservation?: ActionObservation,
   ): Promise<View> {
     const saved = this.views.get(tier);
+    if (this.terminalBudgetFeedback) {
+      signal.throwIfAborted();
+      this.assertCurrent();
+      if (
+        !saved ||
+        this.cost(tier, saved.material, this.observations, saved.selection.messages, batchTargets) >
+          saved.limit
+      )
+        fail("CONTEXT_BUDGET_EXCEEDED", "预算反馈与终结决策超过本轮上下文容量");
+      this.assertSources(saved.material.sources ?? []);
+      return saved;
+    }
     if (
       saved &&
-      (!batchTargets ||
-        this.cost(tier, saved.material, this.observations, saved.selection.messages, batchTargets) +
-          this.envelopeFloor(saved.material) +
-          ACTION_ENVELOPE_ALLOWANCE <=
-          saved.limit)
+      ((!batchTargets && !nextObservation) ||
+        this.costWithNext(
+          tier,
+          saved.material,
+          this.observations,
+          saved.selection.messages,
+          batchTargets,
+          nextObservation,
+        ) <= saved.limit)
     ) {
       this.assertCurrent();
       return saved;
     }
-    const o = this.options;
-    signal.throwIfAborted();
-    const readAt = this.now();
-    const nowSeconds = Math.floor(Date.parse(readAt) / 1000);
-    const context = schemeContext(o.scheme);
-    const compression = schemeCompression(o.scheme);
-    // QQ 的窗口只有一份——条数取绑定助手的「近期保留轮数」（方案里那一栏不再生效），
-    // 分钟与预算取回复档；判断档的参数照旧只管"要不要说话"那一步的原文选取。
-    const windows = {
-      judgement: qqContextLimits(context, "judgement"),
-      reply: {
-        ...qqContextLimits(context, "reply"),
-        messageLimit: o.runtime.p5_config.recent_turns,
-      },
-    };
-    const shared: QqContextLimits = windows.reply;
-    const price = tier === "judgement" ? windows.judgement : shared;
-    // 一次取够两档都要看的范围（谁的窗口大听谁的），各档的选取再各自收窄。
-    const sinceSeconds = Math.max(
-      0,
-      nowSeconds - Math.max(windows.judgement.windowMinutes, shared.windowMinutes) * 60 - 1,
-    );
-    const fetchLimit = Math.max(windows.judgement.messageLimit, shared.messageLimit);
-    const scope = {
-      kind: "qq" as const,
-      accountId: o.binding.accountId,
-      conversationKind: o.binding.kind,
-      peerId: o.binding.peerId,
-      agentId: o.binding.agentId,
-    };
-    // 载体键随选材冻结：观察行的真实 eventKey 作为 server-only carrier 字段穿过两次
-    // zod parse 进 selection（run 私有簿记，非模型 SourceRef，渲染不输出）。
-    const observedRows = conversationMessagesSince(o.orm, scope, {
-      sinceSeconds,
-      limit: fetchLimit,
-      includeSources: true,
-      includeMediaNotes: false,
-      now: readAt,
-    });
-    const timeline = qqBuildTimeline({
-      messages: observedRows.map(({ eventKey, ...message }) => ({
-        ...message,
-        carrierEventKey: eventKey,
-      })),
-      ownSpeech: [
-        ...ownSpeechSince(o.orm, scope, {
-          sinceSeconds,
-          limit: fetchLimit,
-          includeSources: true,
-          now: readAt,
-        }),
-        ...o.outbox.partialSpeechSince(o.conversationId, {
-          sinceSeconds,
-          limit: fetchLimit,
-          at: readAt,
-        }),
-      ],
-    });
-    let selection = qqSelectContext({ timeline, limits: price, nowSeconds });
-    let disclosedMessages: { message: ModelMessage; facts: readonly QqMessageFact[] }[] = [];
-    const cost = (material: ContextMaterial) =>
-      this.cost(tier, material, this.observations, selection.messages, batchTargets);
-    // 正文去重：预计算哪些 selected 消息有 facts 投影（eventKey 匹配）。
-    // 有 facts 的消息正文由 qq_message_facts 资料段承载（唯一来源），
-    // timeline 对这些消息不再重复正文文本。
-    const conversationForFacts = o.journal.get(o.conversationId);
-    const factsScope = conversationForFacts
-      ? qqConversationScopeOfBinding({
-          conversationId: o.conversationId,
-          binding: o.binding,
-          bindingEpoch: conversationForFacts.bindingEpoch,
-        })
-      : null;
-    /**
-     * 每一档窗口选择对应**一整份**投影 bundle：入站事实 keys、出站候选投影、事实 keys、
-     * 出站意图正文承载身份、speech 承载判定与 partial part 身份，全部从**同一份**
-     * `selection` 派生。窗口收窄（下面的预算二分）会更换 selection，因此这份 bundle
-     * 必须按 selection 重建——任何一项停留在收窄前的旧窗口上，被裁掉的历史正文就会
-     * 以 facts 形态留在资料段里，成本不随窗口下降，本可装下的装配被打死。
-     */
-    const projectionFor = (sel: QqContextSelection) => {
-      const factEventKeys = new Set(selectedCarrierEventKeys(sel.messages));
-      /**
-       * 本档窗口（回复档分钟/条数、共享预算）内**已确认**的助手出站 part 事实（T04 Step3）。
-       *
-       * 只有进入窗口的才投影：窗口条数/分钟之外的出站原话不因这次接线被整段拉进资料段
-       * （引用展开里「窗口外按明确 ID 补」那条路仍归 `load`/`loadState` 回落，不受此裁剪影响）。
-       * 未确认（unknown/failed/not_sent/stale）与本 scope 外的一律不在候选里，也拿不到事实：
-       * loader 自身仍按 confirmed 台账、唯一认领、intent target 六维 + 当前 authorityRevision、
-       * 真实 delivery journal 归属与双期限帽再判一次，这里不替代它的 fail-closed。
-       */
-      const outboundWindowFloor =
-        nowSeconds - Math.max(windows.judgement.windowMinutes, shared.windowMinutes) * 60 - 1;
-      /**
-       * 候选范围＝**本档窗口能证明在场的出站意图**，按 journal 稳定 seq 取（§4.3「不扩成
-       * 通用历史预载」）。seq 上界取窗口消息的真实最大 seq（`outboundSeqWindow`，与窗口同
-       * 一次读冻结）；seq 下界不裁——助手的 delivery 事件合法地早于窗口最早一条入站消息
-       * （群友回复的正是它），「哪一段时间」由下面对投影事实 `occurredAtSeconds`（真实
-       * finishedAt）的时间裁剪把关，不靠 SQL 解析时间串，避免刻度/格式漂移。
-       */
-      const outboundSeqWindow = factsScope
-        ? this.outboundSeqWindow(o.conversationId, sel.messages)
-        : null;
-      // 投影 + 意图身份一次算完：只有真正投影成功的 part 才进事实段，其 intent 才算
-      // 「正文已由 facts 承载」（loader 拒掉的候选不得让时间线正文消失）。
-      const outboundProjected =
-        factsScope && outboundSeqWindow
-          ? confirmedOutboundPartCandidates(
-              o.db,
-              factsScope,
-              outboundSeqWindow,
-              fetchLimit * 4,
-            ).flatMap((candidate) => {
-              const fact = loadQqOutboundMessageFact(
-                { db: o.db, orm: o.orm },
-                factsScope,
-                candidate.platformMessageId,
-                readAt,
-              );
-              if (!fact) return [];
-              if (
-                fact.occurredAtSeconds < sinceSeconds ||
-                fact.occurredAtSeconds <= outboundWindowFloor
-              )
-                return [];
-              return [{ intentId: candidate.intentId, fact }];
-            })
-          : [];
-      const outboundFacts = outboundProjected.map((entry) => entry.fact);
-      const projectedFacts = [
-        ...(factsScope && factEventKeys.size > 0
-          ? projectQqMessageFacts({ db: o.db, orm: o.orm }, factsScope, [...factEventKeys], readAt)
-          : []),
-        ...outboundFacts,
-      ];
-      const projectedFactKeys = new Set(projectedFacts.map((f) => f.id));
-      // 时间线正文去重用的真实意图身份：哪些 outbound_intent 已在 facts 资料段承载正文。
-      // 来自同一次投影（不按正文文本猜，也不给 QqMessageFact 加工字段）。
-      const projectedOutboundIntentIds = new Set(outboundProjected.map((entry) => entry.intentId));
-      /**
-       * 已确认出站件的**旧**时间线正文（`qq_speech` source）由 facts 资料段唯一承载后才剥离。
-       *
-       * 精确身份，不按内容/时刻猜：发送通路把一次发送的 `qq_send_log` 行 id 直接交给
-       * `recordQqSpeech` 当 `qq_speech_log.id`（同一事务、同一 id），而
-       * `outbound_intents.legacy_send_id` 指向同一行——所以 `speech.id === legacy_send_id`
-       * 就是「这条旧 speech 正文属于哪个出站意图」的确切关联（§4.3「同一消息最多供一次正文」）。
-       *
-       * 两条硬约束：
-       *   * **只在全部已确认文本部件都真的进了本档 facts 时才剥**。旧 speech 正文是这些部件
-       *     正文的换行拼接；只要有一个部件未确认/无平台 ID/是贴图/被 loader 拒/超窗口/已过期，
-       *     拼接里就仍有只此一份可读的字——那一条 speech 保持原样，并且该意图的事实段只留
-       *     身份与关系、**不再重复正文**（否则会出现「speech 一份 + 已选部件一份」两处正文）。
-       *   * `partialSpeechSince` 那种带 `outbound_intent` source 的行（非 confirmed 意图）照旧：
-       *     它没有 facts 可承载，正文永不由 facts 段提供。
-       * 未映射的独立旧 speech（无 `legacy_send_id`、或非本 scope/纪元）原文字保留，不删、不
-       * 预载整段历史、不迁旧 ID。
-       */
-      const speechFactsCarrying = (() => {
-        const ids = sel.messages.flatMap((message) =>
-          (message.sources ?? [])
-            .filter((source) => source.kind === "qq_speech")
-            .map((source) => source.id),
-        );
-        const empty = {
-          fullyCarriedSpeechIds: new Set<string>(),
-          partlyCarriedSpeechIds: new Set<string>(),
-          partlyCarriedPartIds: new Set<string>(),
-        };
-        if (ids.length === 0 || !factsScope) return empty;
-        return qqSpeechCarriedByOutboundFacts({
-          speechSourceIds: ids,
-          // 平台 ID → **part id**。只有带真实平台 ID 的事实能作为「这个部件已在 facts 段承载」
-          // 的证据；没有平台 ID 的事实无法与部件对上，不进这张表。value 存 part id（=
-          // `QqMessageFact.id` = `outbound_parts.id`），helper 据此要求「同一个部件」而不是
-          // 「同一条线上消息 ID」——后者可能由别的部件的事实满足。
-          projectedByPlatformMessageId: new Map(
-            outboundFacts.flatMap((fact) =>
-              fact.platformMessageId === null
-                ? []
-                : ([[fact.platformMessageId, fact.id]] as [string, string][]),
-            ),
-          ),
-          store: { db: o.db, orm: o.orm },
-          scope: factsScope,
-          now: readAt,
-        });
-      })();
-      /**
-       * 「部分承载」的出站件：其旧 speech 正文仍须作为唯一来源，所以事实段**只去掉正文**，
-       * 身份／完整时间／@与引用关系／其它片段一律保留——不把整条事实删掉（那会让「这条消息
-       * 是谁在什么时候说的、引用了谁」凭空消失），也不谎称正文已完整。
-       *
-       * part 身份直接取自上面 helper 已定位过的同一批意图（`partlyCarriedPartIds`），不在这里
-       * 另跑一条缺 conversation 约束的重复 SQL；仍然只按精确 id 匹配，不按正文/时刻猜。
-       */
-      return {
-        outboundFacts,
-        projectedFacts,
-        projectedFactKeys,
-        projectedOutboundIntentIds,
-        speechFactsCarrying,
-        partlyCarriedPartIds: speechFactsCarrying.partlyCarriedPartIds,
+    let activeRegion:
+      | "readViewDataProjectionMs"
+      | "readViewSummaryMs"
+      | "readViewReplyProjectionMs"
+      | "readViewFinalizationMs" = "readViewDataProjectionMs";
+    let regionStarted = performance.now();
+    try {
+      const o = this.options;
+      signal.throwIfAborted();
+      const readAt = this.now();
+      const nowSeconds = Math.floor(Date.parse(readAt) / 1000);
+      const context = schemeContext(o.scheme);
+      const compression = schemeCompression(o.scheme);
+      // QQ 的窗口只有一份——条数取绑定助手的「近期保留轮数」（方案里那一栏不再生效），
+      // 分钟与预算取回复档；判断档的参数照旧只管"要不要说话"那一步的原文选取。
+      const windows = {
+        judgement: qqContextLimits(context, "judgement"),
+        reply: {
+          ...qqContextLimits(context, "reply"),
+          messageLimit: o.runtime.p5_config.recent_turns,
+        },
       };
-    };
-    let projection = projectionFor(selection);
-    /**
-     * 部分承载时该事实在**资料段**里的形状：保留身份、时间、关系与其它非正文片段，摘掉正文。
-     *
-     * `completeness` 只用既有契约里的两个字面（`"full" | "legacy_partial" | "unavailable"`），
-     * **不新增 `"partial"`**：那等于在没有扩 schema 的情况下偷写第四个状态。
-     * `legacy_partial` 的既有语义是「没有 facts 行、但原正文仍有效」，与这里不符；这里的事实
-     * 行存在、正文被有意让给 timeline 那一份，所以「本段读不到正文」用 `unavailable` 表达——
-     * 它只声明**本段**没有正文，不谎称这条消息的正文不存在。
-     */
-    const withoutBodyOf = (fact: QqMessageFact): QqMessageFact => ({
-      ...fact,
-      parts: fact.parts.filter((part) => part.kind !== "text"),
-      completeness: "unavailable",
-    });
-    /**
-     * 引用展开专用：**只渲染用的 metadata 视图**，不进材料、不当真实 fact 复用。
-     *
-     * 身份/时间/关系/来源全留，`parts` 清空。它存在的唯一理由是让 `expandQqReplies` 的
-     * in_window 分支命中——该分支本来就只产 metadata 并以 `targetMessageId` 指向窗口消息
-     * （`metadataMessage` 同样 `parts=[]`），所以这里与那条既有约定完全同形。
-     *
-     * `completeness` 保持 `"full"` 只在这一个前提下成立：**当前窗口身份里那份正文确实存在**
-     * （本档 timeline 保留了这条 speech 的原正文，见上面的剥离判据）。它不是「这条事实完整」，
-     * 也不是「本段提供它的正文」，因此这个对象绝不回写进 material、也不复用为真实 fact：
-     * 一旦离开本视图，`full` + `parts=[]` 就是一个会骗人的组合。
-     * 若该正文其实不在窗口（例如窗口正文被裁），`speechFactsCarrying` 不会把它标成部分承载，
-     * 也就走不到这里——那种情况仍按正常 lazy read 拒或按预算裁，不把「名字」当已理解。
-     */
-    const metadataOnly = (fact: QqMessageFact): QqMessageFact => ({ ...fact, parts: [] });
-
-    const timelineMessages = () => {
-      // 正文去重：有 facts 的消息 text 置 null（正文由 facts 资料段承载）；
-      // 无 facts 的消息（legacy/未确认出站/无事实行）保留 timeline 正文作为唯一来源。
-      const timelineMsgs = selection.messages.map((message) => {
-        const eventKey = (message.sources ?? []).find(
-          (source) => source.kind === "qq_observation",
-        )?.id;
-        if (eventKey !== undefined && projection.projectedFactKeys.has(eventKey))
-          return { ...message, text: null };
-        // 助手自己的时间线消息经 outbox（outbound_intent source）或旧 timeline（qq_speech
-        // source）进场，没有 qq_observation source。正文去重**按真实意图身份**判，不按正文
-        // 文本猜：本档已投影该 intent 的已确认 part 事实时，时间线那份正文就是重复的一份，
-        // 置 null 由 facts 资料段唯一承载（单消息整体正文一份）；未投影到（未确认/超窗口）
-        // 就保留原正文，绝不因此丢失助手说过的话。
-        const intentId = (message.sources ?? []).find(
-          (source) => source.kind === "outbound_intent",
-        )?.id;
-        if (intentId !== undefined && projection.projectedOutboundIntentIds.has(intentId))
-          return { ...message, text: null };
-        // 旧 `qq_speech` 承载的已确认出站正文：只在**全部**已确认文本部件都进了本档 facts
-        // （`speech.id === intent.legacy_send_id` 精确关联）时，那份拼接正文才是重复的一份。
-        // 「部分承载」与未映射的独立旧 speech 都在上面的判据之外，原正文保持为唯一来源。
-        const speechId = (message.sources ?? []).find((source) => source.kind === "qq_speech")?.id;
-        return speechId !== undefined &&
-          projection.speechFactsCarrying.fullyCarriedSpeechIds.has(speechId)
-          ? { ...message, text: null }
-          : message;
-      });
-      return qqPromptMessages(buildQqPrompt(this.prompt(timelineMsgs)))
-        .filter((message) => message.role === "user")
-        .map((message) => textMessage("user", message.content));
-    };
-    const triggerMessages = (): ModelMessage[] => {
-      const trigger = o.trigger;
-      if (!trigger) return [];
-      const input = selection.messages.find((message) =>
-        message.sources?.some(
-          (source) => source.kind === "qq_observation" && source.id === trigger.sourceId,
-        ),
+      const shared: QqContextLimits = windows.reply;
+      const price = tier === "judgement" ? windows.judgement : shared;
+      // 一次取够两档都要看的范围（谁的窗口大听谁的），各档的选取再各自收窄。
+      const sinceSeconds = Math.max(
+        0,
+        nowSeconds - Math.max(windows.judgement.windowMinutes, shared.windowMinutes) * 60 - 1,
       );
-      return [
-        textMessage(
-          "user",
-          contextDumps({
-            kind: "activation_trigger",
-            trust: "data_only",
-            value: {
-              ...trigger,
-              cause: o.path,
-              text: input?.text ?? null,
-              contentState: input ? "in_selected_context" : "outside_selected_context",
-            },
+      const fetchLimit = Math.max(windows.judgement.messageLimit, shared.messageLimit);
+      const scope = {
+        kind: "qq" as const,
+        accountId: o.binding.accountId,
+        conversationKind: o.binding.kind,
+        peerId: o.binding.peerId,
+        agentId: o.binding.agentId,
+      };
+      // 载体键随选材冻结：观察行的真实 eventKey 作为 server-only carrier 字段穿过两次
+      // zod parse 进 selection（run 私有簿记，非模型 SourceRef，渲染不输出）。
+      const observedRows = conversationMessagesSince(o.orm, scope, {
+        sinceSeconds,
+        limit: fetchLimit,
+        includeSources: true,
+        includeMediaNotes: false,
+        now: readAt,
+      });
+      const timeline = qqBuildTimeline({
+        messages: observedRows.map(({ eventKey, ...message }) => ({
+          ...message,
+          carrierEventKey: eventKey,
+        })),
+        ownSpeech: [
+          ...ownSpeechSince(o.orm, scope, {
+            sinceSeconds,
+            limit: fetchLimit,
+            includeSources: true,
+            now: readAt,
           }),
-        ),
-      ];
-    };
-    /**
-     * D2 统一事实投影（规格 §4.1–§4.4）：选中窗口消息经 projectQqMessageFacts →
-     * renderQqMessageFacts（同一 renderer 口径：@原位/引用原文/双昵称快照/媒体未读标记），
-     * 作为资料段进决策/评分/生成材料。身份/引用是数据，不提升为指令；渲染失败/无 facts
-     * 时该段缺省（不伪造）。scope 由投影自身 fail-closed。
-     */
-    const factsDetailMessages = (): ModelMessage[] => {
-      if (selection.messages.length === 0) return [];
-      const eventKeys = selectedCarrierEventKeys(selection.messages);
-      if (eventKeys.length === 0) return [];
-      const conversation = o.journal.get(o.conversationId);
-      if (!conversation) return [];
-      // 「部分承载」的出站件**只摘掉正文片段**，身份/完整时间/@与引用关系/其它片段照旧留在
-      // 资料段：它的旧 speech 正文仍须作为唯一来源，这里再印一次正文就会出现两处
-      // （§4.3「同一消息最多供一次正文」），但整条删掉会让「谁在何时说了什么、引用了谁」
-      // 凭空消失。按真实 part 身份（ref id = `outbound_parts.id`）判定，不按正文文本猜。
-      const facts = projection.projectedFacts.map((fact) =>
-        projection.partlyCarriedPartIds.has(fact.id) ? withoutBodyOf(fact) : fact,
-      );
-      if (facts.length === 0) return [];
-      const focus = {
-        triggerMessageIds: o.trigger ? [o.trigger.sourceId] : [],
-        responseMessageIds: o.trigger ? [o.trigger.sourceId] : [],
-        responseQqs: o.targets().map((target) => target.speakerId ?? "anonymous"),
-        assistantQq: o.binding.accountId,
-      };
-      const rendered = renderQqMessageFacts({
-        messages: facts,
-        focus,
-        settings: schemeMessageSettings(o.scheme),
-        nowSeconds: nowSeconds,
+          ...o.outbox.partialSpeechSince(o.conversationId, {
+            sinceSeconds,
+            limit: fetchLimit,
+            at: readAt,
+          }),
+        ],
       });
-      if (rendered.trim() === "") return [];
-      const message = textMessage(
-        "user",
-        contextDumps({ kind: "qq_message_facts", trust: "data_only", facts: rendered }),
-      );
-      disclosedMessages.push({ message, facts });
-      return [message];
-    };
-    // 已存水位包独立于近期窗口；长期资料仅经工具观察进入上下文。
-    const pending = (items: readonly QqSummaryPackage[]) => {
-      const messages: ModelMessage[] = [];
-      if (items.length > 0)
-        messages.push(
-          textMessage(
-            "user",
-            contextDumps({
-              kind: "qq_context_packages",
-              trust: "data_only",
-              packages: items.map((item) => ({
-                fromSeq: item.fromSeq,
-                throughSeq: item.throughSeq,
-                fromSeconds: item.fromSeconds,
-                throughSeconds: item.throughSeconds,
-                facts: item.facts,
-              })),
-            }),
-          ),
-        );
-      messages.push(...timelineMessages(), ...factsDetailMessages(), ...triggerMessages());
-      return messages;
-    };
-    let material: ContextMaterial = {
-      pending: pending([]),
-      sources: selection.messages.flatMap((message) => message.sources ?? []),
-    };
-    // 先给下一条动作信封留余量，动作再按实际返回值拟合。
-    const ceiling = await this.available(tier, signal);
-    const roomFor = (candidate: ContextMaterial, used: number) =>
-      ceiling - used - this.envelopeFloor(candidate) - ACTION_ENVELOPE_ALLOWANCE;
-    const fitsTarget = (candidate: ContextMaterial) => roomFor(candidate, cost(candidate)) >= 0;
-    let fixed = cost(material);
-    // 窗口是"配置的预算"，但预算可能比这台模型能装的还大（换模型、调输出预留或冗余
-    // 都会这样）。**宁可把最老的原文裁掉，也不打死整轮**：预算对半收到放得下为止（最新一条永远保留），
-    // 裁掉的事实由窗口自身的预算说明（诊断里带码，运行详情能看到）。真的连一条消息加协议都放不下时
-    // 才失败——那是容量本身撑不住协议。
-    let budget = price.tokenBudget;
-    while (roomFor(material, fixed) < 0 && selection.messages.length > 1 && budget > 1) {
-      budget = Math.floor(budget / 2);
-      selection = qqSelectContext({
-        timeline,
-        limits: { ...price, tokenBudget: budget },
-        nowSeconds,
-      });
-      // 窗口收窄＝selection 换代：projection bundle 必须同代重建，被裁消息的事实/出站
-      // 投影/承载判定不再留在资料段，成本才能真正随窗口下降（见 projectionFor 说明）。
-      projection = projectionFor(selection);
-      disclosedMessages = [];
-      material = {
-        pending: pending([]),
-        sources: selection.messages.flatMap((message) => message.sources ?? []),
-      };
-      fixed = cost(material);
-    }
-    if (roomFor(material, fixed) < 0) {
-      const model =
-        tier === "reply" ? o.runtime.model_name : (o.spec.model ?? o.runtime.model_name);
-      if (o.onDiagnostic)
-        o.onDiagnostic({
-          kind: "context_budget_exceeded",
-          code: "CONTEXT_BUDGET_EXCEEDED",
-          stage: "window_fit",
-          tier,
-          model,
-          capacity: this.cachedCapacity(model) ?? null,
-          ceiling,
-          renderedCost: fixed,
-          roomFor: ceiling - fixed - this.envelopeFloor(material) - ACTION_ENVELOPE_ALLOWANCE,
-        });
-      fail("CONTEXT_BUDGET_EXCEEDED", "配置窗口的原文、完整协议与后续动作余量超过模型容量");
-    }
-    const question = qqJudgementQuestion(selection.messages.map((message) => message.text));
-    // 回复档只读已提交包；新压缩在本轮提交后由后台队列执行。
-    const baseline = cost(material);
-    // 本群停用历史摘要：已存包与新压缩都不再进入这一轮（原文窗口照旧）。
-    if (
-      tier === "reply" &&
-      o.runtime.p5_config.compression_enabled &&
-      this.guard.allowed(this.owner, "history_summary")
-    ) {
-      // 包装进材料才附当前纪元的能力引用：停用后旧包正文连同缓存视图一起失效。
-      const summaryRefs = this.guard.sources(this.owner, "history_summary");
-      let stored: QqConversationSummary | null = null;
-      try {
-        stored = readQqConversationSummary(o.orm, o.conversationId, o.binding.agentId);
-      } catch (error) {
-        // 无法验证的包不进入模型输入；保留原行并记录诊断。
-        const event = {
-          kind: "supplemental_summary_failed" as const,
-          code: "CONTEXT_INVALID_RESULT",
-        };
-        if (o.onDiagnostic) o.onDiagnostic(event);
-        else console.warn("bot_context", event, error);
-      }
-      let packages: QqSummaryPackage[] = (stored?.packages ?? []).filter((item) => {
+      let selection = qqSelectContext({ timeline, limits: price, nowSeconds });
+      let quoteMessage: ModelMessage | undefined;
+      let disclosedMessages: { message: ModelMessage; facts: readonly QqMessageFact[] }[] = [];
+      const measuredCosts = new WeakMap<
+        ContextMaterial,
+        { selection: QqContextSelection; cost: number }
+      >();
+      const nextCosts = new WeakMap<
+        ContextMaterial,
+        { selection: QqContextSelection; cost: number }
+      >();
+      const cost = (material: ContextMaterial) => {
+        const started = performance.now();
         try {
-          this.assertSources(item.sources ?? []);
-          return true;
-        } catch (error) {
-          if (!(error instanceof AppError) || error.code !== "CONTEXT_SOURCE_INVALID") throw error;
-          const event = { kind: "supplemental_summary_failed" as const, code: error.code };
-          if (o.onDiagnostic) o.onDiagnostic(event);
-          else console.warn("bot_context", event);
-          return false;
-        }
-      });
-      const historical = stored?.throughSeq ?? -1;
-      const coveredSeq = stored?.coveredSeq ?? -1;
-      const windowStart = Math.max(0, nowSeconds - shared.windowMinutes * 60 - 1);
-      const retainedSeqs = this.compressionRecords(selection.messages).flatMap((record) =>
-        record.seq === null ? [] : [record.seq],
-      );
-      const buffer = conversationMessagesForBackfill(o.orm, scope, {
-        conversationId: o.conversationId,
-        afterSeq: Math.max(historical, coveredSeq),
-        beforeSeq: retainedSeqs.length ? Math.min(...retainedSeqs) : this.sequence + 1,
-        limit: compression.watermark_trigger,
-        at: readAt,
-      });
-      const tail = this.compressionRecords(buffer);
-      const bufferRecords = this.compressionRecords(
-        buffer.filter((message) => message.occurredAtSeconds < windowStart),
-      );
-      if (tail.length >= compression.watermark_trigger) {
-        const readBudget =
-          o.runtime.p5_config.summary_read_max_tokens ?? o.runtime.p5_config.summary_max_tokens;
-        const target = Math.min(
-          o.runtime.p5_config.summary_target_tokens,
-          readBudget,
-          roomFor(material, baseline),
-        );
-        if (target > 0) {
-          const seqs = tail.flatMap((record) => (record.seq === null ? [] : [record.seq]));
-          const bufferSeqs = bufferRecords.flatMap((record) =>
-            record.seq === null ? [] : [record.seq],
+          if (!this.tokenBudget(tier))
+            return this.cost(tier, material, this.observations, selection.messages, batchTargets);
+          const saved = measuredCosts.get(material);
+          if (saved?.selection === selection) return saved.cost;
+          const value = this.cost(
+            tier,
+            material,
+            this.observations,
+            selection.messages,
+            batchTargets,
           );
-          const times = buffer.map((message) => message.occurredAtSeconds);
-          this.compressionJob = createBotCompressionJob({
-            orm: o.orm,
-            gateway: o.gateway,
-            agentRuntime: o.agentRuntime,
-            runtime: o.runtime,
-            owner: this.owner,
-            conversationId: o.conversationId,
-            agentId: o.binding.agentId,
-            expected: stored,
-            records: tail,
-            throughSeq: bufferSeqs.length
-              ? Math.max(historical, ...bufferSeqs)
-              : Math.max(0, historical),
-            coveredSeq: seqs.length ? Math.max(coveredSeq, ...seqs) : coveredSeq,
-            fromSeconds: times.length ? Math.min(...times) : 0,
-            throughSeconds: times.length ? Math.max(...times) : 0,
-            question,
-            sources: material.sources ?? [],
-            target,
-            packageLimit: compression.package_limit,
-            task: schemePrompts(o.scheme).compress,
-            usage: o.usage,
-            budget: o.budget,
-            assertStartable: o.assertStartable,
-            assertCurrent: o.assertBackgroundCurrent ?? o.assertCurrent,
-            assertSources: (sources) => this.assertSources(sources, false),
-            now: () => this.now(),
-            onFailure: (code) => {
-              const event = { kind: "supplemental_summary_failed" as const, code };
-              if (o.onDiagnostic) o.onDiagnostic(event);
-              else console.warn("bot_context", event);
-            },
-          });
+          measuredCosts.set(material, { selection, cost: value });
+          return value;
+        } finally {
+          if (timings) {
+            timings.readViewCostCalls = (timings.readViewCostCalls ?? 0) + 1;
+            timings.readViewCostMs = (timings.readViewCostMs ?? 0) + performance.now() - started;
+          }
         }
-      }
-      // 协议、已有工具观察与近期窗口先占预算；包装不下就从最早的整包开始丢。
-      const packageRoom = Math.min(
-        roomFor(material, baseline),
-        o.runtime.p5_config.summary_read_max_tokens ?? o.runtime.p5_config.summary_max_tokens,
-      );
-      const withPackages = (items: readonly QqSummaryPackage[]) => ({
-        ...material,
-        pending: pending(items),
-      });
-      while (
-        packages.length > 0 &&
-        cost(withPackages(packages)) - baseline > Math.max(0, packageRoom)
-      )
-        packages = packages.slice(1);
-      material = {
-        ...material,
-        pending: pending(packages),
-        sources: uniqueSources([
-          ...(material.sources ?? []),
-          // 没有包（例如只有排队任务）时不附引用：停用不该打死这一轮。
-          ...(packages.length > 0 ? summaryRefs : []),
-          ...packages.flatMap((item) => item.sources ?? []),
-        ]),
       };
-    }
-    // D2 S4b：回复展开与引用正文资料段（规格 §4.3/§4.4）。展开只在本档 view 构建时做一次：
-    // 真实 load（scope fail-closed 投影）/register（同一 evidence registry，真实 runId）/
-    // fits。引用段字节记账按**最终渲染实量**（qq_reply_roots 段完整序列化的 UTF-8 字节，
-    // 含 JSON 转义/元数据行/bodyRef），不用净正文字节、不用固定每根预留；超余量按
-    // §4.4 降级（深层/最早的引用行先裁，直接层 Unicode 前缀页由展开内 fitPrefix 处理），
-    // 不删已选窗口、不整轮失败。configured_depth 才渲染引用段；one_then_on_demand 规则不变。
-    const settings = schemeMessageSettings(o.scheme);
-    const conversationRowForReply = o.journal.get(o.conversationId);
-    const replyScope =
-      this.runId !== undefined && conversationRowForReply
+      const envelope = (material: ContextMaterial) => {
+        const started = performance.now();
+        try {
+          return this.envelopeFloor(material);
+        } finally {
+          if (timings) {
+            timings.readViewEnvelopeCalls = (timings.readViewEnvelopeCalls ?? 0) + 1;
+            timings.readViewEnvelopeMs =
+              (timings.readViewEnvelopeMs ?? 0) + performance.now() - started;
+          }
+        }
+      };
+      // 正文去重：预计算哪些 selected 消息有 facts 投影（eventKey 匹配）。
+      // 有 facts 的消息正文由 qq_message_facts 资料段承载（唯一来源），
+      // timeline 对这些消息不再重复正文文本。
+      const conversationForFacts = o.journal.get(o.conversationId);
+      const factsScope = conversationForFacts
         ? qqConversationScopeOfBinding({
             conversationId: o.conversationId,
             binding: o.binding,
-            bindingEpoch: conversationRowForReply.bindingEpoch,
+            bindingEpoch: conversationForFacts.bindingEpoch,
           })
         : null;
-    const replyEventKeys = selectedCarrierEventKeys(selection.messages);
-    // 引用展开的窗口事实：本档窗口的入站事实 + 本档已投影的已确认助手出站 part 事实。
-    // 助手 part 必须在窗口里，否则「目标已在窗口」判不出来，展开会改走 load 回落，
-    // 同一份正文既在 facts 段又在引用段各出现一次（§4.3「正文只供一次」）。两者是同一
-    // 个 `QqMessageFact[]`，`expandQqReplies` 按平台 ID 建 windowByPlatformId，天然去重。
-    const replyFacts = [
-      ...(replyScope && replyEventKeys.length > 0
-        ? projectQqMessageFacts({ db: o.db, orm: o.orm }, replyScope, replyEventKeys, readAt)
-        : []),
-      ...projection.outboundFacts,
-    ];
-    /**
-     * 「部分承载」的出站件在引用展开里的形状：**仍是窗口内可指向的合法目标，但只作 metadata
-     * 引用**（render-only，绝不进材料）。
-     *
-     * 它的正文此刻由旧 speech 时间线那一份承载（资料段已按上面剥掉正文），所以这里若把它
-     * 标成非完整，`expandQqReplies` 会跳过 in_window 分支、改走 `load`/`loadState` 回落，
-     * 又把同一份正文印进引用段——那正是要避免的第二处正文。
-     *
-     * 前置条件由上面的剥离判据保证，而不是在这里假设：只有当那条 speech 时间线正文**被判定
-     * 保留**时（既不在 `fullyCarriedSpeechIds` 里、其 source 又确实在本档 `selection` 中），
-     * 它的 part 才可能进 `partlyCarriedPartIds`。因此这里再显式核一次「该 speech 正文在场」，
-     * 不在场就退回真实 fact，让正常 lazy read／预算裁去处理——绝不凭空造一个
-     * `full` + 空 parts 的对象、也不把「有这条消息」当成「正文已理解」。
-     */
-    const speechBodyRetainedFor = (partIds: ReadonlySet<string>): ReadonlySet<string> => {
-      const retainedSpeech = new Set(
-        selection.messages.flatMap((message) =>
-          (message.sources ?? [])
-            .filter(
-              (source) =>
-                source.kind === "qq_speech" && message.text !== null && message.text !== "",
-            )
-            .map((source) => source.id),
-        ),
+      /**
+       * 每一档窗口选择对应**一整份**投影 bundle：入站事实 keys、出站候选投影、事实 keys、
+       * 出站意图正文承载身份、speech 承载判定与 partial part 身份，全部从**同一份**
+       * `selection` 派生。窗口收窄（下面的预算二分）会更换 selection，因此这份 bundle
+       * 必须按 selection 重建——任何一项停留在收窄前的旧窗口上，被裁掉的历史正文就会
+       * 以 facts 形态留在资料段里，成本不随窗口下降，本可装下的装配被打死。
+       */
+      const projectionFor = (sel: QqContextSelection) => {
+        const factEventKeys = new Set(selectedCarrierEventKeys(sel.messages));
+        const selectedIntentIds = new Set<string>();
+        const selectedSpeechIds = new Set<string>();
+        for (const message of sel.messages) {
+          for (const source of message.sources ?? []) {
+            if (source.kind === "outbound_intent") selectedIntentIds.add(source.id);
+            else if (source.kind === "qq_speech") selectedSpeechIds.add(source.id);
+          }
+        }
+        /**
+         * 本档窗口（回复档分钟/条数、共享预算）内**已确认**的助手出站 part 事实（T04 Step3）。
+         *
+         * 只有进入窗口的才投影：窗口条数/分钟之外的出站原话不因这次接线被整段拉进资料段
+         * （引用展开里「窗口外按明确 ID 补」那条路仍归 `load`/`loadState` 回落，不受此裁剪影响）。
+         * 未确认（unknown/failed/not_sent/stale）与本 scope 外的一律不在候选里，也拿不到事实：
+         * loader 自身仍按 confirmed 台账、唯一认领、intent target 六维 + 当前 authorityRevision、
+         * 真实 delivery journal 归属与双期限帽再判一次，这里不替代它的 fail-closed。
+         */
+        const outboundWindowFloor =
+          nowSeconds - Math.max(windows.judgement.windowMinutes, shared.windowMinutes) * 60 - 1;
+        /**
+         * 候选范围＝**本档窗口能证明在场的出站意图**，按 journal 稳定 seq 取（§4.3「不扩成
+         * 通用历史预载」）。seq 上界取窗口消息的真实最大 seq（`outboundSeqWindow`，与窗口同
+         * 一次读冻结）；seq 下界不裁——助手的 delivery 事件合法地早于窗口最早一条入站消息
+         * （群友回复的正是它），「哪一段时间」由下面对投影事实 `occurredAtSeconds`（真实
+         * finishedAt）的时间裁剪把关，不靠 SQL 解析时间串，避免刻度/格式漂移。
+         */
+        const outboundSeqWindow = factsScope
+          ? this.outboundSeqWindow(o.conversationId, sel.messages)
+          : null;
+        // 投影 + 意图身份一次算完：只有真正投影成功的 part 才进事实段，其 intent 才算
+        // 「正文已由 facts 承载」（loader 拒掉的候选不得让时间线正文消失）。
+        const outboundProjected =
+          factsScope &&
+          outboundSeqWindow &&
+          (selectedIntentIds.size > 0 || selectedSpeechIds.size > 0)
+            ? confirmedOutboundPartCandidates(
+                o.db,
+                factsScope,
+                outboundSeqWindow,
+                fetchLimit * 4,
+              ).flatMap((candidate) => {
+                if (
+                  !selectedIntentIds.has(candidate.intentId) &&
+                  (candidate.legacySendId === null ||
+                    !selectedSpeechIds.has(candidate.legacySendId))
+                )
+                  return [];
+                // Use the loader's exact timestamp rule to skip old candidates before reading
+                // their payloads. The original loader and final fact-window check still apply.
+                const occurredAtSeconds =
+                  candidate.finishedAt === null
+                    ? NaN
+                    : Math.floor(Date.parse(candidate.finishedAt) / 1000);
+                if (
+                  !Number.isFinite(occurredAtSeconds) ||
+                  occurredAtSeconds < sinceSeconds ||
+                  occurredAtSeconds <= outboundWindowFloor
+                )
+                  return [];
+                const fact = loadQqOutboundMessageFact(
+                  { db: o.db, orm: o.orm },
+                  factsScope,
+                  candidate.platformMessageId,
+                  readAt,
+                );
+                if (!fact) return [];
+                if (
+                  fact.occurredAtSeconds < sinceSeconds ||
+                  fact.occurredAtSeconds <= outboundWindowFloor
+                )
+                  return [];
+                return [{ intentId: candidate.intentId, fact }];
+              })
+            : [];
+        const outboundFacts = outboundProjected.map((entry) => entry.fact);
+        const projectedFacts = [
+          ...(factsScope && factEventKeys.size > 0
+            ? projectQqMessageFacts(
+                { db: o.db, orm: o.orm },
+                factsScope,
+                [...factEventKeys],
+                readAt,
+              )
+            : []),
+          ...outboundFacts,
+        ];
+        const projectedFactKeys = new Set(projectedFacts.map((f) => f.id));
+        // 时间线正文去重用的真实意图身份：哪些 outbound_intent 已在 facts 资料段承载正文。
+        // 来自同一次投影（不按正文文本猜，也不给 QqMessageFact 加工字段）。
+        const projectedOutboundIntentIds = new Set(
+          outboundProjected.map((entry) => entry.intentId),
+        );
+        /**
+         * 已确认出站件的**旧**时间线正文（`qq_speech` source）由 facts 资料段唯一承载后才剥离。
+         *
+         * 精确身份，不按内容/时刻猜：发送通路把一次发送的 `qq_send_log` 行 id 直接交给
+         * `recordQqSpeech` 当 `qq_speech_log.id`（同一事务、同一 id），而
+         * `outbound_intents.legacy_send_id` 指向同一行——所以 `speech.id === legacy_send_id`
+         * 就是「这条旧 speech 正文属于哪个出站意图」的确切关联（§4.3「同一消息最多供一次正文」）。
+         *
+         * 两条硬约束：
+         *   * **只在全部已确认文本部件都真的进了本档 facts 时才剥**。旧 speech 正文是这些部件
+         *     正文的换行拼接；只要有一个部件未确认/无平台 ID/是贴图/被 loader 拒/超窗口/已过期，
+         *     拼接里就仍有只此一份可读的字——那一条 speech 保持原样，并且该意图的事实段只留
+         *     身份与关系、**不再重复正文**（否则会出现「speech 一份 + 已选部件一份」两处正文）。
+         *   * `partialSpeechSince` 那种带 `outbound_intent` source 的行（非 confirmed 意图）照旧：
+         *     它没有 facts 可承载，正文永不由 facts 段提供。
+         * 未映射的独立旧 speech（无 `legacy_send_id`、或非本 scope/纪元）原文字保留，不删、不
+         * 预载整段历史、不迁旧 ID。
+         */
+        const speechFactsCarrying = (() => {
+          const ids = sel.messages.flatMap((message) =>
+            (message.sources ?? [])
+              .filter((source) => source.kind === "qq_speech")
+              .map((source) => source.id),
+          );
+          const empty = {
+            fullyCarriedSpeechIds: new Set<string>(),
+            partlyCarriedSpeechIds: new Set<string>(),
+            partlyCarriedPartIds: new Set<string>(),
+          };
+          if (ids.length === 0 || !factsScope) return empty;
+          return qqSpeechCarriedByOutboundFacts({
+            speechSourceIds: ids,
+            // 平台 ID → **part id**。只有带真实平台 ID 的事实能作为「这个部件已在 facts 段承载」
+            // 的证据；没有平台 ID 的事实无法与部件对上，不进这张表。value 存 part id（=
+            // `QqMessageFact.id` = `outbound_parts.id`），helper 据此要求「同一个部件」而不是
+            // 「同一条线上消息 ID」——后者可能由别的部件的事实满足。
+            projectedByPlatformMessageId: new Map(
+              outboundFacts.flatMap((fact) =>
+                fact.platformMessageId === null
+                  ? []
+                  : ([[fact.platformMessageId, fact.id]] as [string, string][]),
+              ),
+            ),
+            store: { db: o.db, orm: o.orm },
+            scope: factsScope,
+            now: readAt,
+          });
+        })();
+        /**
+         * 「部分承载」的出站件：其旧 speech 正文仍须作为唯一来源，所以事实段**只去掉正文**，
+         * 身份／完整时间／@与引用关系／其它片段一律保留——不把整条事实删掉（那会让「这条消息
+         * 是谁在什么时候说的、引用了谁」凭空消失），也不谎称正文已完整。
+         *
+         * part 身份直接取自上面 helper 已定位过的同一批意图（`partlyCarriedPartIds`），不在这里
+         * 另跑一条缺 conversation 约束的重复 SQL；仍然只按精确 id 匹配，不按正文/时刻猜。
+         */
+        return {
+          outboundFacts,
+          projectedFacts,
+          projectedFactKeys,
+          projectedOutboundIntentIds,
+          speechFactsCarrying,
+          partlyCarriedPartIds: speechFactsCarrying.partlyCarriedPartIds,
+        };
+      };
+      let projection = projectionFor(selection);
+      /**
+       * 部分承载时该事实在**资料段**里的形状：保留身份、时间、关系与其它非正文片段，摘掉正文。
+       *
+       * `completeness` 只用既有契约里的两个字面（`"full" | "legacy_partial" | "unavailable"`），
+       * **不新增 `"partial"`**：那等于在没有扩 schema 的情况下偷写第四个状态。
+       * `legacy_partial` 的既有语义是「没有 facts 行、但原正文仍有效」，与这里不符；这里的事实
+       * 行存在、正文被有意让给 timeline 那一份，所以「本段读不到正文」用 `unavailable` 表达——
+       * 它只声明**本段**没有正文，不谎称这条消息的正文不存在。
+       */
+      const withoutBodyOf = (fact: QqMessageFact): QqMessageFact => ({
+        ...fact,
+        parts: fact.parts.filter((part) => part.kind !== "text"),
+        completeness: "unavailable",
+      });
+      /**
+       * 引用展开专用：**只渲染用的 metadata 视图**，不进材料、不当真实 fact 复用。
+       *
+       * 身份/时间/关系/来源全留，`parts` 清空。它存在的唯一理由是让 `expandQqReplies` 的
+       * in_window 分支命中——该分支本来就只产 metadata 并以 `targetMessageId` 指向窗口消息
+       * （`metadataMessage` 同样 `parts=[]`），所以这里与那条既有约定完全同形。
+       *
+       * `completeness` 保持 `"full"` 只在这一个前提下成立：**当前窗口身份里那份正文确实存在**
+       * （本档 timeline 保留了这条 speech 的原正文，见上面的剥离判据）。它不是「这条事实完整」，
+       * 也不是「本段提供它的正文」，因此这个对象绝不回写进 material、也不复用为真实 fact：
+       * 一旦离开本视图，`full` + `parts=[]` 就是一个会骗人的组合。
+       * 若该正文其实不在窗口（例如窗口正文被裁），`speechFactsCarrying` 不会把它标成部分承载，
+       * 也就走不到这里——那种情况仍按正常 lazy read 拒或按预算裁，不把「名字」当已理解。
+       */
+      const metadataOnly = (fact: QqMessageFact): QqMessageFact => ({ ...fact, parts: [] });
+
+      const timelineMessages = () => {
+        // 正文去重：有 facts 的消息 text 置 null（正文由 facts 资料段承载）；
+        // 无 facts 的消息（legacy/未确认出站/无事实行）保留 timeline 正文作为唯一来源。
+        const timelineMsgs = selection.messages.map((message) => {
+          const eventKey = (message.sources ?? []).find(
+            (source) => source.kind === "qq_observation",
+          )?.id;
+          if (eventKey !== undefined && projection.projectedFactKeys.has(eventKey))
+            return { ...message, text: null };
+          // 助手自己的时间线消息经 outbox（outbound_intent source）或旧 timeline（qq_speech
+          // source）进场，没有 qq_observation source。正文去重**按真实意图身份**判，不按正文
+          // 文本猜：本档已投影该 intent 的已确认 part 事实时，时间线那份正文就是重复的一份，
+          // 置 null 由 facts 资料段唯一承载（单消息整体正文一份）；未投影到（未确认/超窗口）
+          // 就保留原正文，绝不因此丢失助手说过的话。
+          const intentId = (message.sources ?? []).find(
+            (source) => source.kind === "outbound_intent",
+          )?.id;
+          if (intentId !== undefined && projection.projectedOutboundIntentIds.has(intentId))
+            return { ...message, text: null };
+          // 旧 `qq_speech` 承载的已确认出站正文：只在**全部**已确认文本部件都进了本档 facts
+          // （`speech.id === intent.legacy_send_id` 精确关联）时，那份拼接正文才是重复的一份。
+          // 「部分承载」与未映射的独立旧 speech 都在上面的判据之外，原正文保持为唯一来源。
+          const speechId = (message.sources ?? []).find(
+            (source) => source.kind === "qq_speech",
+          )?.id;
+          return speechId !== undefined &&
+            projection.speechFactsCarrying.fullyCarriedSpeechIds.has(speechId)
+            ? { ...message, text: null }
+            : message;
+        });
+        return qqPromptMessages(buildQqPrompt(this.prompt(timelineMsgs)))
+          .filter((message) => message.role === "user")
+          .map((message) => textMessage("user", message.content));
+      };
+      const triggerMessages = (): ModelMessage[] => {
+        const trigger = o.trigger;
+        if (!trigger) return [];
+        const input = selection.messages.find((message) =>
+          message.sources?.some(
+            (source) => source.kind === "qq_observation" && source.id === trigger.sourceId,
+          ),
+        );
+        return [
+          textMessage(
+            "user",
+            contextDumps({
+              kind: "activation_trigger",
+              trust: "data_only",
+              value: {
+                ...trigger,
+                cause: o.path,
+                text: input?.text ?? null,
+                contentState: input ? "in_selected_context" : "outside_selected_context",
+              },
+            }),
+          ),
+        ];
+      };
+      /**
+       * D2 统一事实投影（规格 §4.1–§4.4）：选中窗口消息经 projectQqMessageFacts →
+       * renderQqMessageFacts（同一 renderer 口径：@原位/引用原文/双昵称快照/媒体未读标记），
+       * 作为资料段进决策/评分/生成材料。身份/引用是数据，不提升为指令；渲染失败/无 facts
+       * 时该段缺省（不伪造）。scope 由投影自身 fail-closed。
+       */
+      const factsDetailMessages = (): ModelMessage[] => {
+        if (selection.messages.length === 0) return [];
+        const eventKeys = selectedCarrierEventKeys(selection.messages);
+        if (eventKeys.length === 0) return [];
+        const conversation = o.journal.get(o.conversationId);
+        if (!conversation) return [];
+        // 「部分承载」的出站件**只摘掉正文片段**，身份/完整时间/@与引用关系/其它片段照旧留在
+        // 资料段：它的旧 speech 正文仍须作为唯一来源，这里再印一次正文就会出现两处
+        // （§4.3「同一消息最多供一次正文」），但整条删掉会让「谁在何时说了什么、引用了谁」
+        // 凭空消失。按真实 part 身份（ref id = `outbound_parts.id`）判定，不按正文文本猜。
+        const facts = projection.projectedFacts.map((fact) =>
+          projection.partlyCarriedPartIds.has(fact.id) ? withoutBodyOf(fact) : fact,
+        );
+        if (facts.length === 0) return [];
+        const focus = {
+          triggerMessageIds: o.trigger ? [o.trigger.sourceId] : [],
+          responseMessageIds: o.trigger ? [o.trigger.sourceId] : [],
+          responseQqs: o.targets().map((target) => target.speakerId ?? "anonymous"),
+          assistantQq: o.binding.accountId,
+        };
+        const rendered = renderQqMessageFacts({
+          messages: facts,
+          focus,
+          settings: schemeMessageSettings(o.scheme),
+          nowSeconds: nowSeconds,
+        });
+        if (rendered.trim() === "") return [];
+        const message = textMessage(
+          "user",
+          contextDumps({ kind: "qq_message_facts", trust: "data_only", facts: rendered }),
+        );
+        disclosedMessages.push({ message, facts });
+        return [message];
+      };
+      // 已存水位包独立于近期窗口；长期资料仅经工具观察进入上下文。
+      const pending = (items: readonly QqSummaryPackage[]) => {
+        const messages: ModelMessage[] = [];
+        if (items.length > 0)
+          messages.push(
+            textMessage(
+              "user",
+              contextDumps({
+                kind: "qq_context_packages",
+                trust: "data_only",
+                packages: items.map((item) => ({
+                  fromSeq: item.fromSeq,
+                  throughSeq: item.throughSeq,
+                  fromSeconds: item.fromSeconds,
+                  throughSeconds: item.throughSeconds,
+                  facts: item.facts,
+                })),
+              }),
+            ),
+          );
+        messages.push(...timelineMessages(), ...factsDetailMessages(), ...triggerMessages());
+        return messages;
+      };
+      let material: ContextMaterial = {
+        pending: pending([]),
+        sources: selection.messages.flatMap((message) => message.sources ?? []),
+      };
+      // 先给下一条动作信封留余量，动作再按实际返回值拟合。
+      const ceiling = await this.available(tier, signal, timings);
+      const tokenMode = this.tokenBudget(tier) !== undefined;
+      const roomFor = (candidate: ContextMaterial, used: number) => {
+        if (!tokenMode)
+          return nextObservation
+            ? ceiling -
+                this.costWithNext(
+                  tier,
+                  candidate,
+                  this.observations,
+                  selection.messages,
+                  batchTargets,
+                  nextObservation,
+                )
+            : ceiling - used - envelope(candidate) - ACTION_ENVELOPE_ALLOWANCE;
+        const saved = nextCosts.get(candidate);
+        if (saved?.selection === selection) return ceiling - saved.cost;
+        const value = this.costWithNext(
+          tier,
+          candidate,
+          this.observations,
+          selection.messages,
+          batchTargets,
+          nextObservation,
+        );
+        nextCosts.set(candidate, { selection, cost: value });
+        return ceiling - value;
+      };
+      const fitsTarget = (candidate: ContextMaterial) =>
+        roomFor(candidate, tokenMode ? 0 : cost(candidate)) >= 0;
+      let fixed = cost(material);
+      // 窗口是"配置的预算"，但预算可能比这台模型能装的还大（换模型、调输出预留或冗余
+      // 都会这样）。**宁可把最老的原文裁掉，也不打死整轮**：预算对半收到放得下为止（最新一条永远保留），
+      // 裁掉的事实由窗口自身的预算说明（诊断里带码，运行详情能看到）。真的连一条消息加协议都放不下时
+      // 才失败——那是容量本身撑不住协议。
+      let budget = price.tokenBudget;
+      while (roomFor(material, fixed) < 0 && selection.messages.length > 1 && budget > 1) {
+        budget = Math.floor(budget / 2);
+        selection = qqSelectContext({
+          timeline,
+          limits: { ...price, tokenBudget: budget },
+          nowSeconds,
+        });
+        // 窗口收窄＝selection 换代：projection bundle 必须同代重建，被裁消息的事实/出站
+        // 投影/承载判定不再留在资料段，成本才能真正随窗口下降（见 projectionFor 说明）。
+        projection = projectionFor(selection);
+        quoteMessage = undefined;
+        disclosedMessages = [];
+        material = {
+          pending: pending([]),
+          sources: selection.messages.flatMap((message) => message.sources ?? []),
+        };
+        fixed = cost(material);
+      }
+      if (roomFor(material, fixed) < 0) {
+        const model =
+          tier === "reply" ? o.runtime.model_name : (o.spec.model ?? o.runtime.model_name);
+        if (o.onDiagnostic)
+          o.onDiagnostic({
+            kind: "context_budget_exceeded",
+            code: "CONTEXT_BUDGET_EXCEEDED",
+            stage: "window_fit",
+            tier,
+            model,
+            capacity: this.cachedCapacity(model) ?? null,
+            ceiling,
+            renderedCost: fixed,
+            roomFor: ceiling - fixed - envelope(material) - ACTION_ENVELOPE_ALLOWANCE,
+          });
+        fail("CONTEXT_BUDGET_EXCEEDED", "配置窗口的原文、完整协议与后续动作余量超过模型容量");
+      }
+      // 回复档只读已提交包；新压缩在本轮提交后由后台队列执行。
+      const baseline = cost(material);
+      // 本群停用历史摘要：已存包与新压缩都不再进入这一轮（原文窗口照旧）。
+      if (
+        tier === "reply" &&
+        o.runtime.p5_config.compression_enabled &&
+        this.guard.allowed(this.owner, "history_summary")
+      ) {
+        if (timings) timings[activeRegion] = performance.now() - regionStarted;
+        activeRegion = "readViewSummaryMs";
+        regionStarted = performance.now();
+        // 包装进材料才附当前纪元的能力引用：停用后旧包正文连同缓存视图一起失效。
+        const summaryRefs = this.guard.sources(this.owner, "history_summary");
+        let stored: QqConversationSummary | null = null;
+        try {
+          stored = readQqConversationSummary(o.orm, o.conversationId, o.binding.agentId);
+        } catch (error) {
+          // 无法验证的包不进入模型输入；保留原行并记录诊断。
+          const event = {
+            kind: "supplemental_summary_failed" as const,
+            code: "CONTEXT_INVALID_RESULT",
+          };
+          if (o.onDiagnostic) o.onDiagnostic(event);
+          else console.warn("bot_context", event, error);
+        }
+        let packages: QqSummaryPackage[] = (stored?.packages ?? []).filter((item) => {
+          try {
+            this.assertSources(item.sources ?? []);
+            return true;
+          } catch (error) {
+            if (!(error instanceof AppError) || error.code !== "CONTEXT_SOURCE_INVALID")
+              throw error;
+            const event = { kind: "supplemental_summary_failed" as const, code: error.code };
+            if (o.onDiagnostic) o.onDiagnostic(event);
+            else console.warn("bot_context", event);
+            return false;
+          }
+        });
+        const historical = stored?.throughSeq ?? -1;
+        const coveredSeq = stored?.coveredSeq ?? -1;
+        const windowStart = Math.max(0, nowSeconds - shared.windowMinutes * 60 - 1);
+        const retainedSeqs = this.compressionRecords(selection.messages).flatMap((record) =>
+          record.seq === null ? [] : [record.seq],
+        );
+        const buffer = conversationMessagesForBackfill(o.orm, scope, {
+          conversationId: o.conversationId,
+          afterSeq: Math.max(historical, coveredSeq),
+          beforeSeq: retainedSeqs.length ? Math.min(...retainedSeqs) : this.sequence + 1,
+          limit: compression.watermark_trigger,
+          at: readAt,
+        });
+        const tail = this.compressionRecords(buffer);
+        const bufferRecords = this.compressionRecords(
+          buffer.filter((message) => message.occurredAtSeconds < windowStart),
+        );
+        if (tail.length >= compression.watermark_trigger) {
+          const readBudget =
+            o.runtime.p5_config.summary_read_max_tokens ?? o.runtime.p5_config.summary_max_tokens;
+          const target = Math.min(
+            o.runtime.p5_config.summary_target_tokens,
+            readBudget,
+            tokenMode ? readBudget : roomFor(material, baseline),
+          );
+          if (target > 0) {
+            const seqs = tail.flatMap((record) => (record.seq === null ? [] : [record.seq]));
+            const bufferSeqs = bufferRecords.flatMap((record) =>
+              record.seq === null ? [] : [record.seq],
+            );
+            const times = buffer.map((message) => message.occurredAtSeconds);
+            this.compressionJob = createBotCompressionJob({
+              orm: o.orm,
+              gateway: o.gateway,
+              agentRuntime: o.agentRuntime,
+              runtime: o.runtime,
+              owner: this.owner,
+              conversationId: o.conversationId,
+              agentId: o.binding.agentId,
+              expected: stored,
+              records: tail,
+              throughSeq: bufferSeqs.length
+                ? Math.max(historical, ...bufferSeqs)
+                : Math.max(0, historical),
+              coveredSeq: seqs.length ? Math.max(coveredSeq, ...seqs) : coveredSeq,
+              recordSeconds: times,
+              sources: material.sources ?? [],
+              target,
+              packageLimit: compression.package_limit,
+              task: schemePrompts(o.scheme).compress,
+              usage: o.usage,
+              budget: o.budget,
+              assertStartable: o.assertStartable,
+              assertCurrent: o.assertBackgroundCurrent ?? o.assertCurrent,
+              assertSources: (sources) => this.assertSources(sources, false),
+              now: () => this.now(),
+              onFailure: (code) => {
+                const event = { kind: "supplemental_summary_failed" as const, code };
+                if (o.onDiagnostic) o.onDiagnostic(event);
+                else console.warn("bot_context", event);
+              },
+            });
+          }
+        }
+        // 协议、已有工具观察与近期窗口先占预算；包装不下就从最早的整包开始丢。
+        const packageRoom = Math.min(
+          tokenMode ? Number.MAX_SAFE_INTEGER : roomFor(material, baseline),
+          o.runtime.p5_config.summary_read_max_tokens ?? o.runtime.p5_config.summary_max_tokens,
+        );
+        const withPackages = (items: readonly QqSummaryPackage[]) => ({
+          ...material,
+          pending: pending(items),
+        });
+        while (
+          packages.length > 0 &&
+          (tokenMode
+            ? inputUnits(
+                this.engine.render(
+                  o.spec,
+                  this.withPendingPlan(withPackages(packages)),
+                  this.observations,
+                  this.targetIds(),
+                ).messages,
+              ) -
+                inputUnits(
+                  this.engine.render(
+                    o.spec,
+                    this.withPendingPlan(material),
+                    this.observations,
+                    this.targetIds(),
+                  ).messages,
+                ) >
+                Math.max(0, packageRoom) || !fitsTarget(withPackages(packages))
+            : cost(withPackages(packages)) - baseline > Math.max(0, packageRoom))
+        )
+          packages = packages.slice(1);
+        material = {
+          ...material,
+          pending: pending(packages),
+          sources: uniqueSources([
+            ...(material.sources ?? []),
+            // 没有包（例如只有排队任务）时不附引用：停用不该打死这一轮。
+            ...(packages.length > 0 ? summaryRefs : []),
+            ...packages.flatMap((item) => item.sources ?? []),
+          ]),
+        };
+      }
+      // D2 S4b：回复展开与引用正文资料段（规格 §4.3/§4.4）。展开只在本档 view 构建时做一次：
+      // 真实 load（scope fail-closed 投影）/register（同一 evidence registry，真实 runId）/
+      // fits。引用段字节记账按**最终渲染实量**（qq_reply_roots 段完整序列化的 UTF-8 字节，
+      // 含 JSON 转义/元数据行/bodyRef），不用净正文字节、不用固定每根预留；超余量按
+      // §4.4 降级（深层/最早的引用行先裁，直接层 Unicode 前缀页由展开内 fitPrefix 处理），
+      // 不删已选窗口、不整轮失败。configured_depth 才渲染引用段；one_then_on_demand 规则不变。
+      if (timings) timings[activeRegion] = performance.now() - regionStarted;
+      activeRegion = "readViewReplyProjectionMs";
+      regionStarted = performance.now();
+      const settings = schemeMessageSettings(o.scheme);
+      const conversationRowForReply = o.journal.get(o.conversationId);
+      const replyScope =
+        this.runId !== undefined && conversationRowForReply
+          ? qqConversationScopeOfBinding({
+              conversationId: o.conversationId,
+              binding: o.binding,
+              bindingEpoch: conversationRowForReply.bindingEpoch,
+            })
+          : null;
+      const replyEventKeys = selectedCarrierEventKeys(selection.messages);
+      // 引用展开的窗口事实：本档窗口的入站事实 + 本档已投影的已确认助手出站 part 事实。
+      // 助手 part 必须在窗口里，否则「目标已在窗口」判不出来，展开会改走 load 回落，
+      // 同一份正文既在 facts 段又在引用段各出现一次（§4.3「正文只供一次」）。两者是同一
+      // 个 `QqMessageFact[]`，`expandQqReplies` 按平台 ID 建 windowByPlatformId，天然去重。
+      const replyFacts = [
+        ...(replyScope && replyEventKeys.length > 0
+          ? projectQqMessageFacts({ db: o.db, orm: o.orm }, replyScope, replyEventKeys, readAt)
+          : []),
+        ...projection.outboundFacts,
+      ];
+      /**
+       * 「部分承载」的出站件在引用展开里的形状：**仍是窗口内可指向的合法目标，但只作 metadata
+       * 引用**（render-only，绝不进材料）。
+       *
+       * 它的正文此刻由旧 speech 时间线那一份承载（资料段已按上面剥掉正文），所以这里若把它
+       * 标成非完整，`expandQqReplies` 会跳过 in_window 分支、改走 `load`/`loadState` 回落，
+       * 又把同一份正文印进引用段——那正是要避免的第二处正文。
+       *
+       * 前置条件由上面的剥离判据保证，而不是在这里假设：只有当那条 speech 时间线正文**被判定
+       * 保留**时（既不在 `fullyCarriedSpeechIds` 里、其 source 又确实在本档 `selection` 中），
+       * 它的 part 才可能进 `partlyCarriedPartIds`。因此这里再显式核一次「该 speech 正文在场」，
+       * 不在场就退回真实 fact，让正常 lazy read／预算裁去处理——绝不凭空造一个
+       * `full` + 空 parts 的对象、也不把「有这条消息」当成「正文已理解」。
+       */
+      const speechBodyRetainedFor = (partIds: ReadonlySet<string>): ReadonlySet<string> => {
+        const retainedSpeech = new Set(
+          selection.messages.flatMap((message) =>
+            (message.sources ?? [])
+              .filter(
+                (source) =>
+                  source.kind === "qq_speech" && message.text !== null && message.text !== "",
+              )
+              .map((source) => source.id),
+          ),
+        );
+        if (retainedSpeech.size === 0) return new Set<string>();
+        const allowed = new Set(
+          [...projection.speechFactsCarrying.partlyCarriedSpeechIds].filter((id) =>
+            retainedSpeech.has(id),
+          ),
+        );
+        if (allowed.size === 0) return new Set<string>();
+        return partIds;
+      };
+      const speechBodyBackedPartIds = speechBodyRetainedFor(projection.partlyCarriedPartIds);
+      const replyWindowFacts = replyFacts.map((fact) =>
+        speechBodyBackedPartIds.has(fact.id) ? metadataOnly(fact) : fact,
       );
-      if (retainedSpeech.size === 0) return new Set<string>();
-      const allowed = new Set(
-        [...projection.speechFactsCarrying.partlyCarriedSpeechIds].filter((id) =>
-          retainedSpeech.has(id),
-        ),
+      let replyExpansion: QqFullReplyProjection = { roots: [], sources: [] };
+      // 引用段可用的真实字节余量（与 fitsTarget 同口径）。
+      const quoteRoom = Math.max(
+        0,
+        tokenMode
+          ? price.tokenBudget - 32
+          : ceiling - cost(material) - envelope(material) - ACTION_ENVELOPE_ALLOWANCE - 32, // 引用段自身作为一条 user 消息的 message 开销（12+role），保证终检不因它超限。
       );
-      if (allowed.size === 0) return new Set<string>();
-      return partIds;
-    };
-    const speechBodyBackedPartIds = speechBodyRetainedFor(projection.partlyCarriedPartIds);
-    const replyWindowFacts = replyFacts.map((fact) =>
-      speechBodyBackedPartIds.has(fact.id) ? metadataOnly(fact) : fact,
-    );
-    let replyExpansion: QqFullReplyProjection = { roots: [], sources: [] };
-    // 引用段可用的真实字节余量（与 fitsTarget 同口径）。
-    const quoteRoom = Math.max(
-      0,
-      ceiling - cost(material) - this.envelopeFloor(material) - ACTION_ENVELOPE_ALLOWANCE - 32, // 引用段自身作为一条 user 消息的 message 开销（12+role），保证终检不因它超限。
-    );
-    /** 根 → 资料段行（与最终渲染逐字同一形状）。 */
-    const toQuoteLine = (root: QqFullReplyProjection["roots"][number]) => {
-      const message = root.message;
-      // P2：message==null（missing/expired/revoked/cycle）也保留安全关系行——稳定 id/state/
-      // depth 指向明确，不冒充无引用、不隐藏状态；不可读正文/私名一律不出（无 speaker/time/
-      // text/bodyRef 字段）。
-      if (!message) {
+      const quoteTime = createQqTimeFormatter({
+        nowSeconds,
+        timezone: settings.timezone,
+        display: settings.time_display,
+      });
+      /** 根 → 资料段行（与最终渲染逐字同一形状）。 */
+      const toQuoteLine = (root: QqFullReplyProjection["roots"][number]) => {
+        const message = root.message;
+        // P2：message==null（missing/expired/revoked/cycle）也保留安全关系行——稳定 id/state/
+        // depth 指向明确，不冒充无引用、不隐藏状态；不可读正文/私名一律不出（无 speaker/time/
+        // text/bodyRef 字段）。
+        if (!message) {
+          return {
+            from: root.fromMessageId,
+            target: root.targetMessageId,
+            state: root.state,
+            depth: root.depth,
+          };
+        }
         return {
           from: root.fromMessageId,
           target: root.targetMessageId,
           state: root.state,
           depth: root.depth,
+          platformMessageId: message.platformMessageId,
+          speaker: {
+            role: message.speaker.role,
+            qq: message.speaker.qq,
+            displayName: resolveQqDisplayName(message.speaker),
+            nameState: message.speaker.nameState,
+          },
+          occurredAtSeconds: message.occurredAtSeconds,
+          // 引用元数据始终带完整时间（规格 §5），时区沿方案 message_settings 真源。
+          time: quoteTime.format(message.occurredAtSeconds, true),
+          ...(root.textPage
+            ? {
+                text: root.textPage.text,
+                offset: root.textPage.offset,
+                total: root.textPage.total,
+                nextOffset: root.textPage.nextOffset,
+                complete: root.textPage.complete,
+              }
+            : {}),
+          ...(root.bodyRef ? { bodyRef: root.bodyRef } : {}),
         };
-      }
-      return {
-        from: root.fromMessageId,
-        target: root.targetMessageId,
-        state: root.state,
-        depth: root.depth,
-        platformMessageId: message.platformMessageId,
-        speaker: {
-          role: message.speaker.role,
-          qq: message.speaker.qq,
-          displayName: resolveQqDisplayName(message.speaker),
-          nameState: message.speaker.nameState,
-        },
-        occurredAtSeconds: message.occurredAtSeconds,
-        // 引用元数据始终带完整时间（规格 §5），时区沿方案 message_settings 真源。
-        time: formatQqTime(message.occurredAtSeconds, {
-          nowSeconds,
-          timezone: settings.timezone,
-          display: settings.time_display,
-          full: true,
-        }),
-        ...(root.textPage
-          ? {
-              text: root.textPage.text,
-              offset: root.textPage.offset,
-              total: root.textPage.total,
-              nextOffset: root.textPage.nextOffset,
-              complete: root.textPage.complete,
-            }
-          : {}),
-        ...(root.bodyRef ? { bodyRef: root.bodyRef } : {}),
       };
-    };
-    /** 最终渲染实量：整个 qq_reply_roots 段（含包装、转义、元数据行、bodyRef）的 UTF-8 字节。 */
-    const quoteDumpBytes = (roots: QqFullReplyProjection["roots"]): number => {
-      const lines = roots
-        .map(toQuoteLine)
-        .filter((line): line is NonNullable<typeof line> => line !== null);
-      if (lines.length === 0) return 0;
-      return estimateTokens(
-        contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots: lines }),
-      );
-    };
-    if (replyScope && replyFacts.length > 0) {
-      replyExpansion = expandQqReplies({
-        scope: replyScope,
-        window: replyWindowFacts,
-        focus: o.mediaInput?.focus() ?? {
-          triggerMessageIds: o.trigger ? [o.trigger.sourceId] : [],
-          responseMessageIds: o.trigger ? [o.trigger.sourceId] : [],
-          responseQqs: o.targets().map((target) => target.speakerId ?? "anonymous"),
-          assistantQq: o.binding.accountId,
-        },
-        settings,
-        now: readAt,
-        // 纯函数的预算单位是码点；这里的装配预算是 UTF-8 字节。字符预算不设限（沿用
-        // evidenceBudget("qq_reply") 口径），真实字节边界交给 fits：按候选投影的**整段
-        // 渲染实量**（元数据行＋page＋bodyRef 全部序列化）复检——fitPrefix 二分因此找到
-        // 整段可容的最长前缀，深层超段则被裁。
-        remainingTextUnits: this.evidenceBudget("qq_reply"),
-        // 出站回落（T04 Step3）：入站 loader 取不到时，按同一平台 ID 查**已确认助手 part**
-        // （群友回复助手旧消息时目标就是助手 part；只走入站 loader 恒 missing，原话取不到）。
-        // loader 自身按 confirmed/唯一认领/双账一致/target 六维+authorityRevision/真实
-        // delivery journal 归属/双期限帽 fail closed，本层不复制任何授权判定。
-        load: (id: string) =>
-          loadQqMessageFact({ db: o.db, orm: o.orm }, replyScope, id, readAt) ??
-          loadQqOutboundMessageFact({ db: o.db, orm: o.orm }, replyScope, id, readAt),
-        // P2/S14：状态感知读取——expired/revoked/legacy 分别表达（同 scope 到期保状态
-        // 不泄正文/身份；跨 scope 恒 missing），不把过期混为 missing。
-        // 出站回落（T04 Step3）：入站 missing 时走同一平台 ID 的**已确认助手 part** 状态
-        // 读取——message-projection 的 `loadQqOutboundMessageFactState` 与事实读同一
-        // guard（scope 八维先决，visiblePart(now=null) 免期定位）：同 scope 过期表达为
-        // `expired`（不给正文/身份），未确认/跨 scope/撤权一律 `missing` 不泄存在，
-        // available 才带事实。本层不复制任何授权判定。
-        loadState: (id: string) => {
-          const inbound = loadQqMessageFactState({ db: o.db, orm: o.orm }, replyScope, id, readAt);
-          if (inbound.state !== "missing") return inbound;
-          return loadQqOutboundMessageFactState({ db: o.db, orm: o.orm }, replyScope, id, readAt);
-        },
-        // 引用正文注册走既有 history 域（规格 §4.4：按需读取扩展 history.read 同一证据
-        // 注册机制，不发明新域/新工具名；history 模块 lazy read 以真实 bodyRef 解析正文）。
-        register: (_candidateEvidence: Evidence, fact: QqMessageFact) => {
-          // P2/S19 桥：reply-context 给的 evidence.id 是 "qq-message:<eventKey>" 形状的
-          // 普通文本 id——history 域的 lazy read 只认 locateHistory 铸造的 JSON tuple
-          // Evidence（带 conversation_evidence sources）。通过当前 fact 的真实
-          // platformMessageId 调 locateHistory，用真实 run ActionContext（owner/runId/
-          // assertAuthority）铸造合法 Evidence 后注册——同 run 读命中，跨 run 仍拒。
-          // locateHistory 内部已做 scope/owner 复验。
-          const platformId = fact?.platformMessageId ?? undefined;
-          const anchor = platformId
-            ? this.locateHistory?.(platformId, {
+      /** 最终渲染实量：整个 qq_reply_roots 段（含包装、转义、元数据行、bodyRef）的 UTF-8 字节。 */
+      const quoteDumpBytes = (roots: QqFullReplyProjection["roots"]): number => {
+        const lines = roots
+          .map(toQuoteLine)
+          .filter((line): line is NonNullable<typeof line> => line !== null);
+        if (lines.length === 0) return 0;
+        return estimateTokens(
+          contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots: lines }),
+        );
+      };
+      if (replyScope && replyFacts.length > 0) {
+        replyExpansion = expandQqReplies({
+          scope: replyScope,
+          window: replyWindowFacts,
+          focus: o.mediaInput?.focus() ?? {
+            triggerMessageIds: o.trigger ? [o.trigger.sourceId] : [],
+            responseMessageIds: o.trigger ? [o.trigger.sourceId] : [],
+            responseQqs: o.targets().map((target) => target.speakerId ?? "anonymous"),
+            assistantQq: o.binding.accountId,
+          },
+          settings,
+          now: readAt,
+          // 纯函数的预算单位是码点；这里的装配预算是 UTF-8 字节。字符预算不设限（沿用
+          // evidenceBudget("qq_reply") 口径），真实字节边界交给 fits：按候选投影的**整段
+          // 渲染实量**（元数据行＋page＋bodyRef 全部序列化）复检——fitPrefix 二分因此找到
+          // 整段可容的最长前缀，深层超段则被裁。
+          remainingTextUnits: this.evidenceBudget("qq_reply"),
+          // 出站回落（T04 Step3）：入站 loader 取不到时，按同一平台 ID 查**已确认助手 part**
+          // （群友回复助手旧消息时目标就是助手 part；只走入站 loader 恒 missing，原话取不到）。
+          // loader 自身按 confirmed/唯一认领/双账一致/target 六维+authorityRevision/真实
+          // delivery journal 归属/双期限帽 fail closed，本层不复制任何授权判定。
+          load: (id: string) =>
+            loadQqMessageFact({ db: o.db, orm: o.orm }, replyScope, id, readAt) ??
+            loadQqOutboundMessageFact({ db: o.db, orm: o.orm }, replyScope, id, readAt),
+          // P2/S14：状态感知读取——expired/revoked/legacy 分别表达（同 scope 到期保状态
+          // 不泄正文/身份；跨 scope 恒 missing），不把过期混为 missing。
+          // 出站回落（T04 Step3）：入站 missing 时走同一平台 ID 的**已确认助手 part** 状态
+          // 读取——message-projection 的 `loadQqOutboundMessageFactState` 与事实读同一
+          // guard（scope 八维先决，visiblePart(now=null) 免期定位）：同 scope 过期表达为
+          // `expired`（不给正文/身份），未确认/跨 scope/撤权一律 `missing` 不泄存在，
+          // available 才带事实。本层不复制任何授权判定。
+          loadState: (id: string) => {
+            const started = performance.now();
+            try {
+              const inbound = loadQqMessageFactState(
+                { db: o.db, orm: o.orm },
+                replyScope,
+                id,
+                readAt,
+              );
+              if (inbound.state !== "missing") return inbound;
+              return loadQqOutboundMessageFactState(
+                { db: o.db, orm: o.orm },
+                replyScope,
+                id,
+                readAt,
+              );
+            } finally {
+              if (timings) {
+                timings.readViewReplyLoadStateCalls =
+                  (timings.readViewReplyLoadStateCalls ?? 0) + 1;
+                timings.readViewReplyLoadStateMs =
+                  (timings.readViewReplyLoadStateMs ?? 0) + performance.now() - started;
+              }
+            }
+          },
+          // 引用正文注册走既有 history 域（规格 §4.4：按需读取扩展 history.read 同一证据
+          // 注册机制，不发明新域/新工具名；history 模块 lazy read 以真实 bodyRef 解析正文）。
+          register: (_candidateEvidence: Evidence, fact: QqMessageFact) => {
+            const started = performance.now();
+            try {
+              // P2/S19 桥：reply-context 给的 evidence.id 是 "qq-message:<eventKey>" 形状的
+              // 普通文本 id——history 域的 lazy read 只认 locateHistory 铸造的 JSON tuple
+              // Evidence（带 conversation_evidence sources）。通过当前 fact 的真实
+              // platformMessageId 调 locateHistory，用真实 run ActionContext（owner/runId/
+              // assertAuthority）铸造合法 Evidence 后注册——同 run 读命中，跨 run 仍拒。
+              // locateHistory 内部已做 scope/owner 复验。
+              const platformId = fact?.platformMessageId ?? undefined;
+              const anchor = platformId
+                ? this.locateHistory?.(platformId, {
+                    owner: this.runOwner ?? this.owner,
+                    runId: this.runId,
+                    signal,
+                  })
+                : null;
+              if (!anchor) {
+                // locateHistory 返回 null＝无法合法定位（scope/权限/存在性失败）——不注册，
+                // 不发不可读 bodyRef 假满足。
+                return "";
+              }
+              return this.registerEvidence("history", anchor, {
                 owner: this.runOwner ?? this.owner,
                 runId: this.runId,
                 signal,
-              })
-            : null;
-          if (!anchor) {
-            // locateHistory 返回 null＝无法合法定位（scope/权限/存在性失败）——不注册，
-            // 不发不可读 bodyRef 假满足。
-            return "";
-          }
-          return this.registerEvidence("history", anchor, {
-            owner: this.runOwner ?? this.owner,
-            runId: this.runId,
-            signal,
-          });
-        },
-        fits: (value: QqFullReplyProjection, sources: readonly SourceRef[]) => {
-          this.assertSources(sources);
-          // bodyRef 在展开授予之后才注册（随机 UUID），此时序列化还看不到它——每个可能携带
-          // 受限读取引用的根（页不完整/被裁直接层）预留一个 bodyRef JSON 的固定字节数，
-          // 不让最终序列化超出这里判定的余量。
-          const pendingBodyRefs = value.roots.filter(
-            (root) => root.message !== null && (root.textPage === null || !root.textPage.complete),
-          ).length;
-          return quoteDumpBytes(value.roots) + pendingBodyRefs * 64 <= quoteRoom;
-        },
-      });
-    }
-    // configured_depth：已授权根（metadata/textPage）进实际资料段；one_then_on_demand 也渲染
-    // 引用行但**仅关系/状态元数据**（正文仍按需读取，不自动供入——规格 §4.3 默认模式）。
-    // 降级顺序（§4.4）：
-    // 段超余量先裁最深、再最早的引用行（其关系仍留在窗口事实与 bodyRef 登记里），
-    // 直接层正文页已由展开内 Unicode 前缀二分裁到位；都不够则整段不渲染——不删窗口、
-    // 不打死整轮。窗口内正文只供一次（in_window 根只带关系指向）；过期/跨 scope 根
-    // fail-closed 不暴露、来源不并入。
-    {
-      const oneThen = settings.reply_mode === "one_then_on_demand";
-      let quoteRoots = [...replyExpansion.roots];
-      while (quoteRoots.length > 0 && quoteDumpBytes(quoteRoots) > quoteRoom) {
-        // 最深优先；同深取最早（occurredAtSeconds 小者），再按 fromMessageId 决胜。
-        let victim = quoteRoots[0];
-        for (const root of quoteRoots) {
-          if (
-            root.depth > victim.depth ||
-            (root.depth === victim.depth &&
-              (root.message?.occurredAtSeconds ?? 0) < (victim.message?.occurredAtSeconds ?? 0)) ||
-            (root.depth === victim.depth &&
-              (root.message?.occurredAtSeconds ?? 0) === (victim.message?.occurredAtSeconds ?? 0) &&
-              root.fromMessageId < victim.fromMessageId)
-          ) {
-            victim = root;
-          }
+              });
+            } finally {
+              if (timings) {
+                timings.readViewReplyRegisterCalls = (timings.readViewReplyRegisterCalls ?? 0) + 1;
+                timings.readViewReplyRegisterMs =
+                  (timings.readViewReplyRegisterMs ?? 0) + performance.now() - started;
+              }
+            }
+          },
+          fits: (value: QqFullReplyProjection) => {
+            // bodyRef 在展开授予之后才注册（随机 UUID），此时序列化还看不到它——每个可能携带
+            // 受限读取引用的根（页不完整/被裁直接层）预留一个 bodyRef JSON 的固定字节数，
+            // 不让最终序列化超出这里判定的余量。
+            const pendingBodyRefs = value.roots.filter(
+              (root) =>
+                root.message !== null && (root.textPage === null || !root.textPage.complete),
+            ).length;
+            const bytesFit = quoteDumpBytes(value.roots) + pendingBodyRefs * 64 <= quoteRoom;
+            if (!bytesFit || !tokenMode) return bytesFit;
+            const roots = value.roots.map(toQuoteLine).filter((line) => line !== null);
+            return fitsTarget({
+              ...material,
+              pending: [
+                ...(material.pending ?? []),
+                textMessage(
+                  "user",
+                  contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots }),
+                ),
+              ],
+            });
+          },
+        });
+        // Prefix fitting is synchronous budget work; recheck the complete disclosed
+        // source union once at its current time before assembling any quote material.
+        const unionAssertStarted = performance.now();
+        try {
+          this.assertSources(replyExpansion.sources);
+        } finally {
+          if (timings) timings.readViewReplyUnionAssertMs = performance.now() - unionAssertStarted;
         }
-        quoteRoots = quoteRoots.filter((root) => root !== victim);
       }
+      // configured_depth：已授权根（metadata/textPage）进实际资料段；one_then_on_demand 也渲染
+      // 引用行但**仅关系/状态元数据**（正文仍按需读取，不自动供入——规格 §4.3 默认模式）。
+      // 降级顺序（§4.4）：
+      // 段超余量先裁最深、再最早的引用行（其关系仍留在窗口事实与 bodyRef 登记里），
+      // 直接层正文页已由展开内 Unicode 前缀二分裁到位；都不够则整段不渲染——不删窗口、
+      // 不打死整轮。窗口内正文只供一次（in_window 根只带关系指向）；过期/跨 scope 根
+      // fail-closed 不暴露、来源不并入。
+      if (timings) timings[activeRegion] = performance.now() - regionStarted;
+      activeRegion = "readViewFinalizationMs";
+      regionStarted = performance.now();
+      {
+        const oneThen = settings.reply_mode === "one_then_on_demand";
+        let quoteRoots = [...replyExpansion.roots];
+        const quoteFits = (roots: QqFullReplyProjection["roots"]) =>
+          quoteDumpBytes(roots) <= quoteRoom &&
+          (!tokenMode ||
+            fitsTarget({
+              ...material,
+              pending: [
+                ...(material.pending ?? []),
+                textMessage(
+                  "user",
+                  contextDumps({
+                    kind: "qq_reply_roots",
+                    trust: "data_only",
+                    roots: roots.map(toQuoteLine).filter((line) => line !== null),
+                  }),
+                ),
+              ],
+            }));
+        while (quoteRoots.length > 0 && !quoteFits(quoteRoots)) {
+          // 最深优先；同深取最早（occurredAtSeconds 小者），再按 fromMessageId 决胜。
+          let victim = quoteRoots[0];
+          for (const root of quoteRoots) {
+            if (
+              root.depth > victim.depth ||
+              (root.depth === victim.depth &&
+                (root.message?.occurredAtSeconds ?? 0) <
+                  (victim.message?.occurredAtSeconds ?? 0)) ||
+              (root.depth === victim.depth &&
+                (root.message?.occurredAtSeconds ?? 0) ===
+                  (victim.message?.occurredAtSeconds ?? 0) &&
+                root.fromMessageId < victim.fromMessageId)
+            ) {
+              victim = root;
+            }
+          }
+          quoteRoots = quoteRoots.filter((root) => root !== victim);
+        }
 
-      const quoteLines = quoteRoots
-        .map(toQuoteLine)
-        .filter((line): line is NonNullable<typeof line> => line !== null)
-        .map((line) =>
-          oneThen
-            ? // one_then：只保留关系/状态元数据，正文与受限读取引用不进模型输入（按需读取）。
-              { from: line.from, target: line.target, state: line.state, depth: line.depth }
-            : line,
-        );
-      if (quoteLines.length > 0 && quoteDumpBytes(quoteRoots) <= quoteRoom) {
-        const message = textMessage(
-          "user",
-          contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots: quoteLines }),
-        );
-        const includedTargets = new Set(quoteLines.map((line) => line.target));
-        disclosedMessages.push({
-          message,
-          facts: quoteRoots.flatMap((root) =>
-            includedTargets.has(root.targetMessageId) && root.message?.platformMessageId
-              ? [root.message]
-              : [],
-          ),
-        });
-        material = {
-          ...material,
-          pending: [...(material.pending ?? []), message],
-          sources: uniqueSources([...(material.sources ?? []), ...replyExpansion.sources]),
-        };
+        const quoteLines = quoteRoots
+          .map(toQuoteLine)
+          .filter((line): line is NonNullable<typeof line> => line !== null)
+          .map((line) =>
+            oneThen
+              ? // one_then：只保留关系/状态元数据，正文与受限读取引用不进模型输入（按需读取）。
+                { from: line.from, target: line.target, state: line.state, depth: line.depth }
+              : line,
+          );
+        if (quoteLines.length > 0 && quoteFits(quoteRoots)) {
+          const message = textMessage(
+            "user",
+            contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots: quoteLines }),
+          );
+          quoteMessage = message;
+          const includedTargets = new Set(quoteLines.map((line) => line.target));
+          disclosedMessages.push({
+            message,
+            facts: quoteRoots.flatMap((root) =>
+              includedTargets.has(root.targetMessageId) && root.message?.platformMessageId
+                ? [root.message]
+                : [],
+            ),
+          });
+          material = {
+            ...material,
+            pending: [...(material.pending ?? []), message],
+            sources: uniqueSources([...(material.sources ?? []), ...replyExpansion.sources]),
+          };
+        }
       }
+      if (!fitsTarget(material)) {
+        const model =
+          tier === "reply" ? o.runtime.model_name : (o.spec.model ?? o.runtime.model_name);
+        const used = cost(material);
+        if (o.onDiagnostic)
+          o.onDiagnostic({
+            kind: "context_budget_exceeded",
+            code: "CONTEXT_BUDGET_EXCEEDED",
+            stage: "final_fit",
+            tier,
+            model,
+            capacity: this.cachedCapacity(model) ?? null,
+            ceiling,
+            renderedCost: used,
+            roomFor: ceiling - used - envelope(material) - ACTION_ENVELOPE_ALLOWANCE,
+          });
+        fail("CONTEXT_BUDGET_EXCEEDED", "近期窗口、水位包、协议与后续动作余量超过可用容量");
+      }
+      signal.throwIfAborted();
+      this.assertSources(material.sources ?? []);
+      const selectedEventKeysBySpeaker = new Map<string | null, string[]>();
+      for (const message of selection.messages) {
+        if (message.speaker === "assistant" || message.carrierEventKey === undefined) continue;
+        const group = selectedEventKeysBySpeaker.get(message.speakerId);
+        if (group === undefined)
+          selectedEventKeysBySpeaker.set(message.speakerId, [message.carrierEventKey]);
+        else if (!group.includes(message.carrierEventKey)) group.push(message.carrierEventKey);
+      }
+      const view: View = {
+        material,
+        selection,
+        limit: ceiling,
+        ...(this.tokenBudget(tier) ? { contextBudget: this.tokenBudget(tier) } : {}),
+        replyFacts,
+        replyExpansion,
+        quoteMessage,
+        disclosedMessages,
+        selectedEventKeysBySpeaker,
+      };
+      this.views.set(tier, view);
+      this.assertCurrent();
+      return view;
+    } finally {
+      if (timings) timings[activeRegion] = performance.now() - regionStarted;
     }
-    if (!fitsTarget(material)) {
-      const model =
-        tier === "reply" ? o.runtime.model_name : (o.spec.model ?? o.runtime.model_name);
-      const used = cost(material);
-      if (o.onDiagnostic)
-        o.onDiagnostic({
-          kind: "context_budget_exceeded",
-          code: "CONTEXT_BUDGET_EXCEEDED",
-          stage: "final_fit",
-          tier,
-          model,
-          capacity: this.cachedCapacity(model) ?? null,
-          ceiling,
-          renderedCost: used,
-          roomFor: ceiling - used - this.envelopeFloor(material) - ACTION_ENVELOPE_ALLOWANCE,
-        });
-      fail("CONTEXT_BUDGET_EXCEEDED", "近期窗口、水位包、协议与后续动作余量超过可用容量");
-    }
-    signal.throwIfAborted();
-    this.assertSources(material.sources ?? []);
-    const selectedEventKeysBySpeaker = new Map<string | null, string[]>();
-    for (const message of selection.messages) {
-      if (message.speaker === "assistant" || message.carrierEventKey === undefined) continue;
-      const group = selectedEventKeysBySpeaker.get(message.speakerId);
-      if (group === undefined)
-        selectedEventKeysBySpeaker.set(message.speakerId, [message.carrierEventKey]);
-      else if (!group.includes(message.carrierEventKey)) group.push(message.carrierEventKey);
-    }
-    const view: View = {
-      material,
-      selection,
-      limit: ceiling,
-      replyFacts,
-      replyExpansion,
-      disclosedMessages,
-      selectedEventKeysBySpeaker,
-    };
-    this.views.set(tier, view);
-    this.assertCurrent();
-    return view;
   }
   private unavailable(name: string, code: string): EvidenceQueryPage {
     this.retrievalFailures = [
@@ -2973,18 +3548,55 @@ ${intent.trim()}`,
           )
           .get(eventKey, scope.accountId, scope.conversationKind, scope.peerId, scope.agentId)
       );
+    const sequenceBySource = new Map<string, Map<string, number | null>>();
+    for (const message of messages) {
+      for (const source of message.sources ?? []) {
+        let ids = sequenceBySource.get(source.kind);
+        if (!ids) {
+          ids = new Map();
+          sequenceBySource.set(source.kind, ids);
+        }
+        ids.set(source.id, null);
+      }
+    }
+    // Secondary references can locate an earlier row outside the selected window.
+    // Derive their minimum journal sequence once per call, without filtering source TTL.
+    if (sequenceBySource.size > 0) {
+      const wantedPairs: [string, string][] = [];
+      for (const [kind, ids] of sequenceBySource) {
+        for (const id of ids.keys()) wantedPairs.push([kind, id]);
+      }
+      const rows = o.db
+        .query(
+          `SELECT json_extract(s.value,'$.kind') AS kind,
+            json_extract(s.value,'$.id') AS id, MIN(e.seq) AS seq
+          FROM conversation_events e,json_each(e.sources) s
+          WHERE e.conversation_id=? AND e.kind IN ('inbound','outbound')
+            AND (json_extract(s.value,'$.kind'),json_extract(s.value,'$.id')) IN (
+              SELECT json_extract(w.value,'$[0]'),json_extract(w.value,'$[1]') FROM json_each(?) w
+            )
+          GROUP BY json_extract(s.value,'$.kind'),json_extract(s.value,'$.id')`,
+        )
+        .all(o.conversationId, JSON.stringify(wantedPairs)) as {
+        kind: unknown;
+        id: unknown;
+        seq: number;
+      }[];
+      for (const row of rows) {
+        if (typeof row.kind !== "string" || typeof row.id !== "string") continue;
+        const ids = sequenceBySource.get(row.kind);
+        if (ids?.has(row.id)) ids.set(row.id, row.seq);
+      }
+    }
     return messages.map((message, index) => {
       const sources = message.sources ?? [];
-      const rows = sources.flatMap(
-        (source) =>
-          o.db
-            .query(
-              "SELECT e.seq FROM conversation_events e,json_each(e.sources) s WHERE e.conversation_id=? AND e.kind IN ('inbound','outbound') AND json_extract(s.value,'$.kind')=? AND json_extract(s.value,'$.id')=?",
-            )
-            .all(o.conversationId, source.kind, source.id) as {
-            seq: number;
-          }[],
-      );
+      let seq: number | null = null;
+      for (const source of sources) {
+        const associated = sequenceBySource.get(source.kind)?.get(source.id);
+        if (associated !== undefined && associated !== null) {
+          seq = seq === null ? associated : Math.min(seq, associated);
+        }
+      }
       // 稳定身份 tuple 只按原 sources 计算：新增的投影 refs 不改变 record 身份。
       const id = sources.length
         ? contextDumps(sources.map((source) => [source.kind, source.id, source.revision]))
@@ -3024,7 +3636,7 @@ ${intent.trim()}`,
       }
       return {
         id,
-        seq: rows.length ? Math.min(...rows.map((row) => row.seq)) : null,
+        seq,
         speaker: message.speakerId ?? message.speaker,
         // 摘要只压文字关系与正文。媒体描述是模型产物、还会变长，压进摘要既贵又容易把
         // "看图看的"当成事实；未读的那一份本来就只是计数。
@@ -3038,14 +3650,42 @@ ${intent.trim()}`,
     name: string,
     arguments_: Record<string, unknown>,
     signal: AbortSignal,
-  ): Promise<(value: unknown, sources: readonly SourceRef[]) => boolean> {
+    requireNextWindow = false,
+  ): Promise<
+    (value: unknown, sources: readonly SourceRef[], terminalFeedback?: boolean) => boolean
+  > {
+    signal.throwIfAborted();
     this.assertCurrent();
-    await this.view(this.options.decisionTier, signal);
-    await this.view("reply", signal);
+    // 参数超过既有动作余量时，先按完整 name/arguments 收窄可裁窗口。
+    // 这里只预备空结果；真实结果和来源仍由同步 fitter 完整复验。
+    const probe: ActionObservation = {
+      id: "00000000-0000-0000-0000-000000000000",
+      name,
+      arguments: arguments_,
+      value: {},
+      sources: [],
+    };
+    const argumentProbe =
+      estimateTokens(contextDumps({ name, arguments: arguments_ })) > ACTION_ENVELOPE_ALLOWANCE
+        ? probe
+        : undefined;
+    await this.view(this.options.decisionTier, signal, undefined, undefined, argumentProbe);
+    await this.view("reply", signal, undefined, undefined, argumentProbe);
     // 同批只读工具并发跑，每个的 fit 只看到"上一轮已提交的 observations"；
     // 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许下一步渲染炸轮。
     const token = Symbol("action-result-fit");
-    return (value, sources) => {
+    const baselineCosts = new Map<
+      QqContextTier,
+      {
+        material: ContextMaterial;
+        observations: readonly ActionObservation[];
+        cost: number;
+      }
+    >();
+    return (value, sources, terminalFeedback = false) => {
+      signal.throwIfAborted();
+      this.assertCurrent();
+      const rawFeedback = terminalFeedback && this.budgetFeedbackBatchEligible;
       const observation: ActionObservation = {
         id: "00000000-0000-0000-0000-000000000000",
         name,
@@ -3054,43 +3694,73 @@ ${intent.trim()}`,
         sources: uniqueSources(sources),
       };
       // 检查与登记必须在同一同步块内完成，才能消除并发竞态（JS 单线程）。
-      let reservation = 0;
+      const reservations = new Map<"bytes" | "tokens", number>();
+      const materialChanges: { view: View; material: ContextMaterial }[] = [];
+      const observations = [...this.observations, observation];
       for (const [tier, view] of this.views) {
-        const projected = this.cost(tier, view.material, [...this.observations, observation]);
-        // 各档增量不同，预留取最大值（保守）。
-        reservation = Math.max(
-          reservation,
-          projected - this.cost(tier, view.material, this.observations),
-        );
-        if (projected + this.reservations.reserved(token) > view.limit) {
-          // §4.4 预算降级：工具观察装不下时，尝试缩减引用段（qq_reply_roots）腾出余量。
-          // 按深→早顺序逐根移除，直到装下或无引用可裁。失败不改 views/reservations。
-          const shrunk = this.tryShrinkQuoteForObservation(tier, observation, view, token);
+        const projected = this.cost(tier, view.material, observations, view.selection.messages);
+        const group = this.reservationGroup(tier);
+        const reserved = this.reservations.reserved(token, group);
+        if (rawFeedback) {
+          if (projected + reserved > view.limit) return false;
+        } else if (
+          (requireNextWindow
+            ? this.costWithNext(tier, view.material, observations, view.selection.messages)
+            : projected) +
+            reserved >
+          view.limit
+        ) {
+          // §4.4 预算降级：先计算移除真实引用段后的候选，所有档都装下才提交。
+          const shrunk = this.tryShrinkQuoteForObservation(
+            tier,
+            observation,
+            view,
+            token,
+            requireNextWindow,
+          );
           if (shrunk === null) return false;
-          reservation = Math.max(reservation, shrunk);
+          reservations.set(group, Math.max(reservations.get(group) ?? 0, shrunk.reservation));
+          materialChanges.push({ view, material: shrunk.material });
         }
+        const saved = baselineCosts.get(tier);
+        const baseline =
+          group === "tokens" &&
+          saved?.material === view.material &&
+          saved.observations === this.observations
+            ? saved.cost
+            : this.cost(tier, view.material, this.observations, view.selection.messages);
+        if (group === "tokens")
+          baselineCosts.set(tier, {
+            material: view.material,
+            observations: this.observations,
+            cost: baseline,
+          });
+        reservations.set(group, Math.max(reservations.get(group) ?? 0, projected - baseline));
       }
+      signal.throwIfAborted();
+      this.assertCurrent();
+      for (const change of materialChanges) change.view.material = change.material;
       // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
-      this.reservations.set(token, reservation);
+      for (const [group, reservation] of reservations)
+        this.reservations.set(token, reservation, group);
+      if (rawFeedback) this.terminalBudgetFeedback = true;
       return true;
     };
   }
   /**
-   * §4.4 预算降级：当工具观察因引用段占满余量而装不下时，尝试移除 qq_reply_roots 段
-   * 腾出空间。移除是永久性的（更新 view material）——引用关系仍由窗口事实的 replyTo
-   * 和 bodyRef registry 保留，模型可在下一轮重新请求。返回新 reservation 或 null（仍装不下）。
+   * §4.4 预算降级：计算移除真实 qq_reply_roots 消息后的材料与预留，不修改视图。
+   * 引用关系仍由窗口事实的 replyTo 和 bodyRef registry 保留，模型可在下一轮重新请求。
    */
   private tryShrinkQuoteForObservation(
     tier: QqContextTier,
     observation: ActionObservation,
     view: View,
     token: symbol,
-  ): number | null {
+    requireNextWindow: boolean,
+  ): { material: ContextMaterial; reservation: number } | null {
     // 找到 qq_reply_roots 消息
     const pending = view.material.pending ?? [];
-    const rootsIdx = pending.findIndex((m) =>
-      m.content.some((p) => p.kind === "text" && p.text.includes("qq_reply_roots")),
-    );
+    const rootsIdx = pending.findIndex((message) => message === view.quoteMessage);
     if (rootsIdx < 0) return null;
     // 移除该消息，重算 reservation
     const shrunkPending = pending.filter((_, idx) => idx !== rootsIdx);
@@ -3098,13 +3768,19 @@ ${intent.trim()}`,
       ...view.material,
       pending: shrunkPending,
     };
-    const projected = this.cost(tier, shrunkMaterial, [...this.observations, observation]);
-    const base = this.cost(tier, shrunkMaterial, this.observations);
+    const observations = [...this.observations, observation];
+    const projected = this.cost(tier, shrunkMaterial, observations, view.selection.messages);
+    if (
+      (requireNextWindow
+        ? this.costWithNext(tier, shrunkMaterial, observations, view.selection.messages)
+        : projected) +
+        this.reservations.reserved(token, this.reservationGroup(tier)) >
+      view.limit
+    )
+      return null;
+    const base = this.cost(tier, shrunkMaterial, this.observations, view.selection.messages);
     const reservation = Math.max(0, projected - base);
-    if (projected + this.reservations.reserved(token) > view.limit) return null;
-    // 成功：永久更新 view 的 material（引用段已降级为不可用）
-    view.material = shrunkMaterial;
-    return reservation;
+    return { material: shrunkMaterial, reservation };
   }
   /**
    * 补充资料查询。返回**信封**而不是裸数组：`ok`＋空＝真的没有相关内容，`unavailable`＋`code`＝
@@ -3134,11 +3810,12 @@ ${intent.trim()}`,
     const budget = Math.min(
       this.evidenceBudget(name === "memory.query" ? "memory" : "knowledge"),
       Math.min(
-        ...[...this.views].map(
-          ([tier, view]) =>
-            view.limit - this.cost(tier, view.material, [...this.observations, empty]),
+        ...[...this.views].map(([tier, view]) =>
+          this.tokenBudget(tier)
+            ? Number.MAX_SAFE_INTEGER
+            : view.limit - this.cost(tier, view.material, [...this.observations, empty]),
         ),
-      ) - this.reservations.reserved(),
+      ) - this.reservations.reserved(undefined, "bytes"),
     );
     const sources = uniqueSources([...this.sources, ...(action.sources ?? [])]);
     signal.throwIfAborted();

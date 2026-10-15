@@ -109,9 +109,7 @@ export class ModelUnavailableError extends AppError {
 // Repository / service layer codes
 
 /**
- * Mirrors the local `fail(code, message, status=409)` helpers in
- * 20` and
- * Default status is **409**.
+ * Throw an application error; repository conflicts default to HTTP 409.
  */
 export function fail(code: ErrorCode, message: string, status = 409): never {
   throw new AppError(code, message, status);

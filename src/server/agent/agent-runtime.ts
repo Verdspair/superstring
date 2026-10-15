@@ -17,6 +17,7 @@ import type {
   RunOwner,
   RunStatus,
 } from "../../shared/contracts/agent-run";
+import { unicodeStrip } from "../../shared/contracts/code-point-string";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ExecutionMode } from "../../shared/contracts/permissions";
 import type { AgentRunRepository } from "../db/agent-run-repository";
@@ -33,7 +34,6 @@ import type {
   TraceMetadata,
   TraceScope,
 } from "../observability/runtime-telemetry";
-import { unicodeStrip } from "../services/text";
 import { ActionExecutor } from "./action-executor";
 import type {
   ActionDescription,
@@ -47,8 +47,12 @@ import type { CodeRunner, CodeRunnerLimits } from "./code-runner";
 import {
   type ActionObservation,
   ContextEngine,
+  type ContextReadTimings,
+  type ContextTokenMeasure,
+  type ContextTokenMeasureOptions,
   type ConversationContextSource,
   inputUnits,
+  measureContextTokens,
   type RenderedContext,
   textMessage,
   uniqueSources,
@@ -57,6 +61,7 @@ import {
 import type { ImageByteResolver } from "./image-byte-resolver";
 import {
   createModelPort,
+  type ModelContextBudget,
   type ModelPort,
   type ModelRequest,
   type ModelResolvedPrepareInput,
@@ -66,6 +71,7 @@ import {
   textMessages,
 } from "./model-port";
 import { createResearchAction, type ResearchLimits } from "./research-action";
+import { ReservationLedger } from "./reservation-ledger";
 import { createToolCatalog, type ToolCatalog } from "./tool-catalog";
 
 export interface LeafInput {
@@ -78,6 +84,9 @@ export interface LeafInput {
   /** 与父 run 共用同一本账（可选）：叶子花的钱算进整棵树。 */
   usage?: RunUsage;
   budget?: RunBudget;
+  /** Explicit leaf opt-in; no phase/model preparation or HTTP probe happens implicitly. */
+  contextBudget?: ModelContextBudget;
+  contextInputLimit?: number;
   onEvent?: (event: RunEvent) => void | Promise<void>;
   /**
    * Existing domain parser executes inside the persisted step's success boundary.
@@ -153,11 +162,23 @@ export interface ConversationInput {
   conversationId?: string;
   requestId?: string;
   onEvent?: (event: RunEvent) => void | Promise<void>;
+  /** Trusted host may supply a bounded next-step correction only for invalid agent decisions. */
+  onDecisionInvalid?: (code: "AGENT_DECISION_INVALID", signal: AbortSignal) => Promise<boolean>;
   /** 整棵任务树共用的一本账与它的上限（0.4.0 P3）；省略＝只记这个 run 自己的账。 */
   usage?: RunUsage;
   budget?: RunBudget;
   /** Host-bound scope/budget handlers, never derived from model arguments. */
   actions?: readonly BuiltInAction[];
+  /** Host admission for the runtime-created research result; never applied to external names. */
+  prepareResearchAction?(action: BuiltInAction): BuiltInAction;
+  /** Trusted host phase gate; terminal recovery never permits another ordinary tool call. */
+  isTerminalDecision?: () => boolean;
+  beforeActionBatch?: (
+    calls: readonly {
+      readonly action: BuiltInAction;
+      readonly arguments: Record<string, unknown>;
+    }[],
+  ) => void;
   executionMode?: ExecutionMode;
   onContext?: (
     context: RenderedContext,
@@ -201,13 +222,10 @@ export interface ConversationInput {
    */
   imageResolver?: ImageByteResolver;
   /**
-   * 规格 §10：本 run 存在待分类 unknown 图时，决策同次响应走内部 envelope schema；
-   * `parse` 由可信宿主提供（白名单校验＋同次分类消费），返回本体 decision 对象。
-   * 缺省＝沿用 AGENT_DECISION_JSON_SCHEMA 原路径（text-only 行为逐字不变）。
-   */
-  /**
-   * 规格 §10：宿主按**当前投影**（每步 re-observe 后可能变化）决定本步决策是否走同次
-   * 分类 envelope——每次决策模型调用前现取；返回 undefined＝该步走原 schema。
+   * 规格 §10：宿主按**当前投影**（每步 re-observe 后可能变化）决定本步决策是否走同次分类
+   * envelope——本 run 存在待分类 unknown 图时启用；`parse` 由可信宿主提供（白名单校验＋同次
+   * 分类消费），返回本体 decision 对象。返回 undefined＝该步走 AGENT_DECISION_JSON_SCHEMA
+   * 原路径（text-only 行为逐字不变）。
    */
   decisionEnvelope?: () =>
     | {
@@ -333,6 +351,7 @@ interface TargetPlan {
   generationContext: RenderedContext;
   messages: ModelMessage[];
   generationSpec: LeafAgentSpec;
+  generationBudget?: ModelContextBudget;
   structured?: PreparedGeneration["responseEnvelope"];
   allowEmpty?: boolean;
   /** 宿主按目标冻结的发送闭包；缺省字段沿输入级闭包。 */
@@ -464,6 +483,10 @@ export class AgentRuntime {
             temperature: spec.temperature,
             maxTokens: spec.maxTokens,
             responseSchema: spec.responseSchema,
+            ...(input.contextBudget === undefined ? {} : { contextBudget: input.contextBudget }),
+            ...(input.contextInputLimit === undefined
+              ? {}
+              : { contextInputLimit: input.contextInputLimit }),
             ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
             signal: active.signal,
             onModelResolved,
@@ -501,6 +524,12 @@ export class AgentRuntime {
                 temperature: spec.temperature,
                 maxTokens: spec.maxTokens,
                 responseSchema: spec.responseSchema,
+                ...(input.contextBudget === undefined
+                  ? {}
+                  : { contextBudget: input.contextBudget }),
+                ...(input.contextInputLimit === undefined
+                  ? {}
+                  : { contextInputLimit: input.contextInputLimit }),
                 ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
                 runId: active.runId,
                 owner: input.owner,
@@ -584,7 +613,12 @@ export class AgentRuntime {
   private async completeLeafTask(
     active: Running,
     phase: "leaf" | "vision",
-    input: { owner: RunOwner; sources?: readonly SourceRef[] },
+    input: {
+      owner: RunOwner;
+      sources?: readonly SourceRef[];
+      contextBudget?: ModelContextBudget;
+      contextInputLimit?: number;
+    },
     prepare: () => {
       messages: ModelMessage[];
       invoke: (
@@ -609,7 +643,26 @@ export class AgentRuntime {
         if (typeof checkpoint === "function") checkpoint();
         return value;
       };
-      const value = await this.step(active, phase, messages, input.sources ?? [], guarded);
+      const value = await this.step(
+        active,
+        phase,
+        messages,
+        input.sources ?? [],
+        guarded,
+        active.spec,
+        undefined,
+        undefined,
+        undefined,
+        {
+          budget: input.contextBudget,
+          inputLimit: input.contextInputLimit,
+          options:
+            active.spec.responseSchema === undefined
+              ? undefined
+              : { responseSchema: active.spec.responseSchema },
+          stepInputLimit: input.contextInputLimit,
+        },
+      );
       await this.finish(active, "completed", { type: "completed", outputs: [] });
       return value;
     } catch (error) {
@@ -678,6 +731,14 @@ export class AgentRuntime {
     let releaseActions: readonly BuiltInAction[] = [];
     try {
       const observations: ActionObservation[] = [];
+      const preparePhaseBudget = (
+        model: string | undefined,
+      ): Promise<ModelContextBudget | undefined> => {
+        const resolved = model ?? this.options.model.defaultModel;
+        return resolved && input.context.prepareModelContext
+          ? input.context.prepareModelContext(resolved, active.signal)
+          : Promise.resolve(undefined);
+      };
       const mode = input.executionMode ?? "direct";
       const catalog = input.actions ? createToolCatalog(input.actions) : this.actions;
       const declaredNames = new Set<string>();
@@ -693,17 +754,17 @@ export class AgentRuntime {
       });
       releaseActions = baseActions;
       const extensions: BuiltInAction[] = [];
-      if (mode === "direct" && this.options.researchEnabled?.())
-        extensions.push(
-          createResearchAction({
-            runtime: this,
-            executor: this.executor,
-            spec,
-            input,
-            actions: baseActions,
-            limits: this.options.researchLimits?.(),
-          }),
-        );
+      if (mode === "direct" && this.options.researchEnabled?.()) {
+        const research = createResearchAction({
+          runtime: this,
+          executor: this.executor,
+          spec,
+          input,
+          actions: baseActions,
+          limits: this.options.researchLimits?.(),
+        });
+        extensions.push(input.prepareResearchAction?.(research) ?? research);
+      }
       const code = this.options.codeMode;
       if (
         mode === "direct" &&
@@ -799,6 +860,7 @@ export class AgentRuntime {
         }
       };
       input.context.bindRun?.(actionContext);
+      for (const action of baseActions) action.bindRun?.(actionContext);
       await this.emit(active, {
         type: "started",
         ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -807,10 +869,13 @@ export class AgentRuntime {
         active.assertActions();
         this.checkStepBudget(active, spec);
         this.repository.setStatus(active.runId, "deciding", this.now());
-        const availableActions = descriptors.filter((descriptor) => {
-          const action = actions.resolve(descriptor.name);
-          return action && this.executor.allowed(action, actionContext, mode);
-        });
+        const terminalDecision = input.isTerminalDecision?.() ?? false;
+        const availableActions = terminalDecision
+          ? []
+          : descriptors.filter((descriptor) => {
+              const action = actions.resolve(descriptor.name);
+              return action && this.executor.allowed(action, actionContext, mode);
+            });
         // 终结回复能力与普通工具进入同一次投递目录：系统声明、原生 tools、configureActions
         // 都看到它——模型只对**本轮已广告**的终结名调用才被接受（下方 terminalDecision 校验），
         // 但它的执行不经 ActionExecutor（它没有可执行体）：转成 final 草稿走输出校验/提交边界。
@@ -821,6 +886,9 @@ export class AgentRuntime {
         // 规格 §10：本步决策的实际响应 schema 选择——投影（read）完成后现取并冻结一次，
         // 系统声明（render）与实际请求（requestFor）、响应解析共用同一个选择。
         let decisionEnvelope: ReturnType<NonNullable<ConversationInput["decisionEnvelope"]>>;
+        const decisionBudget = await preparePhaseBudget(spec.model);
+        active.signal.throwIfAborted();
+        let currentMaterial: Awaited<ReturnType<ConversationContextSource["read"]>>;
         const context = await this.trace(
           active,
           "agent.context",
@@ -829,121 +897,208 @@ export class AgentRuntime {
             details: { phase: "next", observationCount: observations.length },
           },
           async (scope) => {
-            const material = await input.context.read({ signal: active.signal, observations });
-            active.signal.throwIfAborted();
-            decisionEnvelope = input.decisionEnvelope?.();
-            const rendered = this.contextEngine.render(
-              { ...spec, availableActions: advertisedActions },
-              material,
-              observations,
-              input.authorizedTargets,
-              input.outputMode,
-              decisionEnvelope?.responseSchema,
-            );
-            scope?.update({
-              sources: rendered.sources,
-              details: {
-                inputUnits: rendered.units,
-                messageCount: rendered.messages.length,
-                sourceCount: rendered.sources.length,
-                evidenceCount: material.evidence?.length ?? 0,
-                summaryCount: material.summaries?.length ?? 0,
-                historyCount: material.history?.length ?? 0,
-              },
-            });
-            await input.onContext?.(rendered, { runId: active.runId, phase: "next" });
-            return rendered;
-          },
-        );
-        let decision = await this.step(
-          active,
-          "next",
-          context.messages,
-          context.sources,
-          async (capture, onModelResolved) => {
-            let resolved = spec.model ?? this.options.model.defaultModel ?? "?";
-            // T10/§9 决策相发送（真实 HTTP 服务首拒 unsupported → 宿主标 fallback 重备后
-            // 同相同 complete 重试恰一次；非 unsupported 原样抛）。requestFor(messages) 每次以
-            // 当前 messages 组请求；prepare/schema/tools 重试共用同一次钩子结果与 used。
-            const requestFor = (phaseMessages: readonly ModelMessage[]): ModelRequest => ({
-              messages: phaseMessages,
-              model: spec.model,
-              temperature: spec.temperature,
-              maxTokens: spec.maxTokens ?? spec.limits.outputTokens,
-              responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
-              ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
-              runId: active.runId,
-              owner: input.owner,
-              ...(input.imageResolver === undefined ? {} : { imageResolver: input.imageResolver }),
-              // 已广告的动作同时以原生 tools 声明（issue #10）：模型用它表达 invoke，正文只剩
-              // final/none。是否真的发送由网关决定——外部路由发，本地服务保持冻结的 JSON 决策。
-              tools: advertisedActions.map((action) => ({
-                name: action.name,
-                description: action.description,
-                parameters: action.parameters,
-              })),
-              // T10 准备钩子透传（决策相）：actualModel 冻结后由网关调用；宿主闭包决定最终
-              // messages/resolver，undefined＝原样。metadata 由闭包自持，不经网关回传。
-              ...(input.prepareWithResolved === undefined
-                ? {}
-                : {
-                    prepareWithResolved: async (hook) =>
-                      (await input.prepareWithResolved?.({
-                        ...hook,
-                        phase: "next",
-                      })) ?? {},
-                  }),
-              ...(input.assertPreparedCurrent === undefined
-                ? {}
-                : { assertPreparedCurrent: input.assertPreparedCurrent }),
-              signal: active.signal,
-              onModelResolved: (model) => {
-                resolved = model;
-                onModelResolved(model);
-              },
-              onResponseText: capture,
-            });
-            let raw: string;
+            const timings: ContextReadTimings & {
+              onContextPresent: boolean;
+              contextReadMs?: number;
+              contextRenderMs?: number;
+              onContextMs?: number;
+            } = { onContextPresent: Boolean(input.onContext) };
             try {
-              raw = await this.options.model.complete(requestFor(context.messages));
-            } catch (error) {
-              if (
-                !(
-                  error instanceof Error &&
-                  (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
-                ) ||
-                input.onPhaseMediaUnsupported === undefined
-              )
-                throw error;
-              const retry = await input.onPhaseMediaUnsupported({
-                phase: "next",
-                model: resolved,
-                messages: context.messages,
-                signal: active.signal,
+              let material: Awaited<ReturnType<ConversationContextSource["read"]>>;
+              const readStarted = performance.now();
+              try {
+                material = await input.context.read({
+                  signal: active.signal,
+                  observations,
+                  onReadTimings: (readTimings) => Object.assign(timings, readTimings),
+                });
+                currentMaterial = material;
+              } finally {
+                timings.contextReadMs = performance.now() - readStarted;
+              }
+              active.signal.throwIfAborted();
+              decisionEnvelope = input.decisionEnvelope?.();
+              let rendered: RenderedContext;
+              const renderStarted = performance.now();
+              try {
+                rendered = this.contextEngine.render(
+                  { ...spec, availableActions: advertisedActions },
+                  material,
+                  observations,
+                  input.authorizedTargets,
+                  input.outputMode,
+                  decisionEnvelope?.responseSchema,
+                );
+                rendered = this.measureRenderedContext(rendered, decisionBudget, {
+                  responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+                  tools: advertisedActions.map(({ name, description, parameters }) => ({
+                    name,
+                    description,
+                    parameters,
+                  })),
+                });
+              } finally {
+                timings.contextRenderMs = performance.now() - renderStarted;
+              }
+              scope?.update({
+                sources: rendered.sources,
+                details: {
+                  inputUnits: rendered.units,
+                  messageCount: rendered.messages.length,
+                  sourceCount: rendered.sources.length,
+                  evidenceCount: material.evidence?.length ?? 0,
+                  summaryCount: material.summaries?.length ?? 0,
+                  historyCount: material.history?.length ?? 0,
+                },
               });
-              if (retry === null) throw error;
-              raw = await this.options.model.complete(requestFor(retry.messages));
-            }
-            capture(raw, true);
-            // §8.1：决策相调用成功返回＝本 run 真实消费了请求中的图像 → 通知宿主记账。
-            input.onModelCallConsumed?.({ phase: "next" });
-            try {
-              if (decisionEnvelope)
-                return decisionEnvelope.parse(raw, { resolvedModel: active.resolvedModel ?? "" });
-              return parseAgentDecision(raw);
-            } catch {
-              // 「读不出决策」必须能一眼看出模型回了什么。原文也会随步骤落库
-              // （受保护输出，运行检查器可看），这里只是让它出现在控制台/日志里。
-              console.warn(
-                `[agent] 决策解析失败 model=${resolved} phase=next：${summariseModelText(raw)}`,
-              );
-              throw new AgentRuntimeError(
-                "AGENT_DECISION_INVALID",
-                "Decision must be a complete JSON object matching the Agent schema",
-              );
+              if (input.onContext) {
+                const callbackStarted = performance.now();
+                try {
+                  await input.onContext(rendered, { runId: active.runId, phase: "next" });
+                } finally {
+                  timings.onContextMs = performance.now() - callbackStarted;
+                }
+              } else {
+                timings.onContextMs = 0;
+              }
+              return rendered;
+            } finally {
+              scope?.update({ details: timings });
             }
           },
         );
+        let decision: ReturnType<typeof parseAgentDecision>;
+        try {
+          decision = await this.step(
+            active,
+            "next",
+            context.messages,
+            context.sources,
+            async (capture, onModelResolved) => {
+              let resolved =
+                decisionBudget?.model ?? spec.model ?? this.options.model.defaultModel ?? "?";
+              // T10/§9 决策相发送（真实 HTTP 服务首拒 unsupported → 宿主标 fallback 重备后
+              // 同相同 complete 重试恰一次；非 unsupported 原样抛）。requestFor(messages) 每次以
+              // 当前 messages 组请求；prepare/schema/tools 重试共用同一次钩子结果与 used。
+              const requestFor = (phaseMessages: readonly ModelMessage[]): ModelRequest => ({
+                messages: phaseMessages,
+                model: spec.model,
+                temperature: spec.temperature,
+                maxTokens: spec.maxTokens ?? spec.limits.outputTokens,
+                responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+                ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
+                runId: active.runId,
+                owner: input.owner,
+                ...(input.imageResolver === undefined
+                  ? {}
+                  : { imageResolver: input.imageResolver }),
+                // 已广告的动作同时以原生 tools 声明（issue #10）：模型用它表达 invoke，正文只剩
+                // final/none。是否真的发送由网关决定——外部路由发，本地服务保持冻结的 JSON 决策。
+                tools: advertisedActions.map((action) => ({
+                  name: action.name,
+                  description: action.description,
+                  parameters: action.parameters,
+                })),
+                ...(decisionBudget === undefined ? {} : { contextBudget: decisionBudget }),
+                ...(!decisionBudget?.countText ||
+                !decisionBudget.tokenizerEncoding ||
+                spec.limits.inputUnits === undefined
+                  ? {}
+                  : { contextInputLimit: spec.limits.inputUnits }),
+                // T10 准备钩子透传（决策相）：actualModel 冻结后由网关调用；宿主闭包决定最终
+                // messages/resolver，undefined＝原样。metadata 由闭包自持，不经网关回传。
+                ...(input.prepareWithResolved === undefined
+                  ? {}
+                  : {
+                      prepareWithResolved: async (hook) =>
+                        (await input.prepareWithResolved?.({
+                          ...hook,
+                          phase: "next",
+                        })) ?? {},
+                    }),
+                ...(input.assertPreparedCurrent === undefined
+                  ? {}
+                  : { assertPreparedCurrent: input.assertPreparedCurrent }),
+                signal: active.signal,
+                onModelResolved: (model) => {
+                  resolved = model;
+                  onModelResolved(model);
+                },
+                onResponseText: capture,
+              });
+              let raw: string;
+              try {
+                raw = await this.options.model.complete(requestFor(context.messages));
+              } catch (error) {
+                if (
+                  !(
+                    error instanceof Error &&
+                    (error as { code?: unknown }).code === "MODEL_IMAGE_UNSUPPORTED"
+                  ) ||
+                  input.onPhaseMediaUnsupported === undefined
+                )
+                  throw error;
+                const retry = await input.onPhaseMediaUnsupported({
+                  phase: "next",
+                  model: resolved,
+                  messages: context.messages,
+                  signal: active.signal,
+                });
+                if (retry === null) throw error;
+                raw = await this.options.model.complete(requestFor(retry.messages));
+              }
+              capture(raw, true);
+              // §8.1：决策相调用成功返回＝本 run 真实消费了请求中的图像 → 通知宿主记账。
+              input.onModelCallConsumed?.({ phase: "next" });
+              try {
+                if (decisionEnvelope)
+                  return decisionEnvelope.parse(raw, { resolvedModel: active.resolvedModel ?? "" });
+                return parseAgentDecision(raw);
+              } catch {
+                // 「读不出决策」必须能一眼看出模型回了什么。原文也会随步骤落库
+                // （受保护输出，运行检查器可看），这里只是让它出现在控制台/日志里。
+                console.warn(
+                  `[agent] 决策解析失败 model=${resolved} phase=next：${summariseModelText(raw)}`,
+                );
+                throw new AgentRuntimeError(
+                  "AGENT_DECISION_INVALID",
+                  "Decision must be a complete JSON object matching the Agent schema",
+                );
+              }
+            },
+            spec,
+            undefined,
+            undefined,
+            undefined,
+            {
+              budget: decisionBudget,
+              inputLimit: decisionBudget?.countText ? spec.limits.inputUnits : undefined,
+              options: {
+                responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+                tools: advertisedActions.map(({ name, description, parameters }) => ({
+                  name,
+                  description,
+                  parameters,
+                })),
+              },
+              measure: context.tokenMeasure,
+              stepInputLimit: spec.limits.inputUnits,
+            },
+          );
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            (error as { code?: unknown }).code === "AGENT_DECISION_INVALID" &&
+            input.onDecisionInvalid &&
+            !terminalDecision
+          ) {
+            active.signal.throwIfAborted();
+            const accepted = await input.onDecisionInvalid("AGENT_DECISION_INVALID", active.signal);
+            active.signal.throwIfAborted();
+            if (accepted) continue;
+          }
+          throw error;
+        }
         if (decision.kind === "none") {
           if (
             await this.trace(
@@ -956,8 +1111,14 @@ export class AgentRuntime {
                 return result;
               },
             )
-          )
+          ) {
+            if (terminalDecision)
+              throw new AgentRuntimeError(
+                "CONTEXT_SOURCE_INVALID",
+                "Terminal budget recovery cannot reobserve",
+              );
             continue;
+          }
           active.signal.throwIfAborted();
           if (committedTargets.size > 0) {
             // 若上一轮已有目标早提交，本轮 none 不改写既有结果：按完成结算已提交事实。
@@ -1010,6 +1171,11 @@ export class AgentRuntime {
           }
         }
         if (decision.kind === "invoke") {
+          if (terminalDecision)
+            throw new AgentRuntimeError(
+              "AGENT_ACTION_UNAVAILABLE",
+              "Terminal budget recovery cannot invoke tools",
+            );
           // 一批调用（0.4.0 P2）：先整体校验再执行——任何一条不可用就整批拒绝，
           // 不留"执行了一半"的状态。只读的并行，有副作用的串行且保持模型给的顺序。
           const planned = decision.calls.map((call) => {
@@ -1037,6 +1203,12 @@ export class AgentRuntime {
               repeat: seen === noProgressLimit - 1,
             };
           });
+          input.beforeActionBatch?.(
+            planned.map((entry) => ({
+              action: entry.action,
+              arguments: entry.call.arguments,
+            })),
+          );
           this.repository.setStatus(active.runId, "observing", this.now());
           const settled = await this.trace<
             Map<(typeof planned)[number], Omit<ActionObservation, "id" | "name">>
@@ -1049,9 +1221,82 @@ export class AgentRuntime {
               details: { actions: planned.map((entry) => entry.call.name).join(",") },
             },
             async (scope) => {
+              const reservations = new ReservationLedger();
+              const fitReadResult: ActionContext["fitReadResult"] =
+                mode === "subtask"
+                  ? (name, arguments_, value, sources) => {
+                      const token = Symbol("subtask-result");
+                      const tokenMode = Boolean(
+                        decisionBudget?.countText && decisionBudget.tokenizerEncoding,
+                      );
+                      const group = tokenMode ? "tokens" : "bytes";
+                      const limit = spec.limits.inputUnits;
+                      const baseline = tokenMode ? context.tokenMeasure?.textTokens : context.units;
+                      const fit = (candidate: unknown) => {
+                        active.signal.throwIfAborted();
+                        input.context.assertCurrent?.();
+                        input.context.assertSources?.(sources);
+                        decisionBudget?.assertCurrent();
+                        const observation: ActionObservation = {
+                          id: "00000000-0000-0000-0000-000000000000",
+                          name,
+                          arguments: arguments_,
+                          value: candidate,
+                          sources,
+                        };
+                        const rendered = this.contextEngine.render(
+                          { ...spec, availableActions: advertisedActions },
+                          currentMaterial,
+                          [...observations, observation],
+                          input.authorizedTargets,
+                          input.outputMode,
+                          decisionEnvelope?.responseSchema,
+                        );
+                        const measured = this.measureRenderedContext(rendered, decisionBudget, {
+                          responseSchema:
+                            decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+                          tools: advertisedActions.map(({ name, description, parameters }) => ({
+                            name,
+                            description,
+                            parameters,
+                          })),
+                        });
+                        const units = tokenMode
+                          ? measured.tokenMeasure?.textTokens
+                          : measured.units;
+                        if (units === undefined || baseline === undefined)
+                          throw new AgentRuntimeError(
+                            "AGENT_CONTEXT_LIMIT",
+                            "Subtask input measurement unavailable",
+                          );
+                        if (
+                          limit !== undefined &&
+                          units + reservations.reserved(token, group) > limit
+                        )
+                          return false;
+                        reservations.set(token, Math.max(0, units - baseline), group);
+                        return true;
+                      };
+                      if (fit(value)) return value;
+                      const unavailable = {
+                        status: "unavailable",
+                        code: "CONTEXT_BUDGET_EXCEEDED",
+                      };
+                      if (!fit(unavailable))
+                        throw new AgentRuntimeError(
+                          "AGENT_CONTEXT_LIMIT",
+                          "Subtask result and refusal exceed its input budget",
+                        );
+                      return unavailable;
+                    }
+                  : undefined;
               const values = await this.executor.executeBatch(
                 planned.map((entry) => ({ action: entry.action, arguments: entry.call.arguments })),
-                { ...actionContext, sources: context.sources },
+                {
+                  ...actionContext,
+                  sources: context.sources,
+                  ...(fitReadResult ? { fitReadResult } : {}),
+                },
                 { mode, assertCurrent: () => input.context.assertCurrent?.() },
               );
               const results = new Map(
@@ -1123,8 +1368,14 @@ export class AgentRuntime {
               return result;
             },
           )
-        )
+        ) {
+          if (terminalDecision)
+            throw new AgentRuntimeError(
+              "CONTEXT_SOURCE_INVALID",
+              "Terminal budget recovery cannot reobserve",
+            );
           continue;
+        }
         active.signal.throwIfAborted();
         this.repository.setStatus(active.runId, "generating", this.now());
         // 上下文/媒体/水位是共享可变状态，准备逐目标串行；只有模型网络段并行。
@@ -1193,6 +1444,9 @@ export class AgentRuntime {
                   signal: active.signal,
                 });
                 const generation = { ...spec.generation, ...preparedGeneration };
+                const generationModel = generation.model ?? spec.model;
+                const generationBudget = await preparePhaseBudget(generationModel);
+                active.signal.throwIfAborted();
                 // 规格 §10：是否走同次封装在系统声明渲染前冻结——renderOutput 的输出协议
                 // 声明与 structured complete 的实际 responseSchema 用同一个选择。
                 const structured =
@@ -1204,10 +1458,17 @@ export class AgentRuntime {
                   draft,
                   structured?.responseSchema,
                 );
-                await input.onContext?.(
+                const measuredGenerationContext = this.measureRenderedContext(
                   { ...generationContext, messages, units: inputUnits(messages) },
-                  { runId: active.runId, phase: "generate" },
+                  generationBudget,
+                  structured === undefined
+                    ? undefined
+                    : { responseSchema: structured.responseSchema },
                 );
+                await input.onContext?.(measuredGenerationContext, {
+                  runId: active.runId,
+                  phase: "generate",
+                });
                 scope?.update({
                   sources: generationContext.sources,
                   details: {
@@ -1225,9 +1486,10 @@ export class AgentRuntime {
                 };
                 return {
                   generation,
-                  generationContext,
+                  generationContext: measuredGenerationContext,
                   messages,
                   generationSpec,
+                  generationBudget,
                   ...(structured === undefined ? {} : { structured }),
                   ...(preparedGeneration?.hooks === undefined
                     ? {}
@@ -1242,6 +1504,9 @@ export class AgentRuntime {
               generationContext: prepared.generationContext,
               messages: prepared.messages,
               generationSpec: prepared.generationSpec,
+              ...(prepared.generationBudget === undefined
+                ? {}
+                : { generationBudget: prepared.generationBudget }),
               ...(prepared.structured === undefined ? {} : { structured: prepared.structured }),
               ...(prepared.generation.allowEmpty === undefined
                 ? {}
@@ -1317,6 +1582,11 @@ export class AgentRuntime {
           },
         );
         if (reconsidered) {
+          if (terminalDecision && reconsidered !== "no_output")
+            throw new AgentRuntimeError(
+              "CONTEXT_SOURCE_INVALID",
+              "Terminal budget recovery cannot reconsider",
+            );
           if (input.outputMode === "stream")
             throw new AgentRuntimeError(
               "AGENT_STREAM_RECONSIDERED",
@@ -1390,7 +1660,15 @@ export class AgentRuntime {
     plan: TargetPlan,
     signalOverride: AbortSignal,
   ): Promise<PreparedOutput> {
-    const { outputId, messages, generationContext, generationSpec, structured, allowEmpty } = plan;
+    const {
+      outputId,
+      messages,
+      generationContext,
+      generationSpec,
+      generationBudget,
+      structured,
+      allowEmpty,
+    } = plan;
     // 宿主按目标冻结的闭包；未给的字段沿输入级（单目标行为）。并行多目标时宿主须给齐，
     // 否则会回读共享的相投影/fallback 状态。
     const hooks: TargetHooks = plan.hooks ?? {};
@@ -1419,6 +1697,12 @@ export class AgentRuntime {
             temperature: generationSpec.temperature,
             maxTokens: generationSpec.maxTokens,
             responseSchema: structured.responseSchema,
+            ...(generationBudget === undefined ? {} : { contextBudget: generationBudget }),
+            ...(!generationBudget?.countText ||
+            !generationBudget.tokenizerEncoding ||
+            generationSpec.limits?.inputUnits === undefined
+              ? {}
+              : { contextInputLimit: generationSpec.limits.inputUnits }),
             ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
             runId: active.runId,
             owner: input.owner,
@@ -1479,6 +1763,12 @@ export class AgentRuntime {
           model: generationSpec.model,
           temperature: generationSpec.temperature,
           maxTokens: generationSpec.maxTokens,
+          ...(generationBudget === undefined ? {} : { contextBudget: generationBudget }),
+          ...(!generationBudget?.countText ||
+          !generationBudget.tokenizerEncoding ||
+          generationSpec.limits?.inputUnits === undefined
+            ? {}
+            : { contextInputLimit: generationSpec.limits.inputUnits }),
           ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
           runId: active.runId,
           owner: input.owner,
@@ -1550,6 +1840,14 @@ export class AgentRuntime {
       outputId,
       plan.resolvedSink,
       signalOverride,
+      {
+        budget: generationBudget,
+        inputLimit: generationBudget?.countText ? generationSpec.limits?.inputUnits : undefined,
+        options:
+          structured === undefined ? undefined : { responseSchema: structured.responseSchema },
+        measure: generationContext.tokenMeasure,
+        stepInputLimit: generationSpec.limits?.inputUnits,
+      },
     );
     return {
       outputId: plan.outputId,
@@ -1636,6 +1934,22 @@ export class AgentRuntime {
     };
   }
 
+  private measureRenderedContext(
+    rendered: RenderedContext,
+    budget: ModelContextBudget | undefined,
+    options?: ContextTokenMeasureOptions,
+  ): RenderedContext {
+    if (!budget?.countText || !budget.tokenizerEncoding) return rendered;
+    budget.assertCurrent();
+    const tokenMeasure = measureContextTokens(
+      rendered.messages,
+      { encoding: budget.tokenizerEncoding, count: budget.countText },
+      options,
+    );
+    budget.assertCurrent();
+    return { ...rendered, tokenMeasure };
+  }
+
   private async step<T>(
     active: Running,
     phase: AgentStepSnapshot["phase"],
@@ -1654,13 +1968,57 @@ export class AgentRuntime {
     resolvedSink?: { resolvedModel?: string },
     /** 并行批次信号：兄弟 fatal 时取消同批在飞请求并先 settle；缺省＝只用 run 信号。 */
     signalOverride?: AbortSignal,
+    tokenPreflight?: {
+      budget?: ModelContextBudget;
+      inputLimit?: number;
+      options?: ContextTokenMeasureOptions;
+      measure?: ContextTokenMeasure;
+      stepInputLimit?: number;
+    },
   ): Promise<T> {
     const stepSignal = signalOverride ?? active.signal;
     stepSignal.throwIfAborted();
     active.assertActions?.();
     const units = inputUnits(messages);
+    const tokenBudget = tokenPreflight?.budget;
+    const tokenLimit = tokenPreflight?.inputLimit;
+    if (tokenLimit !== undefined && tokenBudget?.countText && tokenBudget.tokenizerEncoding) {
+      tokenBudget.assertCurrent();
+      const measured =
+        tokenPreflight?.measure ??
+        measureContextTokens(
+          messages,
+          { encoding: tokenBudget.tokenizerEncoding, count: tokenBudget.countText },
+          tokenPreflight?.options,
+        );
+      tokenBudget.assertCurrent();
+      const limit = tokenPreflight?.stepInputLimit ?? tokenLimit;
+      if (measured.textTokens > limit) {
+        this.telemetry?.record("agent.budget", {
+          channel: active.channel,
+          stage: "run",
+          status: "failed",
+          code: "AGENT_CONTEXT_LIMIT",
+          runId: active.runId,
+          sources,
+          details: {
+            inputUnits: measured.textTokens,
+            inputLimit: limit,
+            estimator: measured.method,
+            stepNo: active.stepNo,
+            rejected: "context",
+          },
+        });
+        throw new AgentRuntimeError(
+          "AGENT_CONTEXT_LIMIT",
+          "Context exceeds the configured input budget",
+        );
+      }
+    }
     const limit = stepSpec.limits?.inputUnits;
-    if (limit !== undefined && units > limit) {
+    const tokenPreflightActive =
+      tokenLimit !== undefined && Boolean(tokenBudget?.countText && tokenBudget.tokenizerEncoding);
+    if (!tokenPreflightActive && limit !== undefined && units > limit) {
       // 拒绝发生在建 step 之前——没有这一步的模型记录，所以把码与量留在观测里（B06）。
       this.telemetry?.record("agent.budget", {
         channel: active.channel,

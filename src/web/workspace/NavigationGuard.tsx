@@ -7,10 +7,8 @@ import { translateNotice } from "../i18n";
 import { useSuperstringStore } from "../store";
 
 export function NavigationGuard() {
-  const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const open = useSuperstringStore((state) => state.navigationConfirmOpen);
   const [pending, setPending] = useState(false);
-  if (!state.navigationConfirmOpen) return null;
   const run = async (operation: () => Promise<void>) => {
     if (pending) return;
     setPending(true);
@@ -20,6 +18,18 @@ export function NavigationGuard() {
       setPending(false);
     }
   };
+  return open ? <NavigationConfirmDialog pending={pending} run={run} /> : null;
+}
+
+function NavigationConfirmDialog({
+  pending,
+  run,
+}: {
+  pending: boolean;
+  run: (operation: () => Promise<void>) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const state = useSuperstringStore();
   return (
     <AlertDialog
       title={t("workspace.this_section_has_unsaved_changes")}

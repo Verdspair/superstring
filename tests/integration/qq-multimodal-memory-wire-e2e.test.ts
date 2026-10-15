@@ -19,6 +19,7 @@
 // data/密钥；不改产品代码与原 e2e 文件/harness。
 
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { sourceAccess } from "../../src/server/agent/context-access";
 import { projectQqMessageFacts } from "../../src/server/channels/onebot11/message-projection";
@@ -878,9 +879,29 @@ describe("raw wire 保留（id58 补块）", () => {
       // role 顺序逐字：整序列比对（system 在首、后续 user 材料次序与装配序一致）。
       expect(received.map((call) => call.messages.map((message) => message.role))).toEqual([
         ["system", "user", "user", "user", "user", "user"],
-        ["system", "user", "user", "user", "user", "user"],
         ["system", "user", "user", "user", "user", "user", "user"],
+        ["system", "user", "user", "user", "user", "user", "user", "user"],
       ]);
+      for (const call of received.slice(1)) {
+        const anchors = call.messages.flatMap((message) =>
+          message.content.flatMap((part) => {
+            if (part.kind !== "text") return [];
+            try {
+              const value = JSON.parse(part.text);
+              return value.kind === "qq_active_input" ? [{ role: message.role, value }] : [];
+            } catch {
+              return [];
+            }
+          }),
+        );
+        expect(anchors).toHaveLength(1);
+        expect(anchors[0]?.role).toBe("user");
+        expect(anchors[0]?.value).toMatchObject({
+          trust: "data_only",
+          targetId: "10001",
+          sourceSeqs: [h.lastEventSeq],
+        });
+      }
       // tools 逐字：回复决策调用带的工具名数组逐字锁定（动作目录形状）；判断/生成不带 native tools。
       expect(h.model?.calls[1]?.tools ?? []).toEqual([
         "memory.query",
@@ -1514,6 +1535,8 @@ describe("真实后台压缩 worker（S55 补块：生产 queue + 真实 job.run
       ) as {
         packages: Array<{
           facts: Array<{ kind: string; speaker: string; text: string; source_ids: string[] }>;
+          provenance?: Record<string, string>;
+          sources: Array<{ kind: string; id: string; revision: string }>;
           fromSeq: number;
           throughSeq: number;
         }>;
@@ -1531,9 +1554,23 @@ describe("真实后台压缩 worker（S55 补块：生产 queue + 真实 job.run
           k: string;
         }
       ).k;
-      // source_ids[0] 是 contextDumps 的 identity tuple JSON 串，引用真实观察事件（含平台消息号 -7301）。
-      expect(fact.source_ids[0]).toContain("-7301");
-      void eventKey;
+      // 新模型引用可逆短 ID；真实来源仍保留原始有序 tuple 和完整 SourceRefs。
+      const compactId = fact.source_ids[0]!;
+      const rawId = pkg.provenance?.[compactId];
+      if (typeof rawId !== "string") throw new Error("reversible summary provenance missing");
+      expect(compactId).toBe(`qq-record:${createHash("sha256").update(rawId).digest("base64url")}`);
+      const tuples = JSON.parse(rawId) as [string, string, string][];
+      const body = h.db
+        .query("SELECT body FROM qq_observation_text WHERE event_key=?")
+        .get(eventKey) as { body: string };
+      const revision = createHash("sha256").update(body.body).digest("hex");
+      expect(tuples).toEqual([["qq_observation", eventKey, revision]]);
+      expect(
+        pkg.sources.some(
+          (ref) =>
+            ref.kind === "qq_observation" && ref.id === eventKey && ref.revision === revision,
+        ),
+      ).toBe(true);
       expect(fact.text).toContain("压缩事实");
       // 包范围与批次一致（两条窗口外消息）。
       expect(pkg.fromSeq).toBeLessThanOrEqual(pkg.throughSeq ?? pkg.fromSeq);

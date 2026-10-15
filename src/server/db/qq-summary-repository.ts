@@ -7,6 +7,7 @@
 //   * coveredSeq   → 已覆盖水位：连"窗口内被条数/预算裁掉"的那段也算进去，避免同一批反复触发。
 // 两个水位都只增不减；事务内复验授权与旧快照，拒绝并发或迟到覆盖。
 
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { type SourceRef, SourceRefSchema } from "../../shared/contracts/evidence";
@@ -24,6 +25,7 @@ export interface QqSummaryPackage {
   readonly throughSeconds: number;
   readonly at: string;
   readonly sources?: readonly SourceRef[];
+  readonly provenance?: Readonly<Record<string, string>>;
 }
 
 export interface QqConversationSummary {
@@ -38,6 +40,61 @@ export interface QqConversationSummary {
   readonly modelName: string;
   readonly estimatedTokens: number;
   readonly updatedAt: string;
+}
+
+const RecordTuplesSchema = z
+  .array(z.tuple([z.string().min(1), z.string().min(1), z.string()]))
+  .min(1);
+
+export function compactQqSummaryRecordId(rawId: string): string {
+  return `qq-record:${createHash("sha256").update(rawId).digest("base64url")}`;
+}
+
+/** Resolve exact record groups without treating their compact labels as authority. */
+export function resolveQqSummaryProvenance(
+  pkg: Pick<QqSummaryPackage, "facts" | "sources" | "provenance">,
+  sources: readonly SourceRef[] = pkg.sources ?? [],
+): ConversationSummaryFacts {
+  const identities = new Set(
+    sources.map((source) => JSON.stringify([source.kind, source.id, source.revision])),
+  );
+  const provenance =
+    pkg.provenance === undefined
+      ? undefined
+      : z.record(z.string(), z.string()).parse(pkg.provenance);
+  z.array(
+    z.object({
+      text: z.string(),
+      source_ids: z.array(z.string()).min(1),
+    }),
+  ).parse(pkg.facts);
+  const resolved = new Map<string, string>();
+  const referenced = new Set<string>();
+  const facts = pkg.facts.map((fact) => {
+    const ids = z.array(z.string()).min(1).parse(fact.source_ids);
+    z.string().parse(fact.text);
+    return {
+      ...fact,
+      source_ids: ids.map((id) => {
+        const cached = resolved.get(id);
+        if (cached !== undefined) return cached;
+        let raw = id;
+        if (provenance !== undefined && id.startsWith("qq-record:")) {
+          raw = z.string().parse(Object.hasOwn(provenance, id) ? provenance[id] : undefined);
+          z.literal(id).parse(compactQqSummaryRecordId(raw));
+          referenced.add(id);
+        }
+        const tuples = RecordTuplesSchema.parse(JSON.parse(raw));
+        for (const tuple of tuples) z.literal(true).parse(identities.has(JSON.stringify(tuple)));
+        resolved.set(id, raw);
+        return raw;
+      }),
+    };
+  });
+  if (provenance !== undefined) {
+    for (const id of Object.keys(provenance)) z.literal(true).parse(referenced.has(id));
+  }
+  return facts;
 }
 
 /**
@@ -80,7 +137,7 @@ function parsePackages(content: string, throughSeq: number, updatedAt: string): 
   if (!Array.isArray(packages)) return [];
   return packages.map((item) => {
     const entry = item as Partial<QqSummaryPackage>;
-    return Object.freeze({
+    const pkg: QqSummaryPackage = {
       facts: (entry.facts ?? []) as ConversationSummaryFacts,
       fromSeq: entry.fromSeq ?? -1,
       throughSeq: entry.throughSeq ?? -1,
@@ -88,7 +145,10 @@ function parsePackages(content: string, throughSeq: number, updatedAt: string): 
       throughSeconds: entry.throughSeconds ?? 0,
       at: entry.at ?? updatedAt,
       sources: packageSources(entry.facts ?? [], entry.sources),
-    });
+      ...(entry.provenance === undefined ? {} : { provenance: entry.provenance }),
+    };
+    if (pkg.provenance !== undefined) resolveQqSummaryProvenance(pkg);
+    return Object.freeze(pkg);
   });
 }
 
@@ -141,6 +201,9 @@ export function saveQqConversationSummary(
       input.assertCurrent();
       const current = readQqConversationSummary(orm, input.conversationId, input.agentId);
       if (JSON.stringify(current) !== JSON.stringify(input.expected)) return false;
+      for (const pkg of input.packages) {
+        if (pkg.provenance !== undefined) resolveQqSummaryProvenance(pkg);
+      }
       const throughSeq = Math.max(current?.throughSeq ?? -1, input.throughSeq);
       const coveredSeq = Math.max(current?.coveredSeq ?? -1, input.coveredSeq);
       const content = JSON.stringify({ packages: input.packages });

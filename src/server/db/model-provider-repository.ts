@@ -29,6 +29,7 @@ export interface ModelProviderRoute {
   readonly baseUrl: string;
   readonly apiKey: string | null;
   readonly contextWindow: number;
+  readonly tokenizerEncoding?: ModelProviderModel["tokenizer_encoding"];
   /**
    * 能力声明里的"图片输入"三态：true/false 是用户声明；undefined = 未声明而**不是**不支持，
    * 接口诚实保持"允许原生尝试"。
@@ -225,6 +226,9 @@ export function resolveModelProviderRoute(
       baseUrl: row.baseUrl,
       apiKey: row.apiKey === null ? null : openSecret(row.apiKey, transportSecret(keyPath)),
       contextWindow: declared.context_window,
+      ...(declared.tokenizer_encoding === undefined
+        ? {}
+        : { tokenizerEncoding: declared.tokenizer_encoding }),
       ...(declared.capabilities === undefined
         ? {}
         : declared.capabilities.vision === undefined

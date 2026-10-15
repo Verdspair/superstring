@@ -27,6 +27,11 @@ const internalFailureCodes = new Set([
   "scheme_changed",
   "agent_changed",
 ]);
+export interface WakeActivationMetadata {
+  eligibleCount: number;
+  maturityCondition: "count" | "time" | "count_and_time";
+  triggerFunction: "qqChimingBatchWindow";
+}
 export interface WakeSchedulerPolicy {
   leaseMs: number;
   renewMs: number;
@@ -61,7 +66,7 @@ export class WakeScheduler {
        * 领取前的资源闸（如模型名额提示）。返回 false 的机会保持 pending，不烧 attempts——
        * 释放名额的订阅方负责再唤醒 worker，由下一轮复查。这是提示，不是第二准入。
        */
-      resourceGate?: (wake: WakeSignal) => boolean;
+      resourceGate?: (wake: WakeSignal, claimAt: string) => boolean | WakeActivationMetadata;
       now?: () => string;
       onError?: (error: unknown, wake: WakeSignal) => void;
       /** 一条已启动的唤醒结算（成功/失败/中止）后的通知：worker 据此复查下一轮，不是第二准入。 */
@@ -176,20 +181,28 @@ export class WakeScheduler {
     // 一个繁忙服务不能挡住后面空闲服务的机会（无 HOL）；被闸住的机会留在队列里，
     // 不产生一次 attempts 或失败结算。
     const gate = this.options.resourceGate;
+    const claimAt = now();
     let wake: WakeSignal | null;
+    let activationFacts: WakeActivationMetadata | null = null;
     if (gate) {
-      const chosen =
-        this.options.repository.pendingCandidates({ at: now() }).find((c) => gate(c)) ?? null;
+      let chosen: WakeSignal | null = null;
+      for (const candidate of this.options.repository.pendingCandidates({ at: claimAt })) {
+        const decision = gate(candidate, claimAt);
+        if (!decision) continue;
+        chosen = candidate;
+        if (typeof decision === "object") activationFacts = decision;
+        break;
+      }
       if (!chosen) return null;
       wake = this.options.repository.claim({
-        at: now(),
+        at: claimAt,
         leaseMs: policy.leaseMs,
         globalConcurrency: policy.globalConcurrency,
         wakeId: chosen.id,
       });
     } else {
       wake = this.options.repository.claim({
-        at: now(),
+        at: claimAt,
         leaseMs: policy.leaseMs,
         globalConcurrency: policy.globalConcurrency,
       });
@@ -198,6 +211,7 @@ export class WakeScheduler {
     const conversation = this.options.repository.db
       .query("SELECT agent_id FROM conversations WHERE id=?")
       .get(wake.conversationId) as { agent_id: string } | null;
+    const activationAt = claimAt;
     const span = this.options.telemetry?.start("bot.wake.activate", {
       channel: "onebot11",
       stage: "wake",
@@ -206,7 +220,14 @@ export class WakeScheduler {
       agentId: conversation?.agent_id,
       sourceSeq: wake.throughSeq,
       parent: this.options.telemetry.parentFor("wake_id", wake.id) ?? undefined,
-      details: { cause: wake.cause, attempt: wake.attempts, readyAt: wake.readyAt },
+      details: {
+        cause: wake.cause,
+        attempt: wake.attempts,
+        readyAt: wake.readyAt,
+        lastMergedAt: wake.createdAt,
+        activationAt,
+        ...(activationFacts ?? {}),
+      },
     });
     let renewals = 0;
     const owned = new AbortController();

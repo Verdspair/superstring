@@ -32,6 +32,7 @@ import { readOrganizationSettings } from "./db/organization-repository";
 import { schemeMediaInput, schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
 import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import { withCapacityCache } from "./llm/capacity-cache";
+import { FileLocalModelEncodingStore } from "./llm/local-model-encodings";
 import {
   createLmStudioClient,
   type ModelGateway,
@@ -111,6 +112,7 @@ export interface RuntimeOptions {
   permissionConfigPath?: string;
   /** 联网配置（web-access 单元）：端点文件；缺省＝工具只走必应、管理路由不挂载。 */
   webAccessConfigPath?: string;
+  localModelEncodingsPath?: string;
   skillRoot?: string;
   codeRunner?: CodeRunner;
   businessMigrationSql?: BusinessMigrationSql;
@@ -153,6 +155,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   });
   const webAccess = options.webAccessConfigPath
     ? new FileWebAccessConfigStore(options.webAccessConfigPath)
+    : undefined;
+  const localModelEncodings = options.localModelEncodingsPath
+    ? new FileLocalModelEncodingStore(options.localModelEncodingsPath)
     : undefined;
   /** QQ 通道的有效策略：配置给缺省，显式注入（测试与固定入口）优先。 */
   const botLimits = (): Partial<BotConversationPolicy> => {
@@ -276,9 +281,25 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         // providerRevision 是"拒绝过图片"负缓存的指纹——声明翻转/修订后旧观察不再拦新声明。
         ...(route.vision === undefined ? {} : { vision: route.vision }),
         providerRevision: route.providerRevision,
+        // 纯文本计数编码（可选透传；网关只按显式声明计数，不猜模型/provider 名或 OpenAI 兼容）。
+        ...(route.tokenizerEncoding === undefined
+          ? {}
+          : { tokenizerEncoding: route.tokenizerEncoding }),
       };
     };
-    gateway = options.gateway ?? createLmStudioClient(resolveLmStudioConfig(), { externalModel });
+    gateway =
+      options.gateway ??
+      createLmStudioClient(resolveLmStudioConfig(), {
+        externalModel,
+        localModelEncoding: (model) => {
+          if (!localModelEncodings) return null;
+          const snapshot = localModelEncodings.read();
+          const declared = snapshot.models.find((entry) => entry.name === model);
+          return declared
+            ? { tokenizerEncoding: declared.tokenizer_encoding, revision: snapshot.revision }
+            : null;
+        },
+      });
     const visionClient =
       options.gateway === undefined
         ? createLmStudioVisionClient(resolveLmStudioConfig(), fetch, { externalModel })
@@ -498,6 +519,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         options.resolveSource?.(source, owner, at),
       qqTransportKeyPath: options.qqTransportKeyPath,
       modelProviderKeyPath: options.modelProviderKeyPath,
+      localModelEncodings,
       // The page reads the transport's own state; nothing is inferred from a saved endpoint.
       qqConnectionState: () => qqIntake.state,
       qqStickerDirectory: options.qqStickerDirectory,

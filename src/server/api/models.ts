@@ -13,8 +13,10 @@ import { z } from "zod";
 import { rawString } from "../../shared/contracts/common";
 import {
   CreateModelProviderRequestSchema,
+  LocalModelEncodingsResponseSchema,
   ModelProviderResponseSchema,
   ModelProviderTestResponseSchema,
+  UpdateLocalModelEncodingsSchema,
   UpdateModelProviderRequestSchema,
 } from "../../shared/contracts/models";
 import {
@@ -26,7 +28,8 @@ import {
 } from "../db/model-provider-repository";
 import type { Orm } from "../db/repositories";
 import { newId } from "../db/repositories";
-import { isAppError } from "../errors";
+import { fail, isAppError } from "../errors";
+import type { LocalModelEncodingStore } from "../llm/local-model-encodings";
 import type { ModelGateway } from "../llm/model-gateway";
 import { DEFAULT_MODEL_PROVIDER_KEY_PATH } from "../secret-box";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
@@ -42,6 +45,7 @@ export function modelRoutes(
   orm: Orm,
   gateway: ModelGateway,
   keyPath: string = DEFAULT_MODEL_PROVIDER_KEY_PATH,
+  localEncodings?: LocalModelEncodingStore,
 ): Hono {
   const router = new Hono();
 
@@ -78,6 +82,25 @@ export function modelRoutes(
       models,
       default_model: gateway.config.model,
     });
+  });
+
+  router.get("/local/encodings", (c) => {
+    if (!localEncodings) fail("DATABASE_UNAVAILABLE", "本地模型编码配置未接入", 503);
+    return c.json(LocalModelEncodingsResponseSchema.parse(localEncodings.read()));
+  });
+  router.put("/local/encodings", async (c) => {
+    const body = parseBody(UpdateLocalModelEncodingsSchema, await readJsonBody(c.req.raw));
+    if (!localEncodings) fail("DATABASE_UNAVAILABLE", "本地模型编码配置未接入", 503);
+    const external = new Set(
+      readModelProviders(orm).flatMap((provider) => provider.models.map((model) => model.name)),
+    );
+    if (body.models.some((model) => external.has(model.name)))
+      fail("VALIDATION_ERROR", "外部服务的模型编码请在对应服务中配置", 422);
+    return c.json(
+      LocalModelEncodingsResponseSchema.parse(
+        localEncodings.replace(body.expected_revision, body.models),
+      ),
+    );
   });
 
   // ---- 外部模型 API（0032，）------------------------------------------

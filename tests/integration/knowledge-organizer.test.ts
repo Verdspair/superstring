@@ -274,15 +274,34 @@ describe("durable knowledge organizer", () => {
   it("processes long documents in bounded complete segments and publishes once", async () => {
     const source = "启动条件为低于10°C禁用，维护模式除外，阈值42.5。\n".repeat(80);
     const doc = add(source);
+    const summaries: string[] = [];
+    const bodies: string[] = [];
     gateway.complete = async (options) => {
       assertEmptyDrafts();
+      const index = calls.length;
       calls.push(options);
-      return output;
+      const summary = `分段摘要${index}𠮷`;
+      const body = `分段正文${index}。`;
+      summaries.push(summary);
+      bodies.push(body);
+      return JSON.stringify({ summary, tags: ["设备"], body });
     };
     await worker().runCycle();
     expect(calls.length).toBeGreaterThan(1);
     expect(calls.map((call) => call.messages[1]?.content).join("")).toBe(source);
-    expect(repo.detail(doc.id).draft?.sources.length).toBe(calls.length);
+    const detail = repo.detail(doc.id);
+    expect(detail.organization_status).toBe("succeeded");
+    expect(detail.draft?.summary).toBe(summaries.join("\n\n"));
+    expect(detail.draft?.body).toBe(bodies.join("\n\n"));
+    expect(detail.draft?.sources.length).toBe(calls.length);
+    let offset = 0;
+    for (const [index, body] of bodies.entries()) {
+      expect(detail.draft?.sources[index]).toMatchObject({
+        draft_start: offset,
+        draft_end: offset + body.length,
+      });
+      offset += body.length + 2;
+    }
   });
   it("discards every partial result when a later segment fails", async () => {
     add("这是第一部分。".repeat(300));
@@ -451,6 +470,29 @@ describe("durable knowledge organizer", () => {
     await worker().runCycle();
     expect(status()?.error_code).toBe("KNOWLEDGE_OUTPUT_TOO_LARGE");
     assertEmptyDrafts();
+  });
+  it("communicates the per-call reserved whole-JSON UTF-8 output budget in the system prompt", async () => {
+    add();
+    add();
+    const capacities = [8192, 4096];
+    let probe = 0;
+    gateway.loadedContextCapacity = async () => capacities[probe++] ?? 0;
+    const instance = worker();
+    expect(await instance.runCycle()).toBe(true);
+    expect(await instance.runCycle()).toBe(true);
+    expect(probe).toBe(2);
+    expect(calls.map((call) => call.maxTokens)).toEqual([2048, 1024]);
+    for (const [index, budget] of [2048, 1024].entries()) {
+      const call = calls[index];
+      expect(call?.messages[0]?.role).toBe("system");
+      expect(call?.messages[0]?.content).toContain(String(budget));
+      expect(call?.messages[0]?.content).toMatch(/JSON/);
+      expect(call?.messages[0]?.content).toMatch(/UTF-?8/i);
+      expect(call?.messages[0]?.content).toMatch(/字节|byte/i);
+      expect(call?.messages[0]?.content).toMatch(/输出|响应/);
+      expect(call?.messages[1]?.role).toBe("user");
+      expect(call?.messages[1]?.content).toBe(text);
+    }
   });
   it("cannot publish after lease expiration even before heartbeat runs", async () => {
     add();

@@ -7,14 +7,17 @@
 // 3. 非白名单 BATCH_* 码（如 BATCH_SKIPPED_BUSY）保持 text-destructive 标红，禁止全 BATCH_* 通配中性化。
 // 4. 英文语言环境下渲染对应本地化中英文案。
 
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
   ConversationSummary,
 } from "../../src/shared/contracts/conversation";
+import { api } from "../../src/web/api";
 import { i18n } from "../../src/web/i18n/runtime";
 import { EventRecord } from "../../src/web/screens/conversations/EventRecord";
+import { useSuperstringStore } from "../../src/web/store";
 
 const now = "2026-10-09T12:00:00Z";
 
@@ -71,6 +74,46 @@ function wakeEvent(
 }
 
 describe("EventRecord wake status & error code presentation", () => {
+  it("opens the exact active run from the processing task status without inspecting protected content", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const getRun = vi.fn().mockResolvedValue({
+      runId: "active-run-1",
+      specId: "onebot.main",
+      specVersion: "1",
+      owner: { kind: "conversation", id: conversation.id },
+      status: "generating",
+      startedAt: now,
+      endedAt: null,
+      errorCode: null,
+      steps: [],
+      lastSeq: 1,
+      outputs: [],
+    });
+    const inspect = vi.fn();
+    useSuperstringStore.getState().resetForTests({
+      ...api,
+      getRun,
+      inspectRunContext: inspect,
+    });
+    const event = {
+      ...wakeEvent({ status: "completed", cause: "chiming_in" }),
+      runId: "active-run-1",
+      task: { id: "qq-task-active", status: "running" as const, errorCode: null },
+    };
+    try {
+      render(<EventRecord event={event} conversation={conversation} />);
+      expect(screen.queryByRole("button", { name: "运行详情" })).toBeNull();
+      await userEvent.click(screen.getByRole("button", { name: "正在处理" }));
+      expect(await screen.findByRole("dialog")).toBeTruthy();
+      await waitFor(() =>
+        expect(getRun).toHaveBeenCalledWith("active-run-1", expect.any(AbortSignal)),
+      );
+      expect(inspect).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+      useSuperstringStore.getState().resetForTests(api);
+    }
+  });
   it("renders BATCH_WAITING_FOR_COUNT as neutral label without text-destructive class", async () => {
     await i18n.changeLanguage("zh-CN");
     const event = wakeEvent({
@@ -315,5 +358,71 @@ describe("EventRecord wake status & error code presentation", () => {
     };
     render(<EventRecord event={completedEvent} conversation={conversation} />);
     expect(screen.getByText("Task processing completed")).toBeDefined();
+  });
+  it("renders wake no_output + task completed + confirmed delivery without false '本次未发言', and does not treat pending/unknown as confirmed", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const confirmedChainEvent = {
+      ...wakeEvent({
+        status: "no_output",
+        cause: "direct_reply",
+        errorCode: null,
+      }),
+      task: {
+        id: "task-confirmed-1",
+        status: "completed" as const,
+        errorCode: null,
+      },
+      activityId: "act-confirmed-1",
+      activityEvents: [
+        {
+          ...wakeEvent({ status: "no_output", cause: "direct_reply" }),
+          seq: 11,
+          kind: "delivery" as const,
+          outputId: "out-actual",
+          deliveryStatus: "confirmed" as const,
+          text: "助手已送达的内容",
+        },
+      ],
+    };
+
+    const { unmount: u1 } = render(
+      <EventRecord event={confirmedChainEvent} conversation={conversation} />,
+    );
+
+    // 应该展示任务处理完成和已送达，绝不可显示「本次未发言」
+    expect(screen.getByText("任务处理完成")).toBeDefined();
+    expect(screen.getByText("已送达")).toBeDefined();
+    expect(screen.getByText("助手已送达的内容")).toBeDefined();
+    expect(screen.queryByText("本次未发言")).toBeNull();
+    u1();
+
+    // 当 delivery 为 unknown / pending 时，不应该冒充「已送达」
+    const pendingChainEvent = {
+      ...wakeEvent({
+        status: "no_output",
+        cause: "direct_reply",
+        errorCode: null,
+      }),
+      task: {
+        id: "task-pending-1",
+        status: "completed" as const,
+        errorCode: null,
+      },
+      activityId: "act-pending-1",
+      activityEvents: [
+        {
+          ...wakeEvent({ status: "no_output", cause: "direct_reply" }),
+          seq: 12,
+          kind: "delivery" as const,
+          outputId: "out-pending",
+          deliveryStatus: "delivering" as const,
+          text: "发送中内容",
+        },
+      ],
+    };
+
+    render(<EventRecord event={pendingChainEvent} conversation={conversation} />);
+    expect(screen.queryByText("已送达")).toBeNull();
+    expect(screen.getByText(i18n.t("workspace.delivering"))).toBeDefined();
   });
 });

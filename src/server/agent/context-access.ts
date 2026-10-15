@@ -30,7 +30,7 @@ export interface ContextPrincipal {
 }
 
 /**
- * 走 `sourceAccess` 直接复验的七类来源（其余交给 resolveSource 或 inspection 回退）。
+ * 走 `sourceAccess` 直接复验的来源（其余交给 resolveSource 或 inspection 回退）。
  * assertContextSources 与 inspectContext 共用这一份判定，新增直连 kind 只改这里。
  */
 const DIRECT_SOURCE_KINDS: ReadonlySet<string> = new Set([

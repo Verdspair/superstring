@@ -10,13 +10,13 @@
 import { describe, expect, it } from "bun:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DatabaseError } from "../../src/server/api/error-handler";
-import { parseSseFrames, type SseFrame } from "../../src/server/api/sse";
 import { createApp } from "../../src/server/app";
 import { deleteMessage, listMessages, type Orm } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { ModelUnavailableError } from "../../src/server/errors";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { DirectService } from "../../src/server/services/direct-service";
+import { parseSseFrames, type SseFrame } from "../harness/sse";
 
 /** A gateway whose streaming behaviour is scripted per test. */
 class ScriptedGateway implements ModelGateway {

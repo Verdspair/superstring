@@ -3,7 +3,8 @@
 //   2. 主动路径评分走原生消息叶子（completeMessageLeaf）：许可通过后生成，calls=3；
 //   3. agent-runtime buffered structured-complete hook：宿主声明 responseEnvelope 时一次
 //      complete 取 envelope，剥离正文照常提交；streamText 不被调用；phase 记 generate。
-import { afterEach, describe, expect, it } from "bun:test";
+import type { SQLQueryBindings } from "bun:sqlite";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { AgentRuntime, type PreparedGeneration } from "../../src/server/agent/agent-runtime";
 import { textMessage } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
@@ -251,6 +252,81 @@ it("native focus image flows through all three real phases (plan T11 Step2 golde
   }
   expect(h.sent).toHaveLength(1);
 });
+
+for (const cause of ["direct_reply", "chiming_in"] as const) {
+  it(`${cause} rejects a prepared image whose stored policy no longer matches`, async () => {
+    const png = encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(64), 8, 8);
+    const h = createOneBotHarness({
+      accountId: "90001",
+      member: "10001",
+      mediaEnabled: true,
+      mergeWindowSeconds: 0,
+      mediaInput: { mode: "native" },
+      imageBytes: { "synthetic-image": png },
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
+      model: [],
+    });
+    h.receive({
+      id: "-150",
+      speaker: "10001",
+      text: "这张图片里有什么？",
+      image: "synthetic-image",
+      addressed: cause === "direct_reply",
+    });
+    h.advance(31);
+    h.model?.push([
+      ...(cause === "chiming_in"
+        ? [
+            batchScore([
+              { targetId: "10001", score: 6, intent: "看图", sourceSeqs: [h.lastEventSeq] },
+            ]),
+          ]
+        : []),
+      decideGenerate("10001", "看图", []),
+      say("合成回复"),
+    ]);
+    const query = h.db.query.bind(h.db);
+    let injected = 0;
+    const fault = spyOn(h.db, "query").mockImplementation(
+      <ReturnType, ParamsType extends SQLQueryBindings | SQLQueryBindings[]>(sql: string) => {
+        const statement = query<ReturnType, ParamsType>(sql);
+        if (sql !== "SELECT asset_id, policy, bytes FROM qq_media_variants WHERE id=?")
+          return statement;
+        return new Proxy(statement, {
+          get(target, key) {
+            if (key === "get") {
+              return (...args: Parameters<typeof statement.get>) => {
+                const row = target.get(...args) as {
+                  asset_id: string;
+                  policy: string;
+                  bytes: Uint8Array;
+                } | null;
+                if (!row) return row;
+                injected++;
+                return { ...row, policy: `${row.policy}:mismatch` };
+              };
+            }
+            return Reflect.get(target, key, target);
+          },
+        });
+      },
+    );
+    try {
+      await expect(h.activate(cause)).rejects.toThrow(
+        cause === "direct_reply" ? "No output could be prepared" : "SCORE_IMAGE_VARIANT_MISMATCH",
+      );
+      expect(injected).toBeGreaterThan(0);
+      expect(h.model?.calls.map((call) => call.phase)).toEqual(
+        cause === "direct_reply" ? ["next"] : [],
+      );
+      expect(h.sent).toHaveLength(0);
+      expect(h.outbox.list({ conversationId: h.conversationId })).toHaveLength(0);
+    } finally {
+      fault.mockRestore();
+    }
+  });
+}
 
 it("evaluation stage off keeps decision/generation images but the score leaf sees no native image", async () => {
   const png = encodeQqFramePng(new Uint8Array(8 * 8 * 4).fill(64), 8, 8);

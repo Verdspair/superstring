@@ -141,6 +141,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
       searchTimerRef.current = null;
     }
     appliedSeqRef.current = localEditSeqRef.current;
+    setLocalSearch(filters.search);
   };
 
   const flushPendingSearch = (overridePatch?: Parameters<typeof s.loadKnowledge>[0]) => {
@@ -566,6 +567,11 @@ function KnowledgeEditorPanel() {
         {editor && (
           <>
             <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-6">
+              {s.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {translateNotice(s.error)}
+                </p>
+              )}
               {(editor.kind === "import" || editor.kind === "document") && (
                 <>
                   <div className="grid gap-4 sm:grid-cols-2">

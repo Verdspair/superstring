@@ -43,6 +43,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 - 支持在会话卡片和群会话顶部随时启用或停用群发言。停用后群消息照常接收保存，Agent 不发言且不产生新模型任务。
 - **独立回复任务**：有效艾特和引用助手消息的请求分别执行，不再因同一会话中的慢回复等待整批结束。每会话的艾特任务与普通任务上限默认 4／1，可设 1–64；会话覆盖值留空时跟随方案。模型请求另设全局总上限和每服务上限，默认 4／2，可设 1–256，两项同时生效。艾特任务优先取得下一个可用名额，不中断正在执行的任务。
 - **输入防刷屏**：新方案默认开，已有方案保持关，可按会话覆盖。默认将同一成员在首条起3秒内的至少3条纯图片消息按一个候选处理；条数可设2–20条，首窗可设1–30秒，方案默认与会话覆盖分别保存。他人插话不打断，自身文字、其它媒体或直接请求结束分组。命中组与纯表情不自动供图，仍可经工具按需读取；直接艾特和合法引用照常处理，原记录不删除。
+- **研究与媒体预算**：QQ 研究按子任务自己的上下文检查容量；媒体或表情结果装不下时返回明确预算提示，不把本可继续的任务拖到下一轮才失败，真正超出容量时明确失败。
 
 **本群配置**已整合至方案与群目录中，为特定群提供独立的个性化设置与覆盖项。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。
 
@@ -83,6 +84,7 @@ QQ 接入前置步骤与运行要求：
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
 - **执行检查**：通过执行瀑布查看模型输入与输出，区分模型生成完成与平台确认送达。
+- **模型服务与编码**：在「模型服务」中可为本地（如 LM Studio）或外部模型选填文本编码（如 `cl100k_base`、`o200k_base`），未指定采用保守估算；提供参考帮助与来源链接但不自动选择；展示实际模型、容量与编码用量，保存冲突时保留草稿。
 
 ### 记忆与知识库
 
@@ -99,10 +101,10 @@ QQ 接入前置步骤与运行要求：
 | 平台 | 支持的分发形式 | 说明 |
 |---|---|---|
 | Windows x64 | 安装程序（`.exe`） | 可选安装目录，新版安装程序覆盖同一目录升级；数据保存在 `userdata` |
-| macOS 13+，Apple Silicon／Intel | 架构对应的 DMG、ZIP | 已随本次发布提供；macOS 为临时签名（ad-hoc signed，未公证），首次运行请右键「打开」；详情见[跨平台桌面打包](tools/desktop/build/cross-platform/README.md) |
+| macOS 13+，Apple Silicon／Intel | 架构对应的 DMG、ZIP | 已随本次发布提供；macOS 为临时签名（ad-hoc signed，未公证），首次运行请右键「打开」；详情见[升级指南](UPGRADING.md) |
 | Linux glibc，x64／arm64 | DEB、AppImage | 已随本次发布提供；Debian/Ubuntu 使用 DEB 包；AppImage 需要桌面沙箱与 FUSE 支持 |
 
-安装文件以对应 Release 页面实际附带的构件为准，请使用随发布的校验清单（`SHA256SUMS`）核对。macOS 签名状态与各平台安装细节见[跨平台桌面打包](tools/desktop/build/cross-platform/README.md)。
+安装文件以对应 Release 页面实际附带的构件为准，请使用随发布的校验清单（`SHA256SUMS`）核对。macOS 签名状态与各平台安装细节见[升级指南](UPGRADING.md)。
 
 应用安装包包含运行环境。模型推理需要 LM Studio 等本地服务或配置的外部 OpenAI 兼容服务。
 
@@ -119,7 +121,7 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口后，Superstring 自行启动的服务与相关进程一起退出。再次双击启动器即可重新启动。
 
-升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 64（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 66（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -137,10 +139,6 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建�
 
 - [版本说明](RELEASE_NOTES.md)
 - [升级指南](UPGRADING.md)
-- [跨平台桌面打包](tools/desktop/build/cross-platform/README.md)
-- [桌面参考](docs/reference/desktop.md)
-- [运行观测参考](docs/reference/runtime-observability.md)
-- [Agent 内核架构](docs/architecture/agent-runtime.md)与[前端工作区架构](docs/architecture/frontend-workspaces.md)
 - [MIT 许可证](LICENSE)；依赖项附带各自的许可证与 NOTICE 原文
 
 ---
@@ -175,6 +173,7 @@ Incoming messages in bound conversations appear automatically. When loading chat
 - Enable or disable group participation directly from conversation cards or conversation headers. Disabled groups continue to receive and store messages while the Agent stays silent without starting model tasks.
 - **Independent reply tasks**: Valid mentions and replies to the assistant run as separate tasks instead of waiting for all replies in a conversation to finish. Per-conversation mention and ordinary task limits default to 4 and 1, with a range of 1–64. Empty conversation overrides follow the scheme. Model requests have separate global and per-service limits, defaulting to 4 and 2 with a range of 1–256; both limits apply. Mention tasks take the next available slot without interrupting running work.
 - **Input anti-spam**: Enabled for new schemes and kept off for existing schemes, with conversation overrides. By default, at least three image-only messages from one sender within three seconds of the first form one logical candidate; threshold (2–20 messages) and initial window (1–30 seconds) are configurable, stored separately for scheme defaults and conversation overrides. Other senders do not break the group; the sender's own text, other media, or direct request does. Grouped images and pure expressions are excluded from automatic image input but remain readable through tools. Direct mentions and valid replies are still handled, and original records are not deleted.
+- **Research & media budget**: QQ research runs check capacity against each subtask's own context limit; when media or sticker outputs exceed available space, a clear budget message is returned instead of postponing failure to later turns, and genuine capacity exceedances fail clearly.
 
 **Group settings** are integrated into scheme and group workflows, providing dedicated configurations and overrides for specific groups. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. System capabilities can be disabled per group with immediate effect.
 
@@ -215,6 +214,7 @@ The interface provides six primary sections: **Conversations**, **Agents**, **Sy
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
 - **Execution inspection**: Browse execution waterfalls to inspect model inputs and outputs, distinguishing model generation from confirmed platform delivery.
+- **Model services & encodings**: Configure optional text token encodings (such as `cl100k_base` or `o200k_base`) for local services (e.g. LM Studio) and external providers; unconfigured models use conservative estimation. Reference help and documentation links assist verification without auto-selection. Shows actual model, capacity, and encoding usage, while preserving unsaved drafts during save conflicts.
 
 ### Memory and knowledge library
 
@@ -231,10 +231,10 @@ Download distribution assets and the checksum list (`SHA256SUMS`) from [v0.4.0-a
 | Platform | Supported distribution formats | Notes |
 |---|---|---|
 | Windows x64 | Installer (`.exe`) | Choose an installation directory; future installers upgrade the same directory; data lives in `userdata` |
-| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Attached to this release; packages are ad-hoc signed, not notarized (right-click Open on first launch); see [Desktop packaging](tools/desktop/build/cross-platform/README.md) for details |
+| macOS 13+, Apple Silicon or Intel | Architecture-specific DMG and ZIP | Attached to this release; packages are ad-hoc signed, not notarized (right-click Open on first launch); see [Upgrade guide](UPGRADING.md) for details |
 | Linux glibc, x64 or arm64 | DEB and AppImage | Attached to this release; DEB integrates with Debian/Ubuntu; AppImage requires desktop sandbox and FUSE support |
 
-Use files actually attached to the selected release and verify them against its checksum list (`SHA256SUMS`). macOS signing status and platform details are documented in [Desktop packaging](tools/desktop/build/cross-platform/README.md).
+Use files actually attached to the selected release and verify them against its checksum list (`SHA256SUMS`). macOS signing status and platform details are documented in [Upgrade guide](UPGRADING.md).
 
 Application packages bundle their runtime. Inference requires a local server such as LM Studio or an external OpenAI-compatible provider.
 
@@ -251,7 +251,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window exits background services and processes started by Superstring. Double-click the launcher again to restart.
 
-Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 64 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 66 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
 ### Run from source
 
@@ -269,10 +269,6 @@ Services bind to `127.0.0.1:17861` by default, with automatic fallback to availa
 
 - [Release notes](RELEASE_NOTES.md)
 - [Upgrade guide](UPGRADING.md)
-- [Desktop packaging](tools/desktop/build/cross-platform/README.md)
-- [Desktop reference](docs/reference/desktop.md)
-- [Runtime observability reference](docs/reference/runtime-observability.md)
-- [Agent runtime architecture](docs/architecture/agent-runtime.md) and [Frontend workspace architecture](docs/architecture/frontend-workspaces.md)
 - [MIT license](LICENSE); third-party license and NOTICE texts accompany packaged dependencies
 
 ---

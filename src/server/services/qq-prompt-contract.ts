@@ -44,6 +44,17 @@ export const QQ_PROMPT_SLOTS = [
 ] as const;
 export type QqPromptSlot = (typeof QQ_PROMPT_SLOTS)[number];
 
+const STICKER_FREQUENCY_GUIDES = {
+  low: "表情发送倾向（low）：以文字为主，也要自然使用贴切的表情；情绪回应、轻松互动时主动用 sticker.search 找候选，有合适的就用 reply.sticker，不必等到表情比文字更好。没有合适的就不用，不硬凑。",
+  medium:
+    "表情发送倾向（medium）：自然、积极地使用表情；情绪回应、玩笑、赞同或安慰时先用 sticker.search 找候选，有合适的就用 reply.sticker，可只发表情或配文字，不必每次都选纯文字。没有合适的就不用，不硬凑。",
+  high: "表情发送倾向（high）：主动且优先使用贴切的表情或图文组合；除非本轮明显不适合表情，先用 sticker.search 查看候选，有合适的就用 reply.sticker；文字与表情同样合适时优先表情或图文。没有合适的就不用，不强加。",
+} as const;
+
+export function qqStickerFrequencyGuide(level?: "low" | "medium" | "high"): string {
+  return level === undefined ? "" : STICKER_FREQUENCY_GUIDES[level];
+}
+
 /**
  * The shipped wording, one slot at a time, and the DDL default for the same column.
  *

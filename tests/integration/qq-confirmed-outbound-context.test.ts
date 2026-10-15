@@ -33,6 +33,7 @@
 // 不给事实行塞私设的 0 天窗口。
 // 不接真实 QQ/模型/网络，不读真实数据；不新增表/列，不改任何产品契约。
 
+import type { SQLQueryBindings } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
@@ -40,6 +41,7 @@ import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import type { ActionContext } from "../../src/server/agent/built-in-actions";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
 import {
+  loadQqOutboundMessageFact,
   loadQqOutboundMessageFactState,
   qqSpeechCarriedByOutboundFacts,
 } from "../../src/server/channels/onebot11/message-projection";
@@ -53,7 +55,7 @@ import {
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { recordQqOutboundMessageFact } from "../../src/server/db/qq-message-repository";
 import { recordObservation } from "../../src/server/db/qq-observation-intake";
-import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { createQqScheme, schemeContext } from "../../src/server/db/qq-scheme-repository";
 import {
   readQqSettings,
   updateQqSettings,
@@ -70,6 +72,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { captureQqTask, createQqBinding } from "../../src/server/services/qq-binding-contract";
+import { qqContextLimits } from "../../src/server/services/qq-context-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
@@ -239,8 +242,15 @@ function setup(readAt: string = now) {
    * 生产同序 commit：outbox.commit → journal 计划事件 → 身份快照（bot-host 等价播种，
    * 非手 SQL）。`occurredAtSeconds` 用真实送达时刻，投影与时间渲染都取它。
    */
-  const commitOutbound = (intentId: string, text: string | readonly string[]) => {
+  const commitOutbound = (
+    intentId: string,
+    text: string | readonly string[],
+    deliveredAt: string = new Date(sentSeconds * 1000).toISOString(),
+    outputOrdinal = 0,
+  ) => {
     const texts = typeof text === "string" ? [text] : text;
+    const deliveredSeconds = Math.floor(Date.parse(deliveredAt) / 1000);
+    if (!Number.isFinite(deliveredSeconds)) throw new Error("fixture: invalid deliveredAt");
     const row = h.db
       .query("SELECT authority_revision AS authorityRevision FROM qq_bindings WHERE id=?")
       .get(binding.id) as { authorityRevision: number };
@@ -260,22 +270,23 @@ function setup(readAt: string = now) {
       id: intentId,
       runId,
       conversationId: conversation.id,
-      ordinal: 0,
+      ordinal: outputOrdinal,
       target,
       speechKind: "direct_reply",
       sourceThroughSeq: 0,
       deliverBy: far,
-      createdAt: new Date(sentSeconds * 1000).toISOString(),
+      createdAt: deliveredAt,
       expiresAt: far,
       // 多部件输出按真实发送顺序建多个 text part（ordinal 0 带程序收件人，>=1 不带）。
       parts: texts.map((value) => ({ kind: "text" as const, text: value })),
     });
+    if (intent.id !== intentId) throw new Error("fixture: output ordinal reused another intent");
     journal.append({
       conversationId: conversation.id,
       eventKey: `output:${intent.id}`,
       kind: "delivery",
       source: { kind: "outbound_intent", id: intent.id, revision: "planned", expiresAt: far },
-      occurredAt: new Date(sentSeconds * 1000).toISOString(),
+      occurredAt: deliveredAt,
       runId,
       outputId: intent.id,
     });
@@ -290,7 +301,7 @@ function setup(readAt: string = now) {
         legacyDisplayName: null,
         nameState: "known",
       },
-      occurredAtSeconds: sentSeconds,
+      occurredAtSeconds: deliveredSeconds,
     });
     return intent;
   };
@@ -323,6 +334,7 @@ function setup(readAt: string = now) {
           kind: "perPart";
           results: ReadonlyArray<{ kind: "confirmed"; messageId: string } | { kind: "unknown" }>;
         },
+    deliveredAt: string = new Date(sentSeconds * 1000).toISOString(),
   ) => {
     let partIndex = 0;
     const delivery = new OutboundDelivery({
@@ -332,7 +344,7 @@ function setup(readAt: string = now) {
       stickerFile: () => null,
       authorize: () => true,
       // 真实送达时刻：让 finishedAt / delivery journal / attempted_at 落在一个可预期刻度。
-      now: () => new Date(sentSeconds * 1000).toISOString(),
+      now: () => deliveredAt,
       port: {
         async send() {
           const result =
@@ -347,6 +359,9 @@ function setup(readAt: string = now) {
       },
     });
     await delivery.deliver(intentId);
+    const parts = outbox.parts(intentId);
+    if (parts.some((part) => part.finished_at !== deliveredAt))
+      throw new Error("fixture: receipt finishedAt did not match delivery clock");
   };
 
   return {
@@ -355,6 +370,7 @@ function setup(readAt: string = now) {
     outbox,
     conversation,
     binding,
+    scheme,
     runId,
     say,
     commitOutbound,
@@ -499,7 +515,257 @@ function dumpRaw(name: string, material: unknown): void {
   }
 }
 
+async function readWithOutboundPayloadCounts(
+  f: ReturnType<typeof setup>,
+  platformIds: readonly string[],
+) {
+  const counts = new Map(platformIds.map((id) => [id, 0]));
+  const originalQuery = f.h.db.query;
+  const query = originalQuery.bind(f.h.db);
+  f.h.db.query = ((...arguments_: Parameters<typeof f.h.db.query>) => {
+    const statement = query(...arguments_);
+    return new Proxy(statement, {
+      get(target, property) {
+        if (property === "all") {
+          return (...bindings: unknown[]) => {
+            const rows: unknown[] = Reflect.apply(target.all, target, bindings);
+            const platformId = bindings[0];
+            if (typeof platformId === "string" && counts.has(platformId)) {
+              const payloadRows = rows.filter((row) => {
+                if (row === null || typeof row !== "object") return false;
+                const value = row as Record<string, unknown>;
+                return (
+                  value.platformMessageId === platformId &&
+                  typeof value.partId === "string" &&
+                  typeof value.payload === "string" &&
+                  typeof value.factParts === "string" &&
+                  typeof value.targetRaw === "string"
+                );
+              });
+              counts.set(platformId, (counts.get(platformId) ?? 0) + payloadRows.length);
+            }
+            return rows;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }) as typeof f.h.db.query;
+  try {
+    const material = await f.buildSource(f.runId).read(readInput());
+    return { material, counts };
+  } finally {
+    f.h.db.query = originalQuery;
+  }
+}
+
 describe("confirmed assistant outbound parts reach the shared context", () => {
+  it("looks up a confirmed platform part before joining its intent and keeps ambiguous claims unreadable", async () => {
+    const f = setup();
+    const deliveryAt = new Date(sentSeconds * 1000).toISOString();
+    const intent = f.commitOutbound("lookup-part-first", "full-confirmed-payload", deliveryAt, 0);
+    await f.deliver(intent.id, { kind: "confirmed", messageId: "-9501" });
+    const part = f.outbox.parts(intent.id)[0];
+    if (!part) throw new Error("fixture: confirmed part missing");
+    expect(part.status).toBe("confirmed");
+    const scope = {
+      conversationId: f.conversation.id,
+      accountId,
+      conversationKind: "group" as const,
+      peerId,
+      agentId: DEFAULT_AGENT_ID,
+      bindingId: f.binding.id,
+      bindingEpoch: (
+        f.h.db
+          .query("SELECT binding_epoch AS n FROM conversations WHERE id=?")
+          .get(f.conversation.id) as { n: number }
+      ).n,
+      authorityRevision: f.binding.authorityRevision,
+    };
+    const store = { db: f.h.db, orm: f.h.orm };
+    const originalQuery = f.h.db.query;
+    const query = originalQuery.bind(f.h.db);
+    let lookup: { sql: string; bindings: SQLQueryBindings[] } | undefined;
+    f.h.db.query = ((statementSql: string, ...prepareArguments: unknown[]) => {
+      const statement = Reflect.apply(query, f.h.db, [statementSql, ...prepareArguments]);
+      return new Proxy(statement, {
+        get(target, property) {
+          if (property === "all")
+            return (...bindings: SQLQueryBindings[]) => {
+              const rows: unknown[] = Reflect.apply(target.all, target, bindings);
+              if (
+                bindings.length === 4 &&
+                bindings[0] === "-9501" &&
+                rows.some((row) => {
+                  if (row === null || typeof row !== "object") return false;
+                  const value = row as Record<string, unknown>;
+                  return (
+                    value.partId === part.id &&
+                    value.platformMessageId === "-9501" &&
+                    typeof value.payload === "string" &&
+                    typeof value.factParts === "string" &&
+                    typeof value.targetRaw === "string"
+                  );
+                })
+              )
+                lookup = { sql: statementSql, bindings };
+              return rows;
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }) as typeof f.h.db.query;
+    let fact: ReturnType<typeof loadQqOutboundMessageFact>;
+    try {
+      fact = loadQqOutboundMessageFact(store, scope, "-9501", now);
+    } finally {
+      f.h.db.query = originalQuery;
+    }
+    expect(fact?.id).toBe(part.id);
+    expect(fact?.platformMessageId).toBe("-9501");
+    expect(fact?.speaker.role).toBe("assistant");
+    expect(fact?.speaker.qq).toBe(accountId);
+    expect(fact?.speaker.groupCard).toBe(assistantCard);
+    expect(fact?.parts).toEqual([{ kind: "text", text: "full-confirmed-payload" }]);
+    expect(fact?.completeness).toBe("full");
+    expect(fact?.occurredAtSeconds).toBe(sentSeconds);
+    expect(fact?.sources[0]?.id).toBe(part.id);
+    const unknown = f.commitOutbound("lookup-unknown", "unknown-payload", deliveryAt, 1);
+    await f.deliver(unknown.id, { kind: "unknown" });
+    expect(loadQqOutboundMessageFact(store, scope, "-9502", now)).toBeNull();
+    const duplicate = f.commitOutbound("lookup-duplicate", "duplicate-payload", deliveryAt, 2);
+    await f.deliver(duplicate.id, { kind: "confirmed", messageId: "-9501" });
+    expect(f.outbox.parts(duplicate.id)[0]?.status).toBe("confirmed");
+    expect(loadQqOutboundMessageFact(store, scope, "-9501", now)).toBeNull();
+    expect(loadQqOutboundMessageFactState(store, scope, "-9501", now)).toEqual({
+      state: "missing",
+      fact: null,
+    });
+    if (!lookup) throw new Error("fixture: original platform lookup not observed");
+    const plan = f.h.db.query(`EXPLAIN QUERY PLAN ${lookup.sql}`).all(...lookup.bindings) as {
+      detail: string;
+    }[];
+    const drivers = plan.flatMap((row) => {
+      const match = /^(?:SEARCH|SCAN) (?:TABLE )?(\S+)/.exec(row.detail);
+      return match ? [match[1]] : [];
+    });
+    expect(drivers.length).toBeGreaterThan(0);
+    expect(["p", "outbound_parts"]).toContain(drivers[0]);
+  });
+
+  it("does not load historical outbound payloads merely to discard them outside the window", async () => {
+    const f = setup();
+    const context = schemeContext(f.scheme);
+    const floor =
+      atSeconds -
+      Math.max(
+        qqContextLimits(context, "judgement").windowMinutes,
+        qqContextLimits(context, "reply").windowMinutes,
+      ) *
+        60 -
+      1;
+    expect(Number.isFinite(floor)).toBe(true);
+    const oldAt = new Date((floor - 60) * 1000).toISOString();
+    const historicalIds = Array.from({ length: 20 }, (_, index) => String(-9100 - index));
+    for (const [index, messageId] of historicalIds.entries()) {
+      const intent = f.commitOutbound(
+        `historical-${index}`,
+        `outside-window-${index}`,
+        oldAt,
+        index,
+      );
+      await f.deliver(intent.id, { kind: "confirmed", messageId }, oldAt);
+    }
+    const current = f.commitOutbound(
+      "current-window",
+      "current-window-body",
+      new Date(sentSeconds * 1000).toISOString(),
+      20,
+    );
+    await f.deliver(current.id, { kind: "confirmed", messageId: "-9199" });
+    f.say(-9201, atSeconds - 10, "current question");
+    const seededParts = f.outbox
+      .list({ conversationId: f.conversation.id })
+      .flatMap((intent) => intent.parts);
+    expect(seededParts).toHaveLength(21);
+    expect(seededParts.every((part) => part.status === "confirmed")).toBe(true);
+    expect(seededParts.map((part) => part.platformMessageId).sort()).toEqual(
+      [...historicalIds, "-9199"].sort(),
+    );
+    const { material, counts } = await readWithOutboundPayloadCounts(f, [
+      ...historicalIds,
+      "-9199",
+    ]);
+    const assistants = factMessages(factsSections(material).join("\n")).filter(
+      (message) => message.speaker.role === "assistant",
+    );
+    expect(assistants.map((message) => message.platformMessageId)).toEqual(["-9199"]);
+    expect(assistants[0]?.parts).toEqual([{ kind: "text", text: "current-window-body" }]);
+    expect(counts.get("-9199")).toBeGreaterThan(0);
+    expect(historicalIds.map((id) => counts.get(id))).toEqual(historicalIds.map(() => 0));
+  });
+
+  it("keeps floored offset timestamps and explicit replies to old outbound parts readable", async () => {
+    const f = setup();
+    const context = schemeContext(f.scheme);
+    const floor =
+      atSeconds -
+      Math.max(
+        qqContextLimits(context, "judgement").windowMinutes,
+        qqContextLimits(context, "reply").windowMinutes,
+      ) *
+        60 -
+      1;
+    expect(Number.isFinite(floor)).toBe(true);
+    const oldAt = new Date((floor - 60) * 1000).toISOString();
+    const boundaryAt = new Date(floor * 1000 + 999).toISOString();
+    // Same instant as floor+1s, represented with an offset rather than a Z suffix.
+    const offsetAt = new Date((floor + 1) * 1000 + 8 * 3600 * 1000)
+      .toISOString()
+      .replace("Z", "+08:00");
+    const old = f.commitOutbound("explicit-old", "explicit-old-body", oldAt);
+    await f.deliver(old.id, { kind: "confirmed", messageId: "-9301" }, oldAt);
+    const boundary = f.commitOutbound("floor-boundary", "excluded-floor-body", boundaryAt, 1);
+    await f.deliver(boundary.id, { kind: "confirmed", messageId: "-9302" }, boundaryAt);
+    const inside = f.commitOutbound("offset-inside", "offset-inside-body", offsetAt, 2);
+    await f.deliver(inside.id, { kind: "confirmed", messageId: "-9303" }, offsetAt);
+    f.say(-9401, atSeconds - 10, "reply to your old message", -9301);
+    const seededParts = f.outbox
+      .list({ conversationId: f.conversation.id })
+      .flatMap((intent) => intent.parts);
+    expect(seededParts).toHaveLength(3);
+    expect(seededParts.every((part) => part.status === "confirmed")).toBe(true);
+    expect(seededParts.map((part) => part.platformMessageId).sort()).toEqual([
+      "-9301",
+      "-9302",
+      "-9303",
+    ]);
+    const { material, counts } = await readWithOutboundPayloadCounts(f, [
+      "-9301",
+      "-9302",
+      "-9303",
+    ]);
+    const assistants = factMessages(factsSections(material).join("\n")).filter(
+      (message) => message.speaker.role === "assistant",
+    );
+    expect(assistants.map((message) => message.platformMessageId)).toEqual(["-9303"]);
+    expect(assistants[0]?.occurredAtSeconds).toBe(floor + 1);
+    expect(assistants[0]?.parts).toEqual([{ kind: "text", text: "offset-inside-body" }]);
+    expect(counts.get("-9302")).toBe(0);
+    expect(counts.get("-9303")).toBeGreaterThan(0);
+    // Old history is absent from the window, but explicit quote lookup keeps the original loader.
+    expect(counts.get("-9301")).toBeGreaterThan(0);
+    const oldPart = f.outbox.parts(old.id)[0];
+    if (!oldPart) throw new Error("fixture: old confirmed part missing");
+    const root = replyRootSections(material).find((item) => item.target === oldPart.id);
+    expect(root).toBeDefined();
+    expect(root?.state).not.toBe("missing");
+    expect(root?.state).not.toBe("expired");
+    expect(factsSections(material).join("\n")).not.toContain("explicit-old-body");
+  });
+
   it("carries the confirmed part's own words and real sending account into the fact dump", async () => {
     const f = setup();
     const assistantLine = "昨天那家店十点开门";

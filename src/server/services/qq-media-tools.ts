@@ -19,7 +19,7 @@ import {
 } from "../../shared/contracts/agent-action-descriptions";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
-import type { ActionContext, BuiltInAction, EvidenceResultFitter } from "../agent/built-in-actions";
+import type { ActionContext, BuiltInAction } from "../agent/built-in-actions";
 import type { ActionObservation } from "../agent/context-engine";
 import { readBindingByConversation } from "../db/qq-binding-repository";
 import { readQqGroupAgentConfig } from "../db/qq-group-config-repository";
@@ -303,7 +303,9 @@ export interface QqMediaToolsOptions {
     name: string,
     arguments_: Record<string, unknown>,
     signal: AbortSignal,
-  ) => Promise<EvidenceResultFitter>;
+  ) => Promise<
+    (value: unknown, sources: readonly SourceRef[], terminalFeedback?: boolean) => boolean
+  >;
   /** 宿主时钟（nowIso 形状）；省略＝真实时钟。过期与补充窗口都用它。 */
   readonly now?: () => string;
   /**
@@ -371,6 +373,7 @@ interface MediaRunState {
   /** 建立这张表的信号；只有它中止才回收整张表。 */
   readonly signal: AbortSignal;
   active: boolean;
+  listStarted: boolean;
   readonly disclosed: Set<string>;
   readonly outcomes: Map<string, DescribeOutcome>;
   readonly cursors: Map<string, ListCursor>;
@@ -444,6 +447,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       key,
       signal: context.signal,
       active: true,
+      listStarted: false,
       disclosed: new Set(),
       outcomes: new Map(),
       cursors: new Map(),
@@ -460,6 +464,13 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     // 只认建立这张表的信号：外部调用的信号中止只让在飞调用失败，不回收运行态。
     state.signal.addEventListener("abort", state.release, { once: true });
     return state;
+  }
+  function bindRun(context: ActionContext): void {
+    context.signal.throwIfAborted();
+    assertWired(context);
+    if (context.runId === undefined || context.runId.trim().length === 0)
+      fail("CONTEXT_SOURCE_INVALID", "媒体运行身份缺失");
+    runState(context, true);
   }
   /** 每个边界都复验：取消、运行态、宿主权威、宿主当前性。 */
   function boundary(state: MediaRunState, context: ActionContext): void {
@@ -942,14 +953,27 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
   }
 
   /** 同一次 execute 只捕获一个 fitter：重复 fit 不重复计预留（宿主账本语义）。 */
-  type FitCapture = () => Promise<EvidenceResultFitter>;
+  type FitCapture = () => ReturnType<QqMediaToolsOptions["fit"]>;
   function captureFit(
     context: ActionContext,
     name: string,
     arguments_: Record<string, unknown>,
   ): FitCapture {
-    let captured: Promise<EvidenceResultFitter> | undefined;
+    let captured: ReturnType<QqMediaToolsOptions["fit"]> | undefined;
     return () => (captured ??= options.fit(name, arguments_, context.signal));
+  }
+  async function budgetRefusal(
+    state: MediaRunState,
+    context: ActionContext,
+    fits: FitCapture,
+  ): Promise<Omit<ActionObservation, "id" | "name">> {
+    boundary(state, context);
+    const value = unavailableValue();
+    const accept = await fits();
+    if (!accept(value, []) && !accept(value, [], true))
+      fail("CONTEXT_BUDGET_EXCEEDED", "媒体读取结果与拒绝信封超过本轮上下文容量");
+    boundary(state, context);
+    return { value, sources: [] };
   }
   /** 结果按完整信封拟合：装不下＝标准预算拒绝；fit 通过后还要复验行，失效就回拒绝码。 */
   async function settle(
@@ -962,7 +986,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     also?: () => void,
   ): Promise<Omit<ActionObservation, "id" | "name">> {
     boundary(state, context);
-    if (!(await fits())(value, sources)) return { value: unavailableValue(), sources: [] };
+    if (!(await fits())(value, sources)) return budgetRefusal(state, context, fits);
     if (snap !== null) {
       boundary(state, context);
       const check = revalidated(snap);
@@ -983,7 +1007,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     boundary(state, context);
     const observation = (await fits())(value, [])
       ? { value, sources: [] }
-      : { value: unavailableValue(), sources: [] };
+      : await budgetRefusal(state, context, fits);
     boundary(state, context);
     return observation;
   }
@@ -997,13 +1021,14 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     boundary(state, context);
     const observation = (await fits())(value, [])
       ? { value, sources: [] }
-      : { value: unavailableValue(), sources: [] };
+      : await budgetRefusal(state, context, fits);
     boundary(state, context);
     return observation;
   }
 
   const list: BuiltInAction = {
     description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.list"],
+    bindRun,
     release: releaseRun,
     execute: async (arguments_, context) => {
       context.signal.throwIfAborted();
@@ -1011,6 +1036,9 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       const input = QQ_MEDIA_TOOL_SCHEMAS["media.list"].parse(arguments_);
       // 续页不建表：游标必须还活在本 run 的运行态里，跨 run 或伪造一律拒绝。
       const state = runState(context, input.cursor === undefined);
+      if (input.cursor !== undefined && !state.listStarted)
+        fail("CONTEXT_INVALID_SELECTION", "媒体引用不属于本轮已披露的列表");
+      if (input.cursor === undefined) state.listStarted = true;
       const fits = captureFit(context, "media.list", arguments_);
       boundary(state, context);
       let cursor: ListCursor | null = null;
@@ -1159,7 +1187,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       }
       if (staleCode !== null) return refuse(state, context, fits, staleCode);
       boundary(state, context);
-      return { value: unavailableValue(), sources: [] };
+      return budgetRefusal(state, context, fits);
     },
   };
 
@@ -1291,7 +1319,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       boundary(input.state, input.context);
       return { value, sources: [...fresh.sources] };
     }
-    return { value: unavailableValue(), sources: [] };
+    return budgetRefusal(input.state, input.context, input.fits);
   }
 
   /** The single authorized description reader used for explicit paging and describe success. */
@@ -1385,6 +1413,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
 
   const noteRead: BuiltInAction = {
     description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.note.read"],
+    bindRun,
     release: releaseRun,
     execute: async (arguments_, context) => {
       context.signal.throwIfAborted();
@@ -1425,6 +1454,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
     description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.describe"],
     // 有副作用的工具不进沙箱绑定目录；串行执行，绝不与只读批并行。
     sandboxCallable: false,
+    bindRun,
     release: releaseRun,
     execute: async (arguments_, context) => {
       context.signal.throwIfAborted();
@@ -1443,7 +1473,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       if (row.segmentKind !== "image") return refuse(state, context, fits, "unsupported_kind");
       // 结果缓存的键只能是已披露 id（≤ MAX_DISCLOSED），这里只是防御性复检。
       if (!state.outcomes.has(input.id) && state.outcomes.size >= MAX_DISCLOSED)
-        return { value: unavailableValue(), sources: [] };
+        return budgetRefusal(state, context, fits);
 
       /**
        * 缓存命中的统一出口：走已验的 `readQqMediaTaskOnce` 权威 cache 路径——复用
@@ -1642,7 +1672,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         // 结果信封上界都装不下时不认领尝试、不调模型、不写缓存。
         boundary(state, context);
         if (!(await fits())({ status: "failed", described: false, attempt: 1, giveUp: true }, []))
-          return { value: unavailableValue(), sources: [] };
+          return budgetRefusal(state, context, fits);
         boundary(state, context);
         // 请求身份（§5.7）：只有宿主在锚上冻结的 explicitRequest 才是新请求身份；
         // 普通 detail（无 explicitRequest）不带 requestId，仍按原内容身份入账——
@@ -1764,7 +1794,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
         giveUp: true,
       };
       boundary(state, context);
-      if (!(await fits())(resultFloor, [])) return { value: unavailableValue(), sources: [] };
+      if (!(await fits())(resultFloor, [])) return budgetRefusal(state, context, fits);
 
       // baseline 一次自动读（§5.7）：失败不再等补充、不自动第二次、不循环——补充时间窗
       // 与时间解锁流已退役。失败结果记在任务账本行上复用；真实新消息/新显式请求是新的
@@ -1836,6 +1866,7 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
   const read: BuiltInAction | null = readImage
     ? {
         description: QQ_MEDIA_TOOL_DESCRIPTIONS["media.read"],
+        bindRun,
         release: releaseRun,
         execute: async (arguments_, context) => {
           context.signal.throwIfAborted();

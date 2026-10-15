@@ -5,10 +5,7 @@ import {
   buildSectionPayload,
   mergeSavedSection,
 } from "../../src/web/features/agents/section-rules";
-import {
-  applyMessageEvent,
-  createOptimisticMessages,
-} from "../../src/web/features/chat/message-rules";
+import { createOptimisticMessages } from "../../src/web/features/chat/message-rules";
 
 const NOW = "2026-09-17T12:00:00.000Z";
 const agent = () =>
@@ -105,45 +102,5 @@ describe("消息纯规则", () => {
       ["optimistic-user-request", "user", "completed"],
       ["optimistic-assistant-request", "assistant", "pending"],
     ]);
-  });
-  it("delta不修改输入或无关消息，done保留文本与创建时间", () => {
-    const original = freeze(createOptimisticMessages("问题", "request", NOW));
-    const next = applyMessageEvent(original, original[1].id, {
-      event: "delta",
-      request_id: "request",
-      text: "回答",
-    });
-    expect(original[1].content).toBe("");
-    expect(next[0]).toBe(original[0]);
-    const done = applyMessageEvent(next, next[1].id, {
-      event: "done",
-      request_id: "request",
-      message_id: "persisted",
-      created_at: NOW,
-      completed_at: NOW,
-    });
-    expect(done[1]).toMatchObject({
-      id: "persisted",
-      content: "回答",
-      status: "completed",
-      createdAt: NOW,
-      completedAt: NOW,
-    });
-  });
-  it("error保留部分输出并记录错误码，不串改其他消息", () => {
-    const rows = createOptimisticMessages("问题", "request", NOW);
-    rows[1].content = "部分";
-    const next = applyMessageEvent(freeze(rows), rows[1].id, {
-      event: "error",
-      request_id: "request",
-      code: "MODEL_STREAM_INTERRUPTED",
-      message: "中断",
-    });
-    expect(next[1]).toMatchObject({
-      content: "部分",
-      status: "failed",
-      errorCode: "MODEL_STREAM_INTERRUPTED",
-    });
-    expect(next[0]).toBe(rows[0]);
   });
 });

@@ -4,6 +4,7 @@ import {
   qqConversationTaskKey,
   resolveEffectiveInputAntiSpam,
 } from "../../../shared/contracts/qq-task";
+import type { WakeActivationMetadata } from "../../conversation/wake-scheduler";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { readQqBinding, readQqBindings } from "../../db/qq-binding-repository";
 import { readEffectiveQqScheme } from "../../db/qq-group-config-repository";
@@ -53,8 +54,39 @@ export class OneBot11Adapter implements ConversationIngress {
   private now() {
     return this.options.nowSeconds?.() ?? Math.floor(Date.now() / 1000);
   }
+  /** Current activation maturity, from the same owner and pure window rule as ingress offers. */
+  chimingActivationFacts(
+    conversationId: string,
+    nowSeconds: number,
+  ): WakeActivationMetadata | null {
+    const conversation = this.options.journal.get(conversationId);
+    const binding = conversation ? readQqBinding(this.options.orm, conversation.sourceId) : null;
+    const scheme = binding ? readEffectiveQqScheme(this.options.orm, binding) : null;
+    if (!conversation || !binding || !scheme) return null;
+    const eligible = this.derivedChimingCount(
+      conversationId,
+      this.options.journal.chimingInObservedSeq(conversationId),
+      attentionTriggerFilter(binding),
+      effectiveQqTriggers(binding, scheme).direct_reply,
+    );
+    const judgedAt = this.options.journal.chimingInJudgedAt(conversationId);
+    const window = qqChimingBatchWindow({
+      rhythm: schemeRhythm(scheme),
+      count: eligible.count,
+      firstEligibleSeconds: eligible.firstEligibleSeconds,
+      judgedAtSeconds: judgedAt === null ? null : Math.floor(Date.parse(judgedAt) / 1000),
+      nowSeconds,
+    });
+    return window.kind === "ready"
+      ? {
+          eligibleCount: window.count,
+          maturityCondition: window.condition,
+          triggerFunction: "qqChimingBatchWindow",
+        }
+      : null;
+  }
   beforeRecord(bindingId: string): void {
-    this.options.journal.ensureOneBot(bindingId);
+    this.options.journal.ensureOneBotActivation(bindingId);
   }
   afterRecord(bindingId: string, observation: QqObservation): void {
     const mentions = observation.segments.filter((s) => s.kind === "mention").map((s) => s.target);
@@ -94,6 +126,7 @@ export class OneBot11Adapter implements ConversationIngress {
           kind: "message",
           speakerKind: observation.speaker.kind,
           addressed: addressing.reasons.length > 0,
+          addressingReasons: addressing.reasons.join(","),
         },
       });
       const offer = () =>
@@ -131,8 +164,8 @@ export class OneBot11Adapter implements ConversationIngress {
       addressed: number;
     } | null;
     for (const note of notes) {
-      const conversation = this.options.journal.ensureOneBot(bindingId);
-      const before = conversation?.lastSeq ?? 0;
+      const conversation = this.options.journal.ensureOneBotActivation(bindingId);
+      const before = conversation ? conversation.next_seq - 1 : 0;
       const event = this.options.journal.ingestMedia(note.id, bindingId);
       const span =
         event && event.seq > before
@@ -141,7 +174,7 @@ export class OneBot11Adapter implements ConversationIngress {
               stage: "ingress",
               code: "MEDIA_REVISION_RECORDED",
               conversationId: event.conversationId,
-              agentId: conversation?.agentId,
+              agentId: conversation?.agent_id,
               sourceSeq: event.seq,
               sources: event.sources,
             })
@@ -437,7 +470,13 @@ export class OneBot11Adapter implements ConversationIngress {
         wakeId,
         sourceSeq: seq,
         sources: event?.sources,
-        details: { restored: restore, ...details },
+        details: {
+          restored: restore,
+          ...(event?.seq === seq && event.addressing.reasons.length
+            ? { addressingReasons: event.addressing.reasons.join(",") }
+            : {}),
+          ...details,
+        },
       });
     };
     if (!binding) {
@@ -496,7 +535,7 @@ export class OneBot11Adapter implements ConversationIngress {
       report("TRIGGER_OFF", "skipped", undefined, { cause: path });
       return;
     }
-    const conversation = journal.ensureOneBot(bindingId)!;
+    const conversation = journal.ensureOneBotActivation(bindingId)!;
     if (
       mentionIdentity &&
       path === "direct_reply" &&
@@ -511,7 +550,7 @@ export class OneBot11Adapter implements ConversationIngress {
         !currentBinding ||
         !schemeRow ||
         !agent ||
-        current.agentId !== currentBinding.agentId
+        current.agent_id !== currentBinding.agentId
       )
         return;
       const sourceEvent = journal.eventsAfter(conversation.id, seq - 1, 1).items[0];
@@ -520,13 +559,13 @@ export class OneBot11Adapter implements ConversationIngress {
         taskKey: qqConversationTaskKey.mention({
           accountId: mentionIdentity.accountId,
           conversationId: current.id,
-          bindingEpoch: current.bindingEpoch,
+          bindingEpoch: current.binding_epoch,
           platformMessageId: mentionIdentity.platformMessageId,
-          agentId: current.agentId,
+          agentId: current.agent_id,
         }),
         conversationId: current.id,
-        bindingEpoch: current.bindingEpoch,
-        agentId: current.agentId,
+        bindingEpoch: current.binding_epoch,
+        agentId: current.agent_id,
         taskClass: "mention" as const,
         cause: "direct_reply" as const,
         sourceFromSeq: sourceEvent.seq,
@@ -717,6 +756,7 @@ export class OneBot11Adapter implements ConversationIngress {
           merged: previous?.id === coalesced.wake.id,
           count: window.count,
           waitingForSeconds: window.kind === "waiting",
+          ...(window.kind === "ready" ? { condition: window.condition } : {}),
         });
         this.options.wake?.();
       }
@@ -793,9 +833,9 @@ export class OneBot11Adapter implements ConversationIngress {
         addressed: number | null;
       }[];
       if (!candidates.length) continue;
-      const c = journal.ensureOneBot(binding.id)!;
+      const c = journal.ensureOneBotActivation(binding.id)!;
       const legacyBoundary =
-        c.consumedSeq === 0
+        c.consumed_seq === 0
           ? Math.max(
               lastQqSpeech(orm, scope)?.spokeAtSeconds ?? -1,
               readQqSends(orm, scope, 1)[0]?.sentAtSeconds ?? -1,
@@ -850,7 +890,7 @@ export class OneBot11Adapter implements ConversationIngress {
         for (const row of rows) {
           const binding = readQqBinding(orm, row.binding_id);
           if (!binding) continue;
-          const c = journal.ensureOneBot(binding.id)!;
+          const c = journal.ensureOneBotActivation(binding.id)!;
           const event = row.event_key ? journal.ingestOneBotEvent(row.event_key, binding.id) : null;
           if (!row.event_key || event) {
             wakes.enqueue({
@@ -1014,7 +1054,7 @@ export class OneBot11Adapter implements ConversationIngress {
       { nowSeconds },
       {
         hasPending(binding) {
-          const c = journal.ensureOneBot(binding.id)!;
+          const c = journal.ensureOneBotActivation(binding.id)!;
           // 冷场发起有自己的安静前提，不能被一条**尚未到判定时刻**的自主机会永久挡住。
           // 已认领的自主批、判定失败重排、以及已到 ready_at 的自主机会仍然是真实待办。
           return !!journal.db
@@ -1028,7 +1068,7 @@ export class OneBot11Adapter implements ConversationIngress {
             .get(c.id, new Date(nowSeconds * 1000).toISOString());
         },
         enqueue(input) {
-          const c = journal.ensureOneBot(input.binding.id)!;
+          const c = journal.ensureOneBotActivation(input.binding.id)!;
           const result = wakes.enqueueChanged({
             conversationId: c.id,
             cause: "idle_topic",
@@ -1046,7 +1086,7 @@ export class OneBot11Adapter implements ConversationIngress {
               status: "scheduled",
               code: "WAKE_SCHEDULED",
               conversationId: c.id,
-              agentId: c.agentId,
+              agentId: c.agent_id,
               wakeId: wake.id,
               sourceSeq: wake.throughSeq,
               details: { cause: "idle_topic", readyAt: wake.readyAt },

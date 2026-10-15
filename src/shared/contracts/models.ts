@@ -174,6 +174,8 @@ export type LocalModelCatalogResponse = z.infer<typeof LocalModelCatalogResponse
 /** One model a provider serves, with the context window the user typed for it. */
 export const ModelProviderModelSchema = z.strictObject({
   name: nonBlankString(1, 200),
+  // Explicit plain-text encoding; absence keeps the conservative estimator.
+  tokenizer_encoding: z.enum(["cl100k_base", "o200k_base"]).optional(),
   /**
    * 手填的上下文窗口。外部服务通常不报这个数，而容量预检拿不到数就一律拒绝（QQ 的判断/回复/
    * 复核/选图与标注都先过这道闸）——所以这里没有默认值：填了才可用。
@@ -254,3 +256,44 @@ export const ModelProviderTestResponseSchema = z.strictObject({
   error: z.string().nullable(),
 });
 export type ModelProviderTestResponse = z.infer<typeof ModelProviderTestResponseSchema>;
+
+// ---- 本地模型 tokenizer 编码声明 --------------------------------------------
+
+/**
+ * One local model's declared tokenizer encoding, keyed by the exact model id
+ * the local service reports. No per-entry revision or timestamp: the whole
+ * file carries a single revision (its raw SHA-256).
+ */
+export const LocalModelEncodingSchema = z.strictObject({
+  name: nonBlankString(1, 200),
+  tokenizer_encoding: z.enum(["cl100k_base", "o200k_base"]),
+});
+export type LocalModelEncoding = z.infer<typeof LocalModelEncodingSchema>;
+
+/** Same group-replace ceiling as a provider's model list. */
+export const LOCAL_MODEL_ENCODING_LIMIT = 50;
+
+const LocalModelEncodingListSchema = z
+  .array(LocalModelEncodingSchema)
+  .max(LOCAL_MODEL_ENCODING_LIMIT)
+  .refine(
+    (models) => new Set(models.map((model) => model.name)).size === models.length,
+    "本地模型名重复",
+  );
+
+/** GET /models/local/encodings — the whole stored declaration plus its file revision. */
+export const LocalModelEncodingsResponseSchema = z.strictObject({
+  revision: z.string(),
+  models: LocalModelEncodingListSchema,
+});
+export type LocalModelEncodingsResponse = z.infer<typeof LocalModelEncodingsResponseSchema>;
+
+/**
+ * PUT /models/local/encodings — whole-array replace; an empty array clears
+ * every entry. Duplicate names are a validation failure, not a silent merge.
+ */
+export const UpdateLocalModelEncodingsSchema = z.strictObject({
+  expected_revision: z.string(),
+  models: LocalModelEncodingListSchema,
+});
+export type UpdateLocalModelEncodings = z.infer<typeof UpdateLocalModelEncodingsSchema>;

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import { conversationRoutes } from "../../src/server/api/conversations";
 import { handleError } from "../../src/server/api/error-handler";
-import { parseSseFrames } from "../../src/server/api/sse";
 import {
   type ConversationChange,
   subscribeConversationChanges,
@@ -13,6 +12,7 @@ import { ConversationEventRepository } from "../../src/server/db/conversation-ev
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { parseSseFrames } from "../harness/sse";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {

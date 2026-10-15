@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
@@ -365,5 +365,247 @@ describe("run detail readiness and non-blocking preview", () => {
     expect(getRunSpy).toHaveBeenCalledTimes(2);
 
     view.unmount();
+  });
+});
+
+import type {
+  RuntimeSpan,
+  RuntimeTrace,
+  RuntimeTraceDetail,
+  RuntimeTracesPage,
+} from "../../src/shared/contracts/runtime-observability";
+import { i18n } from "../../src/web/i18n/runtime";
+
+const wakeTraceId = "a".repeat(32);
+const noModelStepLabel = () => i18n.t("observability.noModelStepHasStartedYet");
+const traceDetailsLabel = () => i18n.t("observability.traceDetails");
+
+function makeSpan(spanId: string, overrides: Partial<RuntimeSpan>): RuntimeSpan {
+  return {
+    id: 1,
+    traceId: wakeTraceId,
+    spanId,
+    parentSpanId: null,
+    name: spanId,
+    at: now,
+    finishedAt: now,
+    durationMs: 10,
+    channel: "system",
+    stage: "run",
+    status: "completed",
+    code: "",
+    model: null,
+    conversationId: null,
+    agentId: null,
+    runId: null,
+    wakeId: null,
+    outputId: null,
+    sourceSeq: null,
+    details: {},
+    ...overrides,
+  };
+}
+
+function makeTraceDetail(runId: string, model: string | null): RuntimeTraceDetail {
+  const wake = makeSpan("wake.timer", { id: 1, stage: "wake", runId, wakeId: "wake-1" });
+  const call = makeSpan("model.generate", {
+    id: 2,
+    stage: "model",
+    channel: "web",
+    model,
+    runId: "child-run-55e",
+    parentSpanId: wake.spanId,
+    durationMs: 6240,
+    details: { model },
+  });
+  const items = model ? [wake, call] : [wake];
+  const trace: RuntimeTrace = {
+    traceId: wakeTraceId,
+    cursorId: 1,
+    causes: [],
+    specIds: ["memory.organize"],
+    root: wake,
+    at: now,
+    lastActivityAt: now,
+    finishedAt: now,
+    durationMs: 6250,
+    status: "completed",
+    spanCount: items.length,
+    matchedSpanCount: items.length,
+    models: model ? [model] : [],
+    channels: ["system", "web"],
+    runIds: [runId],
+    wakeIds: ["wake-1"],
+  };
+  return { now, trace, items, matchedSpanIds: items.map((item) => item.spanId) };
+}
+
+function tracesPage(details: RuntimeTraceDetail[]): RuntimeTracesPage {
+  return {
+    items: details.map((detail) => detail.trace),
+    nextBeforeId: 1,
+    hasMore: false,
+    summary: {
+      totalTraces: details.length,
+      activeTraces: 0,
+      failedTraces: 0,
+      matchedSpans: details.length,
+      lastActivityAt: now,
+      now,
+    },
+  };
+}
+
+function zeroStepRun(runId = "run-zero", specId = "memory.organize"): RunSnapshot {
+  return { ...createSnapshot(runId, specId), steps: [] };
+}
+
+describe("zero-step wake run resolves its trace through the existing canvas", () => {
+  it("shows wake reason and child model calls for a zero-step parent once the trace settles", async () => {
+    const deferredList = makeDeferred<RuntimeTracesPage>();
+    const deferredWaterfall = makeDeferred<RuntimeTraceDetail>();
+    const client = {
+      ...api,
+      getRun: vi.fn().mockResolvedValue(zeroStepRun()),
+      listRuntimeTraces: vi.fn().mockImplementation(() => deferredList.promise),
+      getRuntimeWaterfall: vi.fn().mockImplementation(() => deferredWaterfall.promise),
+      inspectRunContext: vi.fn(),
+    };
+    store.getState().resetForTests(client);
+
+    render(<RunWorkspace runId="run-zero" />);
+    expect(await screen.findByText("memory.organize")).toBeTruthy();
+
+    await waitFor(() => expect(client.listRuntimeTraces).toHaveBeenCalled());
+    expect(client.listRuntimeTraces).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-zero" }),
+      expect.any(AbortSignal),
+    );
+
+    // Tracing is still pending: no false "no model step" conclusion
+    expect(screen.queryByText(noModelStepLabel())).toBeNull();
+    // Protected bodies are never auto-inspected
+    expect(client.inspectRunContext).not.toHaveBeenCalled();
+
+    const detail = makeTraceDetail("run-zero", "gemini-2.5-flash");
+    await act(async () => {
+      deferredList.resolve(tracesPage([detail]));
+    });
+    await waitFor(() => expect(client.getRuntimeWaterfall).toHaveBeenCalled());
+    await act(async () => {
+      deferredWaterfall.resolve(detail);
+    });
+
+    expect((await screen.findAllByText("gemini-2.5-flash")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("wake.timer").length).toBeGreaterThan(0);
+    expect(screen.getByRole("region", { name: traceDetailsLabel() })).toBeTruthy();
+    expect(screen.queryByText(noModelStepLabel())).toBeNull();
+    expect(client.inspectRunContext).not.toHaveBeenCalled();
+  });
+
+  it("keeps normal own-step runs unchanged and issues no extra trace requests", async () => {
+    const client = {
+      ...api,
+      getRun: vi.fn().mockResolvedValue(createSnapshot("run-normal", "memory.organize")),
+      listRuntimeTraces: vi.fn(),
+      getRuntimeWaterfall: vi.fn(),
+    };
+    store.getState().resetForTests(client);
+
+    render(<RunWorkspace runId="run-normal" />);
+    expect(await screen.findByText("model-alpha")).toBeTruthy();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(client.listRuntimeTraces).not.toHaveBeenCalled();
+    expect(client.getRuntimeWaterfall).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the trace read error and clears a shown trace instead of guessing", async () => {
+    const deferredList = makeDeferred<RuntimeTracesPage>();
+    const client = {
+      ...api,
+      getRun: vi.fn().mockResolvedValue(zeroStepRun("run-error")),
+      listRuntimeTraces: vi.fn().mockImplementation(() => deferredList.promise),
+      getRuntimeWaterfall: vi.fn(),
+    };
+    store.getState().resetForTests(client);
+
+    render(<RunWorkspace runId="run-error" />);
+    await waitFor(() => expect(client.listRuntimeTraces).toHaveBeenCalled());
+
+    await act(async () => {
+      deferredList.reject(new Error("HTTP 503: trace store unavailable"));
+    });
+
+    expect(await screen.findByText("HTTP 503: trace store unavailable")).toBeTruthy();
+    expect(screen.queryByText("gemini-2.5-flash")).toBeNull();
+    expect(screen.queryByRole("region", { name: traceDetailsLabel() })).toBeNull();
+  });
+
+  it("rejects a late trace result that belongs to another run", async () => {
+    const deferredList = makeDeferred<RuntimeTracesPage>();
+    const client = {
+      ...api,
+      getRun: vi.fn().mockResolvedValue(zeroStepRun("run-late")),
+      listRuntimeTraces: vi.fn().mockImplementation(() => deferredList.promise),
+      getRuntimeWaterfall: vi.fn(),
+    };
+    store.getState().resetForTests(client);
+
+    render(<RunWorkspace runId="run-late" />);
+    await waitFor(() => expect(client.listRuntimeTraces).toHaveBeenCalled());
+
+    const foreign = makeTraceDetail("run-other", "gemini-2.5-flash");
+    await act(async () => {
+      deferredList.resolve(tracesPage([foreign]));
+    });
+
+    expect(screen.queryByText("gemini-2.5-flash")).toBeNull();
+    expect(screen.queryByRole("region", { name: traceDetailsLabel() })).toBeNull();
+    expect(client.getRuntimeWaterfall).not.toHaveBeenCalled();
+  });
+});
+
+describe("readable run overview preserves technical details", () => {
+  it("shows recorded calls and keeps input inspection explicit in both views", async () => {
+    const snapshot = createSnapshot("overview-run", "memory.organize");
+    const inspect = vi.fn();
+    const client = {
+      ...api,
+      getRun: vi.fn().mockResolvedValue(snapshot),
+      inspectRunContext: inspect,
+    };
+    store.getState().resetForTests(client);
+    render(<RunWorkspace runId="overview-run" />);
+    expect(await screen.findByText("本运行已记录 1 次模型调用（不含子运行）")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "易读概览" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(screen.getByText("步骤 1 · 单轮任务")).toBeTruthy();
+    expect(inspect).not.toHaveBeenCalled();
+    await userEvent.setup().click(screen.getByRole("button", { name: "步骤与技术追踪" }));
+    expect(
+      screen.getByRole("button", { name: "步骤与技术追踪" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(screen.getByText("步骤 1 · 单轮任务")).toBeTruthy();
+    expect(inspect).not.toHaveBeenCalled();
+  });
+  it("shows child call records for a zero-step parent without declaring a complete total", async () => {
+    const detail = makeTraceDetail("overview-parent", "child-model");
+    store.getState().resetForTests({
+      ...api,
+      getRun: vi.fn().mockResolvedValue(zeroStepRun("overview-parent")),
+      listRuntimeTraces: vi.fn().mockResolvedValue(tracesPage([detail])),
+      getRuntimeWaterfall: vi.fn().mockResolvedValue(detail),
+      inspectRunContext: vi.fn(),
+    });
+    render(<RunWorkspace runId="overview-parent" />);
+    expect(await screen.findByText("已记录 1 次模型调用，总数未确认")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /模型调用/ }).getAttribute("data-state")).toBe("active");
+    await userEvent.setup().click(screen.getByRole("button", { name: "步骤与技术追踪" }));
+    expect(screen.getByRole("tab", { name: "全部时序" }).getAttribute("data-state")).toBe("active");
+    expect(store.getState().apiClient.getRuntimeWaterfall).toHaveBeenCalledTimes(1);
+    expect(store.getState().apiClient.inspectRunContext).not.toHaveBeenCalled();
   });
 });

@@ -1,13 +1,12 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-
+import { useShallow } from "zustand/react/shallow";
 import type {
   QqBindingResponse,
   QqConversationListItem,
   QqSchemeResponse,
   UpdateQqBindingRequest,
 } from "../../../shared/contracts/qq";
-
 import {
   isEmptyQqGroupOverrides,
   type QqGroupSchemeOverrides,
@@ -93,7 +92,13 @@ function Assignment({
   onChange: (patch: { agentId?: string; schemeId?: string }) => void;
 }) {
   const { t } = useTranslation();
-  const { agents, qqSchemes, qqAccessSaving } = useSuperstringStore();
+  const { agents, qqSchemes, qqAccessSaving } = useSuperstringStore(
+    useShallow((s) => ({
+      agents: s.agents,
+      qqSchemes: s.qqSchemes,
+      qqAccessSaving: s.qqAccessSaving,
+    })),
+  );
   return (
     <div className="grid gap-5 sm:grid-cols-2">
       <Field label="connections.assistant">
@@ -142,7 +147,27 @@ export function BindingEditor({
   initialSection?: "administrators";
 }) {
   const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const state = useSuperstringStore(
+    useShallow((s) => ({
+      agents: s.agents,
+      apiClient: s.apiClient,
+      bindQqConversation: s.bindQqConversation,
+      error: s.error,
+      feedback: s.feedback,
+      loadQqBindingDirectory: s.loadQqBindingDirectory,
+      openQqGroupConfig: s.openQqGroupConfig,
+      openSettingsRoute: s.openSettingsRoute,
+      qqAccessSaving: s.qqAccessSaving,
+      qqBindingsLoading: s.qqBindingsLoading,
+      qqGroupConfigSaving: s.qqGroupConfigSaving,
+      qqMemoryBatchSaving: s.qqMemoryBatchSaving,
+      qqSchemeSaving: s.qqSchemeSaving,
+      qqSchemes: s.qqSchemes,
+      qqSettings: s.qqSettings,
+      requestQqSchemeNavigation: s.requestQqSchemeNavigation,
+      updateQqBindingRow: s.updateQqBindingRow,
+    })),
+  );
   const [choices, setChoices] = useQqInput("choices");
   const [attention, setAttention] = useQqInput("attention");
   const adminSectionRef = useRef<HTMLDivElement | null>(null);

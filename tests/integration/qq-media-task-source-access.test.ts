@@ -39,7 +39,7 @@ const GROUP = 30003;
 const PEER = String(GROUP);
 const OTHER_PEER = "30009";
 const BINDING_ID = "bd-task-source";
-const AT = Math.floor(Date.parse("2026-10-01T16:00:00Z") / 1000);
+const AT = Math.floor(Date.now() / 1000) - 120;
 const EXPIRES_AT = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
 
 interface Fixture {

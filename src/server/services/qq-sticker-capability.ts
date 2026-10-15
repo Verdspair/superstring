@@ -57,7 +57,9 @@ export function createQqStickerSearch(options: {
   fit: (
     arguments_: Record<string, unknown>,
     signal: AbortSignal,
-  ) => Promise<(value: unknown, sources: readonly SourceRef[]) => boolean>;
+  ) => Promise<
+    (value: unknown, sources: readonly SourceRef[], terminalFeedback?: boolean) => boolean
+  >;
   /**
    * The refs of every candidate a returned page disclosed, reported with the calling
    * run so a host can bind later explicit picks to this run only.
@@ -98,7 +100,14 @@ export function createQqStickerSearch(options: {
       } = { status: catalog.state, items: [], nextCursor: null };
       const sources: SourceRef[] = [];
       const fits = await options.fit(arguments_, signal);
-      if (!fits(value, sources)) throw codedError("STICKER_SEARCH_CONTEXT_LIMIT");
+      if (!fits(value, sources)) {
+        value.status = "budget_exhausted";
+        if (!fits(value, sources) && !fits(value, sources, true))
+          throw codedError("STICKER_SEARCH_CONTEXT_LIMIT");
+        signal.throwIfAborted();
+        options.assertCurrent();
+        return { value, sources };
+      }
       const limit = input.limit ?? 12;
       let skippedForBudget = false;
       for (const [index, asset] of matches.entries()) {

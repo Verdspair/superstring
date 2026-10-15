@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
-import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
+import type { ActionObservation } from "../../src/server/agent/context-engine";
+import {
+  BotContextSource,
+  type BotContextSourceOptions,
+} from "../../src/server/channels/onebot11/context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
@@ -46,7 +50,9 @@ afterEach(() => {
 const FIXED_SECONDS = Math.floor(Date.now() / 1000);
 const FIXED_NOW = new Date(FIXED_SECONDS * 1000).toISOString();
 
-function setup(input: { tokenBudget?: number } = {}) {
+function setup(
+  input: { tokenBudget?: number; availableActions?: AgentSpec["availableActions"] } = {},
+) {
   const handle = openBusinessDb();
   handles.push(handle);
   ensureDefaults(handle.orm, "reply-model");
@@ -96,10 +102,10 @@ function setup(input: { tokenBudget?: number } = {}) {
     model: "reply-model",
     context: "conversation",
     instructions: QQ_MEDIA_RULE,
-    availableActions: [],
+    availableActions: input.availableActions ?? [],
     limits: { steps: 16 },
   };
-  const buildSource = () =>
+  const buildSource = (onDiagnostic?: BotContextSourceOptions["onDiagnostic"]) =>
     new BotContextSource({
       ...handle,
       gateway,
@@ -117,6 +123,7 @@ function setup(input: { tokenBudget?: number } = {}) {
       targets: () => [{ id: "alice", speakerId: "20002" }],
       assertCurrent() {},
       now: () => now,
+      ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
     });
   /**
    * 一条合成入站消息，带完整的事实快照行。
@@ -170,11 +177,17 @@ function setup(input: { tokenBudget?: number } = {}) {
     return eventKey;
   };
   /** 装一次，返回 source 与材料；失败时返回 null（不吞掉别的错误类型）。 */
-  const attempt = (capacity: number) => {
+  const attempt = (
+    capacity: number,
+    options: {
+      observations?: readonly ActionObservation[];
+      onDiagnostic?: BotContextSourceOptions["onDiagnostic"];
+    } = {},
+  ) => {
     probe.capacity = capacity;
-    const source = buildSource();
+    const source = buildSource(options.onDiagnostic);
     return source
-      .read({ signal: new AbortController().signal, observations: [] })
+      .read({ signal: new AbortController().signal, observations: options.observations ?? [] })
       .then((material) => ({ ok: true as const, source, material }))
       .catch((error: unknown) => ({ ok: false as const, code: (error as { code?: string }).code }));
   };
@@ -257,6 +270,70 @@ describe("QQ 装配预算", () => {
     expect(accepted.ok).toBe(true);
     expect(accepted.ok === true && JSON.stringify(accepted.material.pending)).toContain(
       "NEWBODYMARKER",
+    );
+  });
+
+  it("forces window_fit budget failure with two large typed observations at capacity 131072, but succeeds when empty", async () => {
+    const handle = setup();
+    handle.seed(OLD_BODY, 1);
+    handle.seed(NEW_BODY, 0);
+
+    const largeObservations: ActionObservation[] = [
+      {
+        id: "obs-1",
+        name: "knowledge.query",
+        arguments: { query: "large query" },
+        value: "v".repeat(200_000),
+        sources: [],
+      },
+      {
+        id: "obs-2",
+        name: "knowledge.read",
+        arguments: { id: "doc-1" },
+        value: "v".repeat(200_000),
+        sources: [],
+      },
+    ];
+
+    type DiagnosticEvent = Parameters<NonNullable<BotContextSourceOptions["onDiagnostic"]>>[0];
+    const events: DiagnosticEvent[] = [];
+
+    const rejected = await handle.attempt(131072, {
+      observations: largeObservations,
+      onDiagnostic: (event) => events.push(event),
+    });
+
+    expect(rejected.ok).toBe(false);
+    expect(rejected.ok === false && rejected.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+
+    const budgetDiag = events.find(
+      (e): e is Extract<DiagnosticEvent, { kind: "context_budget_exceeded" }> =>
+        e.kind === "context_budget_exceeded",
+    );
+    expect(budgetDiag).toBeDefined();
+    expect(budgetDiag?.stage).toBe("window_fit");
+    expect(budgetDiag?.tier).toBe("reply");
+    expect(budgetDiag?.capacity).toBe(131072);
+    expect(budgetDiag?.ceiling).toBeGreaterThan(0);
+    expect(budgetDiag?.renderedCost).toBeGreaterThan(budgetDiag?.ceiling ?? 0);
+    expect(budgetDiag?.roomFor).toBeLessThan(0);
+
+    const accepted = await handle.attempt(131072, { observations: [] });
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) throw new Error("expected success with empty observations");
+    expect(accepted.material.pending?.length).toBeGreaterThan(0);
+    expect(accepted.source.selection?.messages.length).toBeGreaterThan(0);
+
+    console.log(
+      JSON.stringify({
+        stage: budgetDiag?.stage,
+        capacity: budgetDiag?.capacity,
+        ceiling: budgetDiag?.ceiling,
+        renderedCost: budgetDiag?.renderedCost,
+        roomFor: budgetDiag?.roomFor,
+        emptySuccess: accepted.ok,
+        selectedCount: accepted.source.selection?.messages.length,
+      }),
     );
   });
 });

@@ -6,6 +6,7 @@ import type {
   ModelGateway,
   ModelTool,
 } from "../llm/model-gateway";
+import type { TextTokenEncoding } from "../llm/text-token-counter";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
 
 /**
@@ -34,6 +35,25 @@ export interface ModelResolvedPrepareOutput {
   readonly messages?: readonly ModelMessage[];
   readonly imageResolver?: ChatContentResolver;
   readonly metadata?: Record<string, unknown>;
+}
+
+/**
+ * 上下文预算描述符（宿主 fitting 的唯一入口，只读）：actualModel、**那个模型**的实际容量，以及
+ * 路由显式声明编码时才有的纯文本计数器。没有声明就没有 `countText`——不按模型名或 provider 名猜编码，
+ * 也不把 OpenAI 兼容当编码证据。描述符本身冻结；`assertCurrent()` 在准备之后、每次真正发送之前复验
+ * 「仍然是这一条路由」（抛错＝该次不发送）。`countText` 是整段纯文本的精确计数，不是 chat 模板、
+ * 工具/schema 包装或媒体后的整请求精确成本。
+ */
+export interface ModelContextBudget {
+  /** 本次实际模型（与最终 HTTP body 的 model 同值）。 */
+  readonly model: string;
+  /** 该实际模型的容量；null = 未知，调用方按未知处理（不缩预算、不加载模型）。 */
+  readonly capacity: number | null;
+  readonly tokenizerEncoding?: TextTokenEncoding;
+  /** Frozen provider revision for retry metadata; absent for local routes. */
+  readonly routeRevision?: number;
+  readonly countText?: (text: string) => number;
+  assertCurrent: () => void;
 }
 
 export type ModelWorkClass = "mention" | "ordinary";
@@ -72,6 +92,15 @@ export interface ModelRequest {
   runId?: string;
   owner?: RunOwner;
   imageResolver?: ChatContentResolver;
+  /**
+   * 宿主已经准备好的上下文预算（可选；缺席＝旧行为）。带它发送时，实际模型改用
+   * `contextBudget.model`（它就是本 call 冻结的真实模型），并在每次真正发送前按
+   * `assertCurrent()` 复验路由当前性——抛错＝该次尝试不发出（零追加 HTTP）。
+   * 描述符的计数器供宿主装配使用，不代表这里已经测量了完整请求。
+   */
+  contextBudget?: ModelContextBudget;
+  /** Optional input ceiling in the descriptor counting method; omitted keeps legacy behavior. */
+  contextInputLimit?: number;
 }
 export interface MultimodalRequest {
   systemPrompt?: string;
@@ -91,13 +120,21 @@ export interface ModelPort {
   streamText(request: ModelRequest): AsyncGenerator<string, void, unknown>;
   completeMultimodal(request: MultimodalRequest): Promise<string>;
   /**
+   * 准备某模型的上下文预算描述符（可选能力；网关没实现就缺席＝旧行为，不影响既有调用）。
+   * 解析一次、复用既有容量目录/外部路由，不另起路由或缓存。
+   */
+  prepareContextModel?(
+    model: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<ModelContextBudget>;
+  /**
    * 准入观察面（只读提示，不预留、不代替 acquire）；由 `createModelPort` 装配，
    * 手工构造的夹具可省略。
    */
   readonly admission?: ModelAdmission;
 }
 export type TextModelGateway = Pick<ModelGateway, "complete"> &
-  Partial<Pick<ModelGateway, "streamChat" | "config">>;
+  Partial<Pick<ModelGateway, "streamChat" | "config" | "prepareContextModel">>;
 
 export function textMessages(messages: readonly ChatMessage[]): ModelMessage[] {
   return messages.map((message) => {
@@ -308,6 +345,7 @@ export function createModelPort(options: {
     : undefined;
   return {
     defaultModel: options.gateway?.config?.model,
+    prepareContextModel: options.gateway?.prepareContextModel?.bind(options.gateway),
     admission,
     async complete(request) {
       const gateway = options.gateway;

@@ -2,7 +2,10 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { ConversationEventView } from "../../../shared/contracts/conversation";
 import type { BeforeHistoryChange, HistoryChange } from "./use-conversation-events";
 
-export function timelineKey(item: ConversationEventView) {
+export function timelineKey(item: ConversationEventView & { activityId?: string }) {
+  if (item.activityId) {
+    return `activity:${item.activityId}`;
+  }
   return item.outputId
     ? `output:${item.outputId}`
     : item.kind === "inbound" || item.kind === "outbound" || item.kind === "media_revision"

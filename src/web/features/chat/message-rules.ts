@@ -1,4 +1,4 @@
-import type { MessageResponse, SseEvent } from "../../../shared/contracts";
+import type { MessageResponse } from "../../../shared/contracts";
 import type { ChatItem } from "../../state/types";
 
 export const toChatItem = (message: MessageResponse): ChatItem => ({
@@ -10,33 +10,6 @@ export const toChatItem = (message: MessageResponse): ChatItem => ({
   createdAt: message.created_at,
   completedAt: message.completed_at,
 });
-
-export function applyMessageEvent(
-  messages: ChatItem[],
-  assistantId: string,
-  event: SseEvent,
-): ChatItem[] {
-  if (event.event === "delta")
-    return messages.map((item) =>
-      item.id === assistantId ? { ...item, content: item.content + event.text } : item,
-    );
-  if (event.event === "done")
-    return messages.map((item) =>
-      item.id === assistantId
-        ? {
-            ...item,
-            id: event.message_id,
-            status: "completed",
-            completedAt: event.completed_at,
-          }
-        : item,
-    );
-  if (event.event === "error")
-    return messages.map((item) =>
-      item.id === assistantId ? { ...item, status: "failed", errorCode: event.code } : item,
-    );
-  return messages;
-}
 
 export function createOptimisticMessages(text: string, requestId: string, now: string): ChatItem[] {
   return [

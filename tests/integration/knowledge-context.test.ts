@@ -17,7 +17,7 @@ import {
   KnowledgeContext,
   knowledgeCost,
   knowledgeTerms,
-} from "../../src/server/services/knowledge-context";
+} from "../../src/server/modules/knowledge-module";
 import { KnowledgeOrganizer } from "../../src/server/services/knowledge-organizer";
 import { ContentItemSchema } from "../../src/shared/contracts/content";
 import type { ContextUsage } from "../../src/shared/contracts/context-usage";

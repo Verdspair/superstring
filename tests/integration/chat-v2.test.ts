@@ -3,7 +3,6 @@ import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { ContextBuilder } from "../../src/server/agent/conversation-context";
 import { chatV2Routes } from "../../src/server/api/chat-v2";
 import { DatabaseError } from "../../src/server/api/error-handler";
-import { parseSseFrames } from "../../src/server/api/sse";
 import { createApp } from "../../src/server/app";
 import { WebChannel } from "../../src/server/channels/web-channel";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
@@ -18,6 +17,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import type { ChatV2Event } from "../../src/shared/contracts/chat-v2";
 import { ChatV2EventSchema } from "../../src/shared/contracts/chat-v2";
+import { parseSseFrames } from "../harness/sse";
 
 class Gateway implements ModelGateway {
   config = { baseUrl: "http://unused", model: "model", timeoutSeconds: 60 };

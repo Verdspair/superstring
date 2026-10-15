@@ -10,6 +10,7 @@ import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositori
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
+import { qqChimingBatchWindow } from "../../src/server/services/qq-chiming-time-window";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 
@@ -998,4 +999,47 @@ it("even repeated producer notifications yield to timers while the transport is 
   await stopped;
   expect(timerRan).toBe(true);
   expect(cycles).toBeLessThan(100);
+});
+
+it("records the exact mature dimension without changing deterministic window readiness", () => {
+  const rhythm = {
+    ...QQ_RHYTHM_DEFAULT,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
+    initiative_batch_target_count: 3,
+    initiative_batch_jitter_count: 0,
+  };
+  for (const [count, nowSeconds, condition] of [
+    [3, 110, "count"],
+    [1, 140, "time"],
+    [3, 140, "count_and_time"],
+  ] as const) {
+    const result = qqChimingBatchWindow({
+      rhythm,
+      count,
+      firstEligibleSeconds: 100,
+      judgedAtSeconds: null,
+      nowSeconds,
+    });
+    expect(result.kind).toBe("ready");
+    if (result.kind === "ready") expect(result.condition).toBe(condition);
+  }
+  const waiting = qqChimingBatchWindow({
+    rhythm,
+    count: 1,
+    firstEligibleSeconds: 100,
+    judgedAtSeconds: 120,
+    nowSeconds: 140,
+  });
+  expect(waiting).toMatchObject({ kind: "waiting", readyAtSeconds: 160 });
+  expect(waiting).not.toHaveProperty("condition");
+  const countOnly = qqChimingBatchWindow({
+    rhythm: { ...rhythm, initiative_time_window_enabled: false },
+    count: 3,
+    firstEligibleSeconds: 100,
+    judgedAtSeconds: null,
+    nowSeconds: 140,
+  });
+  expect(countOnly).toMatchObject({ kind: "ready", condition: "count", upperAtSeconds: null });
 });

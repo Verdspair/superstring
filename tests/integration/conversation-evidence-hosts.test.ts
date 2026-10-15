@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import type { ActionContext } from "../../src/server/agent/built-in-actions";
-import { parseSseFrames } from "../../src/server/api/sse";
 import { createApp } from "../../src/server/app";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
@@ -11,6 +11,7 @@ import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-re
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
+import { saveQqConversationSummary } from "../../src/server/db/qq-summary-repository";
 import {
   createSession,
   DEFAULT_AGENT_ID,
@@ -26,6 +27,7 @@ import { captureQqTask, createQqBinding } from "../../src/server/services/qq-bin
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RuntimeConfig } from "../../src/shared/contracts";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
+import { parseSseFrames } from "../harness/sse";
 
 // 合成宿主测试：会话历史/摘要宿主接线（web-context-source、onebot11 context-source、
 // app 组合解析器）。全部使用内存库与脚本化网关：不读真实数据、密钥，不拉起外部服务。
@@ -297,10 +299,91 @@ function qqSetup(input: { mode?: RuntimeConfig["p5_config"]["retrieval_mode"] } 
     journal.ingestOneBotEvent(id, binding.id);
     return id;
   };
-  return { binding, conversation, buildSource, seed };
+  return { h, binding, conversation, buildSource, seed, now, runtime };
 }
 
 describe("conversation evidence hosts", () => {
+  it("qq host restores exact ordered raw provenance only on protected summary.read", async () => {
+    const h = qqSetup();
+    const first = h.seed("first provenance body");
+    const second = h.seed("second provenance body");
+    const sources = [first, second].map((id, index) => ({
+      kind: "qq_observation",
+      id,
+      revision: createHash("sha256")
+        .update(index === 0 ? "first provenance body" : "second provenance body")
+        .digest("hex"),
+      expiresAt: new Date(Date.parse(h.now) + 3600_000).toISOString(),
+    }));
+    const original = JSON.stringify(sources.map((ref) => [ref.kind, ref.id, ref.revision]));
+    const reverse = JSON.stringify(
+      [...sources].reverse().map((ref) => [ref.kind, ref.id, ref.revision]),
+    );
+    const compact = `qq-record:${createHash("sha256").update(original).digest("base64url")}`;
+    const reversedCompact = `qq-record:${createHash("sha256").update(reverse).digest("base64url")}`;
+    expect(reversedCompact).not.toBe(compact);
+    const pkg = {
+      facts: [
+        {
+          kind: "fact" as const,
+          speaker: "20002",
+          text: "REVERSIBLE_SUMMARY_FACT",
+          source_ids: [compact, reversedCompact],
+        },
+      ],
+      provenance: { [compact]: original, [reversedCompact]: reverse },
+      sources,
+      fromSeq: 1,
+      throughSeq: 2,
+      fromSeconds: 1,
+      throughSeconds: 2,
+      at: h.now,
+    };
+    expect(
+      saveQqConversationSummary(h.h.orm, {
+        conversationId: h.conversation.id,
+        agentId: h.binding.agentId,
+        throughSeq: 2,
+        coveredSeq: 2,
+        packages: [pkg],
+        modelName: "reply-model",
+        configSnapshot: h.runtime.p5_config,
+        estimatedTokens: 1,
+        at: h.now,
+        expected: null,
+        assertCurrent() {},
+      }),
+    ).toBe(true);
+    const source = h.buildSource("reply");
+    const material = await source.read({ signal: new AbortController().signal, observations: [] });
+    expect(JSON.stringify(material.pending)).toContain(compact);
+    expect(JSON.stringify(material.pending)).not.toContain(original);
+    const query = source.actions.find((action) => action.description.name === "summary.query");
+    const read = source.actions.find((action) => action.description.name === "summary.read");
+    if (!query || !read) throw new Error("fixture: original summary actions missing");
+    const context: ActionContext = {
+      owner: {
+        kind: "qq_binding",
+        id: h.binding.id,
+        userId: DEFAULT_USER_ID,
+        agentId: h.binding.agentId,
+      },
+      runId: crypto.randomUUID(),
+      signal: new AbortController().signal,
+    };
+    const found = await query.execute({ query: "REVERSIBLE_SUMMARY_FACT" }, context);
+    const items = (found.value as { items: { bodyRef: string }[] }).items;
+    expect(items).toHaveLength(1);
+    const page = await read.execute({ bodyRef: items[0]!.bodyRef, limit: 4096 }, context);
+    const text = (page.value as { items: { text: string }[] }).items[0]!.text;
+    const facts = JSON.parse(text) as { source_ids: string[] }[];
+    expect(facts[0]!.source_ids).toEqual([original, reverse]);
+    h.h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(first);
+    await expect(
+      read.execute({ bodyRef: items[0]!.bodyRef, limit: 4096 }, context),
+    ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+  });
+
   it("web host: history.read body reaches the next model request", async () => {
     const { business, session, gateway } = webSetup();
     const app = createApp({ business, gateway, resolveSource: () => "available" as const });

@@ -137,6 +137,30 @@ describe("resolveQqDisplayName", () => {
 });
 
 describe("formatQqTime", () => {
+  it("still validates invalid timezones for relative-only output and an empty render", () => {
+    expect(() =>
+      formatQqTime(BASE - 90, {
+        nowSeconds: BASE,
+        timezone: "Invalid/Timezone",
+        display: "hybrid",
+        full: false,
+      }),
+    ).toThrow(RangeError);
+    expect(() =>
+      renderQqMessageFacts({
+        messages: [],
+        focus: {
+          triggerMessageIds: [],
+          responseMessageIds: [],
+          responseQqs: [],
+          assistantQq: "90001",
+        },
+        settings: { ...hybridSettings, timezone: "Invalid/Timezone" },
+        nowSeconds: BASE,
+      }),
+    ).toThrow(RangeError);
+  });
+
   it("matches the locked golden: full time + relative across midnight in Asia/Shanghai", () => {
     const seconds = Date.parse("2026-10-01T16:00:05Z") / 1000;
     expect(
@@ -213,6 +237,59 @@ describe("formatQqTime", () => {
 });
 
 describe("renderQqMessageFacts", () => {
+  it("constructs one time formatter per multi-message render and keeps the full output golden", () => {
+    const messages = [
+      fact({ id: "gold-old", seq: 1, occurredAtSeconds: BASE - 90 }),
+      fact({ id: "gold-new", seq: 2, occurredAtSeconds: BASE - 25 }),
+    ];
+    const focus: QqMessageFocus = {
+      triggerMessageIds: [],
+      responseMessageIds: [],
+      responseQqs: [],
+      assistantQq: "90001",
+    };
+    const expected = [
+      "QQ消息事实（now=2026-10-02 00:00:00，timezone=Asia/Shanghai）：每条 msg= 后是单行 JSON；speaker 是消息发送时身份，replyTo 只给平台消息 ID，focus 是本轮触发与应答，与消息本身严格分开。",
+      ...messages.map(
+        (message, index) =>
+          `msg=${JSON.stringify({
+            id: message.id,
+            platformMessageId: null,
+            seq: message.seq,
+            occurredAtSeconds: message.occurredAtSeconds,
+            time: index === 0 ? "1分钟前" : "2026-10-01 23:59:35",
+            speaker: { role: "member", qq: "10001", displayName: "阿林", nameState: "known" },
+            parts: [{ kind: "text", text: "正文" }],
+            mentions: [],
+            completeness: "full",
+          })}`,
+      ),
+      `focus=${JSON.stringify(focus)}`,
+    ].join("\n");
+    const original = Intl.DateTimeFormat;
+    let constructions = 0;
+    Intl.DateTimeFormat = new Proxy(original, {
+      construct(target, args) {
+        constructions++;
+        return Reflect.construct(target, args);
+      },
+    });
+    let output: string;
+    try {
+      output = renderQqMessageFacts({
+        messages,
+        focus,
+        settings: hybridSettings,
+        nowSeconds: BASE,
+      });
+    } finally {
+      Intl.DateTimeFormat = original;
+    }
+    expect(output).toBe(expected);
+    expect(constructions).toBeGreaterThan(0);
+    expect(constructions).toBeLessThanOrEqual(1);
+  });
+
   it("renders a readable single-line-JSON golden with the fixed now/timezone header", () => {
     const focus: QqMessageFocus = {
       triggerMessageIds: ["m1"],

@@ -80,16 +80,36 @@ describe("api SSE 读循环（readEventStream 行为）", () => {
   });
 
   it("流中途出错：异常向上传播，reader 被取消且锁被释放", async () => {
-    stubFetch(abortResponse());
+    const response = abortResponse();
+    const body = response.body;
+    if (!body) throw new Error("fixture: response body missing");
+    const reader = body.getReader();
+    vi.spyOn(body, "getReader").mockReturnValue(reader);
+    const cancel = vi.spyOn(reader, "cancel");
+    const releaseLock = vi.spyOn(reader, "releaseLock");
+    stubFetch(response);
     const events: unknown[] = [];
     await expect(api.subscribeConversationChanges((event) => events.push(event))).rejects.toThrow(
       "connection reset",
     );
     expect(events).toEqual([]);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
   });
 
   it("坏 JSON 帧使解析异常向上传播（不被静默吞掉），错误后 reader 取消", async () => {
-    stubFetch(sseResponse(["event: conversation_changed\ndata: {broken}\n\n"]));
+    const response = sseResponse(["event: conversation_changed\ndata: {broken}\n\n"]);
+    const body = response.body;
+    if (!body) throw new Error("fixture: response body missing");
+    const reader = body.getReader();
+    vi.spyOn(body, "getReader").mockReturnValue(reader);
+    const cancel = vi.spyOn(reader, "cancel");
+    const releaseLock = vi.spyOn(reader, "releaseLock");
+    stubFetch(response);
     await expect(api.subscribeConversationChanges(() => {})).rejects.toThrow();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
   });
 });

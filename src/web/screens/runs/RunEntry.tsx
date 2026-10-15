@@ -1,5 +1,5 @@
 import { ArrowUpRight, RefreshCw } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ import { formatDate } from "../../i18n/runtime";
 import { useConversationChangeSubscription } from "../../services/conversation-changes";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
+import { InvestigationCanvas } from "../observability/InvestigationCanvas";
 import { ModelEvidence } from "../observability/ModelEvidence";
 import { phaseLabels, ReadError, taskName } from "../observability/presentation";
 
@@ -42,8 +43,8 @@ export function runStatusLabel(status: RunStatus, phase?: AgentStepSnapshot["pha
       ? "observability.understandingImages"
       : runLabels[status];
 }
-export function RunLink({ runId }: { runId: string }) {
-  return <RunEntry runId={runId} />;
+export function RunLink({ runId, children }: { runId: string; children?: ReactNode }) {
+  return <RunEntry runId={runId} label={children} />;
 }
 export function JobRunLink({ ownerKind, ownerId }: { ownerKind: string; ownerId: string }) {
   return <RunEntry ownerKind={ownerKind} ownerId={ownerId} />;
@@ -52,6 +53,7 @@ function RunEntry(
   props:
     | {
         runId: string;
+        label?: ReactNode;
       }
     | {
         ownerKind: string;
@@ -66,7 +68,9 @@ function RunEntry(
       <DialogTrigger asChild>
         <Button variant="link" size="sm" className="h-auto gap-1 px-0">
           <ArrowUpRight />
-          {t("observability.runDetails")}
+          {"runId" in props
+            ? (props.label ?? t("observability.runDetails"))
+            : t("observability.runDetails")}
         </Button>
       </DialogTrigger>
       <DialogContent
@@ -157,6 +161,61 @@ export function RunAttempts({ ownerKind, ownerId }: { ownerKind: string; ownerId
     </div>
   );
 }
+function RunTraceDetails({ runId, view }: { runId: string; view: "overview" | "technical" }) {
+  const { t } = useTranslation();
+  const api = useSuperstringStore((s) => s.apiClient);
+  const [selected, setSelected] = useState("");
+  const [opened, setOpened] = useState(true);
+  const read = useCallback(
+    async (signal: AbortSignal) => {
+      const page = await api.listRuntimeTraces({ runId, limit: 100 }, signal);
+      return { api, runId, traces: page.items.filter((trace) => trace.runIds.includes(runId)) };
+    },
+    [api, runId],
+  );
+  const { data, loading, error } = useLiveResource(read);
+  const traces = data?.api === api && data.runId === runId ? data.traces : [];
+  const traceId = traces.some((trace) => trace.traceId === selected)
+    ? selected
+    : traces[0]?.traceId;
+  return (
+    <div className="space-y-4">
+      <ReadError error={error} />
+      {loading && !data && <p role="status">{t("observability.loadingRuns")}</p>}
+      {!loading && !error && !traces.length && (
+        <p className="text-muted-foreground">{t("observability.noAssociatedSourcesAreRecorded")}</p>
+      )}
+      {traces.length > 1 && (
+        <NativeSelect
+          value={traceId ?? ""}
+          onChange={(event) => setSelected(event.target.value)}
+          aria-label={t("observability.traceDetails")}
+        >
+          {traces.map((trace) => (
+            <NativeSelectOption key={trace.traceId} value={trace.traceId}>
+              {trace.traceId}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      )}
+      {traceId &&
+        (opened ? (
+          <InvestigationCanvas
+            key={traceId}
+            traceId={traceId}
+            filters={{ runId }}
+            initialView={view === "overview" ? "models" : "timeline"}
+            onBack={() => setOpened(false)}
+          />
+        ) : (
+          <Button variant="outline" size="sm" onClick={() => setOpened(true)}>
+            {t("observability.traceDetails")}
+          </Button>
+        ))}
+    </div>
+  );
+}
+
 export function RunWorkspace({
   runId,
   initialSnapshot,
@@ -168,7 +227,8 @@ export function RunWorkspace({
     api = useSuperstringStore((s) => s.apiClient),
     receive = useSuperstringStore((s) => s.receiveRunSnapshot),
     live = useSuperstringStore((s) => s.runById[runId]),
-    [selected, setSelected] = useState<string | null>(null);
+    [selected, setSelected] = useState<string | null>(null),
+    [view, setView] = useState<"overview" | "technical">("overview");
   const read = useCallback(
     async (signal: AbortSignal) => {
       const snapshot = await api.getRun(runId, signal);
@@ -189,6 +249,7 @@ export function RunWorkspace({
     enabled: conversationScope !== undefined,
   });
   const base = error ? null : (currentData ?? validInitial);
+
   const isLiveCurrent = Boolean(currentData && live?.snapshot === currentData);
   const run = base
     ? {
@@ -245,8 +306,36 @@ export function RunWorkspace({
               {t("observability.runCompletionMeansTheModelTaskFinishedExternalMessageDelivery")}
             </p>
           )}
+          <nav className="flex flex-wrap gap-2" aria-label={t("observability.runView")}>
+            <Button
+              variant={view === "overview" ? "default" : "outline"}
+              aria-pressed={view === "overview"}
+              onClick={() => setView("overview")}
+            >
+              {t("observability.overview")}
+            </Button>
+            <Button
+              variant={view === "technical" ? "default" : "outline"}
+              aria-pressed={view === "technical"}
+              onClick={() => setView("technical")}
+            >
+              {t("observability.technicalDetails")}
+            </Button>
+          </nav>
+          {run.steps.length > 0 && (
+            <p className="text-sm font-medium">
+              {t("observability.ownRecordedModelCalls", {
+                "0": new Set(run.steps.map((item) => item.stepId)).size,
+              })}
+            </p>
+          )}
+          {view === "overview" && run.steps.length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {t("observability.selectCallForInputOutput")}
+            </p>
+          )}
           <fieldset
-            className="flex gap-2 overflow-x-auto pb-2"
+            className={view === "overview" ? "grid gap-2" : "flex gap-2 overflow-x-auto pb-2"}
             aria-label={t("observability.modelSteps")}
           >
             {run.steps.map((item) => (
@@ -271,9 +360,7 @@ export function RunWorkspace({
               </Button>
             ))}
           </fieldset>
-          {!run.steps.length && (
-            <p className="text-muted-foreground">{t("observability.noModelStepHasStartedYet")}</p>
-          )}
+          {!run.steps.length && <RunTraceDetails key={run.runId} runId={run.runId} view={view} />}
           {step && (
             <ModelEvidence
               key={step.stepId}

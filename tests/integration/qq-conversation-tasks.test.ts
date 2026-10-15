@@ -13,6 +13,7 @@ import {
   settleQqConversationTask,
 } from "../../src/server/db/qq-task-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
+import { RuntimeTelemetry } from "../../src/server/observability/runtime-telemetry";
 import {
   type QqTaskExecutionSnapshot,
   QqTaskExecutionSnapshotSchema,
@@ -451,7 +452,7 @@ describe("QQ conversation business-task foundation", () => {
         leaseExpiresAt: "2099-01-01T00:00:00.000Z",
         sourceState,
       }),
-    ).toBe(false);
+    ).toEqual({ status: "lost", reason: "cancel_requested" });
     expect(
       settleQqConversationTask(h.orm, {
         taskId: task.task.id,
@@ -470,6 +471,117 @@ describe("QQ conversation business-task foundation", () => {
         sourceState,
       }),
     ).toBe(false);
+  });
+
+  it("reports the precise lease-renewal loss reason in the repository transaction", () => {
+    const h = setup();
+    const missing = renewQqConversationTaskLease(h.orm, {
+      taskId: "missing-task",
+      leaseToken: "owner",
+      at: nowIso(),
+      leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+      sourceState,
+    });
+    expect(missing).toEqual({ status: "lost", reason: "task_missing" });
+
+    const pendingScope = scope(h, "renew-pending");
+    const pending = createQqConversationTask(
+      h.orm,
+      { ...mentionInput(h, pendingScope, "renew-pending"), at: nowIso() },
+      { validateSource: validateInput },
+    ).task;
+    expect(
+      renewQqConversationTaskLease(h.orm, {
+        taskId: pending.id,
+        leaseToken: "owner",
+        at: nowIso(),
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+        sourceState,
+      }),
+    ).toEqual({ status: "lost", reason: "not_running" });
+
+    const validScope = scope(h, "renew-valid");
+    const validTask = createQqConversationTask(
+      h.orm,
+      { ...mentionInput(h, validScope, "renew-valid"), at: nowIso() },
+      { validateSource: validateInput },
+    ).task;
+    h.db
+      .query(
+        "UPDATE qq_conversation_tasks SET status='running',lease_token='valid-owner',lease_expires_at='2099-01-01T00:00:00.000Z' WHERE id=?",
+      )
+      .run(validTask.id);
+    expect(
+      renewQqConversationTaskLease(h.orm, {
+        taskId: validTask.id,
+        leaseToken: "valid-owner",
+        at: nowIso(),
+        leaseExpiresAt: "2099-01-01T00:01:00.000Z",
+        sourceState,
+      }),
+    ).toEqual({ status: "renewed" });
+    expect(
+      h.db.query("SELECT lease_expires_at FROM qq_conversation_tasks WHERE id=?").get(validTask.id),
+    ).toEqual({ lease_expires_at: "2099-01-01T00:01:00.000Z" });
+
+    const scenarios = [
+      "token_mismatch",
+      "lease_expired",
+      "cancel_requested",
+      "source_expired",
+      "source_revoked",
+    ] as const;
+    for (const scenario of scenarios) {
+      const s = scope(h, `renew-${scenario}`);
+      const task = createQqConversationTask(
+        h.orm,
+        {
+          ...mentionInput(h, s, `renew-${scenario}`),
+          at: nowIso(),
+          ...(scenario === "source_expired" ? { sourceExpiresAt: "2026-10-10T00:00:01.000Z" } : {}),
+        },
+        { validateSource: validateInput },
+      ).task;
+      const leaseToken = `owner-${scenario}`;
+      h.db
+        .query(
+          "UPDATE qq_conversation_tasks SET status='running',lease_token=?,lease_expires_at=?,cancellation_requested=? WHERE id=?",
+        )
+        .run(
+          leaseToken,
+          scenario === "lease_expired" ? "2026-10-09T00:00:00.000Z" : "2099-01-01T00:00:00.000Z",
+          scenario === "cancel_requested" ? 1 : 0,
+          task.id,
+        );
+      const result = renewQqConversationTaskLease(h.orm, {
+        taskId: task.id,
+        leaseToken: scenario === "token_mismatch" ? "wrong-owner" : leaseToken,
+        at: nowIso(),
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+        sourceState:
+          scenario === "source_expired"
+            ? () => "expired"
+            : scenario === "source_revoked"
+              ? () => "revoked"
+              : sourceState,
+      });
+      expect(result).toEqual({ status: "lost", reason: scenario });
+      if (scenario === "source_expired" || scenario === "source_revoked")
+        expect(
+          h.db
+            .query("SELECT status,lease_token FROM qq_conversation_tasks WHERE id=?")
+            .get(task.id),
+        ).toEqual({
+          status: scenario === "source_expired" ? "expired" : "cancelled",
+          lease_token: null,
+        });
+      else
+        h.db
+          .query(
+            "UPDATE qq_conversation_tasks SET status='completed',lease_token=NULL,lease_expires_at=NULL WHERE id=?",
+          )
+          .run(task.id);
+    }
   });
 
   it("expires stale pending work and fails closed on expired lease recovery without replay", () => {
@@ -573,7 +685,7 @@ describe("QQ conversation business-task foundation", () => {
         leaseExpiresAt: "2026-10-10T00:03:00.000Z",
         sourceState,
       }),
-    ).toBe(false);
+    ).toEqual({ status: "lost", reason: "lease_expired" });
     expect(
       settleQqConversationTask(h.orm, {
         taskId: task.id,
@@ -763,6 +875,296 @@ describe("QQ conversation business-task foundation", () => {
       ].sort((a, b) => a.id.localeCompare(b.id)),
     );
     expect(scheduler.activeCount).toBe(0);
+  });
+
+  it("preserves lease failure attribution without changing generic errors or terminal row states", async () => {
+    const h = setup();
+    const s = scope(h, "20014");
+    const telemetry = new RuntimeTelemetry(h.db);
+    try {
+      for (const scenario of ["ordinary", "lease", "cancelled", "expired"] as const) {
+        const task = createQqConversationTask(
+          h.orm,
+          { ...mentionInput(h, s, `reason-${scenario}`), at: nowIso() },
+          { validateSource: validateInput },
+        ).task;
+        let expired = false;
+        const errors: string[] = [];
+        const scheduler = new QqTaskScheduler({
+          orm: h.orm,
+          telemetry,
+          policy: () => ({ leaseMs: 60_000, renewMs: 20_000 }),
+          limitsFor: limits,
+          sourceState: (tx, identity) => (expired ? "expired" : sourceState(tx, identity)),
+          freezeAtClaim: freezeSnapshot,
+          async activate(_task, _snapshot, _lease, signal) {
+            if (scenario === "cancelled") {
+              return await new Promise<never>((_resolve, reject) => {
+                signal.addEventListener(
+                  "abort",
+                  () => reject(new DOMException("aborted", "AbortError")),
+                  { once: true },
+                );
+              });
+            }
+            expired = scenario === "expired";
+            if (scenario === "ordinary") throw new Error("unexpected activation failure");
+            throw Object.assign(new Error("owner guard rejected the lease"), {
+              code: "QQ_TASK_LEASE_LOST",
+            });
+          },
+          resolveExistingRunAndOutbox: () => "failed",
+          onError: (error) => errors.push(error instanceof Error ? error.message : String(error)),
+          now: nowIso,
+        });
+        try {
+          expect(await scheduler.dispatchOnce()).toBe(true);
+          if (scenario === "cancelled") expect(scheduler.cancel(task.id)).toBe("requested");
+          await scheduler.waitForIdle();
+          const status = scenario === "cancelled" || scenario === "expired" ? scenario : "failed";
+          const code =
+            scenario === "lease"
+              ? "QQ_TASK_LEASE_LOST"
+              : scenario === "expired"
+                ? "OPPORTUNITY_EXPIRED"
+                : scenario === "cancelled"
+                  ? "QQ_TASK_CANCELLED"
+                  : "QQ_TASK_FAILED";
+          expect(
+            h.db
+              .query("SELECT status,error_code,lease_token FROM qq_conversation_tasks WHERE id=?")
+              .get(task.id),
+          ).toEqual({
+            status,
+            error_code:
+              scenario === "expired" ? "SOURCE_EXPIRED" : status === "failed" ? code : null,
+            lease_token: null,
+          });
+          expect(
+            h.db
+              .query(
+                "SELECT status,code FROM runtime_spans WHERE name='bot.task.activate' AND json_extract(details,'$.taskId')=?",
+              )
+              .get(task.id),
+          ).toEqual({
+            status: scenario === "expired" ? "skipped" : status,
+            code,
+          });
+          expect(errors).toEqual(status === "failed" ? [code] : []);
+          expect(scheduler.activeCount).toBe(0);
+        } finally {
+          scheduler.stop();
+          await scheduler.waitForIdle();
+        }
+      }
+    } finally {
+      await telemetry.close();
+    }
+  });
+
+  it("attributes a generic AbortError rejection to the cancellation reason without leaking messages", async () => {
+    const h = setup();
+    const s = scope(h, "20016");
+    const task = createQqConversationTask(
+      h.orm,
+      { ...mentionInput(h, s, "abort-reason-lease"), at: nowIso() },
+      { validateSource: validateInput },
+    ).task;
+    const telemetry = new RuntimeTelemetry(h.db);
+    const errors: string[] = [];
+    const scheduler = new QqTaskScheduler({
+      orm: h.orm,
+      telemetry,
+      policy: () => ({ leaseMs: 60_000, renewMs: 20_000 }),
+      limitsFor: limits,
+      sourceState,
+      freezeAtClaim: freezeSnapshot,
+      async activate(_task, _snapshot, _lease, signal) {
+        return await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+      resolveExistingRunAndOutbox: () => "failed",
+      onError: (error) => errors.push(error instanceof Error ? error.message : String(error)),
+      now: nowIso,
+    });
+    try {
+      expect(await scheduler.dispatchOnce()).toBe(true);
+      expect(scheduler.cancel(task.id)).toBe("requested");
+      await scheduler.waitForIdle();
+      expect(
+        h.db
+          .query("SELECT status,error_code,lease_token FROM qq_conversation_tasks WHERE id=?")
+          .get(task.id),
+      ).toEqual({
+        status: "cancelled",
+        error_code: null,
+        lease_token: null,
+      });
+      expect(
+        h.db
+          .query(
+            "SELECT status,code FROM runtime_spans WHERE name='bot.task.activate' AND json_extract(details,'$.taskId')=?",
+          )
+          .get(task.id),
+      ).toEqual({
+        status: "cancelled",
+        code: "QQ_TASK_CANCELLED",
+      });
+      expect(errors).toEqual([]);
+      expect(scheduler.activeCount).toBe(0);
+    } finally {
+      scheduler.stop();
+      await scheduler.waitForIdle();
+      await telemetry.close();
+    }
+  });
+
+  it("records renewal loss reason and duration before aborting the owner", async () => {
+    const h = setup();
+    const s = scope(h, "renewal-span");
+    const task = createQqConversationTask(
+      h.orm,
+      { ...mentionInput(h, s, "renewal-span"), at: nowIso() },
+      { validateSource: validateInput },
+    ).task;
+    const telemetry = new RuntimeTelemetry(h.db);
+    let abortReason: unknown;
+    const scheduler = new QqTaskScheduler({
+      orm: h.orm,
+      telemetry,
+      policy: () => ({ leaseMs: 60_000, renewMs: 1 }),
+      limitsFor: limits,
+      sourceState,
+      freezeAtClaim: freezeSnapshot,
+      async activate(_task, _snapshot, _lease, signal) {
+        h.db
+          .query("UPDATE qq_conversation_tasks SET lease_token='other-owner' WHERE id=?")
+          .run(task.id);
+        return await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              abortReason = signal.reason;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+      },
+      resolveExistingRunAndOutbox: () => "failed",
+      now: nowIso,
+    });
+    try {
+      expect(await scheduler.dispatchOnce()).toBe(true);
+      await scheduler.waitForIdle();
+      const row = h.db
+        .query(
+          "SELECT status,code,details FROM runtime_spans WHERE name='bot.task.activate' AND json_extract(details,'$.taskId')=?",
+        )
+        .get(task.id) as { status: string; code: string; details: string };
+      const details = JSON.parse(row.details);
+      expect(row.status).toBe("failed");
+      expect(row.code).toBe("QQ_TASK_LEASE_LOST");
+      expect(details).toMatchObject({
+        leaseRenewals: 0,
+        leaseRenewalAttempts: 1,
+        lastReason: "token_mismatch",
+      });
+      expect(typeof details.lastDurationMs).toBe("number");
+      expect(details.lastDurationMs).toBeGreaterThanOrEqual(0);
+      expect(abortReason).toMatchObject({
+        message: "QQ_TASK_LEASE_LOST",
+        code: "QQ_TASK_LEASE_LOST",
+        details: { reason: "token_mismatch" },
+      });
+      expect(scheduler.activeCount).toBe(0);
+    } finally {
+      scheduler.stop();
+      await scheduler.waitForIdle();
+      await telemetry.close();
+    }
+  });
+
+  it("records zero renewal successes and attempts when activation fails before the first tick", async () => {
+    const h = setup();
+    const s = scope(h, "20015");
+    const task = createQqConversationTask(
+      h.orm,
+      { ...mentionInput(h, s, "before-renewal-tick"), at: nowIso() },
+      { validateSource: validateInput },
+    ).task;
+    const telemetry = new RuntimeTelemetry(h.db);
+    let initialDetails: Record<string, unknown> | undefined;
+    let sinkPresent = false;
+    let measured = 0;
+    const scheduler = new QqTaskScheduler({
+      orm: h.orm,
+      telemetry,
+      policy: () => ({ leaseMs: 60_000, renewMs: 20_000 }),
+      limitsFor: limits,
+      sourceState,
+      freezeAtClaim: freezeSnapshot,
+      async activate(
+        ...args: [
+          ...Parameters<ConstructorParameters<typeof QqTaskScheduler>[0]["activate"]>,
+          ((timings: { authorityLeaseChecks?: number; authorityLeaseMs?: number }) => void)?,
+        ]
+      ) {
+        const sink = args[4];
+        sinkPresent = typeof sink === "function";
+        const row = h.db
+          .query(
+            "SELECT details FROM runtime_spans WHERE name='bot.task.activate' AND json_extract(details,'$.taskId')=?",
+          )
+          .get(task.id) as { details: string };
+        initialDetails = JSON.parse(row.details);
+        const started = performance.now();
+        try {
+          await Promise.resolve();
+        } finally {
+          measured = performance.now() - started;
+          sink?.({ authorityLeaseChecks: 1, authorityLeaseMs: measured });
+        }
+        throw new Error("failed before renewal tick");
+      },
+      resolveExistingRunAndOutbox: () => "failed",
+      now: nowIso,
+    });
+    try {
+      expect(await scheduler.runOnce()).toBe(true);
+      await scheduler.waitForIdle();
+      expect(initialDetails).toMatchObject({ leaseRenewals: 0, leaseRenewalAttempts: 0 });
+      const row = h.db
+        .query(
+          "SELECT status,code,details FROM runtime_spans WHERE name='bot.task.activate' AND json_extract(details,'$.taskId')=?",
+        )
+        .get(task.id) as { status: string; code: string; details: string };
+      expect(row.status).toBe("failed");
+      expect(row.code).toBe("QQ_TASK_FAILED");
+      expect(JSON.parse(row.details)).toMatchObject({
+        leaseRenewals: 0,
+        leaseRenewalAttempts: 0,
+        state: "failed",
+      });
+      expect(scheduler.activeCount).toBe(0);
+      expect(sinkPresent).toBe(true);
+      const metrics = JSON.parse(row.details) as Record<string, unknown>;
+      expect(metrics.authorityLeaseChecks).toBe(1);
+      expect(metrics.authorityLeaseMs).toBe(measured);
+      expect(Number.isFinite(metrics.authorityLeaseMs)).toBe(true);
+      expect(Number(metrics.authorityLeaseMs)).toBeGreaterThanOrEqual(0);
+      expect(metrics.authorityConfigurationChecks).toBeUndefined();
+      expect(metrics.authorityDetailChecks).toBeUndefined();
+    } finally {
+      scheduler.stop();
+      await scheduler.waitForIdle();
+      await telemetry.close();
+    }
   });
 
   it("rolls back the judged marker when committing the judgement fails", () => {

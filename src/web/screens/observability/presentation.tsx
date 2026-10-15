@@ -133,3 +133,83 @@ export function latestWakeOutcome(
 
   return null;
 }
+
+export type WakeCauseSummaryItem = {
+  wakeId: string;
+  cause: string;
+  condition: string | null;
+  count: number | null;
+  addressing: string | null;
+};
+
+const wakeConditionLabels: Record<string, string> = {
+  count: "observability.wakeConditionCount",
+  time: "observability.wakeConditionTime",
+  count_and_time: "observability.wakeConditionCountAndTime",
+};
+
+const wakeAddressingLabels: Record<string, string> = {
+  mention: "observability.wakeAddressedMention",
+  reply_to_agent: "observability.wakeAddressedReply",
+  private: "observability.wakeAddressedPrivate",
+};
+
+/**
+ * Each wake uses its latest own decision record. Activation facts replace queued waiting;
+ * unrelated wake and ingress records never supply the condition.
+ */
+export function wakeCauseSummary(
+  items: RuntimeSpan[],
+  t: (key: string) => string,
+): WakeCauseSummaryItem[] {
+  const offers = items.filter(
+    (item) =>
+      (item.name === "bot.wake.offer" || item.name === "bot.wake.activate") &&
+      typeof item.wakeId === "string" &&
+      item.wakeId,
+  );
+  if (!offers.length) return [];
+  offers.sort((a, b) => a.id - b.id);
+  const latest = new Map<string, RuntimeSpan>();
+  for (const offer of offers) {
+    latest.set(offer.wakeId as string, offer);
+  }
+  return [...latest.entries()].map(([wakeId, offer]) => {
+    const details = offer.details ?? {};
+    const activated = offer.name === "bot.wake.activate";
+    const recordedCondition = activated ? details.maturityCondition : details.condition;
+    const recordedCount = activated ? details.eligibleCount : details.count;
+    const cause =
+      typeof details.cause === "string" && Object.hasOwn(triggerLabels, details.cause)
+        ? t(triggerLabels[details.cause])
+        : t("observability.triggerNotRecorded");
+    let condition: string | null = null;
+    if (details.cause === "chiming_in") {
+      const explicit =
+        typeof recordedCondition === "string" &&
+        Object.hasOwn(wakeConditionLabels, recordedCondition);
+      if (explicit) {
+        condition = t(wakeConditionLabels[recordedCondition as string]);
+      } else if (details.waitingForSeconds === true) {
+        condition = t("observability.wakeAwaitingTime");
+      } else if (details.waitingForSeconds === false) {
+        condition = t("observability.wakeReadyConditionNotRecorded");
+      } else {
+        condition = t("observability.wakeConditionUnavailable");
+      }
+    }
+    const count =
+      typeof recordedCount === "number" && Number.isFinite(recordedCount) && recordedCount >= 0
+        ? recordedCount
+        : null;
+    const addressing =
+      typeof details.addressingReasons === "string"
+        ? details.addressingReasons
+            .split(",")
+            .filter((reason) => Object.hasOwn(wakeAddressingLabels, reason))
+            .map((reason) => t(wakeAddressingLabels[reason]))
+            .join(" · ") || null
+        : null;
+    return { wakeId, cause, condition, count, addressing };
+  });
+}

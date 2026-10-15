@@ -29,8 +29,13 @@ import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
 import { INVOKE_BATCH_LIMIT } from "../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
-import type { ModelResolvedPrepareInput, ModelResolvedPrepareOutput } from "../agent/model-port";
-import { ModelUnavailableError } from "../errors";
+import { measureContextTokens } from "../agent/context-engine";
+import type {
+  ModelContextBudget,
+  ModelResolvedPrepareInput,
+  ModelResolvedPrepareOutput,
+} from "../agent/model-port";
+import { AppError, ModelUnavailableError } from "../errors";
 import { type ChatContentResolver, type ChatMessage, toGatewayMessages } from "./chat-content";
 import {
   markImageContentRejection,
@@ -41,6 +46,7 @@ import {
   toStrictRequiredSchema,
   withStructuredOutputChain,
 } from "./strict-json-schema";
+import { loadTextTokenCounter, type TextTokenEncoding } from "./text-token-counter";
 import { announceToolsFallback, rememberToolsUnavailable, toolsUnavailable } from "./tool-calling";
 
 export type { ChatContentPart, ChatContentResolver, ChatMessage } from "./chat-content";
@@ -69,14 +75,8 @@ export function resolveLmStudioConfig(
   const apiKey = (env.LM_STUDIO_API_KEY ?? "").trim() || DEFAULT_LM_STUDIO_API_KEY;
   const rawTimeout = (env.LM_STUDIO_TIMEOUT ?? "").trim();
   const parsed = rawTimeout === "" ? Number.NaN : Number(rawTimeout);
-  // Default 1200s, not 60s: `requestLifetime` keeps its timer until the response
-  // body has been fully consumed (streaming included), so this value is the
-  // wall-clock budget of one whole turn. Measured on a local 27B model, one
-  // memory-consolidation call takes 53-110s, and a long answer on slower
-  // hardware (a few tokens/second) legitimately runs into the hundreds of
-  // seconds — a 60s default made turns fail at random (P2 acceptance evidence:
-  // outputs/p2-memory-repro-*). Cancelling a turn still works immediately, so a
-  // generous default costs little; `LM_STUDIO_TIMEOUT` lowers it.
+  // Covers the full request and response body, including streaming.
+  // LM_STUDIO_TIMEOUT overrides the default 1200-second wall-clock budget.
   const timeoutSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 1200;
   return { baseUrl: baseUrl.replace(/\/+$/, ""), model, timeoutSeconds, apiKey };
 }
@@ -92,6 +92,14 @@ export interface ModelGateway {
   listModels(options?: { signal?: AbortSignal }): Promise<string[]>;
   /** `signal` aborts the capacity probe when the caller is cancelled. */
   loadedContextCapacity(model: string, options?: { signal?: AbortSignal }): Promise<number | null>;
+  /**
+   * 准备某模型的上下文预算描述符（可选面；宿主 fitting 用）：解析一次实际模型，复用同一份容量
+   * 读取（不做第二次回退），并在路由显式声明编码时惰性载入纯文本计数器。抛错＝本次调用不发送。
+   */
+  prepareContextModel?(
+    model: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<ModelContextBudget>;
   probeModelLoaded(): Promise<boolean>;
   complete(options: {
     /**
@@ -143,6 +151,12 @@ export interface ModelGateway {
      */
     assertPreparedCurrent?: (input: { model: string }) => void;
     acquireSendPermit?: (model: string, signal?: AbortSignal) => Promise<() => void>;
+    /**
+     * 宿主已准备的上下文预算（可选；缺席＝旧行为）。带它时实际模型用 `contextBudget.model`，
+     * 并在每次真正发送前复验它的路由当前性；计数器供宿主后续装配使用。
+     */
+    contextBudget?: ModelContextBudget;
+    contextInputLimit?: number;
   }): Promise<string>;
   streamChat(options: {
     /** 同 complete 的 `messages`：初始 wire 槽（no-hook = 真实消息；hook 路径 = port 受控 `[]` 占位）。 */
@@ -165,6 +179,9 @@ export interface ModelGateway {
     /** 同 complete：每次真正发送前一次的可信宿主复验。 */
     assertPreparedCurrent?: (input: { model: string }) => void;
     acquireSendPermit?: (model: string, signal?: AbortSignal) => Promise<() => void>;
+    /** 同 complete：宿主已准备的上下文预算描述符。 */
+    contextBudget?: ModelContextBudget;
+    contextInputLimit?: number;
   }): AsyncGenerator<string, void, unknown>;
   readonly config: LmStudioConfig;
 }
@@ -682,6 +699,11 @@ export interface ExternalModelRoute {
    * 失效，不会用旧观察拦新声明。本地路由没有修订号。
    */
   readonly providerRevision?: number;
+  /**
+   * 该模型纯文本计数用的编码（可选）：只有配置里显式声明的编码才计数。undefined/缺席 =
+   * 未声明，调用方保持旧口径，不按模型名、provider 名或 OpenAI 兼容猜编码。
+   */
+  readonly tokenizerEncoding?: TextTokenEncoding;
 }
 
 /**
@@ -706,9 +728,53 @@ export function pickUsableModel(input: {
   return input.availableLocal[0] ?? input.configured;
 }
 
+function assertContextInputFits(
+  messages: readonly ChatMessage[],
+  options: {
+    contextBudget?: ModelContextBudget;
+    contextInputLimit?: number;
+  },
+  body: Record<string, unknown>,
+): void {
+  if (options.contextInputLimit === undefined) return;
+  const budget = options.contextBudget;
+  const limit = options.contextInputLimit;
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    budget?.countText === undefined ||
+    budget.tokenizerEncoding === undefined ||
+    budget.model !== body.model
+  )
+    throw new AppError("CONTEXT_BUDGET_EXCEEDED", "模型输入预算缺少一致的计量配置");
+  const measured = measureContextTokens(
+    messages,
+    { encoding: budget.tokenizerEncoding, count: budget.countText },
+    {
+      ...(body.response_format === undefined
+        ? {}
+        : {
+            responseFormat: body.response_format as Record<string, unknown>,
+          }),
+      ...(body.tools === undefined
+        ? {}
+        : {
+            tools: (body.tools as Array<{ function: ModelTool }>).map((tool) => tool.function),
+          }),
+    },
+  );
+  if (measured.textTokens > limit)
+    throw new AppError("CONTEXT_BUDGET_EXCEEDED", "实际请求的文本估算超过模型输入预算");
+}
+
 export function createLmStudioClient(
   config: LmStudioConfig = resolveLmStudioConfig(),
-  options: { readonly externalModel?: (model: string) => ExternalModelRoute | null } = {},
+  options: {
+    readonly externalModel?: (model: string) => ExternalModelRoute | null;
+    readonly localModelEncoding?: (
+      model: string,
+    ) => { readonly tokenizerEncoding: TextTokenEncoding; readonly revision?: string } | null;
+  } = {},
 ): ModelGateway {
   const timeoutMs = config.timeoutSeconds * 1000;
   /** The config a given model name talks to: the local one, or a declared external provider. */
@@ -724,6 +790,28 @@ export function createLmStudioClient(
 
   const routeOfExternal = (model: string): ExternalModelRoute | null =>
     options.externalModel?.(model) ?? null;
+  const localEncodingOf = options.localModelEncoding;
+
+  /**
+   * 预算描述符的当前性判定：准备时冻结的外部路由（providerRevision/baseUrl/apiKey/窗口/tokenizer/
+   * vision/toolCalling）必须与**此刻**解析出来的一致，local 路由则要求现在仍不是外部路由。
+   * 比较只做布尔判定，不回传 baseUrl/apiKey/窗口——密钥与服务地址不进错误消息。
+   */
+  const sameRoute = (model: string, frozen: ExternalModelRoute | null): boolean => {
+    const current = routeOfExternal(model);
+    if (frozen === null || current === null) return frozen === current;
+    return (
+      (frozen.providerRevision ?? 0) === (current.providerRevision ?? 0) &&
+      frozen.baseUrl.replace(/\/+$/, "") === current.baseUrl.replace(/\/+$/, "") &&
+      (frozen.apiKey ?? "") === (current.apiKey ?? "") &&
+      frozen.contextWindow === current.contextWindow &&
+      frozen.tokenizerEncoding === current.tokenizerEncoding &&
+      frozen.vision === current.vision &&
+      frozen.toolCalling === current.toolCalling
+    );
+  };
+  const ROUTE_CHANGED_MESSAGE =
+    "上下文预算已过期：模型的路由配置在准备之后发生了变化，本次请求不发出（重新准备后再试）";
 
   /**
    * Vision 闸门：只有**声明** vision:false 的模型在发请求前拦下；未声明（undefined）允许
@@ -807,6 +895,59 @@ export function createLmStudioClient(
     return chosen;
   };
 
+  /**
+   * 容量读取的一个判定源。两种入参语义必须分开：
+   * - 请求名（既有 `loadedContextCapacity` 的公开语义）：先按请求名解析实际模型，本地未加载的
+   *   模型按**替补**的容量判定（替补才是真正会到达的模型），外部路由读它登记的窗口——这条
+   *   回退策略原样保留。
+   * - 已解析的实际模型（`prepareContextModel` 内部用）：直接按它判一次，**不再走一次回退**。
+   */
+  const capacityOfResolved = async (
+    model: string,
+    signal?: AbortSignal,
+    options?: { readonly alreadyResolved?: boolean },
+  ): Promise<number | null> => {
+    const external = routeOfExternal(model);
+    if (external !== null) return external.contextWindow;
+    const used = options?.alreadyResolved === true ? model : await effectiveModel(model, signal);
+    if (used !== model) {
+      const substitute = routeOfExternal(used);
+      if (substitute !== null) return substitute.contextWindow;
+    }
+    const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
+    const lifetime = requestLifetime(10_000, signal);
+    try {
+      // The native catalog sits on the same origin as the OpenAI-compatible
+      // API and needs the same bearer token once a token is required.
+      const response = await localhostFetch(url, {
+        signal: lifetime.signal,
+        headers: { authorization: `Bearer ${authToken(config)}` },
+      });
+      if (response.status === 404) return null;
+      if (isAuthRejection(response.status)) {
+        throw new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", MODEL_AUTH_MESSAGE);
+      }
+      if (!response.ok) throw new Error(`Capacity HTTP ${response.status}`);
+      // Read transport bytes before the parse-only fallback, as httpx.get does.
+      const text = await response.text();
+      try {
+        return capacityFromCatalog(JSON.parse(text), used);
+      } catch (error) {
+        if (error instanceof ModelUnavailableError) throw error;
+        return null;
+      }
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error;
+      if (error instanceof ModelUnavailableError) throw error;
+      throw new ModelUnavailableError(
+        "MODEL_CAPACITY_UNAVAILABLE",
+        "无法读取LM Studio实际加载容量，请检查本地模型服务",
+      );
+    } finally {
+      lifetime.close();
+    }
+  };
+
   return {
     config,
 
@@ -828,51 +969,60 @@ export function createLmStudioClient(
       model: string,
       options?: { signal?: AbortSignal },
     ): Promise<number | null> {
-      // A declared external model carries the window the user typed. That is the whole point of
-      // asking for it: external services have no catalogue to read, and an unknown capacity would
-      // make the QQ chain refuse to call at all.
-      const external = routeOfExternal(model);
-      if (external !== null) return external.contextWindow;
-      // A configured local model that is not loaded is judged by its substitute's capacity, because
-      // that substitute is the model the call will actually reach (see `effectiveModel`).
-      const used = await effectiveModel(model, options?.signal);
-      if (used !== model) {
-        const substitute = routeOfExternal(used);
-        if (substitute !== null) return substitute.contextWindow;
-      }
-      const capacityModel = used;
-      const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
-      const lifetime = requestLifetime(10_000, options?.signal);
-      try {
-        // The native catalog sits on the same origin as the OpenAI-compatible
-        // API and needs the same bearer token once a token is required.
-        const response = await localhostFetch(url, {
-          signal: lifetime.signal,
-          headers: { authorization: `Bearer ${authToken(config)}` },
-        });
-        if (response.status === 404) return null;
-        if (isAuthRejection(response.status)) {
-          throw new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", MODEL_AUTH_MESSAGE);
+      return capacityOfResolved(model, options?.signal);
+    },
+
+    /**
+     * 上下文预算准备：先按同一次 effectiveModel 解析出**实际**模型，再读**那个模型**的容量
+     * （外部路由读它登记的窗口；本地走同一份目录读取，绝不做第二次回退）。计数器只在路由显式
+     * 声明编码时惰性载入一次，载入后重新判定当前性；载入期间调用方取消时按原 reason 抛出。
+     * 描述符只冻结描述符字段本身，不含私有键或服务地址。
+     */
+    async prepareContextModel(
+      model: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<ModelContextBudget> {
+      const signal = options?.signal;
+      const requested = model || config.model;
+      const used = await effectiveModel(requested, signal);
+      const resolvedRoute = routeOfExternal(used);
+      const frozen = resolvedRoute === null ? null : Object.freeze({ ...resolvedRoute });
+      // 已经解析出的实际模型：不再走一次回退（同名也不会触发第二次 effectiveModel 解析）。
+      const capacity = await capacityOfResolved(used, signal, { alreadyResolved: true });
+      const local = frozen === null ? (localEncodingOf?.(used) ?? null) : null;
+      const frozenLocal = local === null ? null : Object.freeze({ ...local });
+      const encoding = frozen?.tokenizerEncoding ?? frozenLocal?.tokenizerEncoding;
+      // 只判定「这条实际路由还是不是当前配置的那条」：不重跑一次路由解析（否则就是第二次回退），
+      // 也不看 requested 是否仍是同一个名字——描述符冻结的是实际模型本身。
+      const assertCurrent = (): void => {
+        if (!sameRoute(used, frozen)) {
+          throw new ModelUnavailableError("MODEL_NOT_LOADED", ROUTE_CHANGED_MESSAGE);
         }
-        if (!response.ok) throw new Error(`Capacity HTTP ${response.status}`);
-        // Read transport bytes before the parse-only fallback, as httpx.get does.
-        const text = await response.text();
-        try {
-          return capacityFromCatalog(JSON.parse(text), capacityModel);
-        } catch (error) {
-          if (error instanceof ModelUnavailableError) throw error;
-          return null;
+        if (frozen === null) {
+          // 本地描述符的当前性只看**生效编码**与路由本身：整文件 revision 是存储层粒度，
+          // 无关模型写入推高它并不使本模型的预算过期（编码未变则冻结计数器仍成立）；
+          // 本模型编码变化或声明被清除（含从有到 null）才拒绝。外部改道由 sameRoute 拦下。
+          const currentLocal = localEncodingOf?.(used) ?? null;
+          if (currentLocal?.tokenizerEncoding !== frozenLocal?.tokenizerEncoding)
+            throw new ModelUnavailableError("MODEL_NOT_LOADED", ROUTE_CHANGED_MESSAGE);
         }
-      } catch (error) {
-        if (options?.signal?.aborted) throw options.signal.reason ?? error;
-        if (error instanceof ModelUnavailableError) throw error;
-        throw new ModelUnavailableError(
-          "MODEL_CAPACITY_UNAVAILABLE",
-          "无法读取LM Studio实际加载容量，请检查本地模型服务",
-        );
-      } finally {
-        lifetime.close();
-      }
+      };
+      const budget: ModelContextBudget = {
+        model: used,
+        capacity,
+        ...(encoding === undefined ? {} : { tokenizerEncoding: encoding }),
+        ...(frozen?.providerRevision === undefined
+          ? {}
+          : { routeRevision: frozen.providerRevision }),
+        assertCurrent,
+      };
+      signal?.throwIfAborted();
+      assertCurrent();
+      if (encoding === undefined) return Object.freeze(budget);
+      const counter = await loadTextTokenCounter(encoding);
+      if (signal?.aborted) throw signal.reason ?? new Error("context budget preparation aborted");
+      assertCurrent();
+      return Object.freeze({ ...budget, countText: counter.count });
     },
 
     async probeModelLoaded(): Promise<boolean> {
@@ -895,12 +1045,18 @@ export function createLmStudioClient(
 
     async complete(options): Promise<string> {
       const requested = options.model || config.model;
-      const used = await effectiveModel(requested, options.signal);
+      // 带预算的请求：实际模型就是预算描述符冻结的那个模型，不再重新解析路由。
+      const used =
+        options.contextBudget === undefined
+          ? await effectiveModel(requested, options.signal)
+          : options.contextBudget.model;
       reportResolvedModel(options.onModelResolved, used);
       const externalRoute = routeOfExternal(used);
       const isExternal = externalRoute !== null;
       const cfg = routeFor(used);
       const key = structuredOutputKey(cfg.baseUrl, used);
+      // 带预算的请求在准备钩子之前先复验一次路由当前性；复验失败＝本次请求不发出。
+      options.contextBudget?.assertCurrent();
       // 受信任宿主的同次准备（T10 基础）：actualModel 冻结后、HTTP body 组装前调用一次。
       // 输入是原始 ModelMessage[]；输出的 messages/resolver 决定最终发送内容，wire 转换在
       // 这里用最终值完成（resolver 每次 resolve 仍复验 source guard）。vision 闸按最终
@@ -1007,7 +1163,10 @@ export function createLmStudioClient(
         try {
           options.signal?.throwIfAborted();
           options.assertPreparedCurrent?.({ model: used });
+          // 每次 HTTP 尝试（schema/tools 受控重试各一次）前复验预算对应的仍是当前路由。
+          options.contextBudget?.assertCurrent();
           assertVisionAllowed(used, preparedMessages);
+          assertContextInputFits(preparedMessages, options, body);
           lifetime = imageRequestLifetime(
             timeoutMs,
             options.signal,
@@ -1110,8 +1269,14 @@ export function createLmStudioClient(
     },
 
     async *streamChat(options): AsyncGenerator<string, void, unknown> {
-      const used = await effectiveModel(options.model || config.model, options.signal);
+      const requested = options.model || config.model;
+      const used =
+        options.contextBudget === undefined
+          ? await effectiveModel(requested, options.signal)
+          : options.contextBudget.model;
       reportResolvedModel(options.onModelResolved, used);
+      // 同 complete：准备钩子之前先复验路由当前性。
+      options.contextBudget?.assertCurrent();
       // 流式同钩子（T10 基础）：actualModel 冻结后、组 body 前一次受信准备；抛错=流不启动。
       // wire 转换用最终 messages/resolver 在这里完成（同 complete）。
       // prepareWithResolved 与 preparedFrom 必须成对（fix2）：缺一边是装配错误，fail closed。
@@ -1181,7 +1346,9 @@ export function createLmStudioClient(
       try {
         options.signal?.throwIfAborted();
         options.assertPreparedCurrent?.({ model: used });
+        options.contextBudget?.assertCurrent();
         assertVisionAllowed(used, preparedMessages);
+        assertContextInputFits(preparedMessages, options, body);
         // 流式同边界：只有真实带图请求才传图片分类回调；纯文字不进该分类，不标能力。
         const lifetime = imageRequestLifetime(
           timeoutMs,

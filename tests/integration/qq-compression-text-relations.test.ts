@@ -10,22 +10,45 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
+import type { CompressionRecord } from "../../src/server/agent/conversation-compression";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
+import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { contextDumps } from "../../src/server/db/json-text";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { rememberQqMemberNames } from "../../src/server/db/qq-member-repository";
-import { recordQqMessageFact } from "../../src/server/db/qq-message-repository";
+import {
+  recordQqMessageFact,
+  recordQqOutboundMessageFact,
+} from "../../src/server/db/qq-message-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
-import { DEFAULT_AGENT_ID, ensureDefaults, getAgentRow } from "../../src/server/db/repositories";
+import {
+  readQqConversationSummary,
+  saveQqConversationSummary,
+} from "../../src/server/db/qq-summary-repository";
+import {
+  DEFAULT_AGENT_ID,
+  DEFAULT_USER_ID,
+  ensureDefaults,
+  getAgentRow,
+} from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import {
+  evidenceHash,
+  inTimeline,
+  loadConversationEvidence,
+  storedPackages,
+} from "../../src/server/modules/conversation-evidence-store";
 import { captureQqTask, createQqBinding } from "../../src/server/services/qq-binding-contract";
+import type { QqContextMessage } from "../../src/server/services/qq-context-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
+import { uniqueSources } from "../../src/server/services/source-refs";
+import type { SourceRef } from "../../src/shared/contracts/evidence";
 import { QQ_COMPRESSION_DEFAULT } from "../../src/shared/contracts/qq";
 import type { QqMessagePart } from "../../src/shared/contracts/qq-message";
 import { closeHarnesses } from "../harness/onebot";
@@ -44,7 +67,7 @@ interface CapturedEvent {
 }
 
 /** 与 bot-context-source / group-summary 同构的精简夹具：回复档 + 水位压缩。 */
-function setup(input: { watermarkTrigger?: number } = {}) {
+function setup(input: { watermarkTrigger?: number; singleFactCompression?: boolean } = {}) {
   const h = openBusinessDb();
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
@@ -78,6 +101,8 @@ function setup(input: { watermarkTrigger?: number } = {}) {
   const conversation = journal.ensureOneBot(binding.id);
   if (!conversation) throw new Error("conversation");
   const capturedEvents: CapturedEvent[][] = [];
+  /** 压缩调用是否带 question 字段（body-only 诊断专用；其余调用不采集）。 */
+  const capturedQuestions: boolean[] = [];
   const gateway: ModelGateway = {
     config: { baseUrl: "http://unused.invalid", model: "reply-model", timeoutSeconds: 1 },
     listModels: async () => [],
@@ -93,6 +118,19 @@ function setup(input: { watermarkTrigger?: number } = {}) {
       const data = JSON.parse(firstRaw);
       if (data.events) {
         capturedEvents.push(data.events as CapturedEvent[]);
+        capturedQuestions.push(Object.hasOwn(data, "question"));
+        const first = data.events[0];
+        if (input.singleFactCompression === true)
+          return JSON.stringify({
+            facts: [
+              {
+                kind: "fact",
+                speaker: first.speaker,
+                text: "old fact",
+                source_ids: [first.id],
+              },
+            ],
+          });
         return JSON.stringify({
           facts: data.events.map((event: { id: string; speaker: string }) => ({
             kind: "fact",
@@ -220,10 +258,15 @@ function setup(input: { watermarkTrigger?: number } = {}) {
     source: buildSource(),
     binding,
     conversation,
+    journal,
+    outbox,
     diagnostics,
     seed,
     newSource: buildSource,
     capturedEvents,
+    capturedQuestions,
+    runtime,
+    gateway,
     seconds,
     now,
   };
@@ -248,13 +291,660 @@ const legacyIdOf = (sources: readonly { kind: string; id: string; revision?: str
   contextDumps(sources.map((source) => [source.kind, source.id, source.revision]));
 const bodySha = (body: string) => createHash("sha256").update(body).digest("hex");
 
+const compressionRecordsOf = (source: BotContextSource, messages: readonly QqContextMessage[]) =>
+  (
+    source as unknown as {
+      compressionRecords(messages: readonly QqContextMessage[]): CompressionRecord[];
+    }
+  ).compressionRecords(messages);
+
+const assistantMessage = (sources: SourceRef[] = []): QqContextMessage => ({
+  speaker: "assistant",
+  speakerId: null,
+  text: "assistant history",
+  occurredAtSeconds: 1,
+  mediaNotes: [],
+  mediaUnread: 0,
+  sources,
+});
+
 describe("压缩输入的文字关系（T06 接力2）", () => {
-  it("有效消息 id/seq/count 与旧规则逐条相等；水位推进位置不变", async () => {
+  it.each([
+    ["legacy inbound control", false, null],
+    ["fully confirmed speech", true, null],
+    ["wrong target peer", true, "peer"],
+    ["wrong target epoch", true, "epoch"],
+    ["wrong target authority", true, "authority"],
+    ["duplicate legacy link", true, "duplicate"],
+    ["missing delivery journal", true, "journal"],
+    ["mismatched receipt", true, "receipt"],
+    ["speech body drift", true, "body"],
+    ["unconfirmed intent", true, "status"],
+    ["malformed target array", true, "target_array"],
+    ["missing target authority revision", true, "missing_authority"],
+    ["expired intent", true, "expired_intent"],
+    ["expired send log", true, "expired_send"],
+    ["expired speech log", true, "expired_speech"],
+    ["expired speech body", true, "expired_body"],
+  ] as const)(
+    "recognizes only scoped confirmed speech provenance: %s",
+    async (_scenario, withSpeech, mutation) => {
+      const h = setup({ watermarkTrigger: 2 });
+      const firstBody = "old producer first";
+      const secondBody = "old producer second";
+      const first = h.seed(firstBody, 30001, { noFact: true });
+      const second = h.seed(secondBody, 30000, { noFact: true });
+      const scope = {
+        channel: "onebot11" as const,
+        conversationId: h.conversation.id,
+        accountId: h.binding.accountId,
+        conversationKind: h.binding.kind,
+        peerId: h.binding.peerId,
+        agentId: h.binding.agentId,
+        bindingId: h.binding.id,
+        bindingEpoch: h.conversation.bindingEpoch,
+        authorityRevision: h.binding.authorityRevision,
+      };
+      let speechId: string | undefined;
+      let intentId: string | undefined;
+      let portCalls = 0;
+      if (withSpeech) {
+        const runId = crypto.randomUUID();
+        const sentAt = new Date((h.seconds - 60) * 1000).toISOString();
+        const expiresAt = new Date((h.seconds + 3600) * 1000).toISOString();
+        const assistantBody = "confirmed recent producer speech";
+        h.runs.createRun({
+          runId,
+          specId: "synthetic-producer-delivery",
+          specVersion: "1",
+          at: sentAt,
+          owner: {
+            kind: "conversation",
+            id: h.conversation.id,
+            userId: DEFAULT_USER_ID,
+            agentId: h.binding.agentId,
+          },
+        });
+        const intent = h.outbox.commit({
+          id: crypto.randomUUID(),
+          runId,
+          conversationId: h.conversation.id,
+          ordinal: 0,
+          target: {
+            accountId: scope.accountId,
+            conversationKind: scope.conversationKind,
+            peerId: scope.peerId,
+            agentId: scope.agentId,
+            bindingId: scope.bindingId,
+            bindingEpoch: scope.bindingEpoch,
+            authorityRevision: scope.authorityRevision,
+          },
+          speechKind: "direct_reply",
+          sourceThroughSeq: 2,
+          deliverBy: expiresAt,
+          createdAt: sentAt,
+          expiresAt,
+          parts: [{ kind: "text", text: assistantBody }],
+        });
+        intentId = intent.id;
+        h.journal.append({
+          conversationId: h.conversation.id,
+          eventKey: `output:${intent.id}`,
+          kind: "delivery",
+          source: { kind: "outbound_intent", id: intent.id, revision: "planned", expiresAt },
+          occurredAt: sentAt,
+          runId,
+          outputId: intent.id,
+        });
+        recordQqOutboundMessageFact(h.orm, {
+          intentId: intent.id,
+          accountId: scope.accountId,
+          agentId: scope.agentId,
+          identity: {
+            qq: scope.accountId,
+            groupCard: "合成助手",
+            personalNickname: null,
+            legacyDisplayName: null,
+            nameState: "known",
+          },
+          occurredAtSeconds: h.seconds - 60,
+        });
+        const delivery = new OutboundDelivery({
+          orm: h.orm,
+          repository: h.outbox,
+          journal: h.journal,
+          stickerFile: () => null,
+          authorize: () => true,
+          now: () => sentAt,
+          port: {
+            async send() {
+              portCalls++;
+              return { kind: "confirmed" as const, messageId: "-99101" };
+            },
+          },
+        });
+        await delivery.deliver(intent.id);
+        const part = h.outbox.parts(intent.id)[0];
+        expect(portCalls).toBe(1);
+        expect(part?.status).toBe("confirmed");
+        expect(part?.platform_message_id).toBe("-99101");
+        expect(part?.finished_at).toBe(sentAt);
+        speechId = h.outbox.row(intent.id)?.legacy_send_id ?? undefined;
+        if (!speechId) throw new Error("fixture: confirmed legacy send identity missing");
+        const speech = h.db
+          .query(`SELECT s.account_id,s.conversation_kind,s.peer_id,s.agent_id,
+          s.expires_at AS logExpiry,t.expires_at AS bodyExpiry,t.body
+          FROM qq_speech_log s JOIN qq_speech_text t ON t.speech_id=s.id WHERE s.id=?`)
+          .get(speechId) as {
+          account_id: string;
+          conversation_kind: string;
+          peer_id: string;
+          agent_id: string;
+          logExpiry: string;
+          bodyExpiry: string;
+          body: string;
+        };
+        expect(speech.body).toBe(assistantBody);
+        expect([
+          speech.account_id,
+          speech.conversation_kind,
+          speech.peer_id,
+          speech.agent_id,
+        ]).toEqual([scope.accountId, scope.conversationKind, scope.peerId, scope.agentId]);
+        expect(Date.parse(speech.logExpiry)).toBeGreaterThan(Date.parse(h.now));
+        expect(Date.parse(speech.bodyExpiry)).toBeGreaterThan(Date.parse(h.now));
+      }
+      const expectedSpeechIds: string[] = [];
+      if (withSpeech) {
+        if (!speechId) throw new Error("fixture: confirmed speech identity missing");
+        expectedSpeechIds.push(speechId);
+      }
+      const trigger = h.seed("current producer trigger", 0, { noFact: true });
+      const source = h.newSource();
+      const material = await source.read(readInput());
+      expect(
+        material.sources?.some((ref) => ref.kind === "qq_observation" && ref.id === trigger),
+      ).toBe(true);
+      const materialSpeech = material.sources?.filter((ref) => ref.kind === "qq_speech") ?? [];
+      expect(materialSpeech.map((ref) => ref.id)).toEqual(expectedSpeechIds);
+      if (withSpeech) {
+        const speechSource = materialSpeech[0];
+        if (!speechSource || speechSource.expiresAt === undefined)
+          throw new Error("fixture: selected speech source or expiry missing");
+        expect(speechSource.revision).toBe(bodySha("confirmed recent producer speech"));
+        expect(Date.parse(speechSource.expiresAt)).toBeGreaterThan(Date.parse(h.now));
+      }
+      const job = source.takeCompressionJob();
+      if (!job) throw new Error("fixture: original compression job missing");
+      await job.run(readInput().signal);
+      expect(h.capturedEvents).toHaveLength(1);
+      const events = h.capturedEvents[0];
+      if (!events) throw new Error("fixture: original captured compression events missing");
+      expect(events).toHaveLength(2);
+      expect(events.map((event) => event.seq)).toEqual([1, 2]);
+      const rawIds = [
+        legacyIdOf([{ kind: "qq_observation", id: first, revision: bodySha(firstBody) }]),
+        legacyIdOf([{ kind: "qq_observation", id: second, revision: bodySha(secondBody) }]),
+      ];
+      expect(events.map((event) => event.id)).toEqual(
+        rawIds.map((id) => `qq-record:${createHash("sha256").update(id).digest("base64url")}`),
+      );
+      const row = h.orm.select().from(schema.qqConversationSummaries).get();
+      if (!row) throw new Error("fixture: original job did not publish a package");
+      const pkg = (
+        JSON.parse(row.content) as {
+          packages: {
+            facts: { source_ids: string[] }[];
+            sources: SourceRef[];
+            provenance: Record<string, string>;
+          }[];
+        }
+      ).packages[0];
+      if (!pkg) throw new Error("fixture: original published package missing");
+      expect(pkg.sources.length).toBeLessThanOrEqual(100);
+      expect(pkg.sources.filter((ref) => ref.kind === "qq_speech")).toEqual([]);
+      expect(pkg.facts.map((fact) => fact.source_ids.map((id) => pkg.provenance[id]))).toEqual(
+        rawIds.map((id) => [id]),
+      );
+      expect(row.throughSeq).toBe(2);
+      expect(row.coveredSeq).toBe(2);
+      const currentSummary = readQqConversationSummary(h.orm, h.conversation.id, h.binding.agentId);
+      if (!currentSummary) throw new Error("fixture: current summary missing");
+      const currentPackage = currentSummary.packages[0];
+      if (!currentPackage) throw new Error("fixture: current package missing");
+      const legacyPackage = {
+        ...currentPackage,
+        sources: uniqueSources([...(currentPackage.sources ?? []), ...(material.sources ?? [])]),
+      };
+      const saved = saveQqConversationSummary(h.orm, {
+        conversationId: h.conversation.id,
+        agentId: h.binding.agentId,
+        throughSeq: currentSummary.throughSeq,
+        coveredSeq: currentSummary.coveredSeq,
+        packages: [legacyPackage],
+        modelName: currentSummary.modelName,
+        configSnapshot: h.runtime.p5_config,
+        estimatedTokens: currentSummary.estimatedTokens,
+        at: h.now,
+        expected: currentSummary,
+        assertCurrent() {},
+      });
+      expect(saved).toBe(true);
+      const persistedLegacySummary = readQqConversationSummary(
+        h.orm,
+        h.conversation.id,
+        h.binding.agentId,
+      );
+      const legacyPkg = persistedLegacySummary?.packages[0];
+      if (!legacyPkg) throw new Error("fixture: persisted legacy package missing");
+      expect(legacyPkg.sources?.length).toBeLessThanOrEqual(100);
+      expect(
+        (legacyPkg.sources ?? []).filter((ref) => ref.kind === "qq_speech").map((ref) => ref.id),
+      ).toEqual(expectedSpeechIds);
+      expect(
+        legacyPkg.facts.map((fact) => fact.source_ids.map((id) => legacyPkg.provenance?.[id])),
+      ).toEqual(rawIds.map((id) => [id]));
+      if (mutation) {
+        if (!intentId || !speechId)
+          throw new Error("fixture: confirmed provenance identity missing");
+        if (mutation === "peer") {
+          h.db
+            .query("UPDATE outbound_intents SET target=json_set(target,'$.peerId',?) WHERE id=?")
+            .run("39999", intentId);
+        } else if (mutation === "epoch") {
+          h.db
+            .query(
+              "UPDATE outbound_intents SET target=json_set(target,'$.bindingEpoch',?) WHERE id=?",
+            )
+            .run(scope.bindingEpoch + 1, intentId);
+        } else if (mutation === "authority") {
+          h.db
+            .query(
+              "UPDATE outbound_intents SET target=json_set(target,'$.authorityRevision',?) WHERE id=?",
+            )
+            .run(scope.authorityRevision + 1, intentId);
+        } else if (mutation === "duplicate") {
+          h.db
+            .query(`INSERT INTO outbound_intents(id,run_id,conversation_id,output_ordinal,target,speech_kind,
+            source_through_seq,deliver_by,status,created_at,expires_at,legacy_send_id)
+            SELECT ?,run_id,conversation_id,99,target,speech_kind,source_through_seq,deliver_by,status,
+              created_at,expires_at,legacy_send_id FROM outbound_intents WHERE id=?`)
+            .run(crypto.randomUUID(), intentId);
+        } else if (mutation === "journal") {
+          h.db
+            .query(
+              "DELETE FROM conversation_events WHERE conversation_id=? AND kind='delivery' AND source_kind='outbound_intent' AND source_id=?",
+            )
+            .run(h.conversation.id, intentId);
+        } else if (mutation === "receipt") {
+          h.db
+            .query("UPDATE outbound_parts SET platform_message_id=? WHERE intent_id=?")
+            .run("-99102", intentId);
+        } else if (mutation === "body") {
+          h.db
+            .query("UPDATE qq_speech_text SET body=? WHERE speech_id=?")
+            .run("synthetic changed speech body", speechId);
+        } else if (mutation === "status") {
+          h.db.query("UPDATE outbound_intents SET status='unknown' WHERE id=?").run(intentId);
+        } else if (mutation === "target_array") {
+          h.db.query("UPDATE outbound_intents SET target='[]' WHERE id=?").run(intentId);
+        } else if (mutation === "missing_authority") {
+          h.db
+            .query(
+              "UPDATE outbound_intents SET target=json_remove(target,'$.authorityRevision') WHERE id=?",
+            )
+            .run(intentId);
+        } else if (mutation === "expired_intent") {
+          const expiredStamp = new Date((h.seconds - 10) * 1000).toISOString();
+          h.db
+            .query("UPDATE outbound_intents SET expires_at=? WHERE id=?")
+            .run(expiredStamp, intentId);
+        } else if (mutation === "expired_send") {
+          const expiredStamp = new Date((h.seconds - 10) * 1000).toISOString();
+          h.db.query("UPDATE qq_send_log SET expires_at=? WHERE id=?").run(expiredStamp, speechId);
+        } else if (mutation === "expired_speech") {
+          const expiredStamp = new Date((h.seconds - 10) * 1000).toISOString();
+          h.db
+            .query("UPDATE qq_speech_log SET expires_at=? WHERE id=?")
+            .run(expiredStamp, speechId);
+        } else if (mutation === "expired_body") {
+          const expiredStamp = new Date((h.seconds - 10) * 1000).toISOString();
+          h.db
+            .query("UPDATE qq_speech_text SET expires_at=? WHERE speech_id=?")
+            .run(expiredStamp, speechId);
+        }
+      }
+      const sourceKindCounts: Record<string, number> = Object.create(null);
+      const absentTimelineByKind: Record<string, number> = Object.create(null);
+      let expiredSourceCount = 0;
+      for (const ref of legacyPkg.sources ?? []) {
+        sourceKindCounts[ref.kind] = (sourceKindCounts[ref.kind] ?? 0) + 1;
+        if (ref.expiresAt !== undefined && Date.parse(ref.expiresAt) <= Date.parse(h.now))
+          expiredSourceCount++;
+        if (!inTimeline(h.db, scope, ref.kind, ref.id))
+          absentTimelineByKind[ref.kind] = (absentTimelineByKind[ref.kind] ?? 0) + 1;
+      }
+      const stored = storedPackages(h, scope);
+      const canonicalPackage = stored?.packages[0];
+      console.log(
+        JSON.stringify({
+          withSpeech,
+          sourceKindCounts,
+          expiredSourceCount,
+          absentTimelineByKind,
+          factsCount: legacyPkg.facts.length,
+          provenanceCount: Object.keys(legacyPkg.provenance ?? {}).length,
+          fullSourceCount: legacyPkg.sources?.length ?? 0,
+          storedPackagesAvailable: stored !== null,
+        }),
+      );
+      if (!canonicalPackage) throw new Error("fixture: original stored package address missing");
+      const loaded = loadConversationEvidence(
+        h,
+        scope,
+        "summary",
+        evidenceHash(canonicalPackage),
+        h.now,
+      );
+      if (withSpeech) {
+        if (!speechId) throw new Error("fixture: confirmed speech membership identity missing");
+        expect(inTimeline(h.db, scope, "qq_speech", speechId)).toBe(mutation === null);
+      } else {
+        expect(portCalls).toBe(0);
+      }
+      if (mutation) {
+        expect(loaded).toBeNull();
+      } else {
+        expect(loaded).not.toBeNull();
+        if (!loaded) throw new Error("fixture: approved scoped summary was unreadable");
+        const restored = JSON.parse(loaded.text) as { source_ids: string[] }[];
+        expect(restored.map((fact) => fact.source_ids)).toEqual(rawIds.map((id) => [id]));
+      }
+    },
+  );
+
+  it("publishes a target-2048 QQ summary with reversible compact references while retaining original raw records", async () => {
+    const h = setup({ watermarkTrigger: 50 });
+    h.runtime.p5_config.summary_target_tokens = 2048;
+    h.runtime.p5_config.summary_read_max_tokens = 2048;
+    const keys = Array.from({ length: 50 }, (_, index) =>
+      h.seed(`old source ${index}`, 30000 + index),
+    );
+    h.seed("current question");
+    const rawRecords = compressionRecordsOf(
+      h.newSource(),
+      keys.map((id, index) => ({
+        speaker: "member",
+        speakerId: "20002",
+        text: `old source ${index}`,
+        occurredAtSeconds: h.seconds - 30000 - index,
+        mediaNotes: [],
+        mediaUnread: 0,
+        sources: [{ kind: "qq_observation", id, revision: bodySha(`old source ${index}`) }],
+      })),
+    );
+    expect(rawRecords.map((record) => record.id)).toEqual(
+      keys.map((id, index) =>
+        legacyIdOf([{ kind: "qq_observation", id, revision: bodySha(`old source ${index}`) }]),
+      ),
+    );
+    let returnedFacts: { kind: string; speaker: string; text: string; source_ids: string[] }[] = [];
+    h.gateway.complete = async (request) => {
+      const wire = request.messages?.[1]?.content;
+      if (typeof wire !== "string") throw new Error("fixture: summary wire missing");
+      const data = JSON.parse(wire) as { events: CapturedEvent[] };
+      expect(data.events).toHaveLength(50);
+      returnedFacts = Array.from({ length: 5 }, (_, index) => ({
+        kind: "fact",
+        speaker: data.events[index * 3]!.speaker,
+        text: `fact ${index}`,
+        source_ids: data.events.slice(index * 3, index * 3 + 3).map((event) => event.id),
+      }));
+      return JSON.stringify({ facts: returnedFacts });
+    };
+    const source = h.newSource();
+    await source.read(readInput());
+    const job = source.takeCompressionJob();
+    if (!job) throw new Error("fixture: compression job missing");
+    await job.run(readInput().signal);
+    const stored = h.orm.select().from(schema.qqConversationSummaries).get();
+    if (!stored) throw new Error("fixture: accepted summary not stored");
+    const packages = JSON.parse(stored.content) as {
+      packages: {
+        facts: typeof returnedFacts;
+        sources: SourceRef[];
+        provenance?: Record<string, string>;
+      }[];
+    };
+    const pkg = packages.packages[0]!;
+    expect(pkg.facts).toEqual(returnedFacts);
+    expect(Buffer.byteLength(contextDumps({ facts: pkg.facts }))).toBeLessThanOrEqual(2048);
+    const referenced = [...new Set(pkg.facts.flatMap((fact) => fact.source_ids))];
+    expect(referenced).toHaveLength(15);
+    expect(Object.keys(pkg.provenance ?? {}).sort()).toEqual([...referenced].sort());
+    for (const id of referenced) {
+      const original = pkg.provenance?.[id];
+      expect(rawRecords.some((record) => record.id === original)).toBe(true);
+      expect(id).toBe(`qq-record:${createHash("sha256").update(original!).digest("base64url")}`);
+    }
+    expect(
+      pkg.sources.some(
+        (ref) =>
+          ref.kind === "qq_observation" &&
+          ref.id === keys[0] &&
+          ref.revision === bodySha("old source 0"),
+      ),
+    ).toBe(true);
+    expect(stored.throughSeq).toBe(50);
+    expect(stored.coveredSeq).toBe(50);
+  });
+
+  it("compression record sequence association reads history once for twenty source references", () => {
+    const h = setup();
+    const sources: SourceRef[] = Array.from({ length: 20 }, (_, index) => ({
+      kind: "qq_speech",
+      id: `speech-${index}`,
+      revision: "original",
+    }));
+    const journal = new ConversationEventRepository(h.db);
+    for (const [index, source] of sources.entries()) {
+      journal.append({
+        conversationId: h.conversation.id,
+        eventKey: `history-${index}`,
+        kind: "outbound",
+        source,
+        occurredAt: h.now,
+      });
+    }
+    for (let index = 0; index < 60; index++) {
+      journal.append({
+        conversationId: h.conversation.id,
+        eventKey: `unrelated-${index}`,
+        kind: "outbound",
+        source: { kind: "qq_speech", id: `unrelated-${index}`, revision: "original" },
+        occurredAt: h.now,
+      });
+    }
+    const source = h.newSource();
+    const query = h.db.query.bind(h.db);
+    const originalQuery = h.db.query;
+    let historyReads = 0;
+    let associationRows = 0;
+    // No inbound refs: this phase cannot enter fact projection. Count native all() reads
+    // bound to this conversation, without depending on a SQL string or elapsed time.
+    h.db.query = ((...arguments_: Parameters<typeof h.db.query>) => {
+      const statement = query(...arguments_);
+      return new Proxy(statement, {
+        get(target, property) {
+          if (property === "all") {
+            return (...bindings: unknown[]) => {
+              const rows: unknown[] = Reflect.apply(target.all, target, bindings);
+              if (bindings[0] === h.conversation.id) {
+                historyReads += 1;
+                associationRows += rows.filter((row) => {
+                  if (row === null || typeof row !== "object") return false;
+                  const value = row as Record<string, unknown>;
+                  return "kind" in value && "id" in value && typeof value.seq === "number";
+                }).length;
+              }
+              return rows;
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    }) as typeof h.db.query;
+    let records: CompressionRecord[];
+    try {
+      records = compressionRecordsOf(
+        source,
+        sources.map((ref) => assistantMessage([ref, ref])),
+      );
+    } finally {
+      h.db.query = originalQuery;
+    }
+    expect(records.map((record) => record.seq)).toEqual(sources.map((_, index) => index + 1));
+    expect(records.map((record) => record.id)).toEqual(
+      sources.map((ref) => legacyIdOf([ref, ref])),
+    );
+    expect(records.map((record) => record.text)).toEqual(
+      sources.map(() => contextDumps({ text: "assistant history" })),
+    );
+    expect(historyReads).toBeGreaterThan(0);
+    expect(historyReads).toBeLessThanOrEqual(1);
+    expect(associationRows).toBeGreaterThan(0);
+    expect(associationRows).toBeLessThanOrEqual(sources.length);
+  });
+
+  it("sequence association keeps secondary refs, all-history minimum and kind/conversation boundaries", () => {
+    const h = setup();
+    const other = setup();
+    const journal = new ConversationEventRepository(h.db);
+    const ref = (kind: string, id: string, revision = "current"): SourceRef => ({
+      kind,
+      id,
+      revision,
+    });
+    const secondary = ref("qq_speech", "secondary");
+    const alternate = ref("qq_send", "secondary");
+    const missing = ref("qq_speech", "missing");
+    const append = (kind: "inbound" | "outbound" | "delivery", sources: SourceRef[]) =>
+      journal.append({
+        conversationId: h.conversation.id,
+        eventKey: crypto.randomUUID(),
+        kind,
+        source: ref("unrelated", crypto.randomUUID()),
+        sources,
+        occurredAt: h.now,
+      });
+    append("delivery", [secondary, missing]);
+    append("inbound", [
+      ref("unrelated", "primary"),
+      {
+        ...secondary,
+        revision: "old",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      },
+    ]);
+    append("outbound", [secondary]);
+    append("outbound", [alternate]);
+    h.db
+      .query(`INSERT INTO conversation_events(conversation_id,seq,event_key,kind,source_kind,source_id,source_revision,sources,addressing,occurred_at,recorded_at)
+      VALUES(?,5,'numeric-json','outbound','qq_speech','numeric-carrier','original',?,'{"reasons":[],"mentionIds":[]}',?,?)`)
+      .run(
+        h.conversation.id,
+        JSON.stringify([{ kind: "qq_speech", id: 123, revision: "original" }]),
+        h.now,
+        h.now,
+      );
+    // Another conversation in the same database must not supply a smaller sequence.
+    h.db
+      .query(
+        "INSERT INTO conversations(id,channel,topology,source_id,agent_id,user_id,binding_epoch,next_seq,consumed_seq,created_at,updated_at,closed_at,source_watermark) SELECT ?,channel,topology,?,agent_id,user_id,binding_epoch,1,0,created_at,updated_at,closed_at,source_watermark FROM conversations WHERE id=?",
+      )
+      .run(other.conversation.id, other.binding.id, h.conversation.id);
+    journal.append({
+      conversationId: other.conversation.id,
+      eventKey: "outside",
+      kind: "inbound",
+      source: secondary,
+      sources: [secondary, missing],
+      occurredAt: h.now,
+    });
+    const messages = [
+      assistantMessage([secondary]),
+      assistantMessage([alternate]),
+      assistantMessage([secondary, alternate, secondary]),
+      assistantMessage([missing]),
+      assistantMessage(),
+    ];
+    const source = h.newSource();
+    const records = compressionRecordsOf(source, messages);
+    expect(records.map((record) => record.seq)).toEqual([2, 4, 2, null, null]);
+    expect(records.map((record) => record.id)).toEqual(
+      messages.map((message, index) =>
+        message.sources?.length ? legacyIdOf(message.sources ?? []) : `anonymous:1:${index}`,
+      ),
+    );
+    expect(records.map((record) => record.sources)).toEqual(
+      messages.map((message) => message.sources ?? []),
+    );
+    expect(records.map((record) => record.text)).toEqual(
+      messages.map(() => contextDumps({ text: "assistant history" })),
+    );
+    // Each invocation derives its map from current journal rows, not an instance cache.
+    h.db
+      .query("UPDATE conversation_events SET sources=? WHERE conversation_id=? AND seq=1")
+      .run(JSON.stringify([secondary]), h.conversation.id);
+    h.db
+      .query("UPDATE conversation_events SET kind='inbound' WHERE conversation_id=? AND seq=1")
+      .run(h.conversation.id);
+    expect(compressionRecordsOf(source, messages).map((record) => record.seq)).toEqual([
+      1,
+      4,
+      1,
+      null,
+      null,
+    ]);
+    expect(
+      compressionRecordsOf(source, [assistantMessage([ref("qq_speech", "123")])])[0]?.seq,
+    ).toBeNull();
+  });
+
+  it("原压缩记录 id/seq/count 保持旧规则，模型使用可逆短 ID；水位推进位置不变", async () => {
     const h = setup({ watermarkTrigger: 2 });
     const first = h.seed("旧事实一", 30001);
     const second = h.seed("旧事实二", 30000);
     h.seed("recent question");
     const source = h.newSource();
+    const rawIds = [
+      legacyIdOf([{ kind: "qq_observation", id: first, revision: bodySha("旧事实一") }]),
+      legacyIdOf([{ kind: "qq_observation", id: second, revision: bodySha("旧事实二") }]),
+    ];
+    const rawRecords = compressionRecordsOf(source, [
+      {
+        speaker: "member",
+        speakerId: "20002",
+        text: "旧事实一",
+        occurredAtSeconds: h.seconds - 30001,
+        mediaNotes: [],
+        mediaUnread: 0,
+        sources: [{ kind: "qq_observation", id: first, revision: bodySha("旧事实一") }],
+      },
+      {
+        speaker: "member",
+        speakerId: "20002",
+        text: "旧事实二",
+        occurredAtSeconds: h.seconds - 30000,
+        mediaNotes: [],
+        mediaUnread: 0,
+        sources: [{ kind: "qq_observation", id: second, revision: bodySha("旧事实二") }],
+      },
+    ]);
+    expect(rawRecords).toHaveLength(2);
+    expect(rawRecords.map((record) => record.seq)).toEqual([1, 2]);
+    expect(rawRecords.map((record) => record.id)).toEqual(rawIds);
     const material = await source.read(readInput());
     expect(JSON.stringify(material.pending)).not.toContain("旧事实");
     const job = source.takeCompressionJob();
@@ -273,10 +963,12 @@ describe("压缩输入的文字关系（T06 接力2）", () => {
     const events = h.capturedEvents[0];
     if (!events) throw new Error("expected captured call");
     expect(events.map((event) => event.seq)).toEqual([1, 2]);
-    expect(events.map((event) => event.id)).toEqual([
-      legacyIdOf([{ kind: "qq_observation", id: first, revision: bodySha("旧事实一") }]),
-      legacyIdOf([{ kind: "qq_observation", id: second, revision: bodySha("旧事实二") }]),
-    ]);
+    expect(events.map((event) => event.id)).toEqual(
+      rawIds.map((id) => `qq-record:${createHash("sha256").update(id).digest("base64url")}`),
+    );
+    const pkg = (JSON.parse(row.content) as { packages: { provenance: Record<string, string> }[] })
+      .packages[0]!;
+    expect(events.map((event) => pkg.provenance[event.id])).toEqual(rawIds);
   });
 
   it("发送时双名快照与 @/reply 关系进同一次压缩调用；当前目录名不进", async () => {
@@ -446,5 +1138,124 @@ describe("压缩输入的文字关系（T06 接力2）", () => {
     expect(all).toContain("unknown");
     expect(all).not.toContain("expression");
     expect(all).not.toContain("mediaNotes");
+  });
+  /**
+   * QQ 长期语义「摘要只压正文」（body-only）：模型输入的用户消息里不该有当前问题；
+   * 包是中性可复用历史事件段，与本次提问无关；网页共享问题引导契约不在本文件。
+   */
+  it("QQ compression is body-only: the model user message carries no current question", async () => {
+    const h = setup({ watermarkTrigger: 1 });
+    for (let index = 0; index < 5; index += 1) h.seed(`old body ${index}`, 30000 + index);
+    h.seed("今天群里讨论了什么问题？");
+    const source = h.newSource();
+    await source.read(readInput());
+    const job = source.takeCompressionJob();
+    if (!job) throw new Error("fixture: compression job missing");
+    await job.run(readInput().signal);
+    // 先证包正产出：事实为正、模型确实被调用过。
+    const stored = h.orm.select().from(schema.qqConversationSummaries).get();
+    if (!stored) throw new Error("fixture: body-only case produced no package");
+    const packages = JSON.parse(stored.content) as { packages: { facts: unknown[] }[] };
+    expect(packages.packages.length).toBeGreaterThan(0);
+    expect(packages.packages.at(-1)?.facts.length).toBeGreaterThan(0);
+    // 意图契约：QQ body-only → 用户消息不得携带 question 字段（字段缺席，不是空串）。
+    expect(h.capturedQuestions).toHaveLength(1);
+    expect(h.capturedQuestions[0]).toBe(false);
+  });
+
+  /**
+   * 来源上限（消费者 LINKS=100）：仅本批记录自身的不同来源自然并集就超过 100 时，
+   * 发布的整包 sources 仍必须 <= 100 且出处完整。不丢引用、不靠测试专用拟合，
+   * 也不改水位/包上限。
+   */
+  it("splits a natural >100 full tail into multiple packages: every package <=100 refs and the union keeps all 101 observation refs", async () => {
+    const h = setup({ watermarkTrigger: 101, singleFactCompression: true });
+    const keys = Array.from({ length: 101 }, (_, index) =>
+      h.seed(`old source ${index}`, 30000 + index),
+    );
+    h.seed("current window question");
+    const source = h.newSource();
+    await source.read(readInput());
+    const job = source.takeCompressionJob();
+    if (!job) throw new Error("fixture: compression job missing");
+    await job.run(readInput().signal);
+    const stored = h.orm.select().from(schema.qqConversationSummaries).get();
+    if (!stored) throw new Error("fixture: finite-partition case produced no package");
+    const packages = JSON.parse(stored.content) as {
+      packages: {
+        facts: { source_ids: string[] }[];
+        sources: SourceRef[];
+        provenance?: Record<string, string>;
+      }[];
+    };
+    // 同一 job 内产出多个包：整段 101 条各带自身来源，自然并集 >100。
+    expect(packages.packages.length).toBeGreaterThan(1);
+    for (const pkg of packages.packages) {
+      expect(pkg.sources.length).toBeLessThanOrEqual(100);
+      expect(pkg.facts.length).toBeGreaterThan(0);
+      const referenced = [...new Set(pkg.facts.flatMap((fact) => fact.source_ids))];
+      for (const id of referenced) expect(pkg.provenance?.[id]).toBeDefined();
+    }
+    // 分区覆盖：每个 observation 引用恰好被一个包带上（不丢、不重）。
+    const counts = new Map<string, number>();
+    for (const pkg of packages.packages)
+      for (const ref of pkg.sources)
+        if (ref.kind === "qq_observation") counts.set(ref.id, (counts.get(ref.id) ?? 0) + 1);
+    for (const key of keys) expect(counts.get(key)).toBe(1);
+  });
+
+  /**
+   * 原子性（失败不落盘）：多包任务在中途失败时，不写任何行、水位不动。
+   * 第二段模型结果无效 → 整个 job 失败；既有行与两个水位保持原样。
+   */
+  it("keeps the row and watermarks untouched when a mid-chunk summary fails", async () => {
+    const h = setup({ watermarkTrigger: 101, singleFactCompression: true });
+    for (let index = 0; index < 101; index += 1) h.seed(`old part ${index}`, 30000 + index);
+    h.seed("current window question");
+    let calls = 0;
+    h.gateway.complete = async (request) => {
+      const wire = request.messages?.[1]?.content;
+      if (typeof wire !== "string") throw new Error("fixture: summary wire missing");
+      const data = JSON.parse(wire) as { events: { id: string; speaker: string }[] };
+      calls += 1;
+      if (calls === 1)
+        return JSON.stringify({
+          facts: [
+            {
+              kind: "fact",
+              speaker: data.events[0]!.speaker,
+              text: "f",
+              source_ids: [data.events[0]!.id],
+            },
+          ],
+        });
+      throw new Error("synthetic mid-chunk failure");
+    };
+    const source = h.newSource();
+    await source.read(readInput());
+    const job = source.takeCompressionJob();
+    if (!job) throw new Error("fixture: compression job missing");
+    await expect(job.run(readInput().signal)).rejects.toThrow("synthetic mid-chunk failure");
+    expect(calls).toBeGreaterThan(1);
+    expect(h.orm.select().from(schema.qqConversationSummaries).get()).toBeUndefined();
+  });
+
+  /**
+   * 调用前拒绝：分包数超过原总预算时，先拒（typed），一个模型调用都不发、不落盘。
+   */
+  it("refuses before any model call when the chunk count exceeds the original total target", async () => {
+    const h = setup({ watermarkTrigger: 101, singleFactCompression: true });
+    h.runtime.p5_config.summary_target_tokens = 1;
+    for (let index = 0; index < 101; index += 1) h.seed(`old slice ${index}`, 30000 + index);
+    h.seed("current window question");
+    const source = h.newSource();
+    await source.read(readInput());
+    const job = source.takeCompressionJob();
+    if (!job) throw new Error("fixture: compression job missing");
+    await expect(job.run(readInput().signal)).rejects.toMatchObject({
+      code: "CONTEXT_SUMMARY_BUDGET",
+    });
+    expect(h.capturedEvents).toHaveLength(0);
+    expect(h.orm.select().from(schema.qqConversationSummaries).get()).toBeUndefined();
   });
 });

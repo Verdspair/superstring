@@ -52,11 +52,11 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { SqliteKnowledgeModule } from "../../src/server/modules/knowledge-module";
 import { SqliteMemoryModule } from "../../src/server/modules/memory-module";
-import { unicodeStrip } from "../../src/server/services/text";
 import {
   DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
   DEFAULT_MEMORY_RETRIEVAL_PROMPT,
 } from "../../src/shared/contracts";
+import { unicodeStrip } from "../../src/shared/contracts/code-point-string";
 import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
 
 const MODEL = "qwen/qwen3-4b-2507";

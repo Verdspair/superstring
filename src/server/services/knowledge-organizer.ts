@@ -317,7 +317,10 @@ export class KnowledgeOrganizer {
           throw new OrganizerFailure("MODEL_CAPACITY_UNAVAILABLE");
         const output = Math.min(2048, Math.floor(capacity / 4));
         const messages: ChatMessage[] = [
-          { role: "system", content: PROMPT },
+          {
+            role: "system",
+            content: `${PROMPT}整个JSON响应（包括summary、tags、body及JSON语法）最多${output}个UTF-8字节。使用简洁的Markdown，避免重复标题、标签和说明；保留全部数字、单位、条件和例外，不要为满足长度删去事实。`,
+          },
           { role: "user", content: chunk.body },
         ];
         // Include structured-output schema and conservative protocol/safety overhead.
@@ -420,7 +423,7 @@ export class KnowledgeOrganizer {
                 newId(),
                 job.document_id,
                 job.content_version,
-                drafts[0]?.summary ?? "",
+                drafts.map((draft) => draft.summary).join("\n\n"),
                 JSON.stringify(tags),
                 drafts.map((draft) => draft.body).join("\n\n"),
                 JSON.stringify(mappedSources),

@@ -279,6 +279,11 @@ describe("fetchPage 体积、超时与取消", () => {
     const reason = new Error("提前取消");
     controller.abort(reason);
     let called = false;
+    let resolverCalls = 0;
+    const resolve = async () => {
+      resolverCalls++;
+      return ["93.184.216.34"];
+    };
     const fetchImpl = (async () => {
       called = true;
       return new Response("x");
@@ -286,7 +291,7 @@ describe("fetchPage 体积、超时与取消", () => {
     try {
       await fetchPage("http://example.com/", {
         fetchImpl,
-        resolve: publicResolver,
+        resolve,
         signal: controller.signal,
       });
       throw new Error("should reject");
@@ -294,5 +299,6 @@ describe("fetchPage 体积、超时与取消", () => {
       expect(error).toBe(reason);
     }
     expect(called).toBe(false);
+    expect(resolverCalls).toBe(0);
   });
 });

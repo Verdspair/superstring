@@ -6,7 +6,7 @@ import type { ActionContext, EvidenceQueryModule } from "../agent/built-in-actio
 import { readQqMessageFactsByPlatformMessageId } from "../db/qq-message-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
-import { fullCasefold } from "../services/text";
+import { fullCasefold } from "../services/casefold-table";
 import {
   type EvidenceDomain,
   type EvidenceStore,

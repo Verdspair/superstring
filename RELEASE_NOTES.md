@@ -48,7 +48,9 @@
 - 较新回复确认后，已被完整覆盖的旧自主回复提前停止；多成员任务只跳过已覆盖成员，不同艾特任务保持独立。
 - 聊天记录加载失败后重试拉取最新页，不从最早记录重新开始。
 - 修正 QQ 表情回复的输出规则冲突；错误的表情写法不会发送，并可在现有步骤限制内纠正后继续回复。
-- 当前源码数据库结构为 65；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
+- **模型编码**：在模型服务 → LM Studio 本地编码或外部服务登记模型时可选填文本编码（如 `cl100k_base`、`o200k_base`），未指定时采用保守估算；提供参考帮助与来源说明但不自动选择；用量显示实际生效的模型、容量与编码；保存发生冲突时保留当前草稿。
+- **QQ 研究与工具结果**：研究模式按子任务自己的上下文检查容量；媒体或表情结果装不下时返回明确的预算提示，不把本可继续的任务拖到下一轮才失败；仍超出容量时明确失败。
+- 当前源码数据库结构为 66；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
 
 ---
 
@@ -98,7 +100,9 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 - After a newer reply is confirmed, fully covered autonomous replies stop early. Multi-member tasks skip only covered members, and separate mention tasks remain independent.
 - Chat history load failures retry from the newest page instead of restarting from the earliest records.
 - Fixed conflicting output rules for QQ sticker replies. Invalid sticker output is not sent and can be corrected within the existing step limit before the reply continues.
-- Current source uses schema 65; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
+- **Model encodings**: Optionally select text token encodings (such as `cl100k_base` or `o200k_base`) when configuring LM Studio local models or external services under Model Services; falls back to conservative estimation when unspecified. Reference help and documentation links assist verification without auto-selection. Usage details show the actual effective model, capacity, and encoding, and unsaved drafts are preserved if save conflicts occur.
+- **QQ research and tool results**: Research runs check capacity against each subtask's own context limit; when media or sticker results exceed the available window, a clear budget message is returned instead of postponing failures to subsequent turns, with requests that genuinely exceed capacity failing clearly.
+- Current source uses schema 66; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
 
 ---
 

@@ -46,6 +46,56 @@ afterEach(() => {
 });
 
 describe("资料列表的服务端分页", () => {
+  it.each(["next", "prev"] as const)(
+    "待应用搜索时立即 %s 翻页保留已应用查询并恢复搜索框，不再触发延迟请求",
+    async (direction) => {
+      vi.useFakeTimers();
+      const client = setupLibrary({
+        listKnowledgeDocuments: vi
+          .fn()
+          .mockResolvedValueOnce(page([docA], "initial-next"))
+          .mockResolvedValueOnce(page([docA], "alpha-next"))
+          .mockResolvedValueOnce(page([docC], "alpha-later"))
+          .mockResolvedValueOnce(page([docA], "alpha-next")),
+      });
+      await act(async () => render(<KnowledgeLibrary />));
+      await act(async () => {
+        fireEvent.change(searchInput(), { target: { value: "Alpha" } });
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(store.getState().knowledgeFilters.search).toBe("Alpha");
+      expect(searchInput().value).toBe("Alpha");
+      expect(store.getState().knowledgeCursors).toEqual([null]);
+      if (direction === "prev") {
+        await act(async () => fireEvent.click(nextButton()));
+        expect(store.getState().knowledgeCursors).toEqual([null, "alpha-next"]);
+      }
+      const callsBeforePaging = vi.mocked(client.listKnowledgeDocuments).mock.calls.length;
+      await act(async () => fireEvent.change(searchInput(), { target: { value: "Beta" } }));
+      expect(searchInput().value).toBe("Beta");
+      expect(store.getState().knowledgeFilters.search).toBe("Alpha");
+      await act(async () => fireEvent.click(direction === "next" ? nextButton() : prevButton()));
+      expect(client.listKnowledgeDocuments).toHaveBeenLastCalledWith(
+        direction === "next"
+          ? { search: "Alpha", limit: 50, cursor: "alpha-next" }
+          : { search: "Alpha", limit: 50 },
+        expect.any(AbortSignal),
+      );
+      expect(client.listKnowledgeDocuments).toHaveBeenCalledTimes(callsBeforePaging + 1);
+      expect(store.getState().knowledgeCursors).toEqual(
+        direction === "next" ? [null, "alpha-next"] : [null],
+      );
+      const searchAfterPaging = searchInput().value;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(client.listKnowledgeDocuments).toHaveBeenCalledTimes(callsBeforePaging + 1);
+      expect(store.getState().knowledgeFilters.search).toBe("Alpha");
+      expect(searchAfterPaging).toBe("Alpha");
+      expect(searchInput().value).toBe("Alpha");
+    },
+  );
+
   it("首页请求带默认 50 上限，next/prev 使用服务端游标栈", async () => {
     const client = setupLibrary({
       listKnowledgeDocuments: vi

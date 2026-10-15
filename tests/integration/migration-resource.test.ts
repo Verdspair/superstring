@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import {
   copyFileSync,
   existsSync,
@@ -7,339 +8,91 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { type BusinessMigrationSql, openBusinessDb } from "../../src/server/db/schema-gate";
 import { loadStartupLayout } from "../../src/server/startup-layout";
 
-const sql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql"),
-  "utf8",
-);
-const knowledgeSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0002_knowledge.sql"),
-  "utf8",
-);
-const readSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0003_knowledge_read.sql"),
-  "utf8",
-);
-const organizationSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0004_organization.sql"),
-  "utf8",
-);
-const qqTransportSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0005_qq_transport.sql"),
-  "utf8",
-);
-const qqMemorySourcesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0006_qq_memory_sources.sql"),
-  "utf8",
-);
-const qqObservationTextSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0007_qq_observation_text.sql"),
-  "utf8",
-);
-const qqMemoryBatchSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0008_qq_memory_batch.sql"),
-  "utf8",
-);
-const qqTransportConfigSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0009_qq_transport_config.sql"),
-  "utf8",
-);
-const qqSchemesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0010_qq_schemes.sql"),
-  "utf8",
-);
-const qqSpeechLogSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0011_qq_speech_log.sql"),
-  "utf8",
-);
-const qqMediaNotesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0012_qq_media_notes.sql"),
-  "utf8",
-);
-const qqSchemeTriggersSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0013_qq_scheme_triggers.sql"),
-  "utf8",
-);
-const qqSendLogSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0014_qq_send_log.sql"),
-  "utf8",
-);
-const qqSchemeRhythmSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0015_qq_scheme_rhythm.sql"),
-  "utf8",
-);
-const qqContextBudgetSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0016_qq_context_budget.sql"),
-  "utf8",
-);
-const qqSchemePromptsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0017_qq_scheme_prompts.sql"),
-  "utf8",
-);
-const qqMembersSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0018_qq_members.sql"),
-  "utf8",
-);
-const qqOutputReserveSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0019_qq_output_reserve.sql"),
-  "utf8",
-);
-const qqSchemeStickersSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0020_qq_scheme_stickers.sql"),
-  "utf8",
-);
-const qqStickersSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0021_qq_stickers.sql"),
-  "utf8",
-);
-const qqDispatchSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0023_qq_dispatch.sql"),
-  "utf8",
-);
-const qqMediaPurposesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0024_qq_media_purposes.sql"),
-  "utf8",
-);
-const desktopSettingsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0025_desktop_settings.sql"),
-  "utf8",
-);
-const qqMediaSupplementSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0026_qq_media_supplement.sql"),
-  "utf8",
-);
-const qqEventAddressedSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0027_qq_event_addressed.sql"),
-  "utf8",
-);
-const qqImmediateLeaseSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0028_qq_immediate_lease.sql"),
-  "utf8",
-);
-const qqModuleSwitchesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0029_qq_module_switches.sql"),
-  "utf8",
-);
-const qqSweepVerdictsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0030_qq_sweep_verdicts.sql"),
-  "utf8",
-);
-const qqAttentionSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0031_qq_attention.sql"),
-  "utf8",
-);
-const modelProvidersSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0032_model_providers.sql"),
-  "utf8",
-);
-const qqIdleJudgementsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0033_qq_idle_judgements.sql"),
-  "utf8",
-);
-const qqInitiativeMinScoreSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0034_qq_initiative_min_score.sql"),
-  "utf8",
-);
-const qqReplySplitSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0035_qq_reply_split.sql"),
-  "utf8",
-);
-const qqJudgementReuseSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0036_qq_judgement_reuse.sql"),
-  "utf8",
-);
-const qqJudgementPerSpeakerSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0037_qq_judgement_per_speaker.sql"),
-  "utf8",
-);
-const qqJudgementModelSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0038_qq_judgement_model.sql"),
-  "utf8",
-);
-const agentRunsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0039_agent_runs.sql"),
-  "utf8",
-);
-const conversationWakesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0040_conversation_wakes.sql"),
-  "utf8",
-);
-const outboundIntentsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0041_outbound_intents.sql"),
-  "utf8",
-);
-const runtimeObservabilitySql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0042_runtime_observability.sql"),
-  "utf8",
-);
-const protectedModelResultsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0043_protected_model_results.sql"),
-  "utf8",
-);
-const conversationAvatarsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0044_conversation_avatars.sql"),
-  "utf8",
-);
-const qqConversationSummariesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0045_qq_conversation_summaries.sql"),
-  "utf8",
-);
-const qqContextCompressionSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0046_qq_context_compression.sql"),
-  "utf8",
-);
-const qqContextLimitCapsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0047_qq_context_limit_caps.sql"),
-  "utf8",
-);
-const agentTasksSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0048_agent_tasks.sql"),
-  "utf8",
-);
-const qqOutputReserveCapsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0049_qq_output_reserve_caps.sql"),
-  "utf8",
-);
-const qqRetentionDaysSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0050_qq_retention_days.sql"),
-  "utf8",
-);
-const qqGroupAgentConfigSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"),
-  "utf8",
-);
-const qqMessageMultimodalSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0052_qq_message_multimodal.sql"),
-  "utf8",
-);
-const qqGroupNamesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0053_qq_group_names.sql"),
-  "utf8",
-);
-const qqInitiativeBatchesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0054_qq_initiative_batches.sql"),
-  "utf8",
-);
-const qqInitiativeTimeWindowSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0055_qq_initiative_time_window.sql"),
-  "utf8",
-);
-const outboundStaleReasonSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0056_outbound_stale_reason.sql"),
-  "utf8",
-);
-const qqStickerAuthorizationSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0022_qq_sticker_authorization.sql"),
-  "utf8",
-);
-const historyOutputIdentityIndexesSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0057_history_output_identity_indexes.sql"),
-  "utf8",
-);
-const qqConversationTasksSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0058_qq_conversation_tasks.sql"),
-  "utf8",
-);
-const qqTaskLimitsAntispamSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0059_qq_task_limits_antispam.sql"),
-  "utf8",
-);
-const qqTaskExecutionSnapshotSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0060_qq_task_execution_snapshot.sql"),
-  "utf8",
-);
-const qqTaskReadyAtSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0061_qq_task_ready_at.sql"),
-  "utf8",
-);
-const qqMediaSpecUnificationSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0062_qq_media_spec_unification.sql"),
-  "utf8",
-);
-const qqMediaRequestIdentitySql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
-  "utf8",
-);
-const qqSchemeStickerFrequencySql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0064_qq_scheme_sticker_frequency.sql"),
-  "utf8",
-);
-const qqAntispamThresholdsSql = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0065_qq_antispam_thresholds.sql"),
-  "utf8",
-);
-const resources = [
-  sql,
-  knowledgeSql,
-  readSql,
-  organizationSql,
-  qqTransportSql,
-  qqMemorySourcesSql,
-  qqObservationTextSql,
-  qqMemoryBatchSql,
-  qqTransportConfigSql,
-  qqSchemesSql,
-  qqSpeechLogSql,
-  qqMediaNotesSql,
-  qqSchemeTriggersSql,
-  qqSendLogSql,
-  qqSchemeRhythmSql,
-  qqContextBudgetSql,
-  qqSchemePromptsSql,
-  qqMembersSql,
-  qqOutputReserveSql,
-  qqSchemeStickersSql,
-  qqStickersSql,
-  qqStickerAuthorizationSql,
-  qqDispatchSql,
-  qqMediaPurposesSql,
-  desktopSettingsSql,
-  qqMediaSupplementSql,
-  qqEventAddressedSql,
-  qqImmediateLeaseSql,
-  qqModuleSwitchesSql,
-  qqSweepVerdictsSql,
-  qqAttentionSql,
-  modelProvidersSql,
-  qqIdleJudgementsSql,
-  qqInitiativeMinScoreSql,
-  qqReplySplitSql,
-  qqJudgementReuseSql,
-  qqJudgementPerSpeakerSql,
-  qqJudgementModelSql,
-  agentRunsSql,
-  conversationWakesSql,
-  outboundIntentsSql,
-  runtimeObservabilitySql,
-  protectedModelResultsSql,
-  conversationAvatarsSql,
-  qqConversationSummariesSql,
-  qqContextCompressionSql,
-  qqContextLimitCapsSql,
-  agentTasksSql,
-  qqOutputReserveCapsSql,
-  qqRetentionDaysSql,
-  qqGroupAgentConfigSql,
-  qqMessageMultimodalSql,
-  qqGroupNamesSql,
-  qqInitiativeBatchesSql,
-  qqInitiativeTimeWindowSql,
-  outboundStaleReasonSql,
-  historyOutputIdentityIndexesSql,
-  qqConversationTasksSql,
-  qqTaskLimitsAntispamSql,
-  qqTaskExecutionSnapshotSql,
-  qqTaskReadyAtSql,
-  qqMediaSpecUnificationSql,
-  qqMediaRequestIdentitySql,
-  qqSchemeStickerFrequencySql,
-  qqAntispamThresholdsSql,
-] as const;
+const versionsDir = path.join(import.meta.dir, "../../migrations/versions");
+
+// Test-owned golden inventory: the exact 66 business migration files in install
+// order. Deliberately not derived from any production list (such as schema-gate's
+// BUSINESS_MIGRATION_FILES) so the exact-66 checks below can catch a missing or
+// extra production migration resource independently.
+const BUSINESS_MIGRATION_FILE_NAMES = [
+  "0001_initial.sql",
+  "0002_knowledge.sql",
+  "0003_knowledge_read.sql",
+  "0004_organization.sql",
+  "0005_qq_transport.sql",
+  "0006_qq_memory_sources.sql",
+  "0007_qq_observation_text.sql",
+  "0008_qq_memory_batch.sql",
+  "0009_qq_transport_config.sql",
+  "0010_qq_schemes.sql",
+  "0011_qq_speech_log.sql",
+  "0012_qq_media_notes.sql",
+  "0013_qq_scheme_triggers.sql",
+  "0014_qq_send_log.sql",
+  "0015_qq_scheme_rhythm.sql",
+  "0016_qq_context_budget.sql",
+  "0017_qq_scheme_prompts.sql",
+  "0018_qq_members.sql",
+  "0019_qq_output_reserve.sql",
+  "0020_qq_scheme_stickers.sql",
+  "0021_qq_stickers.sql",
+  "0022_qq_sticker_authorization.sql",
+  "0023_qq_dispatch.sql",
+  "0024_qq_media_purposes.sql",
+  "0025_desktop_settings.sql",
+  "0026_qq_media_supplement.sql",
+  "0027_qq_event_addressed.sql",
+  "0028_qq_immediate_lease.sql",
+  "0029_qq_module_switches.sql",
+  "0030_qq_sweep_verdicts.sql",
+  "0031_qq_attention.sql",
+  "0032_model_providers.sql",
+  "0033_qq_idle_judgements.sql",
+  "0034_qq_initiative_min_score.sql",
+  "0035_qq_reply_split.sql",
+  "0036_qq_judgement_reuse.sql",
+  "0037_qq_judgement_per_speaker.sql",
+  "0038_qq_judgement_model.sql",
+  "0039_agent_runs.sql",
+  "0040_conversation_wakes.sql",
+  "0041_outbound_intents.sql",
+  "0042_runtime_observability.sql",
+  "0043_protected_model_results.sql",
+  "0044_conversation_avatars.sql",
+  "0045_qq_conversation_summaries.sql",
+  "0046_qq_context_compression.sql",
+  "0047_qq_context_limit_caps.sql",
+  "0048_agent_tasks.sql",
+  "0049_qq_output_reserve_caps.sql",
+  "0050_qq_retention_days.sql",
+  "0051_qq_group_agent_config.sql",
+  "0052_qq_message_multimodal.sql",
+  "0053_qq_group_names.sql",
+  "0054_qq_initiative_batches.sql",
+  "0055_qq_initiative_time_window.sql",
+  "0056_outbound_stale_reason.sql",
+  "0057_history_output_identity_indexes.sql",
+  "0058_qq_conversation_tasks.sql",
+  "0059_qq_task_limits_antispam.sql",
+  "0060_qq_task_execution_snapshot.sql",
+  "0061_qq_task_ready_at.sql",
+  "0062_qq_media_spec_unification.sql",
+  "0063_qq_media_request_identity.sql",
+  "0064_qq_scheme_sticker_frequency.sql",
+  "0065_qq_antispam_thresholds.sql",
+  "0066_jsonb_context_source_matchers.sql",
+];
+
+const resources = BUSINESS_MIGRATION_FILE_NAMES.map((name) =>
+  readFileSync(path.join(versionsDir, name), "utf8"),
+) as unknown as BusinessMigrationSql;
 const testTmpdir = realpathSync(tmpdir());
 describe("explicit migration resources", () => {
   it("validates supplied SQL before creating a file-backed database", () => {
@@ -347,76 +100,12 @@ describe("explicit migration resources", () => {
     const filename = path.join(dir, "test.sqlite");
     try {
       for (const migrationSql of ["", "this is not SQL"]) {
+        const invalid: [...BusinessMigrationSql] = [...resources];
+        invalid[1] = migrationSql;
         expect(() =>
           openBusinessDb({
             path: filename,
-            migrationSql: [
-              sql,
-              migrationSql,
-              readSql,
-              organizationSql,
-              qqTransportSql,
-              qqMemorySourcesSql,
-              qqObservationTextSql,
-              qqMemoryBatchSql,
-              qqTransportConfigSql,
-              qqSchemesSql,
-              qqSpeechLogSql,
-              qqMediaNotesSql,
-              qqSchemeTriggersSql,
-              qqSendLogSql,
-              qqSchemeRhythmSql,
-              qqContextBudgetSql,
-              qqSchemePromptsSql,
-              qqMembersSql,
-              qqOutputReserveSql,
-              qqSchemeStickersSql,
-              qqStickersSql,
-              qqStickerAuthorizationSql,
-              qqDispatchSql,
-              qqMediaPurposesSql,
-              desktopSettingsSql,
-              qqMediaSupplementSql,
-              qqEventAddressedSql,
-              qqImmediateLeaseSql,
-              qqModuleSwitchesSql,
-              qqSweepVerdictsSql,
-              qqAttentionSql,
-              modelProvidersSql,
-              qqIdleJudgementsSql,
-              qqInitiativeMinScoreSql,
-              qqReplySplitSql,
-              qqJudgementReuseSql,
-              qqJudgementPerSpeakerSql,
-              qqJudgementModelSql,
-              agentRunsSql,
-              conversationWakesSql,
-              outboundIntentsSql,
-              runtimeObservabilitySql,
-              protectedModelResultsSql,
-              conversationAvatarsSql,
-              qqConversationSummariesSql,
-              qqContextCompressionSql,
-              qqContextLimitCapsSql,
-              agentTasksSql,
-              qqOutputReserveCapsSql,
-              qqRetentionDaysSql,
-              qqGroupAgentConfigSql,
-              qqMessageMultimodalSql,
-              qqGroupNamesSql,
-              qqInitiativeBatchesSql,
-              qqInitiativeTimeWindowSql,
-              outboundStaleReasonSql,
-              historyOutputIdentityIndexesSql,
-              qqConversationTasksSql,
-              qqTaskLimitsAntispamSql,
-              qqTaskExecutionSnapshotSql,
-              qqTaskReadyAtSql,
-              qqMediaSpecUnificationSql,
-              qqMediaRequestIdentitySql,
-              qqSchemeStickerFrequencySql,
-              qqAntispamThresholdsSql,
-            ],
+            migrationSql: invalid,
           }),
         ).toThrow();
         expect(existsSync(filename)).toBe(false);
@@ -430,80 +119,16 @@ describe("explicit migration resources", () => {
     const filename = path.join(dir, "test.sqlite");
     try {
       openBusinessDb({ path: filename, migrationSql: resources }).close();
+      const tampered: [...BusinessMigrationSql] = [...resources];
+      tampered[1] = `${tampered[1]}\nCREATE TABLE extra_resource(id INTEGER);`;
       expect(() =>
         openBusinessDb({
           path: filename,
-          migrationSql: [
-            sql,
-            `${knowledgeSql}\nCREATE TABLE extra_resource(id INTEGER);`,
-            readSql,
-            organizationSql,
-            qqTransportSql,
-            qqMemorySourcesSql,
-            qqObservationTextSql,
-            qqMemoryBatchSql,
-            qqTransportConfigSql,
-            qqSchemesSql,
-            qqSpeechLogSql,
-            qqMediaNotesSql,
-            qqSchemeTriggersSql,
-            qqSendLogSql,
-            qqSchemeRhythmSql,
-            qqContextBudgetSql,
-            qqSchemePromptsSql,
-            qqMembersSql,
-            qqOutputReserveSql,
-            qqSchemeStickersSql,
-            qqStickersSql,
-            qqStickerAuthorizationSql,
-            qqDispatchSql,
-            qqMediaPurposesSql,
-            desktopSettingsSql,
-            qqMediaSupplementSql,
-            qqEventAddressedSql,
-            qqImmediateLeaseSql,
-            qqModuleSwitchesSql,
-            qqSweepVerdictsSql,
-            qqAttentionSql,
-            modelProvidersSql,
-            qqIdleJudgementsSql,
-            qqInitiativeMinScoreSql,
-            qqReplySplitSql,
-            qqJudgementReuseSql,
-            qqJudgementPerSpeakerSql,
-            qqJudgementModelSql,
-            agentRunsSql,
-            conversationWakesSql,
-            outboundIntentsSql,
-            runtimeObservabilitySql,
-            protectedModelResultsSql,
-            conversationAvatarsSql,
-            qqConversationSummariesSql,
-            qqContextCompressionSql,
-            qqContextLimitCapsSql,
-            agentTasksSql,
-            qqOutputReserveCapsSql,
-            qqRetentionDaysSql,
-            qqGroupAgentConfigSql,
-            qqMessageMultimodalSql,
-            qqGroupNamesSql,
-            qqInitiativeBatchesSql,
-            qqInitiativeTimeWindowSql,
-            outboundStaleReasonSql,
-            historyOutputIdentityIndexesSql,
-            qqConversationTasksSql,
-            qqTaskLimitsAntispamSql,
-            qqTaskExecutionSnapshotSql,
-            qqTaskReadyAtSql,
-            qqMediaSpecUnificationSql,
-            qqMediaRequestIdentitySql,
-            qqSchemeStickerFrequencySql,
-            qqAntispamThresholdsSql,
-          ],
+          migrationSql: tampered,
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 65 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -592,242 +217,15 @@ describe("explicit migration resources", () => {
       expect(() =>
         loadStartupLayout({ SUPERSTRING_APP_MODE: "installed", SUPERSTRING_APP_ROOT: dir }),
       ).toThrow();
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0010_qq_schemes.sql"),
-        path.join(versions, "0010_qq_schemes.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0011_qq_speech_log.sql"),
-        path.join(versions, "0011_qq_speech_log.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0012_qq_media_notes.sql"),
-        path.join(versions, "0012_qq_media_notes.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0013_qq_scheme_triggers.sql"),
-        path.join(versions, "0013_qq_scheme_triggers.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0014_qq_send_log.sql"),
-        path.join(versions, "0014_qq_send_log.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0015_qq_scheme_rhythm.sql"),
-        path.join(versions, "0015_qq_scheme_rhythm.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0016_qq_context_budget.sql"),
-        path.join(versions, "0016_qq_context_budget.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0017_qq_scheme_prompts.sql"),
-        path.join(versions, "0017_qq_scheme_prompts.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0018_qq_members.sql"),
-        path.join(versions, "0018_qq_members.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0019_qq_output_reserve.sql"),
-        path.join(versions, "0019_qq_output_reserve.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0020_qq_scheme_stickers.sql"),
-        path.join(versions, "0020_qq_scheme_stickers.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0021_qq_stickers.sql"),
-        path.join(versions, "0021_qq_stickers.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0022_qq_sticker_authorization.sql"),
-        path.join(versions, "0022_qq_sticker_authorization.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0023_qq_dispatch.sql"),
-        path.join(versions, "0023_qq_dispatch.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0024_qq_media_purposes.sql"),
-        path.join(versions, "0024_qq_media_purposes.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0025_desktop_settings.sql"),
-        path.join(versions, "0025_desktop_settings.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0026_qq_media_supplement.sql"),
-        path.join(versions, "0026_qq_media_supplement.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0027_qq_event_addressed.sql"),
-        path.join(versions, "0027_qq_event_addressed.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0028_qq_immediate_lease.sql"),
-        path.join(versions, "0028_qq_immediate_lease.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0029_qq_module_switches.sql"),
-        path.join(versions, "0029_qq_module_switches.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0030_qq_sweep_verdicts.sql"),
-        path.join(versions, "0030_qq_sweep_verdicts.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0031_qq_attention.sql"),
-        path.join(versions, "0031_qq_attention.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0032_model_providers.sql"),
-        path.join(versions, "0032_model_providers.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0033_qq_idle_judgements.sql"),
-        path.join(versions, "0033_qq_idle_judgements.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0034_qq_initiative_min_score.sql"),
-        path.join(versions, "0034_qq_initiative_min_score.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0035_qq_reply_split.sql"),
-        path.join(versions, "0035_qq_reply_split.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0036_qq_judgement_reuse.sql"),
-        path.join(versions, "0036_qq_judgement_reuse.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0037_qq_judgement_per_speaker.sql"),
-        path.join(versions, "0037_qq_judgement_per_speaker.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0038_qq_judgement_model.sql"),
-        path.join(versions, "0038_qq_judgement_model.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0039_agent_runs.sql"),
-        path.join(versions, "0039_agent_runs.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0040_conversation_wakes.sql"),
-        path.join(versions, "0040_conversation_wakes.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0041_outbound_intents.sql"),
-        path.join(versions, "0041_outbound_intents.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0042_runtime_observability.sql"),
-        path.join(versions, "0042_runtime_observability.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0043_protected_model_results.sql"),
-        path.join(versions, "0043_protected_model_results.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0044_conversation_avatars.sql"),
-        path.join(versions, "0044_conversation_avatars.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0045_qq_conversation_summaries.sql"),
-        path.join(versions, "0045_qq_conversation_summaries.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0046_qq_context_compression.sql"),
-        path.join(versions, "0046_qq_context_compression.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0047_qq_context_limit_caps.sql"),
-        path.join(versions, "0047_qq_context_limit_caps.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0048_agent_tasks.sql"),
-        path.join(versions, "0048_agent_tasks.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0049_qq_output_reserve_caps.sql"),
-        path.join(versions, "0049_qq_output_reserve_caps.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0050_qq_retention_days.sql"),
-        path.join(versions, "0050_qq_retention_days.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0051_qq_group_agent_config.sql"),
-        path.join(versions, "0051_qq_group_agent_config.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0052_qq_message_multimodal.sql"),
-        path.join(versions, "0052_qq_message_multimodal.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0053_qq_group_names.sql"),
-        path.join(versions, "0053_qq_group_names.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0054_qq_initiative_batches.sql"),
-        path.join(versions, "0054_qq_initiative_batches.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0055_qq_initiative_time_window.sql"),
-        path.join(versions, "0055_qq_initiative_time_window.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0056_outbound_stale_reason.sql"),
-        path.join(versions, "0056_outbound_stale_reason.sql"),
-      );
-      copyFileSync(
-        path.join(
-          import.meta.dir,
-          "../../migrations/versions/0057_history_output_identity_indexes.sql",
-        ),
-        path.join(versions, "0057_history_output_identity_indexes.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0058_qq_conversation_tasks.sql"),
-        path.join(versions, "0058_qq_conversation_tasks.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0059_qq_task_limits_antispam.sql"),
-        path.join(versions, "0059_qq_task_limits_antispam.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0060_qq_task_execution_snapshot.sql"),
-        path.join(versions, "0060_qq_task_execution_snapshot.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0061_qq_task_ready_at.sql"),
-        path.join(versions, "0061_qq_task_ready_at.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0062_qq_media_spec_unification.sql"),
-        path.join(versions, "0062_qq_media_spec_unification.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0063_qq_media_request_identity.sql"),
-        path.join(versions, "0063_qq_media_request_identity.sql"),
-      );
-      copyFileSync(
-        path.join(
-          import.meta.dir,
-          "../../migrations/versions/0064_qq_scheme_sticker_frequency.sql",
-        ),
-        path.join(versions, "0064_qq_scheme_sticker_frequency.sql"),
-      );
-      copyFileSync(
-        path.join(import.meta.dir, "../../migrations/versions/0065_qq_antispam_thresholds.sql"),
-        path.join(versions, "0065_qq_antispam_thresholds.sql"),
-      );
+      for (const name of BUSINESS_MIGRATION_FILE_NAMES.slice(9)) {
+        copyFileSync(path.join(versionsDir, name), path.join(versions, name));
+      }
       const layout = loadStartupLayout({
         SUPERSTRING_APP_MODE: "installed",
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(65);
+      expect(layout?.businessMigrationSql.length).toBe(66);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {
@@ -842,6 +240,49 @@ describe("explicit migration resources", () => {
         SUPERSTRING_DB_PATH: "data/dev.sqlite",
       }),
     ).toThrow("OVERRIDE");
+  });
+  it("checks every packaged migration path before reading resources", () => {
+    const dir = mkdtempSync(path.join(testTmpdir, "ss-guard-coverage-"));
+    const versions = path.join(dir, "app/resources/migrations/versions");
+    mkdirSync(versions, { recursive: true });
+    for (const name of BUSINESS_MIGRATION_FILE_NAMES) {
+      copyFileSync(path.join(versionsDir, name), path.join(versions, name));
+    }
+    const inspection = spyOn(fs, "lstatSync");
+    try {
+      const layout = loadStartupLayout({
+        SUPERSTRING_APP_MODE: "installed",
+        SUPERSTRING_APP_ROOT: dir,
+      });
+      const calls = inspection.mock.calls.map(([filename]) => String(filename));
+      const inspected = new Set(calls);
+      expect(calls.filter((filename) => filename === versions)).toHaveLength(1);
+      expect(layout?.businessMigrationSql.length).toBe(66);
+      expect(existsSync(path.join(dir, "userdata"))).toBe(false);
+      expect(inspected.has(path.join(versions, "0001_initial.sql"))).toBe(true);
+      expect(
+        BUSINESS_MIGRATION_FILE_NAMES.filter((name) => !inspected.has(path.join(versions, name))),
+      ).toEqual([]);
+    } finally {
+      inspection.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("rejects a linked migration directory before creating userdata", () => {
+    const dir = mkdtempSync(path.join(testTmpdir, "ss-linked-resources-"));
+    try {
+      const migrations = path.join(dir, "app/resources/migrations");
+      const target = path.join(dir, "own-migrations");
+      mkdirSync(migrations, { recursive: true });
+      mkdirSync(target);
+      symlinkSync(target, path.join(migrations, "versions"), "junction");
+      expect(() =>
+        loadStartupLayout({ SUPERSTRING_APP_MODE: "installed", SUPERSTRING_APP_ROOT: dir }),
+      ).toThrow("LAYOUT_REJECTS_LINKED_PATH");
+      expect(existsSync(path.join(dir, "userdata"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   it("keeps the legacy entrypoint unchanged until explicit migration", () => {
     expect(loadStartupLayout({})).toBeNull();

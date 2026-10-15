@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { Field } from "@/components/form-field";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,16 @@ export function BindingMemoryControls({
   disabled?: boolean;
   onChanged: () => void;
 }) {
-  const s = useSuperstringStore(),
+  const s = useSuperstringStore(
+      useShallow((state) => ({
+        qqMemoryBatchDrafts: state.qqMemoryBatchDrafts,
+        qqMemoryBatchSaving: state.qqMemoryBatchSaving,
+        qqAccessSaving: state.qqAccessSaving,
+        patchQqMemoryBatchDraft: state.patchQqMemoryBatchDraft,
+        saveQqMemoryBatchDrafts: state.saveQqMemoryBatchDrafts,
+        organiseQqMemoryRow: state.organiseQqMemoryRow,
+      })),
+    ),
     t = useTranslation().t,
     [verdict, setVerdict] = useState<QqMemoryOrganiseResponse | null>(null);
   const draft = s.qqMemoryBatchDrafts[binding.id],

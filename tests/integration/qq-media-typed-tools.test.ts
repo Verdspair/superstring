@@ -549,7 +549,10 @@ describe("typed QQ media tools (t08 finish2)", () => {
         read: async () => {
           throw new Error("synthetic vision failure");
         },
-        fit: async (name) => (name === "media.describe" ? () => allowed : () => true),
+        fit: async (name) =>
+          name === "media.describe"
+            ? (value) => allowed || (value as { code?: string }).code === "CONTEXT_BUDGET_EXCEEDED"
+            : () => true,
       });
       const { ctx } = f.context("run-budget");
       await tool.execute("media.list", {}, ctx);

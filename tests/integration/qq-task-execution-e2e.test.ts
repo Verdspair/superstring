@@ -30,6 +30,7 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { recoverQqConversationTaskLease } from "../../src/server/db/qq-task-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { RuntimeTelemetry } from "../../src/server/observability/runtime-telemetry";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
@@ -109,6 +110,7 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 3000): Promise<void
 const pendingGates: (() => void)[] = [];
 const composed: ReturnType<typeof createOneBotConversationRuntime>[] = [];
 const handles: BusinessDbHandle[] = [];
+const telemetryHandles: RuntimeTelemetry[] = [];
 afterEach(async () => {
   // 先放行全部阀门让在飞桩调用落地，再停调度器并等在飞任务结算，最后才关库。
   for (const release of pendingGates.splice(0)) release();
@@ -119,6 +121,7 @@ afterEach(async () => {
     await bot.delivery.waitForIdle().catch(() => {});
     bot.release();
   }
+  for (const telemetry of telemetryHandles.splice(0)) await telemetry.close();
   for (const h of handles.splice(0)) h.close();
 });
 
@@ -290,10 +293,13 @@ function setup(options: { model: ModelPort }) {
       conversationIngress: adapter,
     });
   };
-  const compose = () => {
+  const compose = (withTelemetry = false) => {
+    const telemetry = withTelemetry ? new RuntimeTelemetry(h.db) : undefined;
+    if (telemetry) telemetryHandles.push(telemetry);
     const sends: { target: string | undefined; request: unknown }[] = [];
     const runtime = new AgentRuntime({
       repository: runs,
+      telemetry,
       now: () => new Date().toISOString(),
       model: options.model,
     });
@@ -306,6 +312,7 @@ function setup(options: { model: ModelPort }) {
     const bot = createOneBotConversationRuntime({
       orm: h.orm,
       db: h.db,
+      telemetry,
       gateway,
       agentRuntime: runtime,
       host: new ConversationHost({ runtime }),
@@ -411,6 +418,138 @@ function decisionStub(
 }
 
 describe("qq task execution end to end (production composition)", () => {
+  it("keeps missing binding failures in the existing wake settlement path", async () => {
+    const model: ModelPort = {
+      complete: async () => JSON.stringify({ kind: "none" }),
+      async *streamText() {
+        yield "";
+      },
+      completeMultimodal: async () => "",
+    };
+    const f = setup({ model });
+    const bindingId = f.makeBinding(30003, {
+      schemeName: "missing-handoff-binding",
+      chimingIn: true,
+      initiativeBatchTargetCount: 1,
+      mergeWindowSeconds: 0,
+    });
+    const { bot } = f.compose();
+    f.receive(30003, "92611", "20002", "ordinary input", false);
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    f.db
+      .query("UPDATE conversations SET source_id='missing-binding' WHERE id=?")
+      .run(conversation.id);
+    await expect(bot.scheduler.runOnce()).resolves.toBe(true);
+    expect(taskRows(f.db)).toEqual([]);
+    const wake = f.db
+      .query("SELECT status,attempts FROM wake_signals WHERE conversation_id=?")
+      .get(conversation.id) as { status: string; attempts: number };
+    expect(wake.attempts).toBe(1);
+    expect(wake.status).toBe("pending");
+  });
+  it("keeps matured chiming input mergeable until the ordinary task owner can accept it", async () => {
+    const scored: number[][] = [];
+    const model: ModelPort = {
+      admission: { available: () => true, subscribe: () => () => {} },
+      complete: async (request) => {
+        const properties = request.responseSchema?.properties as
+          | Record<string, { type?: string }>
+          | undefined;
+        if (properties?.evaluations?.type !== "array") return JSON.stringify({ kind: "none" });
+        const targets = request.messages.flatMap((message) =>
+          message.content.flatMap((part) => {
+            if (part.kind !== "text") return [];
+            try {
+              const value = JSON.parse(part.text) as {
+                kind?: string;
+                sourceSeqs?: number[];
+                targets?: { targetId: string }[];
+              };
+              return value.kind === "qq_batch_targets" ? [value] : [];
+            } catch {
+              return [];
+            }
+          }),
+        );
+        expect(targets).toHaveLength(1);
+        const batch = targets[0]!;
+        scored.push(batch.sourceSeqs ?? []);
+        return JSON.stringify({
+          evaluations: batch.targets!.map((target) => ({
+            targetId: target.targetId,
+            score: 0,
+            intent: "no reply",
+            sourceSeqs: batch.sourceSeqs ?? [],
+          })),
+        });
+      },
+      async *streamText() {
+        yield "";
+      },
+      completeMultimodal: async () => "",
+    };
+    const f = setup({ model });
+    const bindingId = f.makeBinding(30003, {
+      schemeName: "chiming-handoff-admission",
+      chimingIn: true,
+      initiativeBatchTargetCount: 1,
+      mergeWindowSeconds: 0,
+      taskLimits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+    });
+    const { bot } = f.compose();
+    f.receive(30003, "92601", "20002", "first ordinary input", false);
+    expect(await bot.scheduler.runOnce()).toBe(true);
+    const first = taskRows(f.db)[0]!;
+    const frozen = first.execution_snapshot;
+    expect(first.status).toBe("no_output");
+    expect(
+      f.db.query("SELECT judgement_done FROM qq_conversation_tasks WHERE id=?").get(first.id),
+    ).toEqual({ judgement_done: 1 });
+    const expires = new Date(Date.now() + 60_000).toISOString();
+    f.db
+      .query(
+        "UPDATE qq_conversation_tasks SET status='running',lease_token='existing-ordinary-owner',lease_expires_at=?,finished_at=NULL WHERE id=?",
+      )
+      .run(expires, first.id);
+    f.receive(30003, "92602", "20003", "second ordinary input", false);
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    const pending = f.db
+      .query(
+        "SELECT id,through_seq FROM wake_signals WHERE conversation_id=? AND status='pending' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(conversation.id) as { id: string; through_seq: number };
+    expect(pending).toBeTruthy();
+    expect(await bot.scheduler.dispatchOnce()).toBe(false);
+    expect(
+      f.db
+        .query("SELECT status,source_from_seq,transferred_task_id FROM wake_signals WHERE id=?")
+        .get(pending.id),
+    ).toEqual({ status: "pending", source_from_seq: null, transferred_task_id: null });
+    expect(taskRows(f.db)).toHaveLength(1);
+    expect(scored).toHaveLength(1);
+    f.receive(30003, "92603", "20004", "third ordinary input", false);
+    const merged = f.db
+      .query(
+        "SELECT id,through_seq FROM wake_signals WHERE conversation_id=? AND status='pending' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(conversation.id) as { id: string; through_seq: number };
+    expect(merged.id).toBe(pending.id);
+    expect(merged.through_seq).toBeGreaterThan(pending.through_seq);
+    f.db
+      .query(
+        "UPDATE qq_conversation_tasks SET status='no_output',lease_token=NULL,lease_expires_at=NULL,finished_at=? WHERE id=?",
+      )
+      .run(new Date().toISOString(), first.id);
+    expect(await bot.scheduler.runOnce()).toBe(true);
+    expect(scored).toHaveLength(2);
+    expect(scored[1]!.every((seq) => seq > first.source_through_seq)).toBe(true);
+    expect(taskRows(f.db)).toHaveLength(2);
+    expect(taskRows(f.db)[0]?.id).toBe(first.id);
+    expect(taskRows(f.db)[0]?.execution_snapshot).toBe(frozen);
+    expect(f.db.query("SELECT status FROM wake_signals WHERE id=?").get(pending.id)).toEqual({
+      status: "completed",
+    });
+  });
   it("first-claim chiming-in scores a valid batch and completes one ordinary reply", async () => {
     const scores: { request: ModelRequest; targetIds: string[]; sourceSeqs: number[] }[] = [];
     const model: ModelPort = {
@@ -467,7 +606,7 @@ describe("qq task execution end to end (production composition)", () => {
       initiativeBatchTargetCount: 1,
       mergeWindowSeconds: 0,
     });
-    const { bot, sends } = f.compose();
+    const { bot, sends } = f.compose(true);
 
     // A non-addressed member message must register the real chiming wake; the scheduler first
     // hands that wake to the durable task, then atomically claims the generated ordinary task.
@@ -555,6 +694,24 @@ describe("qq task execution end to end (production composition)", () => {
     expect(
       taskRows(f.db).some((row) => row.status === "failed" || row.error_code === "AGENT_FAILED"),
     ).toBe(false);
+    const activation = f.db
+      .query(
+        "SELECT status,details FROM runtime_spans WHERE name='bot.task.activate' AND json_extract(details,'$.taskId')=?",
+      )
+      .get(task!.id) as { status: string; details: string };
+    expect(activation.status).toBe("completed");
+    const metrics = JSON.parse(activation.details) as Record<string, unknown>;
+    for (const key of ["authorityLeaseChecks", "authorityConfigurationChecks"]) {
+      expect(Number.isInteger(metrics[key])).toBe(true);
+      expect(Number(metrics[key])).toBeGreaterThan(0);
+    }
+    expect(metrics.authorityDetailChecks).toBe(0);
+    for (const key of ["authorityLeaseMs", "authorityConfigurationMs", "authorityDetailMs"]) {
+      expect(typeof metrics[key]).toBe("number");
+      expect(Number.isFinite(metrics[key])).toBe(true);
+      expect(Number(metrics[key])).toBeGreaterThanOrEqual(0);
+    }
+    expect(activation.details).not.toContain("Please reply to this group message");
   });
 
   it("freezes effective thresholds on first claim, preserves them through same-task lease recovery, and captures changed scheme thresholds for a new task", async () => {
@@ -891,7 +1048,7 @@ describe("qq task execution end to end (production composition)", () => {
     });
     expect(taskRows(f.db)).toHaveLength(1);
 
-    const { bot, sends } = f.compose();
+    const { bot, sends } = f.compose(true);
     expect(await bot.scheduler.dispatchOnce()).toBe(true);
     await waitFor(() => routed.length === 1);
     expect(taskRows(f.db)[0]!.status).toBe("running");
@@ -936,7 +1093,7 @@ describe("qq task execution end to end (production composition)", () => {
     expect(done[1]!.origin_run_id).toBeTruthy();
     expect(done[2]!.claimed_at).toBeNull();
     expect(done[2]!.origin_run_id).toBeNull();
-    // A 的取消发生在生成中段（决策调用确实进过模型桩）；C 的焦点 seq 从未成为任何 run。
+    // A 已进入模型；C 未领取且没有主 run。其他任务的观察边界可经过 C，不代表处理过 C。
     expect(routed).toHaveLength(2);
     const cSeq = f.db
       .query(
@@ -945,7 +1102,11 @@ describe("qq task execution end to end (production composition)", () => {
       .get() as { seq: number } | null;
     expect(cSeq).not.toBeNull();
     expect(
-      f.db.query("SELECT COUNT(*) AS n FROM agent_runs WHERE observed_seq=?").get(cSeq!.seq) as {
+      f.db
+        .query(
+          "SELECT COUNT(*) AS n FROM agent_runs WHERE run_id IN (SELECT origin_run_id FROM qq_conversation_tasks WHERE source_through_seq=?)",
+        )
+        .get(cSeq!.seq) as {
         n: number;
       },
     ).toEqual({ n: 0 });
@@ -958,5 +1119,22 @@ describe("qq task execution end to end (production composition)", () => {
     expect(f.db.query("SELECT COUNT(*) AS n FROM outbound_intents").get() as { n: number }).toEqual(
       { n: 1 },
     );
+    const activation = f.db
+      .query(
+        "SELECT status,code,details FROM runtime_spans WHERE name='bot.task.activate' AND json_extract(details,'$.taskId')=?",
+      )
+      .get(done[0]!.id) as { status: string; code: string; details: string };
+    expect(activation.status).toBe("cancelled");
+    expect(activation.code).toBe("QQ_TASK_CANCELLED");
+    const metrics = JSON.parse(activation.details) as Record<string, unknown>;
+    expect(Number(metrics.authorityLeaseChecks)).toBeGreaterThan(0);
+    expect(Number(metrics.authorityConfigurationChecks)).toBeGreaterThan(0);
+    expect(metrics.authorityDetailChecks).toBe(0);
+    for (const key of ["authorityLeaseMs", "authorityConfigurationMs", "authorityDetailMs"]) {
+      expect(typeof metrics[key]).toBe("number");
+      expect(Number.isFinite(metrics[key])).toBe(true);
+      expect(Number(metrics[key])).toBeGreaterThanOrEqual(0);
+    }
+    expect(activation.details).not.toContain("CANCEL_A");
   });
 });

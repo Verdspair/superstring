@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { RuntimeConfig } from "../../shared/contracts";
 import type { RunEvent } from "../../shared/contracts/agent-run";
 import type { ChatV2Event } from "../../shared/contracts/chat-v2";
+import { unicodeStrip } from "../../shared/contracts/code-point-string";
 import { type AgentRuntime, AgentRuntimeError, createAgentRuntime } from "../agent/agent-runtime";
 import type { BuiltInAction } from "../agent/built-in-actions";
 import { ContextBuilder } from "../agent/conversation-context";
@@ -33,7 +34,6 @@ import type { ModelGateway } from "../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../modules/composition";
 import type { MemoryModule } from "../modules/contracts";
 import { turnSources } from "../modules/provenance";
-import { unicodeStrip } from "../services/text";
 import { WebContextSource } from "./web-context-source";
 
 export interface WebChannelOptions {

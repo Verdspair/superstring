@@ -101,3 +101,10 @@ it("does not change component focus while a configuration write is active", () =
     componentTarget: null,
   });
 });
+
+it("does not carry a component detail into a reset API session", () => {
+  store.getState().resetForTests(api);
+  store.setState({ componentTarget: { kind: "skill", id: "system-evidence-reading" } });
+  store.getState().resetForTests(api);
+  expect(store.getState().componentTarget).toBeNull();
+});

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import {
   MODEL_PROVIDER_MODEL_LIMIT,
+  type ModelProviderModel,
   type ModelProviderResponse,
 } from "../../../shared/contracts/models";
 import { ConfirmDialog } from "../../components/confirmation";
@@ -29,11 +30,13 @@ import {
   TableRow,
 } from "../../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
+import { LocalModelEncodings } from "../../features/models/LocalModelEncodings";
 import {
   createProviderEditor,
   type ProviderEditor,
   providerPayload,
 } from "../../features/models/provider-draft";
+import { TokenizerEncodingHelp } from "../../features/models/TokenizerEncodingHelp";
 import { translateNotice } from "../../i18n";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { useSuperstringStore } from "../../store";
@@ -282,6 +285,14 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                   </Badge>
                 ))}
               </div>
+              <LocalModelEncodings
+                active={active && tab === "providers"}
+                apiClient={apiClient}
+                loadedModels={loadedModelNames}
+                externalModels={providers.flatMap((provider) =>
+                  provider.models.map((model) => model.name),
+                )}
+              />
             </section>
           </TabsContent>
         )}
@@ -359,6 +370,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
               <section className="space-y-4 border-t pt-5">
                 <h3 className="font-medium">{t("models.registeredModels")}</h3>
                 <p className="text-xs text-muted-foreground">{t("models.windowHint")}</p>
+                <TokenizerEncodingHelp />
                 {editor.models.map((model) => (
                   <div key={model.key} className="space-y-3">
                     <div className="grid grid-cols-[minmax(0,1fr)_6rem_auto] items-end gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
@@ -406,6 +418,33 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                         <Trash2 />
                       </Button>
                     </div>
+                    <Field label="models.tokenizerEncoding" info="models.tokenizerEncodingHint">
+                      <NativeSelect
+                        value={model.tokenizerEncoding ?? ""}
+                        disabled={saving}
+                        onChange={(e) =>
+                          setEditor({
+                            ...editor,
+                            models: editor.models.map((item) =>
+                              item.key === model.key
+                                ? {
+                                    ...item,
+                                    tokenizerEncoding:
+                                      e.target.value === ""
+                                        ? undefined
+                                        : (e.target
+                                            .value as ModelProviderModel["tokenizer_encoding"]),
+                                  }
+                                : item,
+                            ),
+                          })
+                        }
+                      >
+                        <option value="">{t("models.tokenizerUnspecified")}</option>
+                        <option value="cl100k_base">cl100k_base</option>
+                        <option value="o200k_base">o200k_base</option>
+                      </NativeSelect>
+                    </Field>
                     <fieldset
                       className="min-w-0 space-y-3"
                       aria-label={t("models.capabilitiesFor", { "0": model.name })}
@@ -520,6 +559,9 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                                       key: item.key,
                                       name: item.name,
                                       window: item.window,
+                                      ...(item.tokenizerEncoding === undefined
+                                        ? {}
+                                        : { tokenizerEncoding: item.tokenizerEncoding }),
                                     },
                               ),
                             })

@@ -127,8 +127,8 @@ function outboundFactRows(
     f.legacy_display_name AS legacyDisplayName,f.parts AS factParts,
     f.revision AS factRevision,f.expires_at AS factExpiresAt
     FROM outbound_parts p
-    JOIN outbound_intents i ON i.id=p.intent_id
-    JOIN qq_outbound_message_facts f ON f.intent_id=i.id
+    CROSS JOIN outbound_intents i ON i.id=p.intent_id
+    CROSS JOIN qq_outbound_message_facts f ON f.intent_id=i.id
     WHERE ${byPartId ? "p.id=?" : "p.platform_message_id=?"} AND i.conversation_id=?
       AND f.account_id=? AND f.agent_id=?`)
     .all(
@@ -233,7 +233,7 @@ export function visibleQqOutboundFactPartState(
   // Real delivery journal attribution: the intent's own delivery event in this
   // conversation. The generic timeline face (inbound/outbound) is not widened for this.
   const journal = db
-    .query(`SELECT seq,event_key AS eventKey FROM conversation_events
+    .query(`SELECT seq,event_key AS eventKey FROM conversation_events INDEXED BY ix_conversation_events_source
     WHERE conversation_id=? AND kind='delivery' AND source_kind='outbound_intent' AND source_id=?
     ORDER BY seq ASC LIMIT 1`)
     .get(scope.conversationId, row.intentId) as { seq: number; eventKey: string } | null;

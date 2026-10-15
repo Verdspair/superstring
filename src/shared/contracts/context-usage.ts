@@ -52,5 +52,26 @@ export const ContextUsageSchema = z.strictObject({
    * usage 属未来能力），不得把本字段的存在当成 reported 已产出。
    */
   vision_cost: VisionCostSchema.optional(),
+  /**
+   * 模型 token 计量（可选，与上面的字节口径**并存且不同域**）。上面的
+   * `input_units`/`components` 保持 `utf8_bytes_plus_message_overhead` 的字节近似，
+   * `capacity` 与输出预留仍来自模型配置；旧剩余额度是保守近似，不作精确 token 声明。
+   * 本字段是同一个决策请求在描述符
+   * 声明的编码下、用 `measureContextTokens` 对**整条序列化请求**（含本次响应 schema）测出的
+   * 估算，是本轮 token 域的权威值。缺席＝本次没有声明编码的计数器，仍走旧字节口径，
+   * 不是 0，也不是"没有成本"。
+   */
+  model_tokens: z
+    .strictObject({
+      method: z.literal("serialized_chat_token_estimate"),
+      /** 只取路由显式声明的编码，不按模型名/provider 名猜。 */
+      encoding: z.enum(["cl100k_base", "o200k_base"]),
+      input_tokens: units,
+      /** 容量减回复预留与安全余量后的输入上限，与 capacity/output_reserved 同源。 */
+      input_limit: units,
+      /** 无图为 `none`；有图而未计价为 `unknown`（不是 0）。 */
+      media_state: z.enum(["none", "unknown"]),
+    })
+    .optional(),
 });
 export type ContextUsage = z.infer<typeof ContextUsageSchema>;
