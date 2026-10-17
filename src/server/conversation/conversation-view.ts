@@ -21,6 +21,56 @@ type ProjectedWake = {
   through_seq: number;
 };
 
+/**
+ * A persisted step is inserted immediately before its model call. Only the initiative judge
+ * leaf and an ordinary reply decision step prove that this wake reached intent judgement.
+ */
+function initiativeJudgementStarted(
+  db: Database,
+  wake: ProjectedWake,
+  conversationId: string,
+): boolean | undefined {
+  if (wake.cause !== "chiming_in" && wake.cause !== "idle_topic") return undefined;
+  const row = db
+    .query(
+      `WITH scope AS (
+        SELECT w.id AS wake_id,w.status,w.error_code,c.id AS conversation_id,
+          c.source_id,c.user_id,c.agent_id
+        FROM wake_signals w JOIN conversations c ON c.id=w.conversation_id
+        WHERE w.id=? AND w.conversation_id=?
+      ), candidates AS (
+        SELECT r.run_id,r.spec_id,r.owner_kind
+        FROM scope s JOIN agent_runs r INDEXED BY ix_agent_runs_conversation
+          ON r.conversation_id=s.conversation_id
+        WHERE ((r.owner_kind='conversation' AND r.owner_id=s.conversation_id)
+            OR (r.owner_kind='qq_binding' AND r.owner_id=s.source_id))
+          AND r.user_id=s.user_id AND r.agent_id=s.agent_id
+          AND r.conversation_id=s.conversation_id AND r.wake_id=s.wake_id
+      ), evidence AS (
+        SELECT s.status,s.error_code,COUNT(DISTINCT r.run_id) AS run_count,
+          MAX(CASE WHEN step.step_id IS NOT NULL THEN 1 ELSE 0 END) AS intent_step_started
+        FROM scope s
+        LEFT JOIN candidates r ON 1=1
+        LEFT JOIN agent_steps step ON step.run_id=r.run_id AND (
+          (r.owner_kind='qq_binding' AND r.spec_id='onebot.initiative.evaluate_batch'
+            AND step.phase='leaf')
+          OR (r.owner_kind='conversation' AND r.spec_id='onebot.main' AND step.phase='next')
+        )
+        GROUP BY s.wake_id
+      )
+      SELECT CASE
+        WHEN intent_step_started=1 THEN 1
+        WHEN run_count>0 OR status IN ('pending','leased')
+          OR error_code IN ('BATCH_NO_ELIGIBLE_SOURCE','BATCH_WAITING_FOR_COUNT') THEN 0
+        ELSE NULL
+      END AS judgmentStarted
+      FROM evidence`,
+    )
+    .get(wake.id, conversationId) as { judgmentStarted: number | null } | null;
+  if (!row || row.judgmentStarted === null) return undefined;
+  return row.judgmentStarted === 1;
+}
+
 function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWake | null) {
   if (
     !(
@@ -232,6 +282,7 @@ export function projectConversationEvent(
             "SELECT run_id FROM agent_runs WHERE wake_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT 1",
           )
           .get(wake.id, event.conversationId) as { run_id: string } | null);
+    const judgmentStarted = initiativeJudgementStarted(db, wake, event.conversationId);
     return {
       ...base,
       contentState: "active",
@@ -242,6 +293,7 @@ export function projectConversationEvent(
         status: wake.status,
         readyAt: wake.ready_at,
         errorCode: wake.error_code,
+        ...(judgmentStarted === undefined ? {} : { judgmentStarted }),
       },
     };
   }

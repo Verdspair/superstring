@@ -35,7 +35,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 
 新消息到达已绑定的会话时直接显示。加载聊天记录时，新消息不再等旧记录读完才显示，保持当前阅读位置不受影响。群聊顶部显示正在进行的模型任务，点开任务可查看子任务及模型输入输出详情，任务结束后会更新最终结果。
 
-- 可选用连续交谈或自主接话（两种模式互斥）。直接回应与冷场发起可分别配置，直接回应不要求兴趣评分，Agent 仍可保持沉默。自主接话可按消息条数（默认15±5）或经过时间（默认60±20秒）择机判定，新方案默认开启时间窗口，忙时可排队。窗口参数和待发送回复的有效期都可调整，回复有效期默认10分钟。回复失效时，可查看已记录的原因，包括发送超时、对话变化、发送条件变化或内容保留期到期；未记录原因的旧回复只提示“回复已失效”。同一批次中的回复生成完成后即可进入发送流程，不再等待其他目标生成。回复已进入发送流程时，不会再次回答同一条已处理消息。图片工具选错引用时可在本轮纠正；已失效的内容仍不可读取。运行详情同时显示最近尝试结果和失败历史。可为本会话设置多名管理员（Agent 主人），管理员的要求会被优先考虑；入口在群列表与本群配置中直达，也可在方案详情的会话管理中设置。消息历史会避免同一发送的重复显示。
+- 可选用连续交谈或自主接话（两种模式互斥）。直接回应与冷场发起可分别配置，直接回应不要求兴趣评分，Agent 仍可保持沉默。自主接话可按消息条数（默认15±5）或经过时间（默认60±20秒）择机判定，新方案默认开启时间窗口，忙时可排队。窗口参数和待发送回复的有效期都可调整，回复有效期默认10分钟。回复失效时，可查看已记录的原因，包括发送超时、对话变化、发送条件变化或内容保留期到期；未记录原因的旧回复只提示“回复已失效”。同一批次中的回复生成完成后即可进入发送流程，不再等待其他目标生成。回复已进入发送流程时，不会再次回答同一条已处理消息。图片工具选错引用时可在本轮纠正；已失效的内容仍不可读取。运行详情同时显示最近尝试结果和失败历史。可为本会话设置多名管理员（Agent 主人），管理员的要求会被优先考虑；入口在群列表与本群配置中直达，也可在方案详情的会话管理中设置。消息历史会避免同一发送的重复显示。自主接话与冷场记录只显示已开始意图判断的任务；尚未判断的等待或跳过记录不再单独展示，已判断后选择沉默的任务仍保留。无法确认判断状态的旧记录、原有消息、任务队列和技术追踪保持可见。
 - 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。QQ 回复可在当前授权范围内引用消息、@ 成员或搭配表情。引用和 @ 相互独立，表情需由方案授权。
 - 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用同一方案，不会因此共享会话历史。
 - 分别配置判断和回复窗口。超出回复窗口的消息进入缓冲队列，达到阈值后在后台任务队列压缩为上下文包；判断阶段不读取这些包。
@@ -83,8 +83,8 @@ QQ 接入前置步骤与运行要求：
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
-- **执行检查**：通过执行瀑布查看模型输入与输出，区分模型生成完成与平台确认送达。
-- **模型结束原因**：在运行详情中选择模型步骤，打开「查看实际输入与输出 → 模型输出」，可查看原始 `finish_reason`、HTTP 状态码和流式 `[DONE]` 标记。多次请求分别列出，未返回原因、显式 `null`、无 HTTP 响应和历史未记录分别显示，方便排查调用失败。
+- **运行详情与执行检查**：运行概览统一采用竖列方块卡片，步骤与技术追踪按列与时间线展示；点进后模型输入输出与关联来源在有权读取且未过保留期时默认展开显示，区分模型生成完成与平台确认送达。
+- **模型结束原因**：在运行详情中查看模型步骤，可直接查看原始 `finish_reason`、HTTP 状态码和流式 `[DONE]` 标记。多次请求分别列出，未返回原因、显式 `null`、无 HTTP 响应和历史未记录分别显示，方便排查调用失败。
 - **模型服务与编码**：在「模型服务」中可为本地（如 LM Studio）或外部模型选填文本编码（如 `cl100k_base`、`o200k_base`），未指定采用保守估算；提供参考帮助与来源链接但不自动选择；展示实际模型、容量与编码用量，保存冲突时保留草稿。
 
 ### 记忆与知识库
@@ -122,7 +122,7 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口后，Superstring 自行启动的服务与相关进程一起退出。再次双击启动器即可重新启动。
 
-升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 66（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 71（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -166,7 +166,7 @@ Connect a standalone OneBot 11 WebSocket service (such as NapCat), then bind a g
 
 Incoming messages in bound conversations appear automatically. When loading chat history, fresh messages appear right away without waiting for older records to finish loading, keeping your current scroll position undisturbed. In QQ group chats, running model tasks appear above the message history; click a task to view subtasks and model inputs/outputs, and the final result updates upon completion.
 
-- Choose continuous conversation or autonomous participation; these two modes are mutually exclusive. Direct responses and idle-topic initiation can be configured separately. Direct responses bypass interest scoring, while the Agent may still choose silence. Autonomous participation can judge when to join by message count (default 15±5) or elapsed time (default 60±20 seconds). The time window is enabled for new schemes, and opportunities can wait for available capacity. Window settings and the validity period for queued replies are adjustable; replies remain valid for 10 minutes by default. When a reply is no longer valid, the interface shows its recorded reason: delivery timeout, conversation changes, delivery conditions, or content retention expiry. Older replies without a recorded reason use a neutral label. Each completed reply in a batch can enter delivery without waiting for the other targets to finish generating. Once a reply enters the delivery flow, it will not answer the same already-handled message again. When an image tool selects an invalid reference, it can self-correct within the current turn; expired content remains unreadable. Run details display both recent attempt outcomes and failure history. You can appoint several administrators (Agent owners) for a conversation, whose requests are given priority; the entry is available directly in the group directory and group settings, as well as in the scheme's conversation management. Message history avoids showing the same sent message twice.
+- Choose continuous conversation or autonomous participation; these two modes are mutually exclusive. Direct responses and idle-topic initiation can be configured separately. Direct responses bypass interest scoring, while the Agent may still choose silence. Autonomous participation can judge when to join by message count (default 15±5) or elapsed time (default 60±20 seconds). The time window is enabled for new schemes, and opportunities can wait for available capacity. Window settings and the validity period for queued replies are adjustable; replies remain valid for 10 minutes by default. When a reply is no longer valid, the interface shows its recorded reason: delivery timeout, conversation changes, delivery conditions, or content retention expiry. Older replies without a recorded reason use a neutral label. Each completed reply in a batch can enter delivery without waiting for the other targets to finish generating. Once a reply enters the delivery flow, it will not answer the same already-handled message again. When an image tool selects an invalid reference, it can self-correct within the current turn; expired content remains unreadable. Run details display both recent attempt outcomes and failure history. You can appoint several administrators (Agent owners) for a conversation, whose requests are given priority; the entry is available directly in the group directory and group settings, as well as in the scheme's conversation management. Message history avoids duplicate sent messages. Autonomous-participation and idle-topic records show tasks that have started intent judgement, including decisions to remain silent. Waiting or skipped opportunities that have not been judged are no longer shown separately. Older records with unknown judgement status, messages, task queues, and technical traces remain available.
 - Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. QQ replies can quote messages, mention members, or include stickers within authorized permissions. Quotes and mentions are mutually independent; stickers require scheme authorization.
 - Edit scheme prompts across scene, judgement, reply, review, sticker, media, and compression roles. Multiple bindings can share schemes without sharing conversation history.
 - Configure separate judgement and reply windows. Messages outside the reply window enter a buffer queue and are compressed into context packages in a background task queue; judgement does not consume these packages.
@@ -214,8 +214,8 @@ The interface provides six primary sections: **Conversations**, **Agents**, **Sy
 - **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
-- **Execution inspection**: Browse execution waterfalls to inspect model inputs and outputs, distinguishing model generation from confirmed platform delivery.
-- **Model finish reasons**: Select a model step in Run details and open **Inspect actual input and output → Model output** to view the raw `finish_reason`, HTTP status, and streaming `[DONE]` marker. Multiple requests are listed separately. Missing reasons, explicit `null`, no HTTP response, and historical calls without records are shown as distinct states to help diagnose failed calls.
+- **Run details and execution inspection**: Run overviews are unified as vertical cards, with steps and technical traces arranged in columns and a timeline. Model inputs, outputs, and associated sources are expanded when access is authorized and retention has not expired by default upon opening, clearly distinguishing model generation from confirmed platform delivery.
+- **Model finish reasons**: Model steps in Run details directly display raw `finish_reason`, HTTP status codes, and streaming `[DONE]` markers. Multiple requests are listed separately. Missing reasons, explicit `null`, no HTTP response, and historical calls without records are shown as distinct states to help diagnose failed calls.
 - **Model services & encodings**: Configure optional text token encodings (such as `cl100k_base` or `o200k_base`) for local services (e.g. LM Studio) and external providers; unconfigured models use conservative estimation. Reference help and documentation links assist verification without auto-selection. Shows actual model, capacity, and encoding usage, while preserving unsaved drafts during save conflicts.
 
 ### Memory and knowledge library
@@ -253,7 +253,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window exits background services and processes started by Superstring. Double-click the launcher again to restart.
 
-Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 66 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 71 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
 ### Run from source
 

@@ -15,9 +15,11 @@ import { phaseLabels, StatusMark, spanTitle } from "./presentation";
 export function EvidenceWorkbench({
   item,
   autoInspect = false,
+  fullEvidence = false,
 }: {
   item: RuntimeSpan;
   autoInspect?: boolean;
+  fullEvidence?: boolean;
 }) {
   const reducedMotion = useReducedMotion();
   const { t, i18n } = useTranslation(),
@@ -128,7 +130,7 @@ export function EvidenceWorkbench({
             )}
           {reasonLabels[item.code] && <p className="text-sm">{t(reasonLabels[item.code])}</p>}
         </div>
-        {item.runId && (
+        {!fullEvidence && item.runId && (
           <Button variant="outline" size="sm" onClick={() => changeRun(true)}>
             <ArrowUpRight />
             {t("observability.parentRun")}
@@ -140,26 +142,8 @@ export function EvidenceWorkbench({
           {t("observability.theOutcomeIsUnconfirmedNotFailedFollowTheTraceTo")}
         </p>
       )}
-      <Tabs
-        defaultValue={
-          item.stage === "model" && item.runId && stepId
-            ? "model"
-            : item.channel === "onebot11" && item.outputId
-              ? "delivery"
-              : "metadata"
-        }
-        className="min-w-0"
-      >
-        <TabsList aria-label={t("observability.evidenceType")}>
-          <TabsTrigger value="metadata">{t("observability.runAndMetadata")}</TabsTrigger>
-          {item.stage === "model" && item.runId && stepId && (
-            <TabsTrigger value="model">{t("observability.modelEvidence")}</TabsTrigger>
-          )}
-          {item.channel === "onebot11" && item.outputId && (
-            <TabsTrigger value="delivery">{t("observability.deliveryDetails")}</TabsTrigger>
-          )}
-        </TabsList>
-        <TabsContent value="metadata">
+      {fullEvidence ? (
+        <div className="min-w-0 space-y-4">
           <dl className="grid gap-x-8 gap-y-4 py-4 text-xs sm:grid-cols-2 xl:grid-cols-3">
             {Object.entries(metadata)
               .filter(([, value]) => value !== null)
@@ -170,25 +154,61 @@ export function EvidenceWorkbench({
                 </div>
               ))}
           </dl>
-        </TabsContent>
-        {item.runId && stepId && (
-          <TabsContent value="model" className="min-w-0 pt-3">
-            <ModelEvidence
-              autoInspect={autoInspect}
-              inspectionRevision={item.status === "started" ? "running" : "settled"}
-              handle={{
-                runId: item.runId,
-                stepId,
-              }}
-            />
-          </TabsContent>
-        )}
-        {item.outputId && (
-          <TabsContent value="delivery">
+          {item.channel === "onebot11" && item.outputId && (
             <DeliveryEvidence outputId={item.outputId} />
+          )}
+        </div>
+      ) : (
+        <Tabs
+          defaultValue={
+            item.stage === "model" && item.runId && stepId
+              ? "model"
+              : item.channel === "onebot11" && item.outputId
+                ? "delivery"
+                : "metadata"
+          }
+          className="min-w-0"
+        >
+          <TabsList aria-label={t("observability.evidenceType")}>
+            <TabsTrigger value="metadata">{t("observability.runAndMetadata")}</TabsTrigger>
+            {item.stage === "model" && item.runId && stepId && (
+              <TabsTrigger value="model">{t("observability.modelEvidence")}</TabsTrigger>
+            )}
+            {item.channel === "onebot11" && item.outputId && (
+              <TabsTrigger value="delivery">{t("observability.deliveryDetails")}</TabsTrigger>
+            )}
+          </TabsList>
+          <TabsContent value="metadata">
+            <dl className="grid gap-x-8 gap-y-4 py-4 text-xs sm:grid-cols-2 xl:grid-cols-3">
+              {Object.entries(metadata)
+                .filter(([, value]) => value !== null)
+                .map(([key, value]) => (
+                  <div key={key} className="min-w-0">
+                    <dt className="text-muted-foreground">{t(detailLabels[key] ?? key)}</dt>
+                    <dd className="mt-1 break-all font-mono">{String(value)}</dd>
+                  </div>
+                ))}
+            </dl>
           </TabsContent>
-        )}
-      </Tabs>
+          {item.runId && stepId && (
+            <TabsContent value="model" className="min-w-0 pt-3">
+              <ModelEvidence
+                autoInspect={autoInspect}
+                inspectionRevision={item.status === "started" ? "running" : "settled"}
+                handle={{
+                  runId: item.runId,
+                  stepId,
+                }}
+              />
+            </TabsContent>
+          )}
+          {item.outputId && (
+            <TabsContent value="delivery">
+              <DeliveryEvidence outputId={item.outputId} />
+            </TabsContent>
+          )}
+        </Tabs>
+      )}
     </motion.section>
   );
 }

@@ -95,6 +95,8 @@ export const ConversationEventViewSchema = ConversationEventSchema.extend({
       status: WakeStatusSchema,
       readyAt: z.string(),
       errorCode: z.string().nullable(),
+      /** Whether an initiative intent-judgement model step is known to have started. */
+      judgmentStarted: z.boolean().optional(),
     })
     .nullable(),
   text: z.string().nullable(),

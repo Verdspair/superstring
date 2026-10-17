@@ -270,7 +270,7 @@ it("changes to the parent run in the workbench without nested dialogs or retaine
   await pointer(screen.getByRole("button", { name: "查看实际输入与输出" }));
   await screen.findByText("Exact protected input");
   await pointer(screen.getByRole("button", { name: "所属运行" }));
-  await screen.findByText(i18n.t("observability.noAssociatedSourcesAreRecorded"));
+  await screen.findByText(i18n.t("observability.noModelStepHasStartedYet"));
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.queryByText("Exact protected input")).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "返回步骤详情" }));

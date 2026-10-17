@@ -15,10 +15,14 @@ export function TraceTimeline({
   data,
   selected,
   onSelect,
+  alwaysExpanded = false,
+  hideToggles = false,
 }: {
   data: RuntimeTraceDetail;
   selected: string | null;
   onSelect(span: RuntimeSpan): void;
+  alwaysExpanded?: boolean;
+  hideToggles?: boolean;
 }) {
   const { t } = useTranslation(),
     id = useId(),
@@ -46,7 +50,7 @@ export function TraceTimeline({
   const renderNode = (node: WaterfallNode, depth: number) => {
     const item = node.span,
       timing = layout.interval(item),
-      hidden = collapsed.has(item.spanId),
+      hidden = alwaysExpanded ? false : collapsed.has(item.spanId),
       childId = `${id}-${item.spanId}`;
     return (
       <li key={item.spanId} className="list-none">
@@ -60,7 +64,7 @@ export function TraceTimeline({
               paddingLeft: `${12 + Math.min(depth, 10) * 14}px`,
             }}
           >
-            {node.children.length ? (
+            {node.children.length && !alwaysExpanded ? (
               <Button
                 variant="ghost"
                 size="icon-xs"
@@ -141,16 +145,20 @@ export function TraceTimeline({
   return (
     <div className="flex h-full min-h-48 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-        <Button variant="ghost" size="sm" onClick={() => setCollapsed(new Set())}>
-          {t("observability.expandAllSteps")}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setCollapsed(new Set(data.items.map((item) => item.spanId)))}
-        >
-          {t("observability.collapseAllSteps")}
-        </Button>
+        {!hideToggles && !alwaysExpanded && (
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setCollapsed(new Set())}>
+              {t("observability.expandAllSteps")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setCollapsed(new Set(data.items.map((item) => item.spanId)))}
+            >
+              {t("observability.collapseAllSteps")}
+            </Button>
+          </>
+        )}
         <span className="ml-auto text-xs text-muted-foreground">
           {t("observability.timeRange", { "0": milliseconds(layout.duration) })}
         </span>

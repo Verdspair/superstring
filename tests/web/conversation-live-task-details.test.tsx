@@ -21,6 +21,20 @@ const makeDeferred = <T,>() => {
   return { promise, resolve };
 };
 
+const emptyTracePage = () => ({
+  items: [],
+  nextBeforeId: 0,
+  hasMore: false,
+  summary: {
+    totalTraces: 0,
+    activeTraces: 0,
+    failedTraces: 0,
+    matchedSpans: 0,
+    lastActivityAt: null,
+    now,
+  },
+});
+
 const exact: InspectedContext = {
   status: "exact",
   layout: [],
@@ -105,60 +119,65 @@ afterEach(() => {
 });
 
 describe("conversation live task details", () => {
-  it("opens a parent run showing the first step without reading any protected context", async () => {
+  it("opens a parent run with every recorded step as a default-expanded card and auto-inspects all of them", async () => {
     const inspect = vi.fn();
     store.getState().resetForTests({
       ...api,
       getRun: vi.fn().mockResolvedValue(createSnapshot()),
+      listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
       inspectRunContext: inspect,
     });
     render(<RunWorkspace runId={runId} />);
 
     expect(await screen.findByText("memory.organize")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /步骤 1/ }).getAttribute("aria-pressed")).toBe(
-      "true",
-    );
-    // 证据区已就位，但受保护正文必须等用户显式检查
-    expect(screen.getByRole("button", { name: "查看实际输入与输出" })).toBeTruthy();
-    expect(inspect).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "步骤 1 · 单轮任务" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "步骤 2 · 单轮任务" })).toBeTruthy();
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    expect(inspect.mock.calls.map((call) => call[0])).toEqual([
+      { runId, stepId: "step-1" },
+      { runId, stepId: "step-2" },
+    ]);
   });
 
-  it("auto-inspects exactly the explicitly selected step once", async () => {
+  it("auto-inspects every recorded step exactly once without user selection", async () => {
     const deferred = makeDeferred<InspectedContext>();
     const inspect = vi.fn<SuperstringApi["inspectRunContext"]>(() => deferred.promise);
     store.getState().resetForTests({
       ...api,
       getRun: vi.fn().mockResolvedValue(createSnapshot()),
+      listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
       inspectRunContext: inspect,
     });
-    const user = userEvent.setup();
     render(<RunWorkspace runId={runId} />);
     await screen.findByText("memory.organize");
 
-    await user.click(screen.getByRole("button", { name: /步骤 2/ }));
-    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
-    expect(inspect.mock.calls[0][0]).toEqual({ runId, stepId: "step-2" });
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    expect(inspect.mock.calls.map((call) => call[0])).toEqual([
+      { runId, stepId: "step-1" },
+      { runId, stepId: "step-2" },
+    ]);
 
     await act(async () => {
       deferred.resolve(exact);
       await deferred.promise;
     });
-    expect(screen.getByText("Protected input")).toBeTruthy();
-    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText("Protected input")).toHaveLength(2);
+    expect(inspect).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps evidence hidden after clearing and never re-auto-inspects it", async () => {
+  it("standalone manual evidence: clearing keeps it hidden and never re-inspects until asked again", async () => {
     const inspect = vi.fn<SuperstringApi["inspectRunContext"]>().mockResolvedValue(exact);
     store.getState().resetForTests({
       ...api,
-      getRun: vi.fn().mockResolvedValue(createSnapshot()),
       inspectRunContext: inspect,
     });
     const user = userEvent.setup();
-    render(<RunWorkspace runId={runId} />);
-    await screen.findByText("memory.organize");
+    render(<ModelEvidence handle={{ runId, stepId: "step-1" }} />);
 
-    await user.click(screen.getByRole("button", { name: /步骤 2/ }));
+    expect(await screen.findByRole("button", { name: "查看实际输入与输出" })).toBeTruthy();
+    expect(inspect).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
     await screen.findByText("Protected input");
     expect(inspect).toHaveBeenCalledTimes(1);
 
@@ -176,28 +195,27 @@ describe("conversation live task details", () => {
     expect(inspect).toHaveBeenCalledTimes(2);
   });
 
-  it("aborts a pending inspection when the window hides and drops its late response", async () => {
+  it("aborts pending auto-inspections when the window hides and drops their late response", async () => {
     const deferred = makeDeferred<InspectedContext>();
-    let capturedSignal: AbortSignal | undefined;
+    const signals: AbortSignal[] = [];
     const inspect = vi.fn<SuperstringApi["inspectRunContext"]>((_handle, signal) => {
-      capturedSignal = signal;
+      if (signal) signals.push(signal);
       return deferred.promise;
     });
     store.getState().resetForTests({
       ...api,
       getRun: vi.fn().mockResolvedValue(createSnapshot()),
+      listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
       inspectRunContext: inspect,
     });
-    const user = userEvent.setup();
     render(<RunWorkspace runId={runId} />);
     await screen.findByText("memory.organize");
 
-    await user.click(screen.getByRole("button", { name: /步骤 2/ }));
-    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
-    expect(capturedSignal?.aborted).toBe(false);
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
 
     setHidden();
-    expect(capturedSignal?.aborted).toBe(true);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(screen.queryByRole("button", { name: "收起实际输入与输出" })).toBeNull();
 
     await act(async () => {
@@ -206,7 +224,7 @@ describe("conversation live task details", () => {
     });
     expect(screen.queryByText("Protected input")).toBeNull();
     expect(screen.queryByText("Protected output")).toBeNull();
-    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(inspect).toHaveBeenCalledTimes(2);
   });
 
   it("does not leak a late response from the previous API client for the same handle", async () => {
@@ -219,21 +237,24 @@ describe("conversation live task details", () => {
     store.getState().resetForTests({
       ...api,
       getRun: vi.fn().mockResolvedValue(snapshot),
+      listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
       inspectRunContext: inspectA,
     });
-    const user = userEvent.setup();
     render(<RunWorkspace runId={runId} />);
     await screen.findByText("memory.organize");
-    await user.click(screen.getByRole("button", { name: /步骤 2/ }));
-    await waitFor(() => expect(inspectA).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(inspectA).toHaveBeenCalledTimes(2));
 
     store.getState().resetForTests({
       ...api,
       getRun: vi.fn().mockResolvedValue(snapshot),
+      listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
       inspectRunContext: inspectB,
     });
-    await waitFor(() => expect(inspectB).toHaveBeenCalledTimes(1));
-    expect(inspectB.mock.calls[0][0]).toEqual({ runId, stepId: "step-2" });
+    await waitFor(() => expect(inspectB).toHaveBeenCalledTimes(2));
+    expect(inspectB.mock.calls.map((call) => call[0])).toEqual([
+      { runId, stepId: "step-1" },
+      { runId, stepId: "step-2" },
+    ]);
 
     await act(async () => {
       deferredA.resolve(exact);
@@ -283,23 +304,34 @@ describe("conversation live task details", () => {
 
   it("never shows the previous run while switching run identity on the same API", async () => {
     const next = makeDeferred<RunSnapshot>();
-    const inspect = vi.fn<SuperstringApi["inspectRunContext"]>();
+    const inspect = vi
+      .fn<SuperstringApi["inspectRunContext"]>()
+      .mockImplementation(() => new Promise<InspectedContext>(() => {}));
     const first = { ...createSnapshot(), specId: "first-run" };
     const getRun = vi
       .fn<SuperstringApi["getRun"]>()
       .mockResolvedValueOnce(first)
       .mockReturnValueOnce(next.promise);
-    store.getState().resetForTests({ ...api, getRun, inspectRunContext: inspect });
+    store.getState().resetForTests({
+      ...api,
+      getRun,
+      listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
+      inspectRunContext: inspect,
+    });
     const view = render(<RunWorkspace runId={runId} />);
     expect(await screen.findByText("first-run")).toBeTruthy();
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
     view.rerender(<RunWorkspace runId="run-parent-2" />);
     expect(screen.queryByText("first-run")).toBeNull();
-    expect(inspect).not.toHaveBeenCalled();
+    expect(screen.queryByText("Protected input")).toBeNull();
+    expect(inspect).toHaveBeenCalledTimes(2);
     await act(async () => {
       next.resolve({ ...createSnapshot(), runId: "run-parent-2", specId: "second-run", steps: [] });
     });
     expect(await screen.findByText("second-run")).toBeTruthy();
     expect(screen.queryByText("first-run")).toBeNull();
+    expect(inspect).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Protected input")).toBeNull();
   });
 
   it("rechecks only the selected model lifecycle transition and keeps a user-hidden detail hidden", async () => {

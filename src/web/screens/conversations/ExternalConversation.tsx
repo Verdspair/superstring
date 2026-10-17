@@ -1,5 +1,5 @@
 import { ArrowDown, RefreshCw } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   ConversationEventView,
@@ -15,6 +15,46 @@ import { ConversationIdentity } from "./ConversationIdentity";
 import { EventRecord } from "./EventRecord";
 import { QqGroupControls } from "./QqGroupControls";
 import { type ConversationTimelineRow, timelineRows } from "./timeline-projection";
+
+function hasMeaningfulActivity(row: ConversationTimelineRow): boolean {
+  if (
+    row.deliveryStatus !== null ||
+    row.outputId !== null ||
+    (row.text !== null && row.text !== "") ||
+    (row.media && row.media.length > 0)
+  ) {
+    return true;
+  }
+  if (row.activityEvents) {
+    for (const event of row.activityEvents) {
+      if (
+        event.kind === "inbound" ||
+        event.kind === "outbound" ||
+        event.kind === "delivery" ||
+        event.outputId ||
+        event.deliveryStatus ||
+        (event.text !== null && event.text !== "") ||
+        (event.media && event.media.length > 0)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function shouldRetainRow(row: ConversationTimelineRow): boolean {
+  if (
+    row.kind === "wake" &&
+    row.wake &&
+    row.wake.judgmentStarted === false &&
+    (row.wake.cause === "chiming_in" || row.wake.cause === "idle_topic") &&
+    !hasMeaningfulActivity(row)
+  ) {
+    return false;
+  }
+  return true;
+}
 
 export function ExternalConversation({
   conversation,
@@ -33,8 +73,29 @@ export function ExternalConversation({
   const rows = useMemo(() => {
     const next = timelineRows(history.items, previousRowsRef.current);
     previousRowsRef.current = next;
-    return next;
+    return next.filter(shouldRetainRow);
   }, [history.items]);
+  const lastAutoLoadKeyRef = useRef<string>("");
+  useEffect(() => {
+    if (!active || history.loading || history.error || !history.hasMore || rows.length > 0) {
+      return;
+    }
+    const pageKey = `${conversation.id}:${history.items[0]?.seq ?? 0}:${history.items.length}`;
+    if (lastAutoLoadKeyRef.current === pageKey) {
+      return;
+    }
+    lastAutoLoadKeyRef.current = pageKey;
+    void history.loadMore();
+  }, [
+    active,
+    conversation.id,
+    history.hasMore,
+    history.items,
+    history.loading,
+    history.error,
+    history.loadMore,
+    rows.length,
+  ]);
   const bySourceMap = useMemo(() => {
     const map = new Map<string, ConversationEventView>();
     for (const row of rows) {

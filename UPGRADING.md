@@ -53,13 +53,15 @@
 
 #### 当前 main 源码更新
 
-本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **66**，新增迁移 0055–0066。
+本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **71**，新增迁移 0055–0071。
 
 QQ 回复现在可自主选择文字、单张表情或组合，并可按方案设置三档表情倾向；本群可覆盖，私聊跟随方案。同任务恢复保留首次领取的档位，新任务读取新的有效配置。全局或本群关闭表情后，尚未开始发送的图片不再发送，合法文字不受影响。0064 新增倾向字段，仅更新逐字等于旧出厂默认的表情提示词；自定义提示词与旧数量存值保留。
 
 源码新增独立 QQ 回复任务、方案与会话的任务上限和输入防刷屏设置，并统一静图、动图规格，取消旧补充时间窗。新建方案开启防刷屏，已有方案保持关闭；会话覆盖留空时跟随方案。0065 仅新增防刷屏阈值字段（默认 3 条／3 秒），保留已有开关状态与继承关系。已有记录与其它配置保留，退役媒体设置不再使用。
 
 在模型服务中，支持为 LM Studio 本地模型与外部服务登记的模型选填文本编码（如 `cl100k_base`、`o200k_base`，未指定采用保守估算）；页面提供参考帮助但不自动选择；用量显示实际生效的模型、容量与编码，发生保存冲突时保留草稿。QQ 研究按子任务自己的上下文检查容量；媒体与表情结果装不下时返回明确预算提示，不把本可继续的任务拖到下一轮才失败，仍超限时明确失败。
+
+运行详情界面统一为竖列方块概览与列式时间线，步骤点进后模型输入输出与关联来源在有权读取且未过保留期时默认展开显示，去除了多余的手动查看与展开操作；自主接话与冷场记录只显示已开始意图判断的任务，包括选择沉默的结果。不再单独展示尚未判断的等待或跳过记录；判断状态不明的旧记录、原有消息、任务队列和技术追踪保留。
 
 程序仅对已知匹配的数据库结构执行增量迁移，遇到未知结构或降级尝试时拒绝启动以保护数据安全。更新源码前请完全退出程序，自行完整备份实际使用的数据目录、配置和匹配密钥（安装版为完整 `userdata`），包括数据库及其 WAL 文件。启动新源码会执行新增迁移。不要用旧程序直接打开已升级的数据库；回退必须恢复升级前备份及匹配程序。
 
@@ -122,13 +124,15 @@ Unknown schemas or downgrade attempts are rejected to protect data safety. Rolli
 
 #### Current source updates on main
 
-This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **66**, with migrations 0055–0066.
+This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **71**, with migrations 0055–0071.
 
 QQ replies can now independently choose text, one sticker, or a combination, with three levels of scheme-level sticker guidance. Groups can override the setting; private chats follow the scheme. Resumed tasks retain the value captured at first claim, while new tasks use the new effective setting. Global or group sticker disable blocks unstarted image sends without blocking valid text. Migration 0064 adds the guidance field and updates only sticker prompts that exactly match the old factory default. Custom prompts and stored legacy count values are preserved.
 
 Source updates add independent QQ reply tasks, scheme and conversation task limits, and input anti-spam settings. Still images and animations use unified settings, and the old supplement time window is removed. Anti-spam is enabled for new schemes and kept off for existing schemes. Empty conversation overrides follow the scheme. Migration 0065 only adds anti-spam threshold columns (default 3 messages / 3 seconds), preserving existing switch states and inheritance. Existing records and other settings are retained; retired media settings are no longer used.
 
 Model Services supports optional text token encodings (such as `cl100k_base` or `o200k_base`) for LM Studio local models and external services, falling back to conservative estimation when unconfigured. Reference help assists manual verification without auto-selection. Usage details show actual effective model, capacity, and encoding, and unsaved drafts are preserved during save conflicts. QQ research checks capacity against each subtask's own context limit; when media or sticker outputs exceed available space, a clear budget message is returned instead of deferring failures to later turns, and genuine capacity exceedances fail clearly.
+
+Run details are unified into vertical overview cards and column-based timelines. Model inputs, outputs, and associated sources are expanded when access is authorized and retention has not expired by default without extra manual inspection toggles. Autonomous-participation and idle-topic records show tasks that have started intent judgement, including decisions to remain silent. Waiting or skipped opportunities that have not been judged are no longer shown separately. Older records with unknown judgement status, messages, task queues, and technical traces remain available.
 
 The application executes incremental migrations only on matched known schemas, and refuses to start on unknown schemas or downgrade attempts to protect data safety. Before updating source, fully exit the application and back up the actual data directory, configuration, and matching encryption keys, including the database and its WAL files (the complete `userdata` directory for installed Windows builds). Starting the new source applies added migrations. Do not open an upgraded database with an older executable. Rollback requires the pre-upgrade backup and matching application.
 

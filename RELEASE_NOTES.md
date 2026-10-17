@@ -50,8 +50,9 @@
 - 修正 QQ 表情回复的输出规则冲突；错误的表情写法不会发送，并可在现有步骤限制内纠正后继续回复。
 - **模型编码**：在模型服务 → LM Studio 本地编码或外部服务登记模型时可选填文本编码（如 `cl100k_base`、`o200k_base`），未指定时采用保守估算；提供参考帮助与来源说明但不自动选择；用量显示实际生效的模型、容量与编码；保存发生冲突时保留当前草稿。
 - **QQ 研究与工具结果**：研究模式按子任务自己的上下文检查容量；媒体或表情结果装不下时返回明确的预算提示，不把本可继续的任务拖到下一轮才失败；仍超出容量时明确失败。
-- **模型结束原因**：在运行详情中选择模型步骤，打开「查看实际输入与输出 → 模型输出」，可查看原始 `finish_reason`、HTTP 状态码和流式 `[DONE]` 标记。多次请求分别列出，未返回原因、显式 `null`、无 HTTP 响应和历史未记录分别显示，方便排查调用失败。
-- 当前源码数据库结构为 66；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
+- **运行详情与追踪排版**：所有运行详情易读概览统一为竖列方块卡片，步骤与技术追踪统一为列式与时间线展示。点进后模型输入输出与关联来源在有权读取且未过保留期时默认展开显示，去除了多余的手动查看与展开开关（已过保留期或已撤回的内容明确标示相应保留状态）；步骤直接展示原始 `finish_reason`、HTTP 状态码和流式 `[DONE]` 标记，多次请求分别列出，未返回原因、显式 `null`、无 HTTP 响应和历史未记录分别显示，方便排查调用失败。
+- **自主任务记录**：自主接话与冷场任务在开始意图判断后显示，包括选择沉默的结果。不再单独展示尚未判断的等待或跳过记录；判断状态不明的旧记录、原有消息、任务队列和技术追踪保持可见。
+- 当前源码数据库结构为 71；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
 
 ---
 
@@ -103,8 +104,9 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 - Fixed conflicting output rules for QQ sticker replies. Invalid sticker output is not sent and can be corrected within the existing step limit before the reply continues.
 - **Model encodings**: Optionally select text token encodings (such as `cl100k_base` or `o200k_base`) when configuring LM Studio local models or external services under Model Services; falls back to conservative estimation when unspecified. Reference help and documentation links assist verification without auto-selection. Usage details show the actual effective model, capacity, and encoding, and unsaved drafts are preserved if save conflicts occur.
 - **QQ research and tool results**: Research runs check capacity against each subtask's own context limit; when media or sticker results exceed the available window, a clear budget message is returned instead of postponing failures to subsequent turns, with requests that genuinely exceed capacity failing clearly.
-- **Model finish reasons**: Select a model step in Run details and open **Inspect actual input and output → Model output** to view the raw `finish_reason`, HTTP status, and streaming `[DONE]` marker. Multiple requests are listed separately. Missing reasons, explicit `null`, no HTTP response, and historical calls without records are shown as distinct states to help diagnose failed calls.
-- Current source uses schema 66; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
+- **Run details and trace layout**: Run overviews are unified into vertical cards, and steps and technical traces are presented in columns and a timeline. Model inputs, outputs, and associated sources are expanded when access is authorized and retention has not expired by default upon opening, eliminating manual inspection toggles (expired or revoked content clearly reflects its retention state). Steps directly display raw `finish_reason`, HTTP status codes, and streaming `[DONE]` markers; multiple requests are listed separately, with missing reasons, explicit `null`, no HTTP response, and historical calls without records shown as distinct states to help diagnose failed calls.
+- **Autonomous task records**: Autonomous-participation and idle-topic tasks appear once intent judgement starts, including decisions to remain silent. Waiting or skipped opportunities that have not been judged are no longer shown separately. Older records with unknown judgement status, messages, task queues, and technical traces remain available.
+- Current source uses schema 71; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
 
 ---
 

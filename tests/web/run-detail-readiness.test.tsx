@@ -99,8 +99,13 @@ describe("run detail readiness and non-blocking preview", () => {
     // Authoritative getRun was still dispatched in the background
     expect(client.getRun).toHaveBeenCalledWith("run-1", expect.any(AbortSignal));
 
-    // Protected ModelEvidence is NEVER auto-inspected
-    expect(client.inspectRunContext).not.toHaveBeenCalled();
+    // Expanded evidence starts without blocking the metadata preview.
+    await waitFor(() =>
+      expect(client.inspectRunContext).toHaveBeenCalledWith(
+        run1.steps[0].context,
+        expect.any(AbortSignal),
+      ),
+    );
 
     // Resolving background getRun keeps state authoritative and green
     await act(async () => {
@@ -416,7 +421,7 @@ function makeTraceDetail(runId: string, model: string | null): RuntimeTraceDetai
     runId: "child-run-55e",
     parentSpanId: wake.spanId,
     durationMs: 6240,
-    details: { model },
+    details: { model, stepId: "child-step-55e", phase: "leaf" },
   });
   const items = model ? [wake, call] : [wake];
   const trace: RuntimeTrace = {
@@ -497,17 +502,23 @@ describe("zero-step wake run resolves its trace through the existing canvas", ()
     });
 
     expect((await screen.findAllByText("gemini-2.5-flash")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("wake.timer").length).toBeGreaterThan(0);
-    expect(screen.getByRole("region", { name: traceDetailsLabel() })).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("button", { name: "步骤与技术追踪" }));
+    expect((await screen.findAllByText("wake.timer")).length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("region", { name: i18n.t("observability.parentAndChildTiming") }),
+    ).toBeTruthy();
     expect(screen.queryByText(noModelStepLabel())).toBeNull();
-    expect(client.inspectRunContext).not.toHaveBeenCalled();
+    expect(client.inspectRunContext).toHaveBeenCalledWith(
+      { runId: "child-run-55e", stepId: "child-step-55e" },
+      expect.any(AbortSignal),
+    );
   });
 
-  it("keeps normal own-step runs unchanged and issues no extra trace requests", async () => {
+  it("keeps own-step metadata immediate while discovering associated traces", async () => {
     const client = {
       ...api,
       getRun: vi.fn().mockResolvedValue(createSnapshot("run-normal", "memory.organize")),
-      listRuntimeTraces: vi.fn(),
+      listRuntimeTraces: vi.fn().mockResolvedValue(tracesPage([])),
       getRuntimeWaterfall: vi.fn(),
     };
     store.getState().resetForTests(client);
@@ -517,7 +528,7 @@ describe("zero-step wake run resolves its trace through the existing canvas", ()
     await act(async () => {
       await Promise.resolve();
     });
-    expect(client.listRuntimeTraces).not.toHaveBeenCalled();
+    expect(client.listRuntimeTraces).toHaveBeenCalledTimes(1);
     expect(client.getRuntimeWaterfall).not.toHaveBeenCalled();
   });
 
@@ -568,7 +579,7 @@ describe("zero-step wake run resolves its trace through the existing canvas", ()
 });
 
 describe("readable run overview preserves technical details", () => {
-  it("shows recorded calls and keeps input inspection explicit in both views", async () => {
+  it("shows recorded calls and automatically inspects their evidence in either view", async () => {
     const snapshot = createSnapshot("overview-run", "memory.organize");
     const inspect = vi.fn();
     const client = {
@@ -583,13 +594,13 @@ describe("readable run overview preserves technical details", () => {
       "true",
     );
     expect(screen.getByText("步骤 1 · 单轮任务")).toBeTruthy();
-    expect(inspect).not.toHaveBeenCalled();
+    expect(inspect).toHaveBeenCalledWith(snapshot.steps[0].context, expect.any(AbortSignal));
     await userEvent.setup().click(screen.getByRole("button", { name: "步骤与技术追踪" }));
     expect(
       screen.getByRole("button", { name: "步骤与技术追踪" }).getAttribute("aria-pressed"),
     ).toBe("true");
     expect(screen.getByText("步骤 1 · 单轮任务")).toBeTruthy();
-    expect(inspect).not.toHaveBeenCalled();
+    expect(inspect).toHaveBeenCalledWith(snapshot.steps[0].context, expect.any(AbortSignal));
   });
   it("shows child call records for a zero-step parent without declaring a complete total", async () => {
     const detail = makeTraceDetail("overview-parent", "child-model");
@@ -601,11 +612,19 @@ describe("readable run overview preserves technical details", () => {
       inspectRunContext: vi.fn(),
     });
     render(<RunWorkspace runId="overview-parent" />);
-    expect(await screen.findByText("已记录 1 次模型调用，总数未确认")).toBeTruthy();
-    expect(screen.getByRole("tab", { name: /模型调用/ }).getAttribute("data-state")).toBe("active");
+    expect(await screen.findByText("child-model")).toBeTruthy();
+    expect(store.getState().apiClient.inspectRunContext).toHaveBeenCalledWith(
+      { runId: "child-run-55e", stepId: "child-step-55e" },
+      expect.any(AbortSignal),
+    );
     await userEvent.setup().click(screen.getByRole("button", { name: "步骤与技术追踪" }));
-    expect(screen.getByRole("tab", { name: "全部时序" }).getAttribute("data-state")).toBe("active");
+    expect(
+      await screen.findByRole("region", { name: i18n.t("observability.parentAndChildTiming") }),
+    ).toBeTruthy();
     expect(store.getState().apiClient.getRuntimeWaterfall).toHaveBeenCalledTimes(1);
-    expect(store.getState().apiClient.inspectRunContext).not.toHaveBeenCalled();
+    expect(store.getState().apiClient.inspectRunContext).toHaveBeenCalledWith(
+      { runId: "child-run-55e", stepId: "child-step-55e" },
+      expect.any(AbortSignal),
+    );
   });
 });

@@ -8,9 +8,12 @@ function fixture() {
   const db = new Database(":memory:");
   db.exec(`CREATE TABLE conversations(id TEXT PRIMARY KEY,binding_epoch INTEGER,agent_id TEXT,source_id TEXT);
     INSERT INTO conversations VALUES('c',1,'a','binding');
+    ALTER TABLE conversations ADD COLUMN user_id TEXT DEFAULT 'user';
     CREATE TABLE agent_runs(run_id TEXT PRIMARY KEY,conversation_id TEXT,owner_kind TEXT,owner_id TEXT,
-      agent_id TEXT,wake_id TEXT,spec_id TEXT,spec_version TEXT,observed_seq INTEGER,started_at TEXT);
+      agent_id TEXT,wake_id TEXT,spec_id TEXT,spec_version TEXT,observed_seq INTEGER,started_at TEXT,user_id TEXT DEFAULT 'user');
     CREATE INDEX ix_run_scope ON agent_runs(conversation_id,agent_id);
+    CREATE INDEX ix_agent_runs_conversation ON agent_runs(conversation_id,started_at);
+    CREATE TABLE agent_steps(step_id TEXT,run_id TEXT,phase TEXT);
     CREATE TABLE wake_signals(id TEXT PRIMARY KEY,conversation_id TEXT,transferred_task_id TEXT,
       cause TEXT,status TEXT,ready_at TEXT,error_code TEXT,through_seq INTEGER);
     INSERT INTO wake_signals VALUES('w','c','task','chiming_in','completed','${at}',NULL,7);
@@ -43,7 +46,9 @@ function fixture() {
       started: at,
       ...overrides,
     };
-    db.query("INSERT INTO agent_runs VALUES(?,?,?,?,?,?,?,?,?,?)").run(
+    db.query(
+      "INSERT INTO agent_runs(run_id,conversation_id,owner_kind,owner_id,agent_id,wake_id,spec_id,spec_version,observed_seq,started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+    ).run(
       id,
       row.conversation,
       row.ownerKind,

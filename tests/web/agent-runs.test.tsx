@@ -6,6 +6,7 @@ import { api } from "../../src/web/api";
 import { mergeRunSnapshot, reduceRunEvent } from "../../src/web/features/runs/run-state";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
+import { ModelEvidence } from "../../src/web/screens/observability/ModelEvidence";
 import { JobRunLink, RunWorkspace, runStatusLabel } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
 
@@ -53,6 +54,19 @@ function event(
 ): RunEvent {
   return { runId, seq, at: now, ...payload };
 }
+const emptyTracePage = () => ({
+  items: [],
+  nextBeforeId: 0,
+  hasMore: false,
+  summary: {
+    totalTraces: 0,
+    activeTraces: 0,
+    failedTraces: 0,
+    matchedSpans: 0,
+    lastActivityAt: null,
+    now,
+  },
+});
 const exact: InspectedContext = {
   result: { status: "exact", format: "text", text: "private model output" },
   status: "exact",
@@ -151,13 +165,14 @@ describe("run inspector", () => {
       ...api,
       listRuns: vi.fn().mockResolvedValue({ runs: [previous, current] }),
       getRun: vi.fn().mockImplementation(async (id) => (id === current.runId ? current : previous)),
+      listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
       inspectRunContext: inspect,
     };
     store.getState().resetForTests(client);
     render(<JobRunLink ownerKind="memory_job" ownerId="job-one" />);
     return client;
   }
-  it("loads owner attempts on open, only inspects on request, and restores focus on Escape", async () => {
+  it("loads owner attempts on open, auto-inspects every recorded step, and restores focus on Escape", async () => {
     const client = setup();
     const user = userEvent.setup();
     const trigger = screen.getByRole("button", { name: "运行详情" });
@@ -165,25 +180,29 @@ describe("run inspector", () => {
     await user.click(trigger);
     await screen.findByText("步骤 1 · 单轮任务");
     expect(client.listRuns).toHaveBeenCalledWith("memory_job", "job-one", expect.any(AbortSignal));
-    expect(client.inspectRunContext).not.toHaveBeenCalled();
+    expect(client.inspectRunContext).toHaveBeenCalledTimes(1);
+    expect(client.inspectRunContext.mock.calls[0][0]).toEqual({
+      runId: "run-one",
+      stepId: "step-one",
+    });
+    await screen.findByText("private source text");
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "关闭运行详情" }));
     expect((screen.getByRole("combobox", { name: "运行尝试" }) as HTMLSelectElement).value).toBe(
       "run-one",
     );
-    await user.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
-    await screen.findByText("private source text");
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
-  it("retains inspected text across window blur and clears it only when the document is hidden", async () => {
+  it("standalone manual evidence retains inspected text across window blur and clears it only when the document is hidden", async () => {
     const inspect = vi
       .fn()
       .mockResolvedValueOnce(exact)
       .mockResolvedValueOnce({ ...exact, status: "revoked", exactMessages: undefined });
-    setup(inspect);
-    fireEvent.click(screen.getByRole("button", { name: "运行详情" }));
-    fireEvent.click(await screen.findByRole("button", { name: "查看实际输入与输出" }));
+    store.getState().resetForTests({ ...api, inspectRunContext: inspect });
+    render(<ModelEvidence handle={{ runId: "run-one", stepId: "step-one" }} />);
+    expect(inspect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "查看实际输入与输出" }));
     await screen.findByText("private source text");
     act(() => window.dispatchEvent(new Event("blur")));
     expect(screen.getByText("private source text")).toBeTruthy();
@@ -201,20 +220,26 @@ describe("run inspector", () => {
   });
   it("aborts a late context request when another attempt is selected", async () => {
     let finish: (value: InspectedContext) => void = () => {};
-    const inspect = vi.fn().mockImplementation(
-      () =>
-        new Promise<InspectedContext>((resolve) => {
-          finish = resolve;
-        }),
-    );
+    const inspect = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<InspectedContext>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockImplementationOnce(() => new Promise<InspectedContext>(() => {}));
     setup(inspect);
     fireEvent.click(screen.getByRole("button", { name: "运行详情" }));
-    fireEvent.click(await screen.findByRole("button", { name: "查看实际输入与输出" }));
+    await screen.findByText("步骤 1 · 单轮任务");
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByRole("combobox", { name: "运行尝试" }), {
       target: { value: "run-previous" },
     });
+    await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
     expect(inspect.mock.calls[0][1].aborted).toBe(true);
     await act(async () => finish(exact));
+    await act(async () => {});
     expect(screen.queryByText("private source text")).toBeNull();
   });
 });
