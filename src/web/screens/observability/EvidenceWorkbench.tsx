@@ -16,10 +16,12 @@ export function EvidenceWorkbench({
   item,
   autoInspect = false,
   fullEvidence = false,
+  includeDelivery = true,
 }: {
   item: RuntimeSpan;
   autoInspect?: boolean;
   fullEvidence?: boolean;
+  includeDelivery?: boolean;
 }) {
   const reducedMotion = useReducedMotion();
   const { t, i18n } = useTranslation(),
@@ -154,7 +156,7 @@ export function EvidenceWorkbench({
                 </div>
               ))}
           </dl>
-          {item.channel === "onebot11" && item.outputId && (
+          {includeDelivery && item.channel === "onebot11" && item.outputId && (
             <DeliveryEvidence outputId={item.outputId} />
           )}
         </div>

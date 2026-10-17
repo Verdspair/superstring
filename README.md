@@ -83,7 +83,7 @@ QQ 接入前置步骤与运行要求：
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
-- **运行详情与执行检查**：运行概览统一采用竖列方块卡片，步骤与技术追踪按列与时间线展示；点进后模型输入输出与关联来源在有权读取且未过保留期时默认展开显示，区分模型生成完成与平台确认送达。
+- **运行详情与执行检查**：运行概览聚焦结果与依据，采用竖列步骤卡片选择单步并在下方展示详情；输出、输入与其他关联来源分区清晰，输出在最前；概览选中步详情与面向过程诊断的技术追踪条目均为独立展开的列表行，默认收起；运行详情加载时自动预取当前运行内容，读取完成后，展开不再发起网络请求；有权读取且未过保留期时即可查看，并区分模型生成完成与平台确认送达。
 - **模型结束原因**：在运行详情中查看模型步骤，可直接查看原始 `finish_reason`、HTTP 状态码和流式 `[DONE]` 标记。多次请求分别列出，未返回原因、显式 `null`、无 HTTP 响应和历史未记录分别显示，方便排查调用失败。
 - **模型服务与编码**：在「模型服务」中可为本地（如 LM Studio）或外部模型选填文本编码（如 `cl100k_base`、`o200k_base`），未指定采用保守估算；提供参考帮助与来源链接但不自动选择；展示实际模型、容量与编码用量，保存冲突时保留草稿。
 
@@ -214,7 +214,7 @@ The interface provides six primary sections: **Conversations**, **Agents**, **Sy
 - **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
-- **Run details and execution inspection**: Run overviews are unified as vertical cards, with steps and technical traces arranged in columns and a timeline. Model inputs, outputs, and associated sources are expanded when access is authorized and retention has not expired by default upon opening, clearly distinguishing model generation from confirmed platform delivery.
+- **Run details and execution inspection**: Run overviews focus on results and evidence, presenting vertical step cards to select an individual step and display its details below; outputs, inputs, and associated sources are clearly separated with outputs first; selected-step details and process-oriented technical trace entries are independent expandable rows that start collapsed; content is prefetched when run details load, and once reading completes, expanding toggles the view without additional network requests; content is viewable when authorized and unexpired, clearly distinguishing model generation from confirmed platform delivery.
 - **Model finish reasons**: Model steps in Run details directly display raw `finish_reason`, HTTP status codes, and streaming `[DONE]` markers. Multiple requests are listed separately. Missing reasons, explicit `null`, no HTTP response, and historical calls without records are shown as distinct states to help diagnose failed calls.
 - **Model services & encodings**: Configure optional text token encodings (such as `cl100k_base` or `o200k_base`) for local services (e.g. LM Studio) and external providers; unconfigured models use conservative estimation. Reference help and documentation links assist verification without auto-selection. Shows actual model, capacity, and encoding usage, while preserving unsaved drafts during save conflicts.
 

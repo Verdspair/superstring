@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectedContext, RunEvent, RunSnapshot } from "../../src/shared/contracts/agent-run";
@@ -153,6 +153,23 @@ describe("typed run API", () => {
   });
 });
 
+const ROW_LABELS = {
+  output: i18n.t("observability.modelOutput"),
+  input: i18n.t("observability.modelInput"),
+  sources: i18n.t("observability.sourcesAndRevisions"),
+} as const;
+type EvidenceSection = keyof typeof ROW_LABELS;
+/** 证据列表行默认关闭：用实际本地化按钮按需展开（幂等；展开只是视觉效果，零请求）。 */
+function openEvidenceSections(
+  scope: HTMLElement,
+  sections: readonly EvidenceSection[] = ["output", "input", "sources"],
+) {
+  for (const section of sections) {
+    const trigger = within(scope).getByRole("button", { name: ROW_LABELS[section] });
+    if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  }
+}
+
 describe("run inspector", () => {
   function setup(inspect = vi.fn().mockResolvedValue(exact)) {
     const current = snapshot();
@@ -178,13 +195,17 @@ describe("run inspector", () => {
     const trigger = screen.getByRole("button", { name: "运行详情" });
     expect(client.listRuns).not.toHaveBeenCalled();
     await user.click(trigger);
-    await screen.findByText("步骤 1 · 单轮任务");
+    await screen.findByRole("button", { name: "步骤 1 · 单轮任务" });
     expect(client.listRuns).toHaveBeenCalledWith("memory_job", "job-one", expect.any(AbortSignal));
     expect(client.inspectRunContext).toHaveBeenCalledTimes(1);
     expect(client.inspectRunContext.mock.calls[0][0]).toEqual({
       runId: "run-one",
       stepId: "step-one",
     });
+    // 列表行默认关闭：打开输入行后源文本可见（展开零新请求）
+    await screen.findByRole("button", { name: ROW_LABELS.input });
+    openEvidenceSections(document.body, ["input"]);
+    expect(client.inspectRunContext).toHaveBeenCalledTimes(1);
     await screen.findByText("private source text");
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "关闭运行详情" }));
     expect((screen.getByRole("combobox", { name: "运行尝试" }) as HTMLSelectElement).value).toBe(
@@ -231,7 +252,7 @@ describe("run inspector", () => {
       .mockImplementationOnce(() => new Promise<InspectedContext>(() => {}));
     setup(inspect);
     fireEvent.click(screen.getByRole("button", { name: "运行详情" }));
-    await screen.findByText("步骤 1 · 单轮任务");
+    await screen.findByRole("button", { name: "步骤 1 · 单轮任务" });
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByRole("combobox", { name: "运行尝试" }), {
       target: { value: "run-previous" },

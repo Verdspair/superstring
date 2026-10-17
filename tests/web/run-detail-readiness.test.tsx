@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
@@ -90,8 +90,12 @@ describe("run detail readiness and non-blocking preview", () => {
 
     // Metadata, specId, and steps must be immediately visible without waiting for getRun
     expect(await screen.findByText("memory.organize")).toBeTruthy();
-    expect(screen.getByText("步骤 1 · 单轮任务")).toBeTruthy();
-    expect(screen.getByText("model-alpha")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "步骤 1 · 单轮任务" })).toBeTruthy();
+    expect(
+      within(screen.getByRole("group", { name: i18n.t("observability.modelSteps") })).getByText(
+        "model-alpha",
+      ),
+    ).toBeTruthy();
     expect(screen.getByText("target-1 · prepared")).toBeTruthy();
     expect(screen.getByText("out-run-1")).toBeTruthy();
     expect(screen.queryByText("正在读取运行记录…")).toBeNull();
@@ -524,7 +528,7 @@ describe("zero-step wake run resolves its trace through the existing canvas", ()
     store.getState().resetForTests(client);
 
     render(<RunWorkspace runId="run-normal" />);
-    expect(await screen.findByText("model-alpha")).toBeTruthy();
+    expect((await screen.findAllByText("model-alpha"))[0]).toBeTruthy();
     await act(async () => {
       await Promise.resolve();
     });
@@ -593,13 +597,13 @@ describe("readable run overview preserves technical details", () => {
     expect(screen.getByRole("button", { name: "易读概览" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
-    expect(screen.getByText("步骤 1 · 单轮任务")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "步骤 1 · 单轮任务" })).toBeTruthy();
     expect(inspect).toHaveBeenCalledWith(snapshot.steps[0].context, expect.any(AbortSignal));
     await userEvent.setup().click(screen.getByRole("button", { name: "步骤与技术追踪" }));
     expect(
       screen.getByRole("button", { name: "步骤与技术追踪" }).getAttribute("aria-pressed"),
     ).toBe("true");
-    expect(screen.getByText("步骤 1 · 单轮任务")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "步骤 1 · 单轮任务" })).toBeTruthy();
     expect(inspect).toHaveBeenCalledWith(snapshot.steps[0].context, expect.any(AbortSignal));
   });
   it("shows child call records for a zero-step parent without declaring a complete total", async () => {
@@ -612,7 +616,7 @@ describe("readable run overview preserves technical details", () => {
       inspectRunContext: vi.fn(),
     });
     render(<RunWorkspace runId="overview-parent" />);
-    expect(await screen.findByText("child-model")).toBeTruthy();
+    expect((await screen.findAllByText("child-model"))[0]).toBeTruthy();
     expect(store.getState().apiClient.inspectRunContext).toHaveBeenCalledWith(
       { runId: "child-run-55e", stepId: "child-step-55e" },
       expect.any(AbortSignal),

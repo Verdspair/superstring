@@ -239,6 +239,28 @@ function inspectGate() {
     },
   };
 }
+const ROW_LABELS = {
+  output: i18n.t("observability.modelOutput"),
+  input: i18n.t("observability.modelInput"),
+  sources: i18n.t("observability.sourcesAndRevisions"),
+} as const;
+type EvidenceSection = keyof typeof ROW_LABELS;
+/** 证据列表行默认关闭：用实际本地化按钮按需展开（幂等；展开只是视觉效果，零请求）。 */
+function openEvidenceSections(
+  scope: HTMLElement,
+  sections: readonly EvidenceSection[] = ["output", "input", "sources"],
+) {
+  for (const section of sections) {
+    const trigger = within(scope).getByRole("button", { name: ROW_LABELS[section] });
+    if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  }
+}
+/** 技术区外层步级行默认关闭：展开全部步骤触发（幂等；外层展开零请求）。 */
+function openAllTechnicalSteps() {
+  for (const trigger of screen.getAllByRole("button", { name: /步骤 \d+ ·/ })) {
+    if (trigger.getAttribute("aria-expanded") === "false") fireEvent.click(trigger);
+  }
+}
 function install(options: {
   run: RunSnapshot;
   parts: { trace: RuntimeTrace; items: RuntimeSpan[] }[];
@@ -296,9 +318,10 @@ describe("run detail unified presentation", () => {
     const ingress = ingressTrace(2, 8);
     install({ run: runSnapshot([]), parts: [feedback, ingress], inspect });
     render(<RunWorkspace runId={parentRunId} />);
-    await screen.findByText("model-a000-1");
-    const evidence = screen.getAllByRole("region", { name: EVIDENCE });
-    expect(evidence).toHaveLength(8);
+    fireEvent.click(
+      await screen.findByRole("button", { name: i18n.t("observability.technicalDetails") }),
+    );
+    expect((await screen.findAllByText("model-a000-1")).length).toBeGreaterThan(0);
     await waitFor(() => expect(inspect.calls.length).toBeGreaterThan(0));
     expect(inspect.calls.length).toBeLessThanOrEqual(3);
     for (let completed = 0; completed < 8; completed = inspect.calls.length) {
@@ -308,6 +331,11 @@ describe("run detail unified presentation", () => {
       }
     }
     inspect.settle();
+    // 外层步级行默认关闭：逐个打开（纯视觉，零新请求）后 8 个证据 region 可见
+    const callsBeforeOpen = inspect.calls.length;
+    openAllTechnicalSteps();
+    expect((await screen.findAllByRole("region", { name: EVIDENCE })).length).toBe(8);
+    expect(inspect.calls).toHaveLength(callsBeforeOpen);
     for (const call of inspect.calls) {
       expect(call.handle.runId).not.toBe(parentRunId);
       expect(call.handle.runId).toMatch(/^20000000/);
@@ -317,7 +345,7 @@ describe("run detail unified presentation", () => {
       new Set(inspect.calls.map((call) => `${call.handle.runId}|${call.handle.stepId}`)).size,
     ).toBe(8);
   });
-  it("shows every own model call fully expanded by default: input, output and sources visible together", async () => {
+  it("selects the first recorded step by default in the overview, prefetches every call while closed, and moves selection without extra requests", async () => {
     const inspect = inspectGate();
     install({
       run: runSnapshot([ownStep("step-own-1", 1), ownStep("step-own-2", 2)]),
@@ -326,32 +354,76 @@ describe("run detail unified presentation", () => {
     });
     render(<RunWorkspace runId={parentRunId} />);
     const evidence = await screen.findAllByRole("region", { name: EVIDENCE });
-    expect(evidence).toHaveLength(2);
+    expect(evidence).toHaveLength(1);
+    // 全部真实 handle 关闭态预取（bounded 3）
+    await waitFor(() =>
+      expect(new Set(inspect.calls.map((call) => call.handle.stepId))).toEqual(
+        new Set(["step-own-1", "step-own-2"]),
+      ),
+    );
+    const stepName = (no: number) =>
+      i18n.t("observability.stepValueValue", {
+        "0": no,
+        "1": i18n.t("observability.singleTurnTask"),
+      });
+    const first = screen.getByRole("button", { name: stepName(1) });
+    const second = screen.getByRole("button", { name: stepName(2) });
+    expect(first.getAttribute("aria-pressed")).toBe("true");
+    expect(second.getAttribute("aria-pressed")).toBe("false");
+    expect(second.getAttribute("data-step-id")).toBe("step-own-2");
+    fireEvent.click(second);
+    expect(second.getAttribute("aria-pressed")).toBe("true");
+    expect(first.getAttribute("aria-pressed")).toBe("false");
+    // 选择切换是纯视觉切换：零新请求、不中止运行内已拥有的读取
+    expect(inspect.calls.every((call) => !call.signal.aborted)).toBe(true);
     inspect.settle(exactFor("own", 1900));
-    for (const region of evidence) {
-      await within(region).findByText(/^精确输入:/);
-      expect(within(region).getByText(/^\{"label":/)).toBeTruthy();
-      await waitFor(() =>
-        expect(within(region).getAllByText(/^src-\d+$/).length).toBeGreaterThan(0),
-      );
-      expect(
-        within(region).queryByRole("button", { name: i18n.t("observability.expandReader") }),
-      ).toBeNull();
-      expect(
-        within(region).queryByRole("button", {
-          name: i18n.t("observability.inspectActualInputAndOutput"),
-        }),
-      ).toBeNull();
-    }
-    const first = evidence[0];
-    expect(within(first).getAllByText(/^src-\d+$/)).toHaveLength(1900);
-    expect(within(first).getByText("src-1")).toBeTruthy();
-    expect(within(first).getByText("src-1900")).toBeTruthy();
+    const selected = await screen.findAllByRole("region", { name: EVIDENCE });
+    expect(selected).toHaveLength(1);
+    // 列表行默认关闭：关闭态无正文、1900 行 sources 不建 DOM
+    expect(within(selected[0]).queryByText(/^精确输入:/)).toBeNull();
+    expect(within(selected[0]).queryByText("src-1900")).toBeNull();
+    await within(selected[0]).findByRole("button", { name: ROW_LABELS.output });
+    openEvidenceSections(selected[0]);
+    await within(selected[0]).findByText(/^精确输入:/);
+    expect(within(selected[0]).getByText(/^\{"label":/)).toBeTruthy();
+    expect(within(selected[0]).getAllByText(/^src-\d+$/)).toHaveLength(1900);
+    expect(within(selected[0]).getByText("src-1")).toBeTruthy();
+    expect(within(selected[0]).getByText("src-1900")).toBeTruthy();
+    // 展开只是视觉效果：零新请求
+    expect(inspect.calls).toHaveLength(2);
+    expect(
+      within(selected[0]).queryByRole("button", { name: i18n.t("observability.expandReader") }),
+    ).toBeNull();
+    expect(
+      within(selected[0]).queryByRole("button", {
+        name: i18n.t("observability.inspectActualInputAndOutput"),
+      }),
+    ).toBeNull();
   });
 
-  it("keeps all three sections visible in full evidence mode without changing lazy standalone tabs", () => {
+  it("keeps all three sections as independent default-closed rows in full evidence mode without changing lazy standalone tabs", () => {
     const value = exactFor("full", 1900);
     render(<InspectedEvidence value={value} fullEvidence />);
+    // 默认关闭：正文不挂载，1900 行 sources 不建 DOM
+    expect(screen.queryByText(/^精确输入:/)).toBeNull();
+    expect(screen.queryByText('{"label":"full"}')).toBeNull();
+    expect(screen.queryByText("src-1900")).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: i18n.t("observability.modelOutput") })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(
+      screen
+        .getByRole("button", { name: i18n.t("observability.modelInput") })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(
+      screen
+        .getByRole("button", { name: i18n.t("observability.sourcesAndRevisions") })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    openEvidenceSections(document.body);
     expect(screen.getByText("精确输入:full")).toBeTruthy();
     expect(screen.getByText('{"label":"full"}')).toBeTruthy();
     expect(screen.getByText("src-1")).toBeTruthy();
@@ -380,6 +452,9 @@ describe("run detail unified presentation", () => {
     fireEvent(document, new Event("visibilitychange"));
     await waitFor(() => expect(inspect.calls).toHaveLength(2));
     inspect.settle(exactFor("visible-current", 1));
+    // 列表行默认关闭：打开输入行后正文可见
+    await screen.findByRole("button", { name: i18n.t("observability.modelInput") });
+    openEvidenceSections(document.body, ["input"]);
     expect(await screen.findByText("精确输入:visible-current")).toBeTruthy();
     mounted.unmount();
   });
@@ -396,8 +471,16 @@ describe("run detail unified presentation", () => {
     expect(
       await screen.findAllByRole("region", { name: i18n.t("observability.parentAndChildTiming") }),
     ).toHaveLength(2);
-    await waitFor(() => expect(inspect.calls).toHaveLength(2));
+    await waitFor(() => expect(inspect.calls.length).toBeGreaterThanOrEqual(2));
     inspect.settle(exactFor("technical", 2));
+    // 外层步级行与内部列表行默认关闭：逐层打开后正文可见
+    openAllTechnicalSteps();
+    const regions = screen.getAllByRole("region", { name: EVIDENCE });
+    expect(regions).toHaveLength(2);
+    for (const region of regions) {
+      await within(region).findByRole("button", { name: ROW_LABELS.input });
+      openEvidenceSections(region, ["input"]);
+    }
     await waitFor(() => expect(screen.getAllByText("精确输入:technical")).toHaveLength(2));
     expect(
       screen.queryByRole("button", { name: i18n.t("observability.inspectActualInputAndOutput") }),
@@ -412,18 +495,26 @@ describe("run detail unified presentation", () => {
     expect(inspect.calls.every(({ handle }) => handle.runId !== parentRunId)).toBe(true);
   });
 
-  it("refreshes protected evidence explicitly without duplicating reads when switching views", async () => {
+  it("refreshes protected evidence explicitly and rechecks every prefetched run handle", async () => {
     const inspect = inspectGate();
     install({ run: runSnapshot([ownStep("refresh-step", 1)]), parts: [], inspect });
     render(<RunWorkspace runId={parentRunId} />);
+    // 关闭态预取
     await waitFor(() => expect(inspect.calls).toHaveLength(1));
     inspect.settle(exactFor("before-refresh", 1));
+    await screen.findByRole("button", { name: i18n.t("observability.modelInput") });
+    openEvidenceSections(document.body, ["input"]);
     await screen.findByText("精确输入:before-refresh");
+    // 视图切换纯视觉：单一 reader 按 handle 共享，零新请求
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.technicalDetails") }));
     expect(inspect.calls).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.refreshRuns") }));
+    // 刷新重核全部已预取的当前 handle
     await waitFor(() => expect(inspect.calls).toHaveLength(2));
     inspect.settle(exactFor("after-refresh", 1));
+    openAllTechnicalSteps();
+    await screen.findByRole("button", { name: i18n.t("observability.modelInput") });
+    openEvidenceSections(document.body, ["input"]);
     expect(await screen.findByText("精确输入:after-refresh")).toBeTruthy();
     expect(screen.queryByText("精确输入:before-refresh")).toBeNull();
   });
@@ -443,12 +534,18 @@ describe("run detail unified presentation", () => {
     part.items = part.items.map((item) => ({ ...item, outputId: null }));
     install({ run: runSnapshot([]), parts: [part], inspect });
     render(<RunWorkspace runId={parentRunId} />);
-    await screen.findByText("model-a000-1");
-    expect(screen.queryByText("sibling-model")).toBeNull();
+    await screen.findByRole("button", { name: "步骤 1 · 单轮任务" });
+    expect(
+      within(screen.getByRole("group", { name: i18n.t("observability.modelSteps") })).queryByText(
+        "sibling-model",
+      ),
+    ).toBeNull();
     await waitFor(() => expect(inspect.calls).toHaveLength(1));
     expect(inspect.calls[0].handle.runId).toBe(childRunId(1));
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.technicalDetails") }));
     expect((await screen.findAllByText("sibling-model")).length).toBeGreaterThan(0);
+    // 视图切换纯视觉：共享 reader 零新请求，兄弟调用永不读取
     expect(inspect.calls).toHaveLength(1);
+    expect(inspect.calls.every(({ handle }) => handle.runId === childRunId(1))).toBe(true);
   });
 });

@@ -1,8 +1,9 @@
-import { ArrowUpRight, Copy, RefreshCw } from "lucide-react";
+import { ArrowUpRight, ChevronDown, Copy, RefreshCw } from "lucide-react";
 import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogClose,
@@ -28,7 +29,14 @@ import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
 import { EvidenceWorkbench } from "../observability/EvidenceWorkbench";
 import { ModelEvidence, RunEvidenceScope } from "../observability/ModelEvidence";
-import { phaseLabels, ReadError, StatusMark, taskName } from "../observability/presentation";
+import {
+  milliseconds,
+  phaseLabels,
+  ReadError,
+  StatusMark,
+  spanTitle,
+  taskName,
+} from "../observability/presentation";
 import { TraceTimeline } from "../observability/TraceTimeline";
 
 const runLabels: Record<RunStatus, string> = {
@@ -180,13 +188,21 @@ interface UnifiedModelCall {
   context: { runId: string; stepId: string };
 }
 
-function RunTraceSection({ data }: { data: RuntimeTraceDetail }) {
+function RunTraceSection({
+  data,
+  deliveryOwners,
+}: {
+  data: RuntimeTraceDetail;
+  deliveryOwners: ReadonlyMap<string, string>;
+}) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const details = useRef(new Map<string, HTMLDivElement>());
+  const details = useRef(new Map<string, HTMLDetailsElement>());
   const choose = (span: RuntimeSpan) => {
     setSelected(span.spanId);
+    const detail = details.current.get(span.spanId);
+    if (detail) detail.open = true;
     details.current.get(span.spanId)?.scrollIntoView({ block: "nearest" });
     details.current.get(span.spanId)?.focus({ preventScroll: true });
   };
@@ -244,19 +260,43 @@ function RunTraceSection({ data }: { data: RuntimeTraceDetail }) {
         </Button>
       </fieldset>
       <TraceTimeline data={data} selected={selected} onSelect={choose} alwaysExpanded hideToggles />
-      {data.items.map((item) => (
-        <div
-          key={item.spanId}
-          ref={(node) => {
-            if (node) details.current.set(item.spanId, node);
-            else details.current.delete(item.spanId);
-          }}
-          className="min-w-0 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          tabIndex={-1}
-        >
-          <EvidenceWorkbench item={item} fullEvidence />
-        </div>
-      ))}
+      <div className="divide-y rounded-lg border">
+        {data.items.map((item) => (
+          <details
+            key={item.spanId}
+            ref={(node) => {
+              if (node) details.current.set(item.spanId, node);
+              else details.current.delete(item.spanId);
+            }}
+            className="min-w-0 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            tabIndex={-1}
+          >
+            <summary className="flex min-h-12 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
+              <span className="min-w-0 flex-1 break-words font-medium">{spanTitle(item, t)}</span>
+              <StatusMark status={item.status} />
+              {item.model && (
+                <span className="max-w-full break-all text-xs text-muted-foreground">
+                  {item.model}
+                </span>
+              )}
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {item.durationMs == null ? "—" : milliseconds(item.durationMs)}
+              </span>
+              <ChevronDown className="size-4 shrink-0" aria-hidden="true" />
+            </summary>
+            <div className="border-t p-3">
+              <EvidenceWorkbench
+                item={item}
+                fullEvidence
+                includeDelivery={
+                  !item.outputId ||
+                  deliveryOwners.get(item.outputId) === `${item.traceId}|${item.spanId}`
+                }
+              />
+            </div>
+          </details>
+        ))}
+      </div>
     </section>
   );
 }
@@ -273,7 +313,20 @@ export function RunWorkspace({
     receive = useSuperstringStore((s) => s.receiveRunSnapshot),
     live = useSuperstringStore((s) => s.runById[runId]),
     [view, setView] = useState<"overview" | "technical">("overview"),
+    [selectedKey, setSelectedKey] = useState<string | null>(null),
+    [openCalls, setOpenCalls] = useState<Set<string>>(() => new Set()),
     [inspectionRevision, setInspectionRevision] = useState(0);
+
+  const prevApiRef = useRef(api);
+  if (prevApiRef.current !== api) {
+    prevApiRef.current = api;
+    if (selectedKey !== null) setSelectedKey(null);
+  }
+  const prevRunIdRef = useRef(runId);
+  if (prevRunIdRef.current !== runId) {
+    prevRunIdRef.current = runId;
+    if (selectedKey !== null) setSelectedKey(null);
+  }
 
   const read = useCallback(
     async (signal: AbortSignal) => {
@@ -427,6 +480,19 @@ export function RunWorkspace({
     return calls;
   }, [run?.steps, run?.runId, waterfalls]);
 
+  const activeCall = modelCalls.find((call) => call.key === selectedKey) ?? modelCalls[0] ?? null;
+
+  const deliveryOwners = useMemo(() => {
+    const owners = new Map<string, string>();
+    for (const waterfall of waterfalls)
+      for (const span of waterfall.items) {
+        if (span.channel === "onebot11" && span.outputId && !owners.has(span.outputId)) {
+          owners.set(span.outputId, `${span.traceId}|${span.spanId}`);
+        }
+      }
+    return owners;
+  }, [waterfalls]);
+
   const isTracing = shouldFetchTraces && tracesResource.loading && !tracesData;
   const traceError = tracesResource.error;
 
@@ -509,115 +575,192 @@ export function RunWorkspace({
               </Button>
             </nav>
 
-            {(view === "overview" || view === "technical") && (
-              <div className={view === "technical" ? "order-2 space-y-6" : "space-y-6"}>
-                {run.steps.length > 0 && (
-                  <p className="text-sm font-medium">
-                    {t("observability.ownRecordedModelCalls", {
-                      "0": new Set(run.steps.map((item) => item.stepId)).size,
-                    })}
-                  </p>
-                )}
-                {!run.steps.length && modelCalls.length > 0 && (
-                  <p className="text-sm font-medium">
-                    {t("observability.recordedModelCallsTotalUnknown", {
-                      "0": modelCalls.length,
-                    })}
-                  </p>
-                )}
-
-                {isTracing && (
-                  <p role="status" className="text-sm text-muted-foreground">
-                    {t("observability.loadingRuns")}
-                  </p>
-                )}
-
-                {/* Vertical list of full-width cards, all default expanded */}
-                <fieldset className="min-w-0 space-y-4" aria-label={t("observability.modelSteps")}>
-                  {modelCalls.map((call) => {
-                    return (
-                      <article
-                        key={call.key}
-                        className="rounded-xl border bg-card p-5 space-y-4 text-card-foreground shadow-xs"
-                      >
-                        <header className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
-                          <div className="space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h4 className="font-semibold text-sm">
-                                {t("observability.stepValueValue", {
-                                  "0": call.stepNo,
-                                  "1": t(phaseLabels[call.phase]),
-                                })}
-                              </h4>
-                              <Badge
-                                variant={call.status === "failed" ? "destructive" : "secondary"}
-                              >
-                                {call.errorCode ??
-                                  t(
-                                    call.status === "running"
-                                      ? "observability.running"
-                                      : runLabels[call.status],
-                                  )}
-                              </Badge>
-                            </div>
-                            <p className="font-mono text-xs text-muted-foreground">{call.model}</p>
-                            <p className="font-mono text-[11px] text-muted-foreground break-all">
-                              {call.runId} · {call.stepId}
-                            </p>
-                          </div>
-                        </header>
-                        <ModelEvidence
-                          handle={call.context}
-                          autoInspect={true}
-                          embedded={true}
-                          fullEvidence={true}
-                          inspectionRevision={`${call.status === "running" ? "running" : "settled"}:${inspectionRevision}`}
-                        />
-                      </article>
-                    );
+            <div className={view === "technical" ? "order-2 space-y-6" : "space-y-6"}>
+              {run.steps.length > 0 && (
+                <p className="text-sm font-medium">
+                  {t("observability.ownRecordedModelCalls", {
+                    "0": new Set(run.steps.map((item) => item.stepId)).size,
                   })}
-                </fieldset>
+                </p>
+              )}
+              {!run.steps.length && modelCalls.length > 0 && (
+                <p className="text-sm font-medium">
+                  {t("observability.recordedModelCallsTotalUnknown", {
+                    "0": modelCalls.length,
+                  })}
+                </p>
+              )}
+              {view === "overview" && modelCalls.length > 0 && (
+                <p className="text-sm text-muted-foreground">
+                  {t("observability.selectCallForInputOutput")}
+                </p>
+              )}
 
-                {!run.steps.length && !isTracing && !modelCalls.length && (
-                  <p className="text-muted-foreground">
-                    {t("observability.noModelStepHasStartedYet")}
-                  </p>
-                )}
+              {isTracing && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {t("observability.loadingRuns")}
+                </p>
+              )}
 
-                {/* External outputs and delivery */}
-                {!!run.outputs.length && (
-                  <section className="space-y-3 border-t pt-4">
-                    <h3 className="text-sm font-semibold">
-                      {t("observability.outputsAndDelivery")}
-                    </h3>
-                    {run.outputs.map((output) => (
-                      <div key={output.outputId} className="space-y-2">
-                        <p className="break-all text-xs">
-                          {output.targetId} · {output.status}
-                          {output.code && ` · ${output.code}`}
-                        </p>
-                        <code className="block break-all text-xs text-muted-foreground">
-                          {output.outputId}
-                        </code>
-                      </div>
-                    ))}
-                  </section>
-                )}
+              {view === "overview" && (
+                <>
+                  {/* Vertical list of step buttons */}
+                  {modelCalls.length > 0 && (
+                    <fieldset className="grid gap-2" aria-label={t("observability.modelSteps")}>
+                      {modelCalls.map((call) => {
+                        const isSelected = activeCall?.key === call.key;
+                        return (
+                          <Button
+                            key={call.key}
+                            data-key={call.key}
+                            data-run-id={call.runId}
+                            data-step-id={call.stepId}
+                            variant={isSelected ? "default" : "outline"}
+                            className="h-auto w-full flex-col items-start gap-1 p-4 text-left justify-start"
+                            aria-label={t("observability.stepValueValue", {
+                              "0": call.stepNo,
+                              "1": t(phaseLabels[call.phase]),
+                            })}
+                            aria-pressed={isSelected}
+                            onClick={() => setSelectedKey(call.key)}
+                          >
+                            <span className="font-semibold text-sm">
+                              {t("observability.stepValueValue", {
+                                "0": call.stepNo,
+                                "1": t(phaseLabels[call.phase]),
+                              })}
+                            </span>
+                            <span className="font-mono text-xs opacity-80 break-all">
+                              {call.model}
+                            </span>
+                            <span className="text-xs">
+                              {call.errorCode ??
+                                t(
+                                  call.status === "running"
+                                    ? "observability.running"
+                                    : runLabels[call.status],
+                                )}
+                            </span>
+                          </Button>
+                        );
+                      })}
+                    </fieldset>
+                  )}
+                </>
+              )}
+
+              <div className="min-w-0 divide-y rounded-lg border">
+                {modelCalls.map((call) => {
+                  const active = view === "overview" && call.key === activeCall?.key;
+                  const open = active || (view === "technical" && openCalls.has(call.key));
+                  const label = t("observability.stepValueValue", {
+                    "0": call.stepNo,
+                    "1": t(phaseLabels[call.phase]),
+                  });
+                  return (
+                    <Collapsible
+                      key={call.key}
+                      open={open}
+                      onOpenChange={(nextOpen) =>
+                        setOpenCalls((previous) => {
+                          const next = new Set(previous);
+                          if (nextOpen) next.add(call.key);
+                          else next.delete(call.key);
+                          return next;
+                        })
+                      }
+                      hidden={view === "overview" && !active}
+                      className="min-w-0"
+                    >
+                      <CollapsibleTrigger asChild hidden={view !== "technical"}>
+                        <Button
+                          variant="ghost"
+                          aria-label={label}
+                          className="h-auto min-h-12 w-full flex-wrap justify-start gap-x-3 gap-y-1 rounded-none p-3 text-left whitespace-normal"
+                        >
+                          <span className="min-w-0 flex-1 font-medium">{label}</span>
+                          <Badge variant={call.status === "failed" ? "destructive" : "secondary"}>
+                            {call.errorCode ??
+                              t(
+                                call.status === "running"
+                                  ? "observability.running"
+                                  : runLabels[call.status],
+                              )}
+                          </Badge>
+                          <span className="max-w-full break-all text-xs text-muted-foreground">
+                            {call.model}
+                          </span>
+                          <span className="text-xs tabular-nums text-muted-foreground">
+                            {call.durationMs == null ? "—" : milliseconds(call.durationMs)}
+                          </span>
+                          <ChevronDown
+                            className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+                            aria-hidden="true"
+                          />
+                        </Button>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent forceMount hidden={!open}>
+                        <div
+                          className={view === "technical" ? "space-y-3 border-t p-3" : "min-w-0"}
+                        >
+                          {view === "technical" && (
+                            <code className="block break-all text-xs text-muted-foreground">
+                              {call.runId} · {call.stepId}
+                            </code>
+                          )}
+                          <ModelEvidence
+                            handle={call.context}
+                            autoInspect
+                            embedded
+                            fullEvidence
+                            inspectionRevision={`${call.status === "running" ? "running" : "settled"}:${inspectionRevision}`}
+                          />
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  );
+                })}
               </div>
-            )}
 
-            {view === "technical" && (
-              <div className="order-1 space-y-6">
-                {waterfalls.map((waterfall) => (
-                  <RunTraceSection key={waterfall.trace.traceId} data={waterfall} />
-                ))}
-                {!isTracing && !traces.length && (
-                  <p className="text-muted-foreground">
-                    {t("observability.noAssociatedSourcesAreRecorded")}
-                  </p>
-                )}
-              </div>
-            )}
+              {!run.steps.length && !isTracing && !modelCalls.length && (
+                <p className="text-muted-foreground">
+                  {t("observability.noModelStepHasStartedYet")}
+                </p>
+              )}
+
+              {/* External outputs and delivery */}
+              {!!run.outputs.length && (
+                <section className="space-y-3 border-t pt-4">
+                  <h3 className="text-sm font-semibold">{t("observability.outputsAndDelivery")}</h3>
+                  {run.outputs.map((output) => (
+                    <div key={output.outputId} className="space-y-2">
+                      <p className="break-all text-xs">
+                        {output.targetId} · {output.status}
+                        {output.code && ` · ${output.code}`}
+                      </p>
+                      <code className="block break-all text-xs text-muted-foreground">
+                        {output.outputId}
+                      </code>
+                    </div>
+                  ))}
+                </section>
+              )}
+            </div>
+
+            <div hidden={view !== "technical"} className="order-1 space-y-6">
+              {waterfalls.map((waterfall) => (
+                <RunTraceSection
+                  key={waterfall.trace.traceId}
+                  data={waterfall}
+                  deliveryOwners={deliveryOwners}
+                />
+              ))}
+              {!isTracing && !traces.length && (
+                <p className="text-muted-foreground">
+                  {t("observability.noAssociatedSourcesAreRecorded")}
+                </p>
+              )}
+            </div>
           </>
         )}
       </section>

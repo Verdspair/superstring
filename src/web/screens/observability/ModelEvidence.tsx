@@ -1,4 +1,4 @@
-import { Eye, EyeOff, ImageOff } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, ImageOff } from "lucide-react";
 import {
   createContext,
   type ReactNode,
@@ -11,6 +11,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Table,
   TableBody,
@@ -243,6 +244,7 @@ export function InspectedEvidence({
 }) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<string>("input");
+  const [openSections, setOpenSections] = useState<Set<string>>(() => new Set());
   const readable = value.status === "exact" || value.status === "partial";
   const status = {
     exact: "observability.theExactTextInputIsAvailable",
@@ -457,39 +459,62 @@ export function InspectedEvidence({
       )}
     </>
   );
-  if (fullEvidence)
+  if (fullEvidence) {
     return (
-      <div className="min-w-0 space-y-6">
-        {(["input", "output", "sources"] as const).map((section) => (
-          <section
-            key={section}
-            className="min-w-0 space-y-3"
-            aria-label={t(
-              section === "input"
+      <div className="min-w-0 divide-y rounded-lg border">
+        {(["output", "input", "sources"] as const).map((section) => {
+          const open = openSections.has(section);
+          const label = t(
+            section === "output"
+              ? "observability.modelOutput"
+              : section === "input"
                 ? "observability.modelInput"
-                : section === "output"
-                  ? "observability.modelOutput"
-                  : "observability.sourcesAndRevisions",
-            )}
-          >
-            <h4 className="text-sm font-semibold">
-              {t(
-                section === "input"
-                  ? "observability.modelInput"
-                  : section === "output"
-                    ? "observability.modelOutput"
-                    : "observability.sourcesAndRevisions",
-              )}
-            </h4>
-            {section === "input"
-              ? inputContent()
-              : section === "output"
-                ? outputContent()
-                : sourcesContent()}
-          </section>
-        ))}
+                : "observability.sourcesAndRevisions",
+          );
+          return (
+            <Collapsible
+              key={section}
+              open={open}
+              onOpenChange={(nextOpen) =>
+                setOpenSections((previous) => {
+                  const next = new Set(previous);
+                  if (nextOpen) next.add(section);
+                  else next.delete(section);
+                  return next;
+                })
+              }
+              className="min-w-0"
+            >
+              <CollapsibleTrigger asChild>
+                <Button
+                  variant="ghost"
+                  className="h-auto min-h-12 w-full justify-between gap-3 rounded-none px-3 py-2 text-left whitespace-normal"
+                  aria-label={label}
+                >
+                  <span className="text-sm font-semibold">{label}</span>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+                  />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="min-w-0">
+                {open && (
+                  <section aria-label={label} className="min-w-0 space-y-3 border-t p-3">
+                    {section === "output"
+                      ? outputContent()
+                      : section === "input"
+                        ? inputContent()
+                        : sourcesContent()}
+                  </section>
+                )}
+              </CollapsibleContent>
+            </Collapsible>
+          );
+        })}
       </div>
     );
+  }
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 gap-4">
       <TabsList

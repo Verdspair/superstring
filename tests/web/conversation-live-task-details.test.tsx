@@ -95,6 +95,24 @@ const modelSpan = (patch: Partial<RuntimeSpan> = {}): RuntimeSpan => ({
   ...patch,
 });
 
+const EVIDENCE = i18n.t("observability.modelEvidence");
+const ROW_LABELS = {
+  output: i18n.t("observability.modelOutput"),
+  input: i18n.t("observability.modelInput"),
+  sources: i18n.t("observability.sourcesAndRevisions"),
+} as const;
+type EvidenceSection = keyof typeof ROW_LABELS;
+/** 证据列表行默认关闭：用实际本地化按钮按需展开（幂等；展开只是视觉效果，零请求）。 */
+function openEvidenceSections(
+  scope: HTMLElement,
+  sections: readonly EvidenceSection[] = ["output", "input", "sources"],
+) {
+  for (const section of sections) {
+    const trigger = within(scope).getByRole("button", { name: ROW_LABELS[section] });
+    if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+  }
+}
+
 let originalVisibilityDesc: PropertyDescriptor | undefined;
 const setHidden = () => {
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
@@ -119,7 +137,7 @@ afterEach(() => {
 });
 
 describe("conversation live task details", () => {
-  it("opens a parent run with every recorded step as a default-expanded card and auto-inspects all of them", async () => {
+  it("opens a parent run with both step selectors as buttons and prefetches every recorded step while rows are closed", async () => {
     const inspect = vi.fn();
     store.getState().resetForTests({
       ...api,
@@ -130,18 +148,26 @@ describe("conversation live task details", () => {
     render(<RunWorkspace runId={runId} />);
 
     expect(await screen.findByText("memory.organize")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "步骤 1 · 单轮任务" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "步骤 2 · 单轮任务" })).toBeTruthy();
+    const first = screen.getByRole("button", { name: "步骤 1 · 单轮任务" });
+    const second = screen.getByRole("button", { name: "步骤 2 · 单轮任务" });
+    expect(first).toBeTruthy();
+    expect(second).toBeTruthy();
+    expect(first.getAttribute("aria-pressed")).toBe("true");
+    expect(second.getAttribute("aria-pressed")).toBe("false");
+    // 运行加载即预取全部真实 handle（closed 也拉取，bounded 3）
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
-    expect(inspect.mock.calls.map((call) => call[0])).toEqual([
-      { runId, stepId: "step-1" },
-      { runId, stepId: "step-2" },
-    ]);
+    expect(new Set(inspect.mock.calls.map((call) => call[0].stepId))).toEqual(
+      new Set(["step-1", "step-2"]),
+    );
   });
 
-  it("auto-inspects every recorded step exactly once without user selection", async () => {
+  it("prefetches both steps while closed, switches selection with zero extra requests and keeps the unselected step's evidence hidden", async () => {
     const deferred = makeDeferred<InspectedContext>();
-    const inspect = vi.fn<SuperstringApi["inspectRunContext"]>(() => deferred.promise);
+    const signals: AbortSignal[] = [];
+    const inspect = vi.fn<SuperstringApi["inspectRunContext"]>((_handle, signal) => {
+      if (signal) signals.push(signal);
+      return deferred.promise;
+    });
     store.getState().resetForTests({
       ...api,
       getRun: vi.fn().mockResolvedValue(createSnapshot()),
@@ -151,17 +177,27 @@ describe("conversation live task details", () => {
     render(<RunWorkspace runId={runId} />);
     await screen.findByText("memory.organize");
 
+    // 两个步骤的 handle 都在关闭态预取
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
-    expect(inspect.mock.calls.map((call) => call[0])).toEqual([
-      { runId, stepId: "step-1" },
-      { runId, stepId: "step-2" },
-    ]);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "步骤 2 · 单轮任务" }));
+    // 选择切换是纯视觉切换：零新请求，也不中止运行内已拥有的读取
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(inspect).toHaveBeenCalledTimes(2);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
 
     await act(async () => {
       deferred.resolve(exact);
       await deferred.promise;
     });
-    expect(screen.getAllByText("Protected input")).toHaveLength(2);
+    // 列表行默认关闭：打开选中步的输入行后正文可见；未选步行正文保持关闭
+    const region = screen.getByRole("region", { name: EVIDENCE });
+    await within(region).findByRole("button", { name: ROW_LABELS.input });
+    openEvidenceSections(region, ["input"]);
+    expect(screen.getAllByText("Protected input")).toHaveLength(1);
     expect(inspect).toHaveBeenCalledTimes(2);
   });
 
@@ -211,7 +247,9 @@ describe("conversation live task details", () => {
     render(<RunWorkspace runId={runId} />);
     await screen.findByText("memory.organize");
 
+    // 两个步骤的 handle 都在关闭态预取
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    expect(signals).toHaveLength(2);
     expect(signals.every((signal) => !signal.aborted)).toBe(true);
 
     setHidden();
@@ -243,6 +281,9 @@ describe("conversation live task details", () => {
     render(<RunWorkspace runId={runId} />);
     await screen.findByText("memory.organize");
     await waitFor(() => expect(inspectA).toHaveBeenCalledTimes(2));
+    expect(new Set(inspectA.mock.calls.map((call) => call[0].stepId))).toEqual(
+      new Set(["step-1", "step-2"]),
+    );
 
     store.getState().resetForTests({
       ...api,
@@ -250,11 +291,8 @@ describe("conversation live task details", () => {
       listRuntimeTraces: vi.fn().mockResolvedValue(emptyTracePage()),
       inspectRunContext: inspectB,
     });
+    // API 身份变化：全部 handle 用新 client 重核
     await waitFor(() => expect(inspectB).toHaveBeenCalledTimes(2));
-    expect(inspectB.mock.calls.map((call) => call[0])).toEqual([
-      { runId, stepId: "step-1" },
-      { runId, stepId: "step-2" },
-    ]);
 
     await act(async () => {
       deferredA.resolve(exact);
@@ -320,6 +358,7 @@ describe("conversation live task details", () => {
     });
     const view = render(<RunWorkspace runId={runId} />);
     expect(await screen.findByText("first-run")).toBeTruthy();
+    // 运行加载即预取全部真实 handle
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
     view.rerender(<RunWorkspace runId="run-parent-2" />);
     expect(screen.queryByText("first-run")).toBeNull();
