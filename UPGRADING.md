@@ -57,6 +57,8 @@
 
 QQ 回复现在可自主选择文字、单张表情或组合，并可按方案设置三档表情倾向；本群可覆盖，私聊跟随方案。同任务恢复保留首次领取的档位，新任务读取新的有效配置。全局或本群关闭表情后，尚未开始发送的图片不再发送，合法文字不受影响。0064 新增倾向字段，仅更新逐字等于旧出厂默认的表情提示词；自定义提示词与旧数量存值保留。
 
+自主接话兴趣评分校准将 4–6 分（以 5 分为基准）定为自然轻度参与档，认可接梗与轻松互动，达标后正常承接意图组织回复而不重评开口价值；确实无内容、本群自定义规则禁止、来源失效或已确认送达相同内容时仍保留合理沉默，送达状态未知时不盲目重发同一内容且独立新问题仍可回应。默认门槛（6 分）与既有群配置保持不变，无新增数据库字段。
+
 源码新增独立 QQ 回复任务、方案与会话的任务上限和输入防刷屏设置，并统一静图、动图规格，取消旧补充时间窗。新建方案开启防刷屏，已有方案保持关闭；会话覆盖留空时跟随方案。0065 仅新增防刷屏阈值字段（默认 3 条／3 秒），保留已有开关状态与继承关系。已有记录与其它配置保留，退役媒体设置不再使用。
 
 在模型服务中，支持为 LM Studio 本地模型与外部服务登记的模型选填文本编码（如 `cl100k_base`、`o200k_base`，未指定采用保守估算）；页面提供参考帮助但不自动选择；用量显示实际生效的模型、容量与编码，发生保存冲突时保留草稿。QQ 研究按子任务自己的上下文检查容量；媒体与表情结果装不下时返回明确预算提示，不把本可继续的任务拖到下一轮才失败，仍超限时明确失败。
@@ -129,6 +131,8 @@ Unknown schemas or downgrade attempts are rejected to protect data safety. Rolli
 This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **71**, with migrations 0055–0071.
 
 QQ replies can now independently choose text, one sticker, or a combination, with three levels of scheme-level sticker guidance. Groups can override the setting; private chats follow the scheme. Resumed tasks retain the value captured at first claim, while new tasks use the new effective setting. Global or group sticker disable blocks unstarted image sends without blocking valid text. Migration 0064 adds the guidance field and updates only sticker prompts that exactly match the old factory default. Custom prompts and stored legacy count values are preserved.
+
+Autonomous participation interest scoring is calibrated with 4–6 (baseline 5) as natural light participation for natural, brief conversation, carrying qualified intent into response generation without judging the same participation decision again; legitimate silence remains intact when content is empty, custom group rules forbid speaking, cited facts expire, or identical content is confirmed delivered, and the Agent avoids blindly resending identical content while delivery status is unknown without barring responses to independent new questions. Default threshold (6) and existing group settings remain unchanged with no schema additions.
 
 Source updates add independent QQ reply tasks, scheme and conversation task limits, and input anti-spam settings. Still images and animations use unified settings, and the old supplement time window is removed. Anti-spam is enabled for new schemes and kept off for existing schemes. Empty conversation overrides follow the scheme. Migration 0065 only adds anti-spam threshold columns (default 3 messages / 3 seconds), preserving existing switch states and inheritance. Existing records and other settings are retained; retired media settings are no longer used.
 

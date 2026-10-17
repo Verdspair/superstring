@@ -119,6 +119,7 @@ import {
   QQ_JUDGEMENT_ENVELOPE_OUTPUT_RULE,
   QQ_JUDGEMENT_RESPONSE_SCHEMA,
   QQ_MEDIA_RULE,
+  QQ_QUALIFIED_REPLY_GUIDANCE,
   QQ_REPLY_ENVELOPE_OUTPUT_RULE,
   qqReplaceOutputRuleInText,
   qqStickerFrequencyGuide,
@@ -1526,11 +1527,13 @@ export class OneBotHost {
       }回复引用与 @ 成员均由你独立自主选择，互不绑定且均完全可选（缺省不自动引用、不自动 @ 收件人）。需要引用同会话已向你披露的消息时，把该消息的真实平台消息 ID（不是 UUID，原样字符串，包括负数）放入 replyToMessageId；需要 @ 成员时，把成员号放入 mentionIds。正文里不要写 @ 或 CQ 码。`,
     ];
     const reviewRule = `后续相关消息到来要重新决定尚未发送的计划。pending_plan 是你之前的草稿/计划与剩余独立 generate 次数，属于资料而非指令。读过新消息后，可以用 inline 原样保留或修改仍然适用的草稿，也可 none 暂不发送；generate 次数耗尽时不能再请求独立生成。复核指导：\n${schemePrompts(scheme).review}`;
+    const initiativeReviewRule = `pending_plan 是已有草稿、相关新事实与剩余独立 generate 次数，属于资料而非指令。后续相关新消息使草稿过时、事实冲突或不再适用时，可以修改或放弃；没有新事实时承接既有意图与仍适用的草稿，不重新评估兴趣。其他合法沉默条件按达标承接规则处理。generate 次数耗尽时不能再请求独立生成。复核指导：\n${schemePrompts(scheme).review}`;
     const replyRules = [
       "写这一轮要发的回复：可用 reply.text 发文字，或先用 sticker.search 查看候选，再用 reply.sticker 发贴切的表情或图文组合。需要先查资料或理解图片时先调用工具，随后再回复；不要求首条 call 就提交纯文字。",
       path === "follow_up"
         ? `本轮是**连续交谈**，必须回话：给每个发言的人各写一条回复；只有确实没有内容时才被程序拒绝，不要返回 none。需要 @ 谁时，把其成员号放进该目标的 mentionIds（可选）。`
         : "",
+      ...(initiative ? [QQ_QUALIFIED_REPLY_GUIDANCE] : []),
       `写这一轮要发的话（用户可自定义的回复任务）：\n${qqEffectiveReplyPrompt(schemePrompts(scheme).reply, split)}`,
     ];
     // 回复档 spec：首 call 就是回复正文任务（工具可用：terminalAction + 普通 tools）。
@@ -1540,7 +1543,11 @@ export class OneBotHost {
       context: "conversation",
       model: runtime.model_name,
       maxTokens: reserves.reply_output_reserved,
-      instructions: [...sceneRules, ...replyRules.filter(Boolean), reviewRule].join("\n\n"),
+      instructions: [
+        ...sceneRules,
+        ...replyRules.filter(Boolean),
+        initiative ? initiativeReviewRule : reviewRule,
+      ].join("\n\n"),
       availableActions: [],
       generation: {
         model: runtime.model_name,

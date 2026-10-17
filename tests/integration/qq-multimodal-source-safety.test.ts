@@ -21,7 +21,7 @@
 //
 // 只用稳定仓储/inspect API；不碰 runtime/bot/context-source（T11 在制写区）。
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
@@ -71,8 +71,13 @@ import type { SourceRef } from "../../src/shared/contracts/evidence";
 import type { QqConversationScope } from "../../src/shared/contracts/qq-message";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
+// 固定观察时间与仓储默认时钟，避免夹具随日历自然过期。
+beforeEach(() => {
+  setSystemTime(new Date(NOW));
+});
 afterEach(() => {
   for (const h of handles.splice(0)) h.close();
+  setSystemTime();
 });
 
 const ACCOUNT = "91001";

@@ -1,6 +1,6 @@
 // BATCHQA 独立端到端验证（qq-flow-and-project-concurrency 批次）：真实 OneBotHost +
 // AgentRuntime + 业务库合成夹具，验证批量优先（batch-first）自主批次的**最终批准行为**。
-// 不复用旧 onebot 夹具（该文件在制），本文件自带最小合法夹具；X2/Y0 是显式合法方案值，
+// 本文件使用独立的最小生产组合夹具；X2/Y0 是显式合法方案值，
 // 用于让两条合格成员事件构成一个批次机会——生产默认门槛（15/5）由 D1 专测，此处不重复。
 // 不接真实 QQ/模型/网络：模型是受控 ModelPort 桩，阀门用 Promise，无 shell sleep。
 
@@ -24,7 +24,11 @@ import { WakeRepository } from "../../src/server/db/wake-repository";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
 import { recordInbound } from "../../src/server/services/qq-intake";
-import { QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
+import {
+  QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
+  QQ_PROMPT_DEFAULTS,
+  QQ_QUALIFIED_REPLY_GUIDANCE,
+} from "../../src/server/services/qq-prompt-contract";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
 import { estimateTokens } from "../../src/server/services/token-estimate";
@@ -108,6 +112,8 @@ function setup(
     splitBySpeaker?: boolean;
     clockTime?: number;
     mergeWindowSeconds?: number;
+    minimumScore?: number;
+    prompts?: Partial<typeof QQ_PROMPT_DEFAULTS>;
   } = {},
 ) {
   const h = cloneBusinessDb();
@@ -121,6 +127,7 @@ function setup(
   });
   const scheme = createQqScheme(h.orm, {
     name: "batch-e2e",
+    ...(options.prompts ? { prompts: { ...QQ_PROMPT_DEFAULTS, ...options.prompts } } : {}),
     ...(options.judgementBudget === undefined && options.judgementMessageLimit === undefined
       ? {}
       : {
@@ -138,6 +145,7 @@ function setup(
     triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: true },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
+      initiative_min_score: options.minimumScore ?? QQ_RHYTHM_DEFAULT.initiative_min_score,
       participation_timing: "resource_window",
       initiative_batch_target_count: options.batchSize ?? 2,
       initiative_batch_jitter_count: 0,
@@ -419,6 +427,109 @@ describe("batch-first chiming end to end (production host + runtime)", () => {
     // 完整有效判断消费本批已观察边界：chiming_in_observed_seq 推进到冻结的 wake.throughSeq。
     expect(f.journal.chimingInObservedSeq(conversation.id)).toBeGreaterThan(0);
     expect(f.journal.chimingInJudgedAt(conversation.id)).toBe(f.now());
+  });
+
+  it.each([1, 5, 9])(
+    "uses threshold %i as the only score gate and carries qualified intent as data",
+    async (minimumScore) => {
+      const customScene = "不评价消息本身，不单独回复表情。";
+      const customReply = "用自然短句接话，确实没有内容时保持沉默。";
+      const f = setup({
+        minimumScore,
+        prompts: { scene: customScene, reply: customReply },
+        evaluations: (ids) =>
+          ids.map((targetId) => ({
+            targetId,
+            score: targetId === "20002" ? minimumScore - 1 : minimumScore,
+            intent: targetId === "20002" ? "lower-target-intent" : "qualified-target-intent",
+            sourceSeqs: [],
+          })),
+      });
+      f.receive("1", "20002");
+      f.clock.seconds += 1;
+      f.receive("2", "20003");
+      expect((await f.activate()).status).toBe("completed");
+      const scores = f.calls.filter((c) => c.kind === "complete" && isBatchScore(c.request));
+      const replies = f.calls.filter((c) => c.kind === "complete" && !isBatchScore(c.request));
+      expect(scores).toHaveLength(1);
+      expect(replies).toHaveLength(1);
+      expect(f.calls.filter((c) => c.kind === "stream")).toHaveLength(0);
+      const systemText = (request: ModelRequest) =>
+        (request.messages ?? [])
+          .filter((m) => m.role === "system")
+          .flatMap((m) => m.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])))
+          .join("\n");
+      expect(systemText(scores[0]!.request)).not.toContain(QQ_QUALIFIED_REPLY_GUIDANCE);
+      const reply = replies[0]!.request;
+      expect(systemText(reply)).toContain(QQ_QUALIFIED_REPLY_GUIDANCE);
+      expect(systemText(reply)).toContain(customScene);
+      expect(systemText(reply)).toContain(customReply);
+      expect(systemText(reply)).not.toContain("qualified-target-intent");
+      expect(JSON.stringify(reply.messages)).not.toContain("lower-target-intent");
+      const intentMaterial = (reply.messages ?? [])
+        .filter((m) => m.role === "user")
+        .flatMap((m) => m.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])))
+        .find((text) => text.includes('"kind":"qq_batch_intents"'));
+      expect(intentMaterial).toBeDefined();
+      const parsed = JSON.parse(intentMaterial!);
+      expect(parsed.trust).toBe("data_only");
+      expect(parsed.intents).toEqual([{ targetId: "20003", intent: "qualified-target-intent" }]);
+      expect(f.outbox.list({}).map((d) => d.target?.participantId)).toEqual(["20003"]);
+    },
+  );
+
+  it("lets qualified targets decline without retrying, rescoring or creating delivery intents", async () => {
+    const f = setup({ minimumScore: 5, replyComplete: () => JSON.stringify({ kind: "none" }) });
+    f.receive("1", "20002");
+    f.clock.seconds += 1;
+    f.receive("2", "20003");
+    const conversation = f.journal.ensureOneBot(bindingId)!;
+    expect((await f.activate()).status).toBe("no_output");
+    expect(f.calls.filter((c) => c.kind === "complete" && isBatchScore(c.request))).toHaveLength(1);
+    expect(f.calls.filter((c) => c.kind === "complete" && !isBatchScore(c.request))).toHaveLength(
+      2,
+    );
+    expect(f.calls.filter((c) => c.kind === "stream")).toHaveLength(0);
+    expect(f.outbox.list({})).toHaveLength(0);
+    expect(f.journal.chimingInJudgedAt(conversation.id)).toBe(f.now());
+    const replies = f.db.query("SELECT status FROM agent_runs WHERE spec_id='onebot.main'").all();
+    expect(replies).toEqual([{ status: "no_output" }, { status: "no_output" }]);
+  });
+
+  it("keeps qualified guidance on independent generation without another score call", async () => {
+    const f = setup({
+      minimumScore: 5,
+      replyComplete: (request) =>
+        JSON.stringify({
+          kind: "final",
+          outputs: [
+            {
+              kind: "generate",
+              targetId: authorizedTargetOf(request),
+              instructions: "回应这次话头。",
+            },
+          ],
+        }),
+    });
+    f.receive("1", "20002");
+    f.clock.seconds += 1;
+    f.receive("2", "20003");
+    expect((await f.activate()).status).toBe("completed");
+    expect(f.calls.filter((c) => c.kind === "complete" && isBatchScore(c.request))).toHaveLength(1);
+    expect(f.calls.filter((c) => c.kind === "complete" && !isBatchScore(c.request))).toHaveLength(
+      2,
+    );
+    const generations = f.calls.filter((c) => c.kind === "stream");
+    expect(generations).toHaveLength(2);
+    for (const { request } of generations) {
+      const system = (request.messages ?? [])
+        .filter((m) => m.role === "system")
+        .flatMap((m) => m.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])))
+        .join("\n");
+      expect(system).toContain(QQ_QUALIFIED_REPLY_GUIDANCE);
+      expect(isBatchScore(request)).toBe(false);
+    }
+    expect(f.outbox.list({})).toHaveLength(2);
   });
 
   it("production OneBot runtime sends a fast early-committed target before the gated sibling finishes", async () => {

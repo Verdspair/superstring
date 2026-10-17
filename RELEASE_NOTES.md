@@ -41,6 +41,8 @@
 - **自主文字与表情回复**：Agent 可选择纯文字、单张表情或图文组合。只发文字时无需额外声明不用表情。方案可设置较少使用、平衡选择或积极考虑三档表情倾向，默认平衡；本群可覆盖，私聊跟随方案。这是软倾向，不是发送比例或次数限制。
 - **表情关闭即时生效**：关闭全局或本群表情后，尚未开始发送的表情（含排队部件）不再发送，合法文字照常。已开始的请求不撤回，未知送达结果不盲目重发。回复仍至多一张表情，旧数量控件退役但不重写已保存值。
 
+- **自主接话参与度校准**：自主接话兴趣评分将 4–6 分（以 5 分为基准档）定为自然轻度参与档，认可日常接梗与轻松互动的社交价值，不要求每轮必须提供重要新信息；达到方案开口门槛后直接承接意图资料组织回复，不再重复评估是否值得开口。同时保留合理沉默机制：在确实无话可说、违反本群自定义规则、引用来源失效或已有任务确认送达相同内容时保持沉默；送达状态未知时不盲目重发同一内容，独立新问题仍可回应。出厂默认门槛（6 分）与既有群设置保持不变。
+
 - QQ 艾特与合法引用助手消息的请求可独立执行；每会话艾特／普通任务上限默认 4／1（1–64）。全局／每服务模型请求上限另行配置，默认 4／2（1–256），同时生效。
 - 输入防刷屏默认对新方案开启、对已有方案关闭。同成员首条起 3 秒内至少 3 条纯图片消息按一个候选处理，他人插话不打断；自动排除的图片仍可按需读取，直接请求不受分组等待影响。
 - 所有图片类别共用静图与动图规格，取消单独表情画质和补充时间窗；图片设置收敛为基本／高级，保留自定义阶段。
@@ -97,6 +99,8 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 
 - **Independent text and sticker replies**: The Agent can choose text, one sticker, or a combination. Text-only replies need no extra sticker opt-out. Schemes offer low, medium, or high sticker-use guidance, defaulting to medium; groups can override it, while private chats follow the scheme. This is a soft preference, not a sending ratio or count limit.
 - **Immediate sticker disable**: Turning off global or group stickers blocks unstarted sticker sends, including queued parts, without blocking valid text. Started requests are not withdrawn, and unknown delivery results are not blindly retried. Replies still allow at most one sticker. The old count control is retired without rewriting stored values.
+
+- **Autonomous participation calibration**: The interest scoring rubric treats 4–6 (with 5 as baseline) as a natural light-participation range that recognizes the social value of natural, brief conversation without requiring novel information each round; once a candidate passes the scheme's initiative threshold, it directly carries forward intent material to craft a response without judging the same participation decision again. Legitimate silence remains preserved: the Agent may choose not to send a message when there is genuinely nothing to say, when custom group rules forbid it, when cited sources become invalid, or when delivery of identical content is already confirmed; it does not blindly resend identical content while delivery status is unknown, while responses to independent new questions remain allowed. Default threshold (6) and existing group configurations remain unchanged.
 
 - QQ mentions and valid replies to assistant messages run as independent tasks. Per-conversation mention and ordinary task limits default to 4 and 1 (range 1–64). Global and per-service model request limits are configured separately, default to 4 and 2 (range 1–256), and both apply.
 - Input anti-spam is enabled for new schemes and kept off for existing schemes. At least three image-only messages from one sender within three seconds of the first form one candidate; other senders do not break it. Excluded images remain readable on demand, and direct requests do not wait for grouping.

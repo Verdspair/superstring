@@ -120,8 +120,10 @@ import {
   buildQqPrompt,
   QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
   QQ_JUDGEMENT_RESPONSE_SCHEMA,
+  QQ_QUALIFIED_REPLY_GUIDANCE,
   type QqPromptInput,
   type QqPromptMaterial,
+  qqJudgeablePath,
   qqPromptMessages,
   qqReplaceOutputRule,
   qqSpeakerLabel,
@@ -1698,7 +1700,8 @@ export class BotContextSource {
         this.evaluationMessages(material, observations, undefined, timeline),
         "judgement",
         "只返回 JSON 对象 evaluations：对本批每个 targetId 返回一项，包含 0–10 整数 score、意图 intent 和来源引用 sourceSeqs。" +
-          "qq_batch_targets.sourceSeqs 是所有候选共享的完整可引用序号列表；targets 中各项的 sourceSeqs 是该目标这次尚待回应的输入，围绕这些输入判断，其他历史只作上下文。每项只引用共享列表中的真实来源，也可以返回空 sourceSeqs。不得遗漏、重复或增加候选目标。",
+          "qq_batch_targets.sourceSeqs 是所有候选共享的完整可引用序号列表；targets 中各项的 sourceSeqs 是该目标这次尚待回应的输入，围绕这些输入判断，其他历史只作上下文。每项只引用共享列表中的真实来源，也可以返回空 sourceSeqs。不得遗漏、重复或增加候选目标。" +
+          "intent 写本目标这轮可接的话头/回应方向；没有合适内容可空。",
       ),
       batchTargets,
     ];
@@ -2335,9 +2338,13 @@ ${intent.trim()}`,
               message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])).join(""),
             )
             .join("\n\n");
-    return this.options.path === "chiming_in" && target?.activeInput
-      ? `${actualInstructions}\n\nqq_active_input 标明本目标这次尚待回应的输入，eventIds 对应消息事实的 id；围绕这些输入回复，其余历史仅作上下文。引用和 @ 仍由你独立选择。`
-      : actualInstructions;
+    const base =
+      this.options.path === "chiming_in" && target?.activeInput
+        ? `${actualInstructions}\n\nqq_active_input 标明本目标这次尚待回应的输入，eventIds 对应消息事实的 id；围绕这些输入回复，其余历史仅作上下文。引用和 @ 仍由你独立选择。`
+        : actualInstructions;
+    return qqJudgeablePath(this.options.path) && this.batchIntents
+      ? `${base}\n\n${QQ_QUALIFIED_REPLY_GUIDANCE}`
+      : base;
   }
   private cost(
     tier: QqContextTier,

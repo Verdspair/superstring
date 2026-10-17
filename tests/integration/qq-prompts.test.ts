@@ -538,7 +538,15 @@ describe("QQ prompt assembly", () => {
     const judgement = buildQqPrompt(base);
     const scoring = judgement.find((s) => s.origin === "scoring");
     expect(scoring?.role).toBe("system");
-    for (const band of ["7–10", "4–6", "1–3", "0＝明显不该开口"]) {
+    for (const band of [
+      "7–10",
+      "4–6",
+      "1–3",
+      "0：",
+      "5 分为基准档",
+      "回应本身有社交价值",
+      "不要求必须提供新信息",
+    ]) {
       expect(scoring?.body).toContain(band);
     }
     expect(scoring?.body).not.toContain("拿不准就给低分");
