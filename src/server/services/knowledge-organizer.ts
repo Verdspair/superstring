@@ -2,7 +2,8 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
 import { AgentRunRepository } from "../db/agent-run-repository";
-import { DEFAULT_USER_ID, newId, nowIso } from "../db/repositories";
+import { readOrganizationSettings } from "../db/organization-repository";
+import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "../db/repositories";
 import { AppError } from "../errors";
 import type { ChatMessage, ModelGateway } from "../llm/model-gateway";
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
@@ -32,6 +33,8 @@ class OrganizerFailure extends Error {
 }
 export interface KnowledgeOrganizerOptions {
   db: Database;
+  /** 传入后按任务入口一次读取全局辅助分配档（0068）；缺省＝保持既有行为（无档）。 */
+  orm?: Orm;
   gateway: ModelGateway;
   agentRuntime?: LeafAgentRuntime;
   telemetry?: RuntimeTelemetry;
@@ -263,6 +266,10 @@ export class KnowledgeOrganizer {
     return span ? span.within(work) : work();
   }
   private async runJob(job: Job, timeoutMs: number, span?: TraceScope): Promise<boolean> {
+    // 全局辅助分配档（0068）：本任务入口读取一次，段循环内不重读；缺席＝既有公式与容量门。
+    const allocation = this.options.orm
+      ? readOrganizationSettings(this.options.orm).auxiliary_allocation?.knowledge_organize
+      : undefined;
     const controller = new AbortController();
     this.controller = controller;
     const signal = controller.signal;
@@ -315,7 +322,8 @@ export class KnowledgeOrganizer {
         this.check(job, signal);
         if (capacity === null || !Number.isInteger(capacity) || capacity <= 0)
           throw new OrganizerFailure("MODEL_CAPACITY_UNAVAILABLE");
-        const output = Math.min(2048, Math.floor(capacity / 4));
+        // 保存档的 output_reserved 是硬 max_tokens（两种模式都硬）；缺席＝既有容量派生公式。
+        const output = allocation?.output_reserved ?? Math.min(2048, Math.floor(capacity / 4));
         const messages: ChatMessage[] = [
           {
             role: "system",
@@ -331,6 +339,11 @@ export class KnowledgeOrganizer {
               sum + (typeof message.content === "string" ? utf8Size(message.content) : 0) + 8,
             2,
           ) + utf8Size(JSON.stringify(RESPONSE_SCHEMA));
+        if (allocation?.input_limit != null && cost > allocation.input_limit)
+          throw new OrganizerFailure("CONTEXT_AUX_BUDGET");
+        // 自动档输入封顶 = 本段已知容量 - 输出预留（容量探测本就存在，不新增调用）。
+        if (allocation?.mode === "auto" && cost > capacity - output)
+          throw new OrganizerFailure("CONTEXT_AUX_BUDGET");
         if (output < 128 || cost + output + 256 > capacity)
           throw new OrganizerFailure("KNOWLEDGE_INPUT_TOO_LARGE");
         const text = await this.call(signal, () =>

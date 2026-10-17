@@ -198,7 +198,10 @@ export const TASK_READ_DESCRIPTION: SharedActionDescription = {
 // 终结回复动作（speech.reply）
 // ---------------------------------------------------------------------------
 
-/** 终结动作：输出交宿主既有提交路径，工具本身不发送，也不追加一次模型确认。 */
+const QQ_REPLY_REFERENCE_RULE =
+  "Mention observed IDs or authorized targets only; roster data grants no @ rights.";
+
+// 终结动作：输出交宿主既有提交路径，工具本身不发送，也不追加一次模型确认。
 export const SPEECH_REPLY_DESCRIPTION: SharedActionDescription = {
   name: "speech.reply",
   capability: "conversation.reply",
@@ -334,7 +337,8 @@ export const REPLY_TEXT_DESCRIPTION: SharedActionDescription = {
   effect: "write",
   parameters: z.toJSONSchema(ReplyTextArgumentsSchema),
   description:
-    "Contribute text for each authorized QQ target. Choose inline text or generation instructions; replyToMessageId and mentionIds are independent optional fields. Calling this tool without reply.sticker means this target is text-only.",
+    "Contribute inline text or generation instructions per authorized target. Quote/mentions independent and optional; no reply.sticker means text-only. " +
+    QQ_REPLY_REFERENCE_RULE,
 };
 
 export const REPLY_STICKER_DESCRIPTION: SharedActionDescription = {
@@ -343,7 +347,8 @@ export const REPLY_STICKER_DESCRIPTION: SharedActionDescription = {
   effect: "write",
   parameters: z.toJSONSchema(ReplyStickerArgumentsSchema),
   description:
-    "Contribute one sticker for each authorized QQ target, using only an ID disclosed by sticker.search in this run. This may be sticker-only or combine with reply.text; quote and mention fields are independent and optional.",
+    "One sticker per authorized target from this run's sticker.search IDs; alone or with reply.text. Optional independent quote/mentions. " +
+    QQ_REPLY_REFERENCE_RULE,
 };
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import { ConversationActiveTraces } from "./ConversationActiveTraces";
 import { ConversationIdentity } from "./ConversationIdentity";
 import { EventRecord } from "./EventRecord";
 import { QqGroupControls } from "./QqGroupControls";
-import { timelineRows } from "./timeline-projection";
+import { type ConversationTimelineRow, timelineRows } from "./timeline-projection";
 
 export function ExternalConversation({
   conversation,
@@ -29,7 +29,12 @@ export function ExternalConversation({
   );
   const scroll = useTimelineScroll();
   const history = useConversationEvents(conversation.id, scroll.beforeChange, { enabled: active });
-  const rows = useMemo(() => timelineRows(history.items), [history.items]);
+  const previousRowsRef = useRef<ConversationTimelineRow[] | undefined>(undefined);
+  const rows = useMemo(() => {
+    const next = timelineRows(history.items, previousRowsRef.current);
+    previousRowsRef.current = next;
+    return next;
+  }, [history.items]);
   const bySourceMap = useMemo(() => {
     const map = new Map<string, ConversationEventView>();
     for (const row of rows) {

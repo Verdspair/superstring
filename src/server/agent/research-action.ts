@@ -2,6 +2,7 @@ import {
   RESEARCH_ACTION_DESCRIPTION,
   ResearchSchema,
 } from "../../shared/contracts/agent-action-descriptions";
+import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ActionExecutor } from "./action-executor";
 import type { AgentRuntime, ConversationInput } from "./agent-runtime";
@@ -33,6 +34,12 @@ export function createResearchAction(options: {
   input: ConversationInput;
   actions: readonly BuiltInAction[];
   limits?: Partial<ResearchLimits>;
+  /**
+   * 辅助分配档（0068，research 角色）：父 run 已冻结并校验的档。缺席时回读
+   * input.context.researchAllocation?.()（QQ 已接线；Web owner 接线中）；
+   * 两处都缺席＝既有行为（不加输入帽、不发送输出帽）。
+   */
+  allocation?: AuxiliaryAllocationProfile;
 }): BuiltInAction {
   const limits: ResearchLimits = { ...DEFAULT_RESEARCH_LIMITS, ...options.limits };
   let started = 0;
@@ -44,6 +51,47 @@ export function createResearchAction(options: {
       // 一个动作实例只服务一个父 run，所以计数就在实例上。
       if (++started > limits.maxPerRun)
         throw Object.assign(new Error("AGENT_SUBTASK_LIMIT"), { code: "AGENT_SUBTASK_LIMIT" });
+      // 辅助分配档（0068）：调用点入参优先（父 run 冻结值），否则回读本源钩子。
+      const allocation = options.allocation ?? options.input.context.researchAllocation?.();
+      const outputOverride =
+        allocation?.output_reserved != null ? allocation.output_reserved : undefined;
+      // 输入帽（两种模式下都硬）：fixed 用显式 input_limit；auto 用已知模型容量减输出预留，
+      // 仅在路由声明了编码时成立（contextInputLimit 与预算同一计量单位），未知编码不猜换算。
+      // 与父级已有 inputUnits 取小，绝不放宽父级上限。
+      let inputCap: number | undefined;
+      if (allocation?.input_limit != null) {
+        inputCap =
+          options.spec.limits.inputUnits === undefined
+            ? allocation.input_limit
+            : Math.min(options.spec.limits.inputUnits, allocation.input_limit);
+      } else if (allocation?.mode === "auto") {
+        // 自动档的输入封顶 = 已知模型容量 - 输出预留（与其它辅助角色同一保守 utf8 估算口径，
+        // 不要求路由声明编码，也不混用第二套容量）。模型名或容量未知即显式拒绝，不猜保底值。
+        const prepare = options.input.context.prepareModelContext;
+        const model = options.spec.model;
+        if (!prepare || model === undefined || model === "")
+          throw Object.assign(new Error("CONTEXT_CAPACITY_UNKNOWN"), {
+            code: "CONTEXT_CAPACITY_UNKNOWN",
+          });
+        const budget = await prepare(model, context.signal);
+        if (
+          !budget ||
+          budget.capacity === null ||
+          !Number.isSafeInteger(budget.capacity) ||
+          budget.capacity < 1
+        )
+          throw Object.assign(new Error("CONTEXT_CAPACITY_UNKNOWN"), {
+            code: "CONTEXT_CAPACITY_UNKNOWN",
+          });
+        budget.assertCurrent();
+        const room = budget.capacity - (outputOverride ?? 0);
+        if (room < 1)
+          throw Object.assign(new Error("CONTEXT_AUX_BUDGET"), { code: "CONTEXT_AUX_BUDGET" });
+        inputCap =
+          options.spec.limits.inputUnits === undefined
+            ? room
+            : Math.min(options.spec.limits.inputUnits, room);
+      }
       const actions = options.actions.filter(
         (action) =>
           action.sandboxCallable !== false && options.executor.allowed(action, context, "subtask"),
@@ -63,10 +111,12 @@ export function createResearchAction(options: {
           generation: {
             model: options.spec.model,
             instructions: "Write a concise research conclusion, not a message to a person.",
+            ...(outputOverride === undefined ? {} : { maxTokens: outputOverride }),
           },
           availableActions: actions.map((action) => action.description),
           limits: {
             ...options.spec.limits,
+            ...(inputCap === undefined ? {} : { inputUnits: inputCap }),
             steps: Math.min(options.spec.limits.steps, limits.maxSteps),
             deadlineMs: limits.deadlineMs,
           },

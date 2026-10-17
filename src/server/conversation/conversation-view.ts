@@ -154,7 +154,7 @@ function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWak
   const run = task.origin_run_id
     ? (db
         .query(
-          "SELECT run_id,spec_id,spec_version,agent_id,observed_seq FROM agent_runs WHERE run_id=? AND conversation_id=? AND owner_kind='conversation' AND owner_id=? AND (agent_id=? OR agent_id IS NULL) AND wake_id IS ?",
+          "SELECT rowid AS origin_rowid,run_id,spec_id,spec_version,agent_id,observed_seq FROM agent_runs WHERE run_id=? AND conversation_id=? AND owner_kind='conversation' AND owner_id=? AND (agent_id=? OR agent_id IS NULL) AND wake_id IS ?",
         )
         .get(
           task.origin_run_id,
@@ -163,6 +163,7 @@ function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWak
           conversation.agent_id,
           task.origin_wake_id,
         ) as {
+        origin_rowid: number;
         run_id: string;
         spec_id: string;
         spec_version: string;
@@ -175,11 +176,12 @@ function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWak
     run.agent_id === conversation.agent_id &&
     run.observed_seq === task.source_through_seq
       ? (db
-          .query(`SELECT run_id FROM agent_runs
-            WHERE conversation_id=? AND owner_kind='conversation' AND owner_id=?
+          .query(`SELECT run_id FROM agent_runs NOT INDEXED
+            WHERE rowid>=? AND conversation_id=? AND owner_kind='conversation' AND owner_id=?
               AND agent_id=? AND wake_id IS ? AND spec_id=? AND spec_version=?
               AND observed_seq=? ORDER BY rowid DESC LIMIT 1`)
           .get(
+            run.origin_rowid,
             event.conversationId,
             event.conversationId,
             conversation.agent_id,

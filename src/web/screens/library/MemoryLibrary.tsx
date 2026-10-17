@@ -818,7 +818,20 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
 }
 
 export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
-  const s = useSuperstringStore(),
+  const s = useSuperstringStore(
+      useShallow((state) => ({
+        clearMemoryDetail: state.clearMemoryDetail,
+        discardMemoryCorrection: state.discardMemoryCorrection,
+        loadMemoryContent: state.loadMemoryContent,
+        memoryContent: state.memoryContent,
+        memoryCorrectionDirty: state.memoryCorrectionDirty,
+        memoryCorrectionDraft: state.memoryCorrectionDraft,
+        memoryCorrectionSaving: state.memoryCorrectionSaving,
+        memoryEntryDetail: state.memoryEntryDetail,
+        patchMemoryCorrection: state.patchMemoryCorrection,
+        saveMemoryCorrection: state.saveMemoryCorrection,
+      })),
+    ),
     t = useTranslation().t,
     entry = s.memoryEntryDetail,
     content = s.memoryContent,
@@ -1008,7 +1021,16 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
 }
 
 function ManualMemory({ onClose, active }: { onClose: () => void; active: boolean }) {
-  const s = useSuperstringStore(),
+  const s = useSuperstringStore(
+      useShallow((state) => ({
+        clearMemoryTurns: state.clearMemoryTurns,
+        loadMemoryTurns: state.loadMemoryTurns,
+        manualConsolidate: state.manualConsolidate,
+        memorySessions: state.memorySessions,
+        memoryTurns: state.memoryTurns,
+        pendingOperations: state.pendingOperations,
+      })),
+    ),
     t = useTranslation().t;
   const [session, setSession] = useState(s.memorySessions[0]?.id ?? ""),
     [limit, setLimit] = useState(50),

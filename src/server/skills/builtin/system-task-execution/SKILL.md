@@ -28,7 +28,8 @@ those bindings.
 
 `task.start` begins a declared agent task; it needs a real task declaration,
 already authorized elsewhere. `task.read` pages through a task's status and
-result for this run. Follow `nextOffset` until it is `null`.
+result for this run. Follow `nextOffset` until it is `null`. These are declared
+agent tasks, not QQ conversation scheduling or reply-delivery records.
 
 ## Boundaries
 

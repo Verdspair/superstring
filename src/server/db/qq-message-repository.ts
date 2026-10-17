@@ -14,7 +14,7 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, lte, sql } from "drizzle-orm";
 import type { QqMessagePart } from "../../shared/contracts/qq-message";
-import { fail } from "../errors";
+import { fail, QqObservationConflictError } from "../errors";
 import { observationExpiresAt } from "../services/qq-retention";
 import { readQqRetentionDays } from "./qq-settings-repository";
 import { nowIso, type Orm } from "./repositories";
@@ -111,7 +111,7 @@ function mergeBackfill(
   const inputPartsJson = JSON.stringify(input.parts);
   const hasExistingText = existing.parts !== "[]";
   if (hasExistingText && inputPartsJson !== "[]" && inputPartsJson !== existing.parts) {
-    fail("MEMORY_SOURCE_INVALID", "已存在的消息片段不允许被回填改写");
+    throw new QqObservationConflictError("已存在的消息片段不允许被回填改写");
   }
   const source = namePairOf(input);
   // 名字 pair 冲突矩阵：haveValue/givenValue × haveSource/givenSource。
@@ -127,10 +127,10 @@ function mergeBackfill(
     }
     if (existingValue !== null) {
       if (givenValue !== null && givenValue !== existingValue) {
-        fail("MEMORY_SOURCE_INVALID", "已存在的消息姓名事实不允许被回填改写");
+        throw new QqObservationConflictError("已存在的消息姓名事实不允许被回填改写");
       }
       if (givenValue === null && givenSource !== null) {
-        fail("MEMORY_SOURCE_INVALID", "已存在的消息姓名事实不允许被本次清空声明覆盖");
+        throw new QqObservationConflictError("已存在的消息姓名事实不允许被本次清空声明覆盖");
       }
       if (givenValue !== null && givenSource !== null && existingSource === null) {
         // 值已记录但来源未知（历史行）：同值 wire 核补落来源，不是改写。
@@ -142,7 +142,7 @@ function mergeBackfill(
     if (existingValue === null && existingSource !== null) {
       // 已核清空（值 null＋来源明确）：字符串补记不得复活它。
       if (givenValue !== null) {
-        fail("MEMORY_SOURCE_INVALID", "已核实的名字清空不允许被回填复活");
+        throw new QqObservationConflictError("已核实的名字清空不允许被回填复活");
       }
       return { value: null, source: existingSource };
     }
@@ -166,14 +166,14 @@ function mergeBackfill(
     input.legacyDisplayName !== null &&
     input.legacyDisplayName !== existing.legacyDisplayName
   ) {
-    fail("MEMORY_SOURCE_INVALID", "已存在的消息姓名事实不允许被回填改写");
+    throw new QqObservationConflictError("已存在的消息姓名事实不允许被回填改写");
   }
   if (
     existing.replyToMessageId !== null &&
     input.replyToMessageId !== null &&
     input.replyToMessageId !== existing.replyToMessageId
   ) {
-    fail("MEMORY_SOURCE_INVALID", "已存在的引用关系不允许被回填改写");
+    throw new QqObservationConflictError("已存在的引用关系不允许被回填改写");
   }
   if (existing.nameState === "legacy") {
     // legacy 行不采用补记的双名字/双来源：单昵称仍是唯一历史证据（§13.5）。
@@ -236,7 +236,7 @@ export function recordQqMessageFact(
     .get();
   if (existing) {
     if (!sameFacts(existing, input)) {
-      fail("MEMORY_SOURCE_INVALID", "同一消息键描述了不同事实，拒绝覆盖");
+      throw new QqObservationConflictError("同一消息键描述了不同事实，拒绝覆盖");
     }
     return existing;
   }

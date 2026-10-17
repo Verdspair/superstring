@@ -98,6 +98,7 @@ function composeFixture(options: {
     reply: { split_by_speaker: true },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
+      participation_timing: "resource_window",
       initiative_batch_target_count: options.batchSize,
       initiative_batch_jitter_count: 0,
       initiative_time_window_enabled: false,

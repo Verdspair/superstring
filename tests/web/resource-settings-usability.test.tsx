@@ -5,11 +5,16 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
+import {
+  resetContextAllocationTarget,
+  setContextAllocationTarget,
+} from "../../src/web/features/context-allocation";
 import { knowledgeReadDirty } from "../../src/web/features/knowledge/types";
 import {
   KnowledgeToolSettings,
   MemoryToolSettings,
 } from "../../src/web/screens/assistants/ResourceRules";
+import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, agent, B, persona, policy, setupLibrary } from "./helpers/library-fixture";
@@ -42,6 +47,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  resetContextAllocationTarget();
 });
 
 describe("library web memory maintenance", () => {
@@ -244,12 +250,11 @@ describe("agent retrieval presets", () => {
     expect(screen.queryByRole("button", { name: /·/ })).toBeNull();
     const scan = screen.getAllByLabelText("每次查询扫描候选上限") as HTMLInputElement[];
     const entries = screen.getAllByLabelText("每页最大返回项") as HTMLInputElement[];
-    const budget = screen.getAllByLabelText(
-      "每轮记忆工具结果总预算（UTF-8 字节）",
-    ) as HTMLInputElement[];
     expect(scan.map((el) => el.value)).toEqual(["30", "60", "120"]);
     expect(entries.map((el) => el.value)).toEqual(["6", "10", "16"]);
-    expect(budget.map((el) => el.value)).toEqual(["2048", "4096", "8192"]);
+    // 每轮预算编辑已按授权搬迁到统一上下文分配页：旧页不再有预算输入，只留摘要与跳转；
+    // 三档已存预算值改在「资料读取」用途下断言（见下一个用例），不删弱本来的值断言。
+    expect(screen.queryByLabelText("每轮记忆工具结果总预算（UTF-8 字节）")).toBeNull();
     // 只改广泛档：其他两档不受影响，草稿只标记 long-memory。
     const broadScan = within(broadItem as HTMLElement).getByLabelText(
       "每次查询扫描候选上限",
@@ -263,6 +268,10 @@ describe("agent retrieval presets", () => {
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
+    // 预算值不在旧页草稿里（搬迁后归 context 页），不出现 newUI 预算通道。
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
+      8192,
+    );
     // 保存只写 memory-tools 的白名单，不触碰策略。
     await act(async () => {
       expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
@@ -284,6 +293,46 @@ describe("agent retrieval presets", () => {
       }),
     );
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
+  });
+
+  it("moves the per-turn budget edit to the unified workspace and saves through the context whitelist", async () => {
+    const mocks = saveMocks();
+    const client = setupLibrary({
+      ...mocks,
+      getModelCapacity: vi
+        .fn()
+        .mockResolvedValue({ model: "model-a", status: "loaded", context_length: 128000 }),
+    });
+    setContextAllocationTarget({ purpose: "reading", agentId: A });
+    await act(async () => render(<ContextAllocationWorkspace active={true} />));
+    const budget = screen.getByTestId("reading-preset-max-tokens-broad") as HTMLInputElement;
+    expect(budget.value).toBe("8192");
+    fireEvent.change(budget, { target: { value: "9000" } });
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
+      9000,
+    );
+    // 预算改动只归 context 页：memory-tools 页不因此变脏，模型库也不被隐式写入。
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
+    expect(mocks.updateAgent).not.toHaveBeenCalled();
+    expect(client.updatePolicy).not.toHaveBeenCalled();
+    // 保存走 context 白名单：只携带 max_tokens 差异，不再提交扫描/条目草稿。
+    await act(async () => {
+      expect(await store.getState().saveSettingsPage("context")).toBe(true);
+    });
+    expect(mocks.updateAgent).toHaveBeenCalledTimes(1);
+    const [savedId, savedBody] = mocks.updateAgent.mock.calls[0];
+    expect(savedId).toBe(A);
+    expect(savedBody).toEqual({
+      expected_version: 1,
+      p5_config: expect.objectContaining({
+        retrieval_presets: {
+          conservative: expect.objectContaining({ max_tokens: 2048 }),
+          standard: expect.objectContaining({ max_tokens: 4096 }),
+          broad: expect.objectContaining({ max_tokens: 9000, candidate_limit: 120 }),
+        },
+      }),
+    });
+    expect(savedBody).not.toHaveProperty("memory_retrieval_prompt");
   });
 
   it("jumps to the memory library through the shared draft-safe navigation", async () => {

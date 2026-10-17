@@ -414,6 +414,27 @@ try {
           installRoot,
           "app/resources/migrations/versions/0066_jsonb_context_source_matchers.sql",
         ),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0067_qq_participation_timing.sql",
+        ),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0068_context_allocation.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0069_query_plan_indexes.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(installRoot, "app/resources/migrations/versions/0070_context_source_lookup.sql"),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0071_context_storage_metadata.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { LocalModelStatusSchema, nonBlankString, RetrievalModeSchema, rawString } from "./common";
+import { AgentAuxiliaryAllocationSchema, ContextAllocationSchema } from "./context-allocation";
 
 /**
  * Model catalogue and context-budget (P5) contracts. Pure `zod` only.
@@ -109,6 +110,16 @@ export const P5ConfigSchema = z
     catalog_batch_size: z.number().int().min(1).max(10000).default(30),
     // Compatibility only for stored configurations/snapshots; automatic recall is retired.
     recall_max_tokens: z.number().int().min(1).max(1048576).optional(),
+    /**
+     * 分配模式组（0068）：省略＝fixed（既有行为）。context_window 的语义两种模式下都不变——
+     * 它始终是本助手主请求的功能帽，auto 只在帽内按实际材料需求取用，不扩大也不清空它。
+     */
+    allocation: ContextAllocationSchema.optional(),
+    /**
+     * 辅助任务分配（0068，AUX-CONTRACT-FROZEN）。optional；缺席＝各辅助用途保持调用方
+     * 现行为（无任何覆盖）。P5 快照整组带走，整理任务在入队时冻结，不在重试时读活配置。
+     */
+    auxiliary_allocation: AgentAuxiliaryAllocationSchema.optional(),
   })
   .superRefine((v, ctx) => {
     if (v.context_window !== null) {

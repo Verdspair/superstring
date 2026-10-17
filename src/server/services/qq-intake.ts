@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
+import { type ErrorCode, ErrorCodeSchema } from "../../shared/contracts/errors";
 import { publishConversationChange } from "../conversation/conversation-changes";
 import { saveQqOriginalName } from "../db/qq-group-name-repository";
 import * as schema from "../db/schema";
+import { isAppError, QqObservationConflictError } from "../errors";
 // The intake runtime: connection events in, durable observations out.
 //
 // This is the assembly point the plan lists as P2's remaining item. It connects three
@@ -48,6 +50,9 @@ export type QqIntakeEvent =
       reason: "not_a_message" | "unbound_conversation" | "switch_off" | "not_configured";
     }
   | { kind: "discarded"; reason: "duplicate_key_conflict" | "invalid_observation" }
+  | { kind: "failed"; code: ErrorCode }
+  /** 已提交后的调度失败：outcome 仍是 recorded，只补一条内容无关的诊断。 */
+  | { kind: "scheduling_failed"; code: string }
   | { kind: "cycle"; due: number; enqueued: number }
   | { kind: "connection"; state: OneBotConnectionState["phase"] }
   /** The per-message follow-up (P5m). Counts and verdicts only; never text, ids or prompts. */
@@ -66,11 +71,17 @@ export type RecordOutcome =
       kind: "ignored";
       reason: "not_a_message" | "unbound_conversation" | "switch_off" | "not_configured";
     }
-  | { kind: "discarded"; reason: "duplicate_key_conflict" | "invalid_observation" };
+  | { kind: "discarded"; reason: "duplicate_key_conflict" | "invalid_observation" }
+  /** 已落库但提交后的调度失败不改变 recorded；这个 failed 形态只用于存储/记录阶段失败。 */
+  | { kind: "failed"; code: ErrorCode };
 
 export interface ConversationIngress {
   beforeRecord(bindingId: string): void;
-  afterRecord(bindingId: string, observation: QqObservation): void;
+  /**
+   * 只做事务内的持久面（journal/寻址）；可回一个提交后才执行的回调（回复机会的调度）。
+   * 回调在观察事务**提交之后**才被调用：调度失败不再回滚观察。
+   */
+  afterRecord(bindingId: string, observation: QqObservation): void | (() => void);
   afterMedia(bindingId: string, eventKey: string): void;
 }
 export interface RecordInboundOptions {
@@ -83,6 +94,12 @@ export interface RecordInboundOptions {
   accountId: string;
   /** Called with a content-free outcome; a diagnostic sink, never a content log. */
   onEvent?: (event: QqIntakeEvent) => void;
+}
+
+/** 失败兜底诊断：无 onEvent 时也要留痕；内容无关，只有固定标签、阶段与稳定码。 */
+function reportIntakeFailure(stage: "record" | "schedule", code: string, hasSink: boolean): void {
+  if (hasSink) return;
+  console.warn("[qq-intake] failed", JSON.stringify({ stage, code }));
 }
 
 /**
@@ -149,18 +166,41 @@ export function recordInbound(
     return { kind: "ignored", reason: "unbound_conversation" };
   }
   let recorded: RecordedObservation;
+  const committed: { schedule?: () => void } = {};
   try {
     // Note the deliberate absence of a `paused` check: a paused conversation keeps
     // observing and only stops being *triggered*.
     recorded = recordObservation(orm, observation, binding.agentId, {
       beforeWrite: () => options.conversationIngress?.beforeRecord(binding.id),
-      afterWrite: () => options.conversationIngress?.afterRecord(binding.id, observation),
+      afterWrite: () => {
+        const schedule = options.conversationIngress?.afterRecord(binding.id, observation);
+        if (schedule) committed.schedule = schedule;
+      },
     });
-  } catch {
-    // A reused event key describing a different message is a refusal by design; it is
-    // reported as a discard so the transport stays healthy.
-    emit({ kind: "discarded", reason: "duplicate_key_conflict" });
-    return { kind: "discarded", reason: "duplicate_key_conflict" };
+  } catch (error) {
+    if (error instanceof QqObservationConflictError) {
+      // A reused event key describing a different message is a refusal by design; it is
+      // reported as a discard so the transport stays healthy.
+      emit({ kind: "discarded", reason: "duplicate_key_conflict" });
+      return { kind: "discarded", reason: "duplicate_key_conflict" };
+    }
+    // 任何其他存储/记录失败都不是 duplicate：报告失败结果并保持 transport 健康。
+    const parsed = ErrorCodeSchema.safeParse(isAppError(error) ? error.code : undefined);
+    const code: ErrorCode = parsed.success ? parsed.data : "DATABASE_UNAVAILABLE";
+    emit({ kind: "failed", code });
+    reportIntakeFailure("record", code, options.onEvent !== undefined);
+    return { kind: "failed", code };
+  }
+  // 调度只属于提交后的阶段：观察已持久，调度失败不再回滚它。
+  if (recorded.recorded && committed.schedule) {
+    try {
+      committed.schedule();
+    } catch (error) {
+      const parsed = ErrorCodeSchema.safeParse(isAppError(error) ? error.code : undefined);
+      const code = parsed.success ? parsed.data : "QQ_INGRESS_SCHEDULING_FAILED";
+      emit({ kind: "scheduling_failed", code });
+      reportIntakeFailure("schedule", code, options.onEvent !== undefined);
+    }
   }
   const event: QqIntakeEvent = {
     kind: "recorded",

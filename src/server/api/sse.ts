@@ -21,7 +21,7 @@ export const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
 
 export interface SseWriter {
   readonly cancelled: boolean;
-  send(event: string, data: Record<string, unknown>): void;
+  send(event: string, data: Record<string, unknown>): Promise<void>;
 }
 
 /**
@@ -45,6 +45,8 @@ export function createSseResponse(
   let errored = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   let pump: Promise<void> | undefined;
+  let resume: (() => void) | undefined;
+  let sending = false;
   const cleanup = () => {
     if (timer !== undefined) clearInterval(timer);
     timer = undefined;
@@ -53,6 +55,8 @@ export function createSseResponse(
   const disconnect = () => {
     if (cancelled) return;
     cancelled = true;
+    resume?.();
+    resume = undefined;
     cleanup();
     options.onDisconnect();
   };
@@ -60,14 +64,25 @@ export function createSseResponse(
   if (options.requestSignal.aborted) disconnect();
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      const write = (bytes: Uint8Array) => {
-        if (!cancelled && !finished) controller.enqueue(bytes);
+      const send = async (event: string, data: Record<string, unknown>) => {
+        if (cancelled || finished) return;
+        if (sending) throw new Error("SSE business sends must be awaited sequentially");
+        sending = true;
+        try {
+          while (!cancelled && (controller.desiredSize ?? 0) <= 0)
+            await new Promise<void>((resolve) => {
+              resume = resolve;
+            });
+          if (!cancelled && !finished) controller.enqueue(encoder.encode(encodeSse(event, data)));
+        } finally {
+          sending = false;
+        }
       };
       if (!cancelled)
-        timer = setInterval(
-          () => write(keepalive),
-          options.keepaliveIntervalMs ?? SSE_KEEPALIVE_INTERVAL_MS,
-        );
+        timer = setInterval(() => {
+          if (!cancelled && !finished && !sending && (controller.desiredSize ?? 0) > 0)
+            controller.enqueue(keepalive);
+        }, options.keepaliveIntervalMs ?? SSE_KEEPALIVE_INTERVAL_MS);
       // Returning immediately lets reader.cancel interrupt an awaiting producer.
       pump = (async () => {
         try {
@@ -75,7 +90,7 @@ export function createSseResponse(
             get cancelled() {
               return cancelled;
             },
-            send: (event, data) => write(encoder.encode(encodeSse(event, data))),
+            send,
           });
         } catch (error) {
           // The route owns business error events. An unhandled producer failure
@@ -90,6 +105,11 @@ export function createSseResponse(
           if (!readerCancelled && !errored) controller.close();
         }
       })();
+    },
+    pull() {
+      const ready = resume;
+      resume = undefined;
+      ready?.();
     },
     async cancel() {
       readerCancelled = true;

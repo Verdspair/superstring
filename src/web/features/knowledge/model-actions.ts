@@ -77,6 +77,10 @@ export function createKnowledgeModelActions(
     },
     saveKnowledgeModel: async (scope = "all") => {
       const editor = get().knowledgeModelEditor;
+      if (scope !== "model" && "global:knowledge" in get().allocationInvalidInputs) {
+        set({ error: msg("上下文预算必须为正整数。") });
+        return false;
+      }
       if (!knowledgeModelDirty(editor, scope)) return true;
       if (
         !editor ||
@@ -154,6 +158,9 @@ export function createKnowledgeModelActions(
       const editor = get().knowledgeModelEditor;
       if (scope === "budget") {
         if (!editor) return;
+        const { ["global:knowledge"]: _invalid, ...allocationInvalidInputs } =
+          get().allocationInvalidInputs;
+        set({ allocationInvalidInputs });
         read++;
         set({
           knowledgeModelEditor: { ...editor, contextBudget: editor.source.context_budget },

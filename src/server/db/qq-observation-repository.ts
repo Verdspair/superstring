@@ -67,19 +67,26 @@ function mapMessageRows(
       ),
     )
     .all();
-  const byEvent = new Map<string, { notes: string[]; unread: number }>();
+  const byEvent = new Map<string, { notes: string[]; unread: number; sources: SourceRef[] }>();
   for (const note of notes) {
     // 到期即不可读：过期的媒体描述既不列出、不计入未读，也不能作为可复核来源暴露——
     // 读取方（reusableMediaNote 等）本就拒绝过期行，这里让返回的形状与之一致。
     if (isObservationExpired(note.expiresAt, now)) continue;
-    const entry = byEvent.get(note.eventKey) ?? { notes: [], unread: 0 };
+    const entry = byEvent.get(note.eventKey) ?? { notes: [], unread: 0, sources: [] };
+    if (includeSources && note.note !== null)
+      entry.sources.push({
+        kind: "qq_media",
+        id: note.id,
+        revision: String(note.attempts),
+        expiresAt: note.expiresAt,
+      });
     if (note.note === null || note.noteModel === null) entry.unread++;
     else entry.notes.push(`[${note.noteModel}] ${note.note}`);
     byEvent.set(note.eventKey, entry);
   }
 
   return rows.map((row) => {
-    const media = byEvent.get(row.eventKey) ?? { notes: [], unread: 0 };
+    const media = byEvent.get(row.eventKey) ?? { notes: [], unread: 0, sources: [] };
     // 正文到期后连同来源一起消失：来源存在的意义就是"可回读复核"，过期正文的 source 会指向
     // 一个读不到的修订，留着它等于把过期文本的存在当作可利用的证据。
     const textReadable =
@@ -99,19 +106,7 @@ function mapMessageRows(
                     },
                   ]
                 : []),
-              ...notes
-                .filter(
-                  (note) =>
-                    note.eventKey === row.eventKey &&
-                    note.note !== null &&
-                    !isObservationExpired(note.expiresAt, now),
-                )
-                .map((note) => ({
-                  kind: "qq_media",
-                  id: note.id,
-                  revision: String(note.attempts),
-                  expiresAt: note.expiresAt,
-                })),
+              ...media.sources,
             ],
           }
         : {}),

@@ -100,6 +100,7 @@ export function activeSpace(
   if (
     [
       "scheme-library",
+      "context-allocation",
       "qq-scheme-config",
       "scheme-bindings",
       "qq-app-schemes",

@@ -619,11 +619,18 @@ export const organizationSettings = sqliteTable(
     /** Media purposes (§7.1): unset means "cannot understand", never a fallback (P4b). */
     visionModelName: text("vision_model_name"),
     transcriptionModelName: text("transcription_model_name"),
+    // 0068：全局辅助任务分配（AUX-CONTRACT-FROZEN）。NULL＝无任何辅助覆盖，各用途保持
+    // 调用方现行为；值的有效性由共享契约在读取时验证，CHECK 只保证 JSON object。
+    auxiliaryAllocation: text("auxiliary_allocation"),
     revision: integer("revision").notNull().default(1),
   },
   (t) => [
     check("organization_settings_id", sql`${t.id} = 1`),
     check("organization_settings_revision", sql`${t.revision} >= 1`),
+    check(
+      "organization_settings_auxiliary_allocation",
+      sql`${t.auxiliaryAllocation} IS NULL OR (json_valid(${t.auxiliaryAllocation}) AND json_type(${t.auxiliaryAllocation}) = 'object')`,
+    ),
   ],
 );
 
@@ -1348,9 +1355,23 @@ export const qqSchemes = sqliteTable(
     inputAntiSpamEnabled: integer("input_anti_spam_enabled").notNull().default(0),
     burstMinMessages: integer("burst_min_messages").notNull().default(3),
     burstWindowSeconds: integer("burst_window_seconds").notNull().default(3),
+    participationTiming: text("participation_timing").notNull().default("resource_window"),
+    // 0068：方案级分配组（判断/回复两档模式），表尾追加。NOT NULL + 默认两档 fixed——
+    // 存量方案保持既有固定行为；值的有效性由共享契约在仓储读取时验证，CHECK 只保证 JSON object。
+    allocation: text("allocation")
+      .notNull()
+      .default('{"judgement":{"mode":"fixed"},"reply":{"mode":"fixed"}}'),
   },
   (t) => [
     check("qq_scheme_name", sql`length(trim(${t.name})) > 0`),
+    check(
+      "qq_scheme_participation_timing",
+      sql`${t.participationTiming} IN ('resource_window', 'quiet_preferred')`,
+    ),
+    check(
+      "qq_scheme_allocation",
+      sql`json_valid(${t.allocation}) AND json_type(${t.allocation}) = 'object'`,
+    ),
     check("qq_scheme_revision", sql`${t.revision} >= 1`),
     check("qq_scheme_trigger_direct_reply", sql`${t.triggerDirectReply} IN (0, 1)`),
     check("qq_scheme_split_reply_by_speaker", sql`${t.splitReplyBySpeaker} IN (0, 1)`),
@@ -1809,6 +1830,7 @@ export const wakeSignals = sqliteTable(
     ),
   },
   (t) => [
+    index("ix_wake_conversation_status").on(t.conversationId, t.status),
     // 0055：下界是非负序号，NULL 表示还没有冻结。
     check(
       "wake_signals_source_from_seq",
@@ -1887,6 +1909,14 @@ export const contextSnapshots = sqliteTable(
   },
   (t) => [
     index("ix_context_snapshots_expiry").on(t.expiresAt),
+    // 0071: storage metadata counts read (step, status, expiry, protected-content presence)
+    // through one covering expression index.
+    index("ix_context_snapshot_storage_metadata").on(
+      t.stepId,
+      t.status,
+      t.expiresAt,
+      sql`(${t.protectedMessages} IS NOT NULL OR ${t.protectedOutput} IS NOT NULL)`,
+    ),
     check("context_snapshots_refs", sql`json_valid(${t.sourceRefs})`),
     check("context_snapshots_layout", sql`json_valid(${t.layout})`),
     check(
@@ -1901,6 +1931,21 @@ export const contextSnapshots = sqliteTable(
     check("context_snapshots_status", sql`${t.status} IN ('exact','expired','revoked')`),
   ],
 );
+export const contextSnapshotSourceRefs = sqliteTable(
+  "context_snapshot_source_refs",
+  {
+    stepId: text("step_id")
+      .notNull()
+      .references(() => contextSnapshots.stepId, { onDelete: "cascade" }),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.stepId, t.sourceKind, t.sourceId] }),
+    index("ix_context_snapshot_source_lookup").on(t.sourceKind, t.sourceId, t.stepId),
+  ],
+);
+
 export const runEvents = sqliteTable(
   "run_events",
   {
@@ -1943,25 +1988,29 @@ export const conversationEvents = sqliteTable(
   (t) => [primaryKey({ columns: [t.conversationId, t.seq] })],
 );
 
-export const outboundIntents = sqliteTable("outbound_intents", {
-  id: text("id").primaryKey().notNull(),
-  runId: text("run_id")
-    .notNull()
-    .references(() => agentRuns.runId, { onDelete: "cascade" }),
-  conversationId: text("conversation_id")
-    .notNull()
-    .references(() => conversations.id, { onDelete: "cascade" }),
-  outputOrdinal: integer("output_ordinal").notNull(),
-  target: text("target").notNull(),
-  speechKind: text("speech_kind").notNull(),
-  sourceThroughSeq: integer("source_through_seq").notNull(),
-  deliverBy: text("deliver_by").notNull(),
-  status: text("status").notNull(),
-  createdAt: text("created_at").notNull(),
-  expiresAt: text("expires_at").notNull(),
-  legacySendId: text("legacy_send_id"),
-  staleReason: text("stale_reason"),
-});
+export const outboundIntents = sqliteTable(
+  "outbound_intents",
+  {
+    id: text("id").primaryKey().notNull(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => agentRuns.runId, { onDelete: "cascade" }),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    outputOrdinal: integer("output_ordinal").notNull(),
+    target: text("target").notNull(),
+    speechKind: text("speech_kind").notNull(),
+    sourceThroughSeq: integer("source_through_seq").notNull(),
+    deliverBy: text("deliver_by").notNull(),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    legacySendId: text("legacy_send_id"),
+    staleReason: text("stale_reason"),
+  },
+  (t) => [index("ix_outbound_conversation_status").on(t.conversationId, t.status)],
+);
 
 export const outboundParts = sqliteTable("outbound_parts", {
   id: text("id").primaryKey().notNull(),
@@ -2015,6 +2064,17 @@ export const runtimeSpans = sqliteTable(
     index("idx_runtime_spans_filter").on(t.channel, t.stage, t.status, t.id),
     index("idx_runtime_spans_expiry").on(t.expiresAt),
     index("idx_runtime_spans_run").on(t.runId),
+    index("idx_runtime_spans_wake").on(t.wakeId, t.id),
+    index("idx_runtime_spans_output").on(t.outputId, t.id),
+    // 0071: trace storage metadata counts read (scope, trace, expiry, status) through
+    // one covering index.
+    index("ix_runtime_storage_metadata").on(
+      t.userId,
+      t.traceId,
+      t.conversationId,
+      t.expiresAt,
+      t.status,
+    ),
   ],
 );
 
@@ -2562,6 +2622,7 @@ export const businessTables = {
   agentRuns,
   agentSteps,
   contextSnapshots,
+  contextSnapshotSourceRefs,
   runEvents,
   users,
   agents,

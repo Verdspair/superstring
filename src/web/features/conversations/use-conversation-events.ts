@@ -112,12 +112,18 @@ export function useConversationEvents(
       .sort((a, b) => a.seq - b.seq)
       .map((row) => {
         const old = previous.get(row.seq);
-        return old && JSON.stringify(old) === JSON.stringify(row) ? old : row;
+        return old && (old === row || JSON.stringify(old) === JSON.stringify(row)) ? old : row;
       });
+    if (
+      next.length === current.current.length &&
+      next.every((row, index) => row === current.current[index])
+    )
+      return false;
     first.current = next[0]?.seq ?? 0;
     notify.current?.(kind, next);
     current.current = next;
     setItems(next);
+    return true;
   }, []);
 
   const save = useCallback(() => {
@@ -146,6 +152,7 @@ export function useConversationEvents(
     const scope = lastScope.current;
     tailRead.current = controller;
     let cursor = current.current.at(-1)?.seq ?? 0;
+    let changed = false;
     try {
       for (;;) {
         const requestedSeq = wantedSeq.current;
@@ -155,13 +162,13 @@ export function useConversationEvents(
           controller.signal,
         );
         if (controller.signal.aborted || lastScope.current !== scope) return;
-        publish("refresh", [...current.current, ...page.items]);
+        changed = publish("refresh", [...current.current, ...page.items]) || changed;
         const progressed = page.nextSeq > cursor;
         cursor = page.nextSeq;
         if (!page.hasMore && wantedSeq.current <= requestedSeq) wantedSeq.current = 0;
         if (!progressed || (!page.hasMore && wantedSeq.current === 0)) break;
       }
-      if (!rangeRead.current) save();
+      if (changed && !rangeRead.current) save();
     } catch (reason) {
       if (!controller.signal.aborted && lastScope.current === scope) fail(reason);
     } finally {
@@ -181,6 +188,7 @@ export function useConversationEvents(
       setLoading(true);
       setError("");
       const initial = readState.current !== "loaded";
+      const captured = current.current;
       const lower = first.current;
       const upper = current.current.at(-1)?.seq ?? 0;
       wantedSeq.current = 0;
@@ -235,8 +243,9 @@ export function useConversationEvents(
                 ...current.current.filter((row) => row.seq < lower || row.seq > upper),
               ];
         readState.current = "loaded";
-        publish(initial ? "initial" : older ? "older" : "refresh", next);
-        save();
+        const changed = publish(initial ? "initial" : older ? "older" : "refresh", next);
+        // A concurrent append defers its cache write until this range is authoritative.
+        if (initial || changed || current.current !== captured) save();
       } catch (reason) {
         if (!controller.signal.aborted && lastScope.current === scope) {
           if (readState.current !== "loaded") {

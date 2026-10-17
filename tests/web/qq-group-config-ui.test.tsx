@@ -38,6 +38,7 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
   description: null,
   triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: false },
   rhythm: {
+    participation_timing: "resource_window",
     merge_window_seconds: 30,
     reply_cooldown_seconds: 10,
     hourly_speech_limit: 200,
@@ -1194,4 +1195,30 @@ it("enforces mutual exclusivity between follow_up and chiming_in switches in gro
   fireEvent.change(chimingInSelect, { target: { value: "inherit" } });
   expect(editorOf()?.overrides.triggers?.follow_up).toBeUndefined();
   expect(editorOf()?.overrides.triggers?.chiming_in).toBeUndefined();
+});
+
+it("inherits timing mode from base scheme, supports group override to quiet_preferred, and restores follow", async () => {
+  const view = await renderPage();
+  await userEvent.click(screen.getByRole("tab", { name: "发言时机" }));
+
+  const timingSelect = view.container.querySelector(
+    'select[data-field="rhythm.participation_timing"]',
+  ) as HTMLSelectElement;
+  expect(timingSelect).toBeTruthy();
+  expect(timingSelect.value).toBe("resource_window");
+
+  // 派生区间提示展示
+  expect(screen.getByTestId("group-rhythm-derived-intervals")).toBeTruthy();
+
+  // 切换为自定义停顿优先
+  fireEvent.change(timingSelect, { target: { value: "quiet_preferred" } });
+  expect(editorOf()?.overrides.rhythm?.participation_timing).toBe("quiet_preferred");
+
+  // 恢复为跟随基线方案
+  const timingStateSelect = view.container.querySelector(
+    'select[aria-label="自主发言评估时机: 字段使用方式"]',
+  ) as HTMLSelectElement;
+  expect(timingStateSelect).toBeTruthy();
+  fireEvent.change(timingStateSelect, { target: { value: "follow" } });
+  expect(editorOf()?.overrides.rhythm?.participation_timing).toBeUndefined();
 });

@@ -103,6 +103,7 @@ describe("QQ scheme routes", () => {
       // of 0 would mean "speak as fast as you like" and "never speak", neither of which is a
       // default anyone chose.
       expect(created.rhythm).toEqual({
+        participation_timing: "quiet_preferred",
         merge_window_seconds: 30,
         reply_cooldown_seconds: 10,
         hourly_speech_limit: 200,
@@ -178,6 +179,8 @@ describe("QQ scheme routes", () => {
         burst_window_seconds: 3,
       });
       expect(Object.keys(created).sort()).toEqual([
+        // 0068：方案级分配组（判断/回复两档模式），整组出现在创建响应里（排序后居首）。
+        "allocation",
         "compression",
         "context",
         "created_at",

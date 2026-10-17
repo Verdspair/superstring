@@ -82,7 +82,7 @@ import {
 } from "../../db/qq-task-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import type { WakeRepository } from "../../db/wake-repository";
-import { fail } from "../../errors";
+import { AppError, fail } from "../../errors";
 import type { ModelGateway } from "../../llm/model-gateway";
 import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
 import {
@@ -1865,6 +1865,18 @@ export class OneBotHost {
             conversationId: conversation.id,
             binding,
             snapshot,
+            // A legacy wake can refer to the same mention task already registered by ingress.
+            ownTaskId:
+              execution?.task.id ??
+              (
+                db
+                  .query(`SELECT id FROM qq_conversation_tasks
+                WHERE conversation_id=? AND binding_epoch=? AND agent_id=?
+                  AND task_class='mention' AND source_through_seq=? LIMIT 1`)
+                  .get(conversation.id, conversation.bindingEpoch, agent.id, wake.throughSeq) as {
+                  id: string;
+                } | null
+              )?.id,
             scheme,
             antiSpamThresholds: execution
               ? {
@@ -1935,9 +1947,23 @@ export class OneBotHost {
               if (event.kind === "context_budget_exceeded") {
                 diagnose({
                   stage: "context_budget",
-                  status: "failed",
+                  status: event.stage === "action_result_fit" ? "observed" : "failed",
                   code: "CONTEXT_BUDGET_EXCEEDED",
                   details: {
+                    ...(event.stage === "action_result_fit"
+                      ? {
+                          unit: event.unit ?? null,
+                          encoding: event.encoding ?? null,
+                          outputReserved: event.outputReserved ?? null,
+                          headroomRatio: event.headroomRatio ?? null,
+                          siblingReserved: event.siblingReserved ?? null,
+                          currentCost: event.currentCost ?? null,
+                          candidateCost: event.candidateCost ?? null,
+                          nextActionReserved: event.nextActionReserved ?? null,
+                          terminal: event.terminal ?? false,
+                          mode: event.mode ?? null,
+                        }
+                      : {}),
                     stage: event.stage,
                     tier: event.tier,
                     model: event.model,
@@ -2475,13 +2501,14 @@ export class OneBotHost {
                   .query("SELECT id FROM qq_media_notes WHERE event_key=? AND note IS NOT NULL")
                   .all(eventKey) as { id: string }[];
                 for (const note of notes) o.journal.ingestMedia(note.id, binding.id);
+                if (notes.length > 0) source.invalidate();
                 diagnose({
                   stage: "media",
                   status: "typed_task",
                   code: "QQ_MEDIA_READ_TASK_SETTLED",
                   details: { eventKey, actualTaskId },
                 });
-                source.invalidate();
+                // typed 结果由当前工具观察承载，不使同批拟合视图和预留失效。
               },
             })
           : [];
@@ -2984,16 +3011,25 @@ export class OneBotHost {
           source.observedSeq,
           Number.MAX_SAFE_INTEGER,
         ).items;
-        if (!updates.some((event) => relevant(event) && !taskOwnsLaterMention(event.seq)))
+        const repliesChanged = source.relatedRepliesChanged();
+        if (
+          !repliesChanged &&
+          !updates.some((event) => relevant(event) && !taskOwnsLaterMention(event.seq))
+        )
           return false;
+        if (repliesChanged && source.isTerminalDecision())
+          fail("CONTEXT_SOURCE_INVALID", "相关回复事实已变更，终结决策不能重新考虑");
         rememberPlan("new_observation", drafts, outputs);
         // 主动批次的目标集已由阶段一门槛冻结并推进了观察边界：新到达只重观察上下文，不重算机会集合
         // （重算会读到已推进边界而清空目标）。direct/continuous 仍按原机会重算。
-        if (!initiative) {
+        if (!initiative && !repliesChanged) {
           prepared = preparation(false, source);
           setTargets();
         }
-        source.invalidate();
+        source.invalidate(
+          repliesChanged &&
+            !updates.some((event) => relevant(event) && !taskOwnsLaterMention(event.seq)),
+        );
         return true;
       };
       const staged = new Map<string, QqPreparedReply>();
@@ -3077,6 +3113,7 @@ export class OneBotHost {
         opportunitySeq: number,
       ): string | undefined => {
         if (output.status !== "prepared" || committedTargets.has(output.targetId)) return undefined;
+        if (source.relatedRepliesChanged()) throw new Error("CONVERSATION_CHANGED_AT_COMMIT");
         const pending = staged.get(output.outputId);
         if (!pending) throw new Error("OUTPUT_PREPARATION_MISSING");
         if (
@@ -3219,8 +3256,24 @@ export class OneBotHost {
         if (output.replyToMessageId) {
           quoteSources = resolveQuote(output.replyToMessageId);
         }
-        // 结构化 mention 校验（无旧无界 journal 循环，写回去重后的 IDs）
-        const validMentions = validateMentions(output.mentionIds);
+        // 结构化 mention 校验（无旧无界 journal 循环，写回去重后的 IDs）；成员选择可由
+        // 模型重选，来源过期或撤权仍由上游守卫拒绝。
+        let validMentions: readonly string[];
+        try {
+          validMentions = validateMentions(output.mentionIds);
+        } catch (error) {
+          if (!(error instanceof AppError) || error.code !== "CONTEXT_INVALID_SELECTION")
+            throw error;
+          output.status = "blocked";
+          output.code = "CONTEXT_INVALID_SELECTION";
+          diagnose({
+            stage: "output",
+            status: "feedback",
+            code: output.code,
+            targetId: output.targetId,
+          });
+          return;
+        }
         output.mentionIds = [...validMentions];
         // 显式选图在发前再对一次当前事实：本 run 披露过、素材仍在目录里且修订未变。
         const origin = activeOutputOrigins.get(output.outputId);
@@ -3668,6 +3721,22 @@ export class OneBotHost {
                 }
               }
               if (await refresh([], outputs)) return true;
+              // 含早提交前已 blocked 与本轮新 blocked：统一给一次可操作的 pending 理由。
+              if (
+                outputs.some(
+                  (output) =>
+                    !committedTargets.has(output.targetId) &&
+                    output.status === "blocked" &&
+                    output.code === "CONTEXT_INVALID_SELECTION",
+                )
+              ) {
+                rememberPlan(
+                  "CONTEXT_INVALID_SELECTION: mentionIds 只能填当前材料已披露的成员或已授权目标；qq.members 查询结果不是可 @ 对象；不要用 all，改用有效成员号或去掉 @",
+                  [],
+                  outputs,
+                );
+                return true;
+              }
               if (invalidOutput) {
                 rememberPlan("output_feedback", [], outputs);
                 return true;
@@ -3705,6 +3774,7 @@ export class OneBotHost {
                       ? wake.throughSeq
                       : source.observedSeq;
                   if (
+                    source.relatedRepliesChanged() ||
                     o.journal
                       .eventsAfter(conversation.id, source.observedSeq, Number.MAX_SAFE_INTEGER)
                       .items.some((event) => relevant(event) && !taskOwnsLaterMention(event.seq))

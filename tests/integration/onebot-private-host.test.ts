@@ -468,14 +468,29 @@ describe("OneBot private common host", () => {
       h.wakes.peek({ at: new Date(nowSeconds * 1000).toISOString(), topology: "direct" })?.cause,
     ).toBe("direct_reply");
   });
-  it("rolls back observation when journal/queue write fails", () => {
+  it("keeps the private observation when post-commit wake scheduling fails", () => {
     const h = setup();
     h.db.exec(
       "CREATE TRIGGER fixture_fail BEFORE INSERT ON wake_signals BEGIN SELECT RAISE(ABORT,'fixture'); END",
     );
-    expect(h.receive("1")).toMatchObject({ kind: "discarded" });
+    expect(h.receive("1")).toMatchObject({ kind: "recorded", recorded: true });
+    expect(h.db.query("SELECT * FROM qq_events").all()).toHaveLength(1);
+    expect(h.db.query("SELECT * FROM conversation_events WHERE kind='inbound'").all()).toHaveLength(
+      1,
+    );
+    expect(h.db.query("SELECT * FROM wake_signals").all()).toEqual([]);
+    expect(h.requests).toHaveLength(0);
+  });
+  it("rolls back the private observation when its journal write fails", () => {
+    const h = setup();
+    h.db.exec(
+      "CREATE TRIGGER fixture_fail BEFORE INSERT ON conversation_events BEGIN SELECT RAISE(ABORT,'fixture'); END",
+    );
+    expect(h.receive("1")).toMatchObject({ kind: "failed", code: "DATABASE_UNAVAILABLE" });
     expect(h.db.query("SELECT * FROM qq_events").all()).toEqual([]);
     expect(h.db.query("SELECT * FROM conversation_events").all()).toEqual([]);
+    expect(h.db.query("SELECT * FROM wake_signals").all()).toEqual([]);
+    expect(h.requests).toHaveLength(0);
   });
 });
 describe("durable per-part delivery", () => {

@@ -1,6 +1,7 @@
 import { BookOpen, Brain, FileText } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { Field } from "@/components/form-field";
 import {
   Accordion,
@@ -20,6 +21,7 @@ import { knowledgeModelDirty, knowledgeReadDirty } from "@/features/knowledge/ty
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import { P5ConfigSchema, RetrievalPresetSchema } from "../../../shared/contracts/models";
+import { openContextAllocation } from "../../features/context-allocation";
 
 const MODES = {
   off: "library.retrieval.off",
@@ -114,7 +116,21 @@ function CatalogBatchFields({
 }
 
 export function MemoryToolSettings() {
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      discardSettingsPages: state.discardSettingsPages,
+      editorLoading: state.editorLoading,
+      error: state.error,
+      feedback: state.feedback,
+      knowledgeReadLoading: state.knowledgeReadLoading,
+      openSettingsRoute: state.openSettingsRoute,
+      pageEditor: state.pageEditor,
+      patchPageAgent: state.patchPageAgent,
+      refreshSettingsAgent: state.refreshSettingsAgent,
+      saveSettingsPage: state.saveSettingsPage,
+      settingsSaving: state.settingsSaving,
+    })),
+  );
   const t = useTranslation().t;
   const editor = s.pageEditor;
   // 目录批次非法原文只存在于全量档子组件：普通档不挂载，不拦普通档保存。
@@ -213,17 +229,13 @@ export function MemoryToolSettings() {
                 <AccordionTrigger>{t(MODES[mode])}</AccordionTrigger>
                 <AccordionContent className="space-y-4 pt-2">
                   <div className="grid min-w-0 gap-4 sm:grid-cols-2">
-                    {(["candidate_limit", "max_entries", "max_tokens"] as const).map((key) => (
-                      <div
-                        key={key}
-                        className={key === "max_tokens" ? "min-w-0 sm:col-span-2" : "min-w-0"}
-                      >
+                    {(["candidate_limit", "max_entries"] as const).map((key) => (
+                      <div key={key} className="min-w-0">
                         <Field
                           label={
                             {
                               candidate_limit: "library.memory.tools.scan.limit",
                               max_entries: "library.memory.tools.page.limit",
-                              max_tokens: "library.memory.tools.turn.budget",
                             }[key]
                           }
                         >
@@ -252,11 +264,31 @@ export function MemoryToolSettings() {
                         </Field>
                       </div>
                     ))}
+                    <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                      <div>
+                        <span className="text-muted-foreground">
+                          {t("library.memory.tools.turn.budget")}：
+                        </span>
+                        <span className="font-medium">{preset.max_tokens} Bytes</span>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        onClick={() =>
+                          openContextAllocation({
+                            purpose: "reading",
+                            agentId: editor?.agent.id,
+                            returnRoute: "memory-tools",
+                            returnLabel: t("capabilities.memory.name"),
+                          })
+                        }
+                      >
+                        {t("schemes.allocation.goToCentralAllocation")}
+                      </Button>
+                    </div>
                   </div>
-                  <Field
-                    label="library.memory.tools.relevance.instruction"
-                    info="library.memory.tools.relevance.instruction.hint"
-                  >
+                  <Field label="library.memory.tools.relevance.instruction">
                     <Textarea
                       disabled={busy}
                       maxLength={16000}
@@ -327,7 +359,29 @@ export function MemoryToolSettings() {
 /** 知识工具设置：只读写 knowledgeReadEditor 草稿；资料正文仍归资料库文档分区。
  *  全局默认预算独立成组，与默认模型页共用 knowledgeModelEditor（预算只有一个真源）。 */
 export function KnowledgeToolSettings({ active = true }: { active?: boolean } = {}) {
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      discardKnowledgeModel: state.discardKnowledgeModel,
+      discardKnowledgeRead: state.discardKnowledgeRead,
+      editorAgentId: state.editorAgentId,
+      editorLoading: state.editorLoading,
+      error: state.error,
+      feedback: state.feedback,
+      knowledgeModelEditor: state.knowledgeModelEditor,
+      knowledgeModelLoading: state.knowledgeModelLoading,
+      knowledgeReadEditor: state.knowledgeReadEditor,
+      knowledgeReadLoading: state.knowledgeReadLoading,
+      loadKnowledgeModel: state.loadKnowledgeModel,
+      loadKnowledgeRead: state.loadKnowledgeRead,
+      openSettingsRoute: state.openSettingsRoute,
+      pageEditor: state.pageEditor,
+      patchKnowledgeRead: state.patchKnowledgeRead,
+      refreshKnowledgeRead: state.refreshKnowledgeRead,
+      saveKnowledgeModel: state.saveKnowledgeModel,
+      saveKnowledgeRead: state.saveKnowledgeRead,
+      settingsSaving: state.settingsSaving,
+    })),
+  );
   const t = useTranslation().t;
   useEffect(() => {
     if (active && s.editorAgentId !== "__new__") {
@@ -380,22 +434,33 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
                   onCheckedChange={(v) => s.patchKnowledgeRead({ enabled: v === true })}
                 />
               </Field>
-              <Field
-                label="library.knowledge.tools.budget"
-                info={t("library.knowledge.tools.budget.hint", { "0": read.globalBudget })}
-              >
-                <Input
-                  type="number"
-                  disabled={busy}
-                  min={1}
-                  value={read.draft.context_budget ?? ""}
-                  onChange={(e) =>
-                    s.patchKnowledgeRead({
-                      context_budget: e.target.value ? Number(e.target.value) : null,
+              <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                <div>
+                  <span className="text-muted-foreground">
+                    {t("library.knowledge.tools.budget")}：
+                  </span>
+                  <span className="font-medium">
+                    {read.draft.context_budget
+                      ? `${read.draft.context_budget} Bytes`
+                      : `${t("schemes.allocation.reading.followGlobalDefault")} (${read.globalBudget} Bytes)`}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs"
+                  onClick={() =>
+                    openContextAllocation({
+                      purpose: "reading",
+                      agentId: s.editorAgentId ?? undefined,
+                      returnRoute: "knowledge-tools",
+                      returnLabel: t("capabilities.knowledge.name"),
                     })
                   }
-                />
-              </Field>
+                >
+                  {t("schemes.allocation.goToCentralAllocation")}
+                </Button>
+              </div>
               <Field label="library.reading.scope">
                 <NativeSelect
                   disabled={busy}
@@ -542,17 +607,28 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
             )
           ) : (
             <>
-              <Field label="library.workspace.knowledge.budget.tokens">
-                <Input
-                  type="number"
-                  disabled={busy}
-                  min={1}
-                  value={global.contextBudget ?? ""}
-                  onChange={(e) =>
-                    s.patchKnowledgeGlobal({ contextBudget: Number(e.target.value) })
+              <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                <div>
+                  <span className="text-muted-foreground">
+                    {t("library.workspace.knowledge.budget.tokens")}：
+                  </span>
+                  <span className="font-medium">{global.contextBudget} Bytes</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 text-xs"
+                  onClick={() =>
+                    openContextAllocation({
+                      purpose: "reading",
+                      returnRoute: "knowledge-config",
+                      returnLabel: t("workspace.knowledge_settings"),
+                    })
                   }
-                />
-              </Field>
+                >
+                  {t("schemes.allocation.goToCentralAllocation")}
+                </Button>
+              </div>
               <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
                 <Button
                   variant="outline"

@@ -194,6 +194,7 @@ function setup(options: { model: ModelPort }) {
         : {
             rhythm: {
               ...QQ_RHYTHM_DEFAULT,
+              participation_timing: "resource_window",
               ...(binding.mergeWindowSeconds === undefined
                 ? {}
                 : { merge_window_seconds: binding.mergeWindowSeconds }),

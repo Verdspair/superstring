@@ -20,8 +20,10 @@
 // decide something the plan leaves open. ADR0018 records it as pending.
 
 import { z } from "zod";
+import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
+import { readOrganizationSettings } from "../db/organization-repository";
 import {
   type QqStickerAssetView,
   readQqStickerAsset,
@@ -65,6 +67,9 @@ export interface QqStickerAnnotatorInput {
   readonly model: string;
   readonly prompt: string;
   readonly images: readonly { readonly mimeType: string; readonly bytes: Uint8Array }[];
+  /** 保存档的硬输出预留（0068）：存在时作为 max_tokens 发送；缺席＝既有行为（不发送帽）。 */
+  readonly outputReserved?: number;
+  readonly maxTokens?: number;
 }
 
 /** The injected multimodal call. It may constrain the output; this module still parses strictly. */
@@ -79,6 +84,7 @@ export function createQqStickerAnnotator(agentRuntime: LeafAgentRuntime): QqStic
       {
         id: "sticker.annotate",
         version: "1",
+        ...(input.maxTokens === undefined ? {} : { maxTokens: input.maxTokens }),
         responseSchema: QQ_STICKER_ANNOTATION_RESPONSE_SCHEMA,
       },
       {
@@ -175,6 +181,16 @@ export async function annotateQqSticker(
   if (asset === null) return { kind: "rejected", reason: "file_unreadable" };
   const model = (request.data.visionModel ?? "").trim();
   if (model === "") return { kind: "rejected", reason: "model_not_configured" };
+  // 全局辅助分配档（0068）：本操作入口读取一次。output_reserved 同时是发送的 max_tokens
+  // 与预检预留（修复既有「预检 1024 与实际不接线」的错位）；缺席＝既有 1024 预检预留、
+  // 不发送输出帽。图片成本未知仍未知：input_limit 只按可计量的文本部分评估，不伪造图片担保。
+  const allocation: AuxiliaryAllocationProfile | undefined =
+    readOrganizationSettings(orm).auxiliary_allocation?.qq_sticker_annotate;
+  // null＝显式清帽：预检仍按既有 1024 预留（角色公式），但 leaf 不发送 max_tokens；
+  // 缺席＝既有行为（1024 预检预留、不发送输出帽）；数字＝两种模式下都硬，预检与 max_tokens 同值。
+  const savedOutput = allocation?.output_reserved;
+  const outputReserved = savedOutput ?? QQ_STICKER_ANNOTATION_OUTPUT_RESERVED;
+  const maxTokens = savedOutput != null ? savedOutput : undefined;
   let bytes: Uint8Array;
   try {
     bytes = store.readCopy(asset.fileName);
@@ -190,13 +206,16 @@ export async function annotateQqSticker(
   const capacity = await checkQqModelCapacity(gateway, {
     model,
     messages: [{ role: "user", content: QQ_STICKER_ANNOTATION_PROMPT }],
-    outputReserved: QQ_STICKER_ANNOTATION_OUTPUT_RESERVED,
+    outputReserved,
   });
   if (capacity.kind !== "allowed") {
     return {
       kind: "rejected",
       reason: capacity.kind === "unavailable" ? "capacity_unavailable" : "capacity_exceeded",
     };
+  }
+  if (allocation?.input_limit != null && capacity.inputUnits > allocation.input_limit) {
+    return { kind: "rejected", reason: "capacity_exceeded" };
   }
   let raw: string;
   try {
@@ -206,6 +225,8 @@ export async function annotateQqSticker(
       images,
       signal,
       assetId: asset.id,
+      outputReserved,
+      ...(maxTokens === undefined ? {} : { maxTokens }),
       sources: [{ kind: "qq_sticker", id: asset.id, revision: asset.updatedAt }],
     });
   } catch (error) {

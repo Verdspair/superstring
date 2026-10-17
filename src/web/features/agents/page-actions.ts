@@ -1,6 +1,6 @@
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
-import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import type { AgentDraft, StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { toDraft } from "./draft";
 import {
   acceptPageAgent,
@@ -9,7 +9,8 @@ import {
   dirtyPages,
   EDITABLE_PAGES,
   type EditablePage,
-  mergeRetrievalPresets,
+  mergeContextRetrievalPresets,
+  mergeMemoryRetrievalPresets,
   PAGE_AGENT_FIELDS,
   PAGE_PERSONA_FIELDS,
   type PageEditor,
@@ -20,6 +21,24 @@ import {
   personaPageDirty,
   policyDirty,
 } from "./page-drafts";
+
+type Presets = AgentDraft["p5_config"]["retrieval_presets"];
+type Preset = Presets["conservative"];
+
+/**
+ * 逐档合并判据（写回通用，不依赖预设里「每个键都存在」的假设）：既有档保留缺席键，
+ * 新增档整份带入。嵌套字段级所有权（memory 档保基线 max_tokens、context 档保基线
+ * 非 max_tokens）仍由 page-drafts 的 mergeMemory/mergeContext 在载荷阶段执行。
+ */
+function mergePresetModes(
+  baseline: Presets,
+  each: (mode: keyof Presets, savedMode: Preset | undefined) => Preset | undefined,
+): Presets {
+  const merged: Record<string, unknown> = { ...baseline };
+  for (const mode of PRESET_MODE_KEYS) merged[mode] = each(mode, baseline[mode]);
+  return merged as unknown as Presets;
+}
+const PRESET_MODE_KEYS = ["conservative", "standard", "broad"] as const;
 
 export function createPageActions(
   set: StoreSet,
@@ -49,6 +68,17 @@ export function createPageActions(
     let editor = get().pageEditor;
     if (!editor || editor.token !== token) return false;
     const id = editor.agent.id;
+    if (
+      page === "context" &&
+      Object.keys(get().allocationInvalidInputs).some(
+        (key) =>
+          key.startsWith(`agent:${id}:context:`) ||
+          key.startsWith(`agent:${id}:aux:`) ||
+          key.startsWith(`agent:${id}:reading:memory:`),
+      )
+    ) {
+      throw new Error(msg("请先修正方案中的无效数字，再保存。"));
+    }
     const matches = () => get().pageEditor?.token === token && get().editorAgentId === id;
     // 只有用户本会话主动把存量 full 档改走时才由归一化触发保存；未改动的 full 档
     // 不再「进页即保存」，批量字段改动照常经 agentPageDirty 保存且 mode 保持 full。
@@ -139,12 +169,24 @@ export function createPageActions(
               ),
               ...(page === "memory-tools" && presets
                 ? {
-                    retrieval_presets: mergeRetrievalPresets(
-                      editor.agent.p5_config.retrieval_presets,
+                    // 记忆页只改非预算键：补丁字段生效，当前草稿的 max_tokens 保留
+                    //（上下文页未保存的预算改动不被回退）。
+                    retrieval_presets: mergeMemoryRetrievalPresets(
+                      editor.draft.p5_config.retrieval_presets,
                       presets,
                     ),
                   }
-                : {}),
+                : page === "context" && presets
+                  ? {
+                      // context 页此前缺失显式分支：带 retrieval_presets 的补丁被整组丢弃，
+                      // 统一分配面板的读取预算改档因此静默失效。恢复为「只改 max_tokens，
+                      // 保留当前草稿的非预算键」。
+                      retrieval_presets: mergeContextRetrievalPresets(
+                        editor.draft.p5_config.retrieval_presets,
+                        presets,
+                      ),
+                    }
+                  : {}),
             },
           },
         },
@@ -211,7 +253,20 @@ export function createPageActions(
       const editor = get().pageEditor;
       if (get().settingsSaving || !editor) return;
       if (page) {
+        const prefix = `agent:${editor.agent.id}:`;
+        const keptInvalid = Object.fromEntries(
+          Object.entries(get().allocationInvalidInputs).filter(
+            ([key]) =>
+              page !== "context" ||
+              !(
+                key.startsWith(`${prefix}context:`) ||
+                key.startsWith(`${prefix}aux:`) ||
+                key.startsWith(`${prefix}reading:memory:`)
+              ),
+          ),
+        );
         set({
+          allocationInvalidInputs: keptInvalid,
           pageEditor: {
             ...editor,
             draft: {
@@ -220,8 +275,27 @@ export function createPageActions(
               p5_config: {
                 ...editor.draft.p5_config,
                 ...Object.fromEntries(
-                  p5Fields(page).map((key) => [key, editor.agent.p5_config[key]]),
+                  p5Fields(page)
+                    .filter((key) => key !== "retrieval_presets")
+                    .map((key) => [key, editor.agent.p5_config[key]]),
                 ),
+                ...(page === "context" || page === "memory-tools"
+                  ? {
+                      // 嵌套所有权按档恢复：本页只恢复自己拥有的键，另一页的草稿改动保留。
+                      // memory-tools 拥有非 max_tokens 键（基线取回、草稿预算保留）；
+                      // context 只拥有 max_tokens（预算回基线、草稿非预算键保留）。
+                      retrieval_presets:
+                        page === "memory-tools"
+                          ? mergeContextRetrievalPresets(
+                              editor.agent.p5_config.retrieval_presets,
+                              editor.draft.p5_config.retrieval_presets,
+                            )
+                          : mergeMemoryRetrievalPresets(
+                              editor.agent.p5_config.retrieval_presets,
+                              editor.draft.p5_config.retrieval_presets,
+                            ),
+                    }
+                  : {}),
               },
             },
             ...(PAGE_PERSONA_FIELDS[page].length
@@ -242,6 +316,14 @@ export function createPageActions(
         return;
       }
       set({
+        allocationInvalidInputs: Object.fromEntries(
+          Object.entries(get().allocationInvalidInputs).filter(
+            ([key]) =>
+              !key.startsWith(`agent:${editor.agent.id}:context:`) &&
+              !key.startsWith(`agent:${editor.agent.id}:aux:`) &&
+              !key.startsWith(`agent:${editor.agent.id}:reading:memory:`),
+          ),
+        ),
         pageEditor: {
           ...editor,
           draft: toDraft(editor.agent),
@@ -273,7 +355,31 @@ export function createPageActions(
           for (const key of PAGE_AGENT_FIELDS[page]) {
             if (current.draft[key] !== current.agent[key]) draftRecord[key] = current.draft[key];
           }
+          if (page === "memory-tools" || page === "context") {
+            // 三方逐档合并：fresh=新基线、saved=刷新前基线、draft=当前草稿。
+            // 只把「相对 saved 真被改过」的嵌套键保留为草稿值，其余跟随 fresh；
+            // 未改档不再整组被旧对象覆盖，其他页/他端的预设更新得以并入基线。
+            const savedPresets = current.agent.p5_config.retrieval_presets;
+            const draftPresets = current.draft.p5_config.retrieval_presets;
+            const freshPresets = fresh.p5_config.retrieval_presets;
+            p5Record.retrieval_presets = mergePresetModes(freshPresets, (mode, freshMode) => {
+              const savedMode = savedPresets[mode];
+              const draftMode = draftPresets[mode];
+              if (!freshMode) return savedMode ?? draftMode;
+              if (!draftMode || !savedMode) return freshMode;
+              // 逐键三方合并：相对刷新前基线被改过的键保留草稿值，其余跟随新基线。
+              // 不按页分组，避免记忆页改非预算键时把上下文页未保存的预算草稿一起丢掉。
+              const merged = { ...freshMode } as Record<string, unknown>;
+              for (const key of Object.keys(savedMode) as (keyof Preset)[]) {
+                if (JSON.stringify(draftMode[key]) !== JSON.stringify(savedMode[key])) {
+                  merged[key] = draftMode[key];
+                }
+              }
+              return merged as Preset;
+            });
+          }
           for (const key of p5Fields(page)) {
+            if (key === "retrieval_presets") continue;
             if (
               JSON.stringify(current.draft.p5_config[key]) !==
               JSON.stringify(current.agent.p5_config[key])

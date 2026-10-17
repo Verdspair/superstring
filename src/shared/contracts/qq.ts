@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { IsoTimestampSchema, nonBlankString, UuidSchema } from "./common";
+import { QqSchemeAllocationSchema } from "./context-allocation";
 import {
   QQ_MEDIA_INPUT_DEFAULT,
   type QqMediaInputSettings,
@@ -37,8 +38,13 @@ export type QqSpeechTriggers = z.infer<typeof QqSpeechTriggersSchema>;
  * same numbers the table's CHECK constraints enforce — if the two ever disagree, a scheme
  * the API accepts would be refused by the database, so they are kept in step by tests.
  */
+export const QqParticipationTimingSchema = z.enum(["resource_window", "quiet_preferred"]);
+export type QqParticipationTiming = z.infer<typeof QqParticipationTimingSchema>;
+
 export const QqSchemeRhythmSchema = z
   .strictObject({
+    /** Missing only on older frozen scheme snapshots; stored rows retain their migrated mode. */
+    participation_timing: QqParticipationTimingSchema.default("resource_window"),
     /** Let consecutive messages accumulate this long before judging; 0 = judge each at once. */
     merge_window_seconds: z.number().int().min(0).max(300),
     /** Minimum gap between two unprompted utterances. Direct replies are exempt (user decision). */
@@ -795,6 +801,12 @@ export const QqSchemeResponseSchema = z.strictObject({
   task_limits: QqSchemeTaskLimitsSchema,
   /** 0059 的输入防抖组。同上：NOT NULL 列直读。 */
   input_anti_spam: QqSchemeInputAntiSpamSchema,
+  /**
+   * 分配组（0068）。仓储响应永远输出完整组；optional 是显式契约：不含该字段的旧 DTO
+   * 夹具仍可解析，行值 NULL 按 `QQ_ALLOCATION_DEFAULT` 兜底，行值非法在仓储读取口抛
+   * TypeError——缺席解释只属于缺席，不属于非法值。
+   */
+  allocation: QqSchemeAllocationSchema.optional(),
   revision: z.number().int().positive(),
   created_at: IsoTimestampSchema,
   updated_at: IsoTimestampSchema,
@@ -828,6 +840,8 @@ export const CreateQqSchemeRequestSchema = z.strictObject({
   task_limits: QqSchemeTaskLimitsSchema.optional(),
   /** 输入防抖组（0059）。省略＝新建显式落开（`QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT`）。 */
   input_anti_spam: QqSchemeInputAntiSpamSchema.optional(),
+  /** 分配组（0068）。省略＝新建用 `QQ_ALLOCATION_DEFAULT`（两档 fixed），与其他组同规矩。 */
+  allocation: QqSchemeAllocationSchema.optional(),
 });
 export type CreateQqSchemeRequest = z.infer<typeof CreateQqSchemeRequestSchema>;
 
@@ -854,6 +868,8 @@ export const UpdateQqSchemeRequestSchema = z.strictObject({
   task_limits: QqSchemeTaskLimitsSchema.optional(),
   /** 输入防抖组（0059）。省略＝不动。 */
   input_anti_spam: QqSchemeInputAntiSpamSchema.optional(),
+  /** 分配组（0068）。省略＝保持现值，整组来或整组不动。 */
+  allocation: QqSchemeAllocationSchema.optional(),
   expected_revision: z.number().int().positive(),
 });
 export type UpdateQqSchemeRequest = z.infer<typeof UpdateQqSchemeRequestSchema>;

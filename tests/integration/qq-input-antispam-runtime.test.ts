@@ -31,6 +31,7 @@ function setup(
     inputAntiSpam: { enabled, ...thresholds },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
+      participation_timing: "resource_window",
       initiative_batch_target_count: 2,
       initiative_batch_jitter_count: 0,
       initiative_time_window_enabled: false,

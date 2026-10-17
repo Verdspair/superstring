@@ -65,7 +65,7 @@ export class RuntimeSpanRepository {
       .query(`SELECT COUNT(*) AS total,COALESCE(SUM(expired),0) AS expired,
       COALESCE(SUM(started),0) AS started,COALESCE(SUM(unknown),0) AS unknown FROM (
       SELECT s.trace_id,MIN(s.expires_at)<=? AS expired,MAX(s.status='started') AS started,
-      MAX(s.status='unknown') AS unknown FROM runtime_spans s WHERE ${scope.where}
+      MAX(s.status='unknown') AS unknown FROM runtime_spans s INDEXED BY ix_runtime_storage_metadata WHERE ${scope.where}
       GROUP BY s.trace_id)`)
       .get(now, ...scope.params) as {
       total: number;
@@ -75,7 +75,7 @@ export class RuntimeSpanRepository {
     };
     const spans = this.db
       .query(`SELECT COUNT(*) AS total,COALESCE(SUM(s.expires_at<=?),0) AS expired
-      FROM runtime_spans s WHERE ${scope.where}`)
+      FROM runtime_spans s INDEXED BY ix_runtime_storage_metadata WHERE ${scope.where}`)
       .get(now, ...scope.params) as { total: number; expired: number };
     return {
       traces: {
@@ -117,10 +117,11 @@ export class RuntimeSpanRepository {
       (SELECT r.status FROM runtime_spans r WHERE r.trace_id=s.trace_id ORDER BY r.id LIMIT 1) AS rootStatus,
       GROUP_CONCAT(DISTINCT s.channel) AS channels,MAX(s.agent_id) AS agentId,
       MAX(s.conversation_id) AS conversationId
-      FROM runtime_spans s WHERE ${where} GROUP BY s.trace_id`;
+      FROM runtime_spans s INDEXED BY idx_runtime_spans_trace WHERE ${where}
+        AND s.trace_id IN (SELECT traceId FROM candidates) GROUP BY s.trace_id`;
     const summary = this.db
       .query(`SELECT COUNT(*) AS total,COALESCE(SUM(expired),0) AS expired FROM (
-      SELECT s.trace_id,MIN(s.expires_at)<=? AS expired FROM runtime_spans s WHERE ${where}
+      SELECT s.trace_id,MIN(s.expires_at)<=? AS expired FROM runtime_spans s INDEXED BY ix_runtime_storage_metadata WHERE ${where}
       GROUP BY s.trace_id)`)
       .get(now, ...params) as { total: number; expired: number };
     const having = ["1=1"];
@@ -135,9 +136,14 @@ export class RuntimeSpanRepository {
     }
     const rows = this.db
       .query(
-        `SELECT * FROM (${group}) WHERE ${having.join(" AND ")} ORDER BY cursorId DESC LIMIT ?`,
+        `WITH candidates AS MATERIALIZED (
+        SELECT s.trace_id AS traceId,MIN(s.id) AS cursorId,MIN(s.expires_at) AS expiresAt
+        FROM runtime_spans s INDEXED BY ix_runtime_storage_metadata WHERE ${where}
+        GROUP BY s.trace_id HAVING ${having.join(" AND ")}
+        ORDER BY cursorId DESC LIMIT ?
+      ) SELECT * FROM (${group}) ORDER BY cursorId DESC`,
       )
-      .all(...params, ...havingParams, filters.limit + 1) as TraceStorageRow[];
+      .all(...params, ...havingParams, filters.limit + 1, ...params) as TraceStorageRow[];
     const pageRows = rows.slice(0, filters.limit);
     return {
       items: pageRows.map(toTraceStorageItem(now)),
@@ -253,10 +259,23 @@ export class RuntimeSpanRepository {
     const countExpr = matched.filterWhere
       ? `SUM(CASE WHEN ${matched.filterWhere} THEN 1 ELSE 0 END)`
       : "COUNT(*)";
-    const activeConversation = filters.conversationId !== undefined && filters.status === "started";
-    const cte = activeConversation
-      ? `WITH candidates AS MATERIALIZED (SELECT DISTINCT s.trace_id FROM runtime_spans s
-          WHERE ${matched.visibilityWhere} AND ${matched.filterWhere}),
+    const hasFilters = matched.filterWhere !== "";
+    const seedStatus = Boolean(filters.status && !filters.runId && !filters.traceId);
+    const candidatePrefix = seedStatus
+      ? `WITH status_ids AS MATERIALIZED (
+          SELECT id FROM runtime_spans INDEXED BY idx_runtime_spans_filter WHERE status=?),`
+      : "WITH";
+    const candidateFrom = seedStatus
+      ? "status_ids i CROSS JOIN runtime_spans s"
+      : filters.runId
+        ? "runtime_spans s INDEXED BY idx_runtime_spans_run"
+        : filters.traceId
+          ? "runtime_spans s INDEXED BY idx_runtime_spans_trace"
+          : "runtime_spans s";
+    const candidateIdWhere = seedStatus ? "s.id=i.id AND " : "";
+    const cte = hasFilters
+      ? `${candidatePrefix} candidates AS MATERIALIZED (SELECT DISTINCT s.trace_id FROM ${candidateFrom}
+          WHERE ${candidateIdWhere}${matched.visibilityWhere} AND ${matched.filterWhere}),
         groups AS MATERIALIZED (SELECT * FROM (SELECT s.trace_id AS traceId,MIN(s.id) AS cursorId,
           MAX(s.status='started') AS active,MAX(s.status='failed') AS failed,
           MAX(COALESCE(s.finished_at,s.started_at)) AS lastActivityAt,
@@ -270,9 +289,10 @@ export class RuntimeSpanRepository {
           ${countExpr} AS matchedSpanCount
           FROM runtime_spans s WHERE ${matched.visibilityWhere} GROUP BY s.trace_id)
           WHERE matchedSpanCount>0)`;
-    // Candidate bindings precede the grouping SELECT; its CASE bindings precede WHERE bindings.
-    const params = activeConversation
+    // Seed bindings precede candidates; grouping CASE bindings precede its visibility bindings.
+    const params = hasFilters
       ? [
+          ...(seedStatus ? [filters.status!] : []),
           ...matched.visibilityParams,
           ...matched.filterParams,
           ...matched.filterParams,

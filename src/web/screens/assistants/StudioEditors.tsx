@@ -22,6 +22,7 @@ import type { AgentDraft } from "@/state/types";
 import { useSuperstringStore } from "@/store";
 import { executionPolicy, toolExecutionEnabled } from "../../../shared/contracts/permissions";
 import { compilePersona } from "../../../shared/contracts/persona-compile";
+import { openContextAllocation } from "../../features/context-allocation";
 
 export function IdentityEditor() {
   const s = useSuperstringStore(
@@ -368,27 +369,62 @@ export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
       <div className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>{t("library.context.capacity")}</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle>{t("library.context.capacity")}</CardTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  openContextAllocation({
+                    purpose: "assistant",
+                    agentId: editor.agent.id,
+                    returnRoute: "context",
+                    returnLabel: t("workspace.assistant"),
+                  })
+                }
+              >
+                {t("schemes.allocation.goToCentralAllocation")}
+              </Button>
+            </div>
             <CardDescription>
               {s.capacityPreview.split("\n").map(translateNotice).join("\n") ||
                 t("library.reading.capacity")}
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-5 sm:grid-cols-2">
-            {numberField(
-              "context_window",
-              "library.context.window.blank.for.automatic",
-              1024,
-              1048576,
-            )}
-            {numberField("max_output_tokens", "library.maximum.output.tokens", 1, 1048576)}
-            {numberField("safety_margin_ratio", "library.safety.margin.ratio", 0, 0.99, 0.01)}
-            {numberField(
-              "auxiliary_timeout_seconds",
-              "library.auxiliary.task.timeout.seconds",
-              1,
-              3600,
-            )}
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-xs sm:grid-cols-2">
+              <div>
+                <span className="text-muted-foreground">
+                  {t("schemes.allocation.requestLimit")}：
+                </span>
+                <span className="font-medium">
+                  {p5.context_window ? `${p5.context_window} Tokens` : "跟随模型总容量"}
+                </span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">
+                  {t("schemes.allocation.judgementMode")}：
+                </span>
+                <span className="font-medium">
+                  {(p5 as any).allocation?.mode === "auto"
+                    ? t("schemes.allocation.modeAuto")
+                    : t("schemes.allocation.modeFixed")}
+                </span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">
+                  {t("library.maximum.output.tokens")}：
+                </span>
+                <span className="font-medium">{p5.max_output_tokens} Tokens</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">{t("library.safety.margin.ratio")}：</span>
+                <span className="font-medium">{(p5.safety_margin_ratio * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t("schemes.allocation.purposeAssistantDesc")}
+            </p>
           </CardContent>
         </Card>
         <Card>

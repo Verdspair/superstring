@@ -107,6 +107,7 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   "rhythm.active_hours_enabled": "connections.allowedHours",
   "rhythm.active_hours_start_minutes": "connections.allowedHoursStart",
   "rhythm.active_hours_end_minutes": "connections.allowedHoursEnd",
+  "rhythm.participation_timing": "connections.participationTiming",
   "rhythm.initiative_queue_on_busy": "connections.initiativeQueueOnBusy",
   "rhythm.initiative_time_window_enabled": "connections.initiativeTimeWindowEnabled",
   "context.judgement_message_limit": "connections.judgementRecentMessages",
@@ -115,6 +116,8 @@ export const QQ_SCHEME_FIELD_LABELS: Readonly<Record<string, string>> = {
   "context.reply_message_limit": "connections.replyRecentMessages",
   "context.reply_window_minutes": "connections.replyTimeWindowMinutes",
   "context.reply_token_budget": "connections.replyBudgetEstimatedBytes",
+  "allocation.judgement.mode": "schemes.allocation.judgementMode",
+  "allocation.reply.mode": "schemes.allocation.replyMode",
   "compression.watermark_trigger": "connections.watermarkTriggerMessages",
   "compression.package_limit": "connections.watermarkPackageLimit",
   "compression.headroom_ratio": "connections.assemblyHeadroomPercent",
@@ -174,6 +177,7 @@ const rhythmSectionByName: Readonly<Record<string, QqSchemeSection>> = {
       .map(([, name]) => [name, "image_understanding"]),
   ),
 
+  participation_timing: "participation",
   active_hours_enabled: "participation",
   active_hours_start_minutes: "participation",
   active_hours_end_minutes: "participation",
@@ -211,7 +215,12 @@ export function qqSchemeFieldSection(field: string): QqSchemeSection {
   const name = rest.join(".");
   if (group === "triggers") return "participation";
   if (group === "rhythm") return rhythmSectionByName[name] ?? "participation";
-  if (group === "context" || group === "output_reserve" || group === "message_settings")
+  if (
+    group === "context" ||
+    group === "output_reserve" ||
+    group === "message_settings" ||
+    group === "allocation"
+  )
     return "context_reading";
   if (group === "compression") return "history_compression";
   if (group === "stickers" || group === "sticker_collections") return "sticker_sending";
@@ -226,6 +235,14 @@ export function qqSchemeFieldSection(field: string): QqSchemeSection {
 export const QQ_SCHEME_ENUM_OPTION_LABELS: Readonly<
   Record<string, Readonly<Record<string, string>>>
 > = {
+  "allocation.judgement.mode": {
+    fixed: "schemes.allocation.modeFixed",
+    auto: "schemes.allocation.modeAuto",
+  },
+  "allocation.reply.mode": {
+    fixed: "schemes.allocation.modeFixed",
+    auto: "schemes.allocation.modeAuto",
+  },
   "stickers.frequency": {
     low: "connections.stickerFrequencyLow",
     medium: "connections.stickerFrequencyMedium",
@@ -243,6 +260,10 @@ export const QQ_SCHEME_ENUM_OPTION_LABELS: Readonly<
   "media_input.mode": {
     native: "connections.imageMode.native",
     description: "connections.imageMode.description",
+  },
+  "rhythm.participation_timing": {
+    resource_window: "connections.participationTimingMode.resource_window",
+    quiet_preferred: "connections.participationTimingMode.quiet_preferred",
   },
 };
 

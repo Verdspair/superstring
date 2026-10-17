@@ -15,7 +15,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { QqMessagePart } from "../../shared/contracts/qq-message";
 import { QQ_SYSTEM_FACE_LABELS } from "../../shared/qq-system-face-labels";
-import { fail } from "../errors";
+import { fail, QqObservationConflictError } from "../errors";
 import type { QqObservation } from "../services/onebot-protocol";
 import { recordMediaSegment } from "./qq-media-repository";
 import { readQqMemberNames, rememberQqMember, rememberQqMemberNames } from "./qq-member-repository";
@@ -420,7 +420,7 @@ function writeObservation(
       existing.speakerKind === observation.speaker.kind &&
       existing.speakerId === speakerId;
     if (!same) {
-      fail("MEMORY_SOURCE_INVALID", "同一事件键描述了不同消息，拒绝覆盖");
+      throw new QqObservationConflictError("同一事件键描述了不同消息，拒绝覆盖");
     }
     // 同一永久 identity 的再交付：journal append 可能先占了位（facts 缺失或不完整）。
     // 这里补**缺失**的事实（§4.5）：逐字段合并、冲突拒绝；媒体行幂等重建（同位置同引用

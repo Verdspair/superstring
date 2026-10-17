@@ -37,9 +37,11 @@ import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories
 import * as schema from "../db/schema";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import { estimateMessages } from "../modules/memory-query";
 import { memoryEntrySources, turnSources } from "../modules/provenance";
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
+import { estimateTokens } from "../services/token-estimate";
 import {
   buildConsolidationPrompt,
   type ConsolidationConfig,
@@ -48,6 +50,7 @@ import {
   DRAFT_RESULT_JSON_SCHEMA,
   MAX_SOURCE_CHARS,
   parseResult,
+  resolveAuxAllocation,
   SUPPRESSION_RESULT_JSON_SCHEMA,
   SuppressionResultSchema,
   stringifyJsonSpaced,
@@ -110,6 +113,7 @@ export class MemoryService {
   private readonly orm: Orm;
   private readonly db: Database;
   private readonly agentRuntime: LeafAgentRuntime;
+  private readonly gateway: Pick<ModelGateway, "loadedContextCapacity">;
   private readonly telemetry?: RuntimeTelemetry;
   private readonly pollIntervalMs: number;
   private readonly heartbeatIntervalMs: number;
@@ -125,6 +129,7 @@ export class MemoryService {
     this.telemetry = options.telemetry;
     this.orm = options.orm;
     this.db = options.db;
+    this.gateway = options.gateway;
     this.agentRuntime =
       options.agentRuntime ??
       createAgentRuntime({
@@ -499,16 +504,47 @@ export class MemoryService {
       guard.assert(context.owner, "memory_organize");
       if (typeof capCheckpoint === "function") capCheckpoint();
     };
+    // 冻结在入队快照里的辅助分配档（0068）：output_reserved 是两种模式下都硬性的
+    // max_tokens；缺席（含显式 null）＝角色现值（不发送输出帽）。输入门按完整请求计
+    // （消息 + 响应 schema/协议包装，utf8 估算口径）：fixed 用显式 input_limit；
+    // auto 用已知模型容量减输出预留（沿用既有容量读数，无档的老任务不新增探测，
+    // 容量未知即显式拒绝，不发明保底值）。整理输入不可分，超限拒绝而不截断。
+    const allocation = resolveAuxAllocation(config.allocation);
+    const consolidateMessages = buildConsolidationPrompt(kind, config, sources);
+    const schemaCost = (schema: Record<string, unknown>): number =>
+      estimateTokens(JSON.stringify(schema));
+    // 自动档的容量封顶：仅显式保存了档才探测（老任务/无档不新增探测调用）；
+    // 容量未知即显式拒绝。封顶 = 已知容量 - 输出预留（角色无输出预留则不发明余量）。
+    let capacityCeiling: number | null = null;
+    if (allocation.profile !== undefined && allocation.profile.mode === "auto") {
+      const capacity = await this.gateway.loadedContextCapacity(config.model, {
+        signal,
+      });
+      if (capacity === null || !Number.isSafeInteger(capacity) || capacity < 1)
+        fail("CONTEXT_CAPACITY_UNKNOWN", "自动档无法确认整理模型容量，不猜保底值");
+      capacityCeiling = capacity - (allocation.outputReserved ?? 0);
+      if (capacityCeiling < 1) fail("CONTEXT_AUX_BUDGET", "自动档的输出预留已用尽模型容量");
+    }
+    const consolidateInputCost =
+      estimateMessages(consolidateMessages) + schemaCost(DRAFT_RESULT_JSON_SCHEMA);
+    const gate = (cost: number, what: string): void => {
+      if (allocation.inputLimit !== null && cost > allocation.inputLimit)
+        fail("CONTEXT_AUX_BUDGET", `冻结的输入上限小于完整${what}请求，未截断来源`);
+      if (capacityCeiling !== null && cost > capacityCeiling)
+        fail("CONTEXT_AUX_BUDGET", `自动档的模型容量小于完整${what}请求，未截断来源`);
+    };
+    gate(consolidateInputCost, "整理");
     const text = await this.agentRuntime.completeLeaf(
       {
         id: "memory.consolidate",
         version: "1",
         model: config.model,
         temperature: 0,
+        ...(allocation.outputReserved === null ? {} : { maxTokens: allocation.outputReserved }),
         responseSchema: DRAFT_RESULT_JSON_SCHEMA,
       },
       {
-        messages: buildConsolidationPrompt(kind, config, sources),
+        messages: consolidateMessages,
         signal,
         owner: context.owner,
         sources: liveSources(),
@@ -532,16 +568,23 @@ export class MemoryService {
     for (let start = 0; start < blocked.length; start += 8) {
       checkCapture();
       verifyPublication();
+      const chunk = blocked.slice(start, start + 8);
+      const suppressionMessages = suppressionPrompt(draft, chunk);
+      gate(
+        estimateMessages(suppressionMessages) + schemaCost(SUPPRESSION_RESULT_JSON_SCHEMA),
+        "抑制比对",
+      );
       const response = await this.agentRuntime.completeLeaf(
         {
           id: "memory.suppression",
           version: "1",
           model: config.model,
           temperature: 0,
+          ...(allocation.outputReserved === null ? {} : { maxTokens: allocation.outputReserved }),
           responseSchema: SUPPRESSION_RESULT_JSON_SCHEMA,
         },
         {
-          messages: suppressionPrompt(draft, blocked.slice(start, start + 8)),
+          messages: suppressionMessages,
           signal,
           owner: context.owner,
           sources: [...liveSources(), ...context.blockedSources.slice(start, start + 8).flat()],

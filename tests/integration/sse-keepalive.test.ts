@@ -78,9 +78,9 @@ it.each(["complete", "error", "reader_cancel", "request_abort"] as const)(
         },
       },
       async (writer) => {
-        writer.send("started", { seq: 1 });
+        await writer.send("started", { seq: 1 });
         await gate.promise;
-        writer.send("completed", { seq: 2 });
+        await writer.send("completed", { seq: 2 });
       },
     );
     if (!response.body) throw new Error("SSE response has no body");
@@ -188,18 +188,23 @@ for (const path of ["/chat", "/v2/chat"] as const) {
       const response = await h.app.request(request(path, h.session.id));
       if (!response.body) throw new Error("SSE response has no body");
       reader = response.body.getReader();
+      let raw = "";
+      const heartbeatSeen = deferred();
+      const reading = (async () => {
+        for (;;) {
+          const chunk = await reader!.read();
+          if (chunk.done) break;
+          raw += decoder.decode(chunk.value);
+          if (raw.includes(": keepalive\n\n")) heartbeatSeen.resolve();
+        }
+      })();
       await h.gateway.entered.promise;
       expect(clock.callbacks.size).toBe(1);
       clock.tick();
-      let raw = "";
-      while (!raw.includes(": keepalive\n\n")) raw += decoder.decode((await reader.read()).value);
+      await heartbeatSeen.promise;
       expect(h.gateway.signal?.aborted).toBe(false);
       h.gateway.release.resolve();
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        raw += decoder.decode(chunk.value);
-      }
+      await reading;
       const frames = parseSseFrames(raw);
       if (path === "/chat")
         expect(frames.map((frame) => frame.event)).toEqual(["start", "delta", "done"]);
@@ -239,19 +244,24 @@ for (const path of ["/chat", "/v2/chat"] as const) {
         const response = await h.app.request(request(path, h.session.id, abort.signal));
         if (!response.body) throw new Error("SSE response has no body");
         reader = response.body.getReader();
-        await h.gateway.entered.promise;
-        expect(clock.callbacks.size).toBe(1);
-        if (ending === "reader_cancel") await reader.cancel();
-        else {
-          if (ending === "request_abort") abort.abort();
-          else
-            h.gateway.release.reject(new ModelUnavailableError("MODEL_TIMEOUT", "fixture timeout"));
-          let raw = "";
+        let raw = "";
+        const reading = (async () => {
           for (;;) {
-            const chunk = await reader.read();
+            const chunk = await reader!.read();
             if (chunk.done) break;
             raw += decoder.decode(chunk.value);
           }
+        })();
+        await h.gateway.entered.promise;
+        expect(clock.callbacks.size).toBe(1);
+        if (ending === "reader_cancel") {
+          await reader.cancel();
+          await reading;
+        } else {
+          if (ending === "request_abort") abort.abort();
+          else
+            h.gateway.release.reject(new ModelUnavailableError("MODEL_TIMEOUT", "fixture timeout"));
+          await reading;
           if (ending === "model_error") {
             const terminal = parseSseFrames(raw).at(-1);
             expect(terminal?.event).toBe(path === "/chat" ? "error" : "failed");
@@ -290,7 +300,7 @@ const server = Bun.serve({
     return createSseResponse(
       { requestSignal: req.signal, onDisconnect: () => abort.abort(), keepaliveIntervalMs: 100 },
       async (writer) => {
-        writer.send("started", { seq: 1 });
+        await writer.send("started", { seq: 1 });
         await new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
             abort.signal.removeEventListener("abort", cancelled);
@@ -302,7 +312,7 @@ const server = Bun.serve({
           };
           abort.signal.addEventListener("abort", cancelled, { once: true });
         });
-        writer.send("completed", { seq: 2 });
+        await writer.send("completed", { seq: 2 });
       },
     );
   },

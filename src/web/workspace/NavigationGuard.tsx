@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { AlertDialog } from "../components/confirmation";
 import { Button } from "../components/ui/button";
 import { qqDraftChanges } from "../features/qq/draft-state";
@@ -29,7 +30,23 @@ function NavigationConfirmDialog({
   run: (operation: () => Promise<void>) => Promise<void>;
 }) {
   const { t } = useTranslation();
-  const state = useSuperstringStore();
+  const state = useSuperstringStore(
+    useShallow((s) => ({
+      cancelPendingNavigation: s.cancelPendingNavigation,
+      confirmDiscardAndContinue: s.confirmDiscardAndContinue,
+      confirmSaveAndContinue: s.confirmSaveAndContinue,
+      error: s.error,
+      navigationConfirmMessage: s.navigationConfirmMessage,
+      permissionError: s.permissionError,
+      qqInputs: s.qqInputs,
+      qqSchemeEditor: s.qqSchemeEditor,
+      qqGroupConfigEditor: s.qqGroupConfigEditor,
+      qqSchemes: s.qqSchemes,
+      qqStickerEditor: s.qqStickerEditor,
+      qqConversations: s.qqConversations,
+      qqStickerCollections: s.qqStickerCollections,
+    })),
+  );
   return (
     <AlertDialog
       title={t("workspace.this_section_has_unsaved_changes")}

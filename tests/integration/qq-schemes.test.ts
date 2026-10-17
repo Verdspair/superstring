@@ -213,6 +213,9 @@ describe("scheme identity", () => {
         "sticker_frequency",
         "burst_min_messages",
         "burst_window_seconds",
+        "participation_timing",
+        // 0068：方案级分配组，表尾追加（SQLite 只能追加列，这是表的真实顺序）。
+        "allocation",
       ]);
       expect(created.name).toBe("默认方案");
       expect(created.description).toBeNull();
@@ -308,6 +311,7 @@ describe("scheme identity", () => {
       // Spelled out, so a change to the defaults has to be a deliberate edit of this test
       // rather than something that slides through with the constant.
       expect(schemeRhythm(created)).toEqual({
+        participation_timing: "quiet_preferred",
         merge_window_seconds: 30,
         reply_cooldown_seconds: 10,
         hourly_speech_limit: 200,
@@ -1151,7 +1155,7 @@ describe("0059 scheme task limits and input anti-spam", () => {
       db.exec(
         "UPDATE qq_bindings SET burst_min_messages=NULL,burst_window_seconds=NULL WHERE id='11111111-1111-4111-8111-111111111111'",
       );
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
       expect(
         db
           .query("PRAGMA table_info(qq_bindings)")

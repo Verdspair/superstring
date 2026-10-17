@@ -48,6 +48,7 @@ import {
 } from "../../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
+import { openContextAllocation } from "../../features/context-allocation";
 import { invalidSchemeInputs, invalidSchemeTimezone } from "../../features/qq/draft-state";
 import {
   imageFields,
@@ -65,7 +66,11 @@ import { translateNotice } from "../../i18n";
 import type { SuperstringState } from "../../state/types";
 import { useSuperstringStore } from "../../store";
 import { QqMessagePreview } from "./qq-message-preview";
-import { SchemeFieldCard, StickerFrequencyOptions } from "./scheme-field-shared";
+import {
+  DerivedRhythmIntervals,
+  SchemeFieldCard,
+  StickerFrequencyOptions,
+} from "./scheme-field-shared";
 import {
   fieldBounds,
   headroomPercentBounds,
@@ -122,7 +127,7 @@ const schemeEnumLabels = QQ_SCHEME_ENUM_OPTION_LABELS;
  * 错误用 aria-describedby 挂在同一个输入上，另有页脚的「定位」按钮把焦点送回这里。
  * 0052 的两组编辑器组同样走这里（messageSettings/mediaInput），canonical 键保持 message_settings.<key>。
  */
-function SchemeNumber({
+export function SchemeNumber({
   group,
   name,
   label,
@@ -224,7 +229,7 @@ function SchemeEnum({
   label,
   info,
 }: {
-  group: "messageSettings" | "mediaInput";
+  group: "messageSettings" | "mediaInput" | "rhythm";
   name: string;
   label: string;
   info?: string;
@@ -235,8 +240,13 @@ function SchemeEnum({
   const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
   if (!editor) return null;
   const value = (editor[group] as unknown as Record<string, string>)[name];
-  // 选项标签按 canonical 持久键查（message_settings/media_input），与预览的 field 键一致。
-  const canonicalGroup = group === "messageSettings" ? "message_settings" : "media_input";
+  // 选项标签按 canonical 持久键查（message_settings/media_input/rhythm），与预览的 field 键一致。
+  const canonicalGroup =
+    group === "messageSettings"
+      ? "message_settings"
+      : group === "mediaInput"
+        ? "media_input"
+        : group;
   const labels = schemeEnumLabels[`${canonicalGroup}.${name}`] ?? {};
   return (
     <Field label={label} info={info}>
@@ -633,7 +643,7 @@ function BoundRecentTurns() {
 }
 
 /** 装配冗余在界面上是整数百分比，存的是比例（5 ↔ 0.05）；边界同样来自契约（0–50）。 */
-function SchemePercent({
+export function SchemePercent({
   name,
   label,
   info,
@@ -1063,6 +1073,24 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                     description="schemes.studio.rhythmHint"
                   >
                     <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                      <div className="sm:col-span-2">
+                        <SchemeEnum
+                          group="rhythm"
+                          name="participation_timing"
+                          label="connections.participationTiming"
+                          info="connections.participationTimingHint"
+                        />
+                      </div>
+                      <DerivedRhythmIntervals
+                        timingMode={editor.rhythm.participation_timing ?? "resource_window"}
+                        mergeWindowSeconds={editor.rhythm.merge_window_seconds}
+                        batchTarget={editor.rhythm.initiative_batch_target_count}
+                        batchJitter={editor.rhythm.initiative_batch_jitter_count}
+                        timeWindowEnabled={editor.rhythm.initiative_time_window_enabled}
+                        timeTarget={editor.rhythm.initiative_time_target_seconds}
+                        timeJitter={editor.rhythm.initiative_time_jitter_seconds}
+                        testId="scheme-rhythm-derived-intervals"
+                      />
                       <Label className="flex items-start gap-3 rounded-lg border p-4 sm:col-span-2">
                         <Checkbox
                           disabled={saving}
@@ -1349,6 +1377,36 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                       description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                     >
                       <div className="grid gap-5 sm:grid-cols-2">
+                        <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                          <div>
+                            <span className="text-muted-foreground">
+                              {part === "judgement"
+                                ? t("schemes.allocation.judgementMode")
+                                : t("schemes.allocation.replyMode")}
+                              ：
+                            </span>
+                            <span className="font-medium">
+                              {editor.allocation?.[part]?.mode === "auto"
+                                ? t("schemes.allocation.modeAuto")
+                                : t("schemes.allocation.modeFixed")}
+                            </span>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 text-xs"
+                            onClick={() =>
+                              openContextAllocation({
+                                purpose: "qq",
+                                schemeId: editor.source.id,
+                                returnRoute: "qq-scheme-config",
+                                returnLabel: editor.name,
+                              })
+                            }
+                          >
+                            {t("schemes.allocation.goToCentralAllocation")}
+                          </Button>
+                        </div>
                         {/* 回复档的条数跟随绑定助手的「保留最近轮数」，所以它是只读的。 */}
                         {part === "reply" ? (
                           <BoundRecentTurns />

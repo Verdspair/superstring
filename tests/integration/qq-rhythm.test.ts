@@ -83,6 +83,7 @@ function rhythmFor(
 describe("the decided defaults", () => {
   it("is exactly the table the user fixed", () => {
     expect(QQ_RHYTHM_DEFAULT).toEqual({
+      participation_timing: "quiet_preferred",
       merge_window_seconds: 30,
       reply_cooldown_seconds: 10,
       hourly_speech_limit: 200,

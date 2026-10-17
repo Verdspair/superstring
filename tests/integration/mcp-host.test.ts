@@ -5,6 +5,7 @@ import path from "node:path";
 import { ActionExecutor } from "../../src/server/agent/action-executor";
 import type { McpSession } from "../../src/server/mcp/client";
 import { type McpHostDiagnostic, McpToolHost } from "../../src/server/mcp/host";
+import { createMcpManagement } from "../../src/server/mcp/management";
 import { PermissionService } from "../../src/server/permissions/service";
 
 const fixture = path.join(import.meta.dir, "../fixtures/mcp/echo-server.mjs");
@@ -167,5 +168,194 @@ describe("MCP lifecycle and revocation", () => {
     await Promise.all([starting, stopping]);
     expect(another.current()).toEqual([]);
     expect(closed).toContain("late");
+  });
+
+  it("publishes healthy discovery before a blocked server and preserves registry order", async () => {
+    const delayed = Promise.withResolvers<McpSession>();
+    const healthyListed = Promise.withResolvers<void>();
+    const session = (id: string): McpSession => ({
+      serverId: id,
+      serverName: id,
+      protocolVersion: "2025-06-18",
+      async listTools() {
+        if (id === "b") healthyListed.resolve();
+        return [{ name: "read", description: null, inputSchema: {}, readOnly: true }];
+      },
+      callTool: async () => ({ text: id, isError: false, omittedParts: 0 }),
+      async close() {},
+    });
+    const host = makeHost(configFile([server("a"), server("b")]), [], async (config) =>
+      config.id === "a" ? delayed.promise : session("b"),
+    );
+    const starting = host.start();
+    await healthyListed.promise;
+    // Observe after B's discovery continuation, without advancing A.
+    await Promise.resolve();
+    expect(host.current().map((action) => action.description.name)).toEqual(["mcp.b.read"]);
+    delayed.resolve(session("a"));
+    await starting;
+    expect(host.current().map((action) => action.description.name)).toEqual([
+      "mcp.a.read",
+      "mcp.b.read",
+    ]);
+  });
+
+  it("keeps B available while A refreshes, invalidates only A, and isolates A failure", async () => {
+    const refresh = Promise.withResolvers<never>();
+    const entered = Promise.withResolvers<void>();
+    let notifyA: (() => void) | undefined;
+    let refreshing = false;
+    const closed: string[] = [];
+    const host = makeHost(configFile([server("a"), server("b")]), [], async (config, options) => {
+      if (config.id === "a") notifyA = options.onToolsChanged;
+      return {
+        serverId: config.id,
+        serverName: config.id,
+        protocolVersion: "2025-06-18",
+        async listTools() {
+          if (config.id === "a" && refreshing) {
+            entered.resolve();
+            return refresh.promise;
+          }
+          return [{ name: "read", description: null, inputSchema: {}, readOnly: true }];
+        },
+        callTool: async () => ({ text: "ok", isError: false, omittedParts: 0 }),
+        async close() {
+          closed.push(config.id);
+        },
+      };
+    });
+    await host.start();
+    const [a, b] = host.current();
+    refreshing = true;
+    notifyA?.();
+    const reloading = host.reload();
+    await entered.promise;
+    expect(host.current().map((action) => action.description.name)).toEqual(["mcp.b.read"]);
+    expect(() => a.assertAvailable?.()).toThrow("PERMISSION_REVISION_CHANGED");
+    expect(() => b.assertAvailable?.()).not.toThrow();
+    refresh.reject(new Error("catalog unavailable"));
+    await reloading;
+    expect(host.current().map((action) => action.description.name)).toEqual(["mcp.b.read"]);
+    expect(closed).toEqual(["a"]);
+  });
+
+  it("clears saved-registry failures while unchanged B stays usable during blocked A discovery", async () => {
+    const pending = Promise.withResolvers<McpSession>();
+    let aConnections = 0;
+    const session = (id: string): McpSession => ({
+      serverId: id,
+      serverName: id,
+      protocolVersion: "2025-06-18",
+      listTools: async () => [{ name: "read", description: null, inputSchema: {}, readOnly: true }],
+      callTool: async () => ({ text: id, isError: false, omittedParts: 0 }),
+      async close() {},
+    });
+    const file = configFile([server("a"), server("b"), server("bad"), server("disabled")]);
+    const host = makeHost(file, [], async (config) => {
+      if (config.id === "bad") throw new Error("synthetic connect failure");
+      if (config.id === "a" && ++aConnections > 1) return pending.promise;
+      return session(config.id);
+    });
+    const management = createMcpManagement({ configPath: file, host });
+    await host.start();
+    const b = host.current().find((action) => action.description.name === "mcp.b.read");
+    expect(b).toBeDefined();
+    expect(management.status().servers.find((row) => row.config.id === "bad")).toMatchObject({
+      state: "error",
+      code: "MCP_CONNECT_FAILED",
+    });
+    const before = management.status();
+    const saved = management.update(
+      before.revision,
+      before.servers.map(({ config }) =>
+        config.id === "a"
+          ? { ...config, name: "updated" }
+          : config.id === "disabled"
+            ? { ...config, enabled: false }
+            : config,
+      ),
+    );
+    const byId = Object.fromEntries(saved.servers.map((row) => [row.config.id, row]));
+    expect(byId.a).toMatchObject({ state: "pending", code: null, tools: [] });
+    expect(byId.b).toMatchObject({ state: "connected", code: null });
+    expect(byId.bad).toMatchObject({ state: "pending", code: null, tools: [] });
+    expect(byId.disabled).toMatchObject({ state: "disabled", code: null, tools: [] });
+    expect(host.current().map((action) => action.description.name)).toEqual(["mcp.b.read"]);
+    expect(() => b?.assertAvailable?.()).not.toThrow();
+    pending.resolve(session("a"));
+    await host.reload();
+    expect(management.status().servers.find((row) => row.config.id === "bad")).toMatchObject({
+      state: "error",
+      code: "MCP_CONNECT_FAILED",
+    });
+    expect(host.current().map((action) => action.description.name)).toEqual([
+      "mcp.a.read",
+      "mcp.b.read",
+    ]);
+  });
+
+  it("rejects late discovery after revision changes and closes it exactly once", async () => {
+    const pending = Promise.withResolvers<McpSession>();
+    const file = configFile([server("a")]);
+    const closed: string[] = [];
+    const host = makeHost(file, [], () => pending.promise);
+    const starting = host.start();
+    writeFileSync(file, JSON.stringify({ version: 1, servers: [server("a", { enabled: false })] }));
+    expect(host.current()).toEqual([]);
+    pending.resolve({
+      serverId: "a",
+      serverName: "a",
+      protocolVersion: "2025-06-18",
+      listTools: async () => [{ name: "read", description: null, inputSchema: {}, readOnly: true }],
+      callTool: async () => ({ text: "a", isError: false, omittedParts: 0 }),
+      async close() {
+        closed.push("a");
+      },
+    });
+    await starting;
+    await host.reload();
+    await host.stop();
+    expect(host.current()).toEqual([]);
+    expect(closed).toEqual(["a"]);
+  });
+
+  it("removes changed A immediately without hiding unchanged B during reconnect", async () => {
+    const pending = Promise.withResolvers<McpSession>();
+    const file = configFile([server("a"), server("b")]);
+    const closed: string[] = [];
+    let aConnections = 0;
+    const session = (id: string): McpSession => ({
+      serverId: id,
+      serverName: id,
+      protocolVersion: "2025-06-18",
+      listTools: async () => [{ name: "read", description: null, inputSchema: {}, readOnly: true }],
+      callTool: async () => ({ text: id, isError: false, omittedParts: 0 }),
+      async close() {
+        closed.push(id);
+      },
+    });
+    const host = makeHost(file, [], async (config) => {
+      if (config.id === "a" && ++aConnections > 1) return pending.promise;
+      return session(config.id);
+    });
+    await host.start();
+    const [a, b] = host.current();
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, servers: [server("a", { name: "updated" }), server("b")] }),
+    );
+    const reloading = host.reload();
+    expect(host.current().map((action) => action.description.name)).toEqual(["mcp.b.read"]);
+    expect(() => a.assertAvailable?.()).toThrow("PERMISSION_REVISION_CHANGED");
+    expect(() => b.assertAvailable?.()).not.toThrow();
+    expect(closed).toEqual(["a"]);
+    pending.resolve(session("a"));
+    await reloading;
+    expect(host.current().map((action) => action.description.name)).toEqual([
+      "mcp.a.read",
+      "mcp.b.read",
+    ]);
+    expect(closed).toEqual(["a"]);
   });
 });

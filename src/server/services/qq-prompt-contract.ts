@@ -476,17 +476,36 @@ export function qqSpeakerLabel(
  * «回谁» 是**程序**说的话，不是用户提示词：它由这一轮的任务决定（服务端按发言人分的），模型猜不出
  * 来；`@` 也因此在程序侧加，模型不需要（也不该）自己写 @。冷场发起没有对象，就只说场景那一句。
  */
+/** 自主路径的增量贡献口径（程序拥有，固定字面量；直接路径不追加，不进可编辑槽位）。 */
+const QQ_INCREMENTAL_CONTRIBUTION_GUIDANCE = [
+  "并发的其他任务可能正在回答同一个人或同一个话题：比较它们在飞中的工作与已送达的发言，再看这条新消息本身。",
+  "有新的消息序号、换了个说话人、或只是接着上一句说，都不自动等于有了新的话头或新增贡献；在现有 intent 里说明具体新增贡献，回复只给应说内容，不要另加解释。",
+  "同一个问题如果别的任务已经在回答，就不要再补一条重复的空话。",
+  "群友提出的独立的新问题或纠正，照常有效，不受其他任务影响。",
+  "并发投影里的公开意图是那些任务想说的话，不是送达结果：confirmed 表示已确认送达，partial 表示只有部分内容确认送达；planned 是还没尝试发送，sending 是正在发送但还没确认送达；unknown 或缺席时你不知道对方有没有被回答——既不能当作已回答，也不要因为送达还没确认就重发一样的话。",
+].join("\n");
+
 function qqSceneFor(
   path: QqPromptPath,
   replyingTo: { readonly speakerId: string | null; readonly label: string } | null,
 ): string {
-  if (replyingTo === null) return PATH_TASKS[path];
+  if (replyingTo === null) {
+    return qqJudgeablePath(path)
+      ? [PATH_TASKS[path], QQ_INCREMENTAL_CONTRIBUTION_GUIDANCE].join("\n")
+      : PATH_TASKS[path];
+  }
   const target = `这一轮你要回的是 ${replyingTo.label} 说的话：只写回给他一个人的话，一轮只写一条，不要写多条`;
   // 匿名发言有对象但没有号：不说"程序会 @ 他"（那一句会让她以为程序知道是谁）。
-  if (replyingTo.speakerId === null) return [PATH_TASKS[path], `${target}。`].join("\n");
+  if (replyingTo.speakerId === null)
+    return [
+      PATH_TASKS[path],
+      `${target}。`,
+      ...(qqJudgeablePath(path) ? [QQ_INCREMENTAL_CONTRIBUTION_GUIDANCE] : []),
+    ].join("\n");
   return [
     PATH_TASKS[path],
     `${target}；开头会由程序 @ 他，你自己不要在文字里写 @，也不要写别人的名字。`,
+    ...(qqJudgeablePath(path) ? [QQ_INCREMENTAL_CONTRIBUTION_GUIDANCE] : []),
   ].join("\n");
 }
 

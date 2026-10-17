@@ -68,6 +68,7 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
     }
     options.signal?.throwIfAborted();
     if (REDIRECT_STATUS.has(response.status)) {
+      await response.body?.cancel().catch(() => {});
       if (hop >= MAX_REDIRECT_HOPS)
         throw webError(
           "WEB_TOO_MANY_REDIRECTS",
@@ -76,7 +77,6 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       const location = response.headers.get("location");
       if (location === null || location === "")
         throw webError("WEB_FETCH_FAILED", `重定向响应缺少 Location：${current.href}`);
-      await response.body?.cancel().catch(() => {});
       let next: URL;
       try {
         next = new URL(location, current);
@@ -86,7 +86,10 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
       current = await assertSafeUrl(next, options);
       continue;
     }
-    if (!response.ok) throw webError("WEB_FETCH_FAILED", `网页请求失败：HTTP ${response.status}`);
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw webError("WEB_FETCH_FAILED", `网页请求失败：HTTP ${response.status}`);
+    }
     let body: CappedBody;
     try {
       body = await readBodyCapped(response, maxBytes);

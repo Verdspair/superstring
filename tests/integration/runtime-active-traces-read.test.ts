@@ -241,20 +241,34 @@ describe("active conversation traces", () => {
     const f = fixture();
     const query = filters(f.current.id);
     const expected = legacyPage(f, query);
-    const trace = spyOn(f.h.db, "query");
+    const original = f.h.db.query.bind(f.h.db);
+    const groupedCalls: { sql: string; bindings: (string | number)[] }[] = [];
+    const trace = spyOn(f.h.db, "query").mockImplementation(((sql: string) => {
+      const statement = original(sql);
+      return new Proxy(statement, {
+        get(target, property) {
+          const value = Reflect.get(target, property, target);
+          if (typeof value !== "function") return value;
+          return (...bindings: (string | number)[]) => {
+            if (
+              (property === "get" || property === "all") &&
+              sql.includes("groups AS MATERIALIZED") &&
+              sql.includes("matchedSpanCount")
+            )
+              groupedCalls.push({ sql, bindings });
+            return Reflect.apply(value, target, bindings);
+          };
+        },
+      });
+    }) as typeof f.h.db.query);
     const actual = f.spans.traces(query, userId, at);
-    const groupedCall = trace.mock.calls.find(
-      ([sql]) =>
-        String(sql).startsWith("WITH candidates AS MATERIALIZED") &&
-        String(sql).includes("matchedSpanCount"),
-    );
     trace.mockRestore();
-    expect(groupedCall).toBeDefined();
+    expect(groupedCalls).toHaveLength(2);
+    const groupedCall = groupedCalls[0];
     if (!groupedCall) throw new Error("production candidate statement missing");
-    const [sql, ...bindings] = groupedCall;
     const plan = f.h.db
-      .query(`EXPLAIN QUERY PLAN ${String(sql)}`)
-      .all(...(bindings as (string | number)[])) as { detail: string }[];
+      .query(`EXPLAIN QUERY PLAN ${groupedCall.sql}`)
+      .all(...groupedCall.bindings) as { detail: string }[];
     expect(plan.some((row) => row.detail.includes("idx_runtime_spans_filter"))).toBe(true);
     expect(actual).toEqual(expected);
     const baselineTimes: number[] = [],

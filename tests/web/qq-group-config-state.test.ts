@@ -42,6 +42,7 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
   description: null,
   triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: false },
   rhythm: {
+    participation_timing: "resource_window",
     merge_window_seconds: 30,
     reply_cooldown_seconds: 10,
     hourly_speech_limit: 200,

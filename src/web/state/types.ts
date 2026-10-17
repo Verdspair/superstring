@@ -18,6 +18,7 @@ import type { BrowserStateStorage } from "../browser-state";
 import type { PermissionSettingsState } from "../features/access/permission-state";
 import type { WebAccessState } from "../features/access/web-access-state";
 import type { ConversationState } from "../features/chat/conversation-state";
+import type { ContextAllocationTarget } from "../features/context-allocation";
 import type { ConversationDirectoryState } from "../features/conversations/directory-state";
 import type { DesktopSettingsState } from "../features/general/desktop-state";
 import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/types";
@@ -49,6 +50,12 @@ export type ConversationScope = "current" | "global";
 export type QqSchemeView = "settings" | "bindings";
 export type PendingNavigation =
   | {
+      kind: "context-allocation";
+      target: import("../features/context-allocation").ContextAllocationTarget;
+      route?: SettingsRoute;
+      returning?: boolean;
+    }
+  | {
       kind: "page";
       page: Page;
       settingsView: SettingsView;
@@ -59,10 +66,23 @@ export type PendingNavigation =
       conversationView?: ConversationView;
       conversationScope?: ConversationScope;
     }
-  | { kind: "agent"; id: string | "__new__" }
+  | {
+      kind: "agent";
+      id: string | "__new__";
+      settingsRoute?: SettingsRoute;
+    }
   | { kind: "section"; section: SectionKey }
-  | { kind: "scheme"; id: string; view?: QqSchemeView }
-  | { kind: "group-config"; bindingId: string }
+  | {
+      kind: "scheme";
+      id: string;
+      view?: QqSchemeView;
+      settingsRoute?: SettingsRoute;
+    }
+  | {
+      kind: "group-config";
+      bindingId: string;
+      settingsRoute?: SettingsRoute;
+    }
   | { kind: "knowledge"; target: KnowledgeTarget };
 
 export interface ChatItem {
@@ -107,6 +127,9 @@ export interface SuperstringState
     QqGroupConfigState,
     QqDraftState,
     DesktopSettingsState {
+  modelCapacityTarget: string | null;
+  contextAllocationTarget: ContextAllocationTarget;
+  allocationInvalidInputs: Record<string, string>;
   pageEditor: import("../features/agents/page-drafts").PageEditor | null;
   settingsSaving: boolean;
   patchPagePolicy: (patch: Partial<Omit<PolicyView, "version">>) => void;
@@ -146,6 +169,11 @@ export interface SuperstringState
   conversationScope: ConversationScope;
   qqSchemeView: QqSchemeView;
   openSettingsRoute: (route: SettingsRoute) => void;
+  requestContextAllocation: (
+    target: import("../features/context-allocation").ContextAllocationTarget,
+    route?: SettingsRoute,
+    returning?: boolean,
+  ) => void;
   openSystemComponent: (target: SystemComponentTarget) => void;
   activeSection: SectionKey;
   dirty: boolean;
@@ -214,10 +242,14 @@ export interface SuperstringState
   closeAgentSettings: () => void;
   requestPageNavigation: (page: Page, settingsView?: SettingsView) => void;
   requestConversationView: (view: ConversationView, scope?: ConversationScope) => void;
-  requestAgentNavigation: (id: string | "__new__") => void;
-  requestQqSchemeNavigation: (id: string, view?: QqSchemeView) => void;
+  requestAgentNavigation: (id: string | "__new__", settingsRoute?: SettingsRoute) => void;
+  requestQqSchemeNavigation: (
+    id: string,
+    view?: QqSchemeView,
+    settingsRoute?: SettingsRoute,
+  ) => void;
   /** 本群配置入口：打开某间群的完整设置页，一律走统一草稿守卫。 */
-  openQqGroupConfig: (bindingId: string) => void;
+  openQqGroupConfig: (bindingId: string, settingsRoute?: SettingsRoute) => void;
   confirmSaveAndContinue: () => Promise<void>;
   confirmDiscardAndContinue: () => Promise<void>;
   cancelPendingNavigation: () => void;

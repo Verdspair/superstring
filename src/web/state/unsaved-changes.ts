@@ -18,13 +18,14 @@ import type { SuperstringState } from "./types";
 /** 全应用是否有未保存草稿：beforeunload 与导航确认共用同一条判定。 */
 export function hasUnsavedDrafts(state: SuperstringState): boolean {
   return (
+    Object.keys(state.allocationInvalidInputs).length > 0 ||
     state.dirty ||
     state.memoryCorrectionDirty ||
     state.knowledgeDirty ||
     permissionSettingsDirty(state.permissionEditor) ||
     webAccessDraftDirty(state.webAccessSnapshot, state.webAccessDraft) ||
     dirtyPages(state.pageEditor).length > 0 ||
-    organizationDirty(state.organizationEditor) ||
+    organizationDirty(state.organizationEditor, "all") ||
     knowledgeModelDirty(state.knowledgeModelEditor) ||
     knowledgeReadDirty(state.knowledgeReadEditor) ||
     Object.keys(state.qqMemoryBatchDrafts).length > 0 ||

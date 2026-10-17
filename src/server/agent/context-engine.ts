@@ -1,6 +1,7 @@
 import type { OutputDraft } from "../../shared/contracts/agent-output";
 import { AGENT_DECISION_JSON_SCHEMA } from "../../shared/contracts/agent-output";
 import type { ModelMessage } from "../../shared/contracts/agent-run";
+import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { VisionCost } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { ChatMessage } from "../llm/chat-content";
@@ -68,6 +69,7 @@ export type ContextReadTimings = {
 
 export interface ConversationContextSource {
   configureActions?(actions: AgentSpec["availableActions"]): void;
+  researchAllocation?(): AuxiliaryAllocationProfile | undefined;
   /** Optional per-phase preparation supplied by this source's own cache/ownership boundary. */
   prepareModelContext?(model: string, signal: AbortSignal): Promise<ModelContextBudget | undefined>;
   assertCurrent?(): void;

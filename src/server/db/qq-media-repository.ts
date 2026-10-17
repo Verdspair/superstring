@@ -6,7 +6,7 @@
 // many attempts it took, and which model produced the note.
 
 import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
-import { fail } from "../errors";
+import { fail, QqObservationConflictError } from "../errors";
 import {
   parseQqMediaKind,
   QQ_MEDIA_MAX_ATTEMPTS,
@@ -14,8 +14,8 @@ import {
 } from "../services/qq-media-contract";
 import { mediaCacheExpiresAt } from "../services/qq-retention";
 import {
-  findMediaReadTasksForContent,
-  findServableMediaReadTaskByIdentity,
+  findMediaReadTasksForContents,
+  isMediaReadTaskServable,
   type QqMediaReadPurpose,
   revokeMediaReadTaskResultsForSources,
 } from "./qq-media-task-repository";
@@ -66,7 +66,7 @@ export function recordMediaSegment(
   const existing = mediaNoteRow(orm, input.eventKey, input.segmentIndex);
   if (existing) {
     if (existing.segmentKind !== kind || existing.sourceRef !== input.sourceRef) {
-      fail("MEMORY_SOURCE_INVALID", "同一媒体位置描述了不同内容，拒绝覆盖");
+      throw new QqObservationConflictError("同一媒体位置描述了不同内容，拒绝覆盖");
     }
     return existing;
   }
@@ -327,12 +327,9 @@ function blockedMediaNoteIds(
     .all()) {
     blocked.add(row.id);
   }
-  // (b) the unified all-state content list (task-repo owner's read-only interface): every real
-  // ledger row for THIS content in THIS scope, all purposes/questions (identity-NULL legacy rows are
-  // never returned). Blocking = live-window rows that are running/failed (failed-only for the
-  // candidate view); resolution of each = the controlled servable lookup with THAT row's own recorded
-  // model/policy (succeeded + readable + window live) — window-blind rows are never read as successes.
-  // A note without a live asset to answer for the bytes gets no derived key (no sourceRef guessing).
+  // Batch content identity is owned by the task repository. All historical tasks remain
+  // candidates; only serviceability applies a window. Repeated notes share this invocation's
+  // proven rows and verdict, never a retained cache or a sourceRef-derived identity.
   const notes = orm
     .select({
       id: schema.qqMediaNotes.id,
@@ -365,66 +362,61 @@ function blockedMediaNoteIds(
       ),
     )
     .all();
-  for (const n of notes) {
-    if (n.contentSha256 === null) continue;
-    const identity = {
-      accountId: n.accountId,
-      conversationKind: n.conversationKind,
-      peerId: n.peerId,
-      agentId: n.agentId,
+  const contentNotes = notes.filter((note) => note.contentSha256 !== null);
+  const tasksByNote = findMediaReadTasksForContents(
+    orm,
+    contentNotes.map((note) => ({
+      accountId: note.accountId,
+      conversationKind: note.conversationKind,
+      peerId: note.peerId,
+      agentId: note.agentId,
       segmentKind: "image",
-      contentSha256: n.contentSha256,
-    };
-    const rows = findMediaReadTasksForContent(orm, identity);
-    const open = rows.filter(
-      (row) =>
-        Date.parse(row.expiresAt) > Date.parse(at) &&
-        (includeRunning
-          ? row.status === "running" || row.status === "failed"
-          : row.status === "failed"),
-    );
-    const unresolved = open.some((row) => {
-      if (row.status === "succeeded") return false;
-      // The typed ledger only stores baseline/detail (schema CHECK); an out-of-band unknown
-      // purpose is fail-closed: it never resolves through a servable result, so the note
-      // stays blocked instead of untyped data releasing the failed gate.
-      const purpose: QqMediaReadPurpose | null =
-        row.purpose === "baseline" || row.purpose === "detail" ? row.purpose : null;
-      if (purpose === null) return true;
-      const served = findServableMediaReadTaskByIdentity(orm, {
-        ...identity,
-        purpose,
-        questionKey: row.questionKey,
-        modelName: row.modelName ?? "",
-        policy: row.policy,
-        now: at,
+      contentSha256: note.contentSha256 as string,
+    })),
+  );
+  const verdicts = new Map<object, { unresolved: boolean; baselineServable: boolean }>();
+  for (const [index, n] of contentNotes.entries()) {
+    const rows = tasksByNote[index] ?? [];
+    let verdict = verdicts.get(rows);
+    if (!verdict) {
+      const open = rows.filter(
+        (row) =>
+          Date.parse(row.expiresAt) > Date.parse(at) &&
+          (includeRunning
+            ? row.status === "running" || row.status === "failed"
+            : row.status === "failed"),
+      );
+      const unresolved = open.some((row) => {
+        const purpose: QqMediaReadPurpose | null =
+          row.purpose === "baseline" || row.purpose === "detail" ? row.purpose : null;
+        if (purpose === null) return true;
+        return !rows.some(
+          (candidate) =>
+            candidate.purpose === purpose &&
+            (purpose === "baseline" || candidate.questionKey === row.questionKey) &&
+            isMediaReadTaskServable(candidate, {
+              modelName: row.modelName ?? "",
+              policy: row.policy,
+              now: at,
+            }),
+        );
       });
-      return served === null;
-    });
-    if (unresolved) {
+      const baseline = rows.find((row) => row.purpose === "baseline" && row.status === "succeeded");
+      const baselineServable =
+        baseline !== undefined &&
+        isMediaReadTaskServable(baseline, {
+          modelName: baseline.modelName ?? "",
+          policy: baseline.policy,
+          now: at,
+        });
+      verdict = { unresolved, baselineServable };
+      verdicts.set(rows, verdict);
+    }
+    if (verdict.unresolved) {
       blocked.add(n.id);
       continue;
     }
-    // A legacy row-level failure is baseline-shaped: a servable baseline success resolves it.
-    if (n.attempts > 0 && n.note === null) {
-      const servedBaseline = rows.some(
-        (row) => row.purpose === "baseline" && row.status === "succeeded",
-      )
-        ? findServableMediaReadTaskByIdentity(orm, {
-            ...identity,
-            purpose: "baseline",
-            questionKey: null,
-            modelName:
-              rows.find((row) => row.purpose === "baseline" && row.status === "succeeded")
-                ?.modelName ?? "",
-            policy:
-              rows.find((row) => row.purpose === "baseline" && row.status === "succeeded")
-                ?.policy ?? "legacy",
-            now: at,
-          })
-        : null;
-      if (servedBaseline !== null) blocked.delete(n.id);
-    }
+    if (n.attempts > 0 && n.note === null && verdict.baselineServable) blocked.delete(n.id);
   }
   return blocked;
 }

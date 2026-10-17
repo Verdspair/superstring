@@ -93,14 +93,11 @@ function textConsistencyOf(
   return [...storedText].join("") === [...body.body].join("") ? null : "text-mismatch";
 }
 
-export function visibleFactState(
-  db: Database,
-  scope: QqConversationScope,
-  eventKey: string,
+// 可见态纯派生：只依赖调用方已加载的行与 now，不再回查。
+function visibleFactStateOf(
+  row: { fact: QqMessageFactRow; body: string | null; bodyExpiresAt: string | null },
   now: string,
-): QqMessageFactVisibleState | null {
-  const row = factRow(db, scope, eventKey);
-  if (!row) return null;
+): QqMessageFactVisibleState {
   const body = readableBody(row, now);
   const stored = JSON.parse(row.fact.parts) as QqMessagePart[];
   const textConsistency = textConsistencyOf(stored, body);
@@ -117,6 +114,17 @@ export function visibleFactState(
     bodyRevisionValue: body ? bodyRevision(body.body) : null,
     textConsistency,
   };
+}
+
+export function visibleFactState(
+  db: Database,
+  scope: QqConversationScope,
+  eventKey: string,
+  now: string,
+): QqMessageFactVisibleState | null {
+  const row = factRow(db, scope, eventKey);
+  if (!row) return null;
+  return visibleFactStateOf(row, now);
 }
 
 export function qqMessageFactSourceAccess(
@@ -146,8 +154,7 @@ export function qqMessageFactSourceAccess(
   if (isObservationExpired(row.fact.expiresAt, now)) return "expired";
   if (source.expiresAt !== undefined && Date.parse(source.expiresAt) <= Date.parse(now))
     return "expired";
-  const state = visibleFactState(db, scope, source.id, now);
-  if (!state) return "revoked";
+  const state = visibleFactStateOf(row, now);
   return qqMessageFactSourceRevision(
     scope,
     state.fact,

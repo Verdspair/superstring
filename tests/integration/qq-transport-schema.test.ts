@@ -84,6 +84,11 @@ const v63 = sql("0063_qq_media_request_identity.sql");
 const v64 = sql("0064_qq_scheme_sticker_frequency.sql");
 const v65 = sql("0065_qq_antispam_thresholds.sql");
 const v66 = sql("0066_jsonb_context_source_matchers.sql");
+const v67 = sql("0067_qq_participation_timing.sql");
+const v68 = sql("0068_context_allocation.sql");
+const v69 = sql("0069_query_plan_indexes.sql");
+const v70 = sql("0070_context_source_lookup.sql");
+const v71 = sql("0071_context_storage_metadata.sql");
 const QQ_TABLES = ["qq_settings", "qq_owner_identities", "qq_bindings", "qq_events"] as const;
 const NOW = "2026-01-01T00:00:00.000000Z";
 
@@ -427,6 +432,11 @@ describe("0005 QQ transport schema", () => {
           v64,
           v65,
           v66,
+          v67,
+          v68,
+          v69,
+          v70,
+          v71,
         ].join("\n"),
       );
       for (const table of [qqSettings, qqOwnerIdentities, qqBindings, qqEvents, qqSchemes]) {
@@ -629,7 +639,7 @@ describe("0005 QQ transport schema", () => {
       const legacyTables = legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all());
       const sharedRow = old.query("SELECT model_name, revision FROM organization_settings").get();
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
       expect(legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all())).toEqual(
         legacyTables,
       );
@@ -745,6 +755,11 @@ describe("0005 QQ transport schema", () => {
           v64,
           v65,
           v66,
+          v67,
+          v68,
+          v69,
+          v70,
+          v71,
         ]),
       ).toThrow();
       expect(db.query("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()).toEqual(
@@ -753,7 +768,7 @@ describe("0005 QQ transport schema", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
       expect(db.query("SELECT count(*) AS n FROM agents").get()).toEqual({ n: 1 });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
       expect(db.query("SELECT count(*) AS n FROM qq_settings").get()).toEqual({ n: 1 });
     } finally {
       db.close();

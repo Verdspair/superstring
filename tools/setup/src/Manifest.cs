@@ -15,7 +15,7 @@ namespace Superstring.Setup
     {
         internal const int SupportedManifestVersion = 1;
         internal const int SupportedLayoutVersion = 1;
-        internal const int SupportedSchemaVersion = 66;
+        internal const int SupportedSchemaVersion = 71;
         internal const string Product = "superstring";
         internal const string Platform = "win32-x64";
 
@@ -208,6 +208,16 @@ namespace Superstring.Setup
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0065_qq_antispam_thresholds.sql");
             if (manifest.SchemaVersion >= 66 && !seen.Contains("app/resources/migrations/versions/0066_jsonb_context_source_matchers.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0066_jsonb_context_source_matchers.sql");
+            if (manifest.SchemaVersion >= 67 && !seen.Contains("app/resources/migrations/versions/0067_qq_participation_timing.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0067_qq_participation_timing.sql");
+            if (manifest.SchemaVersion >= 68 && !seen.Contains("app/resources/migrations/versions/0068_context_allocation.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0068_context_allocation.sql");
+            if (manifest.SchemaVersion >= 69 && !seen.Contains("app/resources/migrations/versions/0069_query_plan_indexes.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0069_query_plan_indexes.sql");
+            if (manifest.SchemaVersion >= 70 && !seen.Contains("app/resources/migrations/versions/0070_context_source_lookup.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0070_context_source_lookup.sql");
+            if (manifest.SchemaVersion >= 71 && !seen.Contains("app/resources/migrations/versions/0071_context_storage_metadata.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0071_context_storage_metadata.sql");
             if (manifest.SchemaVersion >= 41 && !seen.Contains("app/resources/migrations/versions/0041_outbound_intents.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0041_outbound_intents.sql");
             var launcher = root.ContainsKey("launcher") ? root["launcher"] as Dictionary<string, object> : null;

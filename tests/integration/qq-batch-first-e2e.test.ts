@@ -138,6 +138,7 @@ function setup(
     triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: true },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
+      participation_timing: "resource_window",
       initiative_batch_target_count: options.batchSize ?? 2,
       initiative_batch_jitter_count: 0,
       initiative_time_window_enabled: false,

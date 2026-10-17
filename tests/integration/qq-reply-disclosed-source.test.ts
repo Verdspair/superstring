@@ -176,6 +176,16 @@ function expectSourceInvalid(run: () => unknown) {
   throw new Error("expected an invalid or undisclosed source to be rejected");
 }
 
+function expectSelectionInvalid(run: () => unknown) {
+  try {
+    run();
+  } catch (error) {
+    expect((error as { code?: string }).code).toBe("CONTEXT_INVALID_SELECTION");
+    return;
+  }
+  throw new Error("expected an undisclosed mention selection to be rejected");
+}
+
 describe("QQ reply and mention source disclosure", () => {
   it("resolves only facts actually rendered into the current model view", async () => {
     const fixture = setup();
@@ -295,7 +305,7 @@ describe("QQ reply and mention source disclosure", () => {
     expect(withRead).toBeDefined();
   });
 
-  it("accepts only numeric members from disclosed facts or the explicit authorized targets", async () => {
+  it("accepts only numeric members from disclosed facts or the explicit authorized targets; other selections are recoverable, expiry is not", async () => {
     const fixture = setup();
     fixture.seed("event-member", "-201", "member message");
     await readView(fixture.source);
@@ -304,7 +314,7 @@ describe("QQ reply and mention source disclosure", () => {
       "20003",
     ]);
     for (const ids of [["99999"], ["all"], ["20x"], ["+20002"]])
-      expectSourceInvalid(() => fixture.source.resolveMentionIds(ids, ["20003"]));
+      expectSelectionInvalid(() => fixture.source.resolveMentionIds(ids, ["20003"]));
     fixture.db
       .query("UPDATE qq_observation_text SET expires_at=? WHERE event_key=?")
       .run("2026-10-08T05:59:00.000Z", "event-member");

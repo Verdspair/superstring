@@ -34,6 +34,7 @@ const MINUTES_PER_DAY = 24 * 60;
  * DDL defaults say, so an old scheme and a fresh one behave the same.
  */
 export const QQ_RHYTHM_DEFAULT: QqSchemeRhythm = Object.freeze({
+  participation_timing: "quiet_preferred",
   /** 只用于连续交谈：每位发言人从自己的最后一条消息起算。 */
   merge_window_seconds: 30,
   reply_cooldown_seconds: 10,

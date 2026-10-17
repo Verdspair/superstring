@@ -158,6 +158,7 @@ export function ModelEvidence({
 }
 export function InspectedEvidence({ value }: { value: InspectedContext }) {
   const { t } = useTranslation();
+  const [activeTab, setActiveTab] = useState<string>("input");
   const readable = value.status === "exact" || value.status === "partial";
   const status = {
     exact: "observability.theExactTextInputIsAvailable",
@@ -186,7 +187,7 @@ export function InspectedEvidence({ value }: { value: InspectedContext }) {
                 : "observability.originalModelOutput";
   const canShowMetadata = readable && result.status !== "expired" && result.status !== "revoked";
   return (
-    <Tabs defaultValue="input" className="min-w-0 gap-4">
+    <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 gap-4">
       <TabsList
         className="h-auto w-full flex-wrap sm:w-fit"
         aria-label={t("observability.modelInputOutputAndSources")}
@@ -196,184 +197,199 @@ export function InspectedEvidence({ value }: { value: InspectedContext }) {
         <TabsTrigger value="sources">{t("observability.sourcesAndRevisions")}</TabsTrigger>
       </TabsList>
       <TabsContent value="input" className="min-w-0 space-y-4">
-        <p role="status" className="text-sm text-muted-foreground">
-          {t(status[value.status])}
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {value.layout.map((item, index) => (
-            <Badge
-              // biome-ignore lint/suspicious/noArrayIndexKey: Layout blocks belong to an immutable ordered snapshot.
-              key={`${item.role}:${index}`}
-              variant="outline"
-            >
-              {item.role} ·{" "}
-              {t("observability.valueUnitsValueSources", {
-                "0": item.units,
-                "1": item.sourceIds.length,
-              })}
-            </Badge>
-          ))}
-        </div>
-        {readable &&
-          value.exactMessages?.map((message, index) => (
-            <section
-              // biome-ignore lint/suspicious/noArrayIndexKey: The model input is an immutable ordered snapshot.
-              key={`${message.role}:${index}`}
-              className="min-w-0 space-y-3 border-t pt-4"
-            >
-              <h4 className="flex items-center gap-2 text-sm font-semibold">
-                <Badge variant="secondary">{message.role}</Badge>
-                {t("observability.messageValue", {
-                  "0": index + 1,
-                })}
-              </h4>
-              {message.content.map((part, partIndex) =>
-                part.kind === "text" ? (
-                  <ContentReader
-                    // biome-ignore lint/suspicious/noArrayIndexKey: Source parts retain their exact immutable order.
-                    key={`${partIndex}:text`}
-                    text={part.text}
-                    label={t("observability.messageValueValue", {
-                      "0": index + 1,
-                      "1": message.role,
-                    })}
-                  />
-                ) : (
-                  <div
-                    // biome-ignore lint/suspicious/noArrayIndexKey: Repeated frames can share a source hash in an immutable snapshot.
-                    key={`${partIndex}:${part.sha256}`}
-                    className="flex gap-3 rounded-lg border p-4 text-xs"
-                  >
-                    <ImageOff className="size-5 shrink-0 text-muted-foreground" />
-                    <dl className="min-w-0 space-y-1 break-all">
-                      <dt>{t("observability.imageSource")}</dt>
-                      <dd>{part.sourceId}</dd>
-                      <dt>{t("observability.sourceRevision")}</dt>
-                      <dd>{part.revision}</dd>
-                      <dt>{t("observability.imageHashType", { "0": part.mimeType })}</dt>
-                      <dd>{part.sha256}</dd>
-                    </dl>
-                  </div>
-                ),
-              )}
-            </section>
-          ))}
-        {readable &&
-          value.unavailableMedia?.map((item) => (
-            <p
-              key={`${item.sourceId}:${item.sha256}`}
-              className="break-all text-xs text-muted-foreground"
-            >
-              {t("observability.originalMediaBytesAreUnavailable")}: {item.sourceId} · {item.sha256}
+        {activeTab === "input" && (
+          <>
+            <p role="status" className="text-sm text-muted-foreground">
+              {t(status[value.status])}
             </p>
-          ))}
+            <div className="flex flex-wrap gap-2">
+              {value.layout.map((item, index) => (
+                <Badge
+                  // biome-ignore lint/suspicious/noArrayIndexKey: Layout blocks belong to an immutable ordered snapshot.
+                  key={`${item.role}:${index}`}
+                  variant="outline"
+                >
+                  {item.role} ·{" "}
+                  {t("observability.valueUnitsValueSources", {
+                    "0": item.units,
+                    "1": item.sourceIds.length,
+                  })}
+                </Badge>
+              ))}
+            </div>
+            {readable &&
+              value.exactMessages?.map((message, index) => (
+                <section
+                  // biome-ignore lint/suspicious/noArrayIndexKey: The model input is an immutable ordered snapshot.
+                  key={`${message.role}:${index}`}
+                  className="min-w-0 space-y-3 border-t pt-4"
+                >
+                  <h4 className="flex items-center gap-2 text-sm font-semibold">
+                    <Badge variant="secondary">{message.role}</Badge>
+                    {t("observability.messageValue", {
+                      "0": index + 1,
+                    })}
+                  </h4>
+                  {message.content.map((part, partIndex) =>
+                    part.kind === "text" ? (
+                      <ContentReader
+                        // biome-ignore lint/suspicious/noArrayIndexKey: Source parts retain their exact immutable order.
+                        key={`${partIndex}:text`}
+                        text={part.text}
+                        label={t("observability.messageValueValue", {
+                          "0": index + 1,
+                          "1": message.role,
+                        })}
+                      />
+                    ) : (
+                      <div
+                        // biome-ignore lint/suspicious/noArrayIndexKey: Repeated frames can share a source hash in an immutable snapshot.
+                        key={`${partIndex}:${part.sha256}`}
+                        className="flex gap-3 rounded-lg border p-4 text-xs"
+                      >
+                        <ImageOff className="size-5 shrink-0 text-muted-foreground" />
+                        <dl className="min-w-0 space-y-1 break-all">
+                          <dt>{t("observability.imageSource")}</dt>
+                          <dd>{part.sourceId}</dd>
+                          <dt>{t("observability.sourceRevision")}</dt>
+                          <dd>{part.revision}</dd>
+                          <dt>{t("observability.imageHashType", { "0": part.mimeType })}</dt>
+                          <dd>{part.sha256}</dd>
+                        </dl>
+                      </div>
+                    ),
+                  )}
+                </section>
+              ))}
+            {readable &&
+              value.unavailableMedia?.map((item) => (
+                <p
+                  key={`${item.sourceId}:${item.sha256}`}
+                  className="break-all text-xs text-muted-foreground"
+                >
+                  {t("observability.originalMediaBytesAreUnavailable")}: {item.sourceId} ·{" "}
+                  {item.sha256}
+                </p>
+              ))}
+          </>
+        )}
       </TabsContent>
       <TabsContent value="output" className="min-w-0 space-y-4">
-        <p role="status" className="text-sm text-muted-foreground">
-          {t(resultText)}
-        </p>
-        {readable &&
-          (result.status === "exact" || result.status === "partial") &&
-          typeof result.text === "string" && (
-            <ContentReader label={t("observability.modelOutput")} text={result.text} />
-          )}
-        {canShowMetadata && (
-          <section
-            className="min-w-0 space-y-2 border-t pt-3"
-            aria-label={t("observability.finishReason")}
-          >
-            <h4 className="text-xs font-semibold text-muted-foreground">
-              {t("observability.finishReason")}
-            </h4>
-            {result.responses && result.responses.length > 0 ? (
-              <ol className="space-y-1.5 text-xs font-mono">
-                {result.responses.map((attempt, index) => {
-                  const reasons = Array.isArray(attempt.finishReasons) ? attempt.finishReasons : [];
-                  return (
-                    <li
-                      // biome-ignore lint/suspicious/noArrayIndexKey: Attempts are strictly ordered immutable records of each HTTP request.
-                      key={index}
-                      className="flex flex-wrap items-center gap-1.5 text-muted-foreground"
-                    >
-                      <span className="font-semibold text-foreground">#{index + 1}</span>
-                      <span>·</span>
-                      <span>{attempt.transport}</span>
-                      <span>·</span>
-                      {attempt.httpStatus !== undefined ? (
-                        <span>HTTP {attempt.httpStatus}</span>
-                      ) : (
-                        <span>{t("observability.noHttpResponse")}</span>
-                      )}
-                      {reasons.length > 0 && (
-                        <>
+        {activeTab === "output" && (
+          <>
+            <p role="status" className="text-sm text-muted-foreground">
+              {t(resultText)}
+            </p>
+            {readable &&
+              (result.status === "exact" || result.status === "partial") &&
+              typeof result.text === "string" && (
+                <ContentReader label={t("observability.modelOutput")} text={result.text} />
+              )}
+            {canShowMetadata && (
+              <section
+                className="min-w-0 space-y-2 border-t pt-3"
+                aria-label={t("observability.finishReason")}
+              >
+                <h4 className="text-xs font-semibold text-muted-foreground">
+                  {t("observability.finishReason")}
+                </h4>
+                {result.responses && result.responses.length > 0 ? (
+                  <ol className="space-y-1.5 text-xs font-mono">
+                    {result.responses.map((attempt, index) => {
+                      const reasons = Array.isArray(attempt.finishReasons)
+                        ? attempt.finishReasons
+                        : [];
+                      return (
+                        <li
+                          // biome-ignore lint/suspicious/noArrayIndexKey: Attempts are strictly ordered immutable records of each HTTP request.
+                          key={index}
+                          className="flex flex-wrap items-center gap-1.5 text-muted-foreground"
+                        >
+                          <span className="font-semibold text-foreground">#{index + 1}</span>
                           <span>·</span>
-                          <span className="inline-flex flex-wrap items-center gap-1">
-                            <span>{t("observability.finishReason")}:</span>
-                            {reasons.map((reason, rIdx) => (
-                              // biome-ignore lint/suspicious/noArrayIndexKey: Finish reasons retain their exact arrival order within an attempt.
-                              <span key={rIdx}>
-                                {rIdx > 0 && ", "}
-                                <code>{reason === null ? "null" : JSON.stringify(reason)}</code>
+                          <span>{attempt.transport}</span>
+                          <span>·</span>
+                          {attempt.httpStatus !== undefined ? (
+                            <span>HTTP {attempt.httpStatus}</span>
+                          ) : (
+                            <span>{t("observability.noHttpResponse")}</span>
+                          )}
+                          {reasons.length > 0 && (
+                            <>
+                              <span>·</span>
+                              <span className="inline-flex flex-wrap items-center gap-1">
+                                <span>{t("observability.finishReason")}:</span>
+                                {reasons.map((reason, rIdx) => (
+                                  // biome-ignore lint/suspicious/noArrayIndexKey: Finish reasons retain their exact arrival order within an attempt.
+                                  <span key={rIdx}>
+                                    {rIdx > 0 && ", "}
+                                    <code>{reason === null ? "null" : JSON.stringify(reason)}</code>
+                                  </span>
+                                ))}
                               </span>
-                            ))}
-                          </span>
-                        </>
-                      )}
-                      {reasons.length === 0 && attempt.httpStatus !== undefined && (
-                        <>
-                          <span>·</span>
-                          <span className="inline-flex flex-wrap items-center gap-1">
-                            <span>{t("observability.finishReason")}:</span>
-                            <span>{t("observability.finishReasonProviderDidNotReport")}</span>
-                          </span>
-                        </>
-                      )}
-                      {attempt.doneMarker && (
-                        <>
-                          <span>·</span>
-                          <span className="font-semibold text-foreground">[DONE]</span>
-                        </>
-                      )}
-                    </li>
-                  );
-                })}
-              </ol>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                {t("observability.finishReasonNotRecorded")}
-              </p>
+                            </>
+                          )}
+                          {reasons.length === 0 && attempt.httpStatus !== undefined && (
+                            <>
+                              <span>·</span>
+                              <span className="inline-flex flex-wrap items-center gap-1">
+                                <span>{t("observability.finishReason")}:</span>
+                                <span>{t("observability.finishReasonProviderDidNotReport")}</span>
+                              </span>
+                            </>
+                          )}
+                          {attempt.doneMarker && (
+                            <>
+                              <span>·</span>
+                              <span className="font-semibold text-foreground">[DONE]</span>
+                            </>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("observability.finishReasonNotRecorded")}
+                  </p>
+                )}
+              </section>
             )}
-          </section>
+          </>
         )}
       </TabsContent>
       <TabsContent value="sources">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("observability.sourceId")}</TableHead>
-              <TableHead>{t("observability.sourceRevision")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {value.sourceVersions.map((source, index) => (
-              <TableRow
-                // biome-ignore lint/suspicious/noArrayIndexKey: Immutable provenance may repeat the same source.
-                key={`${source.id}:${index}`}
-              >
-                <TableCell className="whitespace-normal break-all font-mono text-xs">
-                  {source.id}
-                </TableCell>
-                <TableCell className="whitespace-normal break-all font-mono text-xs">
-                  {source.revision}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-        {!value.sourceVersions.length && (
-          <p className="p-4 text-sm text-muted-foreground">
-            {t("observability.noAssociatedSourcesAreRecorded")}
-          </p>
+        {activeTab === "sources" && (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("observability.sourceId")}</TableHead>
+                  <TableHead>{t("observability.sourceRevision")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {value.sourceVersions.map((source, index) => (
+                  <TableRow
+                    // biome-ignore lint/suspicious/noArrayIndexKey: Immutable provenance may repeat the same source.
+                    key={`${source.id}:${index}`}
+                  >
+                    <TableCell className="whitespace-normal break-all font-mono text-xs">
+                      {source.id}
+                    </TableCell>
+                    <TableCell className="whitespace-normal break-all font-mono text-xs">
+                      {source.revision}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {!value.sourceVersions.length && (
+              <p className="p-4 text-sm text-muted-foreground">
+                {t("observability.noAssociatedSourcesAreRecorded")}
+              </p>
+            )}
+          </>
         )}
       </TabsContent>
     </Tabs>

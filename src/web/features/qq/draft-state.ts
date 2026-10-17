@@ -1,3 +1,4 @@
+import { QqSchemeAllocationSchema } from "../../../shared/contracts/context-allocation";
 import { normalizeOneBotAccountId } from "../../../shared/contracts/onebot-identity";
 import {
   QQ_ATTENTION_MEMBER_LIMIT,
@@ -166,7 +167,9 @@ export const qqConversationKey = (
  * 「添加会话」草稿的目标：观察行优先、其次手工号码；两者都没有就是没有草稿。
  * 只做解析，不提供任何默认 Agent/方案——缺什么就报什么，让保存原地失败。
  */
-export function manualBindingTarget(state: SuperstringState): {
+export function manualBindingTarget(
+  state: Pick<SuperstringState, "qqInputs" | "qqConversations">,
+): {
   kind: "group" | "private";
   peer: string;
   agentId: string;
@@ -333,16 +336,21 @@ const invalidSchemeEditorGroups = (
     editor.inputAntiSpam,
     QqSchemeInputAntiSpamSchema.safeParse(editor.inputAntiSpam),
   );
+  collect("allocation", editor.allocation, QqSchemeAllocationSchema.safeParse(editor.allocation));
   return rows;
 };
 
-export function invalidSchemeInputs(state: SuperstringState) {
+export function invalidSchemeInputs(state: Pick<SuperstringState, "qqSchemeEditor" | "qqInputs">) {
   const editor = state.qqSchemeEditor;
   const rawRows = Object.entries(state.qqInputs.schemeTexts).filter(([field, raw]) => {
     const [group, key] = field.split(".");
     const canonicalKey = `${group}.${key}`;
     // 时区不进 Number()：它的合法性由 invalidSchemeTimezone 按共享 schema 判。
     if (canonicalKey === "message_settings.timezone") return false;
+    // participation_timing 是枚举，不进 Number() 校验。
+    if (canonicalKey === "rhythm.participation_timing") return false;
+    // allocation 判断/回复模式是枚举，不进 Number() 校验。
+    if (canonicalKey.startsWith("allocation.")) return false;
     if (canonicalKey in SCHEME_RAW_FIELD_KINDS) {
       const kind = SCHEME_RAW_FIELD_KINDS[canonicalKey];
       if (kind === "number") return !newGroupNumberValid(group, key, raw);
@@ -362,6 +370,13 @@ export function invalidSchemeInputs(state: SuperstringState) {
     ...invalidSchemeEditorGroups(editor).filter(([field]) => !seen.has(field)),
   ];
   if (editor) {
+    if (
+      editor.rhythm.participation_timing !== undefined &&
+      editor.rhythm.participation_timing !== "resource_window" &&
+      editor.rhythm.participation_timing !== "quiet_preferred"
+    ) {
+      finalRows.push(["rhythm.participation_timing", String(editor.rhythm.participation_timing)]);
+    }
     if (!QqSchemeRhythmSchema.safeParse(editor.rhythm).success) {
       if (
         editor.rhythm.initiative_batch_jitter_count >=
@@ -392,7 +407,9 @@ export function invalidSchemeInputs(state: SuperstringState) {
  * 编辑器本身的非法相同字符串一样拦。统一采用共享 QqMessageSettingsSchema 的 timezone 校验器，
  * 分别验证未决原文与编辑器最终组；页面保存/复制/统一保存/导航确认共用这一条边界。
  */
-export function invalidSchemeTimezone(state: SuperstringState): string | null {
+export function invalidSchemeTimezone(
+  state: Pick<SuperstringState, "qqSchemeEditor" | "qqInputs">,
+): string | null {
   const editor = state.qqSchemeEditor;
   // 编辑器最终值先过 schema：异常写入的非法字符串不能保存（无论有没有未决原文）。
   if (
@@ -452,7 +469,16 @@ const groupValueText = (
 };
 
 export function qqDraftChanges(
-  state: SuperstringState,
+  state: Pick<
+    SuperstringState,
+    | "qqInputs"
+    | "qqSchemeEditor"
+    | "qqGroupConfigEditor"
+    | "qqSchemes"
+    | "qqStickerEditor"
+    | "qqConversations"
+    | "qqStickerCollections"
+  >,
 ): { id: string; resource: string; changes: string[] }[] {
   const inputs = state.qqInputs;
   const rows: { id: string; resource: string; changes: string[] }[] = [];

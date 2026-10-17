@@ -276,6 +276,26 @@ const v66 = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0066_jsonb_context_source_matchers.sql"),
   "utf8",
 );
+const v67 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0067_qq_participation_timing.sql"),
+  "utf8",
+);
+const v68 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0068_context_allocation.sql"),
+  "utf8",
+);
+const v69 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0069_query_plan_indexes.sql"),
+  "utf8",
+);
+const v70 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0070_context_source_lookup.sql"),
+  "utf8",
+);
+const v71 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0071_context_storage_metadata.sql"),
+  "utf8",
+);
 const ddl = (db: Database) =>
   db
     .query(
@@ -286,7 +306,7 @@ const ddl = (db: Database) =>
 // Independent field/type contract. ? means nullable; all other fields are NOT NULL.
 const golden: Record<string, string> = {
   organization_settings:
-    "id:I model_name:T? revision:I vision_model_name:T? transcription_model_name:T?",
+    "id:I model_name:T? revision:I vision_model_name:T? transcription_model_name:T? auxiliary_allocation:T?",
   agent_knowledge_read_settings:
     "agent_id:T enabled:I context_budget:I? scope:T document_ids:T revision:I",
   knowledge_settings: "id:I auto_enabled:I model_name:T? context_budget:I revision:I",
@@ -390,6 +410,11 @@ describe("frozen schema defaults and product initialization", () => {
     v64,
     v65,
     v66,
+    v67,
+    v68,
+    v69,
+    v70,
+    v71,
   ] as const;
   // Independent snapshots: v1 matches published v0.2.0-alpha; v2-v4 are the
   // accepted pre-ADR0016 development schemas; v5 onwards are the additive QQ
@@ -513,6 +538,16 @@ describe("frozen schema defaults and product initialization", () => {
     "c1769ba3cc1e2bc255dfe13e8af13dfebd8ecedf6de7b198f884f16794abb583",
     "48c5fe9b138475452786f277f60af23b78ba7a54b26c7c23d6e8206b021af7ed",
     "d3e5b85d2ddb159de4036beea501c64e2bbbb4d834b929f33693b0a9dc9e1388",
+    "85757defde1410edbc35a1cc880ef91b831fe23152ab56742182ef57dee385df",
+    // 0068：qq_schemes 表尾追加 allocation（NOT NULL，默认两档 fixed 的 JSON）+
+    // organization_settings 追加 auxiliary_allocation（可空 JSON）；v1—v67 逐字节重现原值之后量取。
+    "4eda105c3675efe45ebfc8898c58ca0f2e6fb2b18d3f5fbee5d41a8dab6e46c1",
+    "8f7e174a13a9a3827401678fc4768afb874ecdda08ecfcf03090c9db01962d26",
+    // 0070：上下文来源查找派生索引表（context_snapshot_source_refs，WITHOUT ROWID 触发器维护）；
+    // v1—v69 逐字节重现原值之后由 Root native 量取（32988 exit 0）。
+    "02446c0b2bbc28dee48eb11d17c6418b626607694a411b4a8dee5f77015dd02a",
+    // 0071：上下文与追踪存储的覆盖索引；由原生 SQLite 按本文件 ddl() 口径量取。
+    "e5d79ecdd5d6089ca4b8530f66af55dd636b2ea0f51e2c0d690bfe4ef8c03a49",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
@@ -537,7 +572,7 @@ describe("frozen schema defaults and product initialization", () => {
           target_chars: 300,
         });
         ensureBusinessSchema(db);
-        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
         expect(db.query("SELECT target_chars FROM memory_policies").get()).toEqual({
           target_chars: 300,
         });
@@ -570,7 +605,7 @@ describe("knowledge schema v2 migration", () => {
         old.query(`SELECT * FROM ${table}`).all(),
       );
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
       expect(ddl(old)).toEqual(ddl(fresh.db));
       expect(
         BUSINESS_TABLE_NAMES.slice(0, 16).map((table) => old.query(`SELECT * FROM ${table}`).all()),
@@ -669,13 +704,18 @@ describe("knowledge schema v2 migration", () => {
           v64,
           v65,
           v66,
+          v67,
+          v68,
+          v69,
+          v70,
+          v71,
         ]),
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
       expect(db.query("SELECT body FROM memory_entries").get()).toEqual({ body: "旧记忆" });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
     } finally {
       db.close();
     }

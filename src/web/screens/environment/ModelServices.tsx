@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "../../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
+import { openContextAllocation } from "../../features/context-allocation";
 import { LocalModelEncodings } from "../../features/models/LocalModelEncodings";
 import {
   createProviderEditor,
@@ -44,6 +45,7 @@ import { ModelDefaults } from "./model-defaults";
 
 export function ModelServices({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
+  const capacityTarget = useSuperstringStore((s) => s.modelCapacityTarget);
   const { apiClient, refreshModels, modelStatus, loadedModelNames, modelProviders, settingsRoute } =
     useSuperstringStore(
       useShallow((state) => ({
@@ -100,6 +102,15 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
     void refreshModels();
     return () => task.cancel();
   }, [active, apiClient, refreshModels, revision, tab]);
+  useEffect(() => {
+    if (!active || tab !== "providers" || loading || !capacityTarget) return;
+    const target =
+      document.querySelector<HTMLElement>(
+        `[data-capacity-model="${CSS.escape(capacityTarget)}"]`,
+      ) ?? document.getElementById("local-model-capacity");
+    target?.scrollIntoView({ block: "center" });
+    target?.focus({ preventScroll: true });
+  }, [active, tab, loading, capacityTarget]);
   // Provider editing must remain available even while a remote health check is slow.
   // Probing waits for the authoritative read: never probe the stale bootstrap snapshot twice.
   useEffect(() => {
@@ -234,7 +245,15 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                 </TableHeader>
                 <TableBody>
                   {providers.map((provider) => (
-                    <TableRow key={provider.id}>
+                    <TableRow
+                      key={provider.id}
+                      tabIndex={-1}
+                      data-capacity-model={
+                        provider.models.some((model) => model.name === capacityTarget)
+                          ? capacityTarget
+                          : undefined
+                      }
+                    >
                       <TableCell className="font-medium">{provider.name}</TableCell>
                       <TableCell className="max-w-80 truncate font-mono text-xs">
                         {provider.base_url}
@@ -272,7 +291,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                 </TableBody>
               </Table>
             </div>
-            <section className="mt-8 border-t pt-6">
+            <section id="local-model-capacity" tabIndex={-1} className="mt-8 border-t pt-6">
               <div className="flex items-center gap-2">
                 <h2 className="font-semibold">{t("models.localProvider")}</h2>
                 <Badge variant="outline">{t("models.local")}</Badge>
@@ -323,9 +342,25 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
           }}
         >
           <SheetHeader className="border-b">
-            <SheetTitle>
-              {t(editor?.source ? "models.editProvider" : "models.addProvider")}
-            </SheetTitle>
+            <div className="flex items-center justify-between">
+              <SheetTitle>
+                {t(editor?.source ? "models.editProvider" : "models.addProvider")}
+              </SheetTitle>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="text-xs"
+                onClick={() =>
+                  openContextAllocation({
+                    returnRoute: "external-api",
+                    returnLabel: t("workspace.external_model_api"),
+                  })
+                }
+              >
+                {t("schemes.allocation.goToCentralAllocation")}
+              </Button>
+            </div>
             <SheetDescription>{t("models.secretHint")}</SheetDescription>
           </SheetHeader>
           {editor && (

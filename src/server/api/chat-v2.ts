@@ -21,7 +21,7 @@ export function chatV2Routes(options: WebChannelOptions): Hono {
       { requestSignal: c.req.raw.signal, onDisconnect: () => abort.abort() },
       async (stream) => {
         for await (const event of reply) {
-          stream.send(event.type, event);
+          await stream.send(event.type, event);
           if (["completed", "no_output", "failed", "cancelled", "replay"].includes(event.type))
             break;
         }

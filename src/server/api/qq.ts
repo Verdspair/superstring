@@ -434,6 +434,8 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           // 0059 两组同上：未提供时写入侧补默认（上限 4/1、防抖开）。
           taskLimits: body.task_limits,
           inputAntiSpam: body.input_anti_spam,
+          // 0068 分配组整组透传；未提供时写入侧补双 fixed 默认。
+          allocation: body.allocation,
         }),
       ),
       201,
@@ -480,6 +482,8 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           // 0059 两组：同上，未提供＝保持现值。
           taskLimits: body.task_limits,
           inputAntiSpam: body.input_anti_spam,
+          // 0068 分配组：整组透传，未提供＝保持现值。
+          allocation: body.allocation,
           expectedRevision: body.expected_revision,
         }),
       ),

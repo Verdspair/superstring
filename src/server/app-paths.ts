@@ -397,6 +397,36 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0066_jsonb_context_source_matchers.sql",
     ),
+    qqParticipationTimingMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0067_qq_participation_timing.sql",
+    ),
+    contextAllocationMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0068_context_allocation.sql",
+    ),
+    queryPlanIndexesMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0069_query_plan_indexes.sql",
+    ),
+    contextSourceLookupMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0070_context_source_lookup.sql",
+    ),
+    storageMetadataMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0071_context_storage_metadata.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

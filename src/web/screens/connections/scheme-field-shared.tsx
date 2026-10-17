@@ -100,3 +100,84 @@ export function StickerFrequencyOptions({
     </RadioGroup>
   );
 }
+
+/**
+ * 发言时机评估模式与派生区间展示卡片：方案页与群配置页共用。
+ * 纯受控组件，不新增定时器/状态缓存，所有区间直接根据当前 rhythm 参数实时换算。
+ */
+export function DerivedRhythmIntervals({
+  timingMode,
+  mergeWindowSeconds,
+  batchTarget,
+  batchJitter,
+  timeWindowEnabled,
+  timeTarget,
+  timeJitter,
+  testId,
+}: {
+  timingMode: "resource_window" | "quiet_preferred";
+  mergeWindowSeconds?: number;
+  batchTarget?: number;
+  batchJitter?: number;
+  timeWindowEnabled?: boolean;
+  timeTarget?: number;
+  timeJitter?: number;
+  testId?: string;
+}) {
+  const { t } = useTranslation();
+  const target = batchTarget ?? 15;
+  const jitter = batchJitter ?? 5;
+  const m = mergeWindowSeconds ?? 30;
+  const tTarget = timeTarget ?? 60;
+  const tJitter = timeJitter ?? 20;
+
+  const countLower = Math.max(0, target - jitter);
+  const countUpper = target + jitter;
+  const timeLower = Math.max(0, tTarget - tJitter);
+  const timeUpper = tTarget + tJitter;
+
+  return (
+    <div
+      data-testid={testId}
+      className="rounded-lg border bg-muted/40 p-3.5 text-xs space-y-2 sm:col-span-2"
+    >
+      <div className="font-medium text-foreground flex flex-wrap items-center gap-2">
+        <span>
+          {timingMode === "quiet_preferred"
+            ? t("connections.participationTimingMode.quiet_preferred")
+            : t("connections.participationTimingMode.resource_window")}
+        </span>
+        <span className="text-muted-foreground">·</span>
+        <span className="text-muted-foreground">
+          {t("connections.derivedIntervalsTitle")}：
+          {t("connections.derivedIntervalsCount", {
+            "0": String(countLower),
+            "1": String(countUpper),
+          })}
+          {timeWindowEnabled
+            ? t("connections.derivedIntervalsTime", {
+                "0": String(timeLower),
+                "1": String(timeUpper),
+              })
+            : t("connections.derivedIntervalsTimeDisabled")}
+        </span>
+      </div>
+      <p className="text-muted-foreground leading-relaxed">
+        {timingMode === "quiet_preferred"
+          ? t("connections.derivedIntervalsQuietNote", {
+              "0": String(countLower),
+              "1": timeWindowEnabled ? ` / ≥ ${timeLower}s` : "",
+              "2": String(m),
+              "3": String(countUpper),
+              "4": timeWindowEnabled ? ` / ≥ ${timeUpper}s` : "",
+            })
+          : t("connections.derivedIntervalsResourceNote", {
+              "0": String(countLower),
+              "1": String(countUpper),
+              "2": timeWindowEnabled ? `，时间 [${timeLower}, ${timeUpper}] 秒` : "",
+              "3": String(m),
+            })}
+      </p>
+    </div>
+  );
+}

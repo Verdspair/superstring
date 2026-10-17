@@ -1,4 +1,5 @@
 import type { ConversationAddressing } from "../../../shared/contracts/conversation";
+import type { QqSchemeRhythm } from "../../../shared/contracts/qq";
 
 import {
   qqConversationTaskKey,
@@ -27,7 +28,11 @@ import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import type { QqObservation } from "../../services/onebot-protocol";
 
 import { qqConversationScopeOfBinding } from "../../services/qq-binding-contract";
-import { qqChimingBatchWindow } from "../../services/qq-chiming-time-window";
+import {
+  type QqChimingBatchWindow,
+  qqChimingBatchWindow,
+  qqParticipationTimingOf,
+} from "../../services/qq-chiming-time-window";
 import {
   attentionTriggerFilter,
   QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS,
@@ -63,20 +68,13 @@ export class OneBot11Adapter implements ConversationIngress {
     const binding = conversation ? readQqBinding(this.options.orm, conversation.sourceId) : null;
     const scheme = binding ? readEffectiveQqScheme(this.options.orm, binding) : null;
     if (!conversation || !binding || !scheme) return null;
-    const eligible = this.derivedChimingCount(
+    const window = this.chimingBatchWindow(
       conversationId,
-      this.options.journal.chimingInObservedSeq(conversationId),
+      nowSeconds,
+      schemeRhythm(scheme),
       attentionTriggerFilter(binding),
       effectiveQqTriggers(binding, scheme).direct_reply,
     );
-    const judgedAt = this.options.journal.chimingInJudgedAt(conversationId);
-    const window = qqChimingBatchWindow({
-      rhythm: schemeRhythm(scheme),
-      count: eligible.count,
-      firstEligibleSeconds: eligible.firstEligibleSeconds,
-      judgedAtSeconds: judgedAt === null ? null : Math.floor(Date.parse(judgedAt) / 1000),
-      nowSeconds,
-    });
     return window.kind === "ready"
       ? {
           eligibleCount: window.count,
@@ -85,10 +83,71 @@ export class OneBot11Adapter implements ConversationIngress {
         }
       : null;
   }
+  /**
+   * §5.5 单 owner：offer、扫尾与 claim 前 maturity 共用的自主批次窗口派生。资格计数、
+   * 判定时刻与（停顿优先模式下的）最新人类活动都从同一游标 chimingInObservedSeq 与同一
+   * journal 事实出发，没有第二套口径；模式取方案节奏的 participation_timing，旧读取面缺
+   * 字段按 resource_window 解析——该模式不新增任何查询。
+   */
+  private chimingBatchWindow(
+    conversationId: string,
+    nowSeconds: number,
+    rhythm: QqSchemeRhythm,
+    attention: readonly string[] | null,
+    directEnabled: boolean,
+  ): QqChimingBatchWindow {
+    const boundary = this.options.journal.chimingInObservedSeq(conversationId);
+    const eligible = this.derivedChimingCount(conversationId, boundary, attention, directEnabled);
+    const judgedAt = this.options.journal.chimingInJudgedAt(conversationId);
+    const participationTiming = qqParticipationTimingOf(rhythm);
+    const latestHumanSeconds =
+      participationTiming === "quiet_preferred"
+        ? this.latestHumanActivitySeconds(conversationId, boundary, attention)
+        : null;
+    return qqChimingBatchWindow({
+      rhythm,
+      count: eligible.count,
+      firstEligibleSeconds: eligible.firstEligibleSeconds,
+      judgedAtSeconds: judgedAt === null ? null : Math.floor(Date.parse(judgedAt) / 1000),
+      latestHumanSeconds,
+      participationTiming,
+      nowSeconds,
+    });
+  }
+  /**
+   * 停顿优先的话语停顿锚：当前游标之后最新一条真实人类入站活动的 occurred_at。一次有界
+   * SQL（同一 conversation、同一单游标），基面与资格计数一致：member、attention 范围、
+   * kind='inbound' 且 source_kind='qq_event'——自身投递与媒体修订（outbound /
+   * media_revision）不在 kind='inbound' 里，天然不重置停顿钟；纯表情与被指名的 direct
+   * 也是真实人类活动，即使不计入名额。活动按 occurred_at 取最新：迟到补录的旧消息不把
+   * 时钟向前拨（occurredAt 是业务事实，recordedAt 只是入库时刻）。匿名（anonymous）行被
+   * **有意**排除：与资格计数同口径——匿名没有稳定身份、从来不是判定目标（既有契约），
+   * 不计入人类活动，本查询不改这一口径。
+   */
+  private latestHumanActivitySeconds(
+    conversationId: string,
+    boundary: number,
+    attention: readonly string[] | null,
+  ): number | null {
+    const placeholders = (attention ?? []).map(() => "?").join(",");
+    const row = this.options.journal.db
+      .query(
+        `SELECT MAX(CAST(strftime('%s',ce.occurred_at) AS INTEGER)) AS latest_at FROM conversation_events ce
+      WHERE ce.conversation_id=? AND ce.seq>? AND ce.kind='inbound' AND ce.source_kind='qq_event'
+        AND json_extract(ce.participant,'$.role')='member'
+        AND (${attention ? `json_extract(ce.participant,'$.id') IN (${placeholders})` : "1=1"})`,
+      )
+      .get(conversationId, boundary, ...(attention ?? [])) as { latest_at: number | null };
+    return row.latest_at === null ? null : Math.floor(row.latest_at);
+  }
   beforeRecord(bindingId: string): void {
     this.options.journal.ensureOneBotActivation(bindingId);
   }
-  afterRecord(bindingId: string, observation: QqObservation): void {
+  /**
+   * 事务内的持久面只有 journal 与寻址；回复机会的调度（offer）作为提交后回调返回，
+   * 无效配置等调度失败不再回滚观察。
+   */
+  afterRecord(bindingId: string, observation: QqObservation): void | (() => void) {
     const mentions = observation.segments.filter((s) => s.kind === "mention").map((s) => s.target);
     const reply = observation.replyToMessageId;
     const replyingToAgent =
@@ -113,8 +172,9 @@ export class OneBot11Adapter implements ConversationIngress {
       bindingId,
       addressing,
     );
-    if (event) {
-      const conversation = this.options.journal.get(event.conversationId);
+    if (!event) return;
+    const conversation = this.options.journal.get(event.conversationId);
+    return () => {
       const span = this.options.telemetry?.start("bot.ingress", {
         channel: "onebot11",
         stage: "ingress",
@@ -129,24 +189,31 @@ export class OneBot11Adapter implements ConversationIngress {
           addressingReasons: addressing.reasons.join(","),
         },
       });
-      const offer = () =>
-        this.offer(
-          bindingId,
-          event.seq,
-          observation.eventKey,
-          observation.occurredAtSeconds,
-          observation.speaker.id,
-          observation.speaker.kind,
-          addressing.reasons.length > 0,
-          false,
-          mentions.includes(observation.accountId) || replyingToAgent
-            ? { accountId: observation.accountId, platformMessageId: observation.messageId }
-            : undefined,
-        );
-      if (span) span.within(offer);
-      else offer();
-      span?.end("completed", "INGRESS_RECORDED");
-    }
+      try {
+        // 保留 telemetry 父子关系：offer 与 span 的 within 绑定原样在提交后回调里执行。
+        const runOffer = () =>
+          this.offer(
+            bindingId,
+            event.seq,
+            observation.eventKey,
+            observation.occurredAtSeconds,
+            observation.speaker.id,
+            observation.speaker.kind,
+            addressing.reasons.length > 0,
+            false,
+            mentions.includes(observation.accountId) || replyingToAgent
+              ? { accountId: observation.accountId, platformMessageId: observation.messageId }
+              : undefined,
+          );
+        if (span) span.within(runOffer);
+        else runOffer();
+        span?.end("completed", "INGRESS_RECORDED");
+      } catch (error) {
+        // 精确码由 intake 统一校验；span 这里只落稳定通用码，不透传原始错误内容。
+        span?.end("failed", "QQ_INGRESS_SCHEDULING_FAILED");
+        throw error;
+      }
+    };
   }
 
   afterMedia(bindingId: string, eventKey: string): void {
@@ -660,20 +727,13 @@ export class OneBot11Adapter implements ConversationIngress {
       // 输入就没有窗口，空白周期不调用模型。
       const rhythm = schemeRhythm(scheme);
       const nowSeconds = this.now();
-      const eligible = this.derivedChimingCount(
+      const window = this.chimingBatchWindow(
         conversation.id,
-        journal.chimingInObservedSeq(conversation.id),
+        nowSeconds,
+        rhythm,
         attention,
         triggers.direct_reply,
       );
-      const judgedAt = journal.chimingInJudgedAt(conversation.id);
-      const window = qqChimingBatchWindow({
-        rhythm,
-        count: eligible.count,
-        firstEligibleSeconds: eligible.firstEligibleSeconds,
-        judgedAtSeconds: judgedAt === null ? null : Math.floor(Date.parse(judgedAt) / 1000),
-        nowSeconds,
-      });
       if (window.kind === "none") {
         report("BATCH_INSUFFICIENT", "skipped", undefined, { cause: path, count: window.count });
         return;
@@ -961,25 +1021,18 @@ export class OneBot11Adapter implements ConversationIngress {
       const scheme = readEffectiveQqScheme(orm, binding);
       if (!scheme) continue;
       const rhythm = schemeRhythm(scheme);
-      const eligible = this.derivedChimingCount(
+      const window = this.chimingBatchWindow(
         row.conversation_id,
-        journal.chimingInObservedSeq(row.conversation_id),
+        nowSeconds,
+        rhythm,
         attentionTriggerFilter(binding),
         effectiveQqTriggers(binding, scheme).direct_reply,
       );
-      const judgedAt = journal.chimingInJudgedAt(row.conversation_id);
-      const window = qqChimingBatchWindow({
-        rhythm,
-        count: eligible.count,
-        firstEligibleSeconds: eligible.firstEligibleSeconds,
-        judgedAtSeconds: judgedAt === null ? null : Math.floor(Date.parse(judgedAt) / 1000),
-        nowSeconds,
-      });
       // 材料没了（合格输入为 0），或还有输入但没到条数下界：这两种都关掉这条过时机会，
       // 因为它留在可领集合里就会被在条件不足时领走。关闭不推进观察边界、不写判定时刻，
       // 消息仍然保留并继续计入，之后的新输入凑够下界时另起一批。
-      if (eligible.count === 0 || window.kind === "none") {
-        const noSource = eligible.count === 0;
+      if (window.count === 0 || window.kind === "none") {
+        const noSource = window.count === 0;
         const reason = noSource ? "BATCH_NO_ELIGIBLE_SOURCE" : "BATCH_WAITING_FOR_COUNT";
         journal.db
           .transaction(() => {
@@ -999,7 +1052,7 @@ export class OneBot11Adapter implements ConversationIngress {
           agentId: binding.agentId,
           wakeId: row.id,
           sourceSeq: row.through_seq,
-          details: { cause: "chiming_in", count: eligible.count, swept: true },
+          details: { cause: "chiming_in", count: window.count, swept: true },
         });
         continue;
       }

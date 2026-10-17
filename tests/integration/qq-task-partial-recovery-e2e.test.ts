@@ -184,6 +184,7 @@ function setup(options: { schemeName: string; unknownFastReceipt?: boolean }) {
     reply: { split_by_speaker: true },
     rhythm: {
       ...QQ_RHYTHM_DEFAULT,
+      participation_timing: "resource_window",
       // 普通接话：两人一批（count 2、jitter 0），关闭时间窗维度，纯计数窗口；
       // merge 0＝每条各自成立；cooldown 1 是合法字段值，不与默认冲突。
       initiative_batch_target_count: 2,

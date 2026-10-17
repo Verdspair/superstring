@@ -100,6 +100,9 @@ describe("0052 message facts and media persistence", () => {
         "sticker_frequency",
         "burst_min_messages",
         "burst_window_seconds",
+        "participation_timing",
+        // 0068：方案级分配组（判断/回复两档模式），表尾追加（SQLite 只能追加列）。
+        "allocation",
       ]);
       expect(columns("qq_message_facts")).toEqual([
         "event_key",

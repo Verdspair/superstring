@@ -1,5 +1,6 @@
-// 全局知识库预算的归属专测：预算只在「系统能力 → 知识查询」页保存与丢弃，
-// 与模型/自动整理、资料设置、读取规则各自持稿互不夹带；CAS 冲突保稿，刷新后按新修订重试。
+// 全局知识库预算的归属专测（授权搬迁后）：预算编辑器已移到统一上下文分配页的「资料读取」用途，
+// 旧知识查询页只保留只读摘要与跳转。保存/丢弃/CAS 冲突保稿仍按同一 knowledgeModelEditor 真源，
+// 与模型/自动整理、资料设置、读取规则各自持稿互不夹带；刷新保存基线后按新修订重试。
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -7,9 +8,13 @@ import type {
   KnowledgeSettingsUpdate,
 } from "../../src/shared/contracts/knowledge";
 import { ApiError, type api } from "../../src/web/api";
+import {
+  resetContextAllocationTarget,
+  setContextAllocationTarget,
+} from "../../src/web/features/context-allocation";
 import { knowledgeModelDirty } from "../../src/web/features/knowledge/types";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
-import { KnowledgeToolSettings } from "../../src/web/screens/assistants/ResourceRules";
+import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { B, setupLibrary } from "./helpers/library-fixture";
@@ -30,24 +35,36 @@ function settingsMocks(overrides: Partial<typeof api> = {}) {
     saveAgentKnowledgeRead: vi.fn(),
     updateAgent: vi.fn(),
     updatePolicy: vi.fn(),
+    // 统一页会读模型总容量：替身保证不产生任何真实请求。
+    getModelCapacity: vi.fn().mockResolvedValue({
+      model: "model-a",
+      status: "loaded",
+      context_length: 128000,
+    }),
     ...overrides,
   };
 }
 
+// 搬迁后的统一页入口：进入「资料读取」用途后渲染统一工作区，预算编辑只在这里发生。
+async function renderAllocationReading() {
+  setContextAllocationTarget({ purpose: "reading", agentId: B });
+  await act(async () => render(<ContextAllocationWorkspace active={true} />));
+}
 const budgetInput = () =>
-  screen.getByLabelText(label("library.workspace.knowledge.budget.tokens")) as HTMLInputElement;
+  screen.getByTestId("reading-knowledge-global-budget-input") as HTMLInputElement;
 const budgetSave = () =>
-  screen.getByRole("button", { name: label("library.save.knowledge.budget") }) as HTMLButtonElement;
+  screen.getByTestId("reading-save-knowledge-global-btn") as HTMLButtonElement;
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  resetContextAllocationTarget();
 });
 
 describe("知识查询页的全局默认预算", () => {
   it("预算保存只提交预算字段：模型/自动整理草稿与读取、维护保存都不受牵动", async () => {
     const client = setupLibrary(settingsMocks());
-    await act(async () => render(<KnowledgeToolSettings />));
+    await renderAllocationReading();
     // 预置默认模型页与整理规则页的草稿：不归本页预算保存所有。
     act(() => {
       store.getState().patchKnowledgeModel("draft-model");
@@ -106,7 +123,7 @@ describe("知识查询页的全局默认预算", () => {
           return { ...rest, revision: expected_revision + 1 };
         }),
     });
-    await act(async () => render(<KnowledgeToolSettings />));
+    await renderAllocationReading();
     fireEvent.change(budgetInput(), { target: { value: "3000" } });
     await act(async () => fireEvent.click(budgetSave()));
     // 冲突：草稿保留，提示就地可见，基线未被推进。
@@ -123,7 +140,9 @@ describe("知识查询页的全局默认预算", () => {
     });
     await act(async () =>
       fireEvent.click(
-        screen.getByRole("button", { name: label("capabilities.resources.refreshBaseline") }),
+        within(screen.getByTestId("reading-section-knowledge-global")).getByRole("button", {
+          name: label("capabilities.resources.refreshBaseline"),
+        }),
       ),
     );
     expect(store.getState().knowledgeModelEditor?.source.revision).toBe(5);
@@ -258,12 +277,14 @@ describe("资料设置页对全局预算只读与合并保存", () => {
 describe("预算分组的独立丢弃与资料面板只读入口", () => {
   it("预算丢弃只还原预算字段，不清空编辑器，模型草稿保留", async () => {
     const client = setupLibrary(settingsMocks());
-    await act(async () => render(<KnowledgeToolSettings />));
+    await renderAllocationReading();
     act(() => store.getState().patchKnowledgeModel("draft-model"));
     fireEvent.change(budgetInput(), { target: { value: "7777" } });
     expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(7777);
     fireEvent.click(
-      screen.getByRole("button", { name: label("library.discard.knowledge.budget") }),
+      within(screen.getByTestId("reading-section-knowledge-global")).getByRole("button", {
+        name: label("library.discard.knowledge.budget"),
+      }),
     );
     const editor = store.getState().knowledgeModelEditor;
     expect(editor).not.toBeNull();

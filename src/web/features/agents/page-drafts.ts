@@ -31,6 +31,8 @@ export const PAGE_P5_FIELDS = {
     "summary_max_tokens",
     "summary_read_max_tokens",
     "auxiliary_timeout_seconds",
+    "allocation",
+    "auxiliary_allocation",
   ],
 } as const;
 export const POLICY_FIELDS = ["auto_enabled", "every_turns", "target_chars"] as const;
@@ -96,10 +98,87 @@ export function newPageEditor(
     policyDraft: policy ? { ...policy } : null,
   };
 }
+function presetsWithoutMaxTokens(presets: unknown) {
+  if (!presets || typeof presets !== "object") return presets;
+  const copy: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(presets as Record<string, Record<string, unknown>>)) {
+    if (v && typeof v === "object") {
+      const { max_tokens: _, ...rest } = v;
+      copy[k] = rest;
+    } else {
+      copy[k] = v;
+    }
+  }
+  return copy;
+}
+
+function presetsMaxTokensOnly(presets: unknown) {
+  if (!presets || typeof presets !== "object") return presets;
+  const copy: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(presets as Record<string, Record<string, unknown>>)) {
+    if (v && typeof v === "object") {
+      copy[k] = v.max_tokens;
+    }
+  }
+  return copy;
+}
+
+export function mergeMemoryRetrievalPresets(
+  baseline: AgentDraft["p5_config"]["retrieval_presets"],
+  draft: AgentDraft["p5_config"]["retrieval_presets"],
+) {
+  const merged = { ...baseline };
+  for (const mode of ["conservative", "standard", "broad"] as const) {
+    if (draft?.[mode]) {
+      merged[mode] = {
+        ...draft[mode],
+        max_tokens: baseline?.[mode]?.max_tokens,
+      };
+    }
+  }
+  return merged;
+}
+
+export function mergeContextRetrievalPresets(
+  baseline: AgentDraft["p5_config"]["retrieval_presets"],
+  draft: AgentDraft["p5_config"]["retrieval_presets"],
+) {
+  const merged = { ...baseline };
+  for (const mode of ["conservative", "standard", "broad"] as const) {
+    if (baseline?.[mode] && draft?.[mode]) {
+      merged[mode] = {
+        ...baseline[mode],
+        max_tokens: draft[mode].max_tokens,
+      };
+    }
+  }
+  return merged;
+}
+
 export function agentPageDirty(editor: PageEditor, page: EditablePage): boolean {
-  return (
-    PAGE_AGENT_FIELDS[page].some((key) => editor.draft[key] !== editor.agent[key]) ||
-    p5Fields(page).some((key) => !equal(editor.draft.p5_config[key], editor.agent.p5_config[key]))
+  if (PAGE_AGENT_FIELDS[page].some((key) => editor.draft[key] !== editor.agent[key])) {
+    return true;
+  }
+  if (page === "memory-tools") {
+    // memory-tools 不拥有预设的 max_tokens，排除后再比对脏态
+    const draftPresets = presetsWithoutMaxTokens(editor.draft.p5_config?.retrieval_presets);
+    const agentPresets = presetsWithoutMaxTokens(editor.agent.p5_config?.retrieval_presets);
+    if (!equal(draftPresets, agentPresets)) return true;
+    return p5Fields(page)
+      .filter((k) => k !== "retrieval_presets")
+      .some((key) => !equal(editor.draft.p5_config[key], editor.agent.p5_config[key]));
+  }
+  if (page === "context") {
+    // context / allocation 拥有预设的 max_tokens
+    const draftMaxTokens = presetsMaxTokensOnly(editor.draft.p5_config?.retrieval_presets);
+    const agentMaxTokens = presetsMaxTokensOnly(editor.agent.p5_config?.retrieval_presets);
+    if (!equal(draftMaxTokens, agentMaxTokens)) return true;
+    return p5Fields(page).some(
+      (key) => !equal(editor.draft.p5_config[key], editor.agent.p5_config[key]),
+    );
+  }
+  return p5Fields(page).some(
+    (key) => !equal(editor.draft.p5_config[key], editor.agent.p5_config[key]),
   );
 }
 export function personaPageDirty(editor: PageEditor, page: EditablePage): boolean {
@@ -150,12 +229,19 @@ export function pageAgentPayload(editor: PageEditor, page: EditablePage) {
                     (p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body")
                       ? "broad"
                       : p5.retrieval_mode,
-                  retrieval_presets: mergeRetrievalPresets(
+                  retrieval_presets: mergeMemoryRetrievalPresets(
                     editor.agent.p5_config.retrieval_presets,
                     p5.retrieval_presets,
                   ),
                 }
-              : {}),
+              : page === "context"
+                ? {
+                    retrieval_presets: mergeContextRetrievalPresets(
+                      editor.agent.p5_config.retrieval_presets,
+                      p5.retrieval_presets,
+                    ),
+                  }
+                : {}),
           },
         }
       : {}),
@@ -191,6 +277,21 @@ export function acceptPageAgent(
       p5_config: {
         ...editor.draft.p5_config,
         ...Object.fromEntries(p5Fields(page).map((key) => [key, saved.p5_config[key]])),
+        ...(page === "memory-tools"
+          ? {
+              retrieval_presets: mergeMemoryRetrievalPresets(
+                editor.draft.p5_config.retrieval_presets,
+                saved.p5_config.retrieval_presets,
+              ),
+            }
+          : page === "context"
+            ? {
+                retrieval_presets: mergeContextRetrievalPresets(
+                  editor.draft.p5_config.retrieval_presets,
+                  saved.p5_config.retrieval_presets,
+                ),
+              }
+            : {}),
       },
       config_version: saved.config_version,
     },

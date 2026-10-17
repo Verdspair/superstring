@@ -2,6 +2,10 @@ import type { Database } from "bun:sqlite";
 import type { RuntimeConfig } from "../../shared/contracts";
 import { AGENT_DECISION_JSON_SCHEMA } from "../../shared/contracts/agent-output";
 import type { ModelMessage, RunOwner } from "../../shared/contracts/agent-run";
+import {
+  type AuxiliaryAllocationProfile,
+  contextAllocationMode,
+} from "../../shared/contracts/context-allocation";
 import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { AgentRuntime } from "../agent/agent-runtime";
@@ -204,6 +208,13 @@ export class WebContextSource implements ConversationContextSource {
           // 同批只读工具并发跑，每个的 fit 只看到"上一轮已提交的 observations"；
           // 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许下一步渲染炸轮。
           const token = Symbol("action-result-fit");
+          // Auto 模式的同步提案边界：builder 持有本轮冻结的历史候选，返回
+          // 纯提案 {messages, sources, commit()}；是否提交由本闭包在全部
+          // 门槛（整请求 fit、联合预留、领域配额）通过后决定。
+          const reselect =
+            contextAllocationMode(runtime.p5_config.allocation) === "auto"
+              ? this.options.builder.reselectFor(options.turnId, runtime.agent_id)
+              : undefined;
           // Legacy ceiling in byte units; token mode uses the same field as a token
           // ceiling, so one limit serves both and neither mixes the two units.
           const limit =
@@ -212,15 +223,8 @@ export class WebContextSource implements ConversationContextSource {
             Number.MAX_SAFE_INTEGER;
           return (value, sources) => {
             // 检查与登记必须在同一同步块内完成，才能消除并发竞态（JS 单线程）。
-            const baseRender = this.engine.render(
-              this.spec,
-              this.material ?? {},
-              this.observations,
-              ["reply"],
-              "stream",
-            );
-            const base = baseRender.units;
-            const baseMessages = baseRender.messages;
+            // 提案不落任何状态：material / 预留 / builder 校验点只在全部门槛
+            // （整请求 fit、同批联合预留、领域配额）通过后一次提交。
             const observations = [
               ...this.observations,
               {
@@ -231,18 +235,17 @@ export class WebContextSource implements ConversationContextSource {
                 sources,
               },
             ];
-            const projected = this.engine.render(
-              this.spec,
-              this.material ?? {},
-              observations,
-              ["reply"],
-              "stream",
-            );
-            // Token mode prices the same candidate whole (render + advertised actions
-            // + decision schema) against the token ceiling; no byte subtraction here.
-            if (this.tokenCounter() !== undefined) {
-              if (!this.fitsDecision(projected.messages, token)) return false;
-            } else if (projected.units + this.reservations.reserved(token) > limit) return false;
+            const renderWith = (material: ContextMaterial): RenderedContext =>
+              this.engine.render(this.spec, material, observations, ["reply"], "stream");
+            const renderBase = (material: ContextMaterial): RenderedContext =>
+              this.engine.render(this.spec, material, this.observations, ["reply"], "stream");
+            const fits = (rendered: RenderedContext): boolean =>
+              this.tokenCounter() !== undefined
+                ? this.fitsDecision(rendered.messages, token)
+                : rendered.units + this.reservations.reserved(token) <= limit;
+            const currentMaterial = () => this.material ?? {};
+            // Domain quota first: it is independent of the history selection, so a
+            // quota rejection never starts (or commits) a reclaim proposal.
             if (name.startsWith("knowledge.")) {
               const nonempty = observations.filter((observation) => {
                 const result = observation.value as { items?: unknown[] } | null;
@@ -261,12 +264,65 @@ export class WebContextSource implements ConversationContextSource {
               )
                 return false;
             }
+            const directRender = renderWith(currentMaterial());
+            const directBase = renderBase(currentMaterial());
+            let admitted = directRender;
+            if (!fits(directRender) && reselect !== undefined) {
+              // Auto only: propose reclaiming still-selectable history pairs,
+              // oldest first. Each proposal is verified against the WHOLE rebuilt
+              // request before any commit; a proposal that still does not fit
+              // leaves material and reservations untouched and the result is
+              // rejected like the fixed path.
+              for (let drop = 1; ; drop += 1) {
+                const proposal = reselect(({ historyTurnIds, summaryIds }) => {
+                  if (drop <= historyTurnIds.length) {
+                    return { historyTurnIds: historyTurnIds.slice(drop), summaryIds };
+                  }
+                  const summaryDrop = drop - historyTurnIds.length;
+                  return summaryDrop > summaryIds.length
+                    ? null
+                    : { historyTurnIds: [], summaryIds: summaryIds.slice(summaryDrop) };
+                });
+                if (proposal === null) return false;
+                const nonSystem = proposal.messages.filter((m) => m.role !== "system");
+                const asChannel = (m: (typeof nonSystem)[number]) =>
+                  textMessage(m.role === "assistant" ? "assistant" : "user", m.content);
+                const proposalMaterial: ContextMaterial = {
+                  ...currentMaterial(),
+                  sources: proposal.sources,
+                  history: nonSystem.slice(0, -1).map(asChannel),
+                  pending: nonSystem.slice(-1).map(asChannel),
+                };
+                const proposed = renderWith(proposalMaterial);
+                if (fits(proposed)) {
+                  signal.throwIfAborted();
+                  this.assertCurrent();
+                  this.assertSources([
+                    ...proposal.sources,
+                    ...observations.flatMap((item) => item.sources),
+                  ]);
+                  proposal.commit();
+                  this.material = proposalMaterial;
+                  admitted = proposed;
+                  break;
+                }
+                // This reclaim did not create room — try the next oldest pair.
+              }
+            } else if (!fits(directRender)) {
+              return false;
+            }
             // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
+            // 预留基线与已提交 material 同源：回收后按回收后的基线计量增量。
+            const baseRender =
+              admitted === directRender ? directBase : renderBase(currentMaterial());
             this.reservations.set(
               token,
               this.tokenCounter() === undefined
-                ? projected.units - base
-                : Math.max(0, this.tokensOf(projected.messages) - this.tokensOf(baseMessages)),
+                ? admitted.units - baseRender.units
+                : Math.max(
+                    0,
+                    this.tokensOf(admitted.messages) - this.tokensOf(baseRender.messages),
+                  ),
             );
             return true;
           };
@@ -301,6 +357,11 @@ export class WebContextSource implements ConversationContextSource {
   }
   configureActions(actions: AgentSpec["availableActions"]): void {
     this.spec.availableActions = actions;
+  }
+
+  /** This agent's research auxiliary allocation, absent = keep caller defaults. */
+  researchAllocation(): AuxiliaryAllocationProfile | undefined {
+    return this.options.runtime.p5_config.auxiliary_allocation?.research;
   }
 
   /**

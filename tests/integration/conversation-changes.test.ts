@@ -206,4 +206,130 @@ describe("conversation change notifications", () => {
     ]);
     controller.abort();
   });
+
+  it("coalesces 1000 separate same-conversation hints while paused and retains a distinct conversation", async () => {
+    const { business, session, journal, app } = setup();
+    const first = journal.ensureWeb(session.id)!;
+    const secondSession = createSession(business.orm, "other", { modelName: "fixture" });
+    const second = journal.ensureWeb(secondSession.id)!;
+    await tick();
+    const abort = new AbortController();
+    const response = await app.request("/v2/conversations/changes", { signal: abort.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      for (let n = 1; n <= 1000; n++) {
+        appendFixture(journal, first.id, n);
+        // Separate hub flushes, not one already-coalesced publisher burst.
+        await Promise.resolve();
+      }
+      appendFixture(journal, second.id, 1001);
+      await Promise.resolve();
+      expect(parseSseFrames(decoder.decode((await reader.read()).value))).toEqual([
+        { event: "ready", data: { ready: true } },
+      ]);
+      const seen: Array<{ conversationId: string; seq: number; bindingEpoch: number }> = [];
+      while (!seen.some((change) => change.conversationId === second.id)) {
+        const frames = parseSseFrames(decoder.decode((await reader.read()).value));
+        for (const frame of frames) seen.push(frame.data as (typeof seen)[number]);
+      }
+      expect(seen.filter((change) => change.conversationId === first.id).at(-1)).toEqual({
+        conversationId: first.id,
+        seq: 1000,
+        bindingEpoch: 1,
+      });
+      expect(seen.at(-1)).toEqual({ conversationId: second.id, seq: 1, bindingEpoch: 1 });
+      expect(seen.length).toBeLessThanOrEqual(3);
+    } finally {
+      abort.abort();
+      await reader.cancel();
+    }
+    appendFixture(journal, first.id, 1002);
+    await tick();
+  });
+
+  it.each(["reader_cancel", "request_abort"] as const)(
+    "disconnects %s before ready without a late change",
+    async (ending) => {
+      const { session, journal, app } = setup();
+      const conversation = journal.ensureWeb(session.id)!;
+      await tick();
+      const abort = new AbortController();
+      const response = await app.request("/v2/conversations/changes", { signal: abort.signal });
+      const reader = response.body!.getReader();
+      appendFixture(journal, conversation.id, 1);
+      await Promise.resolve();
+      if (ending === "reader_cancel") await reader.cancel();
+      else {
+        abort.abort();
+        expect(parseSseFrames(new TextDecoder().decode((await reader.read()).value))).toEqual([
+          { event: "ready", data: { ready: true } },
+        ]);
+        expect((await reader.read()).done).toBe(true);
+      }
+      appendFixture(journal, conversation.id, 2);
+      await tick();
+    },
+  );
+
+  it("keeps the latest complete epoch tuple under the same projected history id", async () => {
+    const { business, session, journal, app } = setup();
+    const first = journal.ensureWeb(session.id)!;
+    appendFixture(journal, first.id, 1);
+    await tick();
+    const abort = new AbortController();
+    const response = await app.request("/v2/conversations/changes", { signal: abort.signal });
+    const reader = response.body!.getReader();
+    try {
+      appendFixture(journal, first.id, 2);
+      await Promise.resolve();
+      const otherAgentId = crypto.randomUUID();
+      business.orm
+        .insert(schema.agents)
+        .values({
+          id: otherAgentId,
+          name: "epoch fixture",
+          systemPrompt: "s",
+          description: "",
+          additionalInstructions: "",
+          p5Config: "{}",
+          modelName: "fixture",
+          memoryConsolidationPrompt: "p",
+          memoryConsolidationAdditionalInstructions: "",
+          memoryRetrievalPrompt: "p",
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        })
+        .run();
+      business.db.query("UPDATE sessions SET agent_id=? WHERE id=?").run(otherAgentId, session.id);
+      journal.ensureWeb(session.id);
+      await Promise.resolve();
+      business.db
+        .query("UPDATE sessions SET agent_id=? WHERE id=?")
+        .run(DEFAULT_AGENT_ID, session.id);
+      const returned = journal.ensureWeb(session.id)!;
+      appendFixture(journal, returned.id, 3);
+      await Promise.resolve();
+      const expected = journal.historySummary(returned.id)!;
+      expect(expected.id).toBe(first.id);
+      expect(expected.bindingEpoch).toBe(3);
+      const decoder = new TextDecoder();
+      expect(parseSseFrames(decoder.decode((await reader.read()).value))[0]?.event).toBe("ready");
+      let latest: unknown;
+      // A blocked hint, the distinct B history, and the latest A epoch can each be sent.
+      for (let i = 0; i < 3; i++) {
+        const frames = parseSseFrames(decoder.decode((await reader.read()).value));
+        latest = frames.at(-1)?.data;
+        if ((latest as { bindingEpoch?: number })?.bindingEpoch === 3) break;
+      }
+      expect(latest).toEqual({
+        conversationId: expected.id,
+        seq: expected.lastSeq,
+        bindingEpoch: 3,
+      });
+    } finally {
+      abort.abort();
+      await reader.cancel();
+    }
+  });
 });

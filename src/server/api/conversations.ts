@@ -30,7 +30,7 @@ import {
 } from "../services/qq-member-sources";
 import { qqOutboundFactSourceAccess } from "../services/qq-outbound-fact-sources";
 import { conversationAvatarRoutes } from "./conversation-avatars";
-import { createSseResponse, type SseWriter } from "./sse";
+import { createSseResponse } from "./sse";
 import { parseUuidParam, validationFailed } from "./validation";
 
 const principal = { userId: DEFAULT_USER_ID };
@@ -117,15 +117,20 @@ export function conversationRoutes(
   // so "changes" is never captured as a conversation id; each notification still
   // passes the ordinary visibleConversation projection guard.
   router.get("/changes", (c) => {
-    let writer: SseWriter | undefined;
-    let finish: () => void = () => {};
-    const disconnected = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
+    let stopped = false;
+    let wake: (() => void) | undefined;
+    const pending = new Map<
+      string,
+      { conversationId: string; seq: number; bindingEpoch: number }
+    >();
+    const notify = () => {
+      const ready = wake;
+      wake = undefined;
+      ready?.();
+    };
     const unsubscribe = subscribeConversationChanges(db, (change) => {
-      // One guard pass is the whole display projection: the view already speaks the
-      // read contract (history-root id, globally remapped seq) the timeline cursor
-      // compares against, while the hub keeps its physical execution identity.
+      if (stopped) return;
+      // The visible projection owns both history-root identity and epoch/seq.
       const view = visibleConversation(
         db,
         repository,
@@ -133,26 +138,40 @@ export function conversationRoutes(
         principal,
         options.includeShared,
       );
-      if (view)
-        writer?.send("conversation_changed", {
+      if (view) {
+        pending.set(view.id, {
           conversationId: view.id,
           seq: view.lastSeq,
           bindingEpoch: view.bindingEpoch,
         });
+        notify();
+      }
     });
     return createSseResponse(
       {
         requestSignal: c.req.raw.signal,
         onDisconnect: () => {
+          stopped = true;
           unsubscribe();
-          finish();
+          pending.clear();
+          notify();
         },
       },
       async (stream) => {
-        writer = stream;
         // First connect and every reconnect: clients run one authoritative refresh.
-        stream.send("ready", { ready: true });
-        await disconnected;
+        await stream.send("ready", { ready: true });
+        while (!stopped) {
+          const next = pending.entries().next();
+          if (next.done) {
+            await new Promise<void>((resolve) => {
+              wake = resolve;
+            });
+            continue;
+          }
+          const [id, change] = next.value;
+          pending.delete(id);
+          await stream.send("conversation_changed", change);
+        }
       },
     );
   });

@@ -22,6 +22,7 @@ import { unicodeStrip } from "../../shared/contracts/code-point-string";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ExecutionMode } from "../../shared/contracts/permissions";
 import type { AgentRunRepository } from "../db/agent-run-repository";
+import { AppError } from "../errors";
 import type { ChatMessage } from "../llm/model-gateway";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
 import {
@@ -767,6 +768,7 @@ export class AgentRuntime {
           spec,
           input,
           actions: baseActions,
+          allocation: input.context.researchAllocation?.(),
           limits: this.options.researchLimits?.(),
         });
         extensions.push(input.prepareResearchAction?.(research) ?? research);
@@ -1389,6 +1391,7 @@ export class AgentRuntime {
         // 每目标独立 catch：准备失败只作废该目标；结果按 ordinal 落位保持输出顺序。
         const slots: Array<PreparedOutput | undefined> = decision.outputs.map(() => undefined);
         const plans: TargetPlan[] = [];
+        const commitFailedOutputs = new Set<string>();
         for (const [ordinal, draft] of decision.outputs.entries()) {
           active.signal.throwIfAborted();
           // 已早提交目标跨轮保留：不重生成、不再提交（原输出与事实已在宿主早提交事务里）。
@@ -1436,7 +1439,14 @@ export class AgentRuntime {
               };
               slots[ordinal] = output;
               // inline 草稿不走模型段，准备完成即与 generate 目标同一时机边界早提交。
-              await this.commitPrepared(active, input, output, ordinal, committedTargets);
+              await this.commitPrepared(
+                active,
+                input,
+                output,
+                ordinal,
+                committedTargets,
+                commitFailedOutputs,
+              );
               continue;
             }
             this.checkStepBudget(active, spec);
@@ -1547,7 +1557,14 @@ export class AgentRuntime {
               const generated = await this.generateTarget(active, input, plan, batchSignal);
               slots[plan.ordinal] = generated;
               // 规格 §4.1 早提交：本目标生成完成即提交，不等兄弟；宿主按目标写自己的 outbox intent。
-              await this.commitPrepared(active, input, generated, plan.ordinal, committedTargets);
+              await this.commitPrepared(
+                active,
+                input,
+                generated,
+                plan.ordinal,
+                committedTargets,
+                commitFailedOutputs,
+              );
             } catch (error) {
               if (
                 active.signal.aborted ||
@@ -1629,6 +1646,16 @@ export class AgentRuntime {
             await this.commitAndFinish(active, input, outputs, "no_output", { type: "no_output" });
             return { runId: active.runId, status: "no_output", outputs };
           }
+          const sourceCommitFailure =
+            outputs.length > 0 &&
+            outputs.every(
+              (output) =>
+                output.status === "failed" &&
+                commitFailedOutputs.has(output.outputId) &&
+                output.code === "CONTEXT_SOURCE_INVALID",
+            );
+          if (sourceCommitFailure)
+            throw new AppError("CONTEXT_SOURCE_INVALID", "No output could be prepared");
           throw new AgentRuntimeError("AGENT_OUTPUT_FAILED", "No output could be prepared");
         }
         const summaries = outputs.map(({ outputId, targetId, status, code }) => ({
@@ -2317,26 +2344,32 @@ export class AgentRuntime {
     output: PreparedOutput,
     ordinal: number,
     committedTargets: Map<string, PreparedOutput>,
+    commitFailedOutputs: Set<string>,
   ): Promise<void> {
     if (input.commitOutput === undefined || output.status !== "prepared") return;
-    // 与原 commitAndFinish 同一提交边界：先复核本 run 已用动作仍可用，再做宿主事务。
-    active.assertActions?.();
-    const accepted = await this.trace(
-      active,
-      "agent.commit",
-      {
-        stage: "run",
-        details: { outputCount: 1, early: true, targetId: output.targetId, ordinal },
-      },
-      async () => input.commitOutput?.(output, active.runId, { ordinal, at: this.now() }),
-    );
-    if (accepted === false) {
-      // 宿主拒绝＝未提交：标 blocked，终态结算不再把它当 prepared 重新提交（不绕过拒绝）。
-      output.status = "blocked";
-      output.code ??= "AGENT_EARLY_COMMIT_REJECTED";
-      return;
+    try {
+      // 与原 commitAndFinish 同一提交边界：先复核本 run 已用动作仍可用，再做宿主事务。
+      active.assertActions?.();
+      const accepted = await this.trace(
+        active,
+        "agent.commit",
+        {
+          stage: "run",
+          details: { outputCount: 1, early: true, targetId: output.targetId, ordinal },
+        },
+        async () => input.commitOutput?.(output, active.runId, { ordinal, at: this.now() }),
+      );
+      if (accepted === false) {
+        // 宿主拒绝＝未提交：标 blocked，终态结算不再把它当 prepared 重新提交（不绕过拒绝）。
+        output.status = "blocked";
+        output.code ??= "AGENT_EARLY_COMMIT_REJECTED";
+        return;
+      }
+      committedTargets.set(output.targetId, output);
+    } catch (error) {
+      commitFailedOutputs.add(output.outputId);
+      throw error;
     }
-    committedTargets.set(output.targetId, output);
   }
 
   /**

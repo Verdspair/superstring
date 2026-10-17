@@ -498,7 +498,7 @@ export class AgentRunRepository {
       COALESCE(SUM(c.protected_messages IS NOT NULL OR c.protected_output IS NOT NULL),0) AS withProtectedBody,
       COALESCE(SUM((c.protected_messages IS NOT NULL OR c.protected_output IS NOT NULL)
         AND c.expires_at IS NOT NULL AND c.expires_at<=?),0) AS expiredProtectedBodies
-      FROM context_snapshots c JOIN agent_steps s ON s.step_id=c.step_id
+      FROM context_snapshots c INDEXED BY ix_context_snapshot_storage_metadata JOIN agent_steps s ON s.step_id=c.step_id
       JOIN agent_runs r ON r.run_id=s.run_id WHERE ${scope.where}`)
       .get(now, now, now, ...scope.params) as ContextStorageCounts;
     return {

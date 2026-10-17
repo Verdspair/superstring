@@ -176,7 +176,9 @@ export function sessionRoutes(
     const requestId = crypto.randomUUID();
     // The channel, its context builder and journal share this handle.
     let sendContext:
-      | ((usage: import("../../shared/contracts/context-usage").ContextUsage) => void)
+      | ((
+          usage: import("../../shared/contracts/context-usage").ContextUsage,
+        ) => void | Promise<void>)
       | undefined;
     const service = new DirectService({
       ...conversation,
@@ -203,19 +205,19 @@ export function sessionRoutes(
       { requestSignal: c.req.raw.signal, onDisconnect: () => clientAbort.abort() },
       async (stream) => {
         const send = stream.send;
-        sendContext = (usage) => {
+        sendContext = async (usage) => {
           if (c.req.header("X-Superstring-Context-Usage") === "1")
-            send("context", { request_id: requestId, usage });
+            await send("context", { request_id: requestId, usage });
         };
-        send("start", { request_id: requestId, session_id: body.session_id });
+        await send("start", { request_id: requestId, session_id: body.session_id });
         let terminal = false;
         try {
           for await (const event of reply) {
             if (event.kind === "delta") {
-              send("delta", { request_id: requestId, text: event.text });
+              await send("delta", { request_id: requestId, text: event.text });
             } else {
               terminal = true;
-              send("done", {
+              await send("done", {
                 request_id: requestId,
                 message_id: event.messageId,
                 created_at: event.createdAt,
@@ -230,20 +232,20 @@ export function sessionRoutes(
             // DirectService already persisted CLIENT_DISCONNECTED. No terminal
             // event can be delivered to a disconnected consumer.
           } else if (isAppError(error)) {
-            send("error", {
+            await send("error", {
               request_id: requestId,
               code: error.code,
               message: error.message,
             });
           } else if (isDatabaseError(error)) {
             const dbError = new DatabaseUnavailableError();
-            send("error", {
+            await send("error", {
               request_id: requestId,
               code: dbError.code,
               message: dbError.message,
             });
           } else {
-            send("error", {
+            await send("error", {
               request_id: requestId,
               code: "MESSAGE_PERSISTENCE_ERROR",
               message: "助手消息未能确认保存，请重试",
@@ -252,7 +254,7 @@ export function sessionRoutes(
         }
         if (!terminal) {
           // A stream that simply stops must never look like saved success.
-          send("error", {
+          await send("error", {
             request_id: requestId,
             code: "MESSAGE_PERSISTENCE_ERROR",
             message: "助手消息未能确认保存，请重试",

@@ -3,6 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readMode, readTheme, THEMES } from "../../src/web/appearance";
 import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
+import {
+  resetContextAllocationTarget,
+  setContextAllocationTarget,
+} from "../../src/web/features/context-allocation";
 import { msg, selectLocale } from "../../src/web/i18n";
 import en from "../../src/web/i18n/locales/en/translation.json";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
@@ -12,6 +16,7 @@ import {
   MemoryToolSettings,
 } from "../../src/web/screens/assistants/ResourceRules";
 import { CapabilityEditor, IdentityEditor } from "../../src/web/screens/assistants/StudioEditors";
+import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
 import { Preferences } from "../../src/web/screens/environment/Preferences";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { MemoryDetail, MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
@@ -37,6 +42,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   selectLocale("zh-CN");
+  resetContextAllocationTarget();
 });
 
 describe("fresh assistant studio", () => {
@@ -121,12 +127,9 @@ describe("fresh assistant studio", () => {
     const broad = structuredClone(
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad,
     );
-    // 三档预设默认展开：三个预设的额度输入初始都可见，标题只剩档名。
-    for (const label of [
-      "每次查询扫描候选上限",
-      "每页最大返回项",
-      "每轮记忆工具结果总预算（UTF-8 字节）",
-    ]) {
+    // 三档预设默认展开：预设的候选/条目输入初始都可见，标题只剩档名。
+    // 每轮预算输入已按授权搬迁到统一上下文分配页（见下方资料读取用例），旧页不再渲染。
+    for (const label of ["每次查询扫描候选上限", "每页最大返回项"]) {
       expect(screen.getAllByLabelText(label)).toHaveLength(3);
     }
     const conservative = screen.getByRole("button", { name: "保守" });
@@ -134,11 +137,7 @@ describe("fresh assistant studio", () => {
     if (!panel) throw new Error("Missing conservative preset panel");
     const candidates = within(panel).getByLabelText("每次查询扫描候选上限") as HTMLInputElement;
     const entries = within(panel).getByLabelText("每页最大返回项") as HTMLInputElement;
-    const budget = within(panel).getByLabelText(
-      "每轮记忆工具结果总预算（UTF-8 字节）",
-    ) as HTMLInputElement;
     expect([candidates.min, candidates.max]).toEqual(["1", "10000"]);
-    expect([budget.min, budget.max]).toEqual(["1", "1048576"]);
     fireEvent.change(candidates, { target: { value: "200" } });
     expect(entries.max).toBe("200");
     fireEvent.change(candidates, { target: { value: "30" } });
@@ -154,7 +153,43 @@ describe("fresh assistant studio", () => {
     expect(screen.getAllByRole("textbox")).toHaveLength(4);
     expect(screen.getByText(/技能文本不能授予资料访问权限/)).toBeTruthy();
     expect(within(panel).getByText(/最终返回条数不能超过候选上限/)).toBeTruthy();
-    expect(screen.getByText(/全局每轮预算：2048 UTF-8 字节/)).toBeTruthy();
+    // 旧页预算摘要：已存值只读显示，编辑入口统一指向上下文分配页。
+    expect(within(panel).getByText(/每轮记忆工具结果总预算/).parentElement?.textContent).toContain(
+      "2048 Bytes",
+    );
+    expect(
+      screen.getByText(/全局每轮知识工具结果预算（UTF-8 字节；含目录预览）/).parentElement
+        ?.textContent,
+    ).toContain("2048 Bytes");
+    expect(screen.getAllByRole("button", { name: "前往上下文分配" }).length).toBeGreaterThanOrEqual(
+      3,
+    );
+  });
+  it("edits the per-turn memory budget only in the unified reading allocation", async () => {
+    const client = setupLibrary({
+      updateAgent: vi.fn(),
+      getModelCapacity: vi
+        .fn()
+        .mockResolvedValue({ model: "model-a", status: "loaded", context_length: 128000 }),
+    });
+    setContextAllocationTarget({ purpose: "reading", agentId: A });
+    await act(async () => render(<ContextAllocationWorkspace active={true} />));
+    // 三档已存预算值在统一页可见可编辑（搬迁不删能力，只换唯一编辑位置）。
+    const inputs = ["conservative", "standard", "broad"].map(
+      (mode) => screen.getByTestId(`reading-preset-max-tokens-${mode}`) as HTMLInputElement,
+    );
+    expect(inputs.map((el) => el.value)).toEqual(["2048", "4096", "8192"]);
+    // 预算草稿写入 pageEditor 的 context 页：旧 memory-tools 页保持干净。
+    fireEvent.change(inputs[2], { target: { value: "10000" } });
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
+      10000,
+    );
+    expect(
+      store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.candidate_limit,
+    ).toBe(120);
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
+    // 未保存不隐式写库。
+    expect(client.updateAgent).not.toHaveBeenCalled();
   });
   it.each(["full_catalog", "full_body"] as const)(
     "displays %s as broad without mutating drafts on visits, tab changes or reloads",
@@ -460,7 +495,10 @@ describe("preferences and localized resources", () => {
     );
     expect(screen.getByText("Knowledge access")).toBeTruthy();
     expect(screen.getByText(/Skill text cannot grant access/)).toBeTruthy();
-    expect(screen.getByText(/Global budget: 2048 UTF-8 bytes per turn/)).toBeTruthy();
+    // 预算摘要按人工化文案搬迁：统一页用额度行（label + 值），不再渲染旧 hint 句。
+    expect(
+      screen.getByText(/Global knowledge tool result budget per turn/).parentElement?.textContent,
+    ).toContain("2048 Bytes");
     const copy = document.body.cloneNode(true) as HTMLElement;
     copy.querySelectorAll("input,textarea").forEach((node) => {
       node.remove();

@@ -422,6 +422,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
           prompt: schemePrompts(scheme).media,
           frames: schemeRhythm(scheme).media_frame_count,
           maxDimension: schemeRhythm(scheme).media_max_dimension,
+          auxiliary_allocation: readOrganizationSettings(business.orm).auxiliary_allocation
+            ?.qq_media_describe,
+          loadedContextCapacity: (model) => gateway.loadedContextCapacity(model),
           agentRuntime,
           fetchSource: createQqMediaSourceFetcher({
             resolveSource: (request) => qqIntake.resolveMediaSource(request),

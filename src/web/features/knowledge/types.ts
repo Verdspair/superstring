@@ -1,3 +1,4 @@
+import type { GlobalAuxiliaryAllocation } from "../../../shared/contracts/context-allocation";
 import type {
   AgentKnowledge,
   AgentKnowledgeReadConfig,
@@ -124,15 +125,27 @@ export interface OrganizationEditor {
   /** §7.1's media purposes; unset means "cannot understand", never a fallback (P4b). */
   visionModelName: string | null;
   transcriptionModelName: string | null;
+  /** 辅助任务分配草稿（0068）：与模型草稿分开记脏；undefined＝尚未打开分配编辑。 */
+  auxiliaryAllocation?: GlobalAuxiliaryAllocation;
 }
-export function organizationDirty(editor: OrganizationEditor | null): boolean {
-  return (
-    !!editor &&
-    (editor.modelName !== editor.source.model_name ||
-      editor.visionModelName !== editor.source.vision_model_name ||
-      editor.transcriptionModelName !== editor.source.transcription_model_name)
-  );
+/** 保存范围：models 仅模型三项（默认，旧调用方行为不变）；allocation 仅辅助分配组；all 两者。 */
+export type OrganizationSaveScope = "models" | "allocation" | "all";
+export function organizationDirty(
+  editor: OrganizationEditor | null,
+  scope: OrganizationSaveScope = "models",
+): boolean {
+  if (!editor) return false;
+  const models =
+    editor.modelName !== editor.source.model_name ||
+    editor.visionModelName !== editor.source.vision_model_name ||
+    editor.transcriptionModelName !== editor.source.transcription_model_name;
+  const allocation =
+    editor.auxiliaryAllocation !== undefined &&
+    JSON.stringify(editor.auxiliaryAllocation) !==
+      JSON.stringify(editor.source.auxiliary_allocation ?? undefined);
+  return scope === "models" ? models : scope === "allocation" ? allocation : models || allocation;
 }
+
 export interface KnowledgeReadEditor {
   token: object;
   agentId: string;
@@ -166,8 +179,11 @@ export interface KnowledgeState {
     readonly visionModelName?: string | null;
     readonly transcriptionModelName?: string | null;
   }) => void;
-  saveOrganization: () => Promise<boolean>;
-  discardOrganization: () => void;
+  /** 直接以整份角色映射替换分配草稿；{} 清空整组；undefined 语义走 discardOrganization("allocation")。 */
+  patchOrganizationAllocation: (next: GlobalAuxiliaryAllocation) => void;
+  saveOrganization: (scope?: OrganizationSaveScope) => Promise<boolean>;
+  /** scope "allocation" 只还原分配基线，保留模型草稿与编辑器；缺省清空整份编辑器。 */
+  discardOrganization: (scope?: "allocation") => void;
   knowledgeReadEditor: KnowledgeReadEditor | null;
   knowledgeReadLoading: boolean;
   loadKnowledgeRead: () => Promise<void>;

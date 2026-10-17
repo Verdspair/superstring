@@ -1,6 +1,7 @@
 import { ChevronLeft, RefreshCw } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs";
@@ -23,7 +24,17 @@ export function QqAppManagement({
   groupsView?: ReactNode;
 }) {
   const { t } = useTranslation();
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      error: state.error,
+      feedback: state.feedback,
+      openSettingsRoute: state.openSettingsRoute,
+      qqAccessSaving: state.qqAccessSaving,
+      qqSchemeSaving: state.qqSchemeSaving,
+      qqSchemesLoading: state.qqSchemesLoading,
+      qqStorageSaving: state.qqStorageSaving,
+    })),
+  );
   const busy = s.qqSchemeSaving || s.qqAccessSaving || s.qqStorageSaving || s.qqSchemesLoading;
   const back = () => s.openSettingsRoute("scheme-library");
   const openView = (next: string) =>
@@ -143,7 +154,16 @@ const connectionPhaseLabels: Record<string, string> = {
 
 function QqConnectionTab({ active }: { active: boolean }) {
   const { t } = useTranslation();
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      loadQqAccess: state.loadQqAccess,
+      qqAccessLoading: state.qqAccessLoading,
+      qqAccessSaving: state.qqAccessSaving,
+      qqConnection: state.qqConnection,
+      qqSettings: state.qqSettings,
+      refreshQqConnection: state.refreshQqConnection,
+    })),
+  );
   const { loadQqAccess } = s;
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {

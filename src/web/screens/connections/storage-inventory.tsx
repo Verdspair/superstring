@@ -6,6 +6,7 @@
 import { RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import type {
   QqConversationKind,
   QqStorageCategory,
@@ -134,7 +135,28 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
     previewQqStorageCleanup: beginPreview,
     runQqStorageCleanupSelection: runCleanup,
     clearQqStorageCleanup: clearCleanup,
-  } = useSuperstringStore();
+  } = useSuperstringStore(
+    useShallow((state) => ({
+      qqStorageUsage: state.qqStorageUsage,
+      qqStorageLoading: state.qqStorageLoading,
+      qqStorageSaving: state.qqStorageSaving,
+      qqStorageItems: state.qqStorageItems,
+      qqStorageItemsTotal: state.qqStorageItemsTotal,
+      qqStorageItemsNextCursor: state.qqStorageItemsNextCursor,
+      qqStorageItemsLoading: state.qqStorageItemsLoading,
+      qqStorageItemsError: state.qqStorageItemsError,
+      qqStorageCleanupRequest: state.qqStorageCleanupRequest,
+      qqStorageCleanupPreview: state.qqStorageCleanupPreview,
+      qqStorageCleanupResult: state.qqStorageCleanupResult,
+      qqStorageCleanupError: state.qqStorageCleanupError,
+      loadQqStorage: state.loadQqStorage,
+      refreshQqStorage: state.refreshQqStorage,
+      loadQqStorageItems: state.loadQqStorageItems,
+      previewQqStorageCleanup: state.previewQqStorageCleanup,
+      runQqStorageCleanupSelection: state.runQqStorageCleanupSelection,
+      clearQqStorageCleanup: state.clearQqStorageCleanup,
+    })),
+  );
   // 管理列表的筛选与翻页是页面局部状态；条目本身永远来自服务端游标读取。
   const [category, setCategory] = useState<QqStorageCategory>("observation_text");
   const [status, setStatus] = useState<QqStorageStatusFilter>("all");

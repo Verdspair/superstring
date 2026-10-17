@@ -3,6 +3,11 @@
 
 import { asc, eq } from "drizzle-orm";
 import {
+  QQ_ALLOCATION_DEFAULT,
+  type QqSchemeAllocation,
+  QqSchemeAllocationSchema,
+} from "../../shared/contracts/context-allocation";
+import {
   parseQqSchemeOutputReserve,
   QQ_COMPRESSION_DEFAULT,
   QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT,
@@ -121,6 +126,8 @@ export interface QqSchemeInput {
   taskLimits?: QqSchemeTaskLimits;
   /** 输入防抖组（0059）。省略＝更新时不动、新建时显式落开（旧行列默认是关）。 */
   inputAntiSpam?: QqSchemeInputAntiSpam;
+  /** 分配组（0068）。省略＝更新时不动、新建时用 `QQ_ALLOCATION_DEFAULT`（两档 fixed）。 */
+  allocation?: QqSchemeAllocation;
 }
 
 /**
@@ -246,6 +253,10 @@ function sameInputAntiSpam(left: QqSchemeInputAntiSpam, right: QqSchemeInputAnti
   );
 }
 
+function sameAllocation(left: QqSchemeAllocation, right: QqSchemeAllocation): boolean {
+  return left.judgement.mode === right.judgement.mode && left.reply.mode === right.reply.mode;
+}
+
 /**
  * 消息设置组（0052）。行值是严格 JSON（TEXT 存储，读出口先解析）；NULL（理论上只出现在
  * 未经写入侧补默认的旧路径）按已批准默认组兜底，与迁移 0052 的回填语义一致。
@@ -262,6 +273,26 @@ export function schemeMessageSettings(row: QqSchemeRow): QqSchemeMessageSettings
 export function schemeMediaInput(row: QqSchemeRow): QqSchemeMediaInput {
   if (row.mediaInput === null) return QQ_MEDIA_INPUT_SCHEME_DEFAULT;
   return parseQqSchemeMediaInput(parseJsonColumn(row.mediaInput, "media_input"));
+}
+
+/**
+ * 分配组（0068）。NOT NULL 列直读后过契约：NULL（迁移前的旧行理论形态）与迁移默认同义，
+ * 按 `QQ_ALLOCATION_DEFAULT`（两档 fixed）兜底——这是"受保护缺席"的唯一解释点；列里有值但
+ * 不过契约（坏 JSON、缺档、未知模式）一律抛 TypeError，绝不静默落回 fixed。
+ */
+export function schemeAllocation(row: QqSchemeRow): QqSchemeAllocation {
+  if (row.allocation === null) return QQ_ALLOCATION_DEFAULT;
+  return parseQqSchemeAllocation(parseJsonColumn(row.allocation, "allocation"));
+}
+
+function parseQqSchemeAllocation(input: unknown): QqSchemeAllocation {
+  const result = QqSchemeAllocationSchema.safeParse(input);
+  if (!result.success) throw new TypeError("Invalid QQ scheme allocation input");
+  return Object.freeze(result.data);
+}
+
+function allocationColumns(value: QqSchemeAllocation) {
+  return { allocation: stableStringify(parseQqSchemeAllocation(value)) };
 }
 
 function triggerColumns(triggers: QqSpeechTriggers) {
@@ -318,6 +349,7 @@ export function effectiveQqTriggers(
 
 export function schemeRhythm(row: QqSchemeRow): QqSchemeRhythm {
   return parseQqSchemeRhythm({
+    participation_timing: row.participationTiming,
     merge_window_seconds: row.mergeWindowSeconds,
     reply_cooldown_seconds: row.replyCooldownSeconds,
     hourly_speech_limit: row.hourlySpeechLimit,
@@ -342,6 +374,7 @@ export function schemeRhythm(row: QqSchemeRow): QqSchemeRhythm {
 
 function rhythmColumns(rhythm: QqSchemeRhythm) {
   return {
+    participationTiming: rhythm.participation_timing,
     mergeWindowSeconds: rhythm.merge_window_seconds,
     replyCooldownSeconds: rhythm.reply_cooldown_seconds,
     hourlySpeechLimit: rhythm.hourly_speech_limit,
@@ -368,6 +401,7 @@ function sameRhythm(left: QqSchemeRhythm, right: QqSchemeRhythm): boolean {
   // Field-by-field rather than JSON.stringify: the key order of two objects that came from
   // different places is not a promise, and a false "changed" would bump the revision.
   return (
+    left.participation_timing === right.participation_timing &&
     left.merge_window_seconds === right.merge_window_seconds &&
     left.reply_cooldown_seconds === right.reply_cooldown_seconds &&
     left.hourly_speech_limit === right.hourly_speech_limit &&
@@ -586,6 +620,7 @@ export function schemeResponse(orm: Orm, row: QqSchemeRow): QqSchemeResponse {
     media_input: schemeMediaInput(row),
     task_limits: schemeTaskLimits(row),
     input_anti_spam: schemeInputAntiSpam(row),
+    allocation: schemeAllocation(row),
     revision: row.revision,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
@@ -608,6 +643,8 @@ export function schemeColumnsFromGroups(groups: {
   reply: QqSchemeReply;
   messageSettings?: QqSchemeMessageSettings;
   mediaInput?: QqSchemeMediaInput;
+  /** 0068：分配组随本群差异落列；缺席＝保持基础行的列值（稀疏继承）。 */
+  allocation?: QqSchemeAllocation;
 }): Partial<QqSchemeRow> {
   return {
     ...triggerColumns(groups.triggers),
@@ -620,6 +657,7 @@ export function schemeColumnsFromGroups(groups: {
     ...replyColumns(groups.reply),
     ...(groups.messageSettings === undefined ? {} : messageSettingsColumns(groups.messageSettings)),
     ...(groups.mediaInput === undefined ? {} : mediaInputColumns(groups.mediaInput)),
+    ...(groups.allocation === undefined ? {} : allocationColumns(groups.allocation)),
   };
 }
 
@@ -724,6 +762,8 @@ export function restoreQqSchemeSnapshot(
     }),
     ...taskLimitColumns(frozen.task_limits),
     ...inputAntiSpamColumns(frozen.input_anti_spam),
+    // 0068：快照整组恢复包含分配模式，冻结的任务行为不混入当前草稿的模式。
+    ...(frozen.allocation === undefined ? {} : allocationColumns(frozen.allocation)),
   };
 }
 
@@ -782,6 +822,8 @@ export function createQqScheme(orm: Orm, input: QqSchemeInput): QqSchemeRow {
           ...inputAntiSpamColumns(
             parseQqSchemeInputAntiSpam(input.inputAntiSpam ?? QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT),
           ),
+          // 0068 写入侧补默认：未提供的分配组落完整 JSON（两档 fixed），不靠列默认的读取兜底。
+          ...allocationColumns(input.allocation ?? QQ_ALLOCATION_DEFAULT),
           createdAt: nowIso(),
           updatedAt: nowIso(),
         })
@@ -860,6 +902,10 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
     input.inputAntiSpam === undefined
       ? currentInputAntiSpam
       : parseQqSchemeInputAntiSpam(input.inputAntiSpam);
+  // 0068：未提供＝保持现值（NOT NULL 列直读），整组来或整组不动。
+  const currentAllocation = schemeAllocation(current);
+  const nextAllocation =
+    input.allocation === undefined ? currentAllocation : parseQqSchemeAllocation(input.allocation);
   const currentCollectionIds = schemeStickerCollectionIds(orm, id);
   const nextCollectionIds =
     input.stickerCollections === undefined
@@ -883,6 +929,7 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
     sameMediaInput(currentMediaInput, nextMediaInput) &&
     sameTaskLimits(currentTaskLimits, nextTaskLimits) &&
     sameInputAntiSpam(currentInputAntiSpam, nextInputAntiSpam) &&
+    sameAllocation(currentAllocation, nextAllocation) &&
     !collectionsChanged
   ) {
     return current;
@@ -906,6 +953,7 @@ export function updateQqScheme(orm: Orm, id: string, input: QqSchemeUpdate): QqS
           ...mediaInputColumns(nextMediaInput),
           ...taskLimitColumns(nextTaskLimits),
           ...inputAntiSpamColumns(nextInputAntiSpam),
+          ...allocationColumns(nextAllocation),
           revision: current.revision + 1,
           updatedAt: nowIso(),
         })

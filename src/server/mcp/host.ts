@@ -71,9 +71,11 @@ export class McpToolHost {
   current(): readonly BuiltInAction[] {
     if (this.lifetime.signal.aborted) return [];
     try {
-      if (loadMcpRegistry(this.options.configPath).revision !== this.lastRevision) {
-        this.actions = [];
-        void this.reload().catch((error) => this.report("-", error));
+      const registry = loadMcpRegistry(this.options.configPath);
+      if (registry.revision !== this.lastRevision) {
+        if (this.reloading) this.reloadRequested = true;
+        else void this.reload().catch((error) => this.report("-", error));
+        this.publish(registry);
       }
     } catch {
       return [];
@@ -116,6 +118,17 @@ export class McpToolHost {
       /* Diagnostics do not own connection lifecycle. */
     }
   }
+  private publish(registry: McpRegistry): void {
+    if (this.lifetime.signal.aborted) return;
+    this.actions = createMcpActions({
+      sources: registry.servers.flatMap((server) => {
+        const connection = this.connections.get(server.id);
+        return server.enabled && connection?.revision === revisionOf(server)
+          ? [connection.source]
+          : [];
+      }),
+    });
+  }
   private async doReload(): Promise<void> {
     let registry: McpRegistry;
     try {
@@ -125,83 +138,101 @@ export class McpToolHost {
       this.report("-", error);
       return;
     }
-    this.actions = [];
+    // A saved registry starts a new discovery result; old failures are not its result.
+    if (registry.revision !== this.lastRevision) this.diagnostics.clear();
     const wanted = registry.servers.filter((server) => server.enabled);
+    const closing: Promise<void>[] = [];
     for (const [id, connection] of this.connections) {
       const server = wanted.find((entry) => entry.id === id);
       if (!server || revisionOf(server) !== connection.revision) {
         this.connections.delete(id);
-        await connection.source.session.close();
-      }
-    }
-    const signal = this.options.signal
-      ? AbortSignal.any([this.lifetime.signal, this.options.signal])
-      : this.lifetime.signal;
-    for (const server of wanted) {
-      if (signal.aborted) break;
-      let session: McpSession | undefined = this.connections.get(server.id)?.source.session;
-      try {
-        session ??= await (this.options.connect ?? connectMcpServer)(server, {
-          env: this.options.env,
-          signal,
-          onToolsChanged: () => {
-            if (this.connections.get(server.id)?.source.session !== session) return;
-            this.actions = this.actions.filter(
-              (action) => action.description.capability !== `mcp.${server.id}`,
-            );
-            if (this.reloading) this.reloadRequested = true;
-            else void this.reload().catch((error) => this.report(server.id, error));
-          },
-          onClosed: () => {
-            if (this.connections.get(server.id)?.source.session !== session) return;
-            this.connections.delete(server.id);
-            this.actions = this.actions.filter(
-              (action) => action.description.capability !== `mcp.${server.id}`,
-            );
-            this.report(
-              server.id,
-              Object.assign(new Error("MCP connection closed"), { code: "MCP_SERVER_GONE" }),
-            );
-          },
-          onDiagnostic: (code) => this.options.onDiagnostic?.({ serverId: server.id, code }),
-        });
-        const tools = await session.listTools(signal);
-        signal.throwIfAborted();
-        const existing = this.connections.get(server.id);
-        if (existing && JSON.stringify(existing.source.tools) === JSON.stringify(tools)) continue;
-        const revision = revisionOf(server);
-        const connection: Connected = {
-          revision,
-          source: {
-            config: server,
-            session,
-            tools,
-            assertAvailable: () => {
-              const current = loadMcpRegistry(this.options.configPath).servers.find(
-                (entry) => entry.id === server.id,
-              );
-              if (
-                this.lifetime.signal.aborted ||
-                this.connections.get(server.id) !== connection ||
-                !current?.enabled ||
-                revisionOf(current) !== revision
-              )
-                throw new PermissionError("PERMISSION_REVISION_CHANGED");
-            },
-          },
-        };
-        this.connections.set(server.id, connection);
-        this.diagnostics.delete(server.id);
-      } catch (error) {
-        this.connections.delete(server.id);
-        await session?.close();
-        if (!signal.aborted) this.report(server.id, error);
+        this.diagnostics.delete(id);
+        closing.push(connection.source.session.close());
       }
     }
     this.lastRevision = registry.revision;
-    if (!signal.aborted)
-      this.actions = createMcpActions({
-        sources: [...this.connections.values()].map((entry) => entry.source),
-      });
+    this.publish(registry);
+    const signal = this.options.signal
+      ? AbortSignal.any([this.lifetime.signal, this.options.signal])
+      : this.lifetime.signal;
+    await Promise.allSettled([
+      ...closing,
+      ...wanted.map(async (server) => {
+        if (signal.aborted) return;
+        let session: McpSession | undefined = this.connections.get(server.id)?.source.session;
+        try {
+          session ??= await (this.options.connect ?? connectMcpServer)(server, {
+            env: this.options.env,
+            signal,
+            onToolsChanged: () => {
+              const connection = this.connections.get(server.id);
+              if (!connection || connection.source.session !== session) return;
+              // Invalidate only this catalog, retaining its transport for rediscovery.
+              this.connections.set(server.id, {
+                ...connection,
+                source: { ...connection.source, tools: [] },
+              });
+              this.actions = this.actions.filter(
+                (action) => action.description.capability !== `mcp.${server.id}`,
+              );
+              if (this.reloading) this.reloadRequested = true;
+              else void this.reload().catch((error) => this.report(server.id, error));
+            },
+            onClosed: () => {
+              if (this.connections.get(server.id)?.source.session !== session) return;
+              this.connections.delete(server.id);
+              this.actions = this.actions.filter(
+                (action) => action.description.capability !== `mcp.${server.id}`,
+              );
+              this.report(
+                server.id,
+                Object.assign(new Error("MCP connection closed"), { code: "MCP_SERVER_GONE" }),
+              );
+            },
+            onDiagnostic: (code) => this.options.onDiagnostic?.({ serverId: server.id, code }),
+          });
+          const tools = await session.listTools(signal);
+          signal.throwIfAborted();
+          const currentRegistry = loadMcpRegistry(this.options.configPath);
+          const current = currentRegistry.servers.find((entry) => entry.id === server.id);
+          const revision = revisionOf(server);
+          if (!current?.enabled || revisionOf(current) !== revision)
+            throw new PermissionError("PERMISSION_REVISION_CHANGED");
+          const existing = this.connections.get(server.id);
+          if (existing && JSON.stringify(existing.source.tools) === JSON.stringify(tools)) return;
+          const connection: Connected = {
+            revision,
+            source: {
+              config: server,
+              session,
+              tools,
+              assertAvailable: () => {
+                const current = loadMcpRegistry(this.options.configPath).servers.find(
+                  (entry) => entry.id === server.id,
+                );
+                if (
+                  this.lifetime.signal.aborted ||
+                  this.connections.get(server.id) !== connection ||
+                  !current?.enabled ||
+                  revisionOf(current) !== revision
+                )
+                  throw new PermissionError("PERMISSION_REVISION_CHANGED");
+              },
+            },
+          };
+          this.connections.set(server.id, connection);
+          this.diagnostics.delete(server.id);
+          this.publish(currentRegistry);
+        } catch (error) {
+          if (this.connections.get(server.id)?.source.session === session)
+            this.connections.delete(server.id);
+          this.actions = this.actions.filter(
+            (action) => action.description.capability !== `mcp.${server.id}`,
+          );
+          await session?.close();
+          if (!signal.aborted) this.report(server.id, error);
+        }
+      }),
+    ]);
   }
 }

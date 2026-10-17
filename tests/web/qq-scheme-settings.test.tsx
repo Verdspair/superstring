@@ -30,6 +30,7 @@ const scheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => 
   triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: false },
   reply: { split_by_speaker: true },
   rhythm: {
+    participation_timing: "resource_window",
     merge_window_seconds: 30,
     reply_cooldown_seconds: 10,
     hourly_speech_limit: 200,
@@ -725,6 +726,44 @@ describe("Shared scheme studio", () => {
           burst_min_messages: 3,
           burst_window_seconds: 3,
         },
+      }),
+    );
+  });
+
+  it("edits participation timing mode with human-friendly options, preserves other fields on switch, and saves", async () => {
+    const { fake } = await renderPage();
+    await task("发言时机");
+
+    const timingSelect = screen.getByLabelText("自主发言评估时机") as HTMLSelectElement;
+    expect(timingSelect).toBeTruthy();
+    expect(timingSelect.value).toBe("resource_window");
+
+    // 默认展示窗口成熟即评估的派生区间提示
+    expect(screen.getByTestId("scheme-rhythm-derived-intervals")).toBeTruthy();
+    expect(screen.getByTestId("scheme-rhythm-derived-intervals").textContent).toContain(
+      "窗口成熟即评估",
+    );
+    expect(screen.getByText(/消息数 10 ~ 20 条/)).toBeTruthy();
+
+    // 切换至停顿优先
+    fireEvent.change(timingSelect, { target: { value: "quiet_preferred" } });
+    expect(timingSelect.value).toBe("quiet_preferred");
+    expect(store.getState().qqSchemeEditor?.rhythm.participation_timing).toBe("quiet_preferred");
+
+    // 确认切换后派生区间提示更新为停顿优先，且未清除或修改其他数值
+    expect(screen.getByTestId("scheme-rhythm-derived-intervals").textContent).toContain("停顿优先");
+    const targetCount = screen.getByLabelText("目标消息数") as HTMLInputElement;
+    expect(targetCount.value).toBe("15");
+
+    // 保存并验证 payload 携带正确的 participation_timing
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        rhythm: expect.objectContaining({
+          participation_timing: "quiet_preferred",
+          initiative_batch_target_count: 15,
+        }),
       }),
     );
   });

@@ -17,9 +17,9 @@ import { loadStartupLayout } from "../../src/server/startup-layout";
 
 const versionsDir = path.join(import.meta.dir, "../../migrations/versions");
 
-// Test-owned golden inventory: the exact 66 business migration files in install
+// Test-owned golden inventory: the exact 71 business migration files in install
 // order. Deliberately not derived from any production list (such as schema-gate's
-// BUSINESS_MIGRATION_FILES) so the exact-66 checks below can catch a missing or
+// BUSINESS_MIGRATION_FILES) so the exact-71 checks below can catch a missing or
 // extra production migration resource independently.
 const BUSINESS_MIGRATION_FILE_NAMES = [
   "0001_initial.sql",
@@ -88,6 +88,11 @@ const BUSINESS_MIGRATION_FILE_NAMES = [
   "0064_qq_scheme_sticker_frequency.sql",
   "0065_qq_antispam_thresholds.sql",
   "0066_jsonb_context_source_matchers.sql",
+  "0067_qq_participation_timing.sql",
+  "0068_context_allocation.sql",
+  "0069_query_plan_indexes.sql",
+  "0070_context_source_lookup.sql",
+  "0071_context_storage_metadata.sql",
 ];
 
 const resources = BUSINESS_MIGRATION_FILE_NAMES.map((name) =>
@@ -128,7 +133,7 @@ describe("explicit migration resources", () => {
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -225,7 +230,7 @@ describe("explicit migration resources", () => {
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(66);
+      expect(layout?.businessMigrationSql.length).toBe(71);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {
@@ -257,7 +262,7 @@ describe("explicit migration resources", () => {
       const calls = inspection.mock.calls.map(([filename]) => String(filename));
       const inspected = new Set(calls);
       expect(calls.filter((filename) => filename === versions)).toHaveLength(1);
-      expect(layout?.businessMigrationSql.length).toBe(66);
+      expect(layout?.businessMigrationSql.length).toBe(71);
       expect(existsSync(path.join(dir, "userdata"))).toBe(false);
       expect(inspected.has(path.join(versions, "0001_initial.sql"))).toBe(true);
       expect(

@@ -19,6 +19,7 @@ import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { contentBlocks } from "../services/content-format";
+import { resolveAuxAllocation } from "../services/memory-contract";
 import { estimateTokens } from "../services/token-estimate";
 import type {
   EvidenceQueryPage,
@@ -354,6 +355,17 @@ export class SqliteMemoryModule implements MemoryModule {
       return capacity;
     };
     const cfg = input.runtime.p5_config;
+    // 辅助分配档（0068）：本轮冻结快照的 P5 档，查询入口取一次；缺席＝既有公式原样。
+    const allocation = resolveAuxAllocation(cfg.auxiliary_allocation?.memory_retrieval_select);
+    // 自动档输入封顶 = 已知模型容量 - 输出预留（快照冻结的 capacity 已由 modelCapacity 校验，
+    // 未知即显式拒绝）；fixed 无 input_limit＝角色现值不新增门。
+    let capacityCeiling: number | null = null;
+    if (allocation.profile !== undefined && allocation.profile.mode === "auto") {
+      const actual = await modelCapacity();
+      const ceiling = actual - (allocation.outputReserved ?? 0);
+      if (ceiling < 1) fail("CONTEXT_AUX_BUDGET", "自动档的输出预留已用尽模型容量");
+      capacityCeiling = ceiling;
+    }
     const select: Selector =
       this.options.select ??
       (async (candidates, limit, instruction, bounded) => {
@@ -379,10 +391,18 @@ export class SqliteMemoryModule implements MemoryModule {
                 },
                 { role: "user", content: contextDumps(request.data) },
               ];
+              const outputCap = allocation.outputReserved ?? request.outputTokens;
+              const requestCost =
+                estimateMessages(messages as Parameters<typeof estimateMessages>[0]) +
+                estimateTokens(contextDumps(request.responseSchema));
+              if (allocation.inputLimit !== null && requestCost > allocation.inputLimit)
+                fail("CONTEXT_AUX_BUDGET", "冻结的输入上限小于完整选材请求，未截断来源");
+              if (capacityCeiling !== null && requestCost > capacityCeiling)
+                fail("CONTEXT_AUX_BUDGET", "自动档的模型容量小于完整选材请求，未截断来源");
               if (
                 estimateMessages(messages as Parameters<typeof estimateMessages>[0]) +
                   estimateTokens(contextDumps(request.responseSchema)) >
-                actual - request.outputTokens - Math.ceil(actual * cfg.safety_margin_ratio)
+                actual - outputCap - Math.ceil(actual * cfg.safety_margin_ratio)
               )
                 fail("CONTEXT_AUX_BUDGET", "辅助模型输入与输出预留超过容量，不能截断来源");
               assertCurrent();
@@ -394,7 +414,7 @@ export class SqliteMemoryModule implements MemoryModule {
                   version: "1",
                   model: input.runtime.memory_retrieval_model_name,
                   temperature: 0,
-                  maxTokens: request.outputTokens,
+                  maxTokens: outputCap,
                   responseSchema: request.responseSchema,
                 },
                 {
@@ -418,7 +438,10 @@ export class SqliteMemoryModule implements MemoryModule {
         if (!bounded) return choose(candidates);
         const actual = await modelCapacity();
         // 与 selectRecallIds 同一口径：下限 384，给先写一句话的模型留余量。
-        const output = Math.min(cfg.max_output_tokens, Math.max(384, limit * 48 + 32));
+        // 保存档的 output_reserved 硬性覆盖该公式（两种模式都硬）；缺席＝既有公式。
+        const output =
+          allocation.outputReserved ??
+          Math.min(cfg.max_output_tokens, Math.max(384, limit * 48 + 32));
         return boundedRecallIds(
           candidates,
           Math.max(

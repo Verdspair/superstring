@@ -538,7 +538,22 @@ function CategorySelect({
   );
 }
 function KnowledgeEditorPanel() {
-  const s = useSuperstringStore(),
+  const s = useSuperstringStore(
+      useShallow((state) => ({
+        agents: state.agents,
+        error: state.error,
+        knowledgeBusy: state.knowledgeBusy,
+        knowledgeCategories: state.knowledgeCategories,
+        knowledgeDirty: state.knowledgeDirty,
+        knowledgeEditor: state.knowledgeEditor,
+        knowledgeModelEditor: state.knowledgeModelEditor,
+        knowledgeSettings: state.knowledgeSettings,
+        openSettingsRoute: state.openSettingsRoute,
+        requestKnowledgeEditor: state.requestKnowledgeEditor,
+        saveKnowledgeEditor: state.saveKnowledgeEditor,
+        updateKnowledgeEditor: state.updateKnowledgeEditor,
+      })),
+    ),
     t = useTranslation().t,
     editor = s.knowledgeEditor;
   const titles = {

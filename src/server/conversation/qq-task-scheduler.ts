@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { ErrorCodeSchema } from "../../shared/contracts/errors";
 import type {
   QqConversationTaskLimits,
   QqConversationTaskStatus,
@@ -20,6 +21,7 @@ import {
   settleQqConversationTask,
 } from "../db/qq-task-repository";
 import type { Orm } from "../db/repositories";
+import { isAppError } from "../errors";
 
 /** Scheduler-internal abort reasons; message-only attribution mirrors wake-scheduler. */
 const internalFailureCodes = new Set([
@@ -414,12 +416,15 @@ export class QqTaskScheduler {
       // precedent: attribute from the cancellation reason first.
       const failure = controller.signal.aborted ? controller.signal.reason : error;
       const code = failure instanceof Error && "code" in failure ? failure.code : undefined;
+      // 归因顺序：中止/内部原因优先，其次 ErrorCodeSchema 已批准的 AppError code，再内部 message 回退。
       const errorCode =
         typeof code === "string" && internalFailureCodes.has(code)
           ? code
-          : failure instanceof Error && internalFailureCodes.has(failure.message)
-            ? failure.message
-            : "QQ_TASK_FAILED";
+          : isAppError(failure) && ErrorCodeSchema.safeParse(failure.code).success
+            ? failure.code
+            : failure instanceof Error && internalFailureCodes.has(failure.message)
+              ? failure.message
+              : "QQ_TASK_FAILED";
       fail(errorCode);
     } finally {
       clearInterval(renewal);

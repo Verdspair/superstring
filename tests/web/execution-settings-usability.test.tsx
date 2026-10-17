@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { ApiError, api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
+import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ExecutionSettings } from "../../src/web/screens/runs/execution-settings";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -191,10 +192,12 @@ describe("execution settings layout and usability", () => {
       getPermissions: vi.fn().mockResolvedValue(permissions),
       savePermissions: save,
     });
-    // 顶部主按钮保留「保存设置」；底部同源按钮用「保存」，两个入口语义相同而标签不歧义。
-    expect(screen.getAllByRole("button", { name: "保存设置" })).toHaveLength(1);
+    // 按钮文案读 i18n 语义键：顶部 connections.execution.save、底部 workspace.save，两个入口语义相同。
+    expect(screen.getAllByRole("button", { name: zh["connections.execution.save"] })).toHaveLength(
+      1,
+    );
     fireEvent.change(screen.getByLabelText("决策步数上限"), { target: { value: "64" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["connections.execution.save"] }));
     await act(async () => {});
     const [top] = save.mock.calls[0];
     expect(top.expectedRevision).toBe("pr-1");
@@ -208,7 +211,7 @@ describe("execution settings layout and usability", () => {
     fireEvent.change(screen.getByLabelText(T("connections.execution.retentionDays")), {
       target: { value: "30" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["workspace.save"] }));
     await act(async () => {});
     const [bottom] = save.mock.calls[1];
     expect(bottom.expectedRevision).toBe("pr-2");
@@ -231,8 +234,10 @@ describe("execution settings layout and usability", () => {
       savePermissions: save,
     });
     fireEvent.change(screen.getByLabelText("决策步数上限"), { target: { value: "32" } });
-    const top = screen.getByRole("button", { name: "保存设置" }) as HTMLButtonElement;
-    const bottom = screen.getByRole("button", { name: "保存" }) as HTMLButtonElement;
+    const top = screen.getByRole("button", {
+      name: zh["connections.execution.save"],
+    }) as HTMLButtonElement;
+    const bottom = screen.getByRole("button", { name: zh["workspace.save"] }) as HTMLButtonElement;
     expect(top.disabled).toBe(false);
     expect(bottom.disabled).toBe(false);
     fireEvent.click(top);
@@ -256,13 +261,13 @@ describe("execution settings layout and usability", () => {
     });
     const read = screen.getByLabelText("只读并行上限") as HTMLInputElement;
     fireEvent.change(read, { target: { value: "9" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["workspace.save"] }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
     expect(save).not.toHaveBeenCalled();
     expect(read.getAttribute("aria-invalid")).toBe("true");
     expect(read.value).toBe("9");
     expect(screen.getByLabelText("决策步数上限").getAttribute("aria-invalid")).toBe("false");
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["connections.execution.save"] }));
     await act(async () => {});
     expect(save).not.toHaveBeenCalled();
     const nav = screen.getByRole("navigation");
@@ -296,7 +301,7 @@ describe("execution settings layout and usability", () => {
     }
     const timing = screen.getByText(/数值在新运行、任务或领取时生效/);
     expect(
-      screen.getByRole("button", { name: "保存" }).compareDocumentPosition(timing) &
+      screen.getByRole("button", { name: zh["workspace.save"] }).compareDocumentPosition(timing) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
@@ -311,7 +316,7 @@ describe("execution settings layout and usability", () => {
     const read = screen.getByLabelText("只读并行上限") as HTMLInputElement;
     fireEvent.change(read, { target: { value: "9" } });
     expect(scroll).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["workspace.save"] }));
     await waitFor(() => expect(document.activeElement).toBe(read));
     expect(read.getAttribute("aria-invalid")).toBe("true");
     expect(read.value).toBe("9");
@@ -329,7 +334,7 @@ describe("execution settings layout and usability", () => {
       T("connections.execution.retentionDays"),
     ) as HTMLInputElement;
     fireEvent.change(retention, { target: { value: "4000" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["connections.execution.save"] }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
     expect(save).not.toHaveBeenCalled();
     expect(retention.getAttribute("aria-invalid")).toBe("true");
@@ -353,7 +358,7 @@ describe("execution settings layout and usability", () => {
     const steps = screen.getByLabelText("决策步数上限") as HTMLInputElement;
     fireEvent.change(steps, { target: { value: "64" } });
     expect(scroll).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["workspace.save"] }));
     const alert = await screen.findByRole("alert");
     await waitFor(() => expect(document.activeElement).toBe(alert));
     expect(alert.textContent).toContain("权限配置已变化");
@@ -390,7 +395,7 @@ describe("execution settings layout and usability", () => {
     // 256 在放宽后的上界内：两端输入都能随 CAS 保存。
     fireEvent.change(model, { target: { value: "256" } });
     fireEvent.change(provider, { target: { value: "256" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["workspace.save"] }));
     await act(async () => {});
     expect(save).toHaveBeenCalledTimes(1);
     expect(save.mock.calls[0][0].expectedRevision).toBe("pr-1");
@@ -400,13 +405,13 @@ describe("execution settings layout and usability", () => {
     });
     // 上界之外（257）拒绝且不发起保存，焦点提示留在该字段。
     fireEvent.change(model, { target: { value: "257" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["workspace.save"] }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
     expect(save).toHaveBeenCalledTimes(1);
     expect(model.getAttribute("aria-invalid")).toBe("true");
     // 下界之外（0）同样拒绝。
     fireEvent.change(model, { target: { value: "0" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    fireEvent.click(screen.getByRole("button", { name: zh["connections.execution.save"] }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
     expect(save).toHaveBeenCalledTimes(1);
   });

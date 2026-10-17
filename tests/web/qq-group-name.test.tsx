@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { SuperstringApi } from "../../src/web/api";
+import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { ConversationIdentity } from "../../src/web/screens/conversations/ConversationIdentity";
 import { ConversationIndex } from "../../src/web/screens/conversations/ConversationIndex";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -96,7 +97,7 @@ it("QQ群空输入清除备注恢复默认：提交 null 并回落QQ原名，保
   const input = screen.getByRole("textbox", { name: "会话名称" }) as HTMLInputElement;
   expect(input.value).toBe("开会群");
   fireEvent.change(input, { target: { value: "  " } });
-  const save = screen.getByRole("button", { name: "保存" }) as HTMLButtonElement;
+  const save = screen.getByRole("button", { name: zh["workspace.save"] }) as HTMLButtonElement;
   expect(save.disabled).toBe(false);
   fireEvent.click(save);
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "会话名称" })).toBeNull());

@@ -3,6 +3,10 @@ import { webAccessDraftDirty } from "../features/access/web-access-state";
 import { toDraft } from "../features/agents/draft";
 import { dirtyPages } from "../features/agents/page-drafts";
 import {
+  resetContextAllocationTarget,
+  setContextAllocationTarget,
+} from "../features/context-allocation";
+import {
   knowledgeModelDirty,
   knowledgeReadDirty,
   organizationDirty,
@@ -20,6 +24,72 @@ async function performNavigation(
   discard: boolean,
   markLanded: () => void,
 ): Promise<void> {
+  if (pending.kind === "context-allocation") {
+    const requested = pending.target;
+    const binding = requested.bindingId
+      ? get().qqBindings.find((item) => item.id === requested.bindingId)
+      : undefined;
+    const target = pending.returning
+      ? requested
+      : {
+          ...requested,
+          agentId:
+            binding?.agent_id ??
+            requested.agentId ??
+            (get().editorAgentId !== "__new__" ? get().editorAgentId : get().agents[0]?.id),
+          schemeId:
+            binding?.scheme_id ??
+            requested.schemeId ??
+            get().qqSchemeEditor?.source.id ??
+            get().qqSchemes[0]?.id,
+        };
+    if (discard) {
+      get().discardSettingsPages();
+      get().discardKnowledgeRead();
+      get().discardKnowledgeModel();
+      get().discardOrganization();
+      get().discardQqDrafts();
+      get().discardMemoryCorrection();
+    }
+    if (
+      !pending.returning &&
+      target.agentId &&
+      (target.agentId !== get().editorAgentId || !get().pageEditor) &&
+      !(await get().editAgent(target.agentId))
+    ) {
+      set({ pendingNavigation: pending, navigationConfirmOpen: true });
+      return;
+    }
+    if (
+      !pending.returning &&
+      target.schemeId &&
+      target.schemeId !== get().qqSchemeEditor?.source.id
+    )
+      get().selectQqScheme(target.schemeId);
+    if (
+      !pending.returning &&
+      target.bindingId &&
+      !(await get().selectQqGroupConfig(target.bindingId))
+    )
+      return;
+    if (pending.returning) resetContextAllocationTarget();
+    else setContextAllocationTarget(target);
+    set({
+      page: "settings",
+      settingsView: "workspace",
+      modelCapacityTarget:
+        pending.route === "external-api"
+          ? (target.capacityModel ?? null)
+          : get().modelCapacityTarget,
+      settingsRoute: pending.route ?? "context-allocation",
+      pendingNavigation: null,
+      navigationConfirmOpen: false,
+      navigationConfirmMessage: "",
+      error: null,
+    });
+    markLanded();
+    return;
+  }
   if (pending.kind === "knowledge") {
     const previous = {
       knowledgeEditor: get().knowledgeEditor,
@@ -58,7 +128,7 @@ async function performNavigation(
       error: null,
       page: "settings",
       settingsView: "workspace",
-      settingsRoute: "qq-scheme-config",
+      settingsRoute: pending.settingsRoute ?? "qq-scheme-config",
       qqSchemeView: pending.view ?? "settings",
       feedback: "",
     });
@@ -83,7 +153,7 @@ async function performNavigation(
       error: null,
       page: "settings",
       settingsView: "workspace",
-      settingsRoute: "qq-group-config",
+      settingsRoute: pending.settingsRoute ?? "qq-group-config",
       feedback: "",
     });
     markLanded();
@@ -172,6 +242,9 @@ async function performNavigation(
     };
     const changed = await get().editAgent(pending.id);
     if (changed && discard) get().discardQqDrafts();
+    if (changed && pending.settingsRoute && get().settingsRoute !== pending.settingsRoute) {
+      get().openSettingsRoute(pending.settingsRoute);
+    }
     if (!changed) {
       // 读取失败：保留原草稿/位置，并恢复 pendingNavigation 以便可重试或取消，否则弹窗无法重试。
       set({
@@ -223,6 +296,7 @@ export function createNavigationActions(
   | "requestConversationNavigation"
   | "requestConversationView"
   | "openSettingsRoute"
+  | "requestContextAllocation"
   | "openSystemComponent"
   | "openChat"
   | "openSettings"
@@ -249,8 +323,28 @@ export function createNavigationActions(
   let navigationSequence = 0;
   const markLanded = () => {
     navigationSequence += 1;
+    if (
+      get().page !== "settings" ||
+      get().settingsView !== "workspace" ||
+      get().settingsRoute !== "context-allocation"
+    ) {
+      resetContextAllocationTarget();
+    }
   };
   return {
+    requestContextAllocation: (target, route, returning = false) => {
+      if (navigationBusy(get())) return;
+      const pending: PendingNavigation = { kind: "context-allocation", target, route, returning };
+      if (hasUnsavedDrafts(get())) {
+        set({
+          pendingNavigation: pending,
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
+        });
+        return;
+      }
+      void performNavigation(get, set, pending, false, markLanded);
+    },
     requestConversationNavigation: async (id) => {
       if (navigationBusy(get())) return;
       if (
@@ -325,6 +419,10 @@ export function createNavigationActions(
       }
     },
     openSettingsRoute: (settingsRoute) => {
+      if (settingsRoute === "context-allocation") {
+        get().requestContextAllocation(get().contextAllocationTarget);
+        return;
+      }
       if (settingsRoute === "execution-ledger" || settingsRoute === "task-ledger") {
         get().requestConversationView(
           settingsRoute === "execution-ledger" ? "activity" : "tasks",
@@ -473,13 +571,17 @@ export function createNavigationActions(
         return;
       }
       if (
-        (permissionSettingsDirty(get().permissionEditor) ||
-          webAccessDraftDirty(get().webAccessSnapshot, get().webAccessDraft) ||
-          dirtyPages(get().pageEditor).length ||
-          organizationDirty(get().organizationEditor) ||
-          knowledgeModelDirty(get().knowledgeModelEditor) ||
-          knowledgeReadDirty(get().knowledgeReadEditor)) &&
-        page !== "settings"
+        ((permissionSettingsDirty(get().permissionEditor) ||
+          webAccessDraftDirty(get().webAccessSnapshot, get().webAccessDraft)) &&
+          (page !== "settings" ||
+            (get().page === "settings" &&
+              get().settingsView === "workspace" &&
+              settingsView !== "workspace"))) ||
+        (page !== "settings" &&
+          (dirtyPages(get().pageEditor).length > 0 ||
+            organizationDirty(get().organizationEditor, "all") ||
+            knowledgeModelDirty(get().knowledgeModelEditor) ||
+            knowledgeReadDirty(get().knowledgeReadEditor)))
       ) {
         set({
           pendingNavigation: { kind: "page", page, settingsView },
@@ -512,14 +614,18 @@ export function createNavigationActions(
       set({ page, settingsView, feedback: "" });
       markLanded();
     },
-    requestAgentNavigation: (id) => {
+    requestAgentNavigation: (id, settingsRoute) => {
       if (navigationBusy(get())) return;
       // 保存会清空 pageEditor，但保留 editorDraft；既有助手须重建编辑器。
       if (
         id === get().editorAgentId &&
         (id === "__new__" ? get().editorDraft !== null : get().pageEditor !== null)
-      )
+      ) {
+        if (settingsRoute && get().settingsRoute !== settingsRoute) {
+          get().openSettingsRoute(settingsRoute);
+        }
         return;
+      }
       if (
         get().dirty ||
         get().memoryCorrectionDirty ||
@@ -528,15 +634,25 @@ export function createNavigationActions(
         knowledgeReadDirty(get().knowledgeReadEditor)
       ) {
         set({
-          pendingNavigation: { kind: "agent", id },
+          pendingNavigation: {
+            kind: "agent",
+            id,
+            ...(settingsRoute ? { settingsRoute } : {}),
+          },
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("当前 Agent 有未保存修改，是否先保存再切换？"),
         });
         return;
       }
-      void get().editAgent(id);
+      void get()
+        .editAgent(id)
+        .then((ok) => {
+          if (ok && settingsRoute && get().settingsRoute !== settingsRoute) {
+            get().openSettingsRoute(settingsRoute);
+          }
+        });
     },
-    requestQqSchemeNavigation: (id, view = "settings") => {
+    requestQqSchemeNavigation: (id, view = "settings", settingsRoute) => {
       if (navigationBusy(get())) return;
       if (!get().qqSchemes.some((row) => row.id === id)) {
         // 目标不存在（含已删的脏方案）：显式报错，不改路由也不切视图，草稿原样保留。
@@ -547,13 +663,17 @@ export function createNavigationActions(
         get().qqSchemeEditor?.source.id === id &&
         get().page === "settings" &&
         get().settingsView === "workspace" &&
-        get().settingsRoute === "qq-scheme-config";
+        get().settingsRoute === (settingsRoute ?? "qq-scheme-config");
       if (sameDetail) {
         if (get().qqSchemeView !== view) set({ qqSchemeView: view });
         return;
       }
-      const pending: PendingNavigation =
-        view === "settings" ? { kind: "scheme", id } : { kind: "scheme", id, view };
+      const pending: PendingNavigation = {
+        kind: "scheme",
+        id,
+        ...(view !== "settings" ? { view } : {}),
+        ...(settingsRoute ? { settingsRoute } : {}),
+      };
       if (qqDraftChanges(get()).length) {
         set({
           pendingNavigation: pending,
@@ -564,7 +684,7 @@ export function createNavigationActions(
       }
       void performNavigation(get, set, pending, false, markLanded);
     },
-    openQqGroupConfig: (bindingId) => {
+    openQqGroupConfig: (bindingId, settingsRoute) => {
       if (navigationBusy(get())) return;
       const state = get();
       // 目录已载入时先确认真实存在，避免丢弃草稿后进入空页；未载入则让页面读取如实报失败。
@@ -585,10 +705,14 @@ export function createNavigationActions(
         (!state.qqBindingsLoaded || catalogRow?.agent_id === editor.source.binding.agent_id) &&
         state.page === "settings" &&
         state.settingsView === "workspace" &&
-        state.settingsRoute === "qq-group-config";
+        state.settingsRoute === (settingsRoute ?? "qq-group-config");
       // 同一身份已打开：不重读（重读会推进脏基线），也不改路由。
       if (sameTarget) return;
-      const pending: PendingNavigation = { kind: "group-config", bindingId };
+      const pending: PendingNavigation = {
+        kind: "group-config",
+        bindingId,
+        ...(settingsRoute ? { settingsRoute } : {}),
+      };
       // 同 route 换群同样走统一守卫：草稿未决前不换编辑器。
       if (qqDraftChanges(state).length) {
         set({
@@ -603,6 +727,13 @@ export function createNavigationActions(
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;
       const state = get();
+      if (Object.keys(state.allocationInvalidInputs).length) {
+        set({
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("请先修正方案中的无效数字，再保存。"),
+        });
+        return;
+      }
       // Saving needs settled editor baselines; ordinary read-only navigation does not.
       if (
         !pending ||
@@ -661,6 +792,7 @@ export function createNavigationActions(
         return;
       }
       const leavingWorkspace =
+        pending.kind === "context-allocation" ||
         pending.kind === "agent" ||
         pending.kind === "section" ||
         (pending.kind === "page" && pending.page !== "settings");
@@ -688,7 +820,6 @@ export function createNavigationActions(
       }
       if (
         leavingWorkspace &&
-        pending.kind === "page" &&
         knowledgeModelDirty(get().knowledgeModelEditor) &&
         !(await get().saveKnowledgeModel())
       ) {
@@ -700,9 +831,8 @@ export function createNavigationActions(
       }
       if (
         leavingWorkspace &&
-        pending.kind === "page" &&
-        organizationDirty(get().organizationEditor) &&
-        !(await get().saveOrganization())
+        organizationDirty(get().organizationEditor, "all") &&
+        !(await get().saveOrganization("all"))
       ) {
         set({
           navigationConfirmOpen: true,
@@ -752,6 +882,7 @@ export function createNavigationActions(
     confirmDiscardAndContinue: async () => {
       const pending = get().pendingNavigation;
       if (!pending || navigationBusy(get())) return;
+      set({ allocationInvalidInputs: {} });
       await performNavigation(get, set, pending, true, markLanded);
       // 切换方案不能顺带丢弃其他资料草稿。
       if (!get().pendingNavigation && pending.kind !== "scheme") get().discardQqMemoryBatchDrafts();

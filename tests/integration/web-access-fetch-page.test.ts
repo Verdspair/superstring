@@ -132,6 +132,71 @@ describe("fetchPage 正常路径", () => {
   });
 });
 
+describe("fetchPage 未读取响应体释放", () => {
+  const cases: {
+    name: string;
+    status: number;
+    headers: Record<string, string>;
+    code: string;
+    message: string;
+    requests: number;
+  }[] = [
+    {
+      name: "HTTP 失败",
+      status: 503,
+      headers: {},
+      code: "WEB_FETCH_FAILED",
+      message: "HTTP 503",
+      requests: 1,
+    },
+    {
+      name: "缺少 Location",
+      status: 302,
+      headers: {},
+      code: "WEB_FETCH_FAILED",
+      message: "缺少 Location",
+      requests: 1,
+    },
+    {
+      name: "超过重定向上限",
+      status: 302,
+      headers: { location: "/loop" },
+      code: "WEB_TOO_MANY_REDIRECTS",
+      message: `超过 ${MAX_REDIRECT_HOPS} 跳`,
+      requests: MAX_REDIRECT_HOPS + 1,
+    },
+  ];
+
+  for (const scenario of cases) {
+    for (const cancelFails of [false, true]) {
+      it(`${scenario.name} 取消无限响应体且保留错误（取消${cancelFails ? "失败" : "成功"}）`, async () => {
+        const cancellations: number[] = [];
+        const { calls, fetchImpl } = stubFetch((_call, index) => {
+          cancellations.push(0);
+          const body = new ReadableStream<Uint8Array>({
+            cancel() {
+              cancellations[index]++;
+              if (cancelFails) throw new Error("cancel failed");
+            },
+          });
+          return new Response(body, { status: scenario.status, headers: scenario.headers });
+        });
+        let failure: unknown;
+        try {
+          await fetchPage("http://example.com/loop", { fetchImpl, resolve: publicResolver });
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeDefined();
+        expect((failure as { code?: string }).code).toBe(scenario.code);
+        expect((failure as Error).message).toContain(scenario.message);
+        expect(calls).toHaveLength(scenario.requests);
+        expect(cancellations).toEqual(Array.from({ length: scenario.requests }, () => 1));
+      });
+    }
+  }
+});
+
 describe("fetchPage 重定向与 SSRF 复验", () => {
   it("相对 Location 按当前 URL 解析，每一跳都重新过 SSRF", async () => {
     const { calls, fetchImpl } = stubFetch((call) => {

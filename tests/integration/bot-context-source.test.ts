@@ -2108,12 +2108,37 @@ describe("shared Bot context source", () => {
       code: "CONTEXT_BUDGET_EXCEEDED",
       items: [],
     });
-    expect(h.diagnostics).toMatchObject([
+    expect(
+      h.diagnostics.filter(
+        (event) =>
+          typeof event !== "object" ||
+          event === null ||
+          !("kind" in event) ||
+          event.kind !== "context_budget_exceeded",
+      ),
+    ).toMatchObject([
       {
         kind: "supplemental_retrieval_failed",
         name: "memory.query",
         code: "CONTEXT_BUDGET_EXCEEDED",
       },
+    ]);
+    expect(
+      h.diagnostics.filter(
+        (event) =>
+          typeof event === "object" &&
+          event !== null &&
+          "kind" in event &&
+          event.kind === "context_budget_exceeded",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        stage: "action_result_fit",
+        unit: "bytes",
+        terminal: false,
+        code: "CONTEXT_BUDGET_EXCEEDED",
+        mode: "fixed",
+      }),
     ]);
   });
   /**

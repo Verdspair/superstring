@@ -84,6 +84,13 @@ export function createKnowledgeReadActions(
     },
     saveKnowledgeRead: async () => {
       const editor = get().knowledgeReadEditor;
+      if (
+        editor &&
+        `agent:${editor.agentId}:reading:knowledgeAgent` in get().allocationInvalidInputs
+      ) {
+        set({ error: msg("上下文预算必须为正整数。") });
+        return false;
+      }
       if (!knowledgeReadDirty(editor)) return true;
       if (
         !editor ||
@@ -144,6 +151,12 @@ export function createKnowledgeReadActions(
     },
     discardKnowledgeRead: () => {
       if (get().settingsSaving) return;
+      const id = get().knowledgeReadEditor?.agentId;
+      if (id) {
+        const { [`agent:${id}:reading:knowledgeAgent`]: _invalid, ...allocationInvalidInputs } =
+          get().allocationInvalidInputs;
+        set({ allocationInvalidInputs });
+      }
       read++;
       set({ knowledgeReadEditor: null, knowledgeReadLoading: false });
     },

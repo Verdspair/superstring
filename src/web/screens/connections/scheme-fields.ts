@@ -46,6 +46,9 @@ export type SchemeTask = (typeof QQ_SCHEME_SECTIONS)[number]["id"];
  * 取内层数值 schema 的真实边界（不猜值），由页面特判 null 原图语义。
  */
 export function fieldBounds(group: NumberEditorGroup, name: string) {
+  if (group === "rhythm" && name === "participation_timing") {
+    return { min: undefined, max: undefined, step: 1 };
+  }
   const shape = numberEditorGroups[group].shape as Record<
     string,
     | {

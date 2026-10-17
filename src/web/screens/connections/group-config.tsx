@@ -41,6 +41,7 @@ import { NativeSelect } from "../../components/ui/native-select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
 import { permissionResources } from "../../features/access/permission-state";
+import { openContextAllocation } from "../../features/context-allocation";
 import {
   type QqGroupConfigChange,
   type QqGroupConfigEditor,
@@ -66,7 +67,11 @@ import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
 import { BindingEditor } from "./binding-editor";
 import { QqMessagePreview } from "./qq-message-preview";
-import { SchemeFieldCard, StickerFrequencyOptions } from "./scheme-field-shared";
+import {
+  DerivedRhythmIntervals,
+  SchemeFieldCard,
+  StickerFrequencyOptions,
+} from "./scheme-field-shared";
 import {
   fieldBounds,
   headroomPercentBounds,
@@ -357,7 +362,7 @@ function StickerFrequencyField({
 }
 
 /** 数字字段：原文先进 store（契约拒绝的留在 rawTexts），显示以原文优先，blur 后才提示错误。 */
-function NumberField({
+export function NumberField({
   editor,
   base,
   group,
@@ -516,7 +521,7 @@ function EnumField({
 }: {
   editor: QqGroupConfigEditor;
   base: Record<string, unknown> | null;
-  group: "message_settings" | "media_input";
+  group: "message_settings" | "media_input" | "rhythm";
   name: string;
   labelKey: string;
   infoKey?: string;
@@ -1836,6 +1841,30 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   description="schemes.studio.rhythmHint"
                 >
                   <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                    {visible("rhythm", "participation_timing") && (
+                      <div className="sm:col-span-2">
+                        <EnumField
+                          editor={visibleEditor}
+                          base={baseBag("rhythm")}
+                          group="rhythm"
+                          name="participation_timing"
+                          labelKey="connections.participationTiming"
+                          infoKey="connections.participationTimingHint"
+                        />
+                      </div>
+                    )}
+                    {effective && (
+                      <DerivedRhythmIntervals
+                        timingMode={effective.rhythm.participation_timing ?? "resource_window"}
+                        mergeWindowSeconds={effective.rhythm.merge_window_seconds}
+                        batchTarget={effective.rhythm.initiative_batch_target_count}
+                        batchJitter={effective.rhythm.initiative_batch_jitter_count}
+                        timeWindowEnabled={effective.rhythm.initiative_time_window_enabled}
+                        timeTarget={effective.rhythm.initiative_time_target_seconds}
+                        timeJitter={effective.rhythm.initiative_time_jitter_seconds}
+                        testId="group-rhythm-derived-intervals"
+                      />
+                    )}
                     {visible("rhythm", "initiative_time_window_enabled") && (
                       <div className="sm:col-span-2">
                         <ThreeStateField
@@ -2037,6 +2066,53 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
+                    <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground">
+                          {t("schemes.allocation.judgementMode")}：
+                        </span>
+                        <NativeSelect
+                          className="h-7 text-xs"
+                          value={
+                            (visibleEditor.overrides.allocation as any)?.judgement?.mode ??
+                            "inherit"
+                          }
+                          onChange={(e) => {
+                            const val = e.target.value === "inherit" ? undefined : e.target.value;
+                            useSuperstringStore
+                              .getState()
+                              .patchQqGroupOverride("allocation", "judgement.mode", val as any);
+                          }}
+                        >
+                          <option value="inherit">
+                            {t("schemes.allocation.inheritScheme", {
+                              "0":
+                                (visibleEditor.source.base_scheme.allocation as any)?.judgement
+                                  ?.mode === "auto"
+                                  ? "自动"
+                                  : "固定",
+                            })}
+                          </option>
+                          <option value="fixed">{t("schemes.allocation.modeFixed")}</option>
+                          <option value="auto">{t("schemes.allocation.modeAuto")}</option>
+                        </NativeSelect>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        onClick={() =>
+                          openContextAllocation({
+                            purpose: "qq",
+                            bindingId: visibleEditor.source.binding.id,
+                            returnRoute: "qq-group-config",
+                            returnLabel: t("schemes.qq.groupConfigTitle"),
+                          })
+                        }
+                      >
+                        {t("schemes.allocation.goToCentralAllocation")}
+                      </Button>
+                    </div>
                     {visible("context", "judgement_message_limit") && (
                       <NumberField
                         editor={visibleEditor}
@@ -2080,6 +2156,52 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
                 >
                   <div className="grid gap-5 sm:grid-cols-2">
+                    <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground">
+                          {t("schemes.allocation.replyMode")}：
+                        </span>
+                        <NativeSelect
+                          className="h-7 text-xs"
+                          value={
+                            (visibleEditor.overrides.allocation as any)?.reply?.mode ?? "inherit"
+                          }
+                          onChange={(e) => {
+                            const val = e.target.value === "inherit" ? undefined : e.target.value;
+                            useSuperstringStore
+                              .getState()
+                              .patchQqGroupOverride("allocation", "reply.mode", val as any);
+                          }}
+                        >
+                          <option value="inherit">
+                            {t("schemes.allocation.inheritScheme", {
+                              "0":
+                                (visibleEditor.source.base_scheme.allocation as any)?.reply
+                                  ?.mode === "auto"
+                                  ? "自动"
+                                  : "固定",
+                            })}
+                          </option>
+                          <option value="fixed">{t("schemes.allocation.modeFixed")}</option>
+                          <option value="auto">{t("schemes.allocation.modeAuto")}</option>
+                        </NativeSelect>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        onClick={() =>
+                          openContextAllocation({
+                            purpose: "qq",
+                            bindingId: visibleEditor.source.binding.id,
+                            returnRoute: "qq-group-config",
+                            returnLabel: t("schemes.qq.groupConfigTitle"),
+                          })
+                        }
+                      >
+                        {t("schemes.allocation.goToCentralAllocation")}
+                      </Button>
+                    </div>
                     {/* 回复档条数跟随绑定助手（只读）；其他三项是本群可覆盖项。 */}
                     <ReadonlyReplyCount editor={visibleEditor} />
                     {visible("context", "reply_window_minutes") && (

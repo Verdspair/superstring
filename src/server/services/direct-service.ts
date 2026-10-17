@@ -6,7 +6,7 @@ export type StreamEvent =
   | { kind: "delta"; text: string }
   | { kind: "done"; messageId: string; createdAt: string; completedAt: string | null };
 export interface DirectServiceOptions extends WebChannelOptions {
-  onContextUsage?: (usage: ContextUsage) => void;
+  onContextUsage?: (usage: ContextUsage) => void | Promise<void>;
 }
 export class DirectService {
   private readonly channel: WebChannel;
@@ -19,9 +19,9 @@ export class DirectService {
     return (async function* () {
       let latestUsage: ContextUsage | undefined;
       let sentUsage = false;
-      const flushUsage = () => {
+      const flushUsage = async () => {
         if (!sentUsage && latestUsage) {
-          onUsage?.(latestUsage);
+          await onUsage?.(latestUsage);
           sentUsage = true;
         }
       };
@@ -30,7 +30,8 @@ export class DirectService {
           latestUsage = event.usage;
           continue;
         }
-        if (["output_delta", "failed", "cancelled", "completed"].includes(event.type)) flushUsage();
+        if (["output_delta", "failed", "cancelled", "completed"].includes(event.type))
+          await flushUsage();
         if (event.type === "output_delta") yield { kind: "delta" as const, text: event.text };
         else if (event.type === "replay") {
           if (event.message.text) yield { kind: "delta" as const, text: event.message.text };

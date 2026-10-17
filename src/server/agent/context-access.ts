@@ -303,26 +303,13 @@ export function sourceAccess(
         : "revoked";
     }
     case "qq_observation": {
+      // 已过 ref 帽的引用不读正文行（旧 scalar 在 generic 位置就返回 expired）。
+      if (refCapExpired(source, now)) return "expired";
       const row = db
         .query(`SELECT e.agent_id,t.body,t.expires_at FROM qq_events e
         LEFT JOIN qq_observation_text t ON t.event_key=e.event_key WHERE e.event_key=?`)
-        .get(source.id) as {
-        agent_id: string;
-        body: string | null;
-        expires_at: string | null;
-      } | null;
-      if (
-        !row ||
-        principal.userId !== DEFAULT_USER_ID ||
-        (owner.agentId && row.agent_id !== owner.agentId)
-      )
-        return "revoked";
-      return !row.expires_at || Date.parse(row.expires_at) <= Date.parse(now)
-        ? "expired"
-        : row.body !== null &&
-            createHash("sha256").update(row.body).digest("hex") === source.revision
-          ? "available"
-          : "revoked";
+        .get(source.id) as QqObservationBodyRow | null;
+      return observationVerdict({ row, source, owner, principal, now });
     }
     case "qq_media_note": {
       const row = db
@@ -517,6 +504,58 @@ export function assertContextSources(options: {
   }
 }
 
+type QqObservationBodyRow = { agent_id: string; body: string | null; expires_at: string | null };
+
+/** ref 自己的冻结帽是否已过：generic 位置先于授权与行读取，标量与批量共用。 */
+function refCapExpired(source: SourceRef, now: string): boolean {
+  return source.expiresAt !== undefined && Date.parse(source.expiresAt) <= Date.parse(now);
+}
+
+/**
+ * qq_observation 正文复验的纯判定（标量 sourceAccess 与批量读取共用同一谓词，逐字同序）：
+ * ref 冻结帽先于授权；缺失行/非本 principal/agent 不符 → revoked；行帽过期 → expired；
+ * 正文哈希不匹配（含正文缺失）→ revoked。不做任何回退或吞错——SQL 错误原样抛出。
+ */
+function observationVerdict(input: {
+  row: QqObservationBodyRow | null;
+  source: SourceRef;
+  owner: RunOwner;
+  principal: ContextPrincipal;
+  now: string;
+}): SourceAccess {
+  const { row, source, owner, principal, now } = input;
+  if (refCapExpired(source, now)) return "expired";
+  if (
+    !row ||
+    principal.userId !== DEFAULT_USER_ID ||
+    (owner.agentId && row.agent_id !== owner.agentId)
+  )
+    return "revoked";
+  if (!row.expires_at || Date.parse(row.expires_at) <= Date.parse(now)) return "expired";
+  return row.body !== null &&
+    createHash("sha256").update(row.body).digest("hex") === source.revision
+    ? "available"
+    : "revoked";
+}
+
+/**
+ * 一次批量读取一段连续 qq_observation 引用的正文行（键去重；单绑定 JSON 数组，无分块常量）。
+ * 空键集不发起 SQL；SQL 错误原样抛出，不回退逐条。
+ */
+function observationRows(
+  db: Database,
+  eventKeys: readonly string[],
+): Map<string, QqObservationBodyRow> {
+  const unique = [...new Set(eventKeys)];
+  if (unique.length === 0) return new Map();
+  const rows = db
+    .query(`SELECT e.event_key AS event_key,e.agent_id AS agent_id,t.body AS body,t.expires_at AS expires_at
+    FROM qq_events e LEFT JOIN qq_observation_text t ON t.event_key=e.event_key
+    WHERE e.event_key IN (SELECT value FROM json_each(?))`)
+    .all(JSON.stringify(unique)) as (QqObservationBodyRow & { event_key: string })[];
+  return new Map(rows.map((row) => [row.event_key, row]));
+}
+
 /** ContextHandle is an address. The caller must still own its run and every retained source. */
 export function inspectContext(
   db: Database,
@@ -533,12 +572,43 @@ export function inspectContext(
   let status = stored.status;
   let trimmedMessages: ModelMessage[] | null = null;
   if (status === "exact") {
-    const states = stored.sources.map((source) =>
-      isDirectSourceKind(source.kind)
-        ? sourceAccess(db, source, run.owner, principal, now, "inspection")
-        : (resolveSource?.(source, run.owner, now) ??
-          sourceAccess(db, source, run.owner, principal, now, "inspection")),
-    );
+    // 连续同 kind 的 qq_observation 段一次批量读取正文（直连域，从不咨询 resolveSource）；
+    // 其余 ref 保持逐条原表达式与求值顺序，不做跨非 observation ref 的预取或重排。
+    const states: SourceAccess[] = [];
+    for (let index = 0; index < stored.sources.length; ) {
+      const source = stored.sources[index]!;
+      if (source.kind !== "qq_observation") {
+        states.push(
+          isDirectSourceKind(source.kind)
+            ? sourceAccess(db, source, run.owner, principal, now, "inspection")
+            : (resolveSource?.(source, run.owner, now) ??
+                sourceAccess(db, source, run.owner, principal, now, "inspection")),
+        );
+        index += 1;
+        continue;
+      }
+      let end = index;
+      while (end < stored.sources.length && stored.sources[end]!.kind === "qq_observation")
+        end += 1;
+      const segment = stored.sources.slice(index, end);
+      // 已过 ref 帽的引用不进批量键集：全段都过期时不发起 SQL，与旧逐条路径一致。
+      const rows = observationRows(
+        db,
+        segment.filter((ref) => !refCapExpired(ref, now)).map((ref) => ref.id),
+      );
+      for (const ref of segment) {
+        states.push(
+          observationVerdict({
+            row: rows.get(ref.id) ?? null,
+            source: ref,
+            owner: run.owner,
+            principal,
+            now,
+          }),
+        );
+      }
+      index = end;
+    }
     // T06 memory_job：失效的 qq_member_name 只把 currentName 剪空（可选资料），事实快照/
     // 正文/关系照旧出示——name refs 不参与整体失效聚合，也不取消仍合法的 fact/body。其余
     // ref 仍按原样 revoked/expired。ref id 畸形或裁剪不能真实发生（固定前缀消息缺失/结构

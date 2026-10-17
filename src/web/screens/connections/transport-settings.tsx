@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -17,7 +18,14 @@ export function TransportSettings() {
     qqConnection: connection,
     qqAccessSaving: saving,
     saveQqSurface: save,
-  } = useSuperstringStore();
+  } = useSuperstringStore(
+    useShallow((state) => ({
+      qqSettings: state.qqSettings,
+      qqConnection: state.qqConnection,
+      qqAccessSaving: state.qqAccessSaving,
+      saveQqSurface: state.saveQqSurface,
+    })),
+  );
   const [draft, setDraft] = useQqInput("connection");
   if (!settings) return null;
   const value = draft ?? {

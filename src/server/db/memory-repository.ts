@@ -14,9 +14,11 @@
 
 import { and, asc, desc, eq, inArray, notExists, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
+import { AgentAuxiliaryAllocationSchema } from "../../shared/contracts/context-allocation";
 import { AppError, fail } from "../errors";
 import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import {
+  type ConsolidationConfig,
   DEFAULT_SCOPE,
   type MemoryDraft,
   scopeKey,
@@ -514,6 +516,25 @@ export function enqueue(
     key = scopeKey(scope, sessionId as string, agentId);
   }
 
+  // 辅助分配档（0068）：入队时从该 Agent 的 P5 冻结一次；旧配置/缺席＝不写字段，
+  // 任务重试永不注入当下活配置。解析非法即配置错误，不静默当无档。
+  const p5Raw: unknown = (() => {
+    try {
+      return JSON.parse(agent.p5Config);
+    } catch {
+      fail("INVALID_SESSION_CONFIG", "助手上下文与记忆配置无效，请检查迁移或恢复备份", 409);
+    }
+  })();
+  const auxValue = (p5Raw as { auxiliary_allocation?: unknown } | null)?.auxiliary_allocation;
+  let allocationSnapshot: ConsolidationConfig["allocation"];
+  if (auxValue === undefined || auxValue === null) {
+    allocationSnapshot = undefined;
+  } else {
+    const auxParsed = AgentAuxiliaryAllocationSchema.safeParse(auxValue);
+    if (!auxParsed.success)
+      fail("INVALID_SESSION_CONFIG", "助手上下文与记忆配置无效，请检查迁移或恢复备份", 409);
+    allocationSnapshot = auxParsed.data.memory_consolidate;
+  }
   const snapshot = {
     model:
       agent.memoryConsolidationModelName ||
@@ -528,6 +549,7 @@ export function enqueue(
     scope,
     scope_key: key,
     source_event_ids: [...eventIds].sort(),
+    ...(typeof allocationSnapshot === "undefined" ? {} : { allocation: allocationSnapshot }),
   };
 
   const result = orm

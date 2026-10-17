@@ -57,8 +57,8 @@ describe("editable QQ prompt storage and HTTP", () => {
       .map((t) => getTableConfig(t).name)
       .sort();
     expect(actual).toEqual([...BUSINESS_TABLE_NAMES].sort());
-    // 0058 adds qq_conversation_tasks on top of the historical 75 tables.
-    expect(actual).toHaveLength(76);
+    // 0070 adds the derived context source lookup to the existing business tables.
+    expect(actual).toHaveLength(77);
   });
   it("upgrades an existing v18 scheme with editable output defaults and preserved revision", () => {
     const db = new Database(":memory:");

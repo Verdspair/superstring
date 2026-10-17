@@ -270,14 +270,16 @@ describe("API section 9 original-runtime facts", () => {
           expect(response.status).toBe(200);
           const reader = response.body?.getReader();
           if (!reader) throw new Error("missing response stream");
+          // Flow control must consume earlier frames before the gateway can advance.
+          const drained = (async () => {
+            while (!(await reader.read()).done) {
+              /* drain before and after cancellation */
+            }
+          })();
           await deadline(f.gateway.entered.promise);
           if (via === "reader") await deadline(reader.cancel());
-          else {
-            controller.abort();
-            while (!(await deadline(reader.read())).done) {
-              /* drain pre-abort frames */
-            }
-          }
+          else controller.abort();
+          await deadline(drained);
           await deadline(f.gateway.aborted.promise);
           const messages = listMessages(f.business.orm, f.session.id);
           const assistant = messages.find((message) => message.role === "assistant");

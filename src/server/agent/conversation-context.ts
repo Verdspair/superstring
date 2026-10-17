@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { P5Config, RuntimeConfig } from "../../shared/contracts";
 import type { ResolvedModelContext } from "../../shared/contracts/agent";
 import { readJsonBody } from "../../shared/contracts/agent-output";
+import { contextAllocationMode } from "../../shared/contracts/context-allocation";
 import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { AgentRunRepository } from "../db/agent-run-repository";
@@ -79,6 +80,23 @@ export interface ContextDiagnostic {
   memory_ids?: string[];
   message_count?: number;
 }
+
+/**
+ * Auto-mode synchronous candidate reselect boundary. A proposal is a pure
+ * candidate: the caller verifies it (whole-request fit, joint reservations,
+ * domain quotas) and only `commit()` — or dropping the proposal without calling
+ * it — decides whether the turn's selection changes.
+ */
+export type BuilderReselect = (
+  propose: (current: {
+    historyTurnIds: readonly string[];
+    summaryIds: readonly string[];
+  }) => { historyTurnIds: readonly string[]; summaryIds: readonly string[] } | null,
+) => {
+  messages: ContextMessage[];
+  sources: SourceRef[];
+  commit(): void;
+} | null;
 
 export interface ContextBuilderOptions {
   orm: Orm;
@@ -166,6 +184,8 @@ export class ContextBuilder {
     string,
     { agentId: string; generationToken: string; assertCurrent(): void }
   >();
+  /** Auto-mode synchronous reselect boundary for the turn's frozen build locals. */
+  private readonly reselects = new Map<string, BuilderReselect>();
 
   constructor(options: ContextBuilderOptions) {
     this.orm = options.orm;
@@ -188,10 +208,24 @@ export class ContextBuilder {
     checkpoint.assertCurrent();
   }
 
+  /**
+   * The turn's auto-mode reselect boundary: propose a still-selectable history
+   * subset and receive the rebuilt, re-verified candidate (null = not possible).
+   * Undefined outside auto mode, before the build finished, or after release.
+   * The builder stays the single owner: no allocator, cache or ledger is added.
+   */
+  reselectFor(turnId: string, agentId: string): BuilderReselect | undefined {
+    this.assertCurrent(turnId, agentId);
+    return this.reselects.get(turnId);
+  }
+
   // A late stream cleanup must not remove the same turn's newer generation checkpoint.
   release(turnId: string, generationToken: string): void {
     const checkpoint = this.checkpoints.get(turnId);
-    if (checkpoint?.generationToken === generationToken) this.checkpoints.delete(turnId);
+    if (checkpoint?.generationToken === generationToken) {
+      this.checkpoints.delete(turnId);
+      this.reselects.delete(turnId);
+    }
   }
 
   private diagnostic(record: ContextDiagnostic): void {
@@ -724,14 +758,17 @@ export class ContextBuilder {
       budgets: {},
     };
     this.checkpoints.delete(args.currentTurnId);
+    this.reselects.delete(args.currentTurnId);
     try {
       return await this.buildInner(state, args);
     } catch (error) {
       // Only clean up this build's own generation: a newer generation of the same turn
       // may already have registered its checkpoint while this one was unwinding.
       const failed = this.checkpoints.get(args.currentTurnId);
-      if (failed?.generationToken === state.generationToken)
+      if (failed?.generationToken === state.generationToken) {
         this.checkpoints.delete(args.currentTurnId);
+        this.reselects.delete(args.currentTurnId);
+      }
       this.diagnostic({
         session_id: args.sessionId,
         turn_id: args.currentTurnId,
@@ -908,13 +945,16 @@ export class ContextBuilder {
       measured !== undefined && main
         ? this.priced(main, messages, originalCfg.max_output_tokens, originalCfg).inputTokens
         : estimateMessages(messages);
-    const fits = (messages: ContextMessage[]): boolean => {
-      if (measured === undefined || !main) return estimateMessages(messages) <= limit;
+    // `units` is the measurement of THIS exact candidate when the caller already
+    // priced it in the same gate evaluation; fits never skips assertCurrent() or
+    // buildFits, and never reuses a measurement across different candidates.
+    const fits = (messages: ContextMessage[], units?: number): boolean => {
+      if (measured === undefined || !main) return (units ?? estimateMessages(messages)) <= limit;
       main.assertCurrent();
-      if (
-        this.priced(main, messages, originalCfg.max_output_tokens, originalCfg).inputTokens > limit
-      )
-        return false;
+      const inputUnits =
+        units ??
+        this.priced(main, messages, originalCfg.max_output_tokens, originalCfg).inputTokens;
+      if (inputUnits > limit) return false;
       return args.buildFits === undefined ? true : args.buildFits(messages);
     };
     if (!fits([...base, question])) {
@@ -936,8 +976,7 @@ export class ContextBuilder {
         return source_ids.length ? [{ ...entry, source_ids }] : [];
       });
     };
-    const correctionMessages = (): ContextMessage[] => {
-      const corrections = retainedCorrections();
+    const correctionMessages = (corrections: typeof historicalCorrections): ContextMessage[] => {
       return corrections.length
         ? [
             {
@@ -953,14 +992,27 @@ export class ContextBuilder {
     };
     const assemble = (): ContextMessage[] => [
       ...base,
-      ...correctionMessages(),
+      ...correctionMessages(retainedCorrections()),
       ...this.summaryMessages(segments),
       ...recent.flatMap(turnMessages),
       question,
     ];
 
     const trigger = Math.trunc(limit * originalCfg.compression_trigger_ratio);
-    if (originalCfg.compression_enabled && historical.length > 0 && costOf(assemble()) > trigger) {
+    // Auto mode measures history against the real full request: a candidate that
+    // already fits is kept whole; the trigger only schedules compression when the
+    // request does NOT fit. Fixed mode keeps the trigger policy verbatim. Each
+    // gate evaluation binds ONE assembled candidate and prices it once; fits()
+    // reuses that same-candidate measurement while assertCurrent() and buildFits
+    // keep their per-call semantics.
+    const autoMode = contextAllocationMode(originalCfg.allocation) === "auto";
+    const initialGate = (): boolean => {
+      if (!originalCfg.compression_enabled || historical.length === 0) return false;
+      const candidate = assemble();
+      const units = costOf(candidate);
+      return units > trigger && !(autoMode && fits(candidate, units));
+    };
+    if (initialGate()) {
       const saved = summaries(
         this.orm,
         runtime.agent_id,
@@ -978,11 +1030,18 @@ export class ContextBuilder {
         segments.push(selected);
         recent = recent.slice(selected.turnIds.length);
       }
-      while (
-        recent.length > 0 &&
-        (!fits(assemble()) ||
-          (recent.length > originalCfg.recent_turns && costOf(assemble()) > trigger))
-      ) {
+      // One candidate per condition evaluation, priced once: fits() and the
+      // trigger comparison share that measurement; the loop body's selection
+      // changes always assemble a fresh candidate on the next evaluation.
+      const compressionIterates = (): boolean => {
+        if (recent.length === 0) return false;
+        const candidate = assemble();
+        const units = costOf(candidate);
+        return (
+          !fits(candidate, units) || (recent.length > originalCfg.recent_turns && units > trigger)
+        );
+      };
+      while (compressionIterates()) {
         const count = Math.max(
           1,
           Math.min(recent.length - originalCfg.recent_turns, originalCfg.recent_turns || 1),
@@ -1037,7 +1096,7 @@ export class ContextBuilder {
               ? limit -
                 estimateMessages([
                   ...base,
-                  ...correctionMessages(),
+                  ...correctionMessages(retainedCorrections()),
                   ...recent.flatMap(turnMessages),
                   question,
                 ])
@@ -1062,7 +1121,7 @@ export class ContextBuilder {
             ? limit -
               estimateMessages([
                 ...base,
-                ...correctionMessages(),
+                ...correctionMessages(retainedCorrections()),
                 ...recent.flatMap(turnMessages),
                 question,
               ])
@@ -1094,7 +1153,7 @@ export class ContextBuilder {
           ? limit -
             estimateMessages([
               ...base,
-              ...correctionMessages(),
+              ...correctionMessages(retainedCorrections()),
               ...recent.flatMap(turnMessages),
               question,
             ])
@@ -1118,6 +1177,132 @@ export class ContextBuilder {
 
     // Long-term material is only available through tools; corrections constrain retained history.
     const result = assemble();
+
+    const publishUsage = (messages: ContextMessage[]): void => {
+      const marginal = (messages: ContextMessage[]) => estimateMessages(messages) - 3;
+      const inputUnits = estimateMessages(messages);
+      // Token mode reports the measured whole request; legacy fields stay byte-domain
+      // and stay the estimate they were. The final gateway recheck prices the exact body.
+      const modelTokens =
+        measured !== undefined && main
+          ? this.priced(main, messages, originalCfg.max_output_tokens, originalCfg)
+          : undefined;
+      if (modelTokens !== undefined && modelTokens.inputTokens > limit) {
+        fail("CONTEXT_BUDGET_EXCEEDED", "实际请求的文本估算超过模型输入预算");
+      }
+      args.onUsage?.({
+        session_id: args.sessionId,
+        turn_id: args.currentTurnId,
+        model: runtime.model_name,
+        estimator: "utf8_bytes_plus_message_overhead",
+        capacity,
+        input_units: inputUnits,
+        input_limit: limit,
+        output_reserved: originalCfg.max_output_tokens,
+        safety_reserved: Math.ceil(capacity * originalCfg.safety_margin_ratio),
+        // Byte-domain legacy headroom against the byte budget; model_tokens is
+        // authoritative when present and this approximation is not a token count.
+        remaining: Math.max(0, limit - inputUnits),
+        ...(modelTokens === undefined
+          ? {}
+          : {
+              model_tokens: {
+                method: "serialized_chat_token_estimate" as const,
+                encoding: main?.tokenizerEncoding as NonNullable<
+                  ModelContextBudget["tokenizerEncoding"]
+                >,
+                input_tokens: modelTokens.inputTokens,
+                input_limit: limit,
+                media_state: modelTokens.mediaState,
+              },
+            }),
+        components: {
+          instructions: marginal(base),
+          recent_history: marginal(recent.flatMap(turnMessages)),
+          summaries: marginal(this.summaryMessages(segments)),
+          long_term_memory: marginal(correctionMessages(retainedCorrections())),
+          knowledge: 0,
+          current_question: marginal([question]),
+          protocol: 3,
+        },
+      });
+    };
+    /**
+     * Synchronous candidate-reselect boundary (auto mode only). The builder owns
+     * the immutable history pair material, corrections, summary segments and their
+     * sources; each call returns a pure proposal {messages, sources, commit()} —
+     * assembly, retained corrections and checkpoint sources are precomputed, and
+     * only commit() swaps the selection, re-registers the checkpoint and republishes
+     * sources. A proposal the caller rejects (no commit) changes nothing. No new
+     * allocator, cache or ledger: this closes over the same buildInner locals.
+     */
+    type ReselectProposal = {
+      messages: ContextMessage[];
+      sources: SourceRef[];
+      /** The only commit point: assembly, checkpoint and sources change together. */
+      commit(): void;
+    };
+    const reselect = autoMode
+      ? (
+          propose: (current: {
+            historyTurnIds: readonly string[];
+            summaryIds: readonly string[];
+          }) => { historyTurnIds: readonly string[]; summaryIds: readonly string[] } | null,
+        ): ReselectProposal | null => {
+          const proposed = propose({
+            historyTurnIds: recent.map((turn) => turn.id),
+            summaryIds: segments.map((segment) => segment.id),
+          });
+          if (proposed === null) return null;
+          const keep = new Set<string>(proposed.historyTurnIds);
+          const keepSummaries = new Set<string>(proposed.summaryIds);
+          const nextSegments = segments.filter((segment) => keepSummaries.has(segment.id));
+          const nextRecent = recent.filter((turn) => keep.has(turn.id));
+          const candidateRetained = new Set<string>([
+            ...nextRecent.map((turn) => turn.id),
+            ...nextSegments
+              .filter((segment) => segment.content.facts.length > 0)
+              .flatMap((segment) => segment.turnIds),
+          ]);
+          const candidateCorrections = historicalCorrections.flatMap((entry) => {
+            const source_ids = entry.source_ids.filter((id) => candidateRetained.has(id));
+            return source_ids.length ? [{ ...entry, source_ids }] : [];
+          });
+          const candidateMessages: ContextMessage[] = [
+            ...base,
+            ...correctionMessages(candidateCorrections),
+            ...this.summaryMessages(nextSegments),
+            ...nextRecent.flatMap(turnMessages),
+            question,
+          ];
+          const candidateSources = [
+            ...turnSources(this.orm, [args.currentTurnId, ...candidateRetained]),
+            ...candidateCorrections.map((entry) => ({
+              kind: "memory" as const,
+              id: entry.id,
+              revision: entry.revision,
+            })),
+          ];
+          return {
+            messages: candidateMessages,
+            sources: candidateSources,
+            commit: () => {
+              this.assertCurrent(args.currentTurnId, runtime.agent_id);
+              assertSources(candidateSources);
+              segments = nextSegments;
+              recent = nextRecent;
+              const retainedIds = retainedTurnIds();
+              const checkpoint = checkpointFor(
+                historical.filter((turn) => retainedIds.has(turn.id)),
+                retainedCorrections(),
+              );
+              this.checkpoints.set(args.currentTurnId, checkpoint);
+              args.onSources?.(checkpoint.sources);
+              publishUsage(candidateMessages);
+            },
+          };
+        }
+      : null;
 
     // Legacy mode re-probes the loaded capacity as before. Token mode instead
     // re-verifies the frozen descriptor, so a second capacity source cannot
@@ -1150,53 +1335,8 @@ export class ContextBuilder {
     checkpoint.assertCurrent();
     this.checkpoints.set(args.currentTurnId, checkpoint);
     args.onSources?.(checkpoint.sources);
-    const marginal = (messages: ContextMessage[]) => estimateMessages(messages) - 3;
-    const inputUnits = estimateMessages(result);
-    // Token mode reports the measured whole request; legacy fields stay byte-domain
-    // and stay the estimate they were. The final gateway recheck prices the exact body.
-    const modelTokens =
-      measured !== undefined && main
-        ? this.priced(main, result, originalCfg.max_output_tokens, originalCfg)
-        : undefined;
-    if (modelTokens !== undefined && modelTokens.inputTokens > limit) {
-      fail("CONTEXT_BUDGET_EXCEEDED", "实际请求的文本估算超过模型输入预算");
-    }
-    args.onUsage?.({
-      session_id: args.sessionId,
-      turn_id: args.currentTurnId,
-      model: runtime.model_name,
-      estimator: "utf8_bytes_plus_message_overhead",
-      capacity,
-      input_units: inputUnits,
-      input_limit: limit,
-      output_reserved: originalCfg.max_output_tokens,
-      safety_reserved: Math.ceil(capacity * originalCfg.safety_margin_ratio),
-      // Byte-domain legacy headroom against the byte budget; model_tokens is
-      // authoritative when present and this approximation is not a token count.
-      remaining: Math.max(0, limit - inputUnits),
-      ...(modelTokens === undefined
-        ? {}
-        : {
-            model_tokens: {
-              method: "serialized_chat_token_estimate" as const,
-              encoding: main?.tokenizerEncoding as NonNullable<
-                ModelContextBudget["tokenizerEncoding"]
-              >,
-              input_tokens: modelTokens.inputTokens,
-              input_limit: limit,
-              media_state: modelTokens.mediaState,
-            },
-          }),
-      components: {
-        instructions: marginal(base),
-        recent_history: marginal(recent.flatMap(turnMessages)),
-        summaries: marginal(this.summaryMessages(segments)),
-        long_term_memory: marginal(correctionMessages()),
-        knowledge: 0,
-        current_question: marginal([question]),
-        protocol: 3,
-      },
-    });
+    if (reselect !== null) this.reselects.set(args.currentTurnId, reselect);
+    publishUsage(result);
     this.diagnostic({
       session_id: args.sessionId,
       turn_id: args.currentTurnId,

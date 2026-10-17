@@ -112,6 +112,9 @@ export function readEffectiveQqScheme(orm: Orm, binding: QqBinding): QqSchemeRow
       // 从这两列解析，没有列覆盖的差异就不会生效。
       messageSettings: merged.message_settings,
       mediaInput: merged.media_input,
+      // 0068 的分配组同形：本群差异里的模式落列，runtime 的 schemeAllocation 从该列解析；
+      // 差异缺席时保持基础行的列值（稀疏继承）。
+      allocation: merged.allocation,
     }),
   };
 }

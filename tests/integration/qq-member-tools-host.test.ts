@@ -127,4 +127,49 @@ describe("QQ members through the real host and context fitter", () => {
       expect(port.listCalls()).toBe(0);
     },
   );
+
+  it.each(["qq.members.query", "qq.members.read"] as const)(
+    "rejects a roster-only mention as bounded feedback, not a fatal source failure (%s)",
+    async (action) => {
+      const port = memberPort();
+      const h = createOneBotHarness({
+        memberTools: port.memberTools,
+        model: [
+          decideInvoke(action, action.endsWith("read") ? { userId: "20003" } : {}),
+          decideInline("20002", "rejected candidate", undefined, undefined, ["20003"]),
+          decideInline("20002", "corrected candidate", undefined, undefined, ["20002"]),
+        ],
+      });
+      h.receive({ id: "104", speaker: "20002", text: "question", addressed: true });
+      await h.activate("direct_reply");
+      expect(
+        h.runs.listRuns({ ownerKind: "conversation", ownerId: h.conversationId })[0]?.status,
+      ).toBe("completed");
+      expect(h.model?.calls).toHaveLength(3);
+      const nextMessages = h.model?.receivedMessages[2]?.messages ?? [];
+      const feedback = nextMessages
+        .flatMap((message) =>
+          message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+        )
+        .join("\n");
+      expect(feedback).toContain("mentionIds");
+      expect(feedback).toContain("CONTEXT_INVALID_SELECTION");
+      const outboxPayload = JSON.stringify(h.db.query("SELECT payload FROM outbound_parts").all());
+      expect(outboxPayload).not.toContain("rejected candidate");
+      expect(outboxPayload).toContain("corrected candidate");
+      await h.deliver();
+      expect(h.sent).toHaveLength(1);
+      const at = h.sent[0]?.message.find((part) => part.type === "at") as
+        | { data?: { qq?: string } }
+        | undefined;
+      expect(at?.data?.qq).toBe("20002");
+      expect(
+        h.sent[0]?.message.some(
+          (part) => (part.data as { qq?: string } | undefined)?.qq === "20003",
+        ),
+      ).toBe(false);
+      expect(port.listCalls()).toBe(1);
+      expect(port.detailCalls()).toBe(action.endsWith("read") ? 1 : 0);
+    },
+  );
 });

@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import { codePointLength, isBlank, unicodeStrip } from "../../shared/contracts/code-point-string";
+import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import { fail } from "../errors";
 import { isAlnum } from "./alnum-table";
 import { fullCasefold } from "./casefold-table";
@@ -216,6 +217,33 @@ export interface ConsolidationConfig {
   template_version: string;
   scope: string;
   scope_key: string;
+  /**
+   * 辅助分配档（0068，AUX-CONTRACT-FROZEN）：入队时从 agents.p5_config 冻结，重试不读活配置；
+   * 缺席＝本用途保持调用方现行为（无输出帽、无输入门）。output_reserved 两种模式下都是
+   * 发送给模型的 max_tokens；input_limit 用本应用现有的估算输入单位（utf8_bytes_plus_message_overhead）。
+   */
+  allocation?: AuxiliaryAllocationProfile;
+}
+
+/**
+ * 已冻结档对本用途的实际效果（缺席＝既有调用方行为，不发明缺省值）。
+ * input_limit 是硬门：整理输入不可分，超限按 CONTEXT_AUX_BUDGET 拒绝，绝不截断。
+ * mode 由调用方按角色语义执行（auto＝已知模型容量封顶）；这里只解构已校验的值。
+ */
+export function resolveAuxAllocation(allocation: AuxiliaryAllocationProfile | undefined): {
+  profile: AuxiliaryAllocationProfile | undefined;
+  mode: "fixed" | "auto" | undefined;
+  inputLimit: number | null;
+  outputReserved: number | null;
+} {
+  if (!allocation)
+    return { profile: undefined, mode: undefined, inputLimit: null, outputReserved: null };
+  return {
+    profile: allocation,
+    mode: allocation.mode,
+    inputLimit: allocation.input_limit ?? null,
+    outputReserved: allocation.output_reserved ?? null,
+  };
 }
 
 /**

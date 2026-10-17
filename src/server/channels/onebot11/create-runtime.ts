@@ -486,11 +486,13 @@ export function createOneBotConversationRuntime(options: {
       if (limits !== null && !canAcceptQqChimingOpportunity(orm, wake.conversationId, limits))
         return false;
       if (wake.attempts > 0) return true;
+      // Missing configuration still enters the existing failure settlement path.
+      if (limits === null) return true;
       return (
         adapter.chimingActivationFacts(
           wake.conversationId,
           Math.floor(Date.parse(claimAt) / 1000),
-        ) ?? true
+        ) ?? false
       );
     },
     async activate(wake) {

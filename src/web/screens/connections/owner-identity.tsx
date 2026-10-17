@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import type { QqOwnerResponse } from "../../../shared/contracts/qq";
 import { Button } from "../../components/ui/button";
 import {
@@ -15,7 +16,12 @@ import { useSuperstringStore } from "../../store";
 
 export function OwnerIdentity() {
   const { t } = useTranslation();
-  const { apiClient, qqSettings } = useSuperstringStore();
+  const { apiClient, qqSettings } = useSuperstringStore(
+    useShallow((state) => ({
+      apiClient: state.apiClient,
+      qqSettings: state.qqSettings,
+    })),
+  );
   const [owner, setOwner] = useState<QqOwnerResponse | null>(null);
   const [peer, setPeer] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);

@@ -143,6 +143,16 @@ export function isDatabaseError(value: unknown): value is DatabaseError {
   );
 }
 
+/**
+ * 永久观察身份/事实冲突：同一 event_key 描述了不同消息，或同一消息的既有事实被要求改写。
+ * 这是 intake 唯一会降级为 duplicate 丢弃的失败类别；其余存储失败不得冒充它。
+ */
+export class QqObservationConflictError extends AppError {
+  constructor(message: string) {
+    super("MEMORY_SOURCE_INVALID", message, 409);
+  }
+}
+
 /** Validation failure → 422 `VALIDATION_ERROR`. */
 export class ValidationError extends AppError {
   constructor(message = "请求参数不合法") {

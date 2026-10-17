@@ -35,7 +35,9 @@ export type QqGroupConfigGroupKey =
   /** 0052：消息设置组（引用模式、层数、时间模式、时区），逐字段稀疏。 */
   | "message_settings"
   /** 0052：图片输入组（模式、阶段、图数、规格），stages 内逐字段稀疏。 */
-  | "media_input";
+  | "media_input"
+  /** 0068：统一上下文分配（判断模式、回复模式），逐字段稀疏。 */
+  | "allocation";
 
 /**
  * 一次编辑传入的值：开关传 boolean；数字字段传输入框原文（非法进 rawTexts，保存被拦）；
@@ -126,6 +128,9 @@ const baseGroupOf = (scheme: QqSchemeResponse, group: string): Record<string, un
  * 钉住判定、变更预览与刷新合并共用：嵌套字段的存在性以 stages 对象里的键为准。
  */
 function baseFieldExists(scheme: QqSchemeResponse, group: string, name: string): boolean {
+  if (group === "allocation") {
+    return name === "judgement.mode" || name === "reply.mode";
+  }
   if (group === "media_input") {
     const field = mediaInputFieldName(name);
     if (field.kind === "stage") {
@@ -142,6 +147,12 @@ function baseFieldExists(scheme: QqSchemeResponse, group: string, name: string):
 
 /** 基础方案里的字段现值（含嵌套 stages；组不存在时返回 undefined）。 */
 function baseFieldValue(scheme: QqSchemeResponse, group: string, name: string): unknown {
+  if (group === "allocation") {
+    const alloc = scheme.allocation;
+    if (name === "judgement.mode") return alloc?.judgement?.mode ?? "fixed";
+    if (name === "reply.mode") return alloc?.reply?.mode ?? "fixed";
+    return undefined;
+  }
   if (group === "media_input") {
     const field = mediaInputFieldName(name);
     if (field.kind === "stage") {
@@ -220,11 +231,25 @@ function sanitizeOverrides(
   const next: OverridesBag = {};
   for (const [group, fields] of Object.entries(bag)) {
     if (!fields || typeof fields !== "object") continue;
-    if (!baseGroupOf(scheme, group)) continue;
+    // 0068：DTO 层面 allocation 是可选组——旧方案快照可以整组缺席（读侧按 QQ_ALLOCATION_DEFAULT
+    // 兜底），不能因为基础方案里没有这一组就把本群的合法模式覆盖整组丢掉；档位校验在下面做。
+    if (!baseGroupOf(scheme, group) && group !== "allocation") continue;
     const copied: Record<string, unknown> = {};
     for (const [name, value] of Object.entries(fields)) {
       if (value === undefined) continue;
       if (RETIRED_OVERRIDE_FIELDS.has(`${group}.${name}`)) continue;
+      if (group === "allocation") {
+        if (
+          (name === "judgement" || name === "reply") &&
+          value &&
+          typeof value === "object" &&
+          "mode" in value &&
+          (value.mode === "fixed" || value.mode === "auto")
+        ) {
+          copied[name] = { mode: value.mode };
+        }
+        continue;
+      }
       if (group === "media_input" && name === "stages") {
         // 嵌套 stages 逐字段过滤与拷贝；全空＝没有覆盖，整组去掉。
         const stages = (value as Record<string, unknown>) ?? {};
@@ -437,7 +462,8 @@ export function qqGroupConfigChanges(
   const base = editor.source.base_scheme;
   for (const group of new Set([...Object.keys(recordBag), ...Object.keys(localBag)])) {
     const groupBase = baseGroupOf(base, group);
-    if (!groupBase) continue;
+    // 0068：旧快照的基础方案可整组缺 allocation（变更行兜底值已是 fixed），同 sanitize 口径不放行整组丢弃。
+    if (!groupBase && group !== "allocation") continue;
     const recordFields = recordBag[group] ?? {};
     const localFields = localBag[group] ?? {};
     const names = new Set<string>([...Object.keys(recordFields), ...Object.keys(localFields)]);
@@ -448,7 +474,49 @@ export function qqGroupConfigChanges(
       for (const phase of new Set([...Object.keys(recordStages), ...Object.keys(localStages)]))
         names.add(`stages.${phase}`);
     if (group === "media_input") names.delete("stages");
+    if (group === "allocation") {
+      names.delete("judgement");
+      names.delete("reply");
+      if (
+        (recordFields.judgement as Record<string, unknown> | undefined)?.mode !== undefined ||
+        (localFields.judgement as Record<string, unknown> | undefined)?.mode !== undefined
+      ) {
+        names.add("judgement.mode");
+      }
+      if (
+        (recordFields.reply as Record<string, unknown> | undefined)?.mode !== undefined ||
+        (localFields.reply as Record<string, unknown> | undefined)?.mode !== undefined
+      ) {
+        names.add("reply.mode");
+      }
+    }
     for (const name of names) {
+      if (group === "allocation") {
+        const [part, prop] = name.split(".");
+        const recordVal = (recordFields[part] as Record<string, unknown> | undefined)?.[prop];
+        const localVal = (localFields[part] as Record<string, unknown> | undefined)?.[prop];
+        const recorded = recordVal !== undefined;
+        const pinned = localVal !== undefined;
+        if (recorded === pinned && (!recorded || recordVal === localVal)) continue;
+        const before = recorded
+          ? recordVal
+          : ((base.allocation as Record<string, Record<string, unknown>> | undefined)?.[part]?.[
+              prop
+            ] ?? "fixed");
+        const after = pinned
+          ? localVal
+          : ((base.allocation as Record<string, Record<string, unknown>> | undefined)?.[part]?.[
+              prop
+            ] ?? "fixed");
+        changes.push({
+          kind: "override",
+          group: "allocation",
+          field: name,
+          before: String(before),
+          after: String(after),
+        });
+        continue;
+      }
       const stagePhase =
         group === "media_input" && name.startsWith("stages.")
           ? name.slice("stages.".length)
@@ -515,6 +583,13 @@ export function qqGroupConfigHasInvalidInputs(
   if (!effective || !QqSchemeRhythmSchema.safeParse(effective.rhythm).success) {
     return true;
   }
+  if (
+    effective.rhythm.participation_timing !== undefined &&
+    effective.rhythm.participation_timing !== "resource_window" &&
+    effective.rhythm.participation_timing !== "quiet_preferred"
+  ) {
+    return true;
+  }
   // 显式 overrides 中 triggers 禁止双 true
   if (
     isBothTrueInteractionPair({
@@ -572,6 +647,32 @@ function patchOverrideFields(
       overrides: withOverride(editor.overrides, group, name, null),
       rawTexts: withoutRaw(editor.rawTexts, key),
     };
+  }
+  // 0068 统一上下文分配：judgement.mode 与 reply.mode 逐项稀疏改写，undefined 取消跟随基线。
+  if (group === "allocation") {
+    if (value !== undefined && value !== "fixed" && value !== "auto") return editor;
+    const [part, prop] = name.split(".");
+    if ((part === "judgement" || part === "reply") && prop === "mode") {
+      const currentAlloc = (editor.overrides as Record<string, unknown>).allocation as
+        | Record<string, Record<string, unknown> | undefined>
+        | undefined;
+      const currentPart = currentAlloc?.[part];
+      const nextPart = value === undefined ? undefined : { ...currentPart, mode: value };
+      const nextAlloc = { ...(currentAlloc ?? {}), [part]: nextPart };
+      if (!nextAlloc.judgement && !nextAlloc.reply) {
+        return {
+          ...editor,
+          overrides: withoutGroup(editor.overrides, "allocation"),
+          rawTexts: withoutRaw(editor.rawTexts, key),
+        };
+      }
+      return {
+        ...editor,
+        overrides: withGroup(editor.overrides, "allocation", nextAlloc as Record<string, unknown>),
+        rawTexts: withoutRaw(editor.rawTexts, key),
+      };
+    }
+    return editor;
   }
   if (value === undefined) {
     let nextOverrides = withoutOverride(editor.overrides, group, name);
@@ -696,7 +797,9 @@ export function mergeQqGroupConfigEditor(
   ]);
   for (const group of groups) {
     const base = baseGroupOf(fresh.base_scheme, group);
-    if (!base) continue;
+    // 0068：旧快照的基础方案可以整组缺 allocation（读侧 QQ_ALLOCATION_DEFAULT 兜底），
+    // 不能因此在三路合并里整组丢掉；档位校验在下面的 allocation 分支里做。
+    if (!base && group !== "allocation") continue;
     const recordFields = recordBag[group] ?? {};
     const localFields = localBag[group] ?? {};
     const freshFields = freshBag[group] ?? {};
@@ -732,6 +835,38 @@ export function mergeQqGroupConfigEditor(
       bag[group] = { ...(bag[group] ?? {}), [key]: value };
     };
     for (const name of fields) {
+      // 0068 分配组是嵌套对象（judgement/reply 各持 mode）：点路径展平后按"档存在"而不是
+      // 引用相等参与三路合并，与 sanitizeOverrides/qqGroupConfigChanges 同一口径。
+      const allocKey =
+        group === "allocation" && (name === "judgement" || name === "reply") ? name : undefined;
+      const allocRecord =
+        allocKey === undefined
+          ? undefined
+          : (recordFields[allocKey] as { mode?: unknown } | undefined);
+      const allocLocal =
+        allocKey === undefined
+          ? undefined
+          : (localFields[allocKey] as { mode?: unknown } | undefined);
+      const allocFresh =
+        allocKey === undefined
+          ? undefined
+          : (freshFields[allocKey] as { mode?: unknown } | undefined);
+      const allocValid = (value: { mode?: unknown } | undefined) =>
+        value !== undefined && (value.mode === "fixed" || value.mode === "auto");
+      if (allocKey !== undefined) {
+        // 与标量同一三路口径：本地改过（含取消钉住）保留本地方向，没动过的档跟随最新答案。
+        const recorded = allocKey in recordFields;
+        const local = allocKey in localFields;
+        const freshPinned = allocKey in freshFields;
+        const localChanged =
+          recorded !== local || (recorded && local && allocRecord?.mode !== allocLocal?.mode);
+        if (localChanged) {
+          if (local && allocValid(allocLocal)) takeInto(next, allocKey, { mode: allocLocal?.mode });
+        } else if (freshPinned && allocValid(allocFresh)) {
+          takeInto(next, allocKey, { mode: allocFresh?.mode });
+        }
+        continue;
+      }
       const stageKey =
         group === "media_input" && name.startsWith("stages.")
           ? name.slice("stages.".length)
@@ -889,8 +1024,15 @@ export function createQqGroupConfigActions(
         state.qqGroupConfigBindingId ?? state.qqGroupConfigEditor?.source.binding.id;
       if (!bindingId || state.qqGroupConfigSaving) return false;
       const wasDirty = qqGroupConfigDirty(state.qqGroupConfigEditor);
+      const switching =
+        state.qqGroupConfigEditor?.schemeId !== undefined &&
+        state.qqGroupConfigEditor.schemeId !== state.qqGroupConfigEditor.source.base_scheme.id;
       const operation = beginRead();
       try {
+        if (switching) {
+          const catalogOk = await get().loadQqSchemes({ refresh: true, editor: false });
+          if (!isCurrentReadApi(operation) || !catalogOk) return false;
+        }
         const fresh = await operation.api.getQqGroupConfig(bindingId);
         if (!isCurrentReadApi(operation)) return false;
         set((current) => {

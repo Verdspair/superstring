@@ -96,7 +96,7 @@ describe("0063 media request identity", () => {
         .all();
       const columnsBefore = db.query("PRAGMA table_info(qq_media_read_tasks)").all();
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
       // Physical tail column exists; every old column keeps its position and definition.
       const columnsAfter = db.query("PRAGMA table_info(qq_media_read_tasks)").all() as Array<{
         name: string;
@@ -205,7 +205,7 @@ describe("0063 media request identity", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 62 });
       // The real 66-length chain upgrades the same database cleanly.
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 66 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
       expect(
         db.query("SELECT request_id FROM qq_media_read_tasks WHERE id='t-old-baseline'").get(),
       ).toEqual({ request_id: null });

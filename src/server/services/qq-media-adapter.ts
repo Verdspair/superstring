@@ -17,7 +17,9 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
+import { estimateMessages } from "../modules/memory-query";
 import { prepareQqImage } from "./qq-image-codec";
 import type { QqMediaReadAdapter } from "./qq-media-reader";
 
@@ -50,6 +52,17 @@ export interface QqMediaAdapterOptions {
   /** §7.1's 可改 sampling, from the conversation's scheme; omitted means the defaults above. */
   readonly frames?: number;
   readonly maxDimension?: number;
+  /**
+   * 全局辅助分配档（0068，qq_media_describe）：由持有 orm 的调用方在本操作装配点读取一次
+   * 传入。output_reserved＝每次 read 的硬 max_tokens；缺席＝既有行为（不发送输出帽）。
+   * 图片成本未知仍未知：input_limit 只按可计量的文本部分评估，不伪造图片担保。
+   */
+  readonly auxiliary_allocation?: AuxiliaryAllocationProfile;
+  /**
+   * 已知容量读取（可选）：auto 档的输入封顶需要它。缺席时 auto 档显式失败
+   * （CONTEXT_CAPACITY_UNKNOWN），绝不把 auto 假装成无门。
+   */
+  readonly loadedContextCapacity?: (model: string) => Promise<number | null>;
 }
 
 /** The frames to show for an animation, or the picture itself for a still (§7.4). */
@@ -168,8 +181,27 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
       // `cancelled` error (carrying the caller's reason) is rethrown, not swallowed.
       signalForPrepare.throwIfAborted();
       const sampledPrompt = `${prompt}${samplingSuffix(sourceId, images)}`;
+      const allocation = options.auxiliary_allocation;
+      if (allocation) {
+        const textUnits = estimateMessages([{ role: "user", content: sampledPrompt }]);
+        if (allocation.input_limit != null && textUnits > allocation.input_limit)
+          throw new Error("CONTEXT_AUX_BUDGET");
+        if (allocation.mode === "auto") {
+          // 自动档按真实可计量部分对照已知容量；容量来源缺失即显式失败，不做假无门。
+          if (!options.loadedContextCapacity) throw new Error("CONTEXT_CAPACITY_UNKNOWN");
+          const capacity = await options.loadedContextCapacity(model);
+          if (capacity === null || !Number.isSafeInteger(capacity) || capacity < 1)
+            throw new Error("CONTEXT_CAPACITY_UNKNOWN");
+          const ceiling = capacity - (allocation.output_reserved ?? 0);
+          if (textUnits > ceiling) throw new Error("CONTEXT_AUX_BUDGET");
+        }
+      }
       return options.agentRuntime.completeVisionLeaf(
-        { id: "media.describe", version: "1" },
+        {
+          id: "media.describe",
+          version: "1",
+          ...(allocation?.output_reserved != null ? { maxTokens: allocation.output_reserved } : {}),
+        },
         {
           model,
           prompt: sampledPrompt,

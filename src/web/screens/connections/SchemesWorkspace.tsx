@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight, ListTree, Plus, RefreshCw, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/react/shallow";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -27,6 +28,7 @@ import {
   schemeRowsOf,
 } from "../../workspace/scheme-catalog";
 import type { SettingsRoute } from "../../workspace/settings-routes";
+import { ContextAllocationWorkspace } from "./ContextAllocationWorkspace";
 import { QqGroupConfigPage } from "./group-config";
 import { QqAppManagement, type QqAppView } from "./qq-app-management";
 import { QqGroupDirectory } from "./qq-group-directory";
@@ -58,7 +60,27 @@ export function SchemeDirectory({
   active?: boolean;
 } = {}) {
   const { t, i18n } = useTranslation();
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      qqSchemeSaving: state.qqSchemeSaving,
+      qqSchemesLoading: state.qqSchemesLoading,
+      qqInputs: state.qqInputs,
+      qqSchemeEditor: state.qqSchemeEditor,
+      loadQqSchemes: state.loadQqSchemes,
+      loadQqBindings: state.loadQqBindings,
+      selectQqScheme: state.selectQqScheme,
+      settingsRoute: state.settingsRoute,
+      qqSchemesLoaded: state.qqSchemesLoaded,
+      qqSchemes: state.qqSchemes,
+      createQqScheme: state.createQqScheme,
+      saveQqScheme: state.saveQqScheme,
+      qqBindingsLoaded: state.qqBindingsLoaded,
+      qqBindings: state.qqBindings,
+      openSettingsRoute: state.openSettingsRoute,
+      error: state.error,
+      qqBindingsError: state.qqBindingsError,
+    })),
+  );
   const [query, setQuery] = useState("");
   const [appFilter, setAppFilter] = useState("all");
   const [usageFilter, setUsageFilter] = useState("all");
@@ -421,7 +443,20 @@ export function SchemeDirectory({
 
 function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean }) {
   const { t } = useTranslation();
-  const s = useSuperstringStore();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      qqSchemeSaving: state.qqSchemeSaving,
+      qqAccessSaving: state.qqAccessSaving,
+      qqSchemesLoading: state.qqSchemesLoading,
+      qqSchemeView: state.qqSchemeView,
+      qqSchemeEditor: state.qqSchemeEditor,
+      qqSchemeUsage: state.qqSchemeUsage,
+      openSettingsRoute: state.openSettingsRoute,
+      requestQqSchemeNavigation: state.requestQqSchemeNavigation,
+      loadQqSchemes: state.loadQqSchemes,
+      qqSchemeUsageError: state.qqSchemeUsageError,
+    })),
+  );
   const busy = s.qqSchemeSaving || s.qqAccessSaving || s.qqSchemesLoading;
   const view: "settings" | "bindings" = s.qqSchemeView === "bindings" ? "bindings" : "settings";
   const schemeId = s.qqSchemeEditor?.source.id ?? null;
@@ -552,6 +587,9 @@ function qqAppView(route: string, settingsView: string): QqAppView | null {
 export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute);
   const settingsView = useSuperstringStore((s) => s.settingsView);
+  const openSettingsRoute = useSuperstringStore((s) => s.openSettingsRoute);
+  const { t } = useTranslation();
+
   if (route === "scheme-bindings") return <SchemeBindingsPage active={active} />;
   const appView = qqAppView(route, settingsView);
   if (appView)
@@ -569,6 +607,34 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
         }
       />
     );
-  const app = route === "scheme-library" ? null : schemeAppByRoute(route);
-  return app ? <SchemeDetail app={app} active={active} /> : <SchemeDirectory active={active} />;
+  const app =
+    route === "scheme-library" || route === "context-allocation" ? null : schemeAppByRoute(route);
+  if (app) return <SchemeDetail app={app} active={active} />;
+
+  const isAllocation = route === "context-allocation";
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="border-b px-4 py-2">
+        <Tabs
+          value={isAllocation ? "allocation" : "schemes"}
+          onValueChange={(val) => {
+            if (val === "allocation") openSettingsRoute("context-allocation");
+            else openSettingsRoute("scheme-library");
+          }}
+        >
+          <TabsList className="h-8">
+            <TabsTrigger value="schemes">{t("schemes.peerSchemes")}</TabsTrigger>
+            <TabsTrigger value="allocation">{t("schemes.peerAllocation")}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+      <div className="min-h-0 flex-1">
+        {isAllocation ? (
+          <ContextAllocationWorkspace active={active} />
+        ) : (
+          <SchemeDirectory active={active} />
+        )}
+      </div>
+    </div>
+  );
 }

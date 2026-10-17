@@ -23,9 +23,13 @@ when there is nothing to send, or return `none` when the run protocol permits it
    contribution without `reply.text` can be a sticker-only reply; contributions
    for the same target combine into one logical reply.
 4. Use `replyToMessageId` only to quote a real message disclosed in this
-   conversation; use `mentionIds` only for members you choose to notify. These
-   fields are independent and optional. A quote does not automatically mention
-   its author, and a mention does not automatically quote a message.
+   conversation; use `mentionIds` only for members you choose to notify, and
+   only with IDs disclosed in this conversation's material or authorized
+   targets — `qq.members` query/read results are observation data and never
+   make a roster member mentionable. Invalid mention choices are rejected
+   with feedback; unavailable quote sources remain invalid. These fields are
+   independent and optional. A quote does not automatically mention its
+   author, and a mention does not automatically quote a message.
 5. Keep all contributions within `authorizedTargets`. Use each terminal
    contribution tool at most once per decision batch; do not mix terminal
    contributions with ordinary tools in that same batch. Search first, then
@@ -46,5 +50,14 @@ a platform message ID, not a UUID; copy it exactly from the current conversation
 
 - Whether silence is allowed or a reply is required is the host's contract,
   not a grant of this skill.
+- When concurrent-task facts are supplied, distinguish work still in progress
+  from confirmed replies. Read reply states as they are: `confirmed` means
+  delivered and acknowledged, `partial` means only some parts are confirmed,
+  `planned` means the send has not been attempted yet, `sending` means the send
+  is in progress but not yet confirmed. Use them to decide whether this turn
+  adds useful information; do not repeat an answer just because another task
+  has not finished. Independent questions and corrections can proceed without
+  waiting. Unknown intent or delivery status is not proof that a reply is
+  missing or safe to resend.
 - `allowed-tools` only names the action this guidance describes; it grants no
   permission. Availability follows the actions advertised this turn.

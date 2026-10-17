@@ -149,6 +149,12 @@ export const SETTINGS_ROUTES = [
     state: "transition",
     note: "schemes.catalogNote",
   },
+  {
+    id: "context-allocation",
+    title: "schemes.contextAllocation.title",
+    state: "transition",
+    note: "schemes.contextAllocation.note",
+  },
   // 绑定归方案：这是绑定的首次发现入口；日常编辑走方案详情的绑定视图，不做成平级 Tab。
   {
     id: "scheme-bindings",

@@ -264,15 +264,17 @@ it("三个入口共用同一 runtime/端口与策略：真实 HTTP 在飞重叠�
   const session = createSession(business.orm, "Mixed", { modelName: MODEL });
   // 三入口并发发起：Web /v2/chat（决策 + 生成）、QQ 一次 direct（真实 adapter/scheduler，terminal
   // speech.reply）、后台叶子（原 completeMessageLeaf）。桩挂住响应，逼出端口真实排队。
-  const web = runtime.app.request("/v2/chat", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      session_id: session.id,
-      message: "hello",
-      client_request_id: "mixed-web",
+  const web = Promise.resolve(
+    runtime.app.request("/v2/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_id: session.id,
+        message: "hello",
+        client_request_id: "mixed-web",
+      }),
     }),
-  });
+  ).then((response) => response.text());
   await waitFor(() => stub.inFlight() === 1, "web decision in flight");
   seedQqDirect(business);
   const qq = runtime.botWorker.runCycle();
@@ -292,7 +294,7 @@ it("三个入口共用同一 runtime/端口与策略：真实 HTTP 在飞重叠�
   }
   stub.releaseAll();
 
-  const webText = await (await web).text();
+  const webText = await web;
   const backgroundText = await background;
   await qq;
   await waitFor(() => sends.length > 0, "qq direct send");

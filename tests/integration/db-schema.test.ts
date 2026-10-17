@@ -239,6 +239,26 @@ const V66_SQL = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0066_jsonb_context_source_matchers.sql"),
   "utf8",
 );
+const V67_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0067_qq_participation_timing.sql"),
+  "utf8",
+);
+const V68_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0068_context_allocation.sql"),
+  "utf8",
+);
+const V70_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0070_context_source_lookup.sql"),
+  "utf8",
+);
+const V69_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0069_query_plan_indexes.sql"),
+  "utf8",
+);
+const V71_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0071_context_storage_metadata.sql"),
+  "utf8",
+);
 
 const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
 ${QQ_DISPATCH_SQL}
@@ -284,7 +304,12 @@ ${V62_SQL}
 ${V63_SQL}
 ${V64_SQL}
 ${V65_SQL}
-${V66_SQL}`;
+${V66_SQL}
+${V67_SQL}
+${V68_SQL}
+${V69_SQL}
+${V70_SQL}
+${V71_SQL}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };
@@ -1190,7 +1215,7 @@ describe("business schema gate", () => {
   it("preserves the schema 65 QQ anti-spam thresholds migration", () => {
     const db = new Database(":memory:");
     try {
-      db.exec(ALL_MIGRATION_SQL.slice(0, ALL_MIGRATION_SQL.length - V66_SQL.length));
+      db.exec(ALL_MIGRATION_SQL.slice(0, ALL_MIGRATION_SQL.lastIndexOf(V66_SQL)));
       expect(
         db
           .query("PRAGMA table_info(qq_schemes)")
@@ -1202,8 +1227,8 @@ describe("business schema gate", () => {
     }
   });
 
-  it("uses schema 66 for JSONB context source matchers", () => {
-    expect(BUSINESS_SCHEMA_VERSION).toBe(66);
+  it("uses schema 71 for storage metadata indexes", () => {
+    expect(BUSINESS_SCHEMA_VERSION).toBe(71);
   });
 
   it("initialises a fresh db and stamps user_version", () => {

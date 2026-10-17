@@ -94,7 +94,7 @@ describe("OneBotHost quote and mention authorization", () => {
     ]);
   });
 
-  it("unauthorized mention ID from unknown member is rejected with CONTEXT_SOURCE_INVALID", async () => {
+  it("unauthorized mention ID from unknown member is blocked as feedback while a legal mention still delivers", async () => {
     const h = createOneBotHarness({
       model: [
         decideInvoke("reply.text", {
@@ -104,6 +104,16 @@ describe("OneBotHost quote and mention authorization", () => {
               targetId: "20002",
               text: "非法艾特陌生人",
               mentionIds: ["888888888888"],
+            },
+          ],
+        }),
+        decideInvoke("reply.text", {
+          outputs: [
+            {
+              kind: "inline",
+              targetId: "20002",
+              text: "合法回复",
+              mentionIds: ["20002"],
             },
           ],
         }),
@@ -117,8 +127,35 @@ describe("OneBotHost quote and mention authorization", () => {
     } catch (e) {
       thrown = e;
     }
-    expect(thrown).toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    // Pure selection rejection is bounded feedback, not a fatal source failure.
+    expect(thrown).toBeUndefined();
+    expect(h.model?.calls).toHaveLength(2);
+    // The rejected attempt was never sent (old hard-reject no-send proof kept).
     expect(h.sent).toHaveLength(0);
+    const feedback = (h.model?.receivedMessages[1]?.messages ?? [])
+      .flatMap((message) =>
+        message.content.flatMap((part) => (part.kind === "text" ? [part.text] : [])),
+      )
+      .join("\n");
+    expect(feedback).toContain("mentionIds");
+    expect(feedback).toContain("CONTEXT_INVALID_SELECTION");
+    // Only the corrected payload is committed; the unknown member reaches no outbound part.
+    const payloads = JSON.stringify(h.db.query("SELECT payload FROM outbound_parts").all());
+    expect(payloads).not.toContain("非法艾特陌生人");
+    expect(payloads).toContain("合法回复");
+    expect(payloads).not.toContain("888888888888");
+
+    await h.deliver();
+    expect(h.sent).toHaveLength(1);
+    expect(
+      h.sent[0]?.message.some(
+        (part) => (part.data as { qq?: string } | undefined)?.qq === "888888888888",
+      ),
+    ).toBe(false);
+    const at = h.sent[0]?.message.find((part) => part.type === "at") as
+      | { data?: { qq?: string } }
+      | undefined;
+    expect(at?.data?.qq).toBe("20002");
   });
 
   it("delivers an explicit mention without a phantom text or recipient mention", async () => {

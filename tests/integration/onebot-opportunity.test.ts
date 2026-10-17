@@ -34,6 +34,9 @@ function setup(
       ...QQ_RHYTHM_DEFAULT,
       merge_window_seconds: 15,
       judgement_interval_turns: 1,
+      // 本文件全部是 0054/0055 既有资源窗口语义的既有关注点；QQ_RHYTHM_DEFAULT 一旦按
+      // §5 改为 quiet_preferred，这里必须显式钉住旧模式，legacy 断言不随默认值漂移。
+      participation_timing: "resource_window",
       ...overrides.rhythm,
     },
   });

@@ -666,6 +666,7 @@ export function createQqSchemeActions(
           media_input: editor.mediaInput,
           task_limits: editor.taskLimits,
           input_anti_spam: editor.inputAntiSpam,
+          allocation: editor.allocation,
           expected_revision: editor.source.revision,
         });
         if (!isCurrentApi(operation)) return false;

@@ -18,7 +18,7 @@ import path from "node:path";
 import { type BusinessDbHandle, openConnection, toOrmHandle } from "./connection";
 
 /** Ordered resources are also supplied explicitly by installed entrypoints. */
-export const BUSINESS_SCHEMA_VERSION = 66 as const;
+export const BUSINESS_SCHEMA_VERSION = 71 as const;
 export const BUSINESS_MIGRATION_FILES = [
   "0001_initial.sql",
   "0002_knowledge.sql",
@@ -86,8 +86,18 @@ export const BUSINESS_MIGRATION_FILES = [
   "0064_qq_scheme_sticker_frequency.sql",
   "0065_qq_antispam_thresholds.sql",
   "0066_jsonb_context_source_matchers.sql",
+  "0067_qq_participation_timing.sql",
+  "0068_context_allocation.sql",
+  "0069_query_plan_indexes.sql",
+  "0070_context_source_lookup.sql",
+  "0071_context_storage_metadata.sql",
 ] as const;
 export type BusinessMigrationSql = readonly [
+  string,
+  string,
+  string,
+  string,
+  string,
   string,
   string,
   string,
@@ -234,6 +244,7 @@ export const BUSINESS_TABLE_NAMES: readonly string[] = [
   "qq_media_read_tasks",
   "qq_group_names",
   "qq_conversation_tasks",
+  "context_snapshot_source_refs",
 ];
 
 function loadMigrationSql(): BusinessMigrationSql {
@@ -305,6 +316,11 @@ function loadMigrationSql(): BusinessMigrationSql {
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[63]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[64]), "utf8"),
     readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[65]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[66]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[67]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[68]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[69]), "utf8"),
+    readFileSync(path.join(directory, BUSINESS_MIGRATION_FILES[70]), "utf8"),
   ];
 }
 

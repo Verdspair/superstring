@@ -463,13 +463,20 @@ export function findServableMediaReadTaskByIdentity(
   },
 ): QqMediaReadTaskRow | null {
   const row = findMediaReadTaskByIdentity(orm, input);
-  if (row === null || row.identityKey === null) return null;
-  if (row.status !== "succeeded" || row.note === null || row.note.trim().length === 0) return null;
-  if (row.modelName === null || row.modelName !== input.modelName) return null;
+  return row !== null && isMediaReadTaskServable(row, input) ? row : null;
+}
+
+/** Serviceability of an identity-proven row; shared by point and batch readers. */
+export function isMediaReadTaskServable(
+  row: QqMediaReadTaskRow,
+  input: { modelName: string; policy: string; now: string },
+): boolean {
+  if (row.identityKey === null) return false;
+  if (row.status !== "succeeded" || row.note === null || row.note.trim().length === 0) return false;
+  if (row.modelName === null || row.modelName !== input.modelName) return false;
   const legacy = row.policy === "legacy" && row.id.startsWith("legacy-");
-  if (legacy) return Date.parse(row.expiresAt) > Date.parse(input.now) ? row : null;
-  if (row.policy !== input.policy.trim()) return null;
-  return Date.parse(row.expiresAt) > Date.parse(input.now) ? row : null;
+  if (!legacy && row.policy !== input.policy.trim()) return false;
+  return Date.parse(row.expiresAt) > Date.parse(input.now);
 }
 
 /**
@@ -514,6 +521,8 @@ export function findSucceededMediaReadTaskForContent(
         eq(schema.qqMediaReadTasks.peerId, input.peerId),
         eq(schema.qqMediaReadTasks.agentId, input.agentId),
         eq(schema.qqMediaReadTasks.purpose, input.purpose),
+        eq(schema.qqMediaReadTasks.status, "succeeded"),
+        eq(schema.qqMediaReadTasks.modelName, input.modelName),
         input.purpose === "detail"
           ? eq(schema.qqMediaReadTasks.questionKey, input.questionKey ?? "")
           : isNull(schema.qqMediaReadTasks.questionKey),
@@ -589,47 +598,80 @@ export function findServableMediaReadTaskById(
  * match a content sha — i.e. legacy rows are never returned here (they have no
  * same-content proof). Zero writes.
  */
+export interface MediaReadContentIdentity {
+  accountId: string;
+  conversationKind: string;
+  peerId: string;
+  agentId: string;
+  segmentKind: string;
+  requestId?: string | null;
+  contentSha256: string;
+}
+
 export function findMediaReadTasksForContent(
   orm: Orm,
-  input: {
-    accountId: string;
-    conversationKind: string;
-    peerId: string;
-    agentId: string;
-    segmentKind: string;
-    /** 宿主 trusted 显式请求 id（缺省＝只看无显式请求身份的行，不猜请求）。 */
-    requestId?: string | null;
-    contentSha256: string;
-  },
+  input: MediaReadContentIdentity,
 ): QqMediaReadTaskRow[] {
-  const candidates = orm
-    .select()
-    .from(schema.qqMediaReadTasks)
-    .where(
-      and(
-        eq(schema.qqMediaReadTasks.accountId, input.accountId),
-        eq(schema.qqMediaReadTasks.conversationKind, input.conversationKind),
-        eq(schema.qqMediaReadTasks.peerId, input.peerId),
-        eq(schema.qqMediaReadTasks.agentId, input.agentId),
-        sql`${schema.qqMediaReadTasks.identityKey} IS NOT NULL`, // identity rows only; legacy stays a boundary
-      ),
-    )
-    .all();
-  return candidates.filter(
-    (row) =>
-      row.identityKey ===
-      mediaReadTaskIdentityKey({
-        accountId: input.accountId,
-        conversationKind: input.conversationKind,
-        peerId: input.peerId,
-        agentId: input.agentId,
-        segmentKind: input.segmentKind,
-        purpose: row.purpose === "detail" ? "detail" : "baseline",
-        questionKey: row.purpose === "detail" ? row.questionKey : null,
-        requestId: row.purpose === "detail" ? (input.requestId ?? null) : null,
-        contentSha256: input.contentSha256,
-      }),
-  );
+  return findMediaReadTasksForContents(orm, [input])[0] ?? [];
+}
+
+/** One scope read per batch; repeated content shares only invocation-local identity work. */
+export function findMediaReadTasksForContents(
+  orm: Orm,
+  inputs: readonly MediaReadContentIdentity[],
+): QqMediaReadTaskRow[][] {
+  const scopes = new Map<string, QqMediaReadTaskRow[]>();
+  const contents = new Map<string, QqMediaReadTaskRow[]>();
+  return inputs.map((input) => {
+    const scopeKey = JSON.stringify([
+      input.accountId,
+      input.conversationKind,
+      input.peerId,
+      input.agentId,
+    ]);
+    const contentKey = JSON.stringify([
+      scopeKey,
+      input.segmentKind,
+      input.requestId ?? null,
+      input.contentSha256,
+    ]);
+    const existing = contents.get(contentKey);
+    if (existing) return existing;
+    let candidates = scopes.get(scopeKey);
+    if (!candidates) {
+      candidates = orm
+        .select()
+        .from(schema.qqMediaReadTasks)
+        .where(
+          and(
+            eq(schema.qqMediaReadTasks.accountId, input.accountId),
+            eq(schema.qqMediaReadTasks.conversationKind, input.conversationKind),
+            eq(schema.qqMediaReadTasks.peerId, input.peerId),
+            eq(schema.qqMediaReadTasks.agentId, input.agentId),
+            sql`${schema.qqMediaReadTasks.identityKey} IS NOT NULL`,
+          ),
+        )
+        .all();
+      scopes.set(scopeKey, candidates);
+    }
+    const keys = new Map<string, string>();
+    const matches = candidates.filter((row) => {
+      const dimension = JSON.stringify([row.purpose, row.questionKey]);
+      let key = keys.get(dimension);
+      if (key === undefined) {
+        key = mediaReadTaskIdentityKey({
+          ...input,
+          purpose: row.purpose === "detail" ? "detail" : "baseline",
+          questionKey: row.purpose === "detail" ? row.questionKey : null,
+          requestId: row.purpose === "detail" ? (input.requestId ?? null) : null,
+        });
+        keys.set(dimension, key);
+      }
+      return row.identityKey === key;
+    });
+    contents.set(contentKey, matches);
+    return matches;
+  });
 }
 
 /**

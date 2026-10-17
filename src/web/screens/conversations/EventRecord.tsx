@@ -529,4 +529,33 @@ function EventRecordComponent({
   );
 }
 
-export const EventRecord = memo(EventRecordComponent);
+function areEventRecordPropsEqual(
+  prev: {
+    event: ConversationTimelineRow;
+    quoted?: ConversationEventView;
+    conversation: ConversationSummary;
+  },
+  next: {
+    event: ConversationTimelineRow;
+    quoted?: ConversationEventView;
+    conversation: ConversationSummary;
+  },
+): boolean {
+  if (prev.event !== next.event) return false;
+  if (prev.quoted !== next.quoted) return false;
+  if (prev.conversation.topology !== next.conversation.topology) return false;
+  const prevParts = prev.conversation.participants;
+  const nextParts = next.conversation.participants;
+  if (prevParts === nextParts) return true;
+  if (prevParts.length !== nextParts.length) return false;
+  for (let i = 0; i < prevParts.length; i++) {
+    const p = prevParts[i];
+    const np = nextParts[i];
+    if (!np || p.id !== np.id || p.label !== np.label) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const EventRecord = memo(EventRecordComponent, areEventRecordPropsEqual);

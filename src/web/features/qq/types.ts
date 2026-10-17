@@ -6,11 +6,16 @@
 // because §9.2's "保存整理" must not be able to switch an asset on by accident.
 
 import {
+  QQ_ALLOCATION_DEFAULT,
+  type QqSchemeAllocation,
+} from "../../../shared/contracts/context-allocation";
+import {
   QQ_RETENTION_MAX_DAYS,
   QQ_RETENTION_MIN_DAYS,
   type QqBindingResponse,
   type QqConversationListItem,
   type QqMemoryOrganiseResponse,
+  type QqParticipationTiming,
   type QqSchemeCompression,
   type QqSchemeContext,
   type QqSchemeInputAntiSpam,
@@ -170,6 +175,8 @@ export const qqStickerInitial = {
 // saving half a scheme is a scheme nobody can reason about; the API's compare-and-swap on
 // `revision` is what keeps a stale editor from overwriting someone else's save.
 
+export type { QqParticipationTiming };
+
 export interface QqSchemeEditor {
   source: QqSchemeResponse;
   name: string;
@@ -191,6 +198,8 @@ export interface QqSchemeEditor {
   taskLimits: QqSchemeTaskLimits;
   /** 0059 输入防抖组（启用开关）。 */
   inputAntiSpam: QqSchemeInputAntiSpam;
+  /** 0068 统一上下文分配（判断与回复分配模式）。 */
+  allocation: QqSchemeAllocation;
 }
 
 export function qqSchemeEditorFrom(scheme: QqSchemeResponse): QqSchemeEditor {
@@ -215,6 +224,12 @@ export function qqSchemeEditorFrom(scheme: QqSchemeResponse): QqSchemeEditor {
     },
     taskLimits: { ...scheme.task_limits },
     inputAntiSpam: { ...scheme.input_anti_spam },
+    allocation: scheme.allocation
+      ? {
+          judgement: { mode: scheme.allocation.judgement?.mode ?? "fixed" },
+          reply: { mode: scheme.allocation.reply?.mode ?? "fixed" },
+        }
+      : QQ_ALLOCATION_DEFAULT,
   };
 }
 
@@ -344,10 +359,21 @@ export function qqSchemeChanges(editor: QqSchemeEditor | null): readonly QqSchem
     editor.source.input_anti_spam.burst_window_seconds,
     editor.inputAntiSpam.burst_window_seconds,
   );
+  compare(
+    "allocation.judgement.mode",
+    editor.source.allocation?.judgement?.mode ?? "fixed",
+    editor.allocation.judgement.mode,
+  );
+  compare(
+    "allocation.reply.mode",
+    editor.source.allocation?.reply?.mode ?? "fixed",
+    editor.allocation.reply.mode,
+  );
   return changes;
 }
 
 export type QqSchemeGroupKey =
+  | "allocation"
   | "triggers"
   | "rhythm"
   | "context"

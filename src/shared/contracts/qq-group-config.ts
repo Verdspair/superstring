@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { UuidSchema } from "./common";
+import { QQ_ALLOCATION_DEFAULT, QqSchemeAllocationSchema } from "./context-allocation";
 import {
   QQ_MEDIA_INPUT_SCHEME_DEFAULT,
   QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
@@ -74,6 +75,7 @@ const OverridesShapeBase = z.strictObject({
     .optional(),
   rhythm: z
     .strictObject({
+      participation_timing: stripDefault(Scheme.rhythm.participation_timing).optional(),
       merge_window_seconds: Scheme.rhythm.merge_window_seconds.optional(),
       reply_cooldown_seconds: Scheme.rhythm.reply_cooldown_seconds.optional(),
       hourly_speech_limit: Scheme.rhythm.hourly_speech_limit.optional(),
@@ -184,6 +186,12 @@ const OverridesShapeBase = z.strictObject({
       ordinary_still_max_dimension: Scheme.mediaInput.ordinary_still_max_dimension.optional(),
     })
     .optional(),
+  /**
+   * 分配模式覆盖（0068）：稀疏嵌套，逐档逐字段。缺席＝跟随基础方案；给出的档必须给出
+   * mode（与 ContextAllocationSchema 同形，覆盖值不允许 modeless 空对象）。本群只能覆盖
+   * 模式本身，契约未来给方案组新增的其他策略字段不自动成为本群可覆盖项。
+   */
+  allocation: QqSchemeAllocationSchema.partial().optional(),
 });
 
 /** 空组不是覆盖、`triggers` 的 null 成员也不是覆盖、嵌套空 stages 同样不是覆盖，都从结果里去掉；`false`/`0`/空集合是实打实的覆盖。 */
@@ -198,7 +206,8 @@ function normalizeOverrides(
     );
     if (key === "triggers") entries = entries.filter(([, member]) => member !== null);
     // 0052 的 stages 是嵌套稀疏组：成员全空＝没有覆盖，整组去掉，与空组同义。
-    if (key === "media_input") {
+    // 0068 的 allocation 同形：judgement/reply 任一档成员全空＝该档没有覆盖，整组去掉。
+    if (key === "media_input" || key === "allocation") {
       entries = entries.filter(([, member]) => {
         if (member === null || typeof member !== "object" || Array.isArray(member)) return true;
         return Object.keys(member as Record<string, unknown>).length > 0;
@@ -326,6 +335,27 @@ function mergeMediaInput(
   return { ...effective, ...defined, stages: mergedStages };
 }
 
+/**
+ * 分配组的稀疏合并（0068）：逐档合并，档内再逐字段——本群只覆盖 judgement.mode 时，
+ * reply.mode 保持基础方案的值，不被浅合并冲掉。档缺席或字段缺席都＝跟随基础方案；
+ * 生效值永远是完整两档组。
+ */
+function mergeAllocation(
+  base: QqSchemeResponse["allocation"] | undefined,
+  override: QqGroupSchemeOverrides["allocation"] | undefined,
+): NonNullable<QqSchemeResponse["allocation"]> {
+  const fallback = QQ_ALLOCATION_DEFAULT;
+  const effective = base ?? fallback;
+  return {
+    judgement: {
+      mode: override?.judgement?.mode ?? effective.judgement.mode,
+    },
+    reply: {
+      mode: override?.reply?.mode ?? effective.reply.mode,
+    },
+  };
+}
+
 /** 基础方案 + 本群差异 → 生效方案（纯函数，界面与服务端读路径共用同一套合并语义）。 */
 export function mergeQqGroupScheme(
   base: QqSchemeResponse,
@@ -358,17 +388,26 @@ export function mergeQqGroupScheme(
     sticker_collections: overrides.sticker_collections ?? base.sticker_collections,
     message_settings: mergeMessageSettings(base.message_settings, overrides.message_settings),
     media_input: mergeMediaInput(base.media_input, overrides.media_input),
+    allocation: mergeAllocation(base.allocation, overrides.allocation),
   };
 }
 
 /**
+ * 生效方案的编辑器形态：rhythm 用同一组字段的标量形状（`.shape`），不跑跨字段关系——
+ * 基础改动可能让已存差异合并过界，配置页必须仍可读；过界判定只在写边界与前端严格校验。
+ */
+const EditorEffectiveSchemeSchema = QqSchemeResponseSchema.extend({
+  rhythm: z.strictObject(QqSchemeRhythmSchema.shape),
+});
+
+/**
  * 本群配置的读取结果：`binding` 内的四个开关是绑定镜像，`base_scheme` 是当前基础方案，
- * `effective_scheme` 是合并后的生效值；`revision` 为 0 表示还没有记录。
+ * `effective_scheme` 是合并后的生效值（rhythm 只做标量校验）；`revision` 为 0 表示还没有记录。
  */
 export const QqGroupConfigResponseSchema = z.strictObject({
   binding: QqBindingResponseSchema,
   base_scheme: QqSchemeResponseSchema,
-  effective_scheme: QqSchemeResponseSchema,
+  effective_scheme: EditorEffectiveSchemeSchema,
   overrides: QqGroupSchemeOverridesSchema,
   disabled_capabilities: z.array(QqGroupCapabilitySchema),
   revision: z.number().int().nonnegative(),

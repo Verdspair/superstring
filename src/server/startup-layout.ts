@@ -104,6 +104,11 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     readFileSync(paths.qqSchemeStickerFrequencyMigration, "utf8"),
     readFileSync(paths.qqAntispamThresholdsMigration, "utf8"),
     readFileSync(paths.jsonbContextSourceMatchersMigration, "utf8"),
+    readFileSync(paths.qqParticipationTimingMigration, "utf8"),
+    readFileSync(paths.contextAllocationMigration, "utf8"),
+    readFileSync(paths.queryPlanIndexesMigration, "utf8"),
+    readFileSync(paths.contextSourceLookupMigration, "utf8"),
+    readFileSync(paths.storageMetadataMigration, "utf8"),
   ] as const;
   if (businessMigrationSql.some((sql) => !sql.trim())) throw new Error("EMPTY_MIGRATION_RESOURCE");
   if (env.SUPERSTRING_SERVE_WEB === "1") readFileSync(path.join(paths.webDir, "index.html"));
