@@ -358,13 +358,6 @@ function openEvidenceSections(
     if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
   }
 }
-/** 技术区外层步级行默认关闭：展开全部步骤触发（幂等；外层展开零请求）。 */
-function openAllTechnicalSteps() {
-  for (const trigger of screen.getAllByRole("button", { name: /步骤 \d+ ·/ })) {
-    if (trigger.getAttribute("aria-expanded") === "false") fireEvent.click(trigger);
-  }
-}
-
 beforeEach(() => {
   void i18n.changeLanguage("zh-CN");
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
@@ -560,10 +553,54 @@ describe("overview step selection", () => {
     expect(
       await screen.findAllByRole("region", { name: i18n.t("observability.parentAndChildTiming") }),
     ).toHaveLength(2);
-    // 外层步级行默认关闭：逐个打开（纯视觉，零新请求）后 4 个证据 region 可见
+    // 技术视图默认 null：不预选 span，不显示证据；逐个选中，每次只显示一个共享详情
+    const timing = screen.getAllByRole("region", {
+      name: i18n.t("observability.parentAndChildTiming"),
+    });
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
     const callsBeforeOpen = inspect.calls.length;
-    openAllTechnicalSteps();
-    expect((await screen.findAllByRole("region", { name: EVIDENCE })).length).toBe(4);
+    const stepGroup = screen.getByRole("group", { name: STEPS });
+    const timelineModelRows = within(timing[1]).getAllByRole("button", {
+      name: i18n.t("observability.viewInputOutputAndDetails"),
+    });
+    const childModelRows = timelineModelRows.filter((button) =>
+      button.textContent?.includes("model-a000"),
+    );
+    const siblingRow = timelineModelRows.find((button) =>
+      button.textContent?.includes("sibling-model"),
+    );
+    expect(timelineModelRows).toHaveLength(3);
+    expect(childModelRows).toHaveLength(2);
+    const selectable = [
+      screen.getByRole("button", { name: /步骤 1 · 单轮任务/ }),
+      screen.getByRole("button", { name: /步骤 2 · 单轮任务/ }),
+      ...childModelRows,
+    ];
+    const expected = [
+      `${parentRunId}|step-own-1`,
+      `${parentRunId}|step-own-2`,
+      `${childRunId(1)}|step-a000-1`,
+      `${childRunId(2)}|step-a000-2`,
+    ];
+    expect(selectable).toHaveLength(4);
+    for (const [index, row] of selectable.entries()) {
+      fireEvent.click(row);
+      expect(row.getAttribute("aria-pressed")).toBe("true");
+      const pressed = [...timing, stepGroup].flatMap((scope) =>
+        within(scope).queryAllByRole("button", { pressed: true }),
+      );
+      expect(pressed).toHaveLength(1);
+      expect(pressed[0]).toBe(row);
+      const regions = screen.getAllByRole("region", { name: EVIDENCE });
+      expect(regions).toHaveLength(1);
+      if (index > 0) {
+        expect(within(regions[0]).queryByText(`精确输入:${expected[index - 1]}`)).toBeNull();
+      }
+      await within(regions[0]).findByRole("button", { name: ROW_LABELS.input });
+      openEvidenceSections(regions[0], ["input"]);
+      expect(await within(regions[0]).findByText(`精确输入:${expected[index]}`)).toBeTruthy();
+      expect(within(regions[0]).getAllByText(/^精确输入:/)).toHaveLength(1);
+    }
     expect(inspect.calls).toHaveLength(callsBeforeOpen);
     const counts = new Map<string, number>();
     for (const call of inspect.calls) {
@@ -577,9 +614,40 @@ describe("overview step selection", () => {
     expect(counts.get(`${parentRunId}|step-own-2`)).toBe(1);
     expect(counts.get(`${childRunId(1)}|step-a000-1`)).toBe(1);
     expect(counts.get(`${childRunId(2)}|step-a000-2`)).toBe(1);
-    // sibling span 仍在技术时间线，但不产生证据读取
+    // sibling span 仍在技术时间线：可点击但不产生模型证据，也不新增读取
     expect(screen.getAllByText("sibling-model").length).toBeGreaterThan(0);
+    expect(siblingRow).toBeTruthy();
+    fireEvent.click(siblingRow!);
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
+    const siblingPressed = [...timing, stepGroup].flatMap((scope) =>
+      within(scope).queryAllByRole("button", { pressed: true }),
+    );
+    expect(siblingPressed).toHaveLength(1);
+    expect(siblingPressed[0]).toBe(siblingRow);
+    expect(inspect.calls).toHaveLength(callsBeforeOpen);
+
+    // 原始 operation name 只在选中真实 action span 并展开「运行与元数据」后出现
+    const actionRow = within(timing[1])
+      .getAllByRole("button", { name: i18n.t("observability.viewStepDetails") })
+      .find((button) => button.textContent?.includes(i18n.t("observability.agentAction")));
+    expect(actionRow).toBeTruthy();
+    fireEvent.click(actionRow!);
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
+    const actionMetadata = screen
+      .getByText(i18n.t("observability.runAndMetadata"))
+      .closest("details") as HTMLDetailsElement;
+    expect(actionMetadata.open).toBe(false);
+    fireEvent.click(screen.getByText(i18n.t("observability.runAndMetadata")));
+    expect(actionMetadata.open).toBe(true);
     expect(screen.getAllByText("agent.action").length).toBeGreaterThan(0);
+    fireEvent.click(selectable[3]);
+    const modelMetadata = screen
+      .getByText(i18n.t("observability.runAndMetadata"))
+      .closest("details") as HTMLDetailsElement;
+    expect(modelMetadata.open).toBe(false);
+    expect(screen.queryByText("agent.action")).toBeNull();
+    expect(screen.getAllByRole("region", { name: EVIDENCE })).toHaveLength(1);
+    expect(inspect.calls).toHaveLength(callsBeforeOpen);
     // 聚合计数保留；无展开/折叠全部步骤控件
     expect(screen.getByText("本运行已记录 2 次模型调用（不含子运行）")).toBeTruthy();
     expect(

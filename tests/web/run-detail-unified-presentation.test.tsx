@@ -255,12 +255,6 @@ function openEvidenceSections(
     if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
   }
 }
-/** 技术区外层步级行默认关闭：展开全部步骤触发（幂等；外层展开零请求）。 */
-function openAllTechnicalSteps() {
-  for (const trigger of screen.getAllByRole("button", { name: /步骤 \d+ ·/ })) {
-    if (trigger.getAttribute("aria-expanded") === "false") fireEvent.click(trigger);
-  }
-}
 function install(options: {
   run: RunSnapshot;
   parts: { trace: RuntimeTrace; items: RuntimeSpan[] }[];
@@ -331,11 +325,21 @@ describe("run detail unified presentation", () => {
       }
     }
     inspect.settle();
-    // 外层步级行默认关闭：逐个打开（纯视觉，零新请求）后 8 个证据 region 可见
-    const callsBeforeOpen = inspect.calls.length;
-    openAllTechnicalSteps();
-    expect((await screen.findAllByRole("region", { name: EVIDENCE })).length).toBe(8);
-    expect(inspect.calls).toHaveLength(callsBeforeOpen);
+    // 技术视图默认 null：不预选 span，也不显示模型证据；8 个真实 handle 仍各读一次
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
+    const modelRows = screen
+      .getAllByRole("region", { name: i18n.t("observability.parentAndChildTiming") })
+      .flatMap((region) =>
+        within(region).queryAllByRole("button", {
+          name: i18n.t("observability.viewInputOutputAndDetails"),
+        }),
+      );
+    expect(modelRows).toHaveLength(8);
+    const callsBeforeSelect = inspect.calls.length;
+    fireEvent.click(modelRows[0]);
+    expect(screen.getAllByRole("region", { name: EVIDENCE })).toHaveLength(1);
+    expect(modelRows[0].getAttribute("aria-pressed")).toBe("true");
+    expect(inspect.calls).toHaveLength(callsBeforeSelect);
     for (const call of inspect.calls) {
       expect(call.handle.runId).not.toBe(parentRunId);
       expect(call.handle.runId).toMatch(/^20000000/);
@@ -473,15 +477,22 @@ describe("run detail unified presentation", () => {
     ).toHaveLength(2);
     await waitFor(() => expect(inspect.calls.length).toBeGreaterThanOrEqual(2));
     inspect.settle(exactFor("technical", 2));
-    // 外层步级行与内部列表行默认关闭：逐层打开后正文可见
-    openAllTechnicalSteps();
+    // 技术视图默认 null；选中一个时间线模型行后只显示一个共享详情
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
+    const timing = screen.getAllByRole("region", {
+      name: i18n.t("observability.parentAndChildTiming"),
+    });
+    expect(timing).toHaveLength(2);
+    const firstModelRow = within(timing[1])
+      .getAllByRole("button", { name: i18n.t("observability.viewInputOutputAndDetails") })
+      .find((button) => button.textContent?.includes("model-a000-1"));
+    expect(firstModelRow).toBeTruthy();
+    fireEvent.click(firstModelRow!);
     const regions = screen.getAllByRole("region", { name: EVIDENCE });
-    expect(regions).toHaveLength(2);
-    for (const region of regions) {
-      await within(region).findByRole("button", { name: ROW_LABELS.input });
-      openEvidenceSections(region, ["input"]);
-    }
-    await waitFor(() => expect(screen.getAllByText("精确输入:technical")).toHaveLength(2));
+    expect(regions).toHaveLength(1);
+    await within(regions[0]).findByRole("button", { name: ROW_LABELS.input });
+    openEvidenceSections(regions[0], ["input"]);
+    await waitFor(() => expect(screen.getAllByText("精确输入:technical")).toHaveLength(1));
     expect(
       screen.queryByRole("button", { name: i18n.t("observability.inspectActualInputAndOutput") }),
     ).toBeNull();
@@ -491,7 +502,27 @@ describe("run detail unified presentation", () => {
     expect(
       screen.queryByRole("button", { name: i18n.t("observability.collapseAllSteps") }),
     ).toBeNull();
+    // 原始 operation name 只在选中真实 action span 并展开「运行与元数据」后出现
+    const actionRow = within(timing[1])
+      .getAllByRole("button", { name: i18n.t("observability.viewStepDetails") })
+      .find((button) => button.textContent?.includes(i18n.t("observability.agentAction")));
+    expect(actionRow).toBeTruthy();
+    fireEvent.click(actionRow!);
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
+    const actionMetadata = screen
+      .getByText(i18n.t("observability.runAndMetadata"))
+      .closest("details") as HTMLDetailsElement;
+    expect(actionMetadata.open).toBe(false);
+    fireEvent.click(screen.getByText(i18n.t("observability.runAndMetadata")));
+    expect(actionMetadata.open).toBe(true);
     expect(screen.getAllByText("agent.action").length).toBeGreaterThan(0);
+    fireEvent.click(firstModelRow!);
+    const modelMetadata = screen
+      .getByText(i18n.t("observability.runAndMetadata"))
+      .closest("details") as HTMLDetailsElement;
+    expect(modelMetadata.open).toBe(false);
+    expect(screen.queryByText("agent.action")).toBeNull();
+    expect(screen.getAllByRole("region", { name: EVIDENCE })).toHaveLength(1);
     expect(inspect.calls.every(({ handle }) => handle.runId !== parentRunId)).toBe(true);
   });
 
@@ -508,11 +539,15 @@ describe("run detail unified presentation", () => {
     // 视图切换纯视觉：单一 reader 按 handle 共享，零新请求
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.technicalDetails") }));
     expect(inspect.calls).toHaveLength(1);
+    // 无时间线 span 的 own call 用既有步骤标签回退，选中后只显示一个共享详情
+    const fallback = screen.getByRole("button", { name: /步骤 1 · 单轮任务/ });
+    fireEvent.click(fallback);
+    expect(fallback.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getAllByRole("region", { name: EVIDENCE })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.refreshRuns") }));
     // 刷新重核全部已预取的当前 handle
     await waitFor(() => expect(inspect.calls).toHaveLength(2));
     inspect.settle(exactFor("after-refresh", 1));
-    openAllTechnicalSteps();
     await screen.findByRole("button", { name: i18n.t("observability.modelInput") });
     openEvidenceSections(document.body, ["input"]);
     expect(await screen.findByText("精确输入:after-refresh")).toBeTruthy();

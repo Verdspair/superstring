@@ -1,9 +1,9 @@
-import { ArrowUpRight, ChevronDown, Copy, RefreshCw } from "lucide-react";
-import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import { ArrowUpRight, Copy, RefreshCw } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogClose,
@@ -30,7 +30,6 @@ import { useSuperstringStore } from "../../store";
 import { EvidenceWorkbench } from "../observability/EvidenceWorkbench";
 import { ModelEvidence, RunEvidenceScope } from "../observability/ModelEvidence";
 import {
-  milliseconds,
   phaseLabels,
   ReadError,
   StatusMark,
@@ -38,6 +37,7 @@ import {
   taskName,
 } from "../observability/presentation";
 import { TraceTimeline } from "../observability/TraceTimeline";
+import { DeliveryEvidence } from "./DeliveryEvidence";
 
 const runLabels: Record<RunStatus, string> = {
   prepared: "observability.waiting",
@@ -190,26 +190,19 @@ interface UnifiedModelCall {
 
 function RunTraceSection({
   data,
-  deliveryOwners,
+  selected,
+  onSelect,
 }: {
   data: RuntimeTraceDetail;
-  deliveryOwners: ReadonlyMap<string, string>;
+  selected: string | null;
+  onSelect(span: RuntimeSpan): void;
 }) {
   const { t } = useTranslation();
-  const [selected, setSelected] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const details = useRef(new Map<string, HTMLDetailsElement>());
-  const choose = (span: RuntimeSpan) => {
-    setSelected(span.spanId);
-    const detail = details.current.get(span.spanId);
-    if (detail) detail.open = true;
-    details.current.get(span.spanId)?.scrollIntoView({ block: "nearest" });
-    details.current.get(span.spanId)?.focus({ preventScroll: true });
-  };
   const next = (ids: string[]) => {
     const index = ids.indexOf(selected ?? "");
     const span = data.items.find((item) => item.spanId === ids[(index + 1) % ids.length]);
-    if (span) choose(span);
+    if (span) onSelect(span);
   };
   return (
     <section
@@ -259,44 +252,13 @@ function RunTraceSection({
           {t("observability.nextMatch")} · {data.matchedSpanIds.length}
         </Button>
       </fieldset>
-      <TraceTimeline data={data} selected={selected} onSelect={choose} alwaysExpanded hideToggles />
-      <div className="divide-y rounded-lg border">
-        {data.items.map((item) => (
-          <details
-            key={item.spanId}
-            ref={(node) => {
-              if (node) details.current.set(item.spanId, node);
-              else details.current.delete(item.spanId);
-            }}
-            className="min-w-0 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            tabIndex={-1}
-          >
-            <summary className="flex min-h-12 cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
-              <span className="min-w-0 flex-1 break-words font-medium">{spanTitle(item, t)}</span>
-              <StatusMark status={item.status} />
-              {item.model && (
-                <span className="max-w-full break-all text-xs text-muted-foreground">
-                  {item.model}
-                </span>
-              )}
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {item.durationMs == null ? "—" : milliseconds(item.durationMs)}
-              </span>
-              <ChevronDown className="size-4 shrink-0" aria-hidden="true" />
-            </summary>
-            <div className="border-t p-3">
-              <EvidenceWorkbench
-                item={item}
-                fullEvidence
-                includeDelivery={
-                  !item.outputId ||
-                  deliveryOwners.get(item.outputId) === `${item.traceId}|${item.spanId}`
-                }
-              />
-            </div>
-          </details>
-        ))}
-      </div>
+      <TraceTimeline
+        data={data}
+        selected={selected}
+        onSelect={onSelect}
+        alwaysExpanded
+        hideToggles
+      />
     </section>
   );
 }
@@ -314,18 +276,29 @@ export function RunWorkspace({
     live = useSuperstringStore((s) => s.runById[runId]),
     [view, setView] = useState<"overview" | "technical">("overview"),
     [selectedKey, setSelectedKey] = useState<string | null>(null),
-    [openCalls, setOpenCalls] = useState<Set<string>>(() => new Set()),
+    [selectedSpan, setSelectedSpan] = useState<{ traceId: string; spanId: string } | null>(null),
+    [fallbackCallKey, setFallbackCallKey] = useState<string | null>(null),
     [inspectionRevision, setInspectionRevision] = useState(0);
+  const detailHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (view !== "technical" || (!selectedSpan && !fallbackCallKey)) return;
+    detailHeading.current?.scrollIntoView?.({ block: "nearest" });
+    detailHeading.current?.focus({ preventScroll: true });
+  }, [view, selectedSpan, fallbackCallKey]);
 
   const prevApiRef = useRef(api);
   if (prevApiRef.current !== api) {
     prevApiRef.current = api;
     if (selectedKey !== null) setSelectedKey(null);
+    if (selectedSpan !== null) setSelectedSpan(null);
+    if (fallbackCallKey !== null) setFallbackCallKey(null);
   }
   const prevRunIdRef = useRef(runId);
   if (prevRunIdRef.current !== runId) {
     prevRunIdRef.current = runId;
     if (selectedKey !== null) setSelectedKey(null);
+    if (selectedSpan !== null) setSelectedSpan(null);
+    if (fallbackCallKey !== null) setFallbackCallKey(null);
   }
 
   const read = useCallback(
@@ -493,6 +466,31 @@ export function RunWorkspace({
     return owners;
   }, [waterfalls]);
 
+  const technicalSpan = selectedSpan
+    ? waterfalls
+        .find((waterfall) => waterfall.trace.traceId === selectedSpan.traceId)
+        ?.items.find((span) => span.spanId === selectedSpan.spanId)
+    : undefined;
+  const technicalCallKey =
+    technicalSpan?.stage === "model" &&
+    technicalSpan.runId &&
+    typeof technicalSpan.details.stepId === "string"
+      ? `${technicalSpan.runId}|${technicalSpan.details.stepId}`
+      : fallbackCallKey;
+  const technicalCall = modelCalls.find((call) => call.key === technicalCallKey);
+  const untracedCalls = useMemo(() => {
+    const traced = new Set<string>();
+    for (const waterfall of waterfalls)
+      for (const span of waterfall.items)
+        if (span.stage === "model" && span.runId && typeof span.details.stepId === "string")
+          traced.add(`${span.runId}|${span.details.stepId}`);
+    return modelCalls.filter((call) => !traced.has(call.key));
+  }, [modelCalls, waterfalls]);
+  const chooseSpan = (span: RuntimeSpan) => {
+    setFallbackCallKey(null);
+    setSelectedSpan({ traceId: span.traceId, spanId: span.spanId });
+  };
+
   const isTracing = shouldFetchTraces && tracesResource.loading && !tracesData;
   const traceError = tracesResource.error;
 
@@ -649,79 +647,115 @@ export function RunWorkspace({
                 </>
               )}
 
-              <div className="min-w-0 divide-y rounded-lg border">
-                {modelCalls.map((call) => {
-                  const active = view === "overview" && call.key === activeCall?.key;
-                  const open = active || (view === "technical" && openCalls.has(call.key));
-                  const label = t("observability.stepValueValue", {
-                    "0": call.stepNo,
-                    "1": t(phaseLabels[call.phase]),
-                  });
-                  return (
-                    <Collapsible
-                      key={call.key}
-                      open={open}
-                      onOpenChange={(nextOpen) =>
-                        setOpenCalls((previous) => {
-                          const next = new Set(previous);
-                          if (nextOpen) next.add(call.key);
-                          else next.delete(call.key);
-                          return next;
-                        })
-                      }
-                      hidden={view === "overview" && !active}
-                      className="min-w-0"
-                    >
-                      <CollapsibleTrigger asChild hidden={view !== "technical"}>
-                        <Button
-                          variant="ghost"
-                          aria-label={label}
-                          className="h-auto min-h-12 w-full flex-wrap justify-start gap-x-3 gap-y-1 rounded-none p-3 text-left whitespace-normal"
-                        >
-                          <span className="min-w-0 flex-1 font-medium">{label}</span>
-                          <Badge variant={call.status === "failed" ? "destructive" : "secondary"}>
-                            {call.errorCode ??
-                              t(
-                                call.status === "running"
-                                  ? "observability.running"
-                                  : runLabels[call.status],
-                              )}
-                          </Badge>
-                          <span className="max-w-full break-all text-xs text-muted-foreground">
-                            {call.model}
-                          </span>
-                          <span className="text-xs tabular-nums text-muted-foreground">
-                            {call.durationMs == null ? "—" : milliseconds(call.durationMs)}
-                          </span>
-                          <ChevronDown
-                            className={`size-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
-                            aria-hidden="true"
-                          />
-                        </Button>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent forceMount hidden={!open}>
-                        <div
-                          className={view === "technical" ? "space-y-3 border-t p-3" : "min-w-0"}
-                        >
-                          {view === "technical" && (
-                            <code className="block break-all text-xs text-muted-foreground">
-                              {call.runId} · {call.stepId}
-                            </code>
-                          )}
-                          <ModelEvidence
-                            handle={call.context}
-                            autoInspect
-                            embedded
-                            fullEvidence
-                            inspectionRevision={`${call.status === "running" ? "running" : "settled"}:${inspectionRevision}`}
-                          />
-                        </div>
-                      </CollapsibleContent>
-                    </Collapsible>
-                  );
-                })}
-              </div>
+              {view === "technical" && untracedCalls.length > 0 && (
+                <fieldset
+                  className="flex flex-wrap gap-2"
+                  aria-label={t("observability.modelSteps")}
+                >
+                  {untracedCalls.map((call) => {
+                    const label = t("observability.stepValueValue", {
+                      "0": call.stepNo,
+                      "1": t(phaseLabels[call.phase]),
+                    });
+                    return (
+                      <Button
+                        key={call.key}
+                        variant={fallbackCallKey === call.key ? "default" : "outline"}
+                        aria-label={label}
+                        aria-pressed={fallbackCallKey === call.key}
+                        className="h-auto max-w-full flex-col items-start whitespace-normal text-left"
+                        onClick={() => {
+                          setSelectedSpan(null);
+                          setFallbackCallKey(call.key);
+                        }}
+                      >
+                        <span>{label}</span>
+                        <span className="max-w-full break-all text-xs">{call.model}</span>
+                      </Button>
+                    );
+                  })}
+                </fieldset>
+              )}
 
+              <section
+                role={view === "technical" ? "region" : undefined}
+                aria-label={view === "technical" ? t("observability.viewStepDetails") : undefined}
+                className="min-w-0 space-y-4"
+              >
+                {view === "technical" && (technicalSpan || technicalCall) && (
+                  <h3
+                    ref={detailHeading}
+                    tabIndex={-1}
+                    className="text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {technicalSpan
+                      ? spanTitle(technicalSpan, t)
+                      : t("observability.viewStepDetails")}
+                  </h3>
+                )}
+                <div className="min-w-0">
+                  {modelCalls.map((call) => {
+                    const active =
+                      view === "overview"
+                        ? call.key === activeCall?.key
+                        : call.key === technicalCall?.key;
+                    return (
+                      <Collapsible
+                        key={call.key}
+                        open={active}
+                        hidden={!active}
+                        className="min-w-0"
+                      >
+                        <CollapsibleContent forceMount hidden={!active}>
+                          <div
+                            className={
+                              view === "technical" ? "space-y-3 rounded-lg border p-3" : "min-w-0"
+                            }
+                          >
+                            {view === "technical" && active && (
+                              <code className="block break-all text-xs text-muted-foreground">
+                                {call.runId} · {call.stepId}
+                              </code>
+                            )}
+                            <ModelEvidence
+                              handle={call.context}
+                              autoInspect
+                              embedded
+                              fullEvidence
+                              inspectionRevision={`${call.status === "running" ? "running" : "settled"}:${inspectionRevision}`}
+                            />
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    );
+                  })}
+                </div>
+                {view === "technical" && technicalSpan && (
+                  <details
+                    key={`${technicalSpan.traceId}|${technicalSpan.spanId}`}
+                    className="min-w-0 rounded-lg border"
+                  >
+                    <summary className="cursor-pointer p-3 text-sm">
+                      {t("observability.runAndMetadata")}
+                    </summary>
+                    <div className="border-t p-3">
+                      <EvidenceWorkbench
+                        item={technicalSpan}
+                        fullEvidence
+                        includeDelivery={false}
+                      />
+                    </div>
+                  </details>
+                )}
+                {[...deliveryOwners.keys()].map((outputId) => (
+                  <div
+                    key={outputId}
+                    hidden={view !== "technical" || technicalSpan?.outputId !== outputId}
+                  >
+                    <DeliveryEvidence outputId={outputId} />
+                  </div>
+                ))}
+              </section>
               {!run.steps.length && !isTracing && !modelCalls.length && (
                 <p className="text-muted-foreground">
                   {t("observability.noModelStepHasStartedYet")}
@@ -752,7 +786,10 @@ export function RunWorkspace({
                 <RunTraceSection
                   key={waterfall.trace.traceId}
                   data={waterfall}
-                  deliveryOwners={deliveryOwners}
+                  selected={
+                    selectedSpan?.traceId === waterfall.trace.traceId ? selectedSpan.spanId : null
+                  }
+                  onSelect={chooseSpan}
                 />
               ))}
               {!isTracing && !traces.length && (

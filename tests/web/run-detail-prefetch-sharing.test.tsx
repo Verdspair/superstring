@@ -246,14 +246,14 @@ describe("run detail prefetch and two-board sharing", () => {
     expect(visibleRegions()).toHaveLength(1);
     expect(inspect.calls).toHaveLength(2);
 
-    // 切到步骤与技术追踪：同一份已挂载证据复用，不新增读取
+    // 切到技术视图：默认 null，不显示模型证据；无时间线 span 的 own call 用既有步骤标签回退
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.technicalDetails") }));
     expect(inspect.calls).toHaveLength(2);
     expect(visibleRegions()).toHaveLength(0);
-    const stepOneOuter = screen.getByRole("button", { name: /步骤 1 · 单轮任务/ });
-    expect(stepOneOuter.getAttribute("aria-expanded")).toBe("false");
-    fireEvent.click(stepOneOuter);
-    expect(stepOneOuter.getAttribute("aria-expanded")).toBe("true");
+    const fallback = screen.getByRole("button", { name: /步骤 1 · 单轮任务/ });
+    expect(screen.getAllByRole("button", { name: /步骤 1 · 单轮任务/ })).toHaveLength(1);
+    fireEvent.click(fallback);
+    expect(fallback.getAttribute("aria-pressed")).toBe("true");
     expect(visibleRegions()).toHaveLength(1);
     expect(within(visibleRegions()[0]).getByText("精确输入:step-one")).toBeTruthy();
     expect(inspect.calls).toHaveLength(2);
@@ -450,12 +450,16 @@ describe("run detail prefetch and two-board sharing", () => {
     } as typeof api);
     render(<RunWorkspace runId={parentRunId} />);
     await waitFor(() => expect(getDelivery).toHaveBeenCalledTimes(1));
+    // 技术视图默认 null：没有模型证据；送达 reader 仍隐藏挂载，只读一次
     fireEvent.click(screen.getByRole("button", { name: i18n.t("observability.technicalDetails") }));
-    const details = document.querySelectorAll("details");
-    expect(details).toHaveLength(2);
-    details.forEach((item) => {
-      item.open = true;
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
+    const deliveryRows = screen.getAllByRole("button", {
+      name: i18n.t("observability.viewStepDetails"),
     });
+    expect(deliveryRows.length).toBeGreaterThan(0);
+    fireEvent.click(deliveryRows[0]);
+    expect(deliveryRows[0].getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryAllByRole("region", { name: EVIDENCE })).toHaveLength(0);
     expect(getDelivery).toHaveBeenCalledTimes(1);
   });
 });
